@@ -1,4 +1,4 @@
-const CACHE_NAME = 'iHymns-cache-v1';
+const CACHE_NAME = 'hymn-app-cache-v1';
 const urlsToCache = [
   '/',
   '/css/styles.css',

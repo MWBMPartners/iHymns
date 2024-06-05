@@ -1,32 +1,31 @@
 body {
-    font-family: Arial, sans-serif;
-  }
-  
-  .container {
-    max-width: 800px;
-    margin: 0 auto;
-    padding: 20px;
-  }
-  
-  h1 {
-    text-align: center;
-  }
-  
-  #searchInput {
-    width: calc(100% - 20px);
-    padding: 10px;
-    margin: 20px 0;
-  }
-  
-  #searchButton {
-    display: block;
-    width: 100%;
-    padding: 10px;
-  }
-  
-  .song {
-    border: 1px solid #ccc;
-    padding: 10px;
-    margin: 10px 0;
-  }
-  
+  font-family: Arial, sans-serif;
+}
+
+.container {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+h1 {
+  text-align: center;
+}
+
+#searchInput {
+  width: calc(100% - 20px);
+  padding: 10px;
+  margin: 20px 0;
+}
+
+#searchButton {
+  display: block;
+  width: 100%;
+  padding: 10px;
+}
+
+.song {
+  border: 1px solid #ccc;
+  padding: 10px;
+  margin: 10px 0;
+}

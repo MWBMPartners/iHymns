@@ -1,6 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:hymn_app/song_detail_view.dart';
-import 'package:hymn_app/song.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 
@@ -12,7 +10,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Hymns and Worship Songs',
+      title: 'Hymns & Worship Songs',
       theme: ThemeData(
         primarySwatch: Colors.blue,
       ),
@@ -50,7 +48,7 @@ class _MyHomePageState extends State<MyHomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Hymns and Worship Songs'),
+        title: Text('Hymns & Worship Songs'),
       ),
       body: Column(
         children: [
@@ -88,5 +86,156 @@ class _MyHomePageState extends State<MyHomePage> {
         ],
       ),
     );
+  }
+}
+
+class Song {
+  final int id;
+  final String title;
+  final String lyrics;
+  final String language;
+  final bool isCopyProtected;
+  final Map<String, String>? embeddableMedia;
+  final Map<String, String>? purchaseLinks;
+  final String backgroundMediaType;
+  final String backgroundMediaUrl;
+
+  Song({
+    required this.id,
+    required this.title,
+    required this.lyrics,
+    required this.language,
+    required this.isCopyProtected,
+    this.embeddableMedia,
+    this.purchaseLinks,
+    required this.backgroundMediaType,
+    required this.backgroundMediaUrl,
+  });
+
+  factory Song.fromJson(Map<String, dynamic> json) {
+    return Song(
+      id: json['id'],
+      title: json['title'],
+      lyrics: json['lyrics'],
+      language: json['language'],
+      isCopyProtected: json['is_copy_protected'],
+      embeddableMedia: json['embeddable_media'] != null ? Map<String, String>.from(json['embeddable_media']) : null,
+      purchaseLinks: json['purchase_links'] != null ? Map<String, String>.from(json['purchase_links']) : null,
+      backgroundMediaType: json['background_media_type'],
+      backgroundMediaUrl: json['background_media_url'],
+    );
+  }
+}
+
+class SongDetailView extends StatelessWidget {
+  final Song song;
+
+  SongDetailView({required this.song});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(song.title),
+      ),
+      body: SingleChildScrollView(
+        padding: EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(song.title, style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+            SizedBox(height: 16),
+            if (song.backgroundMediaType == 'video') ...[
+              VideoPlayerWidget(url: song.backgroundMediaUrl),
+              SizedBox(height: 16),
+            ] else if (song.backgroundMediaType == 'image') ...[
+              Image.network(song.backgroundMediaUrl),
+              SizedBox(height: 16),
+            ],
+            Text(song.lyrics, style: TextStyle(fontSize: 16)),
+            SizedBox(height: 16),
+            if (song.embeddableMedia != null)
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Embeddable Media:', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  ...song.embeddableMedia!.entries.map((entry) {
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4.0),
+                      child: InkWell(
+                        onTap: () => _launchURL(entry.value),
+                        child: Text(entry.key, style: TextStyle(fontSize: 16, color: Colors.blue)),
+                      ),
+                    );
+                  }).toList(),
+                ],
+              ),
+            SizedBox(height: 16),
+            if (song.purchaseLinks != null)
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Purchase Links:', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  ...song.purchaseLinks!.entries.map((entry) {
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4.0),
+                      child: InkWell(
+                        onTap: () => _launchURL(entry.value),
+                        child: Text('Buy on ${entry.key}', style: TextStyle(fontSize: 16, color: Colors.blue)),
+                      ),
+                    );
+                  }).toList(),
+                ],
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _launchURL(String url) async {
+    if (await canLaunch(url)) {
+      await launch(url);
+    } else {
+      throw 'Could not launch $url';
+    }
+  }
+}
+
+class VideoPlayerWidget extends StatefulWidget {
+  final String url;
+
+  VideoPlayerWidget({required this.url});
+
+  @override
+  _VideoPlayerWidgetState createState() => _VideoPlayerWidgetState();
+}
+
+class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
+  late VideoPlayerController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = VideoPlayerController.network(widget.url)
+      ..initialize().then((_) {
+        setState(() {});
+      });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _controller.value.isInitialized
+        ? AspectRatio(
+            aspectRatio: _controller.value.aspectRatio,
+            child: VideoPlayer(_controller),
+          )
+        : Center(child: CircularProgressIndicator());
   }
 }

@@ -1,0 +1,36 @@
+/* CSS for the admin panel */
+
+body {
+    font-family: Arial, sans-serif;
+}
+
+#wrapper {
+    display: flex;
+    flex-direction: row;
+}
+
+#sidebar-wrapper {
+    min-height: 100vh;
+    width: 250px;
+    margin-left: -250px;
+    transition: margin 0.25s ease-out;
+}
+
+#wrapper.toggled #sidebar-wrapper {
+    margin-left: 0;
+}
+
+#page-content-wrapper {
+    width: 100%;
+    padding: 20px;
+}
+
+@media (max-width: 768px) {
+    #sidebar-wrapper {
+        margin-left: 0;
+    }
+
+    #wrapper.toggled #sidebar-wrapper {
+        margin-left: -250px;
+    }
+}
