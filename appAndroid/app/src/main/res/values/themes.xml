@@ -1,0 +1,34 @@
+<!--
+  Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+  This software is proprietary.
+
+  iHymns - Theme Resources
+
+  PURPOSE:
+  Defines the XML theme used as the initial splash/launch theme before
+  Jetpack Compose takes over rendering. The actual app theme (colours,
+  typography) is managed by the Compose theme in Theme.kt.
+
+  This theme inherits from Theme.MaterialComponents.DayNight.NoActionBar
+  because Compose manages its own app bars and does not use the legacy
+  ActionBar system.
+-->
+<resources>
+    <!-- Base application theme - used only during activity launch -->
+    <style name="Theme.IHymns" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <!-- Status bar colour - amber to match brand -->
+        <item name="colorPrimary">#FFA000</item>
+        <item name="colorPrimaryVariant">#FF6F00</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+
+        <!-- Secondary colour -->
+        <item name="colorSecondary">#FF6F00</item>
+        <item name="colorSecondaryVariant">#E65100</item>
+        <item name="colorOnSecondary">#FFFFFF</item>
+
+        <!-- Background and surface -->
+        <item name="android:colorBackground">#FFFBFE</item>
+        <item name="colorSurface">#FFFBFE</item>
+        <item name="colorOnSurface">#1C1B1F</item>
+    </style>
+</resources>

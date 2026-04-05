@@ -1,0 +1,15 @@
+<!--
+  Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+  This software is proprietary.
+
+  iHymns - String Resources
+
+  PURPOSE:
+  Centralised string resources for the iHymns Android application.
+  The app_name value is referenced by AndroidManifest.xml for the
+  application label displayed in the device launcher and app settings.
+-->
+<resources>
+    <!-- Application display name shown in the device launcher -->
+    <string name="app_name">iHymns</string>
+</resources>

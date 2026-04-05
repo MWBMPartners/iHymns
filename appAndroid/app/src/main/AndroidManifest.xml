@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Copyright © 2026 MWBM Partners Ltd. All rights reserved.
+  This software is proprietary.
+
+  iHymns — Android Application Manifest
+
+  PURPOSE:
+  Declares application-level metadata, permissions, hardware/software feature
+  requirements, and activity registrations for the iHymns Android app.
+
+  PLATFORM COMPATIBILITY:
+  This manifest is designed to support multiple Android-based platforms:
+    - Standard Android phones and tablets (API 26+)
+    - Amazon Fire OS (Fire tablets, Fire TV, Fire TV Stick)
+    - Android TV (Google/Sony/etc. TV devices)
+    - ChromeOS (Chromebooks running Android apps)
+
+  KEY DESIGN DECISIONS:
+  1. android.software.leanback is declared as NOT required (required="false")
+     so the app installs on both TV and non-TV devices.
+  2. android.hardware.touchscreen is declared as NOT required so the app can
+     be discovered and installed on TV devices that lack touchscreens.
+  3. Internet permission is declared for future network features (Phase 2:
+     iLyrics dB integration). Phase 1 operates entirely offline using
+     bundled songs.json data.
+  4. No Google Play Services features are declared to maintain Fire OS
+     compatibility.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- =================================================================== -->
+    <!-- PERMISSIONS                                                          -->
+    <!--                                                                      -->
+    <!-- INTERNET: Required for Phase 2 (iLyrics dB network access).         -->
+    <!-- In Phase 1 the app operates offline, but declaring it now avoids     -->
+    <!-- a permission change in future updates.                               -->
+    <!-- =================================================================== -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- =================================================================== -->
+    <!-- FEATURE DECLARATIONS                                                 -->
+    <!--                                                                      -->
+    <!-- These declarations control which devices can discover and install    -->
+    <!-- the app from app stores (Google Play, Amazon Appstore).             -->
+    <!-- =================================================================== -->
+
+    <!--
+      Leanback (TV) UI support.
+      required="false" means: the app supports TV but does NOT require it.
+      This allows the app to appear in the Android TV / Fire TV app store
+      categories while remaining installable on phones, tablets, and ChromeOS.
+    -->
+    <uses-feature
+        android:name="android.software.leanback"
+        android:required="false" />
+
+    <!--
+      Touchscreen support.
+      required="false" means: the app works with a touchscreen but does not
+      require one. TV devices (Android TV, Fire TV) lack touchscreens and
+      use D-pad/remote navigation instead. Setting this to false ensures
+      the app is discoverable on TV app stores.
+    -->
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="false" />
+
+    <!-- =================================================================== -->
+    <!-- APPLICATION CONFIGURATION                                            -->
+    <!-- =================================================================== -->
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.IHymns"
+        android:banner="@drawable/tv_banner">
+
+        <!--
+          MAIN ACTIVITY — iHymns single-activity Compose application
+
+          This is the sole activity in the app. All screen navigation is
+          handled internally via Jetpack Compose Navigation (NavHost).
+
+          Intent Filters:
+          1. MAIN + LAUNCHER: Standard phone/tablet app launcher entry point.
+          2. MAIN + LEANBACK_LAUNCHER: Android TV / Fire TV home screen entry.
+
+          The leanback launcher category allows TV devices to display the app
+          on their home screen alongside other TV-optimised applications.
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.IHymns">
+
+            <!-- Standard mobile/tablet launcher intent filter -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Android TV / Fire TV launcher intent filter -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
+
+</manifest>
