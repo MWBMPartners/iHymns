@@ -1,0 +1,167 @@
+# =============================================================================
+# iHymns — Automatic Semantic Version Bump Workflow
+#
+# Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+# This software is proprietary. Unauthorized copying, modification, or
+# distribution is strictly prohibited.
+#
+# PURPOSE:
+# Automatically bumps the semantic version number in infoAppVer.php
+# when code is pushed to the `beta` branch.
+#
+# BUMP RULES (based on commit message):
+#   - Contains "BREAKING CHANGE" or "!:" -> MAJOR bump (X.0.0)
+#   - Starts with "feat("                -> MINOR bump (x.Y.0)
+#   - Everything else                    -> PATCH bump (x.y.Z)
+#
+# The new version is written back to infoAppVer.php and committed with
+# [skip ci] to prevent infinite workflow loops.
+# =============================================================================
+
+name: Version Bump
+
+on:
+  push:
+    branches:
+      - beta
+
+# Cancel any in-progress version bump on the same branch
+concurrency:
+  group: version-bump-${{ github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    name: Bump Semantic Version
+    runs-on: ubuntu-latest
+
+    # Skip if the triggering commit was itself a version bump (prevents loops)
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1: Checkout the repository
+      # Uses GITHUB_TOKEN for push access; replace with a PAT if branch
+      # protection rules require it
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+
+      # -----------------------------------------------------------------------
+      # Step 2: Read the current version from infoAppVer.php
+      # Parses the line: $app['Version']['Number'] = '1.2.3';
+      # Also handles pre-release suffixes like '1.0.0-alpha.1'
+      # -----------------------------------------------------------------------
+      - name: Read current version
+        id: current
+        run: |
+          VERSION_FILE="appWeb/public_html_beta/includes/infoAppVer.php"
+
+          # Extract the version string from the PHP file
+          CURRENT=$(grep -oP "\\\$app\['Version'\]\['Number'\]\s*=\s*'\K[^']+" "$VERSION_FILE")
+
+          if [ -z "$CURRENT" ]; then
+            echo "::error::Could not read version from $VERSION_FILE"
+            exit 1
+          fi
+
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "Current version: $CURRENT"
+
+      # -----------------------------------------------------------------------
+      # Step 3: Determine the bump type from the commit message
+      # Uses Conventional Commits conventions:
+      #   BREAKING CHANGE / !: -> major
+      #   feat(              -> minor
+      #   anything else      -> patch
+      # -----------------------------------------------------------------------
+      - name: Determine bump type
+        id: bump
+        run: |
+          COMMIT_MSG="${{ github.event.head_commit.message }}"
+          echo "Commit message: $COMMIT_MSG"
+
+          if echo "$COMMIT_MSG" | grep -qiE 'BREAKING CHANGE|!\:'; then
+            echo "type=major" >> "$GITHUB_OUTPUT"
+            echo "Bump type: MAJOR"
+          elif echo "$COMMIT_MSG" | grep -qE '^feat\('; then
+            echo "type=minor" >> "$GITHUB_OUTPUT"
+            echo "Bump type: MINOR"
+          else
+            echo "type=patch" >> "$GITHUB_OUTPUT"
+            echo "Bump type: PATCH"
+          fi
+
+      # -----------------------------------------------------------------------
+      # Step 4: Calculate the new version number
+      # Strips any pre-release suffix (e.g., -alpha.1) before bumping,
+      # then applies the appropriate increment
+      # -----------------------------------------------------------------------
+      - name: Calculate new version
+        id: new_version
+        run: |
+          CURRENT="${{ steps.current.outputs.current }}"
+          BUMP_TYPE="${{ steps.bump.outputs.type }}"
+
+          # Strip pre-release suffix (everything after the first hyphen)
+          BASE_VERSION=$(echo "$CURRENT" | sed 's/-.*//')
+
+          # Split into major.minor.patch
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
+
+          case "$BUMP_TYPE" in
+            major)
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              ;;
+            minor)
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              ;;
+            patch)
+              PATCH=$((PATCH + 1))
+              ;;
+          esac
+
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "New version: $NEW_VERSION (was $CURRENT)"
+
+      # -----------------------------------------------------------------------
+      # Step 5: Write the new version back to infoAppVer.php
+      # Uses sed to replace the version string in place
+      # -----------------------------------------------------------------------
+      - name: Update version in infoAppVer.php
+        run: |
+          VERSION_FILE="appWeb/public_html_beta/includes/infoAppVer.php"
+          OLD_VERSION="${{ steps.current.outputs.current }}"
+          NEW_VERSION="${{ steps.new_version.outputs.version }}"
+
+          echo "Updating $VERSION_FILE: $OLD_VERSION -> $NEW_VERSION"
+
+          sed -i "s|\(\$app\['Version'\]\['Number'\]\s*=\s*'\)${OLD_VERSION}';|\1${NEW_VERSION}';|" "$VERSION_FILE"
+
+          # Verify the update was applied
+          grep "Version.*Number" "$VERSION_FILE"
+
+      # -----------------------------------------------------------------------
+      # Step 6: Commit and push the version bump
+      # Uses [skip ci] in the commit message to prevent triggering another run
+      # -----------------------------------------------------------------------
+      - name: Commit version bump
+        run: |
+          NEW_VERSION="${{ steps.new_version.outputs.version }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add appWeb/public_html_beta/includes/infoAppVer.php
+          git commit -m "chore: bump version to ${NEW_VERSION} [skip ci]"
+          git push
