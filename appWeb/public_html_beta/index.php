@@ -141,6 +141,13 @@ require_once __DIR__ . '/includes/infoAppVer.php';
                                 id="search-clear" aria-label="Clear search">
                             <i class="bi bi-x-lg" aria-hidden="true"></i>
                         </button>
+                        <!-- Number search toggle: switches input to numeric keypad on mobile -->
+                        <button class="btn btn-outline-secondary" type="button"
+                                id="search-numpad-toggle"
+                                aria-label="Toggle number search mode"
+                                title="Search by song number (numpad)">
+                            <i class="bi bi-123" aria-hidden="true"></i>
+                        </button>
                     </div>
                 </form>
 

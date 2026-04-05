@@ -647,6 +647,71 @@ export function bindSearchInput(containerEl) {
             e.preventDefault();
         });
     }
+
+    /**
+     * Numpad toggle button: switches the search input between text mode
+     * and numeric mode. In numeric mode, mobile devices show the numpad
+     * keyboard instead of the full text keyboard, making it easier to
+     * search by song number during worship.
+     */
+    const numpadToggle = $('#search-numpad-toggle');
+
+    /* Track whether we are currently in numpad (number search) mode */
+    let isNumpadMode = false;
+
+    if (numpadToggle) {
+        numpadToggle.addEventListener('click', () => {
+            /* Toggle the numpad mode flag */
+            isNumpadMode = !isNumpadMode;
+
+            if (isNumpadMode) {
+                /* Switch to numeric input mode */
+                /* 'inputmode="numeric"' tells mobile browsers to show the numpad */
+                searchInput.setAttribute('inputmode', 'numeric');
+
+                /* 'pattern' attribute provides a hint for numeric-only input */
+                searchInput.setAttribute('pattern', '[0-9]*');
+
+                /* Update placeholder to indicate number search mode */
+                searchInput.placeholder = 'Enter song number...';
+
+                /* Highlight the toggle button to indicate active mode */
+                numpadToggle.classList.remove('btn-outline-secondary');
+                numpadToggle.classList.add('btn-primary');
+
+                /* Update the aria-label for screen readers */
+                numpadToggle.setAttribute('aria-label', 'Switch to text search mode');
+                numpadToggle.setAttribute('title', 'Switch to text search');
+            } else {
+                /* Switch back to text input mode */
+                /* Remove the numeric inputmode to restore full keyboard */
+                searchInput.removeAttribute('inputmode');
+
+                /* Remove the numeric pattern */
+                searchInput.removeAttribute('pattern');
+
+                /* Restore the default placeholder text */
+                searchInput.placeholder = 'Search songs, lyrics, songbooks...';
+
+                /* Reset the toggle button to its default style */
+                numpadToggle.classList.remove('btn-primary');
+                numpadToggle.classList.add('btn-outline-secondary');
+
+                /* Update the aria-label for screen readers */
+                numpadToggle.setAttribute('aria-label', 'Toggle number search mode');
+                numpadToggle.setAttribute('title', 'Search by song number (numpad)');
+            }
+
+            /* Clear the input when switching modes for a clean slate */
+            searchInput.value = '';
+
+            /* Focus the input so the correct keyboard appears immediately */
+            searchInput.focus();
+
+            /* If we were showing search results, restore the previous view */
+            restorePreviousView(containerEl);
+        });
+    }
 }
 
 /* =========================================================================
