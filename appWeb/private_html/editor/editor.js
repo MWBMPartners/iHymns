@@ -24,8 +24,21 @@ var songData = {
     songs: []       // will be populated on load
 };
 
-/** Default relative URL used for auto-loading the song data file. */
-var DEFAULT_SONGS_URL = '../../public_html_beta/data/songs.json';
+/**
+ * Possible relative paths for auto-loading the song data file.
+ * The canonical location is data/songs.json at the project root.
+ * Multiple paths are tried because the relative path varies depending
+ * on whether the editor is served locally or deployed to a server.
+ */
+var SONGS_URL_CANDIDATES = [
+    '../../../data/songs.json',              /* Local dev: relative to appWeb/private_html/editor/ */
+    '../../public_html_beta/data/songs.json', /* Deployed: data copied during build to public_html_beta */
+    '../../public_html/data/songs.json',      /* Production: data copied during build to public_html */
+    'data/songs.json'                         /* Fallback: same directory */
+];
+
+/** Default URL shown in the manual load prompt. */
+var DEFAULT_SONGS_URL = SONGS_URL_CANDIDATES[0];
 
 /** ID of the song currently loaded into the edit form (null when nothing selected). */
 var currentSongId = null;
@@ -105,9 +118,38 @@ function loadSongsFromFile(file) {
  * @returns {Promise<void>}
  */
 function loadSongsFromURL(url) {
-    /* Use the default URL if none is supplied. */
-    var target = url || DEFAULT_SONGS_URL;
+    /* If a specific URL is provided, fetch that directly. */
+    if (url) {
+        return _fetchAndParseSongs(url);
+    }
 
+    /* Otherwise, try each candidate path in order until one succeeds. */
+    var candidates = SONGS_URL_CANDIDATES.slice();
+
+    function tryNext() {
+        if (candidates.length === 0) {
+            showToast('Could not load songs.json from any path. Use "Load JSON" to load manually.', 'warning');
+            return Promise.resolve();
+        }
+        var candidate = candidates.shift();
+        return _fetchAndParseSongs(candidate).catch(function () {
+            /* This path failed — try the next one */
+            return tryNext();
+        });
+    }
+
+    return tryNext();
+}
+
+/**
+ * _fetchAndParseSongs(target)
+ * ---------------------------
+ * Internal helper: fetches and parses a single songs.json URL.
+ *
+ * @param {string} target - The URL to fetch.
+ * @returns {Promise<void>}
+ */
+function _fetchAndParseSongs(target) {
     /* Fetch the remote JSON file. */
     return fetch(target)
         .then(function (response) {
