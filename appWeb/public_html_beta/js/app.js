@@ -41,6 +41,9 @@ import { initSearch, bindSearchInput } from './modules/search.js';
 /* Import favourites rendering function */
 import { renderFavorites } from './modules/favorites.js';
 
+/* Import the in-app help view rendering function */
+import { renderHelpView } from './modules/help.js';
+
 /* Import settings/theme functions for dark mode, colourblind mode, install banner, and updates */
 import { initTheme, bindThemeToggle, initInstallBanner, initUpdateChecker, initColourblindMode, toggleColourblindMode } from './modules/settings.js';
 
@@ -332,111 +335,6 @@ function updateActiveNav(navName) {
         activeLink.classList.add('active');
         activeLink.setAttribute('aria-current', 'page');
     }
-}
-
-/**
- * renderHelpView(containerEl)
- *
- * Renders the in-app help view. This is a placeholder that will be
- * expanded with full documentation in a future milestone.
- *
- * @param {Element} containerEl - The container to render into
- */
-function renderHelpView(containerEl) {
-    containerEl.innerHTML = `
-        <div class="view-fade-in" style="max-width: 700px; margin: 0 auto; padding: 1rem;">
-            <button class="back-btn" onclick="window.location.hash='#/'">
-                <i class="bi bi-arrow-left"></i> Back to Songbooks
-            </button>
-
-            <h2 class="mb-4"><i class="bi bi-question-circle me-2"></i>Help</h2>
-
-            <div class="accordion" id="help-accordion">
-                <div class="accordion-item">
-                    <h3 class="accordion-header">
-                        <button class="accordion-button" type="button" data-bs-toggle="collapse"
-                                data-bs-target="#help-search" aria-expanded="true">
-                            <i class="bi bi-search me-2"></i> Searching Songs
-                        </button>
-                    </h3>
-                    <div id="help-search" class="accordion-collapse collapse show"
-                         data-bs-parent="#help-accordion">
-                        <div class="accordion-body">
-                            <p>Use the search bar at the top to find songs by:</p>
-                            <ul>
-                                <li><strong>Title</strong> — type the song title or part of it</li>
-                                <li><strong>Lyrics</strong> — search for a line or phrase</li>
-                                <li><strong>Song number</strong> — type the number (e.g., "CH 3")</li>
-                                <li><strong>Writer/Composer</strong> — search by author name</li>
-                                <li><strong>Songbook</strong> — type the songbook name or abbreviation</li>
-                            </ul>
-                            <p>Searches are fuzzy — you don't need exact spelling!</p>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="accordion-item">
-                    <h3 class="accordion-header">
-                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
-                                data-bs-target="#help-favorites">
-                            <i class="bi bi-star me-2"></i> Favourites
-                        </button>
-                    </h3>
-                    <div id="help-favorites" class="accordion-collapse collapse"
-                         data-bs-parent="#help-accordion">
-                        <div class="accordion-body">
-                            <p>Tap the <i class="bi bi-star"></i> star icon on any song to save it to
-                               your Favourites for quick access.</p>
-                            <p>View all favourites by clicking "Favourites" in the navigation bar.</p>
-                            <p><strong>Note:</strong> Favourites are stored locally on your device.</p>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="accordion-item">
-                    <h3 class="accordion-header">
-                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
-                                data-bs-target="#help-install">
-                            <i class="bi bi-download me-2"></i> Installing the App
-                        </button>
-                    </h3>
-                    <div id="help-install" class="accordion-collapse collapse"
-                         data-bs-parent="#help-accordion">
-                        <div class="accordion-body">
-                            <p>iHymns can be installed as an app on your device:</p>
-                            <ul>
-                                <li><strong>Chrome/Edge:</strong> Click the install banner or the install
-                                    icon in the address bar</li>
-                                <li><strong>Safari (iOS):</strong> Tap Share → "Add to Home Screen"</li>
-                            </ul>
-                            <p>Once installed, iHymns works offline — perfect for worship!</p>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="accordion-item">
-                    <h3 class="accordion-header">
-                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
-                                data-bs-target="#help-about">
-                            <i class="bi bi-info-circle me-2"></i> About iHymns
-                        </button>
-                    </h3>
-                    <div id="help-about" class="accordion-collapse collapse"
-                         data-bs-parent="#help-accordion">
-                        <div class="accordion-body">
-                            <p><strong>iHymns</strong> is a Christian lyrics application providing searchable
-                               hymn and worship song lyrics from multiple songbooks.</p>
-                            <p>Currently featuring <strong>5 songbooks</strong> with over
-                               <strong>3,600 songs</strong>.</p>
-                            <p class="text-muted small mt-3">
-                                © MWBM Partners Ltd. All rights reserved.
-                            </p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    `;
 }
 
 /* =========================================================================
