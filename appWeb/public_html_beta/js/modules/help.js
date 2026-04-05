@@ -52,7 +52,7 @@ const HELP_SECTIONS = [
         icon: 'bi-book',
         title: 'Songbooks',
         content: `
-            <p>iHymns includes songs from <strong>5 songbooks</strong>:</p>
+            <p>iHymns includes songs from <strong>6 songbooks</strong>:</p>
             <table class="table table-sm">
                 <thead><tr><th>Songbook</th><th>Abbrev</th><th>Songs</th><th>Audio</th></tr></thead>
                 <tbody>
@@ -61,8 +61,11 @@ const HELP_SECTIONS = [
                     <tr><td>Mission Praise</td><td>MP</td><td>1,355</td><td>MIDI</td></tr>
                     <tr><td>Junior Praise</td><td>JP</td><td>617</td><td>MIDI</td></tr>
                     <tr><td>Carol Praise</td><td>CP</td><td>243</td><td>MIDI</td></tr>
+                    <tr><td>Miscellaneous</td><td>Misc</td><td>—</td><td>—</td></tr>
                 </tbody>
             </table>
+            <p>The <strong>Miscellaneous</strong> songbook contains hymns and worship songs
+               that aren't from a specific published songbook.</p>
             <p>Click on a songbook card on the home page to browse its songs by number.</p>
         `
     },
