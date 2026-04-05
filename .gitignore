@@ -193,6 +193,8 @@ temp/
 credentials.json
 secrets.json
 sftp-config.json
+.htpasswd
+.htpasswd-*
 
 # ----------------------------------------------------------------------------
 # Generated Data (re-generated from .SourceSongData/)

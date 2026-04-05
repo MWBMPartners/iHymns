@@ -314,7 +314,7 @@ jobs:
           cat > /tmp/lftp_script.txt <<LFTP_EOF
           set sftp:connect-program "ssh -o StrictHostKeyChecking=no -i $HOME/.ssh/deploy_key -p ${SFTP_PORT}"
           open sftp://${SFTP_USER}@${SFTP_HOST}:${SFTP_PORT}
-          mirror --reverse --delete --verbose --only-newer --no-empty-dirs --exclude .DS_Store --exclude .gitkeep --exclude .gitignore --exclude README.md --exclude CHANGELOG.md --exclude DEV_NOTES.md ${SOURCE_DIR} ${REMOTE_PATH}
+          mirror --reverse --delete --verbose --only-newer --no-empty-dirs --exclude .DS_Store --exclude .gitkeep --exclude .gitignore --exclude README.md --exclude CHANGELOG.md --exclude DEV_NOTES.md --exclude .htpasswd --exclude '.htpasswd-*' --exclude '.htpasswd.example' ${SOURCE_DIR} ${REMOTE_PATH}
           bye
           LFTP_EOF
           lftp -f /tmp/lftp_script.txt
