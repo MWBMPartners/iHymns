@@ -1,0 +1,80 @@
+/**
+ * iHymns — Print Stylesheet
+ *
+ * Copyright © 2026 MWBM Partners Ltd. All rights reserved.
+ *
+ * PURPOSE:
+ * Optimises the song detail view for printing.
+ * Hides navigation, search, footer, and other UI chrome.
+ * Ensures lyrics are readable in black-and-white on paper.
+ */
+
+/* Hide all non-essential elements when printing */
+#main-navbar,
+#install-banner,
+#app-footer,
+.song-actions,
+.back-btn,
+.app-breadcrumb,
+.favorite-btn,
+.media-indicator {
+    display: none !important;
+}
+
+/* Reset body to simple print styles */
+body {
+    font-family: 'Georgia', 'Times New Roman', serif;
+    font-size: 12pt;
+    color: #000000;
+    background: #ffffff;
+}
+
+/* Song title: large and bold */
+.song-detail-title {
+    font-size: 18pt;
+    color: #000000;
+    margin-bottom: 4pt;
+}
+
+/* Song metadata: smaller, italic */
+.song-detail-meta {
+    font-size: 10pt;
+    color: #333333;
+    border-bottom: 1px solid #cccccc;
+    padding-bottom: 8pt;
+    margin-bottom: 12pt;
+}
+
+/* Lyrics: comfortable reading size */
+.song-component-lyrics {
+    font-size: 12pt;
+    line-height: 1.6;
+}
+
+/* Component labels */
+.song-component-label {
+    font-size: 9pt;
+    color: #666666;
+}
+
+/* Chorus/refrain: indent but no colour border */
+.song-component-chorus .song-component-lyrics,
+.song-component-refrain .song-component-lyrics {
+    padding-left: 24pt;
+    border-left: 2pt solid #999999;
+    font-style: italic;
+}
+
+/* Credits: small footer text */
+.song-credits {
+    font-size: 9pt;
+    color: #666666;
+    border-top: 1px solid #cccccc;
+    margin-top: 16pt;
+    padding-top: 8pt;
+}
+
+/* Ensure no page break inside a component */
+.song-component {
+    page-break-inside: avoid;
+}

@@ -25,6 +25,21 @@
 - Built `tools/parse-songs.js` — song data parser (fully annotated, ~500 lines)
 - Generated `data/songs.json` — 3,612 songs parsed (5.22 MB), with structured components, writer/composer credits, audio/sheet music flags
 - 31 songs have no lyrics (empty source files — placeholder entries in source data)
+- Built Web PWA core (Milestone 2) in `appWeb/public_html_beta/`:
+  - `index.php` — main SPA layout with Bootstrap 5.3, responsive navbar, search, dark mode toggle
+  - `includes/infoAppVer.php` — centralised version metadata with auto-computed copyright year
+  - `css/styles.css` — custom styles: songbook cards, song list, lyrics view, dark mode, animations
+  - `css/print.css` — print-optimised stylesheet for song lyrics
+  - `js/app.js` — main entry point: data loading, SPA router, module orchestration
+  - `js/utils/helpers.js` — shared DOM helpers, text formatting, hash routing, debounce
+  - `js/modules/songbook.js` — songbook grid (home) and song list views
+  - `js/modules/song-view.js` — song detail view with formatted lyrics, breadcrumb, actions
+  - `js/modules/search.js` — Fuse.js fuzzy search (title, lyrics, songbook, writer, number)
+  - `js/modules/favorites.js` — localStorage-based favourites management
+  - `js/modules/settings.js` — dark mode, PWA install banner, update checker
+  - `manifest.json` — PWA manifest for installability
+  - `service-worker.js` — offline caching (cache-first for static, network-first for data)
+  - `assets/favicon.svg` — SVG favicon (music notes on purple circle)
 
 ### 🏗 Changed — 2026-04-05
 

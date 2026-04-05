@@ -1,0 +1,555 @@
+/**
+ * iHymns — Main Stylesheet
+ *
+ * Copyright © 2026 MWBM Partners Ltd. All rights reserved.
+ * This software is proprietary. Unauthorized copying, modification, or
+ * distribution is strictly prohibited.
+ *
+ * PURPOSE:
+ * Custom styles for the iHymns web PWA. Works alongside Bootstrap 5.3
+ * and extends it with app-specific theming, component styles, and animations.
+ * Dark mode is handled by Bootstrap's data-bs-theme="dark" attribute.
+ */
+
+/* =========================================================================
+ * CSS CUSTOM PROPERTIES (VARIABLES)
+ * These define the colour palette and spacing values used throughout.
+ * Bootstrap's built-in CSS variables are also available (e.g., --bs-primary).
+ * ========================================================================= */
+
+:root {
+    /* Primary brand colour: a rich purple representing worship/royalty */
+    --ihymns-primary: #6f42c1;
+
+    /* Secondary accent colour: a warm gold for highlights and CTAs */
+    --ihymns-accent: #fd7e14;
+
+    /* Background colour for the songbook cards on the home page */
+    --ihymns-card-bg: #ffffff;
+
+    /* Subtle background for alternating song list rows */
+    --ihymns-row-alt: #f8f9fa;
+
+    /* The maximum width for lyric text (for comfortable reading) */
+    --ihymns-lyrics-max-width: 680px;
+
+    /* Border radius used consistently across cards, buttons, etc. */
+    --ihymns-border-radius: 0.75rem;
+
+    /* Transition duration for smooth hover/focus effects */
+    --ihymns-transition: 0.2s ease;
+}
+
+/* --- Dark mode variable overrides --- */
+/* When Bootstrap's data-bs-theme="dark" is set on <html>, these override the light values */
+[data-bs-theme="dark"] {
+    /* Darker card background for dark mode */
+    --ihymns-card-bg: #1e1e2e;
+
+    /* Darker alternating row colour */
+    --ihymns-row-alt: #252535;
+}
+
+/* =========================================================================
+ * GLOBAL / BASE STYLES
+ * ========================================================================= */
+
+/* Set the base font and ensure the page fills the viewport height */
+body {
+    /* System font stack for fast rendering and native feel */
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+
+    /* Minimum height: full viewport so footer stays at the bottom */
+    min-height: 100vh;
+
+    /* Flexbox column layout: navbar at top, content fills middle, footer at bottom */
+    display: flex;
+    flex-direction: column;
+
+    /* Smooth transition for background/colour changes (e.g., dark mode toggle) */
+    transition: background-color var(--ihymns-transition), color var(--ihymns-transition);
+}
+
+/* The main content area should expand to fill available space (pushes footer down) */
+#app-content {
+    flex: 1;
+}
+
+/* =========================================================================
+ * NAVBAR STYLES
+ * ========================================================================= */
+
+/* The main navigation bar: uses the primary brand colour as background */
+#main-navbar {
+    /* Brand purple background */
+    background-color: var(--ihymns-primary) !important;
+
+    /* Slight transparency for a modern frosted-glass effect */
+    backdrop-filter: blur(10px);
+}
+
+/* Dark mode navbar: use a darker shade */
+[data-bs-theme="dark"] #main-navbar {
+    background-color: #1a1a2e !important;
+}
+
+/* Navbar brand text: white, bold, with hover effect */
+#main-navbar .navbar-brand {
+    color: #ffffff !important;
+    transition: opacity var(--ihymns-transition);
+}
+
+/* Subtle hover effect on the brand/logo */
+#main-navbar .navbar-brand:hover {
+    opacity: 0.85;
+}
+
+/* Nav links in the navbar: white text to contrast with purple background */
+#main-navbar .nav-link {
+    color: rgba(255, 255, 255, 0.85) !important;
+    transition: color var(--ihymns-transition), background-color var(--ihymns-transition);
+    border-radius: 0.5rem;
+    padding: 0.4rem 0.75rem !important;
+}
+
+/* Active and hovered nav links: fully opaque white */
+#main-navbar .nav-link:hover,
+#main-navbar .nav-link.active {
+    color: #ffffff !important;
+    background-color: rgba(255, 255, 255, 0.15);
+}
+
+/* Search input: rounded with subtle styling */
+#search-form .form-control {
+    border-radius: 0 var(--ihymns-border-radius) var(--ihymns-border-radius) 0;
+}
+
+/* Search icon container: matches the input styling */
+#search-form .input-group-text {
+    border-radius: var(--ihymns-border-radius) 0 0 var(--ihymns-border-radius);
+}
+
+/* Theme toggle button: ensure it shows as white on the purple navbar */
+#theme-toggle {
+    color: rgba(255, 255, 255, 0.85) !important;
+    font-size: 1.2rem;
+}
+
+#theme-toggle:hover {
+    color: #ffffff !important;
+}
+
+/* =========================================================================
+ * SONGBOOK CARDS (Home View)
+ * Grid of cards showing each songbook with song count.
+ * ========================================================================= */
+
+/* Container for the songbook cards grid */
+.songbook-grid {
+    /* CSS Grid with responsive columns: min 280px, max fills available space */
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 1.25rem;
+    padding: 0.5rem;
+}
+
+/* Individual songbook card */
+.songbook-card {
+    /* Use the card background variable (respects dark mode) */
+    background-color: var(--ihymns-card-bg);
+
+    /* Rounded corners for a modern look */
+    border-radius: var(--ihymns-border-radius);
+
+    /* Subtle shadow for depth */
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+
+    /* Smooth hover transition */
+    transition: transform var(--ihymns-transition), box-shadow var(--ihymns-transition);
+
+    /* Pointer cursor to indicate clickability */
+    cursor: pointer;
+
+    /* Overflow hidden to ensure rounded corners clip child elements */
+    overflow: hidden;
+
+    /* Border for definition */
+    border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+/* Dark mode: adjust card border */
+[data-bs-theme="dark"] .songbook-card {
+    border-color: rgba(255, 255, 255, 0.08);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+/* Hover effect: lift the card up slightly and increase shadow */
+.songbook-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 8px 24px rgba(111, 66, 193, 0.15);
+}
+
+/* Dark mode hover: adjust shadow colour */
+[data-bs-theme="dark"] .songbook-card:hover {
+    box-shadow: 0 8px 24px rgba(111, 66, 193, 0.3);
+}
+
+/* Songbook card header: coloured top strip */
+.songbook-card-header {
+    background: linear-gradient(135deg, var(--ihymns-primary), #9b59b6);
+    color: #ffffff;
+    padding: 1.25rem;
+}
+
+/* Songbook card body: contains the song count and description */
+.songbook-card-body {
+    padding: 1.25rem;
+}
+
+/* Song count badge inside the card */
+.songbook-song-count {
+    display: inline-block;
+    background-color: var(--ihymns-accent);
+    color: #ffffff;
+    font-weight: 600;
+    font-size: 0.8rem;
+    padding: 0.25rem 0.6rem;
+    border-radius: 1rem;
+}
+
+/* =========================================================================
+ * SONG LIST (Song Index View)
+ * A scrollable list of songs within a songbook.
+ * ========================================================================= */
+
+/* Individual song list item */
+.song-list-item {
+    /* Flex layout for number, title, and action icons */
+    display: flex;
+    align-items: center;
+    padding: 0.75rem 1rem;
+
+    /* Subtle bottom border between items */
+    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+
+    /* Pointer cursor and hover transition */
+    cursor: pointer;
+    transition: background-color var(--ihymns-transition);
+}
+
+/* Dark mode: adjust border colour */
+[data-bs-theme="dark"] .song-list-item {
+    border-bottom-color: rgba(255, 255, 255, 0.06);
+}
+
+/* Hover highlight for song list items */
+.song-list-item:hover {
+    background-color: rgba(111, 66, 193, 0.06);
+}
+
+/* Song number (left-aligned, fixed width) */
+.song-list-number {
+    /* Fixed width so numbers align vertically */
+    min-width: 3.5rem;
+    font-weight: 600;
+    color: var(--ihymns-primary);
+    font-size: 0.9rem;
+}
+
+/* Song title (takes remaining space) */
+.song-list-title {
+    flex: 1;
+    font-size: 1rem;
+}
+
+/* Song meta info (writer, etc.) shown below the title */
+.song-list-meta {
+    font-size: 0.8rem;
+    opacity: 0.65;
+    margin-top: 0.15rem;
+}
+
+/* Icons on the right side of song list items (favourite star, audio indicator) */
+.song-list-icons {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-left: 0.5rem;
+}
+
+/* =========================================================================
+ * SONG DETAIL VIEW (Lyrics Display)
+ * The main lyrics view when a song is selected.
+ * ========================================================================= */
+
+/* Container for the song detail view */
+.song-detail {
+    /* Centre the lyrics for comfortable reading */
+    max-width: var(--ihymns-lyrics-max-width);
+    margin: 0 auto;
+    padding: 1rem;
+}
+
+/* Song title in the detail view */
+.song-detail-title {
+    font-size: 1.75rem;
+    font-weight: 700;
+    margin-bottom: 0.25rem;
+    color: var(--ihymns-primary);
+}
+
+/* Song metadata bar (songbook, number, writer) */
+.song-detail-meta {
+    font-size: 0.9rem;
+    opacity: 0.7;
+    margin-bottom: 1.5rem;
+    padding-bottom: 1rem;
+    border-bottom: 2px solid rgba(111, 66, 193, 0.2);
+}
+
+/* A single song component (verse, chorus, refrain, etc.) */
+.song-component {
+    margin-bottom: 1.75rem;
+}
+
+/* Component label (e.g., "Verse 1", "Refrain") */
+.song-component-label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--ihymns-primary);
+    margin-bottom: 0.5rem;
+    opacity: 0.8;
+}
+
+/* Lyrics text within a component */
+.song-component-lyrics {
+    font-size: 1.15rem;
+    line-height: 1.8;
+    white-space: pre-line;
+}
+
+/* Chorus/refrain: indented and with a left border for visual distinction */
+.song-component-chorus .song-component-lyrics,
+.song-component-refrain .song-component-lyrics {
+    padding-left: 1.5rem;
+    border-left: 3px solid var(--ihymns-primary);
+    font-style: italic;
+}
+
+/* Song action buttons (favourite, print, share) */
+.song-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1.5rem;
+    flex-wrap: wrap;
+}
+
+/* Copyright/credits section at the bottom of the song */
+.song-credits {
+    margin-top: 2rem;
+    padding-top: 1rem;
+    border-top: 1px solid rgba(0, 0, 0, 0.1);
+    font-size: 0.85rem;
+    opacity: 0.65;
+}
+
+[data-bs-theme="dark"] .song-credits {
+    border-top-color: rgba(255, 255, 255, 0.1);
+}
+
+/* =========================================================================
+ * SEARCH RESULTS
+ * ========================================================================= */
+
+/* Search results count text */
+.search-results-count {
+    font-size: 0.9rem;
+    opacity: 0.7;
+    margin-bottom: 1rem;
+}
+
+/* Highlighted search match text within results */
+.search-highlight {
+    background-color: rgba(253, 126, 20, 0.25);
+    padding: 0.1rem 0.2rem;
+    border-radius: 0.2rem;
+}
+
+[data-bs-theme="dark"] .search-highlight {
+    background-color: rgba(253, 126, 20, 0.35);
+}
+
+/* =========================================================================
+ * FAVOURITES
+ * ========================================================================= */
+
+/* Favourite star: default (unfilled) state */
+.favorite-btn {
+    color: #adb5bd;
+    cursor: pointer;
+    transition: color var(--ihymns-transition), transform var(--ihymns-transition);
+    background: none;
+    border: none;
+    padding: 0.25rem;
+    font-size: 1.2rem;
+}
+
+/* Favourite star: hover state */
+.favorite-btn:hover {
+    color: var(--ihymns-accent);
+    transform: scale(1.15);
+}
+
+/* Favourite star: active (filled) state */
+.favorite-btn.active {
+    color: var(--ihymns-accent);
+}
+
+/* Empty favourites message */
+.favorites-empty {
+    text-align: center;
+    padding: 3rem 1rem;
+    opacity: 0.6;
+}
+
+.favorites-empty i {
+    font-size: 3rem;
+    margin-bottom: 1rem;
+    display: block;
+}
+
+/* =========================================================================
+ * BREADCRUMB NAVIGATION
+ * Shows the path back from song detail → song list → songbooks
+ * ========================================================================= */
+
+.app-breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.9rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+}
+
+/* Breadcrumb links: styled as subtle text links */
+.app-breadcrumb a {
+    color: var(--ihymns-primary);
+    text-decoration: none;
+    transition: opacity var(--ihymns-transition);
+}
+
+.app-breadcrumb a:hover {
+    opacity: 0.7;
+    text-decoration: underline;
+}
+
+/* Breadcrumb separator (e.g., ">") */
+.app-breadcrumb .separator {
+    opacity: 0.4;
+}
+
+/* =========================================================================
+ * BACK BUTTON
+ * ========================================================================= */
+
+.back-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    color: var(--ihymns-primary);
+    text-decoration: none;
+    font-size: 0.95rem;
+    margin-bottom: 1rem;
+    transition: opacity var(--ihymns-transition);
+    cursor: pointer;
+    background: none;
+    border: none;
+    padding: 0;
+}
+
+.back-btn:hover {
+    opacity: 0.7;
+}
+
+/* =========================================================================
+ * UTILITY CLASSES
+ * ========================================================================= */
+
+/* Fade-in animation for view transitions */
+.view-fade-in {
+    animation: fadeIn 0.3s ease-out;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Badge styles for songbook abbreviation tags */
+.songbook-badge {
+    display: inline-block;
+    background-color: var(--ihymns-primary);
+    color: #ffffff;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0.2rem 0.5rem;
+    border-radius: 0.25rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+/* Audio/sheet music indicator icons */
+.media-indicator {
+    font-size: 0.85rem;
+    opacity: 0.5;
+}
+
+.media-indicator.has-media {
+    opacity: 1;
+    color: var(--ihymns-primary);
+}
+
+/* =========================================================================
+ * RESPONSIVE ADJUSTMENTS
+ * ========================================================================= */
+
+/* Small screens (phones): reduce padding and font sizes */
+@media (max-width: 576px) {
+    /* Reduce song detail title size on small screens */
+    .song-detail-title {
+        font-size: 1.4rem;
+    }
+
+    /* Reduce lyrics font size slightly */
+    .song-component-lyrics {
+        font-size: 1.05rem;
+        line-height: 1.7;
+    }
+
+    /* Songbook cards: full width on very small screens */
+    .songbook-grid {
+        grid-template-columns: 1fr;
+    }
+
+    /* Reduce chorus indent on small screens */
+    .song-component-chorus .song-component-lyrics,
+    .song-component-refrain .song-component-lyrics {
+        padding-left: 1rem;
+    }
+}
+
+/* Medium screens (tablets): 2-column songbook grid */
+@media (min-width: 577px) and (max-width: 991px) {
+    .songbook-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}

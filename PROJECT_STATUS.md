@@ -12,8 +12,8 @@
 | 🗂 Project Structure | ✅ Complete | Directories, .gitignore, .gitkeep files |
 | 📖 Help Documentation | ✅ Complete | 6 guides in `help/` |
 | 🎫 GitHub Issues | ✅ Complete | 70 issues (49 Phase 1 + 14 Phase 2 + 7 infra) |
-| 🔧 Song Data Parser | 🔲 Not Started | Next up |
-| 🌐 Web PWA | 🔲 Not Started | — |
+| 🔧 Song Data Parser | ✅ Complete | 3,612 songs → 5.22 MB JSON |
+| 🌐 Web PWA | 🟢 Core Complete | Layout, search, songbooks, lyrics, favourites, dark mode |
 | 🍎 Apple App | 🔲 Not Started | — |
 | 🤖 Android App | 🔲 Not Started | — |
 | 🚀 CI/CD Pipeline | 🔲 Not Started | SFTP deploy, semver, changelog |
