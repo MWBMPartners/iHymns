@@ -41,9 +41,9 @@ require_once __DIR__ . '/includes/infoAppVer.php';
     <!-- Description: used by search engines and social media previews -->
     <meta name="description" content="<?php echo htmlspecialchars($app['Description']); ?>. Search thousands of hymns and worship songs from multiple songbooks.">
 
-    <!-- Theme colour: used by mobile browsers for the address bar colour -->
-    <meta name="theme-color" content="#6f42c1" media="(prefers-color-scheme: light)">
-    <meta name="theme-color" content="#1a1a2e" media="(prefers-color-scheme: dark)">
+    <!-- Theme colour: warm amber matching iLyrics dB branding -->
+    <meta name="theme-color" content="#d76600" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#3d2800" media="(prefers-color-scheme: dark)">
 
     <!-- Apple-specific meta tags for PWA/home screen behaviour -->
     <meta name="apple-mobile-web-app-capable" content="yes">
@@ -185,8 +185,16 @@ require_once __DIR__ . '/includes/infoAppVer.php';
                     </li>
                 </ul>
 
-                <!-- Right-side controls: dark mode toggle -->
-                <div class="d-flex align-items-center">
+                <!-- Right-side controls: colourblind toggle + dark mode toggle -->
+                <div class="d-flex align-items-center gap-1">
+                    <!-- Colourblind-friendly mode toggle -->
+                    <button class="btn btn-link nav-link px-2" type="button"
+                            id="cb-toggle"
+                            aria-label="Toggle colourblind-friendly mode"
+                            aria-pressed="false"
+                            title="Colourblind-friendly mode">
+                        <i class="bi bi-eye" aria-hidden="true"></i>
+                    </button>
                     <!-- Dark mode toggle button -->
                     <button class="btn btn-link nav-link px-2" type="button"
                             id="theme-toggle"

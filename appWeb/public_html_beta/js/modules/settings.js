@@ -37,6 +37,14 @@ import { $ } from '../utils/helpers.js';
 const THEME_STORAGE_KEY = 'ihymns_theme';
 
 /**
+ * CB_STORAGE_KEY
+ *
+ * The localStorage key for the colourblind-friendly mode toggle.
+ * Stores 'true' or 'false' (as strings).
+ */
+const CB_STORAGE_KEY = 'ihymns_colourblind';
+
+/**
  * VERSION_STORAGE_KEY
  *
  * The localStorage key under which we store the last-known app version
@@ -220,6 +228,68 @@ export function bindThemeToggle() {
         /* Add a click event listener that triggers the theme toggle */
         toggleBtn.addEventListener('click', toggleTheme);
     }
+}
+
+/* =========================================================================
+ * COLOURBLIND-FRIENDLY MODE
+ * ========================================================================= */
+
+/**
+ * initColourblindMode()
+ *
+ * Initialises the colourblind-friendly mode from localStorage.
+ * When enabled, sets data-theme-cb="true" on <html> which activates
+ * the CVD-safe colour palette defined in styles.css.
+ */
+export function initColourblindMode() {
+    /* Read the stored preference (default: 'false') */
+    const cbEnabled = localStorage.getItem(CB_STORAGE_KEY) === 'true';
+
+    /* Apply the attribute to <html> */
+    if (cbEnabled) {
+        document.documentElement.setAttribute('data-theme-cb', 'true');
+    } else {
+        document.documentElement.removeAttribute('data-theme-cb');
+    }
+}
+
+/**
+ * toggleColourblindMode()
+ *
+ * Toggles the colourblind-friendly mode on or off.
+ * Persists to localStorage and updates the DOM attribute.
+ *
+ * @returns {boolean} The new state (true = enabled)
+ */
+export function toggleColourblindMode() {
+    /* Check current state */
+    const isCurrentlyEnabled = document.documentElement.getAttribute('data-theme-cb') === 'true';
+
+    /* Flip the state */
+    const newState = !isCurrentlyEnabled;
+
+    /* Persist to localStorage */
+    localStorage.setItem(CB_STORAGE_KEY, String(newState));
+
+    /* Apply to DOM */
+    if (newState) {
+        document.documentElement.setAttribute('data-theme-cb', 'true');
+    } else {
+        document.documentElement.removeAttribute('data-theme-cb');
+    }
+
+    return newState;
+}
+
+/**
+ * isColourblindMode()
+ *
+ * Returns whether colourblind-friendly mode is currently active.
+ *
+ * @returns {boolean}
+ */
+export function isColourblindMode() {
+    return document.documentElement.getAttribute('data-theme-cb') === 'true';
 }
 
 /* =========================================================================

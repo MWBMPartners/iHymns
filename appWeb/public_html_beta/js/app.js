@@ -41,8 +41,8 @@ import { initSearch, bindSearchInput } from './modules/search.js';
 /* Import favourites rendering function */
 import { renderFavorites } from './modules/favorites.js';
 
-/* Import settings/theme functions for dark mode, install banner, and updates */
-import { initTheme, bindThemeToggle, initInstallBanner, initUpdateChecker } from './modules/settings.js';
+/* Import settings/theme functions for dark mode, colourblind mode, install banner, and updates */
+import { initTheme, bindThemeToggle, initInstallBanner, initUpdateChecker, initColourblindMode, toggleColourblindMode } from './modules/settings.js';
 
 /* =========================================================================
  * APPLICATION STATE
@@ -550,8 +550,26 @@ async function init() {
     /* Apply the user's saved theme preference or system default */
     initTheme();
 
+    /* Apply colourblind-friendly mode if previously enabled */
+    initColourblindMode();
+
     /* Bind the dark mode toggle button event listener */
     bindThemeToggle();
+
+    /* Bind the colourblind mode toggle button */
+    const cbToggle = $('#cb-toggle');
+    if (cbToggle) {
+        cbToggle.addEventListener('click', () => {
+            const newState = toggleColourblindMode();
+            /* Update button visual to reflect state */
+            cbToggle.classList.toggle('active', newState);
+            cbToggle.setAttribute('aria-pressed', String(newState));
+        });
+        /* Set initial visual state */
+        const cbEnabled = document.documentElement.getAttribute('data-theme-cb') === 'true';
+        cbToggle.classList.toggle('active', cbEnabled);
+        cbToggle.setAttribute('aria-pressed', String(cbEnabled));
+    }
 
     /* --- Step 2: Bind navigation --- */
     /* Set up click handlers for all navbar links */
