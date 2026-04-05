@@ -1,0 +1,229 @@
+# =============================================================================
+# iHymns — CI Lint & Validation Workflow
+#
+# Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+# This software is proprietary. Unauthorized copying, modification, or
+# distribution is strictly prohibited.
+#
+# PURPOSE:
+# Runs linting and validation checks on every push and pull request.
+# - ESLint for JavaScript files
+# - PHP syntax checking (php -l) for PHP files
+# - JSON validation for data/songs.json and manifest.json
+# - HTMLHint for HTML files
+#
+# Only runs when relevant files are changed (JS, CSS, PHP, HTML).
+# =============================================================================
+
+name: CI Lint & Validation
+
+on:
+  push:
+    branches:
+      - main
+      - beta
+    paths:
+      - 'appWeb/**/*.js'
+      - 'appWeb/**/*.css'
+      - 'appWeb/**/*.php'
+      - 'appWeb/**/*.html'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.eslintrc*'
+      - 'eslint.config.*'
+
+  pull_request:
+    paths:
+      - 'appWeb/**/*.js'
+      - 'appWeb/**/*.css'
+      - 'appWeb/**/*.php'
+      - 'appWeb/**/*.html'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.eslintrc*'
+      - 'eslint.config.*'
+
+# Cancel any in-progress CI run on the same branch / PR
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint & Validate
+    runs-on: ubuntu-latest
+
+    # Skip CI automation commits
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1: Checkout repository
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # Step 2: Setup Node.js 22 for JavaScript linting tools
+      # -----------------------------------------------------------------------
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      # -----------------------------------------------------------------------
+      # Step 3: Install npm dependencies
+      # Only runs if package.json exists. Uses `npm ci` for reproducible builds
+      # when a lock file is present, otherwise falls back to `npm install`.
+      # -----------------------------------------------------------------------
+      - name: Install npm dependencies
+        run: |
+          if [ -f "package.json" ]; then
+            if [ -f "package-lock.json" ]; then
+              echo "Installing dependencies with npm ci (lock file found)."
+              npm ci
+            else
+              echo "Installing dependencies with npm install (no lock file)."
+              npm install
+            fi
+          else
+            echo "No package.json found. Skipping npm install."
+          fi
+
+      # -----------------------------------------------------------------------
+      # Step 4: Run ESLint on JavaScript files
+      # Checks for a local ESLint config first. If none exists, runs ESLint
+      # with a sensible default configuration via npx.
+      # -----------------------------------------------------------------------
+      - name: Lint JavaScript (ESLint)
+        run: |
+          JS_DIR="appWeb/public_html_beta/js"
+
+          # Check if there are any JS files to lint
+          JS_FILES=$(find "$JS_DIR" -name '*.js' -type f 2>/dev/null || true)
+          if [ -z "$JS_FILES" ]; then
+            echo "No JavaScript files found in $JS_DIR. Skipping ESLint."
+            exit 0
+          fi
+
+          # Check for local ESLint configuration
+          HAS_CONFIG=false
+          for config in .eslintrc .eslintrc.js .eslintrc.cjs .eslintrc.json .eslintrc.yml eslint.config.js eslint.config.mjs eslint.config.cjs; do
+            if [ -f "$config" ]; then
+              HAS_CONFIG=true
+              break
+            fi
+          done
+
+          if [ "$HAS_CONFIG" = true ]; then
+            echo "ESLint config found. Running ESLint with project config."
+            npx eslint "$JS_DIR" --no-error-on-unmatched-pattern
+          else
+            echo "No ESLint config found. Running ESLint with default config via npx."
+            npx eslint@latest "$JS_DIR" --no-error-on-unmatched-pattern || {
+              echo "::warning::ESLint exited with errors. Review the output above."
+              # Don't fail the build if there's no config — this is advisory
+              exit 0
+            }
+          fi
+
+      # -----------------------------------------------------------------------
+      # Step 5: Run PHP syntax check on all PHP files
+      # Uses `php -l` (lint mode) to check for parse errors
+      # -----------------------------------------------------------------------
+      - name: Lint PHP (syntax check)
+        run: |
+          echo "Running PHP syntax checks..."
+          ERRORS=0
+
+          # Find all PHP files in both beta and production directories
+          PHP_FILES=$(find appWeb/ -name '*.php' -type f 2>/dev/null || true)
+
+          if [ -z "$PHP_FILES" ]; then
+            echo "No PHP files found. Skipping PHP lint."
+            exit 0
+          fi
+
+          while IFS= read -r file; do
+            if ! php -l "$file" 2>&1 | grep -q "No syntax errors"; then
+              echo "::error file=$file::PHP syntax error in $file"
+              php -l "$file"
+              ERRORS=$((ERRORS + 1))
+            fi
+          done <<< "$PHP_FILES"
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "::error::$ERRORS PHP file(s) have syntax errors."
+            exit 1
+          else
+            echo "All PHP files passed syntax check."
+          fi
+
+      # -----------------------------------------------------------------------
+      # Step 6: Validate JSON files
+      # Checks that critical JSON files are valid using Node.js
+      # Validates: data/songs.json, manifest.json (in both beta and production)
+      # -----------------------------------------------------------------------
+      - name: Validate JSON files
+        run: |
+          echo "Validating JSON files..."
+          ERRORS=0
+
+          # List of JSON files to validate
+          JSON_FILES=(
+            "data/songs.json"
+            "appWeb/public_html_beta/manifest.json"
+            "appWeb/public_html/manifest.json"
+          )
+
+          for file in "${JSON_FILES[@]}"; do
+            if [ -f "$file" ]; then
+              if node -e "JSON.parse(require('fs').readFileSync('$file', 'utf8'))" 2>/dev/null; then
+                echo "  PASS: $file"
+              else
+                echo "::error file=$file::Invalid JSON in $file"
+                echo "  FAIL: $file"
+                ERRORS=$((ERRORS + 1))
+              fi
+            else
+              echo "  SKIP: $file (not found)"
+            fi
+          done
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "::error::$ERRORS JSON file(s) are invalid."
+            exit 1
+          else
+            echo "All JSON files are valid."
+          fi
+
+      # -----------------------------------------------------------------------
+      # Step 7: Run HTMLHint on HTML files
+      # Uses HTMLHint to check for common HTML issues
+      # Only runs if HTML files exist in the web directories
+      # -----------------------------------------------------------------------
+      - name: Lint HTML (HTMLHint)
+        run: |
+          HTML_FILES=$(find appWeb/public_html_beta/ -name '*.html' -type f 2>/dev/null || true)
+
+          if [ -z "$HTML_FILES" ]; then
+            echo "No HTML files found. Skipping HTMLHint."
+            exit 0
+          fi
+
+          echo "Running HTMLHint on HTML files..."
+
+          # Check if htmlhint is available locally, otherwise use npx
+          if command -v htmlhint &>/dev/null || npx htmlhint --version &>/dev/null; then
+            npx htmlhint appWeb/public_html_beta/**/*.html || {
+              echo "::warning::HTMLHint found issues. Review the output above."
+              # Non-blocking — HTML lint issues are advisory
+              exit 0
+            }
+          else
+            echo "::warning::HTMLHint not available. Skipping HTML lint."
+          fi
