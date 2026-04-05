@@ -177,15 +177,13 @@ jobs:
             fi
           fi
 
-      # -- Install minification tools globally via npm --
-      # -- Copy canonical songs.json into the source directory for deployment --
-      - name: Copy songs.json to deployment source
+      # -- Ensure appWeb/data/songs.json is current from canonical source --
+      - name: Sync canonical songs.json to appWeb/data/
         if: steps.changes.outputs.has_changes == 'true'
         run: |
-          SOURCE_DIR="${{ steps.target.outputs.source_dir }}"
-          mkdir -p "${SOURCE_DIR}data"
-          cp data/songs.json "${SOURCE_DIR}data/songs.json"
-          echo "Copied data/songs.json to ${SOURCE_DIR}data/"
+          mkdir -p appWeb/data
+          cp data/songs.json appWeb/data/songs.json
+          echo "Synced data/songs.json to appWeb/data/"
 
       - name: Install minification tools
         if: steps.changes.outputs.has_changes == 'true'
@@ -423,6 +421,59 @@ jobs:
             appWeb/private_html/ ${REMOTE_PATH}; bye" \
             "sftp://${SFTP_HOST}:${SFTP_PORT}"
           echo "Private HTML deployed to ${REMOTE_PATH}"
+
+      # ================================================================
+      # SHARED DATA DEPLOYMENT (appWeb/data/ → one directory up from SFTP path)
+      # Uploads songs.json to a shared data/ directory accessible by
+      # all web apps (public, beta, dev, private) via ../data/songs.json
+      # ================================================================
+
+      # -- Upload shared data via SFTP (SSH key) --
+      - name: Deploy shared data via SFTP (SSH key)
+        if: >-
+          (steps.changes.outputs.has_changes == 'true' || steps.private_changes.outputs.has_private_changes == 'true')
+          && steps.auth.outputs.method == 'key'
+        env:
+          SFTP_USER: ${{ secrets.SFTP_USER }}
+          SFTP_HOST: ${{ secrets.SFTP_HOST }}
+          SFTP_PORT: ${{ steps.port.outputs.port }}
+          SFTP_KEY: ${{ secrets.SFTP_KEY }}
+          REMOTE_PATH: ${{ steps.target.outputs.remote_path }}
+        run: |
+          # Derive the parent directory (one level up from the SFTP path)
+          # e.g., /home/user/ihymns.app/public_html/ → /home/user/ihymns.app/
+          PARENT_PATH=$(dirname "${REMOTE_PATH%/}")/
+          echo "Uploading appWeb/data/ to ${PARENT_PATH}data/"
+          cat > /tmp/lftp_data.txt <<LFTP_EOF
+          set sftp:connect-program "ssh -o StrictHostKeyChecking=no -i $HOME/.ssh/deploy_key -p ${SFTP_PORT}"
+          open sftp://${SFTP_USER}@${SFTP_HOST}:${SFTP_PORT}
+          mirror --reverse --verbose --only-newer --no-empty-dirs --exclude .DS_Store --exclude .gitkeep appWeb/data/ ${PARENT_PATH}data/
+          bye
+          LFTP_EOF
+          lftp -f /tmp/lftp_data.txt
+          echo "Shared data deployed to ${PARENT_PATH}data/"
+
+      # -- Upload shared data via SFTP (password) --
+      - name: Deploy shared data via SFTP (password)
+        if: >-
+          (steps.changes.outputs.has_changes == 'true' || steps.private_changes.outputs.has_private_changes == 'true')
+          && steps.auth.outputs.method == 'password'
+        env:
+          SFTP_USER: ${{ secrets.SFTP_USER }}
+          SFTP_PASS: ${{ secrets.SFTP_PASSWORD }}
+          SFTP_HOST: ${{ secrets.SFTP_HOST }}
+          SFTP_PORT: ${{ steps.port.outputs.port }}
+          REMOTE_PATH: ${{ steps.target.outputs.remote_path }}
+        run: |
+          PARENT_PATH=$(dirname "${REMOTE_PATH%/}")/
+          echo "Uploading appWeb/data/ to ${PARENT_PATH}data/"
+          lftp -u "${SFTP_USER},${SFTP_PASS}" \
+            -e "set sftp:auto-confirm yes; set ssl:verify-certificate no; \
+            mirror --reverse --verbose --only-newer --no-empty-dirs \
+            --exclude .DS_Store --exclude .gitkeep \
+            appWeb/data/ ${PARENT_PATH}data/; bye" \
+            "sftp://${SFTP_HOST}:${SFTP_PORT}"
+          echo "Shared data deployed to ${PARENT_PATH}data/"
 
       # ================================================================
       # DEPLOYMENT SUMMARY

@@ -83,12 +83,12 @@ const appState = {
  * @throws {Error} If the fetch fails or JSON is invalid
  */
 async function loadSongData() {
-    /* Define possible paths where songs.json might be found */
-    /* In development, the file is at ../../data/songs.json relative to public_html_beta */
-    /* On a deployed server, it may be at data/songs.json or served via PHP */
+    /* Define possible paths where songs.json might be found.
+       On the server, it lives at ../data/songs.json (one directory up from
+       public_html/). In local dev, the predev script copies it to data/. */
     const possiblePaths = [
-        'data/songs.json',
         '../data/songs.json',
+        'data/songs.json',
         '../../data/songs.json',
         '../../../data/songs.json'
     ];

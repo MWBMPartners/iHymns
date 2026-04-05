@@ -10,7 +10,7 @@
     "build:web:production": "node tools/build-web.js --target production",
     "build:web:beta": "node tools/build-web.js --target beta",
     "build:web:dev": "node tools/build-web.js --target dev",
-    "predev": "mkdir -p appWeb/public_html_beta/data && cp data/songs.json appWeb/public_html_beta/data/songs.json",
+    "predev": "mkdir -p appWeb/data && cp data/songs.json appWeb/data/songs.json",
     "dev": "php -S localhost:8000 -t appWeb/public_html_beta",
     "preview": "php -S localhost:8080 -t dist/web",
     "lint:js": "eslint appWeb/public_html_beta/js/",

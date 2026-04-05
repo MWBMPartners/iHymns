@@ -293,18 +293,18 @@ function main() {
     const fileCount = copyDirectoryRecursive(SOURCE_DIR, DIST_DIR);
     console.log(`  ✅ Copied ${fileCount} files`);
 
-    /* Step 2b: Copy songs.json from canonical location (data/songs.json) */
-    /* The canonical song database lives at data/songs.json and is NOT
-       duplicated into each platform directory. Build/packaging copies it. */
+    /* Step 2b: Sync appWeb/data/songs.json from canonical source (data/songs.json) */
+    /* On the server, data/ lives one directory up from public_html/ and is shared
+       across all environments. The deploy workflow uploads appWeb/data/ separately. */
     const songsSource = path.join(PROJECT_ROOT, 'data', 'songs.json');
-    const songsDest = path.join(DIST_DIR, 'data', 'songs.json');
+    const appWebData = path.join(PROJECT_ROOT, 'appWeb', 'data', 'songs.json');
     if (fs.existsSync(songsSource)) {
-        const songsDir = path.dirname(songsDest);
-        if (!fs.existsSync(songsDir)) {
-            fs.mkdirSync(songsDir, { recursive: true });
+        const dataDir = path.dirname(appWebData);
+        if (!fs.existsSync(dataDir)) {
+            fs.mkdirSync(dataDir, { recursive: true });
         }
-        fs.copyFileSync(songsSource, songsDest);
-        console.log('  ✅ Copied data/songs.json to dist');
+        fs.copyFileSync(songsSource, appWebData);
+        console.log('  ✅ Synced data/songs.json → appWeb/data/songs.json');
     } else {
         console.warn('  ⚠️  data/songs.json not found — run "npm run parse-songs" first');
     }
