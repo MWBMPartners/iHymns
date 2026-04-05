@@ -1,0 +1,154 @@
+# =============================================================================
+# iHymns — GitHub Releases Workflow
+#
+# Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+# This software is proprietary. Unauthorized copying, modification, or
+# distribution is strictly prohibited.
+#
+# PURPOSE:
+# Automatically creates a GitHub Release when a version tag (v*) is pushed.
+# - Extracts the release notes from CHANGELOG.md for the tagged version
+# - Marks tags containing "-beta" or "-rc" as pre-releases
+# - Attaches data/songs.json as a release asset
+# =============================================================================
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Cancel any in-progress release for the same tag
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1: Checkout repository to access CHANGELOG.md and assets
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # -----------------------------------------------------------------------
+      # Step 2: Extract the version number from the tag
+      # Strips the leading 'v' prefix (e.g., v1.2.3 -> 1.2.3)
+      # -----------------------------------------------------------------------
+      - name: Extract version from tag
+        id: tag
+        run: |
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Tag: $TAG, Version: $VERSION"
+
+      # -----------------------------------------------------------------------
+      # Step 3: Determine if this is a pre-release
+      # Tags containing "-beta" or "-rc" are marked as pre-releases
+      # -----------------------------------------------------------------------
+      - name: Check for pre-release
+        id: prerelease
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          if echo "$TAG" | grep -qiE '\-beta|\-rc'; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "This is a pre-release."
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "This is a stable release."
+          fi
+
+      # -----------------------------------------------------------------------
+      # Step 4: Extract release notes from CHANGELOG.md
+      # Finds the section matching this version and extracts all content
+      # until the next version heading
+      # -----------------------------------------------------------------------
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        run: |
+          VERSION="${{ steps.tag.outputs.version }}"
+          CHANGELOG="CHANGELOG.md"
+          NOTES_FILE="/tmp/release_notes.md"
+
+          if [ ! -f "$CHANGELOG" ]; then
+            echo "No CHANGELOG.md found. Using default release notes."
+            echo "Release ${VERSION}" > "$NOTES_FILE"
+          else
+            # Extract the section for this version
+            # Matches from "## [VERSION]" to the next "## [" or end of file
+            python3 -c "
+          import re, sys
+
+          version = '${VERSION}'
+          with open('${CHANGELOG}', 'r') as f:
+              content = f.read()
+
+          # Escape dots in version for regex
+          escaped = re.escape(version)
+          pattern = rf'## \[{escaped}\][^\n]*\n(.*?)(?=\n## \[|\Z)'
+          match = re.search(pattern, content, re.DOTALL)
+
+          if match:
+              notes = match.group(1).strip()
+              print(notes)
+          else:
+              print(f'Release {version}')
+          " > "$NOTES_FILE"
+          fi
+
+          echo "Release notes:"
+          cat "$NOTES_FILE"
+
+          # Store the path for the next step
+          echo "notes_file=$NOTES_FILE" >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------------------
+      # Step 5: Create the GitHub Release
+      # Uses the gh CLI to create the release with extracted notes
+      # Attaches data/songs.json as a release asset if it exists
+      # -----------------------------------------------------------------------
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          PRERELEASE="${{ steps.prerelease.outputs.is_prerelease }}"
+          NOTES_FILE="${{ steps.notes.outputs.notes_file }}"
+
+          # Build the gh release command
+          GH_ARGS=(
+            "release" "create" "$TAG"
+            "--title" "iHymns $TAG"
+            "--notes-file" "$NOTES_FILE"
+          )
+
+          # Mark as pre-release if applicable
+          if [ "$PRERELEASE" = "true" ]; then
+            GH_ARGS+=("--prerelease")
+          fi
+
+          # Attach songs.json as a release asset if it exists
+          SONGS_FILE="data/songs.json"
+          if [ -f "$SONGS_FILE" ]; then
+            GH_ARGS+=("$SONGS_FILE")
+            echo "Attaching $SONGS_FILE as release asset."
+          else
+            echo "::warning::$SONGS_FILE not found. Skipping asset attachment."
+          fi
+
+          echo "Creating release: gh ${GH_ARGS[*]}"
+          gh "${GH_ARGS[@]}"
+
+          echo "Release $TAG created successfully."
