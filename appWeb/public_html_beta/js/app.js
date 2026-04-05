@@ -184,16 +184,21 @@ function handleRoute() {
                 renderSongDetail(song, container);
             } else {
                 /* Song not found: show an error message */
-                container.innerHTML = `
-                    <div class="text-center py-5 view-fade-in">
-                        <i class="bi bi-exclamation-triangle fs-1 text-warning"></i>
-                        <h3 class="mt-3">Song Not Found</h3>
-                        <p class="text-muted">The song "${viewParam}" could not be found.</p>
-                        <a href="#/" class="btn btn-primary mt-2">
-                            <i class="bi bi-house me-1"></i>Back to Songbooks
-                        </a>
-                    </div>
+                /* Use textContent to safely display the user-controlled viewParam */
+                container.innerHTML = '';
+                const errorDiv = document.createElement('div');
+                errorDiv.className = 'text-center py-5 view-fade-in';
+                errorDiv.innerHTML = `
+                    <i class="bi bi-exclamation-triangle fs-1 text-warning"></i>
+                    <h3 class="mt-3">Song Not Found</h3>
+                    <p class="text-muted"></p>
+                    <a href="#/" class="btn btn-primary mt-2">
+                        <i class="bi bi-house me-1"></i>Back to Songbooks
+                    </a>
                 `;
+                /* Safely set the user-controlled parameter as text, not HTML */
+                errorDiv.querySelector('p').textContent = `The song "${viewParam}" could not be found.`;
+                container.appendChild(errorDiv);
             }
 
             /* Clear the active nav (song detail is not a nav item) */
@@ -502,20 +507,25 @@ async function init() {
         const container = $('#app-content');
 
         /* Display a user-friendly error message */
-        container.innerHTML = `
-            <div class="text-center py-5">
-                <i class="bi bi-exclamation-triangle fs-1 text-danger"></i>
-                <h3 class="mt-3">Unable to Load Songs</h3>
-                <p class="text-muted">
-                    The song database could not be loaded. Please check your connection
-                    and try refreshing the page.
-                </p>
-                <button class="btn btn-primary mt-2" onclick="location.reload()">
-                    <i class="bi bi-arrow-clockwise me-1"></i>Retry
-                </button>
-                <p class="text-muted small mt-3">Error: ${error.message}</p>
-            </div>
+        /* Use textContent for the error.message to prevent XSS */
+        container.innerHTML = '';
+        const errorContainer = document.createElement('div');
+        errorContainer.className = 'text-center py-5';
+        errorContainer.innerHTML = `
+            <i class="bi bi-exclamation-triangle fs-1 text-danger"></i>
+            <h3 class="mt-3">Unable to Load Songs</h3>
+            <p class="text-muted">
+                The song database could not be loaded. Please check your connection
+                and try refreshing the page.
+            </p>
+            <button class="btn btn-primary mt-2" onclick="location.reload()">
+                <i class="bi bi-arrow-clockwise me-1"></i>Retry
+            </button>
+            <p class="text-muted small mt-3"></p>
         `;
+        /* Safely set the error message as text, not HTML */
+        errorContainer.querySelector('p.small').textContent = `Error: ${error.message}`;
+        container.appendChild(errorContainer);
 
         /* Stop further initialisation since we have no data */
         return;

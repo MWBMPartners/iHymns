@@ -30,6 +30,16 @@ declare(strict_types=1);
  */
 
 /* =========================================================================
+ * DIRECT ACCESS PREVENTION
+ * This file should only be included via require/include from other PHP files.
+ * Deny direct HTTP access by checking that it was not called directly.
+ * ========================================================================= */
+if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
+    http_response_code(403);
+    exit('Direct access to this file is not allowed.');
+}
+
+/* =========================================================================
  * INITIALISE THE APPLICATION METADATA ARRAY
  * ========================================================================= */
 

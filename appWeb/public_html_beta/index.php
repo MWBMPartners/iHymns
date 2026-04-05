@@ -72,16 +72,20 @@ require_once __DIR__ . '/includes/infoAppVer.php';
     <!-- Loaded from CDN for performance; includes dark mode support via data-bs-theme -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
           rel="stylesheet"
-          integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YcnS/1tM8t1T7h2lU3Ov/PCB2ZZFBs9NHAI"
+          integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
           crossorigin="anonymous">
 
     <!-- Bootstrap Icons 1.11: icon font for UI elements (search, star, moon, etc.) -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
-          rel="stylesheet">
+          rel="stylesheet"
+          integrity="sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+"
+          crossorigin="anonymous">
 
     <!-- Animate.css 4.1: CSS animation library for smooth transitions and effects -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css"
-          rel="stylesheet">
+          rel="stylesheet"
+          integrity="sha384-Gu3KVV2H9d+yA4QDpVB7VcOyhJlAVrcXd0thEjr4KznfaFPLe0xQJyonVxONa4ZC"
+          crossorigin="anonymous">
 
     <!-- iHymns custom stylesheet: app-specific styles, overrides, and theming -->
     <link href="css/styles.css" rel="stylesheet">
@@ -305,11 +309,15 @@ require_once __DIR__ . '/includes/infoAppVer.php';
             crossorigin="anonymous"></script>
 
     <!-- Fuse.js 7.x: lightweight fuzzy-search library for client-side song search -->
-    <script src="https://cdn.jsdelivr.net/npm/fuse.js@7.0.0/dist/fuse.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/fuse.js@7.0.0/dist/fuse.min.js"
+            integrity="sha384-PCSoOZTpbkikBEtd/+uV3WNdc676i9KUf01KOA8CnJotvlx8rRrETbDuwdjqTYvt"
+            crossorigin="anonymous"></script>
 
     <!-- PDF.js 4.9: Mozilla's PDF rendering library for sheet music viewer -->
     <!-- Loaded as an ES module; exposes window.pdfjsLib for use by sheet-music.js -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf.min.mjs" type="module"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf.min.mjs" type="module"
+            integrity="sha384-Yw4pTrkymyfp/wv+Y5WT8asmcguuLMaa4rVm7i7SRthvUIAq83i8yVCk3nzzihT1"
+            crossorigin="anonymous"></script>
 
     <!-- iHymns application JavaScript (ES module entry point) -->
     <!-- type="module" enables ES module imports and strict mode by default -->

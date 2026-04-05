@@ -424,16 +424,20 @@ async function _openSheetMusicModal(pdfUrl, songTitle) {
         console.error('Failed to render sheet music PDF:', err);
 
         if (bodyEl) {
+            /* Build the error fallback safely without interpolating pdfUrl into innerHTML */
             bodyEl.innerHTML = `
                 <div class="alert alert-warning my-3" role="alert">
                     <i class="bi bi-exclamation-triangle me-2" aria-hidden="true"></i>
                     Unable to display the sheet music. You can download the PDF file instead.
                 </div>
-                <a class="btn btn-outline-primary btn-sm" href="${pdfUrl}" download=""
-                   aria-label="Download sheet music PDF">
-                    <i class="bi bi-download me-1" aria-hidden="true"></i>Download PDF
-                </a>
             `;
+            const fallbackLink = document.createElement('a');
+            fallbackLink.className = 'btn btn-outline-primary btn-sm';
+            fallbackLink.href = pdfUrl;
+            fallbackLink.download = '';
+            fallbackLink.setAttribute('aria-label', 'Download sheet music PDF');
+            fallbackLink.innerHTML = '<i class="bi bi-download me-1" aria-hidden="true"></i>Download PDF';
+            bodyEl.appendChild(fallbackLink);
         }
     }
 }
