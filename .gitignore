@@ -1,0 +1,201 @@
+# ============================================================================
+# iHymns .gitignore
+# Copyright © 2026 MWBM Partners Ltd. All rights reserved.
+# Maintained for: VS Code, Xcode, macOS, Windows, Linux/Raspberry Pi, Node.js
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# macOS
+# ----------------------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# ----------------------------------------------------------------------------
+# Windows
+# ----------------------------------------------------------------------------
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# ----------------------------------------------------------------------------
+# Linux
+# ----------------------------------------------------------------------------
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ----------------------------------------------------------------------------
+# Node.js
+# ----------------------------------------------------------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+.npm
+.node_repl_history
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# ----------------------------------------------------------------------------
+# Vite / Build Output
+# ----------------------------------------------------------------------------
+dist/
+build/
+.vite/
+*.local
+
+# ----------------------------------------------------------------------------
+# VS Code
+# ----------------------------------------------------------------------------
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/*.code-snippets
+.history/
+*.vsix
+*.code-workspace
+
+# ----------------------------------------------------------------------------
+# Xcode
+# ----------------------------------------------------------------------------
+xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+DerivedData/
+build/
+*.moved-aside
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+*.xcodeproj/project.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
+
+# Swift Package Manager
+.build/
+Packages/
+Package.pins
+Package.resolved
+*.xcworkspace
+
+# Xcode playgrounds
+timeline.xctimeline
+playground.xcworkspace
+
+# ----------------------------------------------------------------------------
+# Android / Kotlin
+# ----------------------------------------------------------------------------
+*.iml
+.gradle/
+local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.idea/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+gen/
+out/
+release/
+
+# ----------------------------------------------------------------------------
+# JetBrains IDEs
+# ----------------------------------------------------------------------------
+.idea/
+*.ipr
+*.iws
+
+# ----------------------------------------------------------------------------
+# Logs
+# ----------------------------------------------------------------------------
+logs/
+*.log
+
+# ----------------------------------------------------------------------------
+# Testing
+# ----------------------------------------------------------------------------
+coverage/
+.nyc_output/
+*.lcov
+
+# ----------------------------------------------------------------------------
+# Temporary / Cache Files
+# ----------------------------------------------------------------------------
+*.tmp
+*.temp
+*.swp
+*.swo
+*.bak
+*.orig
+.cache/
+tmp/
+temp/
+
+# ----------------------------------------------------------------------------
+# Secrets / Credentials (NEVER commit these)
+# ----------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+secrets.json
+sftp-config.json
+
+# ----------------------------------------------------------------------------
+# Generated Data (re-generated from .SourceSongData/)
+# ----------------------------------------------------------------------------
+# Uncomment the line below if you want to exclude generated JSON from git:
+# data/songs.json

@@ -1,0 +1,4 @@
+- [User Profile](user_profile.md) — Lance at MWBM Partners Ltd, wants detailed annotations, modular architecture
+- [iHymns Project](project_ihymns.md) — Multiplatform Christian lyrics app, ~7,415 songs, v1.x.x local JSON, v2.x.x iLyrics dB
+- [Never touch SourceSongData](feedback_source_data.md) — .SourceSongData/ must never be deleted or modified
+- [Use appWeb not web](feedback_appweb_dir.md) — Web directory is appWeb/ with public_html, public_html_beta, public_html_dev, private_html
