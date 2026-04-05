@@ -259,6 +259,25 @@ jobs:
         if: steps.changes.outputs.has_changes == 'true'
         run: sudo apt-get install -y lftp
 
+      # -- Resolve SFTP port (default to 22 if empty, blank, or non-numeric) --
+      - name: Resolve SFTP port
+        if: steps.changes.outputs.has_changes == 'true'
+        id: port
+        env:
+          RAW_PORT: ${{ secrets.SFTP_PORT }}
+        run: |
+          # Strip whitespace from the raw port value
+          TRIMMED_PORT=$(echo "$RAW_PORT" | tr -d '[:space:]')
+
+          # Check if the trimmed value is a valid numeric port (1-65535)
+          if [[ "$TRIMMED_PORT" =~ ^[0-9]+$ ]] && [[ "$TRIMMED_PORT" -ge 1 ]] && [[ "$TRIMMED_PORT" -le 65535 ]]; then
+            echo "port=$TRIMMED_PORT" >> $GITHUB_OUTPUT
+            echo "Using SFTP port: $TRIMMED_PORT"
+          else
+            echo "port=22" >> $GITHUB_OUTPUT
+            echo "SFTP_PORT is empty, blank, or non-numeric — defaulting to port 22"
+          fi
+
       # -- Determine auth method (SSH key preferred, password fallback) --
       - name: Check auth method
         if: steps.changes.outputs.has_changes == 'true'
@@ -276,7 +295,7 @@ jobs:
         env:
           SFTP_USER: ${{ secrets.SFTP_USER }}
           SFTP_HOST: ${{ secrets.SFTP_HOST }}
-          SFTP_PORT: ${{ secrets.SFTP_PORT }}
+          SFTP_PORT: ${{ steps.port.outputs.port }}
           SFTP_KEY: ${{ secrets.SFTP_KEY }}
           SOURCE_DIR: ${{ steps.target.outputs.source_dir }}
           REMOTE_PATH: ${{ steps.target.outputs.remote_path }}
@@ -285,7 +304,7 @@ jobs:
           echo "$SFTP_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           cat > /tmp/lftp_script.txt <<LFTP_EOF
-          set sftp:connect-program "ssh -o StrictHostKeyChecking=no -i $HOME/.ssh/deploy_key"
+          set sftp:connect-program "ssh -o StrictHostKeyChecking=no -i $HOME/.ssh/deploy_key -p ${SFTP_PORT}"
           open sftp://${SFTP_USER}@${SFTP_HOST}:${SFTP_PORT}
           mirror --reverse --delete --verbose --only-newer --no-empty-dirs --exclude .DS_Store --exclude .gitkeep --exclude .gitignore --exclude README.md --exclude CHANGELOG.md --exclude DEV_NOTES.md ${SOURCE_DIR} ${REMOTE_PATH}
           bye
@@ -299,7 +318,7 @@ jobs:
           SFTP_USER: ${{ secrets.SFTP_USER }}
           SFTP_PASS: ${{ secrets.SFTP_PASSWORD }}
           SFTP_HOST: ${{ secrets.SFTP_HOST }}
-          SFTP_PORT: ${{ secrets.SFTP_PORT }}
+          SFTP_PORT: ${{ steps.port.outputs.port }}
           SOURCE_DIR: ${{ steps.target.outputs.source_dir }}
           REMOTE_PATH: ${{ steps.target.outputs.remote_path }}
         run: |
