@@ -51,6 +51,74 @@
 }
 
 /* =========================================================================
+ * ACCESSIBILITY — Skip-to-Content Link (WCAG 2.1 AA)
+ * Hidden off-screen by default; becomes visible when focused via keyboard.
+ * ========================================================================= */
+
+.skip-to-content {
+    position: absolute;
+    top: -100%;
+    left: 0;
+    z-index: 9999;
+    padding: 0.75rem 1.5rem;
+    background-color: var(--ihymns-primary);
+    color: #ffffff;
+    font-weight: 600;
+    text-decoration: none;
+    border-radius: 0 0 var(--ihymns-border-radius) 0;
+    transition: top 0.2s ease;
+}
+
+.skip-to-content:focus {
+    top: 0;
+    outline: 3px solid var(--ihymns-accent);
+    outline-offset: 2px;
+}
+
+/* =========================================================================
+ * ACCESSIBILITY — Focus Indicators (WCAG 2.1 AA)
+ * Visible :focus-visible outlines on all interactive elements.
+ * ========================================================================= */
+
+.songbook-card:focus-visible,
+.song-list-item:focus-visible,
+.favorite-btn:focus-visible,
+.back-btn:focus-visible,
+.clear-all-btn:focus-visible,
+#main-navbar .nav-link:focus-visible,
+#main-navbar .navbar-brand:focus-visible,
+.app-breadcrumb a:focus-visible,
+.song-actions button:focus-visible,
+#theme-toggle:focus-visible,
+#search-form .form-control:focus-visible,
+#search-form button:focus-visible,
+#search-numpad-toggle:focus-visible,
+#install-btn:focus-visible,
+#footer-help:focus-visible {
+    outline: 3px solid var(--ihymns-accent);
+    outline-offset: 2px;
+}
+
+/* =========================================================================
+ * ACCESSIBILITY — Visually Hidden Utility (WCAG 2.1 AA)
+ * Hides content visually while keeping it accessible to screen readers.
+ * Bootstrap provides .visually-hidden but this ensures availability
+ * even if Bootstrap is not loaded.
+ * ========================================================================= */
+
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* =========================================================================
  * GLOBAL / BASE STYLES
  * ========================================================================= */
 
@@ -551,5 +619,43 @@ body {
 @media (min-width: 577px) and (max-width: 991px) {
     .songbook-grid {
         grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+/* =========================================================================
+ * ACCESSIBILITY — Reduced Motion (WCAG 2.1 AA)
+ * Disables animations and transitions for users who prefer reduced motion.
+ * ========================================================================= */
+
+@media (prefers-reduced-motion: reduce) {
+    /* Remove all animations */
+    .view-fade-in {
+        animation: none;
+    }
+
+    /* Remove transitions on interactive elements */
+    .songbook-card,
+    .song-list-item,
+    .favorite-btn,
+    .back-btn,
+    #main-navbar .nav-link,
+    #main-navbar .navbar-brand,
+    #theme-toggle,
+    body {
+        transition: none !important;
+    }
+
+    /* Disable transform-based hover effects */
+    .songbook-card:hover {
+        transform: none;
+    }
+
+    .favorite-btn:hover {
+        transform: none;
+    }
+
+    /* Disable Animate.css animations */
+    .animate__animated {
+        animation-duration: 0s !important;
     }
 }

@@ -423,7 +423,9 @@ export function renderFavorites(songData, containerEl) {
 
     /* Create the list container element */
     const listContainer = createElement('div', {
-        className: 'song-list'
+        className: 'song-list',
+        role: 'list',
+        'aria-label': 'Favourite songs'
     });
 
     /* Iterate over each favourite song and create a list item */
@@ -434,11 +436,19 @@ export function renderFavorites(songData, containerEl) {
          * A click handler navigates to the song's detail view. */
         const item = createElement('div', {
             className: 'song-list-item',
-            'role': 'button',
+            'role': 'listitem',
             'tabindex': '0',
             'aria-label': `View ${song.title}`,
             onClick: () => {
                 /* Navigate to the song detail route (e.g., #/song/CH-0003) */
+                setHashRoute(`/song/${song.id}`);
+            }
+        });
+
+        /* Keyboard activation: Enter/Space navigates to the song */
+        item.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
                 setHashRoute(`/song/${song.id}`);
             }
         });
@@ -489,6 +499,7 @@ export function renderFavorites(songData, containerEl) {
         const favBtn = createElement('button', {
             className: 'favorite-btn active',
             'aria-label': 'Remove from favourites',
+            'aria-pressed': 'true',
             onClick: (event) => {
                 /**
                  * Stop the click from propagating to the parent item,

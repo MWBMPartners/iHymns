@@ -87,7 +87,11 @@ export function renderSongDetail(song, containerEl) {
      * Uses .song-detail for styling and .view-fade-in for the entrance
      * animation defined in styles.css.
      * ----------------------------------------------------------------- */
-    const wrapper = createElement('div', { className: 'song-detail view-fade-in' });
+    const wrapper = createElement('div', {
+        className: 'song-detail view-fade-in',
+        role: 'article',
+        'aria-label': `${song.title} — song lyrics`
+    });
 
     /* -----------------------------------------------------------------
      * 1. BREADCRUMB NAVIGATION
@@ -297,7 +301,11 @@ function buildMetaBar(song) {
  */
 function buildActionButtons(song) {
     /* Create the action buttons container */
-    const actionsBar = createElement('div', { className: 'song-actions' });
+    const actionsBar = createElement('div', {
+        className: 'song-actions',
+        role: 'group',
+        'aria-label': 'Song actions'
+    });
 
     /* -----------------------------------------------------------------
      * FAVOURITE TOGGLE BUTTON
@@ -320,6 +328,8 @@ function buildActionButtons(song) {
         className: favClass,
         /* Accessible label for screen readers */
         'aria-label': favorited ? 'Remove from favourites' : 'Add to favourites',
+        /* Pressed state for toggle button accessibility */
+        'aria-pressed': favorited ? 'true' : 'false',
         /* Click handler toggles the favourite state */
         onClick: () => {
             /* Toggle the song's favourite status in storage */
@@ -339,6 +349,9 @@ function buildActionButtons(song) {
                 'aria-label',
                 isNowFav ? 'Remove from favourites' : 'Add to favourites'
             );
+
+            /* Update the aria-pressed state for screen readers */
+            favBtn.setAttribute('aria-pressed', isNowFav ? 'true' : 'false');
         }
     }, favLabel);
 
@@ -416,7 +429,10 @@ function buildActionButtons(song) {
  */
 function buildLyricsSection(song) {
     /* Create a container div for the lyrics section */
-    const section = createElement('div', {});
+    const section = createElement('div', {
+        role: 'region',
+        'aria-label': 'Song lyrics'
+    });
 
     /* -----------------------------------------------------------------
      * EMPTY LYRICS FALLBACK

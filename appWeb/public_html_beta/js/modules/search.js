@@ -335,8 +335,13 @@ export function renderSearchResults(results, query, containerEl) {
         ? 'No results found'
         : `${resultCount} result${resultCount !== 1 ? 's' : ''} found`;
 
-    /* Create the count element and append it to the container */
-    const countEl = createElement('div', { className: 'search-results-count' }, countText);
+    /* Create the count element with ARIA live region so screen readers announce results */
+    const countEl = createElement('div', {
+        className: 'search-results-count',
+        role: 'status',
+        'aria-live': 'polite',
+        'aria-atomic': 'true'
+    }, countText);
     containerEl.appendChild(countEl);
 
     /**
@@ -368,7 +373,11 @@ export function renderSearchResults(results, query, containerEl) {
      * Create a list container to hold all the result items.
      * Uses a <div> rather than <ul> for styling flexibility.
      */
-    const listEl = createElement('div', { className: 'search-results-list' });
+    const listEl = createElement('div', {
+        className: 'search-results-list',
+        role: 'list',
+        'aria-label': 'Search results'
+    });
 
     /**
      * Iterate over each search result and create a clickable list item.
@@ -384,7 +393,7 @@ export function renderSearchResults(results, query, containerEl) {
          */
         const itemEl = createElement('div', {
             className: 'song-list-item',
-            role: 'button',
+            role: 'listitem',
             tabindex: '0',
             'aria-label': `${song.title} — ${song.songbookName} #${song.number}`
         });

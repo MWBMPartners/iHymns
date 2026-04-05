@@ -86,6 +86,9 @@ require_once __DIR__ . '/includes/infoAppVer.php';
 </head>
 
 <body>
+    <!-- Skip-to-content link for keyboard/screen reader users (WCAG 2.1 AA) -->
+    <a href="#app-content" class="skip-to-content">Skip to main content</a>
+
     <!-- ================================================================
          NAVIGATION BAR
          Fixed at the top of the page. Contains:
@@ -94,7 +97,7 @@ require_once __DIR__ . '/includes/infoAppVer.php';
          - Navigation links (Songbooks, Favourites, Settings)
          - Dark mode toggle
          ================================================================ -->
-    <nav class="navbar navbar-expand-lg sticky-top shadow-sm" id="main-navbar">
+    <nav class="navbar navbar-expand-lg sticky-top shadow-sm" id="main-navbar" role="banner">
         <div class="container-fluid">
 
             <!-- App brand/logo: clicking returns to the home/songbooks view -->
@@ -254,7 +257,7 @@ require_once __DIR__ . '/includes/infoAppVer.php';
          FOOTER
          Contains copyright info, version, and useful links.
          ================================================================ -->
-    <footer class="border-top py-3 mt-auto" id="app-footer">
+    <footer class="border-top py-3 mt-auto" id="app-footer" role="contentinfo">
         <div class="container-fluid">
             <div class="row align-items-center">
                 <!-- Copyright and version info (left side) -->
