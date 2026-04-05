@@ -39,6 +39,18 @@ import {
  */
 import { isFavorite, toggleFavorite } from './favorites.js';
 
+/**
+ * Import audio playback functionality from the audio module.
+ * - renderAudioPlayer : renders MIDI playback controls for songs with audio
+ */
+import { renderAudioPlayer } from './audio.js';
+
+/**
+ * Import sheet music viewer functionality from the sheet-music module.
+ * - renderSheetMusic : renders a "View Sheet Music" button for songs with PDFs
+ */
+import { renderSheetMusic } from './sheet-music.js';
+
 /* =========================================================================
  * SONG DETAIL RENDERER
  * ========================================================================= */
@@ -133,6 +145,22 @@ export function renderSongDetail(song, containerEl) {
 
     /* Append the action buttons bar to the wrapper */
     wrapper.appendChild(actionsBar);
+
+    /* -----------------------------------------------------------------
+     * 4a. AUDIO PLAYER
+     * If the song has an associated MIDI audio file, render playback
+     * controls (play/pause/stop) or a download link fallback.
+     * Rendered between the action buttons and the lyrics section.
+     * ----------------------------------------------------------------- */
+    renderAudioPlayer(song, wrapper);
+
+    /* -----------------------------------------------------------------
+     * 4b. SHEET MUSIC VIEWER
+     * If the song has associated PDF sheet music, render a "View Sheet
+     * Music" button that opens a modal PDF viewer, plus a download link.
+     * Rendered after the audio player, before the lyrics section.
+     * ----------------------------------------------------------------- */
+    renderSheetMusic(song, wrapper);
 
     /* -----------------------------------------------------------------
      * 5. SONG COMPONENTS (LYRICS)
