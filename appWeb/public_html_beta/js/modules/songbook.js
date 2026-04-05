@@ -57,22 +57,22 @@ import { isFavorite, toggleFavorite } from './favorites.js';
  * colour even when the number of songbooks exceeds the palette size.
  */
 const SONGBOOK_GRADIENTS = [
-    /* Deep blue to vibrant blue — evokes trust and tradition */
-    'linear-gradient(135deg, #1a237e 0%, #1565c0 100%)',
-    /* Rich purple to soft violet — conveys royalty and reverence */
-    'linear-gradient(135deg, #4a148c 0%, #7c43bd 100%)',
-    /* Dark teal to bright cyan — fresh and inviting */
-    'linear-gradient(135deg, #004d40 0%, #00897b 100%)',
-    /* Deep crimson to warm red — passion and energy */
-    'linear-gradient(135deg, #b71c1c 0%, #e53935 100%)',
-    /* Burnt orange to golden amber — warmth and heritage */
-    'linear-gradient(135deg, #e65100 0%, #fb8c00 100%)',
-    /* Dark indigo to soft periwinkle — calm and meditative */
-    'linear-gradient(135deg, #283593 0%, #5c6bc0 100%)',
-    /* Forest green to lime accent — nature and growth */
-    'linear-gradient(135deg, #1b5e20 0%, #43a047 100%)',
-    /* Slate grey-blue to steel — modern and neutral */
-    'linear-gradient(135deg, #37474f 0%, #607d8b 100%)'
+    /* Soft warm amber — matches iLyrics dB brand, gentle warmth */
+    'linear-gradient(135deg, #d4a574 0%, #e8c9a0 100%)',
+    /* Soft dusty rose — gentle, warm, worship-appropriate */
+    'linear-gradient(135deg, #c9a0a0 0%, #ddbfbf 100%)',
+    /* Soft sage green — calm, natural, restful */
+    'linear-gradient(135deg, #a0b89c 0%, #c4d4c0 100%)',
+    /* Soft slate blue — trust, tradition, peaceful */
+    'linear-gradient(135deg, #9aafc4 0%, #bccde0 100%)',
+    /* Soft warm gold — heritage, classic, inviting */
+    'linear-gradient(135deg, #c8b078 0%, #ddd0a8 100%)',
+    /* Soft muted mauve — reverence, contemplative */
+    'linear-gradient(135deg, #b0a0be 0%, #cfc4d8 100%)',
+    /* Soft terracotta — earthy, grounded, warm */
+    'linear-gradient(135deg, #c4a08c 0%, #d8c4b4 100%)',
+    /* Soft cool grey — modern, neutral, clean */
+    'linear-gradient(135deg, #a8b0b8 0%, #c8cdd4 100%)'
 ];
 
 /* =========================================================================

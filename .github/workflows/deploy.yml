@@ -81,14 +81,19 @@ jobs:
             --exclude='DEV_NOTES.md' \
             appWeb/public_html_beta/ appWeb/public_html/
 
-          # Check if the sync actually changed anything
-          if git diff --quiet appWeb/public_html/; then
+          # Stage all files (including new/untracked) so git can detect changes
+          git add appWeb/public_html/
+
+          # Check if the staging area has any changes vs HEAD
+          if git diff --cached --quiet appWeb/public_html/; then
             echo "synced=false" >> $GITHUB_OUTPUT
             echo "Production files already in sync"
+            # Unstage since nothing changed
+            git reset HEAD appWeb/public_html/ > /dev/null 2>&1 || true
           else
             echo "synced=true" >> $GITHUB_OUTPUT
             echo "Files synced — changes detected:"
-            git diff --stat appWeb/public_html/
+            git diff --cached --stat appWeb/public_html/
           fi
 
       # -- Commit the synced files back to main --
