@@ -1,3 +1,62 @@
+## [Unreleased] - 2026-04-05
+- fix: default SFTP port to 22 if secret is empty or non-numeric
+- refactor: rewrite deploy.yml to match phpWhoIs pattern exactly
+- feat: unit tests + fix songbook abbreviation badges
+- fix: comprehensive code review + security hardening
+- feat: automated Android packaging (Play Store, Amazon, direct APK)
+- feat: automated Apple app packaging (App Store, TestFlight, direct)
+- feat: automated Web PWA build & packaging
+- feat: Web PWA — PDF sheet music viewer
+- feat: Web PWA — MIDI audio playback
+- refactor: update PHP code for PHP 8.5 compatibility
+- fix: set Vendor Parent to NULL — MWBM Partners Ltd is the top-level vendor
+- refactor: use unique platform-specific Application IDs
+- feat: Android — Full feature parity with Apple app
+- feat: Android — Kotlin/Jetpack Compose project setup
+- refactor: align infoAppVer.php with phpWhoIs structure + platform info files
+- feat: Apple — Widgets (Song of the Day + Recent Favourites)
+- feat: Apple — Code signing and notarisation
+- feat: Apple — App Store submission preparation
+- feat: Apple — Auto-update checker
+- feat: Apple — In-app help
+- feat: Apple — Share sheet
+- feat: Apple �� Spotlight integration
+- feat: Apple — Audio playback
+- feat: Apple — Favorites system
+- feat: Apple — Dark mode support
+- feat: Apple — tvOS large-screen lyrics display
+- feat: Apple — Search functionality
+- feat: Apple — Song detail view
+- feat: Apple — Song list and songbook browser
+- feat: Apple — Song data model (Codable)
+- feat: Apple universal app — Xcode project setup (Swift 6.3 / SwiftUI)
+- docs: update PROJECT_STATUS with all completed milestones
+- feat: CI test/lint workflow
+- feat: GitHub Releases workflow
+- feat: automated changelog generation
+- feat: automated semver version bumping
+- feat: GitHub Actions SFTP deployment pipeline
+- feat: Song Editor — bulk import/export
+- feat: Song Editor — JSON validation and save
+- feat: Song Editor — CCLI number support
+- feat: Song Editor — edit writers/composers
+- feat: Song Editor — edit song structure/arrangement
+- feat: Song Editor — edit metadata (title, number, songbook, CCLI)
+- feat: Song Editor — web-based developer tool UI
+- feat: comprehensive in-app help system
+- feat: align colour scheme with iLyrics dB + colourblind-friendly mode
+- feat: WCAG 2.1 AA accessibility compliance
+- feat: numeric keypad toggle for song number search
+- feat: deep linking with clean URLs and browser title updates
+- feat: build Web PWA core — Milestone 2 complete
+- feat: build song data parser and generate songs.json
+- feat: project setup — new structure, plan, docs, and song data
+- app refresh upload (early dev 1)
+- initial folder structure
+- Update README.md
+- Initial commit
+
+
 # 📝 iHymns — Changelog
 
 > All notable changes to this project are documented here.
