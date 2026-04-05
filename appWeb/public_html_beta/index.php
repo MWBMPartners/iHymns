@@ -36,10 +36,10 @@ require_once __DIR__ . '/includes/infoAppVer.php';
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
     <!-- Page title: shown in browser tab, bookmarks, and search results -->
-    <title><?php echo htmlspecialchars($app['Name']); ?> — Christian Lyrics for Worship</title>
+    <title><?php echo htmlspecialchars($app["Application"]["Name"]); ?> — Christian Lyrics for Worship</title>
 
     <!-- Description: used by search engines and social media previews -->
-    <meta name="description" content="<?php echo htmlspecialchars($app['Description']); ?>. Search thousands of hymns and worship songs from multiple songbooks.">
+    <meta name="description" content="<?php echo htmlspecialchars($app["Application"]["Description"]["Synopsis"]); ?>. Search thousands of hymns and worship songs from multiple songbooks.">
 
     <!-- Theme colour: warm amber matching iLyrics dB branding -->
     <meta name="theme-color" content="#d76600" media="(prefers-color-scheme: light)">
@@ -48,7 +48,7 @@ require_once __DIR__ . '/includes/infoAppVer.php';
     <!-- Apple-specific meta tags for PWA/home screen behaviour -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
-    <meta name="apple-mobile-web-app-title" content="<?php echo htmlspecialchars($app['Name']); ?>">
+    <meta name="apple-mobile-web-app-title" content="<?php echo htmlspecialchars($app["Application"]["Name"]); ?>">
 
     <!-- PWA Web App Manifest: defines app name, icons, theme, display mode -->
     <link rel="manifest" href="manifest.json">
@@ -106,7 +106,7 @@ require_once __DIR__ . '/includes/infoAppVer.php';
                 <!-- Music note icon as the app logo -->
                 <i class="bi bi-music-note-list me-2 fs-4" aria-hidden="true"></i>
                 <!-- App name text -->
-                <span><?php echo htmlspecialchars($app['Name']); ?></span>
+                <span><?php echo htmlspecialchars($app["Application"]["Name"]); ?></span>
             </a>
 
             <!-- Mobile hamburger toggle button: shown on small screens -->
@@ -271,14 +271,14 @@ require_once __DIR__ . '/includes/infoAppVer.php';
                 <!-- Copyright and version info (left side) -->
                 <div class="col-md-6 text-center text-md-start text-muted small">
                     <!-- Copyright with auto-computed year range -->
-                    <span><?php echo htmlspecialchars($app['Legal']['CopyrightFull']); ?>.</span>
+                    <span><?php echo htmlspecialchars($app["Application"]["Copyright"]["Full"]); ?>.</span>
                     <!-- Version number -->
-                    <span class="ms-2">v<?php echo htmlspecialchars($app['Version']['Number']); ?></span>
+                    <span class="ms-2">v<?php echo htmlspecialchars($app["Application"]["Version"]["Number"]); ?></span>
                 </div>
                 <!-- Links (right side) -->
                 <div class="col-md-6 text-center text-md-end text-muted small mt-2 mt-md-0">
                     <a href="#" class="text-muted text-decoration-none me-3" id="footer-help">Help</a>
-                    <a href="<?php echo htmlspecialchars($app['Repo']['URL']); ?>"
+                    <a href="<?php echo htmlspecialchars($app["Application"]["Repo"]["URL"]); ?>"
                        class="text-muted text-decoration-none"
                        target="_blank" rel="noopener noreferrer">
                         <i class="bi bi-github me-1" aria-hidden="true"></i>GitHub

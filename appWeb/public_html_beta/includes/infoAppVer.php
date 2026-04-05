@@ -1,115 +1,189 @@
 <?php
 /**
- * iHymns — Application Version Information
+ * iHymns — Application Version & Information
  *
- * Copyright © 2026–<?php echo date('Y'); ?> MWBM Partners Ltd. All rights reserved.
+ * Copyright © 2026 MWBM Partners Ltd. All rights reserved.
  * This software is proprietary. Unauthorized copying, modification, or
  * distribution is strictly prohibited.
  *
  * PURPOSE:
- * Centralised version metadata for the iHymns web application.
- * This file is auto-updated by the CI/CD pipeline (version-bump workflow).
- * Build metadata (commit SHA, date, URL) is injected at deploy time.
+ * Centralised application metadata and version information for the
+ * iHymns web application. This file serves as the single point of
+ * reference for all application identity, version, vendor, copyright,
+ * and licensing information.
+ *
+ * This file is auto-updated by the CI/CD pipeline:
+ * - Version number bumped by version-bump.yml workflow
+ * - Build metadata (commit SHA, date, URL) injected by deploy.yml
+ *
+ * STRUCTURE:
+ * Follows the same $app["Application"][...] array convention used
+ * across all MWBM Partners Ltd applications (e.g., DomainCheckr/phpWhoIs).
  *
  * USAGE:
- *   <?php require_once 'includes/infoAppVer.php'; ?>
- *   Then access $app['Version']['Number'], $app['Name'], etc.
+ *   require_once __DIR__ . '/includes/infoAppVer.php';
+ *   echo $app["Application"]["Name"];
+ *   echo $app["Application"]["Version"]["Number"];
  */
 
 /* =========================================================================
- * APPLICATION METADATA
+ * INITIALISE THE APPLICATION METADATA ARRAY
  * ========================================================================= */
 
-/* Initialise the $app array to hold all application metadata */
+/* Initialise the top-level $app array */
 $app = [];
 
-/* --- Application Identity --- */
+/* =========================================================================
+ * APPLICATION IDENTITY
+ * ========================================================================= */
 
-/* The short name of the application (used in manifests, titles, etc.) */
-$app['Name'] = 'iHymns';
+/* Unique reverse-domain application identifier */
+$app["Application"]["ID"] = "Ltd.MWBMPartners.iHymns";
 
-/* The full descriptive name of the application */
-$app['FullName'] = 'iHymns — Christian Lyrics Application';
+/* Short application name (used in titles, manifests, UI) */
+$app["Application"]["Name"] = "iHymns";
 
-/* A brief description of what the application does */
-$app['Description'] = 'A multiplatform Christian lyrics application for worship enhancement';
+/* Application website URL (NULL if not yet live) */
+$app["Application"]["Website"]["URL"] = "https://ihymns.app";
 
-/* The application's website domain */
-$app['Domain'] = 'ihymns.app';
+/* Synopsis: a brief description of the application's purpose */
+$app["Application"]["Description"]["Synopsis"] = "A multiplatform Christian lyrics application providing searchable hymn and worship song lyrics from multiple songbooks, designed to enhance worship. Features 5 songbooks with over 3,600 songs, full-text search, favourites, dark mode, colourblind-friendly mode, and offline support via PWA.";
 
-/* The application's full URL */
-$app['URL'] = 'https://ihymns.app';
+/* Keywords: comma-separated keywords for discoverability and SEO */
+$app["Application"]["Description"]["Keywords"] = "hymns, worship, lyrics, songbook, Christian, church, praise, songs, PWA, offline, search, favourites";
 
-/* --- Version Information --- */
+/* =========================================================================
+ * VERSION INFORMATION
+ * ========================================================================= */
 
-/* Initialise the Version sub-array */
-$app['Version'] = [];
+/* Semantic version number (MAJOR.MINOR.PATCH) */
+/* Auto-bumped by the version-bump GitHub Action on push to beta */
+/* v1.x.x = Phase 1 (local JSON data), v2.x.x = Phase 2 (iLyrics dB) */
+$app["Application"]["Version"]["Number"] = "1.0.0";
 
-/* The semantic version number (MAJOR.MINOR.PATCH) */
-/* This is auto-bumped by the version-bump GitHub Action on push to beta */
-$app['Version']['Number'] = '1.0.0-alpha.1';
-
-/* The version phase label (e.g., 'alpha', 'beta', 'stable', NULL for production) */
-$app['Version']['Phase'] = 'alpha';
-
-/* --- Build / Deployment Metadata --- */
-/* These fields are populated at deploy time by the GitHub Actions pipeline */
-/* They default to NULL in the source code and are replaced during deployment */
-
-/* Initialise the Development sub-array */
-$app['Development'] = [];
-
-/* The development/deployment status (e.g., 'Beta', 'Development', NULL for production) */
-$app['Development']['Status'] = 'Development';
-
-/* The full git commit SHA that this build was created from */
-$app['Development']['CommitSHA'] = NULL;
-
-/* The short (7-char) git commit SHA for display purposes */
-$app['Development']['CommitShort'] = NULL;
-
-/* The date/time of the commit this build was created from (ISO 8601) */
-$app['Development']['CommitDate'] = NULL;
-
-/* The GitHub URL to the specific commit */
-$app['Development']['CommitURL'] = NULL;
-
-/* --- Copyright & Legal --- */
-
-/* Initialise the Legal sub-array */
-$app['Legal'] = [];
-
-/* The starting year of the copyright (first year of development) */
-$app['Legal']['CopyrightStartYear'] = 2026;
+/* Version name: human-readable release name (e.g., "Hymnal", NULL if unused) */
+$app["Application"]["Version"]["Name"] = NULL;
 
 /**
- * Dynamically compute the copyright year range.
- * If the current year is the same as the start year, show just "2026".
- * Otherwise, show "2026–<current year>" (e.g., "2026–2028").
+ * Development status: dynamically determined from the deployment directory.
+ *
+ * - If the file is in a directory containing "public_html_dev" → "Alpha"
+ * - If the file is in a directory containing "public_html_beta" → "Beta"
+ * - Otherwise (production public_html/) → NULL (no development label)
+ *
+ * This allows the same codebase to show the correct status label
+ * depending on which server directory it is deployed to.
  */
-$currentYear = (int) date('Y');
-if ($currentYear > $app['Legal']['CopyrightStartYear']) {
-    $app['Legal']['CopyrightYears'] = $app['Legal']['CopyrightStartYear'] . '–' . $currentYear;
+if (strpos(__DIR__, 'public_html_dev') !== false) {
+    /* Alpha/dev deployment */
+    $app["Application"]["Version"]["Development"]["Status"] = "Alpha";
+} elseif (strpos(__DIR__, 'public_html_beta') !== false) {
+    /* Beta deployment */
+    $app["Application"]["Version"]["Development"]["Status"] = "Beta";
 } else {
-    $app['Legal']['CopyrightYears'] = (string) $app['Legal']['CopyrightStartYear'];
+    /* Production deployment (no development status label) */
+    $app["Application"]["Version"]["Development"]["Status"] = NULL;
 }
 
-/* The copyright holder's name */
-$app['Legal']['CopyrightHolder'] = 'MWBM Partners Ltd';
+/* --- Repository / Commit Metadata --- */
+/* These fields are populated at deploy time by the GitHub Actions pipeline */
+/* They default to NULL in source and are replaced via sed during deployment */
 
-/* The full copyright string for display (e.g., "© 2026 MWBM Partners Ltd") */
-$app['Legal']['CopyrightFull'] = '© ' . $app['Legal']['CopyrightYears'] . ' ' . $app['Legal']['CopyrightHolder'];
+/* Full git commit SHA (40 characters) */
+$app["Application"]["Version"]["Repo"]["Commit"]["SHA"]["Full"] = NULL;
 
-/* The licence type */
-$app['Legal']['Licence'] = 'Proprietary';
+/* Short git commit SHA (7 characters, for display) */
+$app["Application"]["Version"]["Repo"]["Commit"]["SHA"]["Short"] = NULL;
 
-/* --- Repository Information --- */
+/* Commit date/time (ISO 8601 format) */
+$app["Application"]["Version"]["Repo"]["Commit"]["Date"] = NULL;
 
-/* Initialise the Repo sub-array */
-$app['Repo'] = [];
+/* GitHub URL to the specific commit */
+$app["Application"]["Version"]["Repo"]["Commit"]["URL"] = NULL;
 
-/* The GitHub repository URL */
-$app['Repo']['URL'] = 'https://github.com/MWBMPartners/iHymns';
+/* =========================================================================
+ * VENDOR INFORMATION
+ * ========================================================================= */
 
-/* The GitHub issues URL */
-$app['Repo']['Issues'] = 'https://github.com/MWBMPartners/iHymns/issues';
+/* Primary vendor/developer name */
+$app["Application"]["Vendor"]["Name"] = "MWservices";
+
+/* Primary vendor website URL */
+$app["Application"]["Vendor"]["Website"]["URL"] = "https://www.MWservices.it";
+
+/* Parent company name */
+$app["Application"]["Vendor"]["Parent"]["Name"] = "MWBM Partners Ltd";
+
+/* Parent company website URL */
+$app["Application"]["Vendor"]["Parent"]["Website"]["URL"] = "https://www.MWBMpartners.Ltd";
+
+/* =========================================================================
+ * COPYRIGHT
+ * ========================================================================= */
+
+/* Year copyright protection began */
+$app["Application"]["Copyright"]["Year"]["Start"] = "2026";
+
+/**
+ * Dynamically compute the copyright year range for display.
+ *
+ * If the current year is the same as the start year, show just "2026".
+ * Otherwise, show "2026–<current year>" (e.g., "2026–2028").
+ * This ensures the copyright notice is always current without manual updates.
+ */
+$currentYear = date('Y');
+if ($currentYear > $app["Application"]["Copyright"]["Year"]["Start"]) {
+    /* Multi-year range: "2026–2028" */
+    $app["Application"]["Copyright"]["Year"]["Display"] = $app["Application"]["Copyright"]["Year"]["Start"] . "–" . $currentYear;
+} else {
+    /* Single year: "2026" */
+    $app["Application"]["Copyright"]["Year"]["Display"] = $app["Application"]["Copyright"]["Year"]["Start"];
+}
+
+/* Rights statement */
+$app["Application"]["Copyright"]["RightsStatement"] = "All Rights Reserved";
+
+/* Full copyright string for display: "© 2026 MWBM Partners Ltd. All Rights Reserved" */
+$app["Application"]["Copyright"]["Full"] = "© " . $app["Application"]["Copyright"]["Year"]["Display"] . " " . $app["Application"]["Vendor"]["Parent"]["Name"] . ". " . $app["Application"]["Copyright"]["RightsStatement"];
+
+/* =========================================================================
+ * LICENSING — DEVELOPER
+ * ========================================================================= */
+
+/* Developer licence type (e.g., "MIT", "Proprietary", NULL) */
+$app["Application"]["License"]["Developer"]["Type"] = "Proprietary";
+
+/* Developer licence cost */
+$app["Application"]["License"]["Developer"]["Cost"] = NULL;
+
+/* Developer licence agreement URL */
+$app["Application"]["License"]["Developer"]["Agreement"]["URL"] = NULL;
+
+/* Developer terms of service URL */
+$app["Application"]["License"]["Developer"]["ToSURL"] = NULL;
+
+/* =========================================================================
+ * LICENSING — USER / END-USER
+ * ========================================================================= */
+
+/* User licence type */
+$app["Application"]["License"]["User"]["Type"] = "Freeware";
+
+/* User licence cost */
+$app["Application"]["License"]["User"]["Cost"] = "Free";
+
+/* User licence agreement URL */
+$app["Application"]["License"]["User"]["Agreement"]["URL"] = NULL;
+
+/* User terms of service URL */
+$app["Application"]["License"]["User"]["ToSURL"] = NULL;
+
+/* =========================================================================
+ * REPOSITORY INFORMATION
+ * ========================================================================= */
+
+/* GitHub repository URL */
+$app["Application"]["Repo"]["URL"] = "https://github.com/MWBMPartners/iHymns";
+
+/* GitHub issues URL */
+$app["Application"]["Repo"]["Issues"]["URL"] = "https://github.com/MWBMPartners/iHymns/issues";
