@@ -1,0 +1,32 @@
+{
+  "name": "ihymns",
+  "version": "1.0.0-alpha.1",
+  "description": "iHymns — A multiplatform Christian lyrics application for worship enhancement",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "parse-songs": "node tools/parse-songs.js",
+    "dev": "vite appWeb/public_html_beta",
+    "build": "vite build appWeb/public_html_beta",
+    "preview": "vite preview appWeb/public_html_beta",
+    "lint:js": "eslint appWeb/public_html_beta/js/",
+    "lint:css": "stylelint appWeb/public_html_beta/css/**/*.css",
+    "lint:html": "htmlhint appWeb/public_html_beta/**/*.html",
+    "lint": "npm run lint:js && npm run lint:css && npm run lint:html",
+    "format": "prettier --write appWeb/public_html_beta/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MWBMPartners/iHymns.git"
+  },
+  "author": "MWBM Partners Ltd",
+  "license": "SEE LICENSE IN LICENSE",
+  "bugs": {
+    "url": "https://github.com/MWBMPartners/iHymns/issues"
+  },
+  "homepage": "https://ihymns.app",
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
+  }
+}

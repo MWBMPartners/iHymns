@@ -34,9 +34,9 @@
 | Create .gitignore | ✅ Done |
 | Create help documentation | ✅ Done |
 | Create GitHub Issues (Phase 1 + 2 + infra) | ✅ Done |
-| Set up Node.js project (package.json) | 🔲 Pending |
-| Create song data parser | 🔲 Pending |
-| Generate songs.json | 🔲 Pending |
+| Set up Node.js project (package.json) | ✅ Done |
+| Create song data parser | ✅ Done |
+| Generate songs.json (3,612 songs, 5.22 MB) | ✅ Done |
 | Set up CI/CD workflows | 🔲 Pending |
 
 ---

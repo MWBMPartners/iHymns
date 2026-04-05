@@ -19,8 +19,12 @@
 - Created `.claude/ProjectBrief.md` — Claude AI context and project brief
 - Created `.gitignore` — comprehensive ignore rules for macOS, Windows, Linux, VS Code, Xcode, Node.js, Android
 - Created `help/` documentation — getting started, searching, songbooks, favorites, troubleshooting, FAQ
-- Analysed existing song data: 5 songbooks, ~7,415 songs
+- Analysed existing song data: 5 songbooks, ~7,415 source files
 - Documented song data format and structure
+- Created `package.json` — Node.js project configuration (v1.0.0-alpha.1)
+- Built `tools/parse-songs.js` — song data parser (fully annotated, ~500 lines)
+- Generated `data/songs.json` — 3,612 songs parsed (5.22 MB), with structured components, writer/composer credits, audio/sheet music flags
+- 31 songs have no lyrics (empty source files — placeholder entries in source data)
 
 ### 🏗 Changed — 2026-04-05
 
