@@ -307,6 +307,10 @@ require_once __DIR__ . '/includes/infoAppVer.php';
     <!-- Fuse.js 7.x: lightweight fuzzy-search library for client-side song search -->
     <script src="https://cdn.jsdelivr.net/npm/fuse.js@7.0.0/dist/fuse.min.js"></script>
 
+    <!-- PDF.js 4.9: Mozilla's PDF rendering library for sheet music viewer -->
+    <!-- Loaded as an ES module; exposes window.pdfjsLib for use by sheet-music.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf.min.mjs" type="module"></script>
+
     <!-- iHymns application JavaScript (ES module entry point) -->
     <!-- type="module" enables ES module imports and strict mode by default -->
     <script type="module" src="js/app.js"></script>
