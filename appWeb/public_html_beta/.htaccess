@@ -1,0 +1,149 @@
+# ============================================================================
+# iHymns — Apache Configuration (.htaccess)
+#
+# Copyright © 2026 MWBM Partners Ltd. All rights reserved.
+#
+# PURPOSE:
+# - Enable clean URL deep linking (redirect /song/CH-0003 to index.php#/song/CH-0003)
+# - Set correct MIME types for modern web assets
+# - Enable GZIP compression for faster loading
+# - Set cache headers for optimal performance
+# - Security headers
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# DEEP LINKING / CLEAN URLs
+# Redirect requests for /songbook/*, /song/*, /favorites, /help
+# to index.php with the path converted to a hash fragment.
+# This allows users to share URLs like ihymns.app/song/CH-0003
+# ----------------------------------------------------------------------------
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # If the request is not for an existing file or directory,
+    # and it matches a known route pattern, redirect to index.php
+    # with the hash fragment appended.
+
+    # Songbook route: /songbook/CH → index.php#/songbook/CH
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^songbook/(.+)$ index.php#/songbook/$1 [NE,R=302,L]
+
+    # Song route: /song/CH-0003 → index.php#/song/CH-0003
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^song/(.+)$ index.php#/song/$1 [NE,R=302,L]
+
+    # Favorites route: /favorites → index.php#/favorites
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^favorites/?$ index.php#/favorites [NE,R=302,L]
+
+    # Help route: /help → index.php#/help
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^help/?$ index.php#/help [NE,R=302,L]
+</IfModule>
+
+# ----------------------------------------------------------------------------
+# MIME TYPES
+# Ensure modern file types are served with correct Content-Type headers.
+# ----------------------------------------------------------------------------
+<IfModule mod_mime.c>
+    # JavaScript ES modules
+    AddType application/javascript .js .mjs
+
+    # JSON data files
+    AddType application/json .json
+
+    # Web App Manifest
+    AddType application/manifest+json .webmanifest
+
+    # SVG images
+    AddType image/svg+xml .svg .svgz
+
+    # Web fonts
+    AddType font/woff2 .woff2
+    AddType font/woff .woff
+
+    # MIDI audio files
+    AddType audio/midi .mid .midi
+</IfModule>
+
+# ----------------------------------------------------------------------------
+# GZIP COMPRESSION
+# Compress text-based responses for faster transfer over the network.
+# ----------------------------------------------------------------------------
+<IfModule mod_deflate.c>
+    # Compress HTML, CSS, JavaScript, JSON, SVG, XML, and plain text
+    AddOutputFilterByType DEFLATE text/html
+    AddOutputFilterByType DEFLATE text/css
+    AddOutputFilterByType DEFLATE application/javascript
+    AddOutputFilterByType DEFLATE application/json
+    AddOutputFilterByType DEFLATE application/manifest+json
+    AddOutputFilterByType DEFLATE image/svg+xml
+    AddOutputFilterByType DEFLATE text/xml
+    AddOutputFilterByType DEFLATE application/xml
+    AddOutputFilterByType DEFLATE text/plain
+</IfModule>
+
+# ----------------------------------------------------------------------------
+# CACHE CONTROL
+# Set browser caching headers for optimal performance.
+# Static assets get long cache times; dynamic content gets short/none.
+# ----------------------------------------------------------------------------
+<IfModule mod_expires.c>
+    ExpiresActive On
+
+    # HTML/PHP: no cache (always fetch fresh for SPA routing)
+    ExpiresByType text/html "access plus 0 seconds"
+
+    # CSS: cache for 1 week (versioned via cache-busting)
+    ExpiresByType text/css "access plus 1 week"
+
+    # JavaScript: cache for 1 week
+    ExpiresByType application/javascript "access plus 1 week"
+
+    # JSON (song data): cache for 1 hour (allows updates to propagate)
+    ExpiresByType application/json "access plus 1 hour"
+
+    # Images: cache for 1 month
+    ExpiresByType image/svg+xml "access plus 1 month"
+    ExpiresByType image/png "access plus 1 month"
+    ExpiresByType image/jpeg "access plus 1 month"
+    ExpiresByType image/webp "access plus 1 month"
+
+    # Fonts: cache for 1 year
+    ExpiresByType font/woff2 "access plus 1 year"
+    ExpiresByType font/woff "access plus 1 year"
+
+    # MIDI audio: cache for 1 month
+    ExpiresByType audio/midi "access plus 1 month"
+</IfModule>
+
+# ----------------------------------------------------------------------------
+# SECURITY HEADERS
+# Basic security headers to protect against common web vulnerabilities.
+# ----------------------------------------------------------------------------
+<IfModule mod_headers.c>
+    # Prevent MIME type sniffing
+    Header set X-Content-Type-Options "nosniff"
+
+    # Enable XSS protection in older browsers
+    Header set X-XSS-Protection "1; mode=block"
+
+    # Prevent clickjacking by disallowing embedding in iframes
+    Header set X-Frame-Options "SAMEORIGIN"
+
+    # Referrer policy: send origin only for cross-origin requests
+    Header set Referrer-Policy "strict-origin-when-cross-origin"
+
+    # Permissions policy: disable unnecessary browser features
+    Header set Permissions-Policy "camera=(), microphone=(), geolocation=()"
+</IfModule>
+
+# ----------------------------------------------------------------------------
+# ERROR DOCUMENTS
+# Custom error handling (serve the SPA for 404s to support client-side routing)
+# ----------------------------------------------------------------------------
+ErrorDocument 404 /index.php

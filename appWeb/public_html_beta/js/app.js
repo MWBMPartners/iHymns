@@ -236,6 +236,65 @@ function handleRoute() {
 
     /* Scroll to the top of the page on each route change */
     window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    /* Update the browser tab title to reflect the current view */
+    updateDocumentTitle(viewType, viewParam);
+}
+
+/**
+ * updateDocumentTitle(viewType, viewParam)
+ *
+ * Updates the browser tab title based on the current route.
+ * This helps users identify the page in their browser tabs and history,
+ * and improves SEO for bookmarked/shared deep links.
+ *
+ * @param {string} viewType  - The view type segment (e.g., 'songbook', 'song', 'favorites')
+ * @param {string} viewParam - The view parameter (e.g., songbook ID or song ID)
+ */
+function updateDocumentTitle(viewType, viewParam) {
+    /* Base app name used as suffix in all titles */
+    const baseName = 'iHymns';
+
+    /* Build title based on the current view */
+    switch (viewType) {
+
+        case 'songbook': {
+            /* Find the songbook name from the song data */
+            const songbook = appState.songData.songbooks.find(sb => sb.id === viewParam);
+
+            /* Set title to "Songbook Name — iHymns" */
+            document.title = songbook
+                ? `${songbook.name} — ${baseName}`
+                : `Songbook — ${baseName}`;
+            break;
+        }
+
+        case 'song': {
+            /* Find the song from the song data */
+            const song = appState.songData.songs.find(s => s.id === viewParam);
+
+            /* Set title to "Song Title — Songbook — iHymns" */
+            document.title = song
+                ? `${song.title} — ${song.songbookName} #${song.number} — ${baseName}`
+                : `Song — ${baseName}`;
+            break;
+        }
+
+        case 'favorites':
+            /* Set title for favourites view */
+            document.title = `Favourites — ${baseName}`;
+            break;
+
+        case 'help':
+            /* Set title for help view */
+            document.title = `Help — ${baseName}`;
+            break;
+
+        default:
+            /* Home/default: just the app name with tagline */
+            document.title = `${baseName} — Christian Lyrics for Worship`;
+            break;
+    }
 }
 
 /**
