@@ -38,7 +38,7 @@ $app = [];
  * ========================================================================= */
 
 /* Unique reverse-domain application identifier */
-$app["Application"]["ID"] = "Ltd.MWBMPartners.iHymns";
+$app["Application"]["ID"] = "Ltd.MWBMPartners.iHymns.PWA";
 
 /* Short application name (used in titles, manifests, UI) */
 $app["Application"]["Name"] = "iHymns";

@@ -43,7 +43,7 @@ enum AppInfo {
     enum Application {
 
         /* Unique reverse-domain application identifier */
-        static let id = "Ltd.MWBMPartners.iHymns"
+        static let id = "Ltd.MWBMPartners.iHymns.Apple"
 
         /* Short application name (used in titles, UI) */
         static let name = "iHymns"
