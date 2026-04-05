@@ -1,0 +1,202 @@
+# ============================================================================
+# iHymns — Fastlane Configuration (Apple Platforms)
+#
+# Copyright © 2026 MWBM Partners Ltd. All rights reserved.
+# This software is proprietary.
+#
+# PURPOSE:
+# Automates building, signing, testing, and distributing the iHymns
+# Apple universal app for iOS, iPadOS, tvOS, visionOS, macOS, and watchOS.
+#
+# USAGE:
+#   fastlane beta          — Build and upload to TestFlight
+#   fastlane release       — Build and submit to App Store
+#   fastlane direct        — Build signed/notarised for direct distribution
+#   fastlane tests         — Run unit and UI tests
+#
+# PREREQUISITES:
+# - Xcode 16+ with Swift 6.3
+# - Apple Developer Programme account
+# - Fastlane installed: gem install fastlane
+# - App Store Connect API key configured
+# ============================================================================
+
+# Default platform: iOS (also handles iPadOS, tvOS, macOS via separate lanes)
+default_platform(:ios)
+
+# ============================================================================
+# SHARED CONSTANTS
+# ============================================================================
+
+# Bundle identifier for the app
+APP_IDENTIFIER = "ltd.mwbmpartners.ihymns"
+
+# App Store Connect team ID (set via environment or App Store Connect API)
+TEAM_ID = ENV["APPLE_TEAM_ID"]
+
+# Xcode project path
+PROJECT_PATH = "iHymns/iHymns.xcodeproj"
+
+# Xcode scheme name (universal scheme covering all platforms)
+SCHEME = "iHymns"
+
+# ============================================================================
+# iOS / iPadOS PLATFORM
+# ============================================================================
+platform :ios do
+
+  # --------------------------------------------------------------------------
+  # BEFORE ALL: Ensure clean build state
+  # --------------------------------------------------------------------------
+  before_all do
+    # Ensure we're on the latest provisioning profiles
+    # Uses Fastlane match for certificate/profile management
+    ensure_git_status_clean
+  end
+
+  # --------------------------------------------------------------------------
+  # LANE: tests — Run unit and UI tests
+  # --------------------------------------------------------------------------
+  desc "Run all unit and UI tests"
+  lane :tests do
+    # Run tests using the iHymns scheme
+    run_tests(
+      project: PROJECT_PATH,
+      scheme: SCHEME,
+      devices: ["iPhone 16 Pro", "iPad Pro 13-inch (M4)"],
+      clean: true,
+      code_coverage: true,
+      output_directory: "./fastlane/test_output",
+      output_types: "html,junit"
+    )
+  end
+
+  # --------------------------------------------------------------------------
+  # LANE: beta — Build and upload to TestFlight
+  # --------------------------------------------------------------------------
+  desc "Build and upload to TestFlight for beta testing"
+  lane :beta do
+    # Increment the build number (uses the current timestamp)
+    increment_build_number(
+      build_number: Time.now.strftime("%Y%m%d%H%M")
+    )
+
+    # Sync code signing certificates and provisioning profiles
+    match(
+      type: "appstore",
+      app_identifier: APP_IDENTIFIER,
+      readonly: true
+    )
+
+    # Build the app for App Store distribution (includes TestFlight)
+    build_app(
+      project: PROJECT_PATH,
+      scheme: SCHEME,
+      export_method: "app-store",
+      output_directory: "./fastlane/builds",
+      output_name: "iHymns-beta.ipa",
+      clean: true,
+      include_bitcode: false
+    )
+
+    # Upload to TestFlight
+    upload_to_testflight(
+      skip_waiting_for_build_processing: true,
+      changelog: "Beta build #{lane_context[SharedValues::BUILD_NUMBER]}"
+    )
+
+    # Notify (optional — Slack, email, etc.)
+    # slack(message: "iHymns beta uploaded to TestFlight!")
+  end
+
+  # --------------------------------------------------------------------------
+  # LANE: release — Build and submit to App Store
+  # --------------------------------------------------------------------------
+  desc "Build and submit to App Store for review"
+  lane :release do
+    # Increment build number
+    increment_build_number(
+      build_number: Time.now.strftime("%Y%m%d%H%M")
+    )
+
+    # Sync certificates
+    match(
+      type: "appstore",
+      app_identifier: APP_IDENTIFIER,
+      readonly: true
+    )
+
+    # Build the app
+    build_app(
+      project: PROJECT_PATH,
+      scheme: SCHEME,
+      export_method: "app-store",
+      output_directory: "./fastlane/builds",
+      output_name: "iHymns-release.ipa",
+      clean: true
+    )
+
+    # Upload to App Store Connect for review
+    upload_to_app_store(
+      force: true,
+      skip_metadata: false,
+      skip_screenshots: true,
+      submit_for_review: false,
+      automatic_release: false
+    )
+  end
+
+  # --------------------------------------------------------------------------
+  # LANE: direct — Build signed for direct distribution (ad hoc / dev)
+  # --------------------------------------------------------------------------
+  desc "Build signed IPA for direct distribution"
+  lane :direct do
+    # Sync ad hoc certificates
+    match(
+      type: "adhoc",
+      app_identifier: APP_IDENTIFIER,
+      readonly: true
+    )
+
+    # Build with ad hoc export method
+    build_app(
+      project: PROJECT_PATH,
+      scheme: SCHEME,
+      export_method: "ad-hoc",
+      output_directory: "./fastlane/builds",
+      output_name: "iHymns-direct.ipa",
+      clean: true
+    )
+  end
+end
+
+# ============================================================================
+# macOS PLATFORM
+# ============================================================================
+platform :mac do
+
+  # --------------------------------------------------------------------------
+  # LANE: build_mac — Build for macOS
+  # --------------------------------------------------------------------------
+  desc "Build and notarise macOS app for direct distribution"
+  lane :build_mac do
+    # Build the macOS app
+    build_app(
+      project: PROJECT_PATH,
+      scheme: SCHEME,
+      export_method: "developer-id",
+      output_directory: "./fastlane/builds",
+      output_name: "iHymns-macOS",
+      clean: true,
+      destination: "generic/platform=macOS"
+    )
+
+    # Notarise the macOS app with Apple
+    notarize(
+      package: "./fastlane/builds/iHymns-macOS.app",
+      bundle_id: APP_IDENTIFIER,
+      print_log: true,
+      verbose: true
+    )
+  end
+end
