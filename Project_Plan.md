@@ -210,7 +210,7 @@ iHymns/
 │   ├── public_html_dev/        # 🔴 ALPHA/DEV release (experimental)
 │   └── private_html/           # 🔒 PRIVATE (admin tools, song editor)
 │       └── editor/             # Song editor tool
-├── apple/                      # Native Apple app (Swift/SwiftUI)
+├── appApple/                   # Native Apple app (Swift/SwiftUI)
 │   └── iHymns/
 │       ├── iHymns.xcodeproj
 │       ├── iHymns/
@@ -222,7 +222,7 @@ iHymns/
 │       │   ├── Resources/
 │       │   └── Help/
 │       └── iHymnsTests/
-├── android/                    # Android app (Kotlin/Compose) — future
+├── appAndroid/                 # Android app (Kotlin/Compose) — future
 ├── help/                       # Documentation (Markdown)
 │   ├── README.md               # Help index
 │   ├── getting-started.md

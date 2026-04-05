@@ -121,8 +121,8 @@ See `Project_Plan.md` for full directory tree. Key directories:
 - `tools/` — Build tools & data parsers
 - `data/` — Generated structured song data (JSON)
 - `appWeb/` — Web PWA application (public_html, public_html_beta, public_html_dev, private_html)
-- `apple/` — Native Apple app (Swift/SwiftUI)
-- `android/` — Android app (future)
+- `appApple/` — Native Apple app (Swift/SwiftUI)
+- `appAndroid/` — Android app (future)
 - `help/` — User documentation (Markdown)
 
 ---

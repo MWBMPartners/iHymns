@@ -69,8 +69,8 @@ iHymns/
 │   ├── public_html_beta/ #   Beta release (primary dev target)
 │   ├── public_html_dev/  #   Alpha/dev release
 │   └── private_html/     #   Private (admin tools, song editor)
-├── apple/                # Native Apple app (Swift/SwiftUI)
-├── android/              # Android app (future)
+├── appApple/             # Native Apple app (Swift/SwiftUI)
+├── appAndroid/           # Android app (future)
 ├── help/                 # User documentation
 ├── Project_Plan.md       # Detailed project plan
 ├── PROJECT_STATUS.md     # Current status tracker
