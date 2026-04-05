@@ -1,8 +1,11 @@
 <?php
+
+declare(strict_types=1);
+
 /**
  * iHymns — Main Entry Point (index.php)
  *
- * Copyright © 2026–<?php echo date('Y'); ?> MWBM Partners Ltd. All rights reserved.
+ * Copyright © 2026 MWBM Partners Ltd. All rights reserved.
  * This software is proprietary. Unauthorized copying, modification, or
  * distribution is strictly prohibited.
  *
@@ -17,6 +20,8 @@
  * - PHP handles: version injection, copyright year, server-side includes
  * - JavaScript handles: SPA routing, data loading, search, UI rendering
  * - Bootstrap 5.3: responsive layout, components, dark mode
+ *
+ * @requires PHP 8.5+
  */
 
 /* Load the application version/metadata configuration */

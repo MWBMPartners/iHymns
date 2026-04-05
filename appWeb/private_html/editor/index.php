@@ -1,4 +1,7 @@
 <?php
+
+declare(strict_types=1);
+
 /**
  * ============================================================================
  * iHymns Song Editor — Web-Based Developer Tool
@@ -14,11 +17,12 @@
  * distribution, or modification of this file, via any medium, is strictly
  * prohibited.
  *
- * @package   iHymns
+ * @package    iHymns
  * @subpackage SongEditor
- * @author    MWBM Partners Ltd
- * @copyright 2026 MWBM Partners Ltd
- * @license   Proprietary — All rights reserved
+ * @author     MWBM Partners Ltd
+ * @copyright  2026 MWBM Partners Ltd
+ * @license    Proprietary — All rights reserved
+ * @requires   PHP 8.5+
  * ============================================================================
  */
 ?>

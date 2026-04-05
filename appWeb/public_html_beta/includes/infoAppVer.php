@@ -1,4 +1,7 @@
 <?php
+
+declare(strict_types=1);
+
 /**
  * iHymns — Application Version & Information
  *
@@ -74,16 +77,14 @@ $app["Application"]["Version"]["Name"] = NULL;
  * This allows the same codebase to show the correct status label
  * depending on which server directory it is deployed to.
  */
-if (strpos(__DIR__, 'public_html_dev') !== false) {
-    /* Alpha/dev deployment */
-    $app["Application"]["Version"]["Development"]["Status"] = "Alpha";
-} elseif (strpos(__DIR__, 'public_html_beta') !== false) {
-    /* Beta deployment */
-    $app["Application"]["Version"]["Development"]["Status"] = "Beta";
-} else {
-    /* Production deployment (no development status label) */
-    $app["Application"]["Version"]["Development"]["Status"] = NULL;
-}
+$app["Application"]["Version"]["Development"]["Status"] = match (true) {
+    /* Alpha/dev deployment — directory path contains "public_html_dev" */
+    str_contains(__DIR__, 'public_html_dev') => "Alpha",
+    /* Beta deployment — directory path contains "public_html_beta" */
+    str_contains(__DIR__, 'public_html_beta') => "Beta",
+    /* Production deployment — no development status label */
+    default => null,
+};
 
 /* --- Repository / Commit Metadata --- */
 /* These fields are populated at deploy time by the GitHub Actions pipeline */
