@@ -9,45 +9,67 @@
 | Area | Status | Notes |
 | --- | --- | --- |
 | 📋 Project Plan | ✅ Complete | See [Project_Plan.md](Project_Plan.md) |
-| 🗂 Project Structure | ✅ Complete | Directories, .gitignore, .gitkeep files |
-| 📖 Help Documentation | ✅ Complete | 6 guides in `help/` |
-| 🎫 GitHub Issues | ✅ Complete | 70 issues (49 Phase 1 + 14 Phase 2 + 7 infra) |
+| 🗂 Project Structure | ✅ Complete | Directories, .gitignore, deployment structure |
+| 📖 Help Documentation | ✅ Complete | 6 guides in `help/` + in-app help |
+| 🎫 GitHub Issues | ✅ Complete | 72 issues created, 31 closed |
 | 🔧 Song Data Parser | ✅ Complete | 3,612 songs → 5.22 MB JSON |
-| 🌐 Web PWA | 🟢 Core Complete | Layout, search, songbooks, lyrics, favourites, dark mode |
-| 🍎 Apple App | 🔲 Not Started | — |
-| 🤖 Android App | 🔲 Not Started | — |
-| 🚀 CI/CD Pipeline | 🔲 Not Started | SFTP deploy, semver, changelog |
+| 🌐 Web PWA | ✅ Core + Enhanced | Search, songbooks, lyrics, favourites, dark mode, deep linking, accessibility, colourblind mode |
+| 🛠 Song Editor | ✅ Complete | Developer tool in `appWeb/private_html/editor/` |
+| 🚀 CI/CD Pipeline | ✅ Complete | 5 workflows: deploy, version-bump, changelog, release, test |
+| 🍎 Apple App | 🔲 Not Started | Swift 6.3 / SwiftUI — next priority |
+| 🤖 Android App | 🔲 Not Started | Kotlin / Jetpack Compose |
 
 ---
 
-## 📌 Current Milestone
+## 📌 Completed Milestones
 
-### Milestone 1: Project Setup & Data Pipeline
+### Milestone 1: Project Setup & Data Pipeline ✅
 
-| Task | Status |
-| --- | --- |
-| Analyse existing repo and song data | ✅ Done |
-| Create project plan and outline | ✅ Done |
-| User sense-check/approval | ✅ Done |
-| Clean up old implementation files | ✅ Done |
-| Set up new project structure | ✅ Done |
-| Create .gitignore | ✅ Done |
-| Create help documentation | ✅ Done |
-| Create GitHub Issues (Phase 1 + 2 + infra) | ✅ Done |
-| Set up Node.js project (package.json) | ✅ Done |
-| Create song data parser | ✅ Done |
-| Generate songs.json (3,612 songs, 5.22 MB) | ✅ Done |
-| Set up CI/CD workflows | 🔲 Pending |
+All tasks complete: project structure, .gitignore, help docs, GitHub Issues, package.json, song parser, songs.json.
+
+### Milestone 2: Web PWA Core ✅
+
+Layout, songbook browser, song detail, search (Fuse.js), responsive design, dark mode, favourites, PWA.
+
+### Milestone 3: Web PWA Enhanced ✅
+
+Deep linking (.htaccess), accessibility (WCAG 2.1 AA), in-app help, colourblind-friendly mode, numpad search, iLyrics dB colour scheme alignment, print stylesheet.
+
+### Milestone 6: Song Editor ✅
+
+Web-based developer tool: edit metadata, structure/arrangement, writers/composers, CCLI numbers, JSON validation/save, bulk import/export, preview.
+
+### Infrastructure ✅
+
+5 GitHub Actions workflows: SFTP deployment, semver bumping, changelog generation, GitHub Releases, CI lint/test.
+
+---
+
+## 📌 Next Milestones
+
+### Milestone 4 & 5: Apple App (Next)
+
+- Xcode project setup (Swift 6.3 / SwiftUI)
+- Universal app (iPhone, iPad, Apple TV)
+- Song data model, browser, search, detail view
+- Favourites, dark mode, Spotlight, share sheet
+- App Store submission, signing & notarisation
+
+### Milestone 7: Android App
+
+- Kotlin / Jetpack Compose
+- Feature parity with Apple app
 
 ---
 
 ## 📈 Progress Summary
 
-- **Songs catalogued**: ~7,415 across 5 songbooks
-- **Platforms**: 0/3 started
-- **Phase**: ONE (local song data)
-- **Version**: 0.1.0-planning
-- **GitHub Issues**: 70 created (Phase 1, Phase 2, infrastructure)
+- **Songs parsed**: 3,612 across 5 songbooks (5.22 MB JSON)
+- **Web PWA**: Feature-complete (core + enhanced + editor)
+- **GitHub Issues**: 72 created, 31 closed
+- **Phase**: ONE (v1.x.x — local song data)
+- **Version**: 1.0.0-alpha.1
+- **CI/CD**: 5 GitHub Actions workflows ready
 
 ---
 
