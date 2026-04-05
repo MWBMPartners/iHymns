@@ -293,6 +293,22 @@ function main() {
     const fileCount = copyDirectoryRecursive(SOURCE_DIR, DIST_DIR);
     console.log(`  ✅ Copied ${fileCount} files`);
 
+    /* Step 2b: Copy songs.json from canonical location (data/songs.json) */
+    /* The canonical song database lives at data/songs.json and is NOT
+       duplicated into each platform directory. Build/packaging copies it. */
+    const songsSource = path.join(PROJECT_ROOT, 'data', 'songs.json');
+    const songsDest = path.join(DIST_DIR, 'data', 'songs.json');
+    if (fs.existsSync(songsSource)) {
+        const songsDir = path.dirname(songsDest);
+        if (!fs.existsSync(songsDir)) {
+            fs.mkdirSync(songsDir, { recursive: true });
+        }
+        fs.copyFileSync(songsSource, songsDest);
+        console.log('  ✅ Copied data/songs.json to dist');
+    } else {
+        console.warn('  ⚠️  data/songs.json not found — run "npm run parse-songs" first');
+    }
+
     /* Step 3: Inject build metadata */
     console.log('  📦 Injecting build metadata...');
     injectBuildMetadata(DIST_DIR, target);

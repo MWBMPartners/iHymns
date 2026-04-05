@@ -178,6 +178,15 @@ jobs:
           fi
 
       # -- Install minification tools globally via npm --
+      # -- Copy canonical songs.json into the source directory for deployment --
+      - name: Copy songs.json to deployment source
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          SOURCE_DIR="${{ steps.target.outputs.source_dir }}"
+          mkdir -p "${SOURCE_DIR}data"
+          cp data/songs.json "${SOURCE_DIR}data/songs.json"
+          echo "Copied data/songs.json to ${SOURCE_DIR}data/"
+
       - name: Install minification tools
         if: steps.changes.outputs.has_changes == 'true'
         run: |
