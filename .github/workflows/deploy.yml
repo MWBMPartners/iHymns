@@ -43,6 +43,9 @@ on:
       - main
       - beta
       - alpha
+    paths:
+      - 'appWeb/**'
+      - '.github/workflows/deploy.yml'
   workflow_dispatch:
 
 permissions:

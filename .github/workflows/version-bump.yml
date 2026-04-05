@@ -24,6 +24,12 @@ on:
   push:
     branches:
       - beta
+    paths:
+      - 'appWeb/**'
+      - 'appApple/**'
+      - 'appAndroid/**'
+      - 'tools/**'
+      - 'data/**'
 
 # Cancel any in-progress version bump on the same branch
 concurrency:

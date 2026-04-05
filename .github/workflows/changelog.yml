@@ -24,6 +24,12 @@ on:
     branches:
       - main
       - beta
+    paths:
+      - 'appWeb/**'
+      - 'appApple/**'
+      - 'appAndroid/**'
+      - 'tools/**'
+      - 'data/**'
 
 # Cancel any in-progress changelog generation on the same branch
 concurrency:

@@ -28,7 +28,6 @@ on:
     paths:
       - 'appAndroid/**'
       - '.github/workflows/build-android.yml'
-  push:
     tags:
       - 'v*'
   workflow_dispatch:
