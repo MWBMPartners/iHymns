@@ -137,21 +137,21 @@ object AppInfo {
         object Vendor {
 
             /* Primary vendor/developer name */
-            const val NAME = "MWservices"
+            const val NAME = "MWBM Partners Ltd"
 
             /* Primary vendor website URL */
-            const val WEBSITE_URL = "https://www.MWservices.it"
+            const val WEBSITE_URL = "https://www.MWBMpartners.Ltd"
 
             /**
-             * Parent company information.
+             * Parent company information (null — MWBM Partners Ltd is the top-level vendor).
              */
             object Parent {
 
-                /* Parent company name */
-                const val NAME = "MWBM Partners Ltd"
+                /* Parent company name (none — no parent vendor) */
+                val NAME: String? = null
 
-                /* Parent company website URL */
-                const val WEBSITE_URL = "https://www.MWBMpartners.Ltd"
+                /* Parent company website URL (none) */
+                val WEBSITE_URL: String? = null
             }
         }
 
@@ -192,7 +192,7 @@ object AppInfo {
              * Example: "© 2026 MWBM Partners Ltd. All Rights Reserved"
              */
             fun full(): String {
-                return "© ${yearDisplay()} ${Vendor.Parent.NAME}. $RIGHTS_STATEMENT"
+                return "© ${yearDisplay()} ${Vendor.NAME}. $RIGHTS_STATEMENT"
             }
         }
 

@@ -106,16 +106,16 @@ $app["Application"]["Version"]["Repo"]["Commit"]["URL"] = NULL;
  * ========================================================================= */
 
 /* Primary vendor/developer name */
-$app["Application"]["Vendor"]["Name"] = "MWservices";
+$app["Application"]["Vendor"]["Name"] = "MWBM Partners Ltd";
 
 /* Primary vendor website URL */
-$app["Application"]["Vendor"]["Website"]["URL"] = "https://www.MWservices.it";
+$app["Application"]["Vendor"]["Website"]["URL"] = "https://www.MWBMpartners.Ltd";
 
 /* Parent company name */
-$app["Application"]["Vendor"]["Parent"]["Name"] = "MWBM Partners Ltd";
+$app["Application"]["Vendor"]["Parent"]["Name"] = NULL;
 
 /* Parent company website URL */
-$app["Application"]["Vendor"]["Parent"]["Website"]["URL"] = "https://www.MWBMpartners.Ltd";
+$app["Application"]["Vendor"]["Parent"]["Website"]["URL"] = NULL;
 
 /* =========================================================================
  * COPYRIGHT
@@ -144,7 +144,7 @@ if ($currentYear > $app["Application"]["Copyright"]["Year"]["Start"]) {
 $app["Application"]["Copyright"]["RightsStatement"] = "All Rights Reserved";
 
 /* Full copyright string for display: "© 2026 MWBM Partners Ltd. All Rights Reserved" */
-$app["Application"]["Copyright"]["Full"] = "© " . $app["Application"]["Copyright"]["Year"]["Display"] . " " . $app["Application"]["Vendor"]["Parent"]["Name"] . ". " . $app["Application"]["Copyright"]["RightsStatement"];
+$app["Application"]["Copyright"]["Full"] = "© " . $app["Application"]["Copyright"]["Year"]["Display"] . " " . $app["Application"]["Vendor"]["Name"] . ". " . $app["Application"]["Copyright"]["RightsStatement"];
 
 /* =========================================================================
  * LICENSING — DEVELOPER

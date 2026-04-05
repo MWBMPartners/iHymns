@@ -133,19 +133,19 @@ enum AppInfo {
         enum Vendor {
 
             /* Primary vendor/developer name */
-            static let name = "MWservices"
+            static let name = "MWBM Partners Ltd"
 
             /* Primary vendor website URL */
-            static let websiteURL = "https://www.MWservices.it"
+            static let websiteURL = "https://www.MWBMpartners.Ltd"
 
-            /// Parent company information.
+            /// Parent company information (NULL — MWBM Partners Ltd is the top-level vendor).
             enum Parent {
 
-                /* Parent company name */
-                static let name = "MWBM Partners Ltd"
+                /* Parent company name (none — no parent vendor) */
+                static let name: String? = nil
 
-                /* Parent company website URL */
-                static let websiteURL = "https://www.MWBMpartners.Ltd"
+                /* Parent company website URL (none) */
+                static let websiteURL: String? = nil
             }
         }
 
@@ -180,7 +180,7 @@ enum AppInfo {
              * Example: "© 2026 MWBM Partners Ltd. All Rights Reserved"
              */
             static var full: String {
-                "© \(yearDisplay) \(Vendor.Parent.name). \(rightsStatement)"
+                "© \(yearDisplay) \(Vendor.name). \(rightsStatement)"
             }
         }
 
