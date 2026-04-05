@@ -258,11 +258,11 @@ export function renderSongbookGrid(songData, containerEl) {
         headerEl.style.background = _getGradient(index);
 
         /* ---- 4c. Create the large abbreviation badge ---- */
-        const abbreviation = _buildAbbreviation(songbook.name);
-
+        /* Use the songbook's ID directly (e.g., "SDAH", "CH") as the canonical
+           abbreviation from the source data, not a computed abbreviation */
         const badgeEl = createElement('span', {
             className: 'songbook-badge'
-        }, abbreviation);
+        }, songbook.id);
 
         /* Append the badge into the header */
         headerEl.appendChild(badgeEl);
