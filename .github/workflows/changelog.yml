@@ -1,20 +1,23 @@
 # =============================================================================
 # iHymns — Automatic Changelog Generation Workflow
 #
-# Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
-# This software is proprietary. Unauthorized copying, modification, or
-# distribution is strictly prohibited.
+# Copyright © 2026 MWBM Partners Ltd. All rights reserved.
+# This software is proprietary.
 #
 # PURPOSE:
 # Automatically generates changelog entries from commit messages when code
-# is pushed to `main` or `beta`. Entries are prepended to CHANGELOG.md
-# in the format:
+# is pushed to main or beta. Generates BOTH a root CHANGELOG.md AND
+# per-platform changelogs:
 #
-#   ## [version] - YYYY-MM-DD
-#   - commit message 1
-#   - commit message 2
+#   CHANGELOG.md                    — All changes (root)
+#   appWeb/CHANGELOG.md             — Web/PWA changes only
+#   appApple/CHANGELOG.md           — Apple app changes only
+#   appAndroid/CHANGELOG.md         — Android app changes only
 #
-# Optionally uploads the updated changelog to the server via SFTP.
+# Each platform changelog only includes commits that touched files in
+# that platform's directory. The root changelog includes everything.
+#
+# Optionally uploads changelogs to the server via SFTP.
 # =============================================================================
 
 name: Changelog
@@ -41,7 +44,7 @@ permissions:
 
 jobs:
   changelog:
-    name: Generate Changelog
+    name: Generate Changelogs
     runs-on: ubuntu-latest
 
     # Skip if the triggering commit was a CI automation commit
@@ -59,153 +62,145 @@ jobs:
 
       # -----------------------------------------------------------------------
       # Step 2: Read the current application version from infoAppVer.php
-      # This is used as the heading for the changelog entry
       # -----------------------------------------------------------------------
       - name: Read current version
         id: version
         run: |
-          # Determine which version file to read based on branch
-          if [ "${{ github.ref_name }}" = "main" ]; then
+          # Try production file first, then beta
+          VERSION_FILE="appWeb/public_html_beta/includes/infoAppVer.php"
+          if [ "${{ github.ref_name }}" = "main" ] && [ -f "appWeb/public_html/includes/infoAppVer.php" ]; then
             VERSION_FILE="appWeb/public_html/includes/infoAppVer.php"
-            # Fall back to beta if production file doesn't exist yet
-            if [ ! -f "$VERSION_FILE" ]; then
-              VERSION_FILE="appWeb/public_html_beta/includes/infoAppVer.php"
-            fi
-          else
-            VERSION_FILE="appWeb/public_html_beta/includes/infoAppVer.php"
           fi
 
-          VERSION=$(grep -oP "\\\$app\['Version'\]\['Number'\]\s*=\s*'\K[^']+" "$VERSION_FILE" || echo "Unreleased")
+          # Extract version number from the PHP file
+          VERSION=$(grep -oP '\["Version"\]\["Number"\]\s*=\s*"\K[^"]+' "$VERSION_FILE" 2>/dev/null || echo "Unreleased")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Version: $VERSION"
 
       # -----------------------------------------------------------------------
-      # Step 3: Gather commit messages since the last tag
-      # If no tags exist, uses all commits on the branch
-      # Filters out CI automation commits ([skip ci], chore: bump, etc.)
+      # Step 3: Determine commit range (since last tag or all commits)
       # -----------------------------------------------------------------------
-      - name: Gather commit messages
-        id: commits
+      - name: Determine commit range
+        id: range
         run: |
-          # Find the most recent tag on this branch
           LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-
           if [ -n "$LAST_TAG" ]; then
-            echo "Gathering commits since tag: $LAST_TAG"
-            RANGE="${LAST_TAG}..HEAD"
+            echo "range=${LAST_TAG}..HEAD" >> "$GITHUB_OUTPUT"
+            echo "Commits since tag: $LAST_TAG"
           else
-            echo "No previous tags found. Using all commits."
-            RANGE="HEAD"
-          fi
-
-          # Collect commit messages, filtering out automated commits
-          MESSAGES=$(git log "$RANGE" --pretty=format:"- %s" \
-            | grep -v '\[skip ci\]' \
-            | grep -v '^- chore: bump version' \
-            | grep -v '^- chore: sync beta to production' \
-            | grep -v '^- chore: update changelog' \
-            || true)
-
-          if [ -z "$MESSAGES" ]; then
-            echo "No meaningful commits found since last tag."
-            echo "has_changes=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
-            # Write messages to a temp file (multi-line output)
-            echo "$MESSAGES" > /tmp/changelog_messages.txt
-            echo "Commits to include:"
-            echo "$MESSAGES"
+            echo "range=HEAD" >> "$GITHUB_OUTPUT"
+            echo "No previous tags — using all commits"
           fi
 
       # -----------------------------------------------------------------------
-      # Step 4: Generate the changelog entry and prepend to CHANGELOG.md
-      # Creates the file if it doesn't exist
+      # Step 4: Generate per-platform changelogs + root changelog
+      # For each platform, filter commits to only those touching that dir.
       # -----------------------------------------------------------------------
-      - name: Update CHANGELOG.md
-        if: steps.commits.outputs.has_changes == 'true'
+      - name: Generate changelogs
+        id: generate
+        env:
+          CL_VERSION: ${{ steps.version.outputs.version }}
+          CL_RANGE: ${{ steps.range.outputs.range }}
+        shell: bash
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
           DATE=$(date +%Y-%m-%d)
-          CHANGELOG_FILE="CHANGELOG.md"
+          HEADER="## [${CL_VERSION}] — ${DATE}"
+          FILTER_OUT='(\[skip ci\]|^chore: bump version|^chore: sync|^chore: update changelog|^build: auto-sync)'
+          HAS_CHANGES="false"
 
-          # Build the new entry
-          ENTRY="## [${VERSION}] - ${DATE}"
-          ENTRY="${ENTRY}
-          $(cat /tmp/changelog_messages.txt)"
-          ENTRY="${ENTRY}
-          "
-
-          if [ -f "$CHANGELOG_FILE" ]; then
-            # Check if this version already has an entry; if so, replace it
-            if grep -q "## \[${VERSION}\]" "$CHANGELOG_FILE"; then
-              echo "Updating existing entry for version ${VERSION}"
-              # Remove the old entry for this version (up to the next ## heading or EOF)
-              python3 -c "
+          # Write the Python helper script to a temp file (avoids YAML quoting issues)
+          cat > /tmp/cl_clean.py << 'PYEOF'
           import re, sys
-          with open('$CHANGELOG_FILE', 'r') as f:
+          version = sys.argv[1]
+          filepath = sys.argv[2]
+          with open(filepath, 'r') as f:
               content = f.read()
-          # Pattern: from this version heading to the next version heading (or end)
-          pattern = r'## \[${VERSION}\] - \d{4}-\d{2}-\d{2}\n.*?(?=\n## \[|$)'
+          pattern = r'## \[' + re.escape(version) + r'\] — \d{4}-\d{2}-\d{2}\n.*?(?=\n## \[|\Z)'
           cleaned = re.sub(pattern, '', content, flags=re.DOTALL).strip()
           print(cleaned)
-          " > /tmp/changelog_cleaned.txt
+          PYEOF
 
-              # Prepend the new entry
-              echo "$ENTRY" > /tmp/changelog_new.txt
-              echo "" >> /tmp/changelog_new.txt
-              cat /tmp/changelog_cleaned.txt >> /tmp/changelog_new.txt
-              mv /tmp/changelog_new.txt "$CHANGELOG_FILE"
-            else
-              echo "Prepending new entry for version ${VERSION}"
-              # Check if file starts with a top-level heading (# Changelog)
-              if head -1 "$CHANGELOG_FILE" | grep -q '^# '; then
-                # Keep the title, insert entry after it
-                HEAD_LINE=$(head -1 "$CHANGELOG_FILE")
-                TAIL_CONTENT=$(tail -n +2 "$CHANGELOG_FILE")
-                echo "$HEAD_LINE" > "$CHANGELOG_FILE"
-                echo "" >> "$CHANGELOG_FILE"
-                echo "$ENTRY" >> "$CHANGELOG_FILE"
-                echo "$TAIL_CONTENT" >> "$CHANGELOG_FILE"
-              else
-                # No title — just prepend
-                echo "$ENTRY" | cat - "$CHANGELOG_FILE" > /tmp/changelog_merged.txt
-                mv /tmp/changelog_merged.txt "$CHANGELOG_FILE"
+          # Function to generate a changelog for a given set of path filters
+          generate_cl() {
+            local CL_FILE="$1"
+            local CL_NAME="$2"
+            shift 2
+
+            local MSGS=""
+            for pf in "$@"; do
+              local C=$(git log "${CL_RANGE}" --pretty=format:"%s" -- "$pf" 2>/dev/null | grep -vE "$FILTER_OUT" || true)
+              if [ -n "$C" ]; then
+                MSGS="${MSGS}${C}"$'\n'
               fi
+            done
+
+            MSGS=$(echo "$MSGS" | sort -u | sed '/^$/d' | sed 's/^/- /')
+            if [ -z "$MSGS" ]; then
+              echo "  No changes for ${CL_NAME}"
+              return
             fi
-          else
-            # Create a new CHANGELOG.md
-            echo "# Changelog" > "$CHANGELOG_FILE"
-            echo "" >> "$CHANGELOG_FILE"
-            echo "$ENTRY" >> "$CHANGELOG_FILE"
-          fi
 
-          echo "Changelog updated."
-          cat "$CHANGELOG_FILE" | head -30
+            echo "  ${CL_NAME}: $(echo "$MSGS" | wc -l | tr -d ' ') entries"
+            HAS_CHANGES="true"
+
+            local ENTRY="${HEADER}"$'\n'"${MSGS}"$'\n'
+
+            if [ -f "$CL_FILE" ]; then
+              if grep -q "## \[${CL_VERSION}\]" "$CL_FILE"; then
+                python3 /tmp/cl_clean.py "${CL_VERSION}" "${CL_FILE}" > /tmp/cl_cleaned.txt
+                printf '%s\n\n' "$ENTRY" > /tmp/cl_new.txt
+                cat /tmp/cl_cleaned.txt >> /tmp/cl_new.txt
+                mv /tmp/cl_new.txt "$CL_FILE"
+              elif head -1 "$CL_FILE" | grep -q '^# '; then
+                local HL
+                HL=$(head -1 "$CL_FILE")
+                local TL
+                TL=$(tail -n +2 "$CL_FILE")
+                printf '%s\n\n%s\n%s\n' "$HL" "$ENTRY" "$TL" > "$CL_FILE"
+              else
+                printf '%s\n' "$ENTRY" | cat - "$CL_FILE" > /tmp/cl_m.txt
+                mv /tmp/cl_m.txt "$CL_FILE"
+              fi
+            else
+              printf '# %s — Changelog\n\n%s\n' "$CL_NAME" "$ENTRY" > "$CL_FILE"
+            fi
+          }
+
+          echo "Generating changelogs..."
+          generate_cl "CHANGELOG.md" "iHymns" "appWeb/" "appApple/" "appAndroid/" "tools/" "data/" "tests/"
+          generate_cl "appWeb/CHANGELOG.md" "iHymns Web/PWA" "appWeb/"
+          generate_cl "appApple/CHANGELOG.md" "iHymns Apple" "appApple/"
+          generate_cl "appAndroid/CHANGELOG.md" "iHymns Android" "appAndroid/"
+
+          echo "has_changes=${HAS_CHANGES}" >> "$GITHUB_OUTPUT"
+          echo "Done."
 
       # -----------------------------------------------------------------------
-      # Step 5: Commit the changelog update
+      # Step 5: Commit all changelog updates
       # -----------------------------------------------------------------------
-      - name: Commit changelog
-        if: steps.commits.outputs.has_changes == 'true'
+      - name: Commit changelogs
+        if: steps.generate.outputs.has_changes == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add CHANGELOG.md
+          # Stage all changelog files
+          git add CHANGELOG.md appWeb/CHANGELOG.md appApple/CHANGELOG.md appAndroid/CHANGELOG.md 2>/dev/null || true
+
           if git diff --cached --quiet; then
             echo "No changelog changes to commit."
           else
-            git commit -m "chore: update changelog for ${{ steps.version.outputs.version }} [skip ci]"
+            git commit -m "chore: update changelogs for ${{ steps.version.outputs.version }} [skip ci]"
             git push
           fi
 
       # -----------------------------------------------------------------------
-      # Step 6: (Optional) Upload changelog to the server via SFTP
+      # Step 6: (Optional) Upload web changelog to server via SFTP
       # Only runs if SFTP_ENABLED is 'true'
       # -----------------------------------------------------------------------
       - name: Upload changelog via SFTP
         if: >-
-          steps.commits.outputs.has_changes == 'true'
+          steps.generate.outputs.has_changes == 'true'
           && vars.SFTP_ENABLED == 'true'
         env:
           SFTP_HOST: ${{ secrets.SFTP_HOST }}
@@ -215,7 +210,7 @@ jobs:
           SFTP_BETA_PATH: ${{ secrets.SFTP_BETA_PATH }}
           SFTP_LIVE_PATH: ${{ secrets.SFTP_LIVE_PATH }}
         run: |
-          sudo apt-get update && sudo apt-get install -y lftp
+          sudo apt-get update -qq && sudo apt-get install -y -qq lftp
 
           # Determine target path based on branch
           if [ "${{ github.ref_name }}" = "main" ]; then
@@ -225,7 +220,6 @@ jobs:
           fi
 
           # Build lftp authentication
-          LFTP_AUTH=""
           if [ -n "$SFTP_KEY" ]; then
             mkdir -p ~/.ssh && chmod 700 ~/.ssh
             echo "$SFTP_KEY" > ~/.ssh/deploy_key
@@ -238,15 +232,14 @@ jobs:
             exit 0
           fi
 
-          echo "Uploading CHANGELOG.md to $TARGET_PATH"
-
+          # Upload the web changelog
           lftp -c "
             $LFTP_AUTH
             set ssl:verify-certificate no;
             open sftp://$SFTP_USER@$SFTP_HOST;
-            put -O $TARGET_PATH CHANGELOG.md;
+            put -O $TARGET_PATH appWeb/CHANGELOG.md;
             quit;
           "
 
-          echo "Changelog uploaded."
+          echo "Web changelog uploaded to $TARGET_PATH"
           rm -f ~/.ssh/deploy_key
