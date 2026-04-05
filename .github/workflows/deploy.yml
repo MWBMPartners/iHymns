@@ -1,0 +1,442 @@
+# =============================================================================
+# iHymns — SFTP Deployment Workflow
+#
+# Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+# This software is proprietary. Unauthorized copying, modification, or
+# distribution is strictly prohibited.
+#
+# PURPOSE:
+# Deploys the iHymns web application via SFTP.
+#   - Push to `beta`  -> minify assets, deploy appWeb/public_html_beta/ to beta server
+#   - Push to `main`  -> sync beta into production, deploy appWeb/public_html/ to live server
+#
+# SECRETS REQUIRED:
+#   SFTP_HOST, SFTP_USER, SFTP_KEY (SSH private key), SFTP_PASSWORD (fallback),
+#   SFTP_BETA_PATH, SFTP_LIVE_PATH
+#
+# VARIABLES REQUIRED:
+#   SFTP_ENABLED — set to 'true' to allow deployments (kill switch)
+# =============================================================================
+
+name: Deploy via SFTP
+
+on:
+  # Deploy beta when pushing to the beta branch
+  push:
+    branches:
+      - beta
+      - main
+
+  # Allow manual deployments from the Actions tab
+  workflow_dispatch:
+
+# Cancel any in-progress deployment on the same branch
+concurrency:
+  group: deploy-${{ github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  # ===========================================================================
+  # JOB: Deploy Beta
+  # Triggered on push to `beta` branch
+  # ===========================================================================
+  deploy-beta:
+    name: Deploy to Beta
+    runs-on: ubuntu-latest
+    if: github.ref_name == 'beta'
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1: Kill switch — abort if SFTP_ENABLED is not 'true'
+      # -----------------------------------------------------------------------
+      - name: Check kill switch
+        if: vars.SFTP_ENABLED != 'true'
+        run: |
+          echo "::warning::SFTP_ENABLED is not 'true'. Deployment skipped."
+          exit 0
+
+      # -----------------------------------------------------------------------
+      # Step 2: Checkout repository
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        if: vars.SFTP_ENABLED == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 5
+
+      # -----------------------------------------------------------------------
+      # Step 3: Check for changes in the beta web directory (last 5 commits)
+      # Skip deployment if nothing changed unless [deploy all] is in the message
+      # -----------------------------------------------------------------------
+      - name: Check for relevant changes
+        if: vars.SFTP_ENABLED == 'true'
+        id: changes
+        run: |
+          COMMIT_MSG="${{ github.event.head_commit.message }}"
+
+          # Force deploy if commit message contains [deploy all]
+          if echo "$COMMIT_MSG" | grep -qi '\[deploy all\]'; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            echo "Force deploy triggered by [deploy all] in commit message."
+            exit 0
+          fi
+
+          # Check if any files in the beta web directory changed in the last 5 commits
+          CHANGED=$(git diff --name-only HEAD~5..HEAD -- appWeb/public_html_beta/ 2>/dev/null || true)
+          if [ -n "$CHANGED" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            echo "Changes detected in appWeb/public_html_beta/:"
+            echo "$CHANGED"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "No changes detected in appWeb/public_html_beta/. Skipping deployment."
+          fi
+
+      # -----------------------------------------------------------------------
+      # Step 4: Setup Node.js for minification tools
+      # -----------------------------------------------------------------------
+      - name: Setup Node.js
+        if: vars.SFTP_ENABLED == 'true' && steps.changes.outputs.deploy == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # -----------------------------------------------------------------------
+      # Step 5: Install minification tools globally
+      # - terser: JavaScript minifier
+      # - clean-css-cli: CSS minifier
+      # - html-minifier-terser: HTML minifier
+      # -----------------------------------------------------------------------
+      - name: Install minification tools
+        if: vars.SFTP_ENABLED == 'true' && steps.changes.outputs.deploy == 'true'
+        run: npm install -g terser clean-css-cli html-minifier-terser
+
+      # -----------------------------------------------------------------------
+      # Step 6: Minify JS, CSS, and HTML files in the beta web directory
+      # Only minifies files that are not already minified (.min.js, .min.css)
+      # -----------------------------------------------------------------------
+      - name: Minify assets
+        if: vars.SFTP_ENABLED == 'true' && steps.changes.outputs.deploy == 'true'
+        run: |
+          BETA_DIR="appWeb/public_html_beta"
+
+          echo "--- Minifying JavaScript files ---"
+          find "$BETA_DIR" -name '*.js' ! -name '*.min.js' -type f | while read -r file; do
+            echo "  Minifying: $file"
+            terser "$file" --compress --mangle --output "$file" || echo "  Warning: failed to minify $file"
+          done
+
+          echo "--- Minifying CSS files ---"
+          find "$BETA_DIR" -name '*.css' ! -name '*.min.css' -type f | while read -r file; do
+            echo "  Minifying: $file"
+            cleancss -o "$file" "$file" || echo "  Warning: failed to minify $file"
+          done
+
+          echo "--- Minifying HTML files ---"
+          find "$BETA_DIR" -name '*.html' -type f | while read -r file; do
+            echo "  Minifying: $file"
+            html-minifier-terser \
+              --collapse-whitespace \
+              --remove-comments \
+              --minify-css true \
+              --minify-js true \
+              --output "$file" \
+              "$file" || echo "  Warning: failed to minify $file"
+          done
+
+          echo "Minification complete."
+
+      # -----------------------------------------------------------------------
+      # Step 7: Inject build metadata into includes/infoAppVer.php
+      # Replaces NULL placeholders with actual commit SHA, date, and URL
+      # -----------------------------------------------------------------------
+      - name: Inject build metadata
+        if: vars.SFTP_ENABLED == 'true' && steps.changes.outputs.deploy == 'true'
+        run: |
+          VERSION_FILE="appWeb/public_html_beta/includes/infoAppVer.php"
+          COMMIT_SHA="${{ github.sha }}"
+          COMMIT_SHORT="${COMMIT_SHA:0:7}"
+          COMMIT_DATE=$(git log -1 --format=%cI)
+          COMMIT_URL="${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
+
+          echo "Injecting build metadata into $VERSION_FILE"
+          echo "  SHA:   $COMMIT_SHA"
+          echo "  Short: $COMMIT_SHORT"
+          echo "  Date:  $COMMIT_DATE"
+          echo "  URL:   $COMMIT_URL"
+
+          # Replace NULL values with actual build metadata
+          sed -i "s|\(\$app\['Development'\]\['CommitSHA'\]\s*=\s*\)NULL;|\1'${COMMIT_SHA}';|" "$VERSION_FILE"
+          sed -i "s|\(\$app\['Development'\]\['CommitShort'\]\s*=\s*\)NULL;|\1'${COMMIT_SHORT}';|" "$VERSION_FILE"
+          sed -i "s|\(\$app\['Development'\]\['CommitDate'\]\s*=\s*\)NULL;|\1'${COMMIT_DATE}';|" "$VERSION_FILE"
+          sed -i "s|\(\$app\['Development'\]\['CommitURL'\]\s*=\s*\)NULL;|\1'${COMMIT_URL}';|" "$VERSION_FILE"
+
+      # -----------------------------------------------------------------------
+      # Step 8: Install lftp for SFTP deployment
+      # -----------------------------------------------------------------------
+      - name: Install lftp
+        if: vars.SFTP_ENABLED == 'true' && steps.changes.outputs.deploy == 'true'
+        run: sudo apt-get update && sudo apt-get install -y lftp
+
+      # -----------------------------------------------------------------------
+      # Step 9: Deploy to beta server via SFTP
+      # Uses SSH key authentication with password fallback
+      # Excludes non-deployable files (.DS_Store, .gitkeep, etc.)
+      # -----------------------------------------------------------------------
+      - name: Deploy to beta via SFTP
+        if: vars.SFTP_ENABLED == 'true' && steps.changes.outputs.deploy == 'true'
+        env:
+          SFTP_HOST: ${{ secrets.SFTP_HOST }}
+          SFTP_USER: ${{ secrets.SFTP_USER }}
+          SFTP_KEY: ${{ secrets.SFTP_KEY }}
+          SFTP_PASSWORD: ${{ secrets.SFTP_PASSWORD }}
+          SFTP_BETA_PATH: ${{ secrets.SFTP_BETA_PATH }}
+        run: |
+          # Build lftp authentication — prefer SSH key, fall back to password
+          LFTP_AUTH=""
+          if [ -n "$SFTP_KEY" ]; then
+            echo "Using SSH key authentication."
+            mkdir -p ~/.ssh && chmod 700 ~/.ssh
+            echo "$SFTP_KEY" > ~/.ssh/deploy_key
+            chmod 600 ~/.ssh/deploy_key
+            LFTP_AUTH="set sftp:connect-program 'ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key';"
+          elif [ -n "$SFTP_PASSWORD" ]; then
+            echo "Using password authentication (SSH key not available)."
+            LFTP_AUTH="set ftp:password '$SFTP_PASSWORD';"
+          else
+            echo "::error::No SFTP credentials configured. Set SFTP_KEY or SFTP_PASSWORD."
+            exit 1
+          fi
+
+          # Define files/patterns to exclude from upload
+          EXCLUDES=(
+            ".DS_Store"
+            ".gitkeep"
+            ".gitignore"
+            "README.md"
+            "CHANGELOG.md"
+            "DEV_NOTES.md"
+          )
+
+          # Build the exclude flags for lftp mirror
+          EXCLUDE_FLAGS=""
+          for pattern in "${EXCLUDES[@]}"; do
+            EXCLUDE_FLAGS="$EXCLUDE_FLAGS --exclude $pattern"
+          done
+
+          echo "Deploying appWeb/public_html_beta/ to $SFTP_BETA_PATH"
+
+          lftp -c "
+            $LFTP_AUTH
+            set ssl:verify-certificate no;
+            set net:max-retries 3;
+            set net:timeout 30;
+            open sftp://$SFTP_USER@$SFTP_HOST;
+            mirror --reverse --delete --verbose \
+              $EXCLUDE_FLAGS \
+              appWeb/public_html_beta/ $SFTP_BETA_PATH;
+            quit;
+          "
+
+          echo "Beta deployment complete."
+
+          # Clean up SSH key
+          rm -f ~/.ssh/deploy_key
+
+  # ===========================================================================
+  # JOB: Deploy Production
+  # Triggered on push to `main` branch
+  # Syncs beta -> production, then deploys production via SFTP
+  # ===========================================================================
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    if: github.ref_name == 'main'
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1: Kill switch — abort if SFTP_ENABLED is not 'true'
+      # -----------------------------------------------------------------------
+      - name: Check kill switch
+        if: vars.SFTP_ENABLED != 'true'
+        run: |
+          echo "::warning::SFTP_ENABLED is not 'true'. Deployment skipped."
+          exit 0
+
+      # -----------------------------------------------------------------------
+      # Step 2: Checkout repository with full history for sync commit
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        if: vars.SFTP_ENABLED == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # -----------------------------------------------------------------------
+      # Step 3: Check for relevant changes
+      # -----------------------------------------------------------------------
+      - name: Check for relevant changes
+        if: vars.SFTP_ENABLED == 'true'
+        id: changes
+        run: |
+          COMMIT_MSG="${{ github.event.head_commit.message }}"
+
+          if echo "$COMMIT_MSG" | grep -qi '\[deploy all\]'; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            echo "Force deploy triggered by [deploy all] in commit message."
+            exit 0
+          fi
+
+          CHANGED=$(git diff --name-only HEAD~5..HEAD -- appWeb/public_html_beta/ appWeb/public_html/ 2>/dev/null || true)
+          if [ -n "$CHANGED" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            echo "Changes detected:"
+            echo "$CHANGED"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "No changes detected. Skipping deployment."
+          fi
+
+      # -----------------------------------------------------------------------
+      # Step 4: Sync beta -> production (rsync within the repo)
+      # Skipped if commit message contains [skip sync]
+      # Excludes environment-specific files from the sync
+      # -----------------------------------------------------------------------
+      - name: Sync beta to production
+        if: >-
+          vars.SFTP_ENABLED == 'true'
+          && steps.changes.outputs.deploy == 'true'
+          && !contains(github.event.head_commit.message, '[skip sync]')
+        run: |
+          echo "Syncing appWeb/public_html_beta/ -> appWeb/public_html/"
+
+          rsync -av --delete \
+            --exclude='.DS_Store' \
+            --exclude='.gitkeep' \
+            --exclude='.gitignore' \
+            --exclude='README.md' \
+            --exclude='CHANGELOG.md' \
+            --exclude='DEV_NOTES.md' \
+            appWeb/public_html_beta/ appWeb/public_html/
+
+          echo "Sync complete."
+
+      # -----------------------------------------------------------------------
+      # Step 5: Inject build metadata for production
+      # Also clears Development.Status to NULL for production builds
+      # -----------------------------------------------------------------------
+      - name: Inject build metadata (production)
+        if: vars.SFTP_ENABLED == 'true' && steps.changes.outputs.deploy == 'true'
+        run: |
+          VERSION_FILE="appWeb/public_html/includes/infoAppVer.php"
+          COMMIT_SHA="${{ github.sha }}"
+          COMMIT_SHORT="${COMMIT_SHA:0:7}"
+          COMMIT_DATE=$(git log -1 --format=%cI)
+          COMMIT_URL="${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
+
+          echo "Injecting production build metadata into $VERSION_FILE"
+
+          # Replace NULL values with actual build metadata
+          sed -i "s|\(\$app\['Development'\]\['CommitSHA'\]\s*=\s*\)NULL;|\1'${COMMIT_SHA}';|" "$VERSION_FILE"
+          sed -i "s|\(\$app\['Development'\]\['CommitShort'\]\s*=\s*\)NULL;|\1'${COMMIT_SHORT}';|" "$VERSION_FILE"
+          sed -i "s|\(\$app\['Development'\]\['CommitDate'\]\s*=\s*\)NULL;|\1'${COMMIT_DATE}';|" "$VERSION_FILE"
+          sed -i "s|\(\$app\['Development'\]\['CommitURL'\]\s*=\s*\)NULL;|\1'${COMMIT_URL}';|" "$VERSION_FILE"
+
+          # Clear Development.Status to NULL for production
+          sed -i "s|\(\$app\['Development'\]\['Status'\]\s*=\s*\)'[^']*';|\1NULL;|" "$VERSION_FILE"
+
+          echo "Production metadata injected. Development.Status set to NULL."
+
+      # -----------------------------------------------------------------------
+      # Step 6: Commit the sync (production directory changes)
+      # -----------------------------------------------------------------------
+      - name: Commit production sync
+        if: >-
+          vars.SFTP_ENABLED == 'true'
+          && steps.changes.outputs.deploy == 'true'
+          && !contains(github.event.head_commit.message, '[skip sync]')
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add appWeb/public_html/
+          if git diff --cached --quiet; then
+            echo "No changes to commit after sync."
+          else
+            git commit -m "chore: sync beta to production [skip ci]"
+            git push
+          fi
+
+      # -----------------------------------------------------------------------
+      # Step 7: Install lftp for SFTP deployment
+      # -----------------------------------------------------------------------
+      - name: Install lftp
+        if: vars.SFTP_ENABLED == 'true' && steps.changes.outputs.deploy == 'true'
+        run: sudo apt-get update && sudo apt-get install -y lftp
+
+      # -----------------------------------------------------------------------
+      # Step 8: Deploy production to live server via SFTP
+      # Uses SSH key authentication with password fallback
+      # -----------------------------------------------------------------------
+      - name: Deploy to production via SFTP
+        if: vars.SFTP_ENABLED == 'true' && steps.changes.outputs.deploy == 'true'
+        env:
+          SFTP_HOST: ${{ secrets.SFTP_HOST }}
+          SFTP_USER: ${{ secrets.SFTP_USER }}
+          SFTP_KEY: ${{ secrets.SFTP_KEY }}
+          SFTP_PASSWORD: ${{ secrets.SFTP_PASSWORD }}
+          SFTP_LIVE_PATH: ${{ secrets.SFTP_LIVE_PATH }}
+        run: |
+          # Build lftp authentication — prefer SSH key, fall back to password
+          LFTP_AUTH=""
+          if [ -n "$SFTP_KEY" ]; then
+            echo "Using SSH key authentication."
+            mkdir -p ~/.ssh && chmod 700 ~/.ssh
+            echo "$SFTP_KEY" > ~/.ssh/deploy_key
+            chmod 600 ~/.ssh/deploy_key
+            LFTP_AUTH="set sftp:connect-program 'ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key';"
+          elif [ -n "$SFTP_PASSWORD" ]; then
+            echo "Using password authentication (SSH key not available)."
+            LFTP_AUTH="set ftp:password '$SFTP_PASSWORD';"
+          else
+            echo "::error::No SFTP credentials configured. Set SFTP_KEY or SFTP_PASSWORD."
+            exit 1
+          fi
+
+          # Define files/patterns to exclude from upload
+          EXCLUDES=(
+            ".DS_Store"
+            ".gitkeep"
+            ".gitignore"
+            "README.md"
+            "CHANGELOG.md"
+            "DEV_NOTES.md"
+          )
+
+          EXCLUDE_FLAGS=""
+          for pattern in "${EXCLUDES[@]}"; do
+            EXCLUDE_FLAGS="$EXCLUDE_FLAGS --exclude $pattern"
+          done
+
+          echo "Deploying appWeb/public_html/ to $SFTP_LIVE_PATH"
+
+          lftp -c "
+            $LFTP_AUTH
+            set ssl:verify-certificate no;
+            set net:max-retries 3;
+            set net:timeout 30;
+            open sftp://$SFTP_USER@$SFTP_HOST;
+            mirror --reverse --delete --verbose \
+              $EXCLUDE_FLAGS \
+              appWeb/public_html/ $SFTP_LIVE_PATH;
+            quit;
+          "
+
+          echo "Production deployment complete."
+
+          # Clean up SSH key
+          rm -f ~/.ssh/deploy_key
