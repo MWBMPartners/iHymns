@@ -5,7 +5,7 @@ declare(strict_types=1);
 /**
  * iHymns — Song Data Handler
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Provides server-side access to the song database (songs.json).

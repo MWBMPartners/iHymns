@@ -1,7 +1,7 @@
 /**
  * iHymns — Recently Viewed History Module (#92)
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Tracks recently viewed songs in localStorage and displays them
@@ -83,6 +83,7 @@ export class History {
      */
     saveAll(history) {
         localStorage.setItem(this.storageKey, JSON.stringify(history));
+        this.app.syncStorage(this.storageKey);
     }
 
     /** Clear all history */

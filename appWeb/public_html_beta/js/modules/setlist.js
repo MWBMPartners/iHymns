@@ -1,7 +1,7 @@
 /**
  * iHymns — Set List / Playlist Module (#94)
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Allows users to create ordered set lists (playlists) of songs for
@@ -56,6 +56,7 @@ export class SetList {
      */
     saveAll(lists) {
         localStorage.setItem(this.storageKey, JSON.stringify(lists));
+        this.app.syncStorage(this.storageKey);
     }
 
     /**

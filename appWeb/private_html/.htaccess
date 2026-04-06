@@ -1,7 +1,7 @@
 # ============================================================================
 # iHymns — Private HTML Access Restriction (.htaccess)
 #
-# Copyright © 2026 MWBM Partners Ltd. All rights reserved.
+# Copyright © 2026 iHymns. All rights reserved.
 #
 # PURPOSE:
 # Restricts access to the private_html/ directory (song editor, admin tools).

@@ -1,7 +1,7 @@
 /**
  * iHymns — Song of the Day Module (#108)
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Displays a featured "Song of the Day" card on the home page.

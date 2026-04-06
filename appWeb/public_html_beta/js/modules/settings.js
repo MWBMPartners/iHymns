@@ -1,7 +1,7 @@
 /**
  * iHymns — Settings Module
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Manages user preferences: theme (light/dark/high-contrast/system),
@@ -81,7 +81,10 @@ export class Settings {
      * @param {*} value Setting value
      */
     set(key, value) {
-        localStorage.setItem(this.storagePrefix + key, String(value));
+        const fullKey = this.storagePrefix + key;
+        localStorage.setItem(fullKey, String(value));
+        /* Sync to cross-domain bridge if connected (#133) */
+        this.app.storageBridge?.set(fullKey, String(value));
     }
 
     /**
@@ -197,6 +200,7 @@ export class Settings {
             transitionSelect.value = localStorage.getItem('ihymns_transition') || 'none';
             transitionSelect.addEventListener('change', () => {
                 localStorage.setItem('ihymns_transition', transitionSelect.value);
+                this.app.syncStorage('ihymns_transition');
             });
         }
 
@@ -236,6 +240,7 @@ export class Settings {
                 } else {
                     localStorage.removeItem('ihymns_default_songbook');
                 }
+                this.app.syncStorage('ihymns_default_songbook');
             });
         }
 
@@ -288,6 +293,7 @@ export class Settings {
             autoUpdateToggle.addEventListener('change', () => {
                 const enabled = autoUpdateToggle.checked;
                 localStorage.setItem('ihymns_auto_update_songs', String(enabled));
+                this.app.syncStorage('ihymns_auto_update_songs');
                 /* Inform the service worker of the new preference */
                 if (navigator.serviceWorker?.controller) {
                     navigator.serviceWorker.controller.postMessage({
@@ -419,6 +425,11 @@ export class Settings {
                     localStorage.setItem('ihymns_history', JSON.stringify(merged.slice(0, 20)));
                 }
             }
+
+            /* Sync imported data to cross-domain bridge (#133) */
+            this.app.syncStorage('ihymns_favorites');
+            this.app.syncStorage('ihymns_setlists');
+            this.app.syncStorage('ihymns_history');
 
             this.app.showToast(`Data imported (${mode})`, 'success', 2000);
         } catch (error) {

@@ -1,7 +1,7 @@
 /**
  * iHymns — Main Application Entry Point (ES Module)
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Bootstraps the iHymns single-page application. Initialises all
@@ -39,6 +39,7 @@ import { SongbookIndex } from './modules/songbook-index.js';
 import { SearchHistory } from './modules/search-history.js';
 import { SongOfTheDay } from './modules/song-of-the-day.js';
 import { OfflineIndicator } from './modules/offline-indicator.js';
+import { StorageBridge } from './modules/storage-bridge.js';
 
 /**
  * iHymnsApp — Main application class
@@ -118,6 +119,9 @@ class iHymnsApp {
 
         /** @type {OfflineIndicator} Offline status indicator (#112) */
         this.offlineIndicator = null;
+
+        /** @type {StorageBridge} Cross-domain storage bridge (#133) */
+        this.storageBridge = null;
     }
 
     /**
@@ -131,6 +135,33 @@ class iHymnsApp {
             /* Settings must be first — it sets theme, motion prefs, etc. */
             this.settings = new Settings(this);
             this.settings.init();
+
+            /* Cross-domain storage bridge (#133) — initialise in background.
+             * Modules use localStorage directly (synchronous). The bridge
+             * syncs data across domains asynchronously without blocking. */
+            if (this.config.storageBridgeUrl) {
+                this.storageBridge = new StorageBridge(this.config.storageBridgeUrl);
+                this.storageBridge.init().then((connected) => {
+                    if (connected) {
+                        /* Pull any settings from other domains and re-apply */
+                        this.storageBridge.getAll().then((data) => {
+                            let needsRefresh = false;
+                            for (const [key, value] of Object.entries(data)) {
+                                if (localStorage.getItem(key) !== value) {
+                                    localStorage.setItem(key, value);
+                                    needsRefresh = true;
+                                }
+                            }
+                            if (needsRefresh) {
+                                /* Re-apply settings that may have been updated */
+                                this.settings.applyTheme(this.settings.get('theme'));
+                                this.settings.applyReduceMotion(this.settings.get('reduceMotion'));
+                                this.settings.applyFontSize(this.settings.get('fontSize'));
+                            }
+                        });
+                    }
+                });
+            }
 
             /* Page transitions */
             this.transitions = new Transitions(this);
@@ -825,6 +856,20 @@ class iHymnsApp {
         const div = document.createElement('div');
         div.textContent = str || '';
         return div.innerHTML;
+    }
+
+    /**
+     * Sync a localStorage key to the cross-domain storage bridge (#133).
+     * Call this after any direct localStorage.setItem() for ihymns_ keys.
+     * Non-blocking — failures are silent.
+     *
+     * @param {string} key Full localStorage key (e.g. 'ihymns_favorites')
+     */
+    syncStorage(key) {
+        const value = localStorage.getItem(key);
+        if (value !== null && this.storageBridge) {
+            this.storageBridge.set(key, value);
+        }
     }
 
     /**

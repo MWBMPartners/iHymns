@@ -1,7 +1,7 @@
 /**
  * iHymns — Favourites Module
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Manages the user's favourite songs. Stores IDs and metadata in
@@ -36,6 +36,7 @@ export class Favorites {
      */
     saveAll(favorites) {
         localStorage.setItem(this.storageKey, JSON.stringify(favorites));
+        this.app.syncStorage(this.storageKey);
     }
 
     /**

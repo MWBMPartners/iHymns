@@ -1,7 +1,7 @@
 /**
  * iHymns — Search History Module (#110)
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Stores recent search queries in localStorage and displays them as
@@ -59,6 +59,7 @@ export class SearchHistory {
         }
 
         localStorage.setItem(this.storageKey, JSON.stringify(history));
+        this.app.syncStorage(this.storageKey);
     }
 
     /**
@@ -76,6 +77,7 @@ export class SearchHistory {
         let history = this.getHistory();
         history = history.filter(q => q !== query);
         localStorage.setItem(this.storageKey, JSON.stringify(history));
+        this.app.syncStorage(this.storageKey);
     }
 
     /**

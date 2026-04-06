@@ -1,7 +1,7 @@
 /**
  * iHymns — SPA Router Module
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Manages client-side routing using the History API (pushState).

@@ -72,4 +72,4 @@ iHymns does not collect any personal data. Favorites and preferences are stored 
 
 ---
 
-Copyright &copy; 2026 MWBM Partners Ltd. All rights reserved.
+Copyright &copy; 2026 iHymns. All rights reserved.

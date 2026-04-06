@@ -5,7 +5,7 @@ declare(strict_types=1);
 /**
  * iHymns — Application Configuration
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Centralised configuration constants and settings for the iHymns

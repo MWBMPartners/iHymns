@@ -1,7 +1,7 @@
 /**
  * iHymns — Share Module
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Provides song sharing functionality. Generates clean permalinks

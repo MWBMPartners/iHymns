@@ -1,7 +1,7 @@
 /**
  * iHymns — Page Transitions Module (#106)
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Manages smooth page-to-page transitions for an app-like feel.

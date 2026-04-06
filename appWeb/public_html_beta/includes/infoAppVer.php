@@ -5,7 +5,7 @@ declare(strict_types=1);
 /**
  * iHymns — Application Version & Information
  *
- * Copyright © 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright © 2026 iHymns. All rights reserved.
  * This software is proprietary. Unauthorized copying, modification, or
  * distribution is strictly prohibited.
  *
@@ -21,7 +21,7 @@ declare(strict_types=1);
  *
  * STRUCTURE:
  * Follows the same $app["Application"][...] array convention used
- * across all MWBM Partners Ltd applications (e.g., DomainCheckr/phpWhoIs).
+ * across all iHymns applications.
  *
  * USAGE:
  *   require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
@@ -124,10 +124,10 @@ $app["Application"]["Version"]["Repo"]["Commit"]["URL"] = NULL;
  * ========================================================================= */
 
 /* Primary vendor/developer name */
-$app["Application"]["Vendor"]["Name"] = "MWBM Partners Ltd";
+$app["Application"]["Vendor"]["Name"] = "iHymns";
 
 /* Primary vendor website URL */
-$app["Application"]["Vendor"]["Website"]["URL"] = "https://www.MWBMpartners.Ltd";
+$app["Application"]["Vendor"]["Website"]["URL"] = "https://ihymns.app";
 
 /* Parent company name */
 $app["Application"]["Vendor"]["Parent"]["Name"] = NULL;
@@ -162,7 +162,7 @@ if ($currentYear > $app["Application"]["Copyright"]["Year"]["Start"]) {
 /* Rights statement */
 $app["Application"]["Copyright"]["RightsStatement"] = "All Rights Reserved";
 
-/* Full copyright string for display: "© 2026 MWBM Partners Ltd. All Rights Reserved" */
+/* Full copyright string for display: "© 2026 iHymns. All Rights Reserved" */
 if (isset($app["Application"]["Copyright"]["UseVendor"]) && $app["Application"]["Copyright"]["UseVendor"]) {
     $app["Application"]["Copyright"]["Full"] = "&copy; " . $app["Application"]["Copyright"]["Year"]["Display"] . " " . $app["Application"]["Vendor"]["Name"] . ". " . $app["Application"]["Copyright"]["RightsStatement"];
 }

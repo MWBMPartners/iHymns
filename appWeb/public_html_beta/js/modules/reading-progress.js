@@ -1,7 +1,7 @@
 /**
  * iHymns — Reading Progress Indicator Module (#109)
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Displays a thin, scroll-linked progress bar at the top of song pages

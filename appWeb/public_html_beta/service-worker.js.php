@@ -18,7 +18,7 @@ $swVersion = $app['Application']['Version']['Number'] ?? '0.0.0';
 /**
  * iHymns — Service Worker
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Provides offline support and caching for the iHymns PWA.
@@ -87,6 +87,7 @@ const PRECACHE_ASSETS = [
     '/js/modules/search-history.js',
     '/js/modules/song-of-the-day.js',
     '/js/modules/offline-indicator.js',
+    '/js/modules/storage-bridge.js',
     '/manifest.json',
     '/assets/favicon.svg',
 ];

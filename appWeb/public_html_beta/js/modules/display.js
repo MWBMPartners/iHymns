@@ -1,7 +1,7 @@
 /**
  * iHymns — Display Preferences & Presentation Mode Module (#95)
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Provides per-song display controls: font size adjustment, line
@@ -62,6 +62,7 @@ export class Display {
             const stored = JSON.parse(localStorage.getItem(this.storageKey)) || {};
             stored[key] = value;
             localStorage.setItem(this.storageKey, JSON.stringify(stored));
+            this.app.syncStorage(this.storageKey);
         } catch {
             /* Ignore storage errors */
         }

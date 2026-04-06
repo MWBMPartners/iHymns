@@ -12,15 +12,15 @@ declare(strict_types=1);
  * developer use behind the private_html/ directory — no authentication is
  * included because access is restricted at the server/directory level.
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  * This software is proprietary and confidential. Unauthorized copying,
  * distribution, or modification of this file, via any medium, is strictly
  * prohibited.
  *
  * @package    iHymns
  * @subpackage SongEditor
- * @author     MWBM Partners Ltd
- * @copyright  2026 MWBM Partners Ltd
+ * @author     iHymns
+ * @copyright  2026 iHymns
  * @license    Proprietary — All rights reserved
  * @requires   PHP 8.5+
  * ============================================================================

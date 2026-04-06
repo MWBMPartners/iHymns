@@ -5,7 +5,7 @@ declare(strict_types=1);
 /**
  * iHymns — Main Application Entry Point
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * This is the single-page application (SPA) shell for iHymns.
@@ -780,6 +780,7 @@ try {
             locale:         <?= json_encode($locale) ?>,
             initialPath:    <?= json_encode($requestPath) ?>,
             songbooks:      <?= json_encode($songData->getSongbooks()) ?>,
+            storageBridgeUrl: 'https://sync.ihymns.app/bridge.html',
         };
     </script>
 

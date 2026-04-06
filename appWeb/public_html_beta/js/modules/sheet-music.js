@@ -1,7 +1,7 @@
 /**
  * iHymns — Sheet Music Viewer Module (#91)
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Provides an inline PDF viewer for song sheet music using PDF.js.

@@ -5,7 +5,7 @@ declare(strict_types=1);
 /**
  * iHymns — AJAX API Endpoint
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Handles all AJAX requests from the iHymns SPA frontend.

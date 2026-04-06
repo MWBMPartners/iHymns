@@ -1,7 +1,7 @@
 /**
  * iHymns — Transpose / Capo Indicator Module (#101)
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Displays capo information and provides transpose controls on song pages.

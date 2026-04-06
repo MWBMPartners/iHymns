@@ -1,7 +1,7 @@
 /**
  * iHymns — Keyboard Shortcuts Help Overlay (#104)
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Shows a categorised keyboard shortcuts reference overlay when
