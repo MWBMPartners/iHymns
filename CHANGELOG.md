@@ -23,6 +23,7 @@
 - feat: unit tests + fix songbook abbreviation badges
 - fix: comprehensive code review + security hardening
 - fix: deploy sync detection + softer songbook card colours
+- fix: include data/songs.json inside each SFTP upload directory
 - fix: set Vendor Parent to NULL — MWBM Partners Ltd is the top-level vendor
 - fix: song editor loads songs.json from canonical data/ location
 - initial folder structure
@@ -30,6 +31,7 @@
 - refactor: single canonical songs.json — copy during build/deploy
 - refactor: update PHP code for PHP 8.5 compatibility
 - refactor: use unique platform-specific Application IDs
+
 
 ## [Unreleased] - 2026-04-05
 - fix: default SFTP port to 22 if secret is empty or non-numeric

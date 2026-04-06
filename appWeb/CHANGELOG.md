@@ -1,5 +1,3 @@
-# iHymns Web/PWA — Changelog
-
 ## [1.0.0] — 2026-04-06
 - app refresh upload (early dev 1)
 - feat: Song Editor — edit metadata (title, number, songbook, CCLI)
@@ -19,6 +17,7 @@
 - feat: unit tests + fix songbook abbreviation badges
 - fix: comprehensive code review + security hardening
 - fix: deploy sync detection + softer songbook card colours
+- fix: include data/songs.json inside each SFTP upload directory
 - fix: set Vendor Parent to NULL — MWBM Partners Ltd is the top-level vendor
 - fix: song editor loads songs.json from canonical data/ location
 - initial folder structure
@@ -27,3 +26,5 @@
 - refactor: update PHP code for PHP 8.5 compatibility
 - refactor: use unique platform-specific Application IDs
 
+
+# iHymns Web/PWA — Changelog
