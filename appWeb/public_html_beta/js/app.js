@@ -198,6 +198,34 @@ class iHymnsApp {
                 e.preventDefault();
                 this.handleAction(action.dataset.action, action);
             }
+
+            /*
+             * Audio button — currently not implemented (#80).
+             * Shows a "coming soon" toast until the audio module is built.
+             */
+            const audioBtn = e.target.closest('.btn-audio');
+            if (audioBtn) {
+                e.preventDefault();
+                this.showToast(
+                    '<i class="fa-solid fa-headphones me-2" aria-hidden="true"></i>'
+                    + 'Audio playback is coming soon!',
+                    'info', 3000
+                );
+            }
+
+            /*
+             * Sheet music button — currently not implemented (#80).
+             * Shows a "coming soon" toast until the sheet music module is built.
+             */
+            const sheetBtn = e.target.closest('.btn-sheet-music');
+            if (sheetBtn) {
+                e.preventDefault();
+                this.showToast(
+                    '<i class="fa-solid fa-file-pdf me-2" aria-hidden="true"></i>'
+                    + 'Sheet music viewer is coming soon!',
+                    'info', 3000
+                );
+            }
         });
 
         /* --- Footer navigation active state --- */
