@@ -2,25 +2,28 @@
  * iHymns — Service Worker
  *
  * Copyright © 2026 MWBM Partners Ltd. All rights reserved.
- * This software is proprietary. Unauthorized copying, modification, or
- * distribution is strictly prohibited.
+ * This software is proprietary.
  *
  * PURPOSE:
  * Provides offline functionality for the iHymns PWA by caching
- * essential resources (HTML, CSS, JS, song data, fonts, icons).
- * Uses a cache-first strategy for static assets and network-first
- * for the song data (to allow updates).
+ * essential local resources. CDN resources are NOT cached by the
+ * service worker (they have their own CDN caching).
+ *
+ * STRATEGY:
+ * - Local static assets: cache-first (fast offline access)
+ * - Song data (songs.json): network-first (get latest, fallback to cache)
+ * - CDN resources: network-only (never cache — avoids poisoned cache)
+ * - Navigation requests: fallback to cached index.php when offline
  */
 
 /* =========================================================================
  * CACHE CONFIGURATION
  * ========================================================================= */
 
-/* Cache version: increment this when deploying new versions to bust the cache */
-const CACHE_VERSION = 'ihymns-v0.1.1';
+/* Cache version: increment to force a full cache purge on next visit */
+const CACHE_VERSION = 'ihymns-v0.2.0';
 
-/* Static assets to pre-cache during service worker installation */
-/* These files are cached immediately so the app works offline on first install */
+/* Local static assets to pre-cache during service worker installation */
 const STATIC_ASSETS = [
     './',
     'index.php',
@@ -33,152 +36,112 @@ const STATIC_ASSETS = [
     'js/modules/search.js',
     'js/modules/favorites.js',
     'js/modules/settings.js',
+    'js/modules/help.js',
+    'js/modules/audio.js',
+    'js/modules/sheet-music.js',
     'manifest.json',
     'assets/favicon.svg'
 ];
 
-/* External CDN resources to cache on first use (not pre-cached) */
-const CDN_ASSETS = [
-    'https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css',
-    'https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css',
-    'https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css',
-    'https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js',
-    'https://cdn.jsdelivr.net/npm/fuse.js@7.0.0/dist/fuse.min.js'
+/* CDN origins — requests to these are NEVER cached by the service worker */
+const CDN_ORIGINS = [
+    'cdn.jsdelivr.net',
+    'cdnjs.cloudflare.com'
 ];
 
 /* =========================================================================
- * INSTALL EVENT
- * Triggered when the service worker is first installed.
- * Pre-caches all static assets so the app works offline immediately.
+ * INSTALL — Pre-cache local static assets
  * ========================================================================= */
 self.addEventListener('install', (event) => {
-    /* Log installation for debugging */
-    console.log('[iHymns SW] Installing service worker:', CACHE_VERSION);
-
-    /* Wait until all static assets are cached before marking install as complete */
+    console.log('[iHymns SW] Installing:', CACHE_VERSION);
     event.waitUntil(
-        /* Open (or create) the cache with our versioned name */
         caches.open(CACHE_VERSION)
-            .then((cache) => {
-                /* Pre-cache all static assets */
-                console.log('[iHymns SW] Pre-caching static assets');
-                return cache.addAll(STATIC_ASSETS);
-            })
-            .then(() => {
-                /* Skip waiting: activate the new service worker immediately */
-                /* (instead of waiting for all tabs to close) */
-                return self.skipWaiting();
-            })
+            .then((cache) => cache.addAll(STATIC_ASSETS))
+            .then(() => self.skipWaiting())
     );
 });
 
 /* =========================================================================
- * ACTIVATE EVENT
- * Triggered when the service worker becomes active.
- * Cleans up old caches from previous versions.
+ * ACTIVATE — Clean up old caches
  * ========================================================================= */
 self.addEventListener('activate', (event) => {
-    /* Log activation for debugging */
-    console.log('[iHymns SW] Activating service worker:', CACHE_VERSION);
-
-    /* Wait until old caches are cleaned up */
+    console.log('[iHymns SW] Activating:', CACHE_VERSION);
     event.waitUntil(
-        /* Get all existing cache names */
         caches.keys()
-            .then((cacheNames) => {
-                /* Delete any caches that don't match the current version */
-                return Promise.all(
-                    cacheNames
-                        .filter((name) => name !== CACHE_VERSION)
-                        .map((name) => {
-                            console.log('[iHymns SW] Deleting old cache:', name);
-                            return caches.delete(name);
-                        })
-                );
-            })
-            .then(() => {
-                /* Claim all open clients (tabs) immediately */
-                /* This ensures the new service worker controls existing tabs */
-                return self.clients.claim();
-            })
+            .then((names) => Promise.all(
+                names
+                    .filter((name) => name !== CACHE_VERSION)
+                    .map((name) => {
+                        console.log('[iHymns SW] Deleting old cache:', name);
+                        return caches.delete(name);
+                    })
+            ))
+            .then(() => self.clients.claim())
     );
 });
 
 /* =========================================================================
- * FETCH EVENT
- * Intercepts all network requests and serves from cache when available.
- *
- * Strategy:
- * - Song data (songs.json): Network-first (try network, fall back to cache)
- *   This ensures users get the latest songs when online.
- * - Static assets & CDN: Cache-first (try cache, fall back to network)
- *   This provides fast offline loading for CSS, JS, fonts, etc.
+ * FETCH — Intercept network requests
  * ========================================================================= */
 self.addEventListener('fetch', (event) => {
-    /* Get the request URL for strategy decisions */
-    const requestUrl = new URL(event.request.url);
+    const url = new URL(event.request.url);
 
-    /* --- Strategy: Network-first for song data --- */
-    if (requestUrl.pathname.includes('songs.json')) {
+    /* -----------------------------------------------------------------
+     * CDN RESOURCES: Network-only — NEVER cache
+     * CDN has its own caching. Caching CDN responses in the SW risks
+     * poisoning the cache with error responses (503s) that then get
+     * served forever via cache-first strategy.
+     * ----------------------------------------------------------------- */
+    if (CDN_ORIGINS.some((origin) => url.hostname.includes(origin))) {
+        event.respondWith(fetch(event.request));
+        return;
+    }
+
+    /* -----------------------------------------------------------------
+     * SONG DATA: Network-first
+     * Try network for fresh data, fall back to cache when offline.
+     * ----------------------------------------------------------------- */
+    if (url.pathname.includes('songs.json')) {
         event.respondWith(
-            /* Try to fetch from the network first */
             fetch(event.request)
-                .then((networkResponse) => {
-                    /* If network succeeds, cache the fresh response and return it */
-                    const responseClone = networkResponse.clone();
-                    caches.open(CACHE_VERSION).then((cache) => {
-                        cache.put(event.request, responseClone);
-                    });
-                    return networkResponse;
+                .then((response) => {
+                    if (response.ok) {
+                        const clone = response.clone();
+                        caches.open(CACHE_VERSION).then((c) => c.put(event.request, clone));
+                    }
+                    return response;
                 })
-                .catch(() => {
-                    /* If network fails, try to serve from cache */
-                    return caches.match(event.request);
-                })
+                .catch(() => caches.match(event.request))
         );
         return;
     }
 
-    /* --- Strategy: Cache-first for everything else --- */
+    /* -----------------------------------------------------------------
+     * LOCAL ASSETS: Cache-first
+     * Serve from cache for speed, fall back to network if not cached.
+     * Only cache successful (200) GET responses.
+     * ----------------------------------------------------------------- */
     event.respondWith(
-        /* Check if the request is in the cache */
         caches.match(event.request)
-            .then((cachedResponse) => {
-                /* If found in cache, return the cached response (fast!) */
-                if (cachedResponse) {
-                    return cachedResponse;
+            .then((cached) => {
+                if (cached) {
+                    return cached;
                 }
-
-                /* If not in cache, fetch from the network */
                 return fetch(event.request)
-                    .then((networkResponse) => {
-                        /* Only cache successful GET requests */
-                        if (networkResponse && networkResponse.status === 200 &&
-                            event.request.method === 'GET') {
-                            /* Clone the response (it can only be consumed once) */
-                            const responseClone = networkResponse.clone();
-
-                            /* Store the response in the cache for future use */
-                            caches.open(CACHE_VERSION).then((cache) => {
-                                cache.put(event.request, responseClone);
-                            });
+                    .then((response) => {
+                        /* Only cache successful local responses */
+                        if (response && response.ok && event.request.method === 'GET') {
+                            const clone = response.clone();
+                            caches.open(CACHE_VERSION).then((c) => c.put(event.request, clone));
                         }
-
-                        /* Return the network response to the page */
-                        return networkResponse;
+                        return response;
                     })
                     .catch(() => {
-                        /* Both cache and network failed: return an offline fallback */
-                        /* For navigation requests, return the cached index page */
+                        /* Offline fallback: serve index.php for navigation requests */
                         if (event.request.mode === 'navigate') {
                             return caches.match('index.php');
                         }
-
-                        /* For other requests (images, etc.), return nothing */
-                        return new Response('Offline', {
-                            status: 503,
-                            statusText: 'Service Unavailable'
-                        });
+                        return new Response('Offline', { status: 503 });
                     });
             })
     );
