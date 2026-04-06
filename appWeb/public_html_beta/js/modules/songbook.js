@@ -56,24 +56,14 @@ import { isFavorite, toggleFavorite } from './favorites.js';
  * songbook's index modulo the array length, ensuring every card gets a
  * colour even when the number of songbooks exceeds the palette size.
  */
-const SONGBOOK_GRADIENTS = [
-    /* Soft warm amber — matches iLyrics dB brand, gentle warmth */
-    'linear-gradient(135deg, #d4a574 0%, #e8c9a0 100%)',
-    /* Soft dusty rose — gentle, warm, worship-appropriate */
-    'linear-gradient(135deg, #c9a0a0 0%, #ddbfbf 100%)',
-    /* Soft sage green — calm, natural, restful */
-    'linear-gradient(135deg, #a0b89c 0%, #c4d4c0 100%)',
-    /* Soft slate blue — trust, tradition, peaceful */
-    'linear-gradient(135deg, #9aafc4 0%, #bccde0 100%)',
-    /* Soft warm gold — heritage, classic, inviting */
-    'linear-gradient(135deg, #c8b078 0%, #ddd0a8 100%)',
-    /* Soft muted mauve — reverence, contemplative */
-    'linear-gradient(135deg, #b0a0be 0%, #cfc4d8 100%)',
-    /* Soft terracotta — earthy, grounded, warm */
-    'linear-gradient(135deg, #c4a08c 0%, #d8c4b4 100%)',
-    /* Soft cool grey — modern, neutral, clean */
-    'linear-gradient(135deg, #a8b0b8 0%, #c8cdd4 100%)'
-];
+/**
+ * SONGBOOK_GRADIENT
+ *
+ * A single, consistent warm amber gradient used for ALL songbook card
+ * headers. Provides a unified, professional look rather than a rainbow
+ * of different colours. Matches the iLyrics dB brand aesthetic.
+ */
+const SONGBOOK_GRADIENT = 'linear-gradient(135deg, #c8a06c 0%, #ddc09c 100%)';
 
 /* =========================================================================
  * PRIVATE HELPERS
@@ -107,18 +97,15 @@ function _buildAbbreviation(name) {
 }
 
 /**
- * _getGradient(index)
+ * _getGradient()
  *
- * Returns a CSS gradient string for the given numeric index.  Uses modulo
- * arithmetic to cycle through SONGBOOK_GRADIENTS so that any number of
- * songbooks can be rendered without running out of colours.
+ * Returns the single consistent gradient used for all songbook card headers.
+ * All cards use the same soft amber — unified, professional look.
  *
- * @param {number} index - The songbook's positional index in the array
  * @returns {string} A CSS linear-gradient value
  */
-function _getGradient(index) {
-    /* Modulo wraps the index back to the start of the palette */
-    return SONGBOOK_GRADIENTS[index % SONGBOOK_GRADIENTS.length];
+function _getGradient() {
+    return SONGBOOK_GRADIENT;
 }
 
 /**

@@ -312,14 +312,51 @@ body {
     background-color: rgba(255, 255, 255, 0.15);
 }
 
-/* Search input: rounded with subtle styling */
+/* Search input: clean rounded styling, no stretched outline */
 #search-form .form-control {
-    border-radius: 0 var(--ihymns-border-radius) var(--ihymns-border-radius) 0;
+    border-radius: var(--ihymns-border-radius) 0 0 var(--ihymns-border-radius);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    background-color: rgba(255, 255, 255, 0.12);
+    color: #ffffff;
 }
 
-/* Search icon container: matches the input styling */
-#search-form .input-group-text {
-    border-radius: var(--ihymns-border-radius) 0 0 var(--ihymns-border-radius);
+#search-form .form-control::placeholder {
+    color: rgba(255, 255, 255, 0.55);
+}
+
+#search-form .form-control:focus {
+    background-color: rgba(255, 255, 255, 0.18);
+    border-color: rgba(255, 255, 255, 0.4);
+    color: #ffffff;
+    box-shadow: none;
+}
+
+/* Search button: amber accent, right side of input group */
+.btn-search {
+    background-color: var(--ihymns-primary);
+    color: #ffffff;
+    border: 1px solid var(--ihymns-primary);
+    border-radius: 0 var(--ihymns-border-radius) var(--ihymns-border-radius) 0;
+    padding: 0.4rem 0.85rem;
+}
+
+.btn-search:hover {
+    background-color: var(--ihymns-primary-hover);
+    border-color: var(--ihymns-primary-hover);
+    color: #ffffff;
+}
+
+/* Numpad + clear buttons: match the search bar aesthetic */
+#search-form .btn-outline-secondary {
+    border-color: rgba(255, 255, 255, 0.25);
+    color: rgba(255, 255, 255, 0.7);
+    border-radius: 0;
+}
+
+#search-form .btn-outline-secondary:hover,
+#search-form .btn-outline-secondary.btn-primary {
+    background-color: rgba(255, 255, 255, 0.15);
+    color: #ffffff;
 }
 
 /* Theme toggle button: ensure it shows as white on the purple navbar */

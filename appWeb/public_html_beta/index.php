@@ -77,15 +77,11 @@ require_once __DIR__ . '/includes/infoAppVer.php';
 
     <!-- Bootstrap Icons 1.11: icon font for UI elements (search, star, moon, etc.) -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
-          rel="stylesheet"
-          integrity="sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+"
-          crossorigin="anonymous">
+          rel="stylesheet">
 
     <!-- Animate.css 4.1: CSS animation library for smooth transitions and effects -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css"
-          rel="stylesheet"
-          integrity="sha384-Gu3KVV2H9d+yA4QDpVB7VcOyhJlAVrcXd0thEjr4KznfaFPLe0xQJyonVxONa4ZC"
-          crossorigin="anonymous">
+          rel="stylesheet">
 
     <!-- iHymns custom stylesheet: app-specific styles, overrides, and theming -->
     <link href="css/styles.css" rel="stylesheet">
@@ -136,17 +132,12 @@ require_once __DIR__ . '/includes/infoAppVer.php';
                 <form class="d-flex mx-lg-4 my-2 my-lg-0 flex-grow-1" role="search"
                       id="search-form" aria-label="Search songs">
                     <div class="input-group">
-                        <!-- Search icon prepended to the input field -->
-                        <span class="input-group-text bg-transparent border-end-0" id="search-icon">
-                            <i class="bi bi-search" aria-hidden="true"></i>
-                        </span>
                         <!-- Search input field: users type their query here -->
                         <input type="search"
-                               class="form-control border-start-0"
+                               class="form-control"
                                id="search-input"
                                placeholder="Search songs, lyrics, songbooks..."
                                aria-label="Search songs, lyrics, songbooks"
-                               aria-describedby="search-icon"
                                autocomplete="off">
                         <!-- Clear search button: shown when there is text in the input -->
                         <button class="btn btn-outline-secondary d-none" type="button"
@@ -159,6 +150,11 @@ require_once __DIR__ . '/includes/infoAppVer.php';
                                 aria-label="Toggle number search mode"
                                 title="Search by song number (numpad)">
                             <i class="bi bi-123" aria-hidden="true"></i>
+                        </button>
+                        <!-- Search button -->
+                        <button class="btn btn-search" type="submit"
+                                id="search-btn" aria-label="Search">
+                            <i class="bi bi-search" aria-hidden="true"></i>
                         </button>
                     </div>
                 </form>
@@ -309,15 +305,10 @@ require_once __DIR__ . '/includes/infoAppVer.php';
             crossorigin="anonymous"></script>
 
     <!-- Fuse.js 7.x: lightweight fuzzy-search library for client-side song search -->
-    <script src="https://cdn.jsdelivr.net/npm/fuse.js@7.0.0/dist/fuse.min.js"
-            integrity="sha384-PCSoOZTpbkikBEtd/+uV3WNdc676i9KUf01KOA8CnJotvlx8rRrETbDuwdjqTYvt"
-            crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/fuse.js@7.0.0/dist/fuse.min.js"></script>
 
     <!-- PDF.js 4.9: Mozilla's PDF rendering library for sheet music viewer -->
-    <!-- Loaded as an ES module; exposes window.pdfjsLib for use by sheet-music.js -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf.min.mjs" type="module"
-            integrity="sha384-Yw4pTrkymyfp/wv+Y5WT8asmcguuLMaa4rVm7i7SRthvUIAq83i8yVCk3nzzihT1"
-            crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf.min.mjs" type="module"></script>
 
     <!-- iHymns application JavaScript (ES module entry point) -->
     <!-- type="module" enables ES module imports and strict mode by default -->
