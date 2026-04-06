@@ -1936,6 +1936,21 @@ body.reduce-motion .related-songs-chevron {
     background-color: var(--bs-primary-bg-subtle, #cfe2ff);
 }
 
+.fav-tag-badge {
+    font-size: 0.6rem;
+    padding: 0.15em 0.45em;
+    vertical-align: middle;
+}
+
+.fav-edit-tags {
+    opacity: 0.5;
+    transition: opacity 0.15s;
+}
+
+.song-list-item:hover .fav-edit-tags {
+    opacity: 1;
+}
+
 /* =========================================================================
  * USAGE STATISTICS — Simple bar charts (#120)
  * ========================================================================= */

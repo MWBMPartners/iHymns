@@ -76,11 +76,196 @@ export class Favorites {
                 title: title || '',
                 songbook: songbook || '',
                 number: number || 0,
+                tags: [],
                 addedAt: new Date().toISOString(),
             });
             this.saveAll(favorites);
             return true;
         }
+    }
+
+    /* =====================================================================
+     * TAGS (#122) — Custom categories for favourites
+     * ===================================================================== */
+
+    /** Common pre-defined tags for quick selection */
+    static COMMON_TAGS = [
+        'Praise', 'Worship', 'Communion', 'Christmas', 'Easter',
+        'Weddings', 'Funerals', 'Baptism', 'Opening', 'Closing',
+        'Fast', 'Slow', 'Choir', 'Children',
+    ];
+
+    /**
+     * Get all unique tags used across favourites + user custom tags.
+     * @returns {string[]}
+     */
+    getAllTags() {
+        const favorites = this.getAll();
+        const tagSet = new Set();
+        for (const fav of favorites) {
+            for (const tag of (fav.tags || [])) {
+                tagSet.add(tag);
+            }
+        }
+        /* Merge with any custom tags stored separately */
+        try {
+            const custom = JSON.parse(localStorage.getItem('ihymns_custom_tags')) || [];
+            custom.forEach(t => tagSet.add(t));
+        } catch {}
+        return [...tagSet].sort();
+    }
+
+    /**
+     * Set tags on a favourite song.
+     * @param {string} songId
+     * @param {string[]} tags
+     */
+    setTags(songId, tags) {
+        const favorites = this.getAll();
+        const fav = favorites.find(f => f.id === songId);
+        if (fav) {
+            fav.tags = tags;
+            this.saveAll(favorites);
+        }
+    }
+
+    /**
+     * Get tags for a specific favourite.
+     * @param {string} songId
+     * @returns {string[]}
+     */
+    getTags(songId) {
+        const fav = this.getAll().find(f => f.id === songId);
+        return fav?.tags || [];
+    }
+
+    /**
+     * Save a custom tag to the user's tag list.
+     * @param {string} tag
+     */
+    saveCustomTag(tag) {
+        let custom = [];
+        try { custom = JSON.parse(localStorage.getItem('ihymns_custom_tags')) || []; } catch {}
+        if (!custom.includes(tag)) {
+            custom.push(tag);
+            custom.sort();
+            localStorage.setItem('ihymns_custom_tags', JSON.stringify(custom));
+        }
+    }
+
+    /**
+     * Show a tag editor modal for a favourite song.
+     * @param {string} songId
+     * @param {string} songTitle
+     */
+    async editTags(songId, songTitle) {
+        const currentTags = this.getTags(songId);
+        const allTags = [...new Set([...Favorites.COMMON_TAGS, ...this.getAllTags()])].sort();
+
+        /* Build tag picker content */
+        const tagHtml = allTags.map(tag => {
+            const checked = currentTags.includes(tag) ? 'checked' : '';
+            const escaped = this.escapeHtml(tag);
+            return `<label class="btn btn-sm ${checked ? 'btn-primary' : 'btn-outline-secondary'} rounded-pill tag-toggle-btn">
+                        <input type="checkbox" class="d-none tag-checkbox" value="${escaped}" ${checked}> ${escaped}
+                    </label>`;
+        }).join('');
+
+        /* Create modal */
+        document.getElementById('tag-editor-modal')?.remove();
+        const modal = document.createElement('div');
+        modal.id = 'tag-editor-modal';
+        modal.className = 'modal fade';
+        modal.tabIndex = -1;
+        modal.innerHTML = `
+            <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">
+                            <i class="fa-solid fa-tags me-2" aria-hidden="true"></i>
+                            Edit Tags
+                        </h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <p class="text-muted small mb-2">${this.escapeHtml(songTitle)}</p>
+                        <div class="d-flex flex-wrap gap-2 mb-3">${tagHtml}</div>
+                        <div class="input-group input-group-sm">
+                            <input type="text" class="form-control" id="tag-custom-input"
+                                   placeholder="Add custom tag..." maxlength="30">
+                            <button type="button" class="btn btn-outline-primary" id="tag-custom-add">
+                                <i class="fa-solid fa-plus" aria-hidden="true"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="button" class="btn btn-primary" id="tag-save-btn">Save Tags</button>
+                    </div>
+                </div>
+            </div>`;
+
+        document.body.appendChild(modal);
+        const bsModal = new bootstrap.Modal(modal);
+
+        /* Toggle button styling on checkbox change */
+        modal.querySelectorAll('.tag-toggle-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                const cb = btn.querySelector('.tag-checkbox');
+                cb.checked = !cb.checked;
+                btn.className = `btn btn-sm ${cb.checked ? 'btn-primary' : 'btn-outline-secondary'} rounded-pill tag-toggle-btn`;
+            });
+        });
+
+        /* Add custom tag */
+        const addCustom = () => {
+            const input = modal.querySelector('#tag-custom-input');
+            const tag = input.value.trim();
+            if (!tag) return;
+            /* Check if already exists */
+            const existing = modal.querySelector(`.tag-checkbox[value="${this.escapeHtml(tag)}"]`);
+            if (existing) {
+                existing.checked = true;
+                existing.closest('.tag-toggle-btn').className = 'btn btn-sm btn-primary rounded-pill tag-toggle-btn';
+            } else {
+                const container = modal.querySelector('.d-flex.flex-wrap');
+                const newBtn = document.createElement('label');
+                newBtn.className = 'btn btn-sm btn-primary rounded-pill tag-toggle-btn';
+                newBtn.innerHTML = `<input type="checkbox" class="d-none tag-checkbox" value="${this.escapeHtml(tag)}" checked> ${this.escapeHtml(tag)}`;
+                newBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    const cb = newBtn.querySelector('.tag-checkbox');
+                    cb.checked = !cb.checked;
+                    newBtn.className = `btn btn-sm ${cb.checked ? 'btn-primary' : 'btn-outline-secondary'} rounded-pill tag-toggle-btn`;
+                });
+                container.appendChild(newBtn);
+                this.saveCustomTag(tag);
+            }
+            input.value = '';
+        };
+
+        modal.querySelector('#tag-custom-add').addEventListener('click', addCustom);
+        modal.querySelector('#tag-custom-input').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); addCustom(); }
+        });
+
+        /* Save handler */
+        return new Promise((resolve) => {
+            modal.querySelector('#tag-save-btn').addEventListener('click', () => {
+                const selected = [...modal.querySelectorAll('.tag-checkbox:checked')].map(cb => cb.value);
+                this.setTags(songId, selected);
+                bsModal.hide();
+                resolve(selected);
+            });
+
+            modal.addEventListener('hidden.bs.modal', () => {
+                modal.remove();
+                resolve(null);
+            });
+
+            bsModal.show();
+        });
     }
 
     /** Clear all favourites */
@@ -217,11 +402,18 @@ export class Favorites {
 
         /* Render favourite items */
         if (listEl) {
-            listEl.innerHTML = favorites.map(fav => `
+            listEl.innerHTML = favorites.map(fav => {
+                const tags = (fav.tags || []);
+                const tagsHtml = tags.length > 0
+                    ? `<span class="fav-tags ms-1">${tags.map(t => `<span class="badge bg-body-secondary text-body-secondary rounded-pill fav-tag-badge">${this.escapeHtml(t)}</span>`).join(' ')}</span>`
+                    : '';
+                const tagsData = tags.map(t => this.escapeHtml(t)).join(',');
+                return `
                 <a href="/song/${this.escapeHtml(fav.id)}"
                    class="list-group-item list-group-item-action song-list-item"
                    data-navigate="song"
                    data-song-id="${this.escapeHtml(fav.id)}"
+                   data-tags="${tagsData}"
                    role="listitem">
                     <input type="checkbox" class="form-check-input fav-select-check d-none me-2"
                            data-song-id="${this.escapeHtml(fav.id)}"
@@ -230,13 +422,31 @@ export class Favorites {
                     <span class="song-number-badge" data-songbook="${this.escapeHtml(fav.songbook)}">${fav.number || '?'}</span>
                     <div class="song-info flex-grow-1">
                         <span class="song-title">${this.escapeHtml(fav.title)}</span>
-                        <small class="text-muted d-block">${this.escapeHtml(fav.songbook)}</small>
+                        <small class="text-muted d-block">${this.escapeHtml(fav.songbook)}${tagsHtml}</small>
                     </div>
+                    <button type="button" class="btn btn-sm btn-link text-muted fav-edit-tags p-0 me-2"
+                            data-song-id="${this.escapeHtml(fav.id)}"
+                            data-song-title="${this.escapeHtml(fav.title)}"
+                            aria-label="Edit tags"
+                            onclick="event.preventDefault(); event.stopPropagation();">
+                        <i class="fa-solid fa-tags" aria-hidden="true"></i>
+                    </button>
                     <i class="fa-solid fa-heart text-danger me-2 fav-heart-icon" aria-hidden="true"></i>
                     <i class="fa-solid fa-chevron-right text-muted fav-chevron-icon" aria-hidden="true"></i>
-                </a>
-            `).join('');
+                </a>`;
+            }).join('');
+
+            /* Bind tag edit buttons */
+            listEl.querySelectorAll('.fav-edit-tags').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    await this.editTags(btn.dataset.songId, btn.dataset.songTitle);
+                    this.loadFavoritesList();
+                });
+            });
         }
+
+        /* Render tag filter (#122) */
+        this.renderTagFilter(favorites);
 
         /* Bind batch toolbar actions (#119) */
         this.initBatchToolbar();
@@ -451,6 +661,66 @@ export class Favorites {
 
         this.app.showToast(`Removed ${count} favourite${count !== 1 ? 's' : ''}`, 'info');
         this.loadFavoritesList();
+    }
+
+    /**
+     * Render the tag filter bar on the favourites page (#122).
+     * @param {Array} favorites Current favourites list
+     */
+    renderTagFilter(favorites) {
+        const filterEl = document.getElementById('favorites-tag-filter');
+        const pillsEl = document.getElementById('favorites-tag-pills');
+        if (!filterEl || !pillsEl) return;
+
+        /* Collect all tags in use */
+        const tagCounts = {};
+        for (const fav of favorites) {
+            for (const tag of (fav.tags || [])) {
+                tagCounts[tag] = (tagCounts[tag] || 0) + 1;
+            }
+        }
+
+        const tags = Object.entries(tagCounts).sort((a, b) => b[1] - a[1]);
+        if (tags.length === 0) {
+            filterEl.classList.add('d-none');
+            return;
+        }
+
+        filterEl.classList.remove('d-none');
+        pillsEl.innerHTML =
+            `<button type="button" class="btn btn-sm btn-primary rounded-pill tag-filter-btn active" data-tag="">
+                All <span class="badge bg-white text-primary ms-1">${favorites.length}</span>
+            </button>` +
+            tags.map(([tag, count]) =>
+                `<button type="button" class="btn btn-sm btn-outline-secondary rounded-pill tag-filter-btn" data-tag="${this.escapeHtml(tag)}">
+                    ${this.escapeHtml(tag)} <span class="badge bg-secondary ms-1">${count}</span>
+                </button>`
+            ).join('');
+
+        /* Bind filter clicks */
+        pillsEl.querySelectorAll('.tag-filter-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                /* Update active state */
+                pillsEl.querySelectorAll('.tag-filter-btn').forEach(b => {
+                    b.classList.remove('btn-primary', 'active');
+                    b.classList.add('btn-outline-secondary');
+                });
+                btn.classList.remove('btn-outline-secondary');
+                btn.classList.add('btn-primary', 'active');
+
+                /* Filter list items */
+                const tag = btn.dataset.tag;
+                const items = document.querySelectorAll('#favorites-list .song-list-item');
+                items.forEach(item => {
+                    if (!tag) {
+                        item.classList.remove('d-none');
+                    } else {
+                        const itemTags = (item.dataset.tags || '').split(',');
+                        item.classList.toggle('d-none', !itemTags.includes(tag));
+                    }
+                });
+            });
+        });
     }
 
     /**

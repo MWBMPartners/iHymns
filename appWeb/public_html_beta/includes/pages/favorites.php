@@ -55,6 +55,13 @@ declare(strict_types=1);
         </span>
     </div>
 
+    <!-- Tag filter (#122) — populated by JS -->
+    <div id="favorites-tag-filter" class="d-none mb-3">
+        <div class="d-flex flex-wrap gap-1" id="favorites-tag-pills" role="group" aria-label="Filter by tag">
+            <!-- Tag pills rendered by JS -->
+        </div>
+    </div>
+
     <!-- Favourites list container — populated by JavaScript -->
     <div id="favorites-list"
          class="list-group song-list"
