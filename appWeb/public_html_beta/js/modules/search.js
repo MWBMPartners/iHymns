@@ -42,6 +42,15 @@ export class Search {
 
         /** @type {boolean} True if currently loading Fuse.js/data */
         this.fuseLoading = false;
+
+        /** @type {object|null} Fuse.js instance with lyrics (#93) */
+        this.fuseLyricsIndex = null;
+
+        /** @type {boolean} Whether lyrics search is active */
+        this.lyricsSearchEnabled = false;
+
+        /** @type {object|null} Fuse.js constructor reference */
+        this.FuseClass = null;
     }
 
     /**
@@ -158,6 +167,16 @@ export class Search {
             const data = await response.json();
 
             this.songsData = data.songs || [];
+            this.FuseClass = Fuse;
+
+            /* Prepare lyricsText field for lyrics search (#93) */
+            this.songsData.forEach(song => {
+                const lines = [];
+                (song.components || []).forEach(c => {
+                    (c.lines || []).forEach(l => lines.push(l));
+                });
+                song.lyricsText = lines.join(' ');
+            });
 
             /* Step 3: Build the Fuse.js index with weighted field scoring */
             this.fuseIndex = new Fuse(this.songsData, {
@@ -206,8 +225,36 @@ export class Search {
         const input = document.getElementById('page-search-input');
         const filter = document.getElementById('page-search-filter');
         const results = document.getElementById('text-search-results');
+        const lyricsToggle = document.getElementById('search-lyrics-toggle');
 
         if (!input || !results) return;
+
+        /* Restore lyrics toggle state from localStorage */
+        if (lyricsToggle) {
+            this.lyricsSearchEnabled = localStorage.getItem('ihymns_search_lyrics') === 'true';
+            lyricsToggle.checked = this.lyricsSearchEnabled;
+
+            lyricsToggle.addEventListener('change', () => {
+                this.lyricsSearchEnabled = lyricsToggle.checked;
+                localStorage.setItem('ihymns_search_lyrics', String(this.lyricsSearchEnabled));
+
+                /* Build lyrics index on first enable */
+                if (this.lyricsSearchEnabled && !this.fuseLyricsIndex && this.FuseClass && this.songsData) {
+                    this.buildLyricsIndex();
+                }
+
+                /* Re-run current search with new mode */
+                const q = input.value.trim();
+                if (q.length >= 2) {
+                    this.performSearch(q, filter?.value || '', results);
+                }
+            });
+
+            /* Build lyrics index eagerly if toggle was previously enabled */
+            if (this.lyricsSearchEnabled && !this.fuseLyricsIndex && this.FuseClass && this.songsData) {
+                this.buildLyricsIndex();
+            }
+        }
 
         /* Pre-fill from URL query string */
         const params = new URLSearchParams(window.location.search);
@@ -245,6 +292,33 @@ export class Search {
         }
     }
 
+    /**
+     * Build the lyrics-inclusive Fuse.js index on demand (#93).
+     * Uses higher threshold for lyrics (lyrics text is longer and noisier).
+     */
+    buildLyricsIndex() {
+        if (!this.FuseClass || !this.songsData) return;
+
+        this.fuseLyricsIndex = new this.FuseClass(this.songsData, {
+            keys: [
+                { name: 'title',        weight: 3.0 },
+                { name: 'songbookName', weight: 1.5 },
+                { name: 'writers',      weight: 1.2 },
+                { name: 'composers',    weight: 1.0 },
+                { name: 'lyricsText',   weight: 0.8 },
+            ],
+            threshold: 0.3,
+            distance: 500,
+            minMatchCharLength: 3,
+            includeScore: true,
+            includeMatches: true,
+            shouldSort: true,
+            ignoreLocation: true,
+        });
+
+        console.log(`[Search] Lyrics Fuse.js index built: ${this.songsData.length} songs`);
+    }
+
     /* =====================================================================
      * SEARCH EXECUTION — Fuse.js (preferred) with API fallback
      * ===================================================================== */
@@ -270,7 +344,8 @@ export class Search {
             }
 
             if (results && results.length > 0) {
-                container.innerHTML = this.renderSearchResults(results, results.length);
+                const method = this.fuseIndex && !this.fuseFailed ? 'fuzzy' : 'basic';
+                container.innerHTML = this.renderSearchResults(results, results.length, method);
             } else {
                 container.innerHTML = `
                     <div class="text-center text-muted py-4">
@@ -297,7 +372,12 @@ export class Search {
      * @returns {Array} Array of song summary objects
      */
     fuseSearch(query, songbook) {
-        let fuseResults = this.fuseIndex.search(query, { limit: 50 });
+        /* Use lyrics index when lyrics search is enabled (#93) */
+        const index = (this.lyricsSearchEnabled && this.fuseLyricsIndex)
+            ? this.fuseLyricsIndex
+            : this.fuseIndex;
+
+        let fuseResults = index.search(query, { limit: 50 });
 
         /* Apply songbook filter if specified */
         if (songbook) {
@@ -306,16 +386,48 @@ export class Search {
         }
 
         /* Map Fuse.js results to the same format as API results */
-        return fuseResults.map(r => ({
-            id:           r.item.id,
-            number:       r.item.number,
-            title:        r.item.title,
-            songbook:     r.item.songbook,
-            songbookName: r.item.songbookName,
-            writers:      r.item.writers || [],
-            hasAudio:     r.item.hasAudio || false,
-            hasSheetMusic: r.item.hasSheetMusic || false,
-        }));
+        return fuseResults.map(r => {
+            const result = {
+                id:           r.item.id,
+                number:       r.item.number,
+                title:        r.item.title,
+                songbook:     r.item.songbook,
+                songbookName: r.item.songbookName,
+                writers:      r.item.writers || [],
+                hasAudio:     r.item.hasAudio || false,
+                hasSheetMusic: r.item.hasSheetMusic || false,
+            };
+
+            /* Extract lyrics snippet if match was in lyrics (#93) */
+            if (this.lyricsSearchEnabled && r.matches) {
+                const lyricsMatch = r.matches.find(m => m.key === 'lyricsText');
+                if (lyricsMatch) {
+                    result.lyricsSnippet = this.extractLyricsSnippet(r.item, query);
+                }
+            }
+
+            return result;
+        });
+    }
+
+    /**
+     * Extract a matching lyrics snippet from a song (#93).
+     * Finds the first line containing the query and returns it.
+     *
+     * @param {object} song Song object
+     * @param {string} query Search query
+     * @returns {string} Matching line or empty string
+     */
+    extractLyricsSnippet(song, query) {
+        const q = query.toLowerCase();
+        for (const comp of (song.components || [])) {
+            for (const line of (comp.lines || [])) {
+                if (line.toLowerCase().includes(q)) {
+                    return line;
+                }
+            }
+        }
+        return '';
     }
 
     /**
@@ -349,13 +461,15 @@ export class Search {
      * @param {number} total Total number of results
      * @returns {string} HTML string
      */
-    renderSearchResults(results, total) {
-        const method = this.fuseIndex && !this.fuseFailed ? 'fuzzy' : 'basic';
+    renderSearchResults(results, total, method) {
         let html = `<p class="text-muted small mb-2">${total} result${total !== 1 ? 's' : ''} found</p>`;
         html += '<div class="list-group">';
 
         results.forEach(song => {
             const writers = (song.writers || []).join(', ');
+            const snippet = song.lyricsSnippet
+                ? `<small class="text-muted d-block fst-italic"><i class="fa-solid fa-music me-1" aria-hidden="true"></i>&ldquo;${this.escapeHtml(song.lyricsSnippet)}&rdquo;</small>`
+                : '';
             html += `
                 <a href="/song/${this.escapeHtml(song.id)}"
                    class="list-group-item list-group-item-action song-list-item"
@@ -368,6 +482,7 @@ export class Search {
                             ${this.escapeHtml(song.songbookName || '')}
                             ${writers ? ' &middot; ' + this.escapeHtml(writers) : ''}
                         </small>
+                        ${snippet}
                     </div>
                     <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>
                 </a>`;

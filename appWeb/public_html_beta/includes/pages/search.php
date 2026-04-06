@@ -100,6 +100,16 @@ $songbooks = $songData->getSongbooks();
                 </select>
             </div>
 
+            <!-- Lyrics search toggle (#93) -->
+            <div class="form-check form-switch mb-3">
+                <input class="form-check-input" type="checkbox" role="switch"
+                       id="search-lyrics-toggle" aria-label="Include lyrics in search">
+                <label class="form-check-label" for="search-lyrics-toggle">
+                    <i class="fa-solid fa-music me-1" aria-hidden="true"></i>
+                    Search within lyrics
+                </label>
+            </div>
+
             <!-- Search results container -->
             <div id="text-search-results"
                  class="search-results"
