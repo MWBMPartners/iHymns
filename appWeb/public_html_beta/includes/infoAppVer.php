@@ -144,6 +144,7 @@ $app["Application"]["Copyright"]["Year"]["Start"] = "2026";
  * This ensures the copyright notice is always current without manual updates.
  */
 $currentYear = date('Y');
+$app["Application"]["Copyright"]["UseVendor"] = FALSE;
 if ($currentYear > $app["Application"]["Copyright"]["Year"]["Start"]) {
     /* Multi-year range: "2026–2028" */
     $app["Application"]["Copyright"]["Year"]["Display"] = $app["Application"]["Copyright"]["Year"]["Start"] . "–" . $currentYear;
@@ -156,7 +157,12 @@ if ($currentYear > $app["Application"]["Copyright"]["Year"]["Start"]) {
 $app["Application"]["Copyright"]["RightsStatement"] = "All Rights Reserved";
 
 /* Full copyright string for display: "© 2026 MWBM Partners Ltd. All Rights Reserved" */
-$app["Application"]["Copyright"]["Full"] = "© " . $app["Application"]["Copyright"]["Year"]["Display"] . " " . $app["Application"]["Vendor"]["Name"] . ". " . $app["Application"]["Copyright"]["RightsStatement"];
+if (isset($app["Application"]["Copyright"]["UseVendor"]) && $app["Application"]["Copyright"]["UseVendor"]) {
+    $app["Application"]["Copyright"]["Full"] = "&copy; " . $app["Application"]["Copyright"]["Year"]["Display"] . " " . $app["Application"]["Vendor"]["Name"] . ". " . $app["Application"]["Copyright"]["RightsStatement"];
+}
+else {
+    $app["Application"]["Copyright"]["Full"] = "&copy; " . $app["Application"]["Copyright"]["Year"]["Display"] . ". " . $app["Application"]["Name"] . "." .$app["Application"]["Copyright"]["RightsStatement"];
+}
 
 /* =========================================================================
  * LICENSING — DEVELOPER

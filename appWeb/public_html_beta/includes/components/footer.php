@@ -31,11 +31,11 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
                 <!-- Links -->
                 <div class="col-md-6 text-center text-md-end text-muted small mt-2 mt-md-0">
                     <a href="#" class="text-muted text-decoration-none me-3" id="footer-help">Help</a>
-                    <a href="<?php echo htmlspecialchars($app["Application"]["Repo"]["URL"]); ?>"
+                <!--<a href="<?php echo htmlspecialchars($app["Application"]["Repo"]["URL"]); ?>"
                        class="text-muted text-decoration-none"
                        target="_blank" rel="noopener noreferrer">
                         <i class="bi bi-github me-1" aria-hidden="true"></i>GitHub
-                    </a>
+                    </a>-->
                 </div>
             </div>
         </div>
