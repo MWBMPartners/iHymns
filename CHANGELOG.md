@@ -21,6 +21,7 @@
 - feat: restrict access to private_html/ via HTTP Basic Auth
 - feat: shared data/ directory uploaded one level up from SFTP paths
 - feat: unit tests + fix songbook abbreviation badges
+- fix: clean up Web PWA UI — search bar, icons, songbook colours
 - fix: comprehensive code review + security hardening
 - fix: deploy sync detection + softer songbook card colours
 - fix: include data/songs.json inside each SFTP upload directory
