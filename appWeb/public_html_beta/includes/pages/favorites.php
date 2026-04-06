@@ -27,14 +27,25 @@ declare(strict_types=1);
             <i class="fa-solid fa-heart me-2 text-danger" aria-hidden="true"></i>
             Favourites
         </h1>
-        <!-- Clear all button (only visible when favourites exist) -->
-        <button type="button"
-                class="btn btn-outline-danger btn-sm d-none"
-                id="clear-all-favorites"
-                aria-label="Remove all favourites">
-            <i class="fa-solid fa-trash-can me-1" aria-hidden="true"></i>
-            Clear All
-        </button>
+        <div class="d-flex gap-2">
+            <!-- Select mode toggle (#119) -->
+            <button type="button"
+                    class="btn btn-outline-secondary btn-sm d-none"
+                    id="favorites-select-toggle"
+                    aria-label="Toggle select mode"
+                    aria-pressed="false">
+                <i class="fa-solid fa-check-double me-1" aria-hidden="true"></i>
+                Select
+            </button>
+            <!-- Clear all button (only visible when favourites exist) -->
+            <button type="button"
+                    class="btn btn-outline-danger btn-sm d-none"
+                    id="clear-all-favorites"
+                    aria-label="Remove all favourites">
+                <i class="fa-solid fa-trash-can me-1" aria-hidden="true"></i>
+                Clear All
+            </button>
+        </div>
     </div>
 
     <!-- Favourites count badge -->
@@ -50,6 +61,28 @@ declare(strict_types=1);
          role="list"
          aria-label="Favourite songs list">
         <!-- Songs loaded dynamically by favorites.js -->
+    </div>
+
+    <!-- Batch actions toolbar (#119) — visible in select mode when items selected -->
+    <div id="favorites-batch-toolbar" class="favorites-batch-toolbar d-none" role="toolbar" aria-label="Batch actions">
+        <div class="d-flex align-items-center justify-content-between gap-2 p-2 bg-body-tertiary rounded border">
+            <div class="d-flex align-items-center gap-2">
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="favorites-select-all">
+                    Select All
+                </button>
+                <span class="badge bg-primary" id="favorites-selected-count">0 selected</span>
+            </div>
+            <div class="d-flex gap-2">
+                <button type="button" class="btn btn-sm btn-outline-primary" id="favorites-batch-setlist" disabled>
+                    <i class="fa-solid fa-list-ol me-1" aria-hidden="true"></i>
+                    Set List
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-danger" id="favorites-batch-remove" disabled>
+                    <i class="fa-solid fa-trash-can me-1" aria-hidden="true"></i>
+                    Remove
+                </button>
+            </div>
+        </div>
     </div>
 
     <!-- Empty state — shown when no favourites saved -->

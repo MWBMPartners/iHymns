@@ -1921,3 +1921,17 @@ body.reduce-motion .offline-banner {
 body.reduce-motion .related-songs-chevron {
     transition: none;
 }
+
+/* =========================================================================
+ * BATCH FAVOURITES — Select mode toolbar (#119)
+ * ========================================================================= */
+
+.favorites-batch-toolbar {
+    position: sticky;
+    bottom: 4rem;
+    z-index: 100;
+}
+
+#favorites-list .song-list-item.active {
+    background-color: var(--bs-primary-bg-subtle, #cfe2ff);
+}
