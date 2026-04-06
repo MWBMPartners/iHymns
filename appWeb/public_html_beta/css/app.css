@@ -1889,3 +1889,15 @@ body.reduce-motion .song-list-item.alphabet-highlight {
 body.reduce-motion .offline-banner {
     transition: none;
 }
+
+/* =========================================================================
+ * TOAST & PROGRESS — CSP-compliant replacements for inline styles (#117)
+ * ========================================================================= */
+
+#toast-container {
+    z-index: 1090;
+}
+
+.progress-thin {
+    height: 6px;
+}

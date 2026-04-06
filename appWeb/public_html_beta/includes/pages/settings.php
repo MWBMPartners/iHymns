@@ -246,10 +246,10 @@ declare(strict_types=1);
                 </div>
 
                 <!-- Progress bar (shared across all download operations) -->
-                <div class="progress mt-2 d-none" id="download-songs-progress" style="height: 6px;">
+                <div class="progress mt-2 d-none progress-thin" id="download-songs-progress">
                     <div class="progress-bar progress-bar-striped progress-bar-animated"
                          id="download-songs-bar" role="progressbar"
-                         aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" style="width: 0%"></div>
+                         aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
                 </div>
                 <small class="text-muted mt-1 d-block">
                     Save songs to your device for offline access. Download individual songbooks or all at once.

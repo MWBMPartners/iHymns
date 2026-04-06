@@ -69,6 +69,33 @@ $locale = APP_CONFIG['i18n']['default_locale'];
 $textDir = APP_CONFIG['i18n']['text_direction'];
 
 /* =========================================================================
+ * CONTENT SECURITY POLICY (CSP) — #117
+ *
+ * Generate a per-request nonce for inline scripts and send a strict CSP
+ * header. This is the primary defence against XSS exploitation.
+ * ========================================================================= */
+
+$cspNonce = base64_encode(random_bytes(16));
+
+$cspDirectives = [
+    "default-src 'self'",
+    "script-src 'self' 'nonce-{$cspNonce}' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://www.googletagmanager.com https://plausible.io https://www.clarity.ms",
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
+    "img-src 'self' data: https:",
+    "font-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
+    "connect-src 'self' https://www.google-analytics.com https://plausible.io https://www.clarity.ms",
+    "frame-src 'self' https://sync.ihymns.app https://*.ihymns.app",
+    "worker-src 'self' https://cdn.jsdelivr.net blob:",
+    "manifest-src 'self'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'self'",
+    "upgrade-insecure-requests",
+];
+
+header("Content-Security-Policy: " . implode('; ', $cspDirectives));
+
+/* =========================================================================
  * OPEN GRAPH META TAGS — Dynamic per-page social sharing previews
  *
  * When a social media platform or messaging app fetches a shared URL,
@@ -242,7 +269,7 @@ try {
     <?php if (!empty(APP_CONFIG['analytics']['google_analytics_id'])): ?>
     <!-- Google Analytics 4 (GA4) -->
     <script async src="https://www.googletagmanager.com/gtag/js?id=<?= htmlspecialchars(APP_CONFIG['analytics']['google_analytics_id']) ?>"></script>
-    <script>
+    <script nonce="<?= $cspNonce ?>">
         window.dataLayer = window.dataLayer || [];
         function gtag(){dataLayer.push(arguments);}
         gtag('js', new Date());
@@ -266,7 +293,7 @@ try {
 
     <?php if (!empty(APP_CONFIG['analytics']['clarity_id'])): ?>
     <!-- Microsoft Clarity -->
-    <script>
+    <script nonce="<?= $cspNonce ?>">
         (function(c,l,a,r,i,t,y){
             c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
             t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
@@ -418,7 +445,7 @@ try {
                                 class="btn btn-outline-secondary"
                                 id="search-clear-btn"
                                 aria-label="Clear search"
-                                style="display: none;">
+                                class="d-none">
                             <i class="fa-solid fa-xmark" aria-hidden="true"></i>
                         </button>
                     </div>
@@ -694,7 +721,7 @@ try {
                         <button type="button"
                                 class="btn btn-primary"
                                 id="share-native-btn"
-                                style="display: none;">
+                                class="d-none">
                             <i class="fa-solid fa-share-from-square me-2" aria-hidden="true"></i>
                             Share via...
                         </button>
@@ -721,7 +748,7 @@ try {
     <!-- ================================================================
          TOAST NOTIFICATIONS — For non-intrusive user feedback
          ================================================================ -->
-    <div class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index: 1090;" id="toast-container"
+    <div class="toast-container position-fixed bottom-0 end-0 p-3" id="toast-container"
          aria-live="polite" aria-atomic="true">
     </div>
 
@@ -734,10 +761,13 @@ try {
             integrity="<?= $libs['jquery']['js_sri'] ?>"
             crossorigin="anonymous"
             id="jquery-js"></script>
-    <script>
-        /* Fallback: load jQuery locally if CDN fails or SRI check fails */
+    <script nonce="<?= $cspNonce ?>">
+        /* Fallback: load jQuery locally if CDN fails or SRI check fails (#117) */
         if (typeof jQuery === 'undefined') {
-            document.write('<script src="<?= $libs['jquery']['js_local'] ?>"><\/script>');
+            var s = document.createElement('script');
+            s.src = '/<?= $libs['jquery']['js_local'] ?>';
+            s.async = false;
+            document.head.appendChild(s);
         }
     </script>
 
@@ -746,17 +776,20 @@ try {
             integrity="<?= $libs['bootstrap']['js_sri'] ?>"
             crossorigin="anonymous"
             id="bootstrap-js"></script>
-    <script>
-        /* Fallback: load Bootstrap JS locally if CDN fails or SRI check fails */
+    <script nonce="<?= $cspNonce ?>">
+        /* Fallback: load Bootstrap JS locally if CDN fails or SRI check fails (#117) */
         if (typeof bootstrap === 'undefined') {
-            document.write('<script src="<?= $libs['bootstrap']['js_local'] ?>"><\/script>');
+            var s = document.createElement('script');
+            s.src = '/<?= $libs['bootstrap']['js_local'] ?>';
+            s.async = false;
+            document.head.appendChild(s);
         }
     </script>
 
     <!-- ================================================================
          iHymns Application Configuration — PHP to JavaScript bridge
          ================================================================ -->
-    <script>
+    <script nonce="<?= $cspNonce ?>">
         /**
          * Global application configuration object.
          * Passes server-side PHP configuration to the client-side JavaScript.

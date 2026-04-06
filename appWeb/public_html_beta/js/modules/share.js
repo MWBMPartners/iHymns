@@ -66,7 +66,7 @@ export class Share {
         /* Show native share button if Web Share API is available */
         if (nativeBtn) {
             if (navigator.share) {
-                nativeBtn.style.display = '';
+                nativeBtn.classList.remove('d-none');
                 nativeBtn.onclick = async () => {
                     try {
                         await navigator.share({
@@ -82,7 +82,7 @@ export class Share {
                     }
                 };
             } else {
-                nativeBtn.style.display = 'none';
+                nativeBtn.classList.add('d-none');
             }
         }
 

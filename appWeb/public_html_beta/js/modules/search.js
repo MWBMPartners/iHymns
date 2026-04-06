@@ -86,7 +86,7 @@ export class Search {
             clearBtn.addEventListener('click', () => {
                 if (searchInput) {
                     searchInput.value = '';
-                    clearBtn.style.display = 'none';
+                    clearBtn.classList.add('d-none');
                     searchInput.focus();
                 }
             });
@@ -95,7 +95,7 @@ export class Search {
         /* Show/hide clear button based on input */
         if (searchInput && clearBtn) {
             searchInput.addEventListener('input', () => {
-                clearBtn.style.display = searchInput.value ? 'block' : 'none';
+                clearBtn.classList.toggle('d-none', !searchInput.value);
             });
         }
 
