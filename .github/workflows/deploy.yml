@@ -91,6 +91,9 @@ jobs:
       # -- Build shared lftp exclude flags for all mirror commands --
       # Excludes repo metadata, IDE/editor files, OS artefacts, and
       # documentation that should never be deployed to SFTP servers.
+      # NOTE: No shell quotes around glob patterns — these are stored in
+      # GITHUB_OUTPUT and interpolated by GitHub Actions, then passed
+      # directly to lftp which handles its own glob expansion.
       - name: Build SFTP exclude flags
         id: excludes
         run: |
@@ -102,17 +105,17 @@ jobs:
           # Documentation
           EXCLUDES+=" --exclude README.md --exclude DEV_NOTES.md --exclude CLAUDE.md"
           # Apache auth (server-managed, never overwrite)
-          EXCLUDES+=" --exclude .htpasswd --exclude '.htpasswd-*' --exclude '.htpasswd.example'"
+          EXCLUDES+=" --exclude .htpasswd --exclude .htpasswd-* --exclude .htpasswd.example"
           # VS Code
           EXCLUDES+=" --exclude .vscode/"
           # JetBrains IDEs (IntelliJ, WebStorm, PhpStorm)
           EXCLUDES+=" --exclude .idea/"
           # Xcode
-          EXCLUDES+=" --exclude '*.xcodeproj' --exclude '*.xcworkspace' --exclude .xcuserdata/"
+          EXCLUDES+=" --exclude *.xcodeproj --exclude *.xcworkspace --exclude .xcuserdata/"
           # Sublime Text
-          EXCLUDES+=" --exclude '*.sublime-project' --exclude '*.sublime-workspace'"
+          EXCLUDES+=" --exclude *.sublime-project --exclude *.sublime-workspace"
           # Editor config & temp files
-          EXCLUDES+=" --exclude .editorconfig --exclude '*.swp' --exclude '*.swo' --exclude '*~'"
+          EXCLUDES+=" --exclude .editorconfig --exclude *.swp --exclude *.swo --exclude *~"
           echo "flags=$EXCLUDES" >> $GITHUB_OUTPUT
 
       # -- Check if deployable files changed in the last 5 commits --
