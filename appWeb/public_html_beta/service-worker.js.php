@@ -247,8 +247,8 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
-    /* --- Song data (songs.json): network-first, cache for offline --- */
-    if (url.pathname.endsWith('/songs.json')) {
+    /* --- Song data (served via API): network-first, cache for offline (#154) --- */
+    if (url.pathname === '/api' && url.searchParams.get('action') === 'songs_json') {
         event.respondWith(networkFirstWithCache(event.request));
         return;
     }

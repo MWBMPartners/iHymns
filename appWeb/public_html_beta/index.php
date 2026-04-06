@@ -1034,7 +1034,7 @@ if (!empty($breadcrumbItems)) {
             devStatus:      <?= json_encode($appDevStatus) ?>,
             appUrl:         <?= json_encode($appUrl) ?>,
             apiUrl:         '/api',
-            dataUrl:        '/data/songs.json',
+            dataUrl:        '/api?action=songs_json',
             nativeApps:     <?= json_encode(APP_CONFIG['native_apps']) ?>,
             features:       <?= json_encode(APP_CONFIG['features']) ?>,
             fuseJsCdn:      <?= json_encode($libs['fusejs']['js_cdn']) ?>,

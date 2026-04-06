@@ -682,34 +682,100 @@ export class SetList {
     }
 
     /* =====================================================================
-     * SHAREABLE SET LISTS (#147)
+     * SHAREABLE SET LISTS (#147, #155 server-side persistent storage)
+     *
+     * Shared setlists are stored server-side as private JSON files in
+     * appWeb/data_share/setlist_json/. Each gets a short hex ID (8 chars).
+     * The owner is identified by a random UUID stored in localStorage.
+     * Legacy base64-encoded URLs (pre-#155) are still supported as fallback.
      * ===================================================================== */
 
     /**
-     * Generate a shareable URL for a set list.
-     * Encodes the set list name and song IDs as base64 JSON in the URL.
+     * Get or create a persistent owner UUID for this browser.
+     * Used to identify who created a shared setlist so only they can update it.
      *
-     * @param {string} listId Set list ID
-     * @returns {string|null} Shareable URL or null if list not found
+     * @returns {string} UUID string
      */
-    generateShareLink(listId) {
+    getOwnerId() {
+        const key = 'ihymns_owner_id';
+        let id = localStorage.getItem(key);
+        if (!id) {
+            id = crypto.randomUUID?.() || (
+                /* Fallback for older browsers: generate UUID v4 */
+                'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+                    const r = (Math.random() * 16) | 0;
+                    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+                })
+            );
+            localStorage.setItem(key, id);
+        }
+        return id;
+    }
+
+    /**
+     * Generate a shareable URL by saving the setlist to the server.
+     * Returns a short, clean URL like /setlist/shared/a1b2c3d4.
+     *
+     * If the setlist already has a shareId (from a previous share), it
+     * sends an update request so the same link reflects the latest content.
+     *
+     * @param {string} listId Local setlist ID
+     * @returns {Promise<string|null>} Shareable URL or null on failure
+     */
+    async generateShareLink(listId) {
         const list = this.getById(listId);
         if (!list) return null;
 
-        const data = {
-            n: list.name,
-            s: list.songs.map(s => s.id),
-            v: 1,
+        const payload = {
+            name: list.name,
+            songs: list.songs.map(s => s.id),
+            owner: this.getOwnerId(),
         };
 
-        const json = JSON.stringify(data);
-        const encoded = btoa(unescape(encodeURIComponent(json)));
+        /* If this list was shared before, include the server-side ID for update */
+        if (list.shareId) {
+            payload.id = list.shareId;
+        }
 
-        return window.location.origin + '/setlist/shared/' + encoded;
+        try {
+            const response = await fetch(`${this.app.config.apiUrl}?action=setlist_share`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                },
+                body: JSON.stringify(payload),
+            });
+
+            if (!response.ok) {
+                const err = await response.json().catch(() => ({}));
+                console.error('Share failed:', err.error || response.statusText);
+                return null;
+            }
+
+            const result = await response.json();
+
+            /* Store the server-side share ID on the local setlist for future updates.
+             * Re-fetch all lists, find this one, update it, and save back. */
+            if (result.id) {
+                const allLists = this.getAll();
+                const target = allLists.find(l => l.id === listId);
+                if (target) {
+                    target.shareId = result.id;
+                    this.saveAll(allLists);
+                }
+            }
+
+            return window.location.origin + result.url;
+        } catch (error) {
+            console.error('Share request failed:', error);
+            return null;
+        }
     }
 
     /**
      * Share a set list via the Web Share API or copy-to-clipboard fallback.
+     * Posts the setlist to the server first to get a persistent short URL.
      *
      * @param {string} listId Set list ID
      */
@@ -717,14 +783,20 @@ export class SetList {
         const list = this.getById(listId);
         if (!list) return;
 
-        const shareUrl = this.generateShareLink(listId);
-        if (!shareUrl) return;
+        /* Show a brief loading indicator */
+        this.app.showToast('Creating share link...', 'info', 1500);
+
+        const shareUrl = await this.generateShareLink(listId);
+        if (!shareUrl) {
+            this.app.showToast('Failed to create share link. Please try again.', 'danger', 3000);
+            return;
+        }
 
         /* Try native Web Share API first.
          * IMPORTANT: Only pass title + url (no text). Some platforms (macOS, iOS)
          * concatenate text and url when the user chooses "Copy", resulting in
-         * a broken link like "https://…/eyJ… Test Setlist — 4 songs". Omitting
-         * text ensures the clipboard only contains the clean URL. */
+         * a broken link. Omitting text ensures the clipboard only contains
+         * the clean URL. */
         if (navigator.share) {
             try {
                 await navigator.share({
@@ -755,12 +827,13 @@ export class SetList {
     }
 
     /**
-     * Parse base64-encoded shared set list data from a URL.
+     * Parse legacy base64-encoded shared set list data from a URL.
+     * Kept for backwards compatibility with links created before #155.
      *
      * @param {string} encodedData Base64-encoded JSON string
      * @returns {{ name: string, songIds: string[], version: number }|null}
      */
-    parseSharedSetlist(encodedData) {
+    parseLegacySharedSetlist(encodedData) {
         try {
             const json = decodeURIComponent(escape(atob(encodedData)));
             const data = JSON.parse(json);
@@ -773,6 +846,33 @@ export class SetList {
                 name: data.n,
                 songIds: data.s,
                 version: data.v || 1,
+            };
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * Fetch shared setlist data from the server by short ID.
+     *
+     * @param {string} shareId 8-character hex ID
+     * @returns {Promise<{ name: string, songIds: string[] }|null>}
+     */
+    async fetchSharedSetlist(shareId) {
+        try {
+            const url = `${this.app.config.apiUrl}?action=setlist_get&id=${encodeURIComponent(shareId)}`;
+            const response = await fetch(url, {
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            });
+
+            if (!response.ok) return null;
+
+            const data = await response.json();
+            if (!data || !data.name || !Array.isArray(data.songs)) return null;
+
+            return {
+                name: data.name,
+                songIds: data.songs,
             };
         } catch {
             return null;
@@ -827,19 +927,31 @@ export class SetList {
 
     /**
      * Initialise the shared set list page.
-     * Decodes URL data, renders the read-only view, and binds import button.
+     * Detects whether the URL contains a short server-side ID (8 hex chars)
+     * or a legacy base64 string, then loads data accordingly.
      *
-     * @param {string} encodedData Base64-encoded set list data from the URL
+     * @param {string} shareData Short ID or legacy base64 string from the URL
      */
-    initSharedSetListPage(encodedData) {
+    async initSharedSetListPage(shareData) {
         const loadingEl = document.getElementById('shared-setlist-loading');
         const errorEl = document.getElementById('shared-setlist-error');
         const contentEl = document.getElementById('shared-setlist-content');
 
         if (!loadingEl || !errorEl || !contentEl) return;
 
-        /* Decode the shared data */
-        const sharedData = this.parseSharedSetlist(encodedData);
+        /* Determine if this is a server-side short ID or legacy base64 data.
+         * Short IDs are 8 hex characters; legacy base64 strings are longer
+         * and contain characters outside the hex range. */
+        let sharedData = null;
+        const isShortId = /^[a-f0-9]{6,16}$/.test(shareData);
+
+        if (isShortId) {
+            /* Fetch from server-side storage (#155) */
+            sharedData = await this.fetchSharedSetlist(shareData);
+        } else {
+            /* Legacy base64 fallback (pre-#155) */
+            sharedData = this.parseLegacySharedSetlist(shareData);
+        }
 
         if (!sharedData) {
             loadingEl.classList.add('d-none');
