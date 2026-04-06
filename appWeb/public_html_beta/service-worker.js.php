@@ -82,6 +82,7 @@ const PRECACHE_ASSETS = [
     '/js/modules/shortcuts.js',
     '/js/modules/request.js',
     '/js/modules/transpose.js',
+    '/js/modules/reading-progress.js',
     '/manifest.json',
     '/assets/favicon.svg',
 ];

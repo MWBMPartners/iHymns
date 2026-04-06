@@ -1676,3 +1676,36 @@ body.reduce-motion .shortcuts-overlay {
 .transpose-controls .badge {
     font-size: 0.8rem;
 }
+
+/* ==========================================================================
+   READING PROGRESS INDICATOR (#109)
+   ========================================================================== */
+
+.reading-progress-bar {
+    position: sticky;
+    top: var(--header-height, 56px);
+    left: 0;
+    width: 0;
+    height: 3px;
+    background: var(--bs-primary, #6366f1);
+    z-index: 1020;
+    transition: width 80ms linear;
+    border-radius: 0 2px 2px 0;
+}
+
+/* Songbook-specific accent colours */
+.reading-progress-bar[data-songbook="CP"] { background: var(--songbook-CP, #6366f1); }
+.reading-progress-bar[data-songbook="JP"] { background: var(--songbook-JP, #10b981); }
+.reading-progress-bar[data-songbook="MP"] { background: var(--songbook-MP, #f59e0b); }
+.reading-progress-bar[data-songbook="SDAH"] { background: var(--songbook-SDAH, #ef4444); }
+.reading-progress-bar[data-songbook="CH"] { background: var(--songbook-CH, #8b5cf6); }
+
+/* In presentation mode, stick to top of screen (no header) */
+body.presentation-active .reading-progress-bar {
+    top: 0;
+}
+
+/* Respect reduce-motion */
+body.reduce-motion .reading-progress-bar {
+    transition: none;
+}

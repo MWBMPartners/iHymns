@@ -34,6 +34,7 @@ import { Compare } from './modules/compare.js';
 import { Shortcuts } from './modules/shortcuts.js';
 import { Request } from './modules/request.js';
 import { Transpose } from './modules/transpose.js';
+import { ReadingProgress } from './modules/reading-progress.js';
 
 /**
  * iHymnsApp — Main application class
@@ -98,6 +99,9 @@ class iHymnsApp {
 
         /** @type {Transpose} Transpose / capo indicator (#101) */
         this.transpose = null;
+
+        /** @type {ReadingProgress} Scroll-linked reading progress (#109) */
+        this.readingProgress = null;
     }
 
     /**
@@ -178,6 +182,10 @@ class iHymnsApp {
             /* Transpose / capo indicator (#101) */
             this.transpose = new Transpose(this);
             this.transpose.init();
+
+            /* Scroll-linked reading progress (#109) */
+            this.readingProgress = new ReadingProgress(this);
+            this.readingProgress.init();
 
             /* --- Set up global event listeners --- */
             this.bindGlobalEvents();

@@ -92,6 +92,7 @@ export class Router {
 
         /* Clean up previous page state (#95) */
         this.app.display.cleanup();
+        this.app.readingProgress.cleanup();
 
         /* Run post-load hooks (e.g., initialise favourites on song pages) */
         this.afterPageLoad(page, params);
@@ -273,6 +274,7 @@ export class Router {
             this.app.display.initSongPage();
             this.app.compare.initSongPage();
             this.app.transpose.initSongPage();
+            this.app.readingProgress.initSongPage();
 
             /* Precache this song for offline access (#105) */
             if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
