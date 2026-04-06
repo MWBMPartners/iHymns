@@ -42,8 +42,14 @@ enum AppInfo {
     /// Application identity, description, and website information.
     enum Application {
 
-        /* Unique reverse-domain application identifier */
-        static let id = "Ltd.MWBMPartners.iHymns.Apple"
+        /* Shared base application identifier (common across all platforms) */
+        static let idBase = "Ltd.MWBMPartners.iHymns"
+
+        /* Platform-specific suffix */
+        static let idPlatform = "Apple"
+
+        /* Full unique reverse-domain application identifier */
+        static let id = "\(idBase).\(idPlatform)"
 
         /* Short application name (used in titles, UI) */
         static let name = "iHymns"

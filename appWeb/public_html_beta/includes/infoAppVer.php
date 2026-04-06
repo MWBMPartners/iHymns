@@ -5,7 +5,7 @@ declare(strict_types=1);
 /**
  * iHymns — Application Version & Information
  *
- * Copyright © 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright © 2026 iHymns. All rights reserved.
  * This software is proprietary. Unauthorized copying, modification, or
  * distribution is strictly prohibited.
  *
@@ -21,10 +21,10 @@ declare(strict_types=1);
  *
  * STRUCTURE:
  * Follows the same $app["Application"][...] array convention used
- * across all MWBM Partners Ltd applications (e.g., DomainCheckr/phpWhoIs).
+ * across all iHymns applications.
  *
  * USAGE:
- *   require_once __DIR__ . '/includes/infoAppVer.php';
+ *   require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
  *   echo $app["Application"]["Name"];
  *   echo $app["Application"]["Version"]["Number"];
  */
@@ -36,7 +36,8 @@ declare(strict_types=1);
  * ========================================================================= */
 if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     http_response_code(403);
-    exit('Direct access to this file is not allowed.');
+    header('Location: ' . dirname($_SERVER['REQUEST_URI'] ?? '', 2) . '/', true, 302);
+    exit('<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=../"></head><body>Redirecting to <a href="../">iHymns</a>...</body></html>');
 }
 
 /* =========================================================================
@@ -50,8 +51,14 @@ $app = [];
  * APPLICATION IDENTITY
  * ========================================================================= */
 
-/* Unique reverse-domain application identifier */
-$app["Application"]["ID"] = "Ltd.MWBMPartners.iHymns.PWA";
+/* Shared base application identifier (common across all platforms) */
+$app["Application"]["ID_Base"] = "Ltd.MWBMPartners.iHymns";
+
+/* Platform-specific suffix */
+$app["Application"]["ID_Platform"] = "PWA";
+
+/* Full unique reverse-domain application identifier */
+$app["Application"]["ID"] = $app["Application"]["ID_Base"] . "." . $app["Application"]["ID_Platform"];
 
 /* Short application name (used in titles, manifests, UI) */
 $app["Application"]["Name"] = "iHymns";
@@ -72,7 +79,7 @@ $app["Application"]["Description"]["Keywords"] = "hymns, worship, lyrics, songbo
 /* Semantic version number (MAJOR.MINOR.PATCH) */
 /* Auto-bumped by the version-bump GitHub Action on push to beta */
 /* v1.x.x = Phase 1 (local JSON data), v2.x.x = Phase 2 (iLyrics dB) */
-$app["Application"]["Version"]["Number"] = "1.0.0";
+$app["Application"]["Version"]["Number"] = "0.1.7";
 
 /* Version name: human-readable release name (e.g., "Hymnal", NULL if unused) */
 $app["Application"]["Version"]["Name"] = NULL;
@@ -117,10 +124,10 @@ $app["Application"]["Version"]["Repo"]["Commit"]["URL"] = NULL;
  * ========================================================================= */
 
 /* Primary vendor/developer name */
-$app["Application"]["Vendor"]["Name"] = "MWBM Partners Ltd";
+$app["Application"]["Vendor"]["Name"] = "iHymns";
 
 /* Primary vendor website URL */
-$app["Application"]["Vendor"]["Website"]["URL"] = "https://www.MWBMpartners.Ltd";
+$app["Application"]["Vendor"]["Website"]["URL"] = "https://ihymns.app";
 
 /* Parent company name */
 $app["Application"]["Vendor"]["Parent"]["Name"] = NULL;
@@ -143,6 +150,7 @@ $app["Application"]["Copyright"]["Year"]["Start"] = "2026";
  * This ensures the copyright notice is always current without manual updates.
  */
 $currentYear = date('Y');
+$app["Application"]["Copyright"]["UseVendor"] = FALSE;
 if ($currentYear > $app["Application"]["Copyright"]["Year"]["Start"]) {
     /* Multi-year range: "2026–2028" */
     $app["Application"]["Copyright"]["Year"]["Display"] = $app["Application"]["Copyright"]["Year"]["Start"] . "–" . $currentYear;
@@ -154,8 +162,13 @@ if ($currentYear > $app["Application"]["Copyright"]["Year"]["Start"]) {
 /* Rights statement */
 $app["Application"]["Copyright"]["RightsStatement"] = "All Rights Reserved";
 
-/* Full copyright string for display: "© 2026 MWBM Partners Ltd. All Rights Reserved" */
-$app["Application"]["Copyright"]["Full"] = "© " . $app["Application"]["Copyright"]["Year"]["Display"] . " " . $app["Application"]["Vendor"]["Name"] . ". " . $app["Application"]["Copyright"]["RightsStatement"];
+/* Full copyright string for display: "© 2026 iHymns. All Rights Reserved" */
+if (isset($app["Application"]["Copyright"]["UseVendor"]) && $app["Application"]["Copyright"]["UseVendor"]) {
+    $app["Application"]["Copyright"]["Full"] = "&copy; " . $app["Application"]["Copyright"]["Year"]["Display"] . " " . $app["Application"]["Vendor"]["Name"] . ". " . $app["Application"]["Copyright"]["RightsStatement"];
+}
+else {
+    $app["Application"]["Copyright"]["Full"] = "&copy; " . $app["Application"]["Copyright"]["Year"]["Display"] . " " . $app["Application"]["Name"] . ". " . $app["Application"]["Copyright"]["RightsStatement"];
+}
 
 /* =========================================================================
  * LICENSING — DEVELOPER

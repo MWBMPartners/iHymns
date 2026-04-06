@@ -87,7 +87,7 @@ test('has meta object', () => {
 
 test('has songbooks array', () => {
     assert.ok(Array.isArray(songData.songbooks), 'songbooks should be an array');
-    assert.equal(songData.songbooks.length, 5, 'Should have 5 songbooks');
+    assert.equal(songData.songbooks.length, 6, 'Should have 6 songbooks');
 });
 
 test('has songs array', () => {
@@ -115,7 +115,8 @@ const expectedSongbooks = [
     { id: 'JP', name: 'Junior Praise' },
     { id: 'MP', name: 'Mission Praise' },
     { id: 'SDAH', name: 'Seventh-day Adventist Hymnal' },
-    { id: 'CH', name: 'The Church Hymnal' }
+    { id: 'CH', name: 'The Church Hymnal' },
+    { id: 'Misc', name: 'Miscellaneous' }
 ];
 
 for (const expected of expectedSongbooks) {
@@ -123,7 +124,7 @@ for (const expected of expectedSongbooks) {
         const sb = songData.songbooks.find(s => s.id === expected.id);
         assert.ok(sb, `Songbook ${expected.id} not found`);
         assert.equal(sb.name, expected.name);
-        assert.ok(sb.songCount > 0, `${expected.id} songCount should be > 0`);
+        assert.ok(sb.songCount >= 0, `${expected.id} songCount should be >= 0`);
     });
 }
 

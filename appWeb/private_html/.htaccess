@@ -1,0 +1,91 @@
+# ============================================================================
+# iHymns — Private HTML Access Restriction (.htaccess)
+#
+# Copyright © 2026 iHymns. All rights reserved.
+#
+# PURPOSE:
+# Restricts access to the private_html/ directory (song editor, admin tools).
+# Uses HTTP Basic Authentication via .htpasswd file.
+#
+# SETUP:
+# 1. Generate a .htpasswd file (store OUTSIDE the web root for security):
+#
+#    htpasswd -c /home/<username>/.htpasswd-ihymns admin
+#
+#    This prompts for a password. To add more users:
+#    htpasswd /home/<username>/.htpasswd-ihymns another_user
+#
+# 2. Update the AuthUserFile path below to match your server.
+#
+# 3. On DreamHost, the .htpasswd file should be in the home directory
+#    (e.g., /home/ihymns/.htpasswd-ihymns), NOT inside public_html.
+#
+# NOTE:
+# If your hosting provider supports directory protection via the control
+# panel (e.g., DreamHost → Manage Websites → .htaccess/WebDAV), you can
+# use that instead of manually editing this file.
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# HTTP BASIC AUTHENTICATION
+# Requires a valid username and password to access any file in this directory.
+# ----------------------------------------------------------------------------
+AuthType Basic
+
+# The message shown in the browser's login prompt
+AuthName "iHymns Administration — Authorised Personnel Only"
+
+# Path to the password file (MUST be an absolute server path)
+# IMPORTANT: Update this path to match your server's home directory.
+# The .htpasswd file should be OUTSIDE the web-accessible directory tree.
+#
+# DreamHost example:  /home/ihymns/.htpasswd-ihymns
+# cPanel example:     /home/username/.htpasswd-ihymns
+# Generic example:    /var/www/.htpasswd-ihymns
+AuthUserFile /home/ihymns/.htpasswd-ihymns
+
+# Only allow authenticated users
+Require valid-user
+
+# ----------------------------------------------------------------------------
+# ADDITIONAL IP RESTRICTION (Optional)
+# Uncomment and adjust to restrict access to specific IP addresses
+# IN ADDITION to password authentication (belt and braces).
+# ----------------------------------------------------------------------------
+# <RequireAll>
+#     Require valid-user
+#     Require ip 203.0.113.0/24
+#     Require ip 198.51.100.42
+# </RequireAll>
+
+# ----------------------------------------------------------------------------
+# SECURITY HEADERS
+# Apply the same security headers as the main site.
+# ----------------------------------------------------------------------------
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options "nosniff"
+    Header set X-Frame-Options "DENY"
+    Header set X-XSS-Protection "1; mode=block"
+    Header set Referrer-Policy "strict-origin-when-cross-origin"
+    Header set Cache-Control "no-store, no-cache, must-revalidate, max-age=0"
+    Header set Pragma "no-cache"
+</IfModule>
+
+# ----------------------------------------------------------------------------
+# PREVENT DIRECTORY LISTING
+# Do not allow browsing the directory contents without a specific filename.
+# ----------------------------------------------------------------------------
+Options -Indexes
+
+# ----------------------------------------------------------------------------
+# BLOCK SENSITIVE FILES
+# Prevent direct access to any backup, config, or hidden files.
+# ----------------------------------------------------------------------------
+<FilesMatch "\.(bak|orig|old|save|swp|swo|tmp|log|env|sql)$">
+    Require all denied
+</FilesMatch>
+
+# Block access to hidden files (except .htaccess itself)
+<FilesMatch "^\.(?!htaccess)">
+    Require all denied
+</FilesMatch>

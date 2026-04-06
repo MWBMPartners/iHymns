@@ -293,6 +293,22 @@ function main() {
     const fileCount = copyDirectoryRecursive(SOURCE_DIR, DIST_DIR);
     console.log(`  ✅ Copied ${fileCount} files`);
 
+    /* Step 2b: Sync appWeb/data/songs.json from canonical source (data/songs.json) */
+    /* On the server, data/ lives one directory up from public_html/ and is shared
+       across all environments. The deploy workflow uploads appWeb/data/ separately. */
+    const songsSource = path.join(PROJECT_ROOT, 'data', 'songs.json');
+    const appWebData = path.join(PROJECT_ROOT, 'appWeb', 'data', 'songs.json');
+    if (fs.existsSync(songsSource)) {
+        const dataDir = path.dirname(appWebData);
+        if (!fs.existsSync(dataDir)) {
+            fs.mkdirSync(dataDir, { recursive: true });
+        }
+        fs.copyFileSync(songsSource, appWebData);
+        console.log('  ✅ Synced data/songs.json → appWeb/data/songs.json');
+    } else {
+        console.warn('  ⚠️  data/songs.json not found — run "npm run parse-songs" first');
+    }
+
     /* Step 3: Inject build metadata */
     console.log('  📦 Injecting build metadata...');
     injectBuildMetadata(DIST_DIR, target);

@@ -177,7 +177,18 @@ jobs:
             fi
           fi
 
-      # -- Install minification tools globally via npm --
+      # -- Copy songs.json INTO each deployment source directory --
+      # songs.json is identical across all environments, so we copy the
+      # canonical data/songs.json directly into the source dir at data/songs.json.
+      # The app loads it from data/songs.json (same directory, no ../ needed).
+      - name: Copy songs.json into deployment source
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          SOURCE_DIR="${{ steps.target.outputs.source_dir }}"
+          mkdir -p "${SOURCE_DIR}data"
+          cp data/songs.json "${SOURCE_DIR}data/songs.json"
+          echo "Copied data/songs.json into ${SOURCE_DIR}data/"
+
       - name: Install minification tools
         if: steps.changes.outputs.has_changes == 'true'
         run: |
@@ -314,7 +325,7 @@ jobs:
           cat > /tmp/lftp_script.txt <<LFTP_EOF
           set sftp:connect-program "ssh -o StrictHostKeyChecking=no -i $HOME/.ssh/deploy_key -p ${SFTP_PORT}"
           open sftp://${SFTP_USER}@${SFTP_HOST}:${SFTP_PORT}
-          mirror --reverse --delete --verbose --only-newer --no-empty-dirs --exclude .DS_Store --exclude .gitkeep --exclude .gitignore --exclude README.md --exclude CHANGELOG.md --exclude DEV_NOTES.md ${SOURCE_DIR} ${REMOTE_PATH}
+          mirror --reverse --delete --verbose --only-newer --no-empty-dirs --exclude .DS_Store --exclude .gitkeep --exclude .gitignore --exclude README.md --exclude CHANGELOG.md --exclude DEV_NOTES.md --exclude .htpasswd --exclude '.htpasswd-*' --exclude '.htpasswd.example' ${SOURCE_DIR} ${REMOTE_PATH}
           bye
           LFTP_EOF
           lftp -f /tmp/lftp_script.txt
@@ -338,19 +349,112 @@ jobs:
             ${SOURCE_DIR} ${REMOTE_PATH}; bye" \
             "sftp://${SFTP_HOST}:${SFTP_PORT}"
 
+      # ================================================================
+      # PRIVATE_HTML DEPLOYMENT
+      # Uploads appWeb/private_html/ to its own SFTP directory.
+      # Runs alongside the public deployment when private files changed.
+      # ================================================================
+
+      # -- Copy songs.json into private_html/ for the editor --
+      - name: Copy songs.json into private_html
+        if: steps.changes.outputs.has_changes == 'true' || contains(github.event.head_commit.message, '[deploy all]')
+        run: |
+          mkdir -p appWeb/private_html/data
+          cp data/songs.json appWeb/private_html/data/songs.json
+          echo "Copied data/songs.json into appWeb/private_html/data/"
+
+      # -- Check if private_html/ files changed --
+      - name: Check private_html changes
+        id: private_changes
+        run: |
+          COMMIT_MSG=$(git log -1 --pretty=format:"%s")
+          if echo "$COMMIT_MSG" | grep -q "\[deploy all\]"; then
+            echo "has_private_changes=true" >> $GITHUB_OUTPUT
+          else
+            CHANGED=$(git diff --name-only HEAD~5 HEAD -- "appWeb/private_html/" 2>/dev/null \
+              | grep -vE '\.DS_Store|\.gitkeep|\.gitignore|\.htpasswd' | sort -u || true)
+            if [[ -z "$CHANGED" ]]; then
+              echo "has_private_changes=false" >> $GITHUB_OUTPUT
+            else
+              echo "has_private_changes=true" >> $GITHUB_OUTPUT
+              echo "Private files changed:"
+              echo "$CHANGED"
+            fi
+          fi
+
+      # -- Deploy private_html/ via SFTP (SSH key) --
+      - name: Deploy private_html via SFTP (SSH key)
+        if: >-
+          steps.private_changes.outputs.has_private_changes == 'true'
+          && steps.auth.outputs.method == 'key'
+        env:
+          SFTP_USER: ${{ secrets.SFTP_USER }}
+          SFTP_HOST: ${{ secrets.SFTP_HOST }}
+          SFTP_PORT: ${{ steps.port.outputs.port }}
+          SFTP_KEY: ${{ secrets.SFTP_KEY }}
+          REMOTE_PATH: ${{ secrets.SFTP_PRIVATE_PATH }}
+        run: |
+          # Skip if SFTP_PRIVATE_PATH is not configured
+          if [[ -z "$REMOTE_PATH" ]]; then
+            echo "SFTP_PRIVATE_PATH not set — skipping private_html deployment"
+            exit 0
+          fi
+          cat > /tmp/lftp_private.txt <<LFTP_EOF
+          set sftp:connect-program "ssh -o StrictHostKeyChecking=no -i $HOME/.ssh/deploy_key -p ${SFTP_PORT}"
+          open sftp://${SFTP_USER}@${SFTP_HOST}:${SFTP_PORT}
+          mirror --reverse --delete --verbose --only-newer --no-empty-dirs --exclude .DS_Store --exclude .gitkeep --exclude .gitignore --exclude .htpasswd --exclude '.htpasswd-*' --exclude '.htpasswd.example' appWeb/private_html/ ${REMOTE_PATH}
+          bye
+          LFTP_EOF
+          lftp -f /tmp/lftp_private.txt
+          echo "Private HTML deployed to ${REMOTE_PATH}"
+
+      # -- Deploy private_html/ via SFTP (password) --
+      - name: Deploy private_html via SFTP (password)
+        if: >-
+          steps.private_changes.outputs.has_private_changes == 'true'
+          && steps.auth.outputs.method == 'password'
+        env:
+          SFTP_USER: ${{ secrets.SFTP_USER }}
+          SFTP_PASS: ${{ secrets.SFTP_PASSWORD }}
+          SFTP_HOST: ${{ secrets.SFTP_HOST }}
+          SFTP_PORT: ${{ steps.port.outputs.port }}
+          REMOTE_PATH: ${{ secrets.SFTP_PRIVATE_PATH }}
+        run: |
+          # Skip if SFTP_PRIVATE_PATH is not configured
+          if [[ -z "$REMOTE_PATH" ]]; then
+            echo "SFTP_PRIVATE_PATH not set — skipping private_html deployment"
+            exit 0
+          fi
+          lftp -u "${SFTP_USER},${SFTP_PASS}" \
+            -e "set sftp:auto-confirm yes; set ssl:verify-certificate no; \
+            mirror --reverse --delete --verbose --only-newer --no-empty-dirs \
+            --exclude .DS_Store --exclude .gitkeep --exclude .gitignore \
+            --exclude .htpasswd --exclude '.htpasswd-*' --exclude '.htpasswd.example' \
+            appWeb/private_html/ ${REMOTE_PATH}; bye" \
+            "sftp://${SFTP_HOST}:${SFTP_PORT}"
+          echo "Private HTML deployed to ${REMOTE_PATH}"
+
+      # ================================================================
+      # DEPLOYMENT SUMMARY
+      # ================================================================
+
       # -- Deployment summary in GitHub Actions UI --
       - name: Deployment summary
-        if: steps.changes.outputs.has_changes == 'true'
+        if: steps.changes.outputs.has_changes == 'true' || steps.private_changes.outputs.has_private_changes == 'true'
         run: |
-          echo "### ✅ Deployed to ${{ steps.target.outputs.channel }}" >> $GITHUB_STEP_SUMMARY
+          echo "### ✅ Deployment Complete" >> $GITHUB_STEP_SUMMARY
           echo "- **Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Source:** ${{ steps.target.outputs.source_dir }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Remote path:** ${{ steps.target.outputs.remote_path }}" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ steps.changes.outputs.has_changes }}" == "true" ]]; then
+            echo "- **Public:** ${{ steps.target.outputs.source_dir }} → ${{ steps.target.outputs.channel }}" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [[ "${{ steps.private_changes.outputs.has_private_changes }}" == "true" ]]; then
+            echo "- **Private:** appWeb/private_html/ → private server path" >> $GITHUB_STEP_SUMMARY
+          fi
 
       # -- No-deploy summary --
       - name: Skip summary
-        if: steps.changes.outputs.has_changes == 'false'
+        if: steps.changes.outputs.has_changes == 'false' && steps.private_changes.outputs.has_private_changes == 'false'
         run: |
           echo "### ⏭️ No deployment needed" >> $GITHUB_STEP_SUMMARY
-          echo "No deployable files changed in ${{ steps.target.outputs.source_dir }}" >> $GITHUB_STEP_SUMMARY
+          echo "No deployable files changed." >> $GITHUB_STEP_SUMMARY

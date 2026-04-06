@@ -33,6 +33,7 @@ The web app deploys via SFTP using `lftp` (mirroring the phpWhoIs pattern).
 | `SFTP_LIVE_PATH` | ✅ Secret | Remote path for production (e.g., `/home/user/ihymns.app/public_html/`) |
 | `SFTP_BETA_PATH` | ✅ Secret | Remote path for beta (e.g., `/home/user/beta.ihymns.app/public_html/`) |
 | `SFTP_DEV_PATH` | ❌ Secret | Remote path for alpha/dev (e.g., `/home/user/dev.ihymns.app/public_html/`) |
+| `SFTP_PRIVATE_PATH` | ❌ Secret | Remote path for private_html (e.g., `/home/user/admin.ihymns.app/`) — song editor, admin tools |
 | `SFTP_ENABLED` | ✅ Variable | Set to `true` to enable SFTP deployment (kill switch). **Must be a Variable, not a Secret.** |
 
 > ⭐ Either `SFTP_KEY` or `SFTP_PASSWORD` is required. SSH key auth is preferred.
@@ -215,6 +216,7 @@ Fire OS uses the **same APK** as standard Android (no Google Play Services depen
 - [ ] Set `SFTP_LIVE_PATH` secret
 - [ ] Set `SFTP_BETA_PATH` secret
 - [ ] Set `SFTP_ENABLED` **variable** to `true`
+- [ ] (Optional) Set `SFTP_PRIVATE_PATH` for song editor/admin tools deployment
 
 #### Minimum for Apple deployment
 

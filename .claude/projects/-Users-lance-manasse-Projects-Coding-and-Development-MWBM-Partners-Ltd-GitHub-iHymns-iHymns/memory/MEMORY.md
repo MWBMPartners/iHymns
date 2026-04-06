@@ -1,5 +1,7 @@
 - [User Profile](user_profile.md) — Lance at MWBM Partners Ltd, wants detailed annotations, modular architecture
-- [iHymns Project](project_ihymns.md) — Multiplatform Christian lyrics app, ~7,415 songs, v1.x.x local JSON, v2.x.x iLyrics dB
+- [iHymns Project](project_ihymns.md) — Multiplatform Christian lyrics app, 6 songbooks, 3,612 songs
 - [Never touch SourceSongData](feedback_source_data.md) — .SourceSongData/ must never be deleted or modified
-- [Use appWeb not web](feedback_appweb_dir.md) — Web directory is appWeb/ with public_html, public_html_beta, public_html_dev, private_html
-- [Web app can use PHP](feedback_php_web.md) — PHP files OK for flexibility on shared hosting (DreamHost etc.)
+- [Use appX/ directories](feedback_app_dirs.md) — appWeb/, appApple/, appAndroid/ naming convention
+- [Web app can use PHP](feedback_php_web.md) — PHP 8.5+ on shared hosting (DreamHost)
+- [Phase 1 is first iteration](feedback_phase1_simplicity.md) — Don't over-engineer JSON file distribution, Phase 2 API fixes it
+- [Clean neutral colours](feedback_colours.md) — Slate/grey neutral scheme, no bright/vivid colours on songbook cards

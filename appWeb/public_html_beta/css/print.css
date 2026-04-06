@@ -1,80 +1,108 @@
 /**
  * iHymns — Print Stylesheet
  *
- * Copyright © 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
- * Optimises the song detail view for printing.
- * Hides navigation, search, footer, and other UI chrome.
- * Ensures lyrics are readable in black-and-white on paper.
+ * Optimised layout for printing song lyrics. Hides navigation,
+ * adjusts colours for print, and ensures clean, readable output.
  */
 
-/* Hide all non-essential elements when printing */
-#main-navbar,
-#install-banner,
-#app-footer,
-.song-actions,
-.back-btn,
-.app-breadcrumb,
-.favorite-btn,
-.media-indicator {
-    display: none !important;
-}
+@media print {
+    /* Hide non-essential elements */
+    .app-header,
+    .app-footer,
+    .pwa-install-banner,
+    #skip-nav,
+    .btn-favourite,
+    .btn-share,
+    .btn-audio,
+    .btn-sheet-music,
+    .btn-print,
+    .song-navigation,
+    .toast-container,
+    .modal {
+        display: none !important;
+    }
 
-/* Reset body to simple print styles */
-body {
-    font-family: 'Georgia', 'Times New Roman', serif;
-    font-size: 12pt;
-    color: #000000;
-    background: #ffffff;
-}
+    /* Reset page layout */
+    body {
+        background: #ffffff !important;
+        color: #000000 !important;
+        font-size: 12pt;
+        line-height: 1.5;
+    }
 
-/* Song title: large and bold */
-.song-detail-title {
-    font-size: 18pt;
-    color: #000000;
-    margin-bottom: 4pt;
-}
+    .main-content {
+        padding: 0 !important;
+        min-height: auto !important;
+    }
 
-/* Song metadata: smaller, italic */
-.song-detail-meta {
-    font-size: 10pt;
-    color: #333333;
-    border-bottom: 1px solid #cccccc;
-    padding-bottom: 8pt;
-    margin-bottom: 12pt;
-}
+    .page-content {
+        padding: 0 !important;
+        max-width: 100% !important;
+    }
 
-/* Lyrics: comfortable reading size */
-.song-component-lyrics {
-    font-size: 12pt;
-    line-height: 1.6;
-}
+    /* Song header */
+    .card-song-header {
+        border: none !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+        border-left: 3px solid #000000 !important;
+        border-radius: 0 !important;
+    }
 
-/* Component labels */
-.song-component-label {
-    font-size: 9pt;
-    color: #666666;
-}
+    /* Lyrics */
+    .song-lyrics {
+        font-size: 12pt !important;
+    }
 
-/* Chorus/refrain: indent but no colour border */
-.song-component-chorus .song-component-lyrics,
-.song-component-refrain .song-component-lyrics {
-    padding-left: 24pt;
-    border-left: 2pt solid #999999;
-    font-style: italic;
-}
+    .lyric-component {
+        break-inside: avoid;
+        page-break-inside: avoid;
+    }
 
-/* Credits: small footer text */
-.song-credits {
-    font-size: 9pt;
-    color: #666666;
-    border-top: 1px solid #cccccc;
-    margin-top: 16pt;
-    padding-top: 8pt;
-}
+    .lyric-chorus,
+    .lyric-refrain {
+        background-color: #f5f5f5 !important;
+        border-left-color: #000000 !important;
+    }
 
-/* Ensure no page break inside a component */
-.song-component {
-    page-break-inside: avoid;
+    .lyric-label {
+        color: #333333 !important;
+    }
+
+    /* Links */
+    a {
+        color: #000000 !important;
+        text-decoration: none !important;
+    }
+
+    /* Copyright */
+    .song-copyright {
+        border-top: 1px solid #cccccc !important;
+        padding-top: 0.5rem !important;
+        font-size: 9pt !important;
+        color: #666666 !important;
+    }
+
+    /* Page breaks */
+    .page-song {
+        page-break-before: avoid;
+    }
+
+    /* Badges */
+    .badge {
+        border: 1px solid #cccccc !important;
+        background: transparent !important;
+        color: #000000 !important;
+    }
+
+    .song-number-badge,
+    .song-number-badge-lg {
+        background: #000000 !important;
+        color: #ffffff !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
 }

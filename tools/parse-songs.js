@@ -83,6 +83,10 @@ const SONGBOOK_CONFIG = {
   'The Church Hymnal [CH]': {
     id: 'CH',
     name: 'The Church Hymnal'
+  },
+  'Miscellaneous [Misc]': {
+    id: 'Misc',
+    name: 'Miscellaneous'
   }
 };
 
