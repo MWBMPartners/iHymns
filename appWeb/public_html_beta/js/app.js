@@ -37,6 +37,7 @@ import { Transpose } from './modules/transpose.js';
 import { ReadingProgress } from './modules/reading-progress.js';
 import { SongbookIndex } from './modules/songbook-index.js';
 import { SearchHistory } from './modules/search-history.js';
+import { SongOfTheDay } from './modules/song-of-the-day.js';
 
 /**
  * iHymnsApp — Main application class
@@ -110,6 +111,9 @@ class iHymnsApp {
 
         /** @type {SearchHistory} Recent search terms (#110) */
         this.searchHistory = null;
+
+        /** @type {SongOfTheDay} Song of the Day (#108) */
+        this.songOfTheDay = null;
     }
 
     /**
@@ -202,6 +206,10 @@ class iHymnsApp {
             /* Recent search terms (#110) */
             this.searchHistory = new SearchHistory(this);
             this.searchHistory.init();
+
+            /* Song of the Day (#108) */
+            this.songOfTheDay = new SongOfTheDay(this);
+            this.songOfTheDay.init();
 
             /* --- Set up global event listeners --- */
             this.bindGlobalEvents();

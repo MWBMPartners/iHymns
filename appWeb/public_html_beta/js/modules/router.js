@@ -302,6 +302,7 @@ export class Router {
         /* Render recently viewed section on home page (#92) */
         if (page === 'home') {
             this.app.history.renderHomeSection();
+            this.app.songOfTheDay.renderHomeSection();
         }
 
         /* Initialise favourites list on favorites page */

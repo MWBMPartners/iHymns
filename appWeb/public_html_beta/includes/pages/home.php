@@ -99,6 +99,9 @@ $songbooks = $songData->getSongbooks();
         </div>
     </div>
 
+    <!-- Song of the Day (#108) — populated by JS -->
+    <div id="song-of-the-day"></div>
+
     <!-- Songbook Cards Grid -->
     <h2 class="h5 mb-3">
         <i class="fa-solid fa-book-open me-2" aria-hidden="true"></i>

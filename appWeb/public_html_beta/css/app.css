@@ -1805,3 +1805,33 @@ body.reduce-motion .song-list-item.alphabet-highlight {
 .search-history-chip .btn-close-sm:hover {
     opacity: 1;
 }
+
+/* ==========================================================================
+   SONG OF THE DAY (#108)
+   ========================================================================== */
+
+.card-song-of-the-day {
+    border-left: 4px solid var(--bs-warning, #ffc107);
+    background: var(--bs-body-bg, #fff);
+}
+
+.sotd-icon {
+    width: 2.5rem;
+    height: 2.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bs-warning-bg-subtle, #fff3cd);
+    color: var(--bs-warning, #ffc107);
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.card-song-of-the-day .card-title {
+    color: var(--bs-body-color, #000);
+    transition: color 0.15s ease;
+}
+
+.card-song-of-the-day .card-title:hover {
+    color: var(--bs-primary, #6366f1);
+}
