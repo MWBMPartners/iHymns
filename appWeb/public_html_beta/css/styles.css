@@ -424,16 +424,16 @@ body {
     box-shadow: 0 8px 24px rgba(251, 191, 36, 0.2);
 }
 
-/* Songbook card header: warm gradient matching brand */
+/* Songbook card header: background set via inline style from JS */
+/* Uses a single soft warm amber gradient for all cards */
 .songbook-card-header {
-    background: var(--ihymns-surface-glow);
-    color: #1c1917;
     padding: 1.25rem;
+    color: #3d2400;
 }
 
-/* Dark mode: header text should be light */
+/* Dark mode: slightly lighter text for readability on the amber header */
 [data-bs-theme="dark"] .songbook-card-header {
-    color: #fef3e2;
+    color: #3d2400;
 }
 
 /* Songbook card body: contains the song count and description */
