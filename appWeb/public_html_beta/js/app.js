@@ -33,6 +33,7 @@ import { Display } from './modules/display.js';
 import { Compare } from './modules/compare.js';
 import { Shortcuts } from './modules/shortcuts.js';
 import { Request } from './modules/request.js';
+import { Transpose } from './modules/transpose.js';
 
 /**
  * iHymnsApp — Main application class
@@ -94,6 +95,9 @@ class iHymnsApp {
 
         /** @type {Request} Missing song request form (#107) */
         this.request = null;
+
+        /** @type {Transpose} Transpose / capo indicator (#101) */
+        this.transpose = null;
     }
 
     /**
@@ -170,6 +174,10 @@ class iHymnsApp {
             /* Missing song request form (#107) */
             this.request = new Request(this);
             this.request.init();
+
+            /* Transpose / capo indicator (#101) */
+            this.transpose = new Transpose(this);
+            this.transpose.init();
 
             /* --- Set up global event listeners --- */
             this.bindGlobalEvents();

@@ -1630,3 +1630,27 @@ body.reduce-motion .compare-overlay {
 body.reduce-motion .shortcuts-overlay {
     transition: none;
 }
+
+/* ==========================================================================
+   TRANSPOSE / CAPO CONTROLS (#101)
+   ========================================================================== */
+
+.transpose-controls {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.transpose-key-display {
+    font-size: 0.9rem;
+}
+
+.transpose-controls .btn-group .btn {
+    padding: 0.2rem 0.5rem;
+    font-size: 0.8rem;
+}
+
+.transpose-controls .badge {
+    font-size: 0.8rem;
+}

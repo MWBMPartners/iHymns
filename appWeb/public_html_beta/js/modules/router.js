@@ -272,6 +272,7 @@ export class Router {
             this.app.setList.renderSongNavigation();
             this.app.display.initSongPage();
             this.app.compare.initSongPage();
+            this.app.transpose.initSongPage();
 
             /* Precache this song for offline access (#105) */
             if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
