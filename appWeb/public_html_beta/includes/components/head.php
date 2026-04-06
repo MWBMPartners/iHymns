@@ -7,7 +7,7 @@
  *
  * PURPOSE:
  * Reusable <head> section containing meta tags, stylesheets, and PWA config.
- * Include via: <?php require_once __DIR__ . '/includes/components/head.php'; ?>
+ * Include via: require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'components' . DIRECTORY_SEPARATOR . 'head.php';
  *
  * REQUIRES: $app array from infoAppVer.php to be loaded before inclusion.
  *

@@ -26,12 +26,12 @@ declare(strict_types=1);
  */
 
 /* Load the application version/metadata configuration */
-require_once __DIR__ . '/includes/infoAppVer.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
 ?>
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="light">
 <head>
-<?php require __DIR__ . '/includes/components/head.php'; ?>
+<?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'components' . DIRECTORY_SEPARATOR . 'head.php'; ?>
 </head>
 
 <body>
@@ -39,10 +39,10 @@ require_once __DIR__ . '/includes/infoAppVer.php';
     <a href="#app-content" class="skip-to-content">Skip to main content</a>
 
     <!-- Navigation bar -->
-<?php require __DIR__ . '/includes/components/navbar.php'; ?>
+<?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'components' . DIRECTORY_SEPARATOR . 'navbar.php'; ?>
 
     <!-- PWA install banner -->
-<?php require __DIR__ . '/includes/components/install-banner.php'; ?>
+<?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'components' . DIRECTORY_SEPARATOR . 'install-banner.php'; ?>
 
     <!-- Main content area: views rendered dynamically by JavaScript (SPA) -->
     <main class="container-fluid py-3" id="app-content" role="main">
@@ -56,9 +56,9 @@ require_once __DIR__ . '/includes/infoAppVer.php';
     </main>
 
     <!-- Footer -->
-<?php require __DIR__ . '/includes/components/footer.php'; ?>
+<?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'components' . DIRECTORY_SEPARATOR . 'footer.php'; ?>
 
     <!-- JavaScript dependencies -->
-<?php require __DIR__ . '/includes/components/scripts.php'; ?>
+<?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'components' . DIRECTORY_SEPARATOR . 'scripts.php'; ?>
 </body>
 </html>

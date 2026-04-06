@@ -24,7 +24,7 @@ declare(strict_types=1);
  * across all MWBM Partners Ltd applications (e.g., DomainCheckr/phpWhoIs).
  *
  * USAGE:
- *   require_once __DIR__ . '/includes/infoAppVer.php';
+ *   require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
  *   echo $app["Application"]["Name"];
  *   echo $app["Application"]["Version"]["Number"];
  */
