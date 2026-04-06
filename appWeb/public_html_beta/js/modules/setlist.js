@@ -325,6 +325,10 @@ export class SetList {
                             aria-label="Copy set list to clipboard" title="Copy">
                         <i class="fa-solid fa-copy" aria-hidden="true"></i>
                     </button>
+                    <button type="button" class="btn btn-outline-secondary" id="setlist-print-btn"
+                            aria-label="Print set list" title="Print">
+                        <i class="fa-solid fa-print" aria-hidden="true"></i>
+                    </button>
                     <button type="button" class="btn btn-outline-primary" id="setlist-activate-btn"
                             aria-label="Activate set list for navigation" title="Use this set list">
                         <i class="fa-solid fa-play me-1" aria-hidden="true"></i> Use
@@ -356,6 +360,11 @@ export class SetList {
         /* Copy to clipboard */
         container.querySelector('#setlist-copy-btn')?.addEventListener('click', () => {
             this.copyToClipboard(list);
+        });
+
+        /* Print set list (#113) */
+        container.querySelector('#setlist-print-btn')?.addEventListener('click', () => {
+            this.printSetList(list);
         });
 
         /* Activate for navigation */
@@ -724,6 +733,140 @@ export class SetList {
         } catch {
             return '';
         }
+    }
+
+    /* =====================================================================
+     * PRINT SET LIST (#113)
+     * ===================================================================== */
+
+    /**
+     * Print a set list with full lyrics for all songs.
+     * Fetches each song's page content, builds a print document, and prints.
+     * @param {object} list The set list { id, name, createdAt, songs }
+     */
+    async printSetList(list) {
+        if (!list.songs || list.songs.length === 0) {
+            this.app.showToast('No songs to print.', 'warning');
+            return;
+        }
+
+        this.app.showToast('Preparing print layout...', 'info', 2000);
+
+        /* Fetch all song pages in parallel */
+        const songPages = await Promise.all(
+            list.songs.map(async (song) => {
+                try {
+                    const url = `${this.app.config.apiUrl}?page=song&id=${encodeURIComponent(song.id)}`;
+                    const response = await fetch(url, {
+                        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+                    });
+                    if (!response.ok) return null;
+                    return { song, html: await response.text() };
+                } catch {
+                    return null;
+                }
+            })
+        );
+
+        /* Build print document */
+        const printWindow = window.open('', '_blank', 'width=800,height=600');
+        if (!printWindow) {
+            this.app.showToast('Pop-up blocked. Please allow pop-ups for printing.', 'danger');
+            return;
+        }
+
+        const dateStr = new Date().toLocaleDateString(undefined, {
+            weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
+        });
+
+        /* Build running order summary */
+        const orderSummary = list.songs.map((song, i) =>
+            `<tr><td class="pe-3 text-muted">${i + 1}.</td><td>${this.escapeHtml(song.title)}</td><td class="text-muted">${this.escapeHtml(song.songbook)} #${song.number || '?'}</td></tr>`
+        ).join('');
+
+        /* Build individual song pages */
+        let songPagesHtml = '';
+        songPages.forEach((page, index) => {
+            if (!page) return;
+            songPagesHtml += `
+                <div class="print-song-page">
+                    <div class="print-song-header">
+                        <span class="print-song-order">${index + 1}</span>
+                        <h2>${this.escapeHtml(page.song.title)}</h2>
+                        <p class="print-song-meta">${this.escapeHtml(page.song.songbook)} #${page.song.number || '?'}</p>
+                    </div>
+                    <div class="print-song-content">${page.html}</div>
+                </div>`;
+        });
+
+        printWindow.document.write(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>${this.escapeHtml(list.name)} — iHymns Set List</title>
+    <style>
+        @page { margin: 2cm; size: A4; }
+        * { box-sizing: border-box; }
+        body { font-family: Georgia, 'Times New Roman', serif; font-size: 12pt; line-height: 1.6; color: #000; margin: 0; padding: 0; }
+
+        /* Cover page */
+        .print-cover { text-align: center; page-break-after: always; padding-top: 30vh; }
+        .print-cover h1 { font-size: 24pt; margin-bottom: 0.5em; }
+        .print-cover .print-date { font-size: 14pt; color: #666; margin-bottom: 2em; }
+        .print-cover .print-song-count { font-size: 12pt; color: #999; }
+
+        /* Running order */
+        .print-order { page-break-after: always; }
+        .print-order h2 { font-size: 16pt; margin-bottom: 1em; border-bottom: 2px solid #000; padding-bottom: 0.3em; }
+        .print-order table { width: 100%; border-collapse: collapse; }
+        .print-order td { padding: 0.3em 0.5em; border-bottom: 1px solid #eee; font-size: 11pt; }
+
+        /* Individual songs */
+        .print-song-page { page-break-before: always; }
+        .print-song-header { margin-bottom: 1.5em; border-bottom: 2px solid #333; padding-bottom: 0.5em; }
+        .print-song-order { display: inline-block; width: 2em; height: 2em; line-height: 2em; text-align: center; background: #333; color: #fff; border-radius: 50%; font-weight: bold; float: left; margin-right: 0.75em; margin-top: 0.2em; }
+        .print-song-header h2 { font-size: 18pt; margin: 0 0 0.2em; }
+        .print-song-meta { color: #666; font-size: 10pt; margin: 0; }
+
+        /* Song content overrides */
+        .print-song-content .breadcrumb,
+        .print-song-content .song-navigation,
+        .print-song-content .d-flex.flex-wrap.gap-2,
+        .print-song-content .card-song-header { display: none !important; }
+        .print-song-content .song-lyrics { margin: 0; }
+        .print-song-content .lyric-component { margin-bottom: 1em; }
+        .print-song-content .lyric-label { font-weight: bold; font-size: 10pt; color: #666; margin-bottom: 0.3em; }
+        .print-song-content .lyric-line { margin: 0.1em 0; }
+        .print-song-content .song-copyright { font-size: 9pt; color: #999; margin-top: 1em; }
+
+        @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+    </style>
+</head>
+<body>
+    <!-- Cover Page -->
+    <div class="print-cover">
+        <h1>${this.escapeHtml(list.name)}</h1>
+        <p class="print-date">${dateStr}</p>
+        <p class="print-song-count">${list.songs.length} song${list.songs.length !== 1 ? 's' : ''}</p>
+    </div>
+
+    <!-- Running Order -->
+    <div class="print-order">
+        <h2>Running Order</h2>
+        <table>${orderSummary}</table>
+    </div>
+
+    <!-- Songs -->
+    ${songPagesHtml}
+</body>
+</html>`);
+
+        printWindow.document.close();
+
+        /* Wait for content to load then trigger print */
+        printWindow.onload = () => {
+            printWindow.print();
+        };
     }
 
     /**
