@@ -475,10 +475,9 @@ try {
                                autocomplete="off"
                                spellcheck="false">
                         <button type="button"
-                                class="btn btn-outline-secondary"
+                                class="btn btn-outline-secondary d-none"
                                 id="search-clear-btn"
-                                aria-label="Clear search"
-                                class="d-none">
+                                aria-label="Clear search">
                             <i class="fa-solid fa-xmark" aria-hidden="true"></i>
                         </button>
                     </div>
