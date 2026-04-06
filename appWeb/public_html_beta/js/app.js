@@ -35,6 +35,7 @@ import { Shortcuts } from './modules/shortcuts.js';
 import { Request } from './modules/request.js';
 import { Transpose } from './modules/transpose.js';
 import { ReadingProgress } from './modules/reading-progress.js';
+import { SongbookIndex } from './modules/songbook-index.js';
 
 /**
  * iHymnsApp — Main application class
@@ -102,6 +103,9 @@ class iHymnsApp {
 
         /** @type {ReadingProgress} Scroll-linked reading progress (#109) */
         this.readingProgress = null;
+
+        /** @type {SongbookIndex} Songbook alphabetical index (#111) */
+        this.songbookIndex = null;
     }
 
     /**
@@ -186,6 +190,10 @@ class iHymnsApp {
             /* Scroll-linked reading progress (#109) */
             this.readingProgress = new ReadingProgress(this);
             this.readingProgress.init();
+
+            /* Songbook alphabetical index (#111) */
+            this.songbookIndex = new SongbookIndex(this);
+            this.songbookIndex.init();
 
             /* --- Set up global event listeners --- */
             this.bindGlobalEvents();

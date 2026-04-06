@@ -319,6 +319,11 @@ export class Router {
             this.app.setList.initSetListPage();
         }
 
+        /* Initialise songbook index (#111) */
+        if (page === 'songbook') {
+            this.app.songbookIndex.initSongbookPage();
+        }
+
         /* Initialise search page controls */
         if (page === 'search') {
             this.app.search.initSearchPage();

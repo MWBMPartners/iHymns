@@ -1709,3 +1709,70 @@ body.presentation-active .reading-progress-bar {
 body.reduce-motion .reading-progress-bar {
     transition: none;
 }
+
+/* ==========================================================================
+   SONGBOOK ALPHABETICAL INDEX (#111)
+   ========================================================================== */
+
+.songbook-index-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.alphabet-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+}
+
+.alphabet-letter {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    border: 1px solid var(--bs-border-color, #dee2e6);
+    border-radius: 0.3rem;
+    background: var(--bs-body-bg, #fff);
+    color: var(--bs-body-color, #000);
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.alphabet-letter:hover:not(.disabled) {
+    background: var(--bs-primary, #6366f1);
+    color: #fff;
+    border-color: var(--bs-primary, #6366f1);
+}
+
+.alphabet-letter.disabled {
+    opacity: 0.3;
+    cursor: default;
+}
+
+/* Highlight animation on target song */
+@keyframes alphabet-highlight-pulse {
+    0% { background: var(--bs-warning-bg-subtle, #fff3cd); }
+    100% { background: transparent; }
+}
+
+.song-list-item.alphabet-highlight {
+    animation: alphabet-highlight-pulse 1.5s ease-out;
+}
+
+/* Responsive: smaller letters on mobile */
+@media (max-width: 575.98px) {
+    .alphabet-letter {
+        width: 1.6rem;
+        height: 1.6rem;
+        font-size: 0.7rem;
+    }
+}
+
+body.reduce-motion .song-list-item.alphabet-highlight {
+    animation: none;
+    background: var(--bs-warning-bg-subtle, #fff3cd);
+}
