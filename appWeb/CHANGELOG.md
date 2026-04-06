@@ -29,12 +29,14 @@
 - fix: set Vendor Parent to NULL — MWBM Partners Ltd is the top-level vendor
 - fix: song editor loads songs.json from canonical data/ location
 - fix: song list spacing, version bump regex, pre-release version, lyrics resilience
+- fix: temporarily remove CSP header to clear poisoned SW cache
 - initial folder structure
 - refactor: align infoAppVer.php with phpWhoIs structure + platform info files
 - refactor: modularise Web/PWA into PHP components
 - refactor: single canonical songs.json — copy during build/deploy
 - refactor: update PHP code for PHP 8.5 compatibility
 - refactor: use unique platform-specific Application IDs
+
 
 ## [1.0.0] — 2026-04-06
 - app refresh upload (early dev 1)
@@ -65,6 +67,3 @@
 - refactor: single canonical songs.json — copy during build/deploy
 - refactor: update PHP code for PHP 8.5 compatibility
 - refactor: use unique platform-specific Application IDs
-
-
-
