@@ -228,6 +228,9 @@ class iHymnsApp {
             /* --- Register service worker --- */
             this.registerServiceWorker();
 
+            /* --- Listen for service worker messages (#131, #132) --- */
+            this.initServiceWorkerMessaging();
+
             /* --- Load initial page based on current URL --- */
             await this.router.handleCurrentRoute();
 
@@ -721,6 +724,95 @@ class iHymnsApp {
         }, { once: true });
 
         /* Clean up toast element after dismissed */
+        toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
+    }
+
+    /**
+     * Initialise service worker message listener (#131, #132).
+     * Handles song update notifications and auto-update confirmations.
+     */
+    initServiceWorkerMessaging() {
+        if (!('serviceWorker' in navigator)) return;
+
+        /* Send auto-update preference to SW on init */
+        navigator.serviceWorker.ready.then(() => {
+            const autoUpdate = localStorage.getItem('ihymns_auto_update_songs') === 'true';
+            navigator.serviceWorker.controller?.postMessage({
+                type: 'SET_AUTO_UPDATE',
+                enabled: autoUpdate,
+            });
+        });
+
+        navigator.serviceWorker.addEventListener('message', (event) => {
+            if (!event.data) return;
+
+            /* A cached song has a newer version available — ask user (#131) */
+            if (event.data.type === 'SONG_UPDATE_AVAILABLE') {
+                this.showSongUpdateNotification(event.data.songId, event.data.url);
+            }
+
+            /* A song was auto-updated or manually updated (#131) */
+            if (event.data.type === 'SONG_UPDATED') {
+                if (event.data.auto) {
+                    console.log(`[iHymns] Song ${event.data.songId} auto-updated in cache`);
+                } else {
+                    this.showToast('Song updated to latest version', 'success', 2000);
+                }
+            }
+        });
+    }
+
+    /**
+     * Show a notification that a cached song has an update available (#131).
+     * Offers an "Update" button to re-cache the new version.
+     *
+     * @param {string} songId Song ID (e.g. 'CP-0001')
+     * @param {string} url The API URL for the updated song
+     */
+    showSongUpdateNotification(songId, url) {
+        const container = document.getElementById('toast-container');
+        if (!container) return;
+
+        const toastEl = document.createElement('div');
+        toastEl.className = 'toast align-items-center text-bg-info border-0';
+        toastEl.setAttribute('role', 'alert');
+        toastEl.setAttribute('aria-live', 'polite');
+        toastEl.setAttribute('aria-atomic', 'true');
+        toastEl.innerHTML = `
+            <div class="d-flex">
+                <div class="toast-body">
+                    <i class="fa-solid fa-rotate me-1" aria-hidden="true"></i>
+                    Song ${this.escapeHtml(songId)} has been updated.
+                    <button type="button" class="btn btn-sm btn-light ms-2 btn-update-song"
+                            data-song-id="${this.escapeHtml(songId)}"
+                            data-url="${this.escapeHtml(url)}">
+                        Update
+                    </button>
+                </div>
+                <button type="button" class="btn-close btn-close-white me-2 m-auto"
+                        data-bs-dismiss="toast" aria-label="Close"></button>
+            </div>`;
+
+        container.appendChild(toastEl);
+
+        const toast = new bootstrap.Toast(toastEl, { autohide: false });
+        toast.show();
+
+        /* Handle the update button */
+        const updateBtn = toastEl.querySelector('.btn-update-song');
+        if (updateBtn) {
+            updateBtn.addEventListener('click', () => {
+                navigator.serviceWorker.controller?.postMessage({
+                    type: 'UPDATE_SONG_CACHE',
+                    songId: updateBtn.dataset.songId,
+                    url: updateBtn.dataset.url,
+                });
+                updateBtn.disabled = true;
+                updateBtn.textContent = 'Updating...';
+                toast.hide();
+            });
+        }
+
         toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
     }
 

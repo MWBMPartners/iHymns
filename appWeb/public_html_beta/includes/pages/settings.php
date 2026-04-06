@@ -254,6 +254,22 @@ declare(strict_types=1);
                 <small class="text-muted mt-1 d-block">
                     Save songs to your device for offline access. Download individual songbooks or all at once.
                 </small>
+
+                <!-- Auto-update toggle (#132) -->
+                <div class="form-check form-switch mt-2">
+                    <input class="form-check-input"
+                           type="checkbox"
+                           id="setting-auto-update-songs"
+                           role="switch"
+                           aria-label="Automatically update offline songs">
+                    <label class="form-check-label" for="setting-auto-update-songs">
+                        <strong>Auto-update offline songs</strong>
+                        <small class="text-muted d-block">
+                            Automatically download updates for saved songs when connected.
+                            When off, you will be notified of available updates.
+                        </small>
+                    </label>
+                </div>
             </div>
 
             <!-- Cache info -->

@@ -281,6 +281,23 @@ export class Settings {
             });
         });
 
+        /* Auto-update offline songs toggle (#132) */
+        const autoUpdateToggle = document.getElementById('setting-auto-update-songs');
+        if (autoUpdateToggle) {
+            autoUpdateToggle.checked = localStorage.getItem('ihymns_auto_update_songs') === 'true';
+            autoUpdateToggle.addEventListener('change', () => {
+                const enabled = autoUpdateToggle.checked;
+                localStorage.setItem('ihymns_auto_update_songs', String(enabled));
+                /* Inform the service worker of the new preference */
+                if (navigator.serviceWorker?.controller) {
+                    navigator.serviceWorker.controller.postMessage({
+                        type: 'SET_AUTO_UPDATE',
+                        enabled,
+                    });
+                }
+            });
+        }
+
         /* Listen for progress messages from service worker */
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.addEventListener('message', (event) => {
@@ -303,6 +320,7 @@ export class Settings {
                     });
                     localStorage.removeItem('ihymns_default_songbook');
                     localStorage.removeItem('ihymns_transition');
+                    localStorage.removeItem('ihymns_auto_update_songs');
                     /* Re-apply defaults */
                     this.applyTheme(this.defaults.theme);
                     this.applyReduceMotion(this.defaults.reduceMotion);

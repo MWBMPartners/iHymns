@@ -91,6 +91,23 @@ const PRECACHE_ASSETS = [
     '/assets/favicon.svg',
 ];
 
+/**
+ * Auto-update flag for offline songs (#132).
+ * When true, the SW silently updates cached songs when changes are detected.
+ * When false (default), the SW notifies the client and waits for confirmation.
+ * Toggled via SET_AUTO_UPDATE message from the client.
+ */
+let autoUpdateOfflineSongs = false;
+
+/**
+ * Send a message to all controlled clients.
+ * @param {object} data Message payload
+ */
+async function notifyClients(data) {
+    const clients = await self.clients.matchAll({ type: 'window' });
+    clients.forEach(client => client.postMessage(data));
+}
+
 /* =========================================================================
  * INSTALL EVENT — Pre-cache essential assets
  * ========================================================================= */
@@ -160,18 +177,51 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
-    /* --- API requests: network-first with cache for song pages (#105) --- */
+    /* --- API requests: network-first with cache for song pages (#105, #131) --- */
     if (url.pathname.startsWith('/api')) {
         const isSongPage = url.searchParams.get('page') === 'song';
+        const songId = url.searchParams.get('id');
         event.respondWith(
             fetch(event.request)
-                .then(response => {
+                .then(async (response) => {
                     /* Cache song page API responses for offline access */
                     if (isSongPage && response.ok) {
-                        const clone = response.clone();
-                        caches.open(RECENT_CACHE).then(cache => {
-                            cache.put(event.request, clone);
-                        });
+                        const cache = await caches.open(RECENT_CACHE);
+                        const existing = await cache.match(event.request);
+
+                        if (existing) {
+                            /* Compare content to detect updates (#131) */
+                            const [newBody, oldBody] = await Promise.all([
+                                response.clone().text(),
+                                existing.text(),
+                            ]);
+
+                            if (newBody !== oldBody) {
+                                if (autoUpdateOfflineSongs) {
+                                    /* Auto-update: silently cache the new version */
+                                    await cache.put(event.request, response.clone());
+                                    notifyClients({
+                                        type: 'SONG_UPDATED',
+                                        songId,
+                                        auto: true,
+                                    });
+                                } else {
+                                    /* Manual mode: notify user, don't overwrite yet */
+                                    notifyClients({
+                                        type: 'SONG_UPDATE_AVAILABLE',
+                                        songId,
+                                        url: event.request.url,
+                                    });
+                                }
+                            }
+                            /* If content unchanged, refresh the cache timestamp */
+                            else {
+                                await cache.put(event.request, response.clone());
+                            }
+                        } else {
+                            /* Not previously cached — just cache it */
+                            await cache.put(event.request, response.clone());
+                        }
                     }
                     return response;
                 })
@@ -325,6 +375,36 @@ self.addEventListener('message', (event) => {
             }
 
             /* Remove the LRU limit for bulk downloads — keep all songs */
+        });
+    }
+
+    /* Set auto-update preference (#132) */
+    if (event.data.type === 'SET_AUTO_UPDATE') {
+        autoUpdateOfflineSongs = !!event.data.enabled;
+        console.log('[SW] Auto-update offline songs:', autoUpdateOfflineSongs);
+    }
+
+    /* Accept a pending song update — cache the fresh version (#131) */
+    if (event.data.type === 'UPDATE_SONG_CACHE' && event.data.url) {
+        try {
+            const cacheUrl = new URL(event.data.url, self.location.origin);
+            if (cacheUrl.origin !== self.location.origin) return;
+        } catch { return; }
+
+        caches.open(RECENT_CACHE).then(async (cache) => {
+            try {
+                const response = await fetch(event.data.url);
+                if (response.ok) {
+                    await cache.put(event.data.url, response);
+                    notifyClients({
+                        type: 'SONG_UPDATED',
+                        songId: event.data.songId,
+                        auto: false,
+                    });
+                }
+            } catch (error) {
+                console.warn('[SW] Failed to update cached song:', error.message);
+            }
         });
     }
 
