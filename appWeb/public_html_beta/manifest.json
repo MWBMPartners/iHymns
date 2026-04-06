@@ -99,6 +99,9 @@
   "launch_handler": {
     "client_mode": "navigate-existing"
   },
+  "note_taking": {
+    "new_note_url": "index.php#/favorites"
+  },
   "orientation": "any",
   "prefer_related_applications": false,
   "protocol_handlers": [
@@ -157,6 +160,10 @@
       "type": "image/png"
     }
   ],
+  "serviceworker": {
+    "scope": "./",
+    "src": "service-worker.js"
+  },
   "share_target": {
     "action": "index.php",
     "method": "GET",
