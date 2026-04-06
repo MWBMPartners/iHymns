@@ -356,17 +356,45 @@ try {
     <header id="app-header" class="app-header" role="banner">
         <nav class="navbar navbar-expand" aria-label="Main navigation">
             <div class="container-fluid px-3">
-                <!-- App Logo & Name -->
-                <a class="navbar-brand d-flex align-items-center gap-2"
-                   href="/"
-                   data-navigate="home"
-                   aria-label="<?= htmlspecialchars($appName) ?> Home">
-                    <i class="fa-solid fa-music fa-lg" aria-hidden="true"></i>
-                    <span class="fw-bold"><?= htmlspecialchars($appName) ?></span>
-                    <?php if ($appDevStatus): ?>
-                        <span class="badge bg-warning text-dark ms-1 small"><?= htmlspecialchars($appDevStatus) ?></span>
-                    <?php endif; ?>
-                </a>
+                <!-- App Logo & Name — Dropdown navigation -->
+                <div class="dropdown">
+                    <button type="button"
+                            class="navbar-brand d-flex align-items-center gap-2 dropdown-toggle"
+                            data-bs-toggle="dropdown"
+                            aria-expanded="false"
+                            aria-label="<?= htmlspecialchars($appName) ?> navigation menu"
+                            id="logo-nav-btn">
+                        <i class="fa-solid fa-music fa-lg" aria-hidden="true"></i>
+                        <span class="fw-bold"><?= htmlspecialchars($appName) ?></span>
+                        <?php if ($appDevStatus): ?>
+                            <span class="badge bg-warning text-dark ms-1 small"><?= htmlspecialchars($appDevStatus) ?></span>
+                        <?php endif; ?>
+                    </button>
+                    <ul class="dropdown-menu" aria-labelledby="logo-nav-btn">
+                        <li><a class="dropdown-item" href="/" data-navigate="home">
+                            <i class="fa-solid fa-house me-2" aria-hidden="true"></i> Home
+                        </a></li>
+                        <li><a class="dropdown-item" href="/songbooks" data-navigate="songbooks">
+                            <i class="fa-solid fa-book-open me-2" aria-hidden="true"></i> Songbooks
+                        </a></li>
+                        <li><a class="dropdown-item" href="/favorites" data-navigate="favorites">
+                            <i class="fa-solid fa-heart me-2" aria-hidden="true"></i> Favourites
+                        </a></li>
+                        <li><a class="dropdown-item" href="/setlist" data-navigate="setlist">
+                            <i class="fa-solid fa-list-ol me-2" aria-hidden="true"></i> Set Lists
+                        </a></li>
+                        <li><hr class="dropdown-divider"></li>
+                        <li><a class="dropdown-item" href="/stats" data-navigate="stats">
+                            <i class="fa-solid fa-chart-simple me-2" aria-hidden="true"></i> Statistics
+                        </a></li>
+                        <li><a class="dropdown-item" href="/settings" data-navigate="settings">
+                            <i class="fa-solid fa-gear me-2" aria-hidden="true"></i> Settings
+                        </a></li>
+                        <li><a class="dropdown-item" href="/help" data-navigate="help">
+                            <i class="fa-solid fa-circle-question me-2" aria-hidden="true"></i> Help
+                        </a></li>
+                    </ul>
+                </div>
 
                 <!-- Right-side header actions -->
                 <div class="d-flex align-items-center gap-2">

@@ -1947,6 +1947,23 @@ body.reduce-motion .related-songs-chevron {
     transition: opacity 0.15s;
 }
 
+/* =========================================================================
+ * HEADER LOGO DROPDOWN — Navigation menu from app logo
+ * ========================================================================= */
+
+#logo-nav-btn {
+    border: none;
+    background: none;
+    cursor: pointer;
+    padding: 0;
+}
+
+#logo-nav-btn::after {
+    font-size: 0.6em;
+    vertical-align: middle;
+    opacity: 0.5;
+}
+
 .song-list-item:hover .fav-edit-tags {
     opacity: 1;
 }
