@@ -31,7 +31,7 @@ declare(strict_types=1);
  * PATH CONFIGURATION
  *
  * The canonical songs.json lives in data_share/song_data/ which is a
- * sibling directory to both public_html_beta/ and private_html/.
+ * sibling directory to both public_html/ and private_html/.
  * From private_html/editor/, the relative path is ../../data_share/.
  * ========================================================================= */
 

@@ -27,6 +27,9 @@ declare(strict_types=1);
  *   action=song_data   — Returns JSON song data for a specific ID
  *   action=songbooks   — Returns JSON songbook list
  *   action=songs       — Returns JSON song list (with optional songbook filter)
+ *   action=songs_json  — Serves the full songs.json file (for client-side search)
+ *   action=setlist_share (POST) — Create or update a shared setlist
+ *   action=setlist_get&id=X    — Retrieve a shared setlist by short ID
  *
  * SECURITY:
  *   - Input sanitisation on all parameters
@@ -278,6 +281,190 @@ if ($action !== null) {
          * ----------------------------------------------------------------- */
         case 'stats':
             sendJson($songData->getStats());
+            break;
+
+        /* -----------------------------------------------------------------
+         * Serve the full songs.json file (#154)
+         *
+         * Streams the canonical songs.json from the private data_share
+         * directory. Used by client-side Fuse.js search and service
+         * worker caching. Includes ETag / Last-Modified for efficient
+         * browser caching.
+         * ----------------------------------------------------------------- */
+        case 'songs_json':
+            $songsFile = APP_DATA_FILE;
+            if (!file_exists($songsFile)) {
+                sendJson(['error' => 'Song data file not found.'], 500);
+                break;
+            }
+
+            /* ETag and Last-Modified for conditional requests */
+            $lastModified = filemtime($songsFile);
+            $etag = '"' . md5_file($songsFile) . '"';
+
+            header('Content-Type: application/json; charset=UTF-8');
+            header('Cache-Control: public, max-age=3600, must-revalidate');
+            header('Last-Modified: ' . gmdate('D, d M Y H:i:s', $lastModified) . ' GMT');
+            header('ETag: ' . $etag);
+
+            /* Return 304 Not Modified if client cache is still valid */
+            $ifNoneMatch   = $_SERVER['HTTP_IF_NONE_MATCH'] ?? '';
+            $ifModifiedStr = $_SERVER['HTTP_IF_MODIFIED_SINCE'] ?? '';
+            if ($ifNoneMatch === $etag
+                || ($ifModifiedStr !== '' && strtotime($ifModifiedStr) >= $lastModified)) {
+                http_response_code(304);
+                exit;
+            }
+
+            /* Stream the file directly (no JSON decode/encode overhead) */
+            readfile($songsFile);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Create or update a shared setlist (#155)
+         *
+         * POST body (JSON):
+         *   { "name": "...", "songs": ["MP-1342", ...], "owner": "uuid" }
+         * Optional: { "id": "abc123" } to update an existing share
+         *
+         * Returns: { "id": "abc123", "url": "/setlist/shared/abc123" }
+         * ----------------------------------------------------------------- */
+        case 'setlist_share':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            /* Parse JSON request body */
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            if (!is_array($body) || empty($body['name']) || !is_array($body['songs'] ?? null) || empty($body['owner'])) {
+                sendJson(['error' => 'Invalid request. Required: name, songs (array), owner.'], 400);
+                break;
+            }
+
+            /* Sanitise inputs */
+            $setlistName  = mb_substr(trim($body['name']), 0, 200);
+            $setlistSongs = array_values(array_filter(
+                array_map('trim', $body['songs']),
+                fn($s) => preg_match('/^[A-Za-z]+-\d+$/', $s)
+            ));
+            $ownerId      = preg_replace('/[^a-f0-9\-]/', '', strtolower(trim($body['owner'])));
+
+            if ($setlistName === '' || $ownerId === '') {
+                sendJson(['error' => 'Invalid name or owner ID.'], 400);
+                break;
+            }
+
+            if (count($setlistSongs) === 0) {
+                sendJson(['error' => 'Set list must contain at least one song.'], 400);
+                break;
+            }
+
+            /* Cap at 200 songs per shared setlist */
+            if (count($setlistSongs) > 200) {
+                sendJson(['error' => 'Set list cannot exceed 200 songs.'], 400);
+                break;
+            }
+
+            $shareDir = APP_SETLIST_SHARE_DIR;
+
+            /* Determine ID: use existing if updating, generate new otherwise */
+            $shareId = null;
+            if (!empty($body['id'])) {
+                /* Updating an existing shared setlist */
+                $candidateId = preg_replace('/[^a-f0-9]/', '', strtolower(trim($body['id'])));
+                $existingFile = $shareDir . '/' . $candidateId . '.json';
+
+                if ($candidateId !== '' && file_exists($existingFile)) {
+                    /* Verify ownership */
+                    $existing = json_decode(file_get_contents($existingFile), true);
+                    if (is_array($existing) && ($existing['owner'] ?? '') === $ownerId) {
+                        $shareId = $candidateId;
+                    } else {
+                        sendJson(['error' => 'You do not own this shared set list.'], 403);
+                        break;
+                    }
+                }
+            }
+
+            /* Generate a new short ID if not updating */
+            if ($shareId === null) {
+                $attempts = 0;
+                do {
+                    $shareId = bin2hex(random_bytes(4)); /* 8 hex chars */
+                    $attempts++;
+                } while (file_exists($shareDir . '/' . $shareId . '.json') && $attempts < 10);
+
+                if ($attempts >= 10) {
+                    sendJson(['error' => 'Unable to generate unique ID. Try again.'], 500);
+                    break;
+                }
+            }
+
+            /* Build the shared setlist object */
+            $now = gmdate('c');
+            $shareData = [
+                'id'      => $shareId,
+                'name'    => $setlistName,
+                'songs'   => $setlistSongs,
+                'owner'   => $ownerId,
+                'created' => !empty($body['id']) ? ($existing['created'] ?? $now) : $now,
+                'updated' => $now,
+                'version' => 1,
+            ];
+
+            /* Write to file */
+            $filePath = $shareDir . '/' . $shareId . '.json';
+            $written = file_put_contents(
+                $filePath,
+                json_encode($shareData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT),
+                LOCK_EX
+            );
+
+            if ($written === false) {
+                sendJson(['error' => 'Failed to save shared set list.'], 500);
+                break;
+            }
+
+            sendJson([
+                'id'  => $shareId,
+                'url' => '/setlist/shared/' . $shareId,
+            ]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Retrieve a shared setlist by short ID (#155)
+         * Parameters: id (required) — 8-character hex ID
+         * ----------------------------------------------------------------- */
+        case 'setlist_get':
+            $shareId = isset($_GET['id']) ? preg_replace('/[^a-f0-9]/', '', strtolower(trim($_GET['id']))) : '';
+            if ($shareId === '' || strlen($shareId) > 16) {
+                sendJson(['error' => 'Invalid or missing set list ID.'], 400);
+                break;
+            }
+
+            $filePath = APP_SETLIST_SHARE_DIR . '/' . $shareId . '.json';
+            if (!file_exists($filePath)) {
+                sendJson(['error' => 'Shared set list not found.'], 404);
+                break;
+            }
+
+            $data = json_decode(file_get_contents($filePath), true);
+            if (!is_array($data)) {
+                sendJson(['error' => 'Invalid set list data.'], 500);
+                break;
+            }
+
+            /* Return public-safe fields only (exclude owner UUID) */
+            sendJson([
+                'id'      => $data['id'] ?? $shareId,
+                'name'    => $data['name'] ?? 'Untitled',
+                'songs'   => $data['songs'] ?? [],
+                'created' => $data['created'] ?? null,
+                'updated' => $data['updated'] ?? null,
+            ]);
             break;
 
         /* -----------------------------------------------------------------

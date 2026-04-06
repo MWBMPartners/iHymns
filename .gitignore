@@ -203,7 +203,8 @@ sftp-config.json
 appWeb/data_share/song_data/songs.json
 appWeb/data_share/setlist_json/*.json
 appWeb/data/songs.json
-appWeb/public_html_beta/data/songs.json
 appWeb/public_html/data/songs.json
-appWeb/public_html_dev/data/songs.json
 appWeb/private_html/data/songs.json
+
+# CI/CD injected environment channel file (deploy-time only)
+appWeb/public_html/.env-channel
