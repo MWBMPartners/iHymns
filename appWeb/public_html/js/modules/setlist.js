@@ -19,6 +19,7 @@
 
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml } from '../utils/html.js';
+import { STORAGE_SETLISTS, STORAGE_OWNER_ID } from '../constants.js';
 
 export class SetList {
     /**
@@ -28,7 +29,7 @@ export class SetList {
         this.app = app;
 
         /** @type {string} localStorage key */
-        this.storageKey = 'ihymns_setlists';
+        this.storageKey = STORAGE_SETLISTS;
 
         /** @type {string|null} Currently active set list ID (for navigation) */
         this.activeSetListId = null;
@@ -698,8 +699,7 @@ export class SetList {
      * @returns {string} UUID string
      */
     getOwnerId() {
-        const key = 'ihymns_owner_id';
-        let id = localStorage.getItem(key);
+        let id = localStorage.getItem(STORAGE_OWNER_ID);
         if (!id) {
             id = crypto.randomUUID?.() || (
                 /* Fallback for older browsers: generate UUID v4 */
@@ -708,7 +708,7 @@ export class SetList {
                     return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
                 })
             );
-            localStorage.setItem(key, id);
+            localStorage.setItem(STORAGE_OWNER_ID, id);
         }
         return id;
     }

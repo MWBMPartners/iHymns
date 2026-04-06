@@ -17,6 +17,7 @@
  *   - data-chord attributes on lyric lines for inline chord display
  */
 import { escapeHtml } from '../utils/html.js';
+import { STORAGE_TRANSPOSE_PREFIX } from '../constants.js';
 
 export class Transpose {
     /**
@@ -29,7 +30,7 @@ export class Transpose {
         this.offset = 0;
 
         /** @type {string} Storage key prefix for per-song transpose offsets */
-        this.storagePrefix = 'ihymns_transpose_';
+        this.storagePrefix = STORAGE_TRANSPOSE_PREFIX;
 
         /** @type {string[]} Chromatic scale using sharps */
         this.sharpScale = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];

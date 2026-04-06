@@ -10,12 +10,13 @@
 
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml } from '../utils/html.js';
+import { STORAGE_FAVORITES, STORAGE_CUSTOM_TAGS } from '../constants.js';
 
 export class Favorites {
     constructor(app) {
         this.app = app;
         /** @type {string} localStorage key for favourites */
-        this.storageKey = 'ihymns_favorites';
+        this.storageKey = STORAGE_FAVORITES;
         /** @type {boolean} Whether select mode is active (#119) */
         this.selectMode = false;
         /** @type {Set<string>} Currently selected song IDs (#119) */
@@ -112,7 +113,7 @@ export class Favorites {
         }
         /* Merge with any custom tags stored separately */
         try {
-            const custom = JSON.parse(localStorage.getItem('ihymns_custom_tags')) || [];
+            const custom = JSON.parse(localStorage.getItem(STORAGE_CUSTOM_TAGS)) || [];
             custom.forEach(t => tagSet.add(t));
         } catch {}
         return [...tagSet].sort();
@@ -148,11 +149,11 @@ export class Favorites {
      */
     saveCustomTag(tag) {
         let custom = [];
-        try { custom = JSON.parse(localStorage.getItem('ihymns_custom_tags')) || []; } catch {}
+        try { custom = JSON.parse(localStorage.getItem(STORAGE_CUSTOM_TAGS)) || []; } catch {}
         if (!custom.includes(tag)) {
             custom.push(tag);
             custom.sort();
-            localStorage.setItem('ihymns_custom_tags', JSON.stringify(custom));
+            localStorage.setItem(STORAGE_CUSTOM_TAGS, JSON.stringify(custom));
         }
     }
 

@@ -14,6 +14,7 @@
  *   Ordered by most recent first.
  */
 import { escapeHtml } from '../utils/html.js';
+import { STORAGE_HISTORY } from '../constants.js';
 
 export class History {
     /**
@@ -23,7 +24,7 @@ export class History {
         this.app = app;
 
         /** @type {string} localStorage key */
-        this.storageKey = 'ihymns_history';
+        this.storageKey = STORAGE_HISTORY;
 
         /** @type {number} Maximum number of entries to store */
         this.maxEntries = 20;

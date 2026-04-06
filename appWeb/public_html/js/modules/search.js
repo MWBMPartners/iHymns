@@ -18,6 +18,7 @@
  *   5. Offline search works when songs.json is cached by service worker.
  */
 import { escapeHtml } from '../utils/html.js';
+import { STORAGE_SEARCH_LYRICS } from '../constants.js';
 
 export class Search {
     /**
@@ -232,13 +233,13 @@ export class Search {
 
         /* Restore lyrics toggle state from localStorage */
         if (lyricsToggle) {
-            this.lyricsSearchEnabled = localStorage.getItem('ihymns_search_lyrics') === 'true';
+            this.lyricsSearchEnabled = localStorage.getItem(STORAGE_SEARCH_LYRICS) === 'true';
             lyricsToggle.checked = this.lyricsSearchEnabled;
 
             lyricsToggle.addEventListener('change', () => {
                 this.lyricsSearchEnabled = lyricsToggle.checked;
-                localStorage.setItem('ihymns_search_lyrics', String(this.lyricsSearchEnabled));
-                this.app.syncStorage('ihymns_search_lyrics');
+                localStorage.setItem(STORAGE_SEARCH_LYRICS, String(this.lyricsSearchEnabled));
+                this.app.syncStorage(STORAGE_SEARCH_LYRICS);
 
                 /* Build lyrics index on first enable */
                 if (this.lyricsSearchEnabled && !this.fuseLyricsIndex && this.FuseClass && this.songsData) {

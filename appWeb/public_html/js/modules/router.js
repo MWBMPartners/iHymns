@@ -15,6 +15,13 @@
 
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml } from '../utils/html.js';
+import {
+    STORAGE_FAVORITES,
+    STORAGE_SETLISTS,
+    STORAGE_HISTORY,
+    STORAGE_SEARCH_HISTORY,
+    STORAGE_RECENT_SONGBOOKS,
+} from '../constants.js';
 
 export class Router {
     /**
@@ -453,19 +460,19 @@ export class Router {
     populateStats() {
         /* History data */
         let history = [];
-        try { history = JSON.parse(localStorage.getItem('ihymns_history')) || []; } catch {}
+        try { history = JSON.parse(localStorage.getItem(STORAGE_HISTORY)) || []; } catch {}
 
         /* Favourites data */
         let favorites = [];
-        try { favorites = JSON.parse(localStorage.getItem('ihymns_favorites')) || []; } catch {}
+        try { favorites = JSON.parse(localStorage.getItem(STORAGE_FAVORITES)) || []; } catch {}
 
         /* Set lists data */
         let setlists = [];
-        try { setlists = JSON.parse(localStorage.getItem('ihymns_setlists')) || []; } catch {}
+        try { setlists = JSON.parse(localStorage.getItem(STORAGE_SETLISTS)) || []; } catch {}
 
         /* Search history data */
         let searches = [];
-        try { searches = JSON.parse(localStorage.getItem('ihymns_search_history')) || []; } catch {}
+        try { searches = JSON.parse(localStorage.getItem(STORAGE_SEARCH_HISTORY)) || []; } catch {}
 
         /* Summary counts */
         const el = (id) => document.getElementById(id);
@@ -810,7 +817,7 @@ export class Router {
      */
     trackRecentSongbook(songbookId) {
         if (!songbookId) return;
-        const key = 'ihymns_recent_songbooks';
+        const key = STORAGE_RECENT_SONGBOOKS;
         let recent = [];
         try { recent = JSON.parse(localStorage.getItem(key)) || []; } catch {}
 
@@ -831,7 +838,7 @@ export class Router {
         if (!container) return;
 
         let recent = [];
-        try { recent = JSON.parse(localStorage.getItem('ihymns_recent_songbooks')) || []; } catch {}
+        try { recent = JSON.parse(localStorage.getItem(STORAGE_RECENT_SONGBOOKS)) || []; } catch {}
 
         /* Only show if user has visited 2+ songbooks */
         if (recent.length < 2) return;

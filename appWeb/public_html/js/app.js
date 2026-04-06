@@ -44,6 +44,11 @@ import { SubdomainSync } from './modules/subdomain-sync.js';
 import { Gestures } from './modules/gestures.js';
 import { Analytics } from './modules/analytics.js';
 import { escapeHtml } from './utils/html.js';
+import {
+    STORAGE_DEFAULT_SONGBOOK,
+    STORAGE_DISCLAIMER_ACCEPTED,
+    STORAGE_AUTO_UPDATE_SONGS,
+} from './constants.js';
 
 /**
  * iHymnsApp — Main application class
@@ -609,7 +614,7 @@ class iHymnsApp {
 
         if (!number) return;
 
-        const defaultBook = localStorage.getItem('ihymns_default_songbook');
+        const defaultBook = localStorage.getItem(STORAGE_DEFAULT_SONGBOOK);
         if (defaultBook) {
             const padded = number.padStart(4, '0');
             this.router.navigate(`/song/${defaultBook}-${padded}`);
@@ -668,7 +673,7 @@ class iHymnsApp {
                 const bookId = btn.dataset.book;
                 const remember = document.getElementById('quick-jump-remember')?.checked;
                 if (remember) {
-                    localStorage.setItem('ihymns_default_songbook', bookId);
+                    localStorage.setItem(STORAGE_DEFAULT_SONGBOOK, bookId);
                 }
                 picker.remove();
                 const padded = number.padStart(4, '0');
@@ -700,7 +705,7 @@ class iHymnsApp {
      * If not, show the disclaimer modal.
      */
     checkDisclaimer() {
-        const accepted = localStorage.getItem('ihymns_disclaimer_accepted');
+        const accepted = localStorage.getItem(STORAGE_DISCLAIMER_ACCEPTED);
         if (accepted) return;
 
         const modal = document.getElementById('disclaimer-modal');
@@ -714,7 +719,7 @@ class iHymnsApp {
         const acceptBtn = document.getElementById('disclaimer-accept-btn');
         if (acceptBtn) {
             acceptBtn.addEventListener('click', () => {
-                localStorage.setItem('ihymns_disclaimer_accepted', 'true');
+                localStorage.setItem(STORAGE_DISCLAIMER_ACCEPTED, 'true');
                 bsModal.hide();
             });
         }
@@ -829,7 +834,7 @@ class iHymnsApp {
 
         /* Send auto-update preference to SW on init */
         navigator.serviceWorker.ready.then(() => {
-            const autoUpdate = localStorage.getItem('ihymns_auto_update_songs') === 'true';
+            const autoUpdate = localStorage.getItem(STORAGE_AUTO_UPDATE_SONGS) === 'true';
             navigator.serviceWorker.controller?.postMessage({
                 type: 'SET_AUTO_UPDATE',
                 enabled: autoUpdate,

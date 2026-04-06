@@ -10,6 +10,8 @@
  * Respects the user's reduce-motion preference.
  */
 
+import { STORAGE_TRANSITION } from '../constants.js';
+
 export class Transitions {
     /**
      * @param {object} app Reference to the main iHymnsApp instance
@@ -33,7 +35,7 @@ export class Transitions {
      * Load the saved transition type from localStorage.
      */
     loadType() {
-        this.type = localStorage.getItem('ihymns_transition') || 'none';
+        this.type = localStorage.getItem(STORAGE_TRANSITION) || 'none';
     }
 
     /**

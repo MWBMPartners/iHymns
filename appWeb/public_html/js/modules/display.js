@@ -9,6 +9,7 @@
  * mode (fullscreen), and auto-scroll. Settings persist in localStorage.
  */
 import { escapeHtml } from '../utils/html.js';
+import { STORAGE_DISPLAY } from '../constants.js';
 
 export class Display {
     /**
@@ -18,7 +19,7 @@ export class Display {
         this.app = app;
 
         /** @type {string} localStorage key */
-        this.storageKey = 'ihymns_display';
+        this.storageKey = STORAGE_DISPLAY;
 
         /** @type {number|null} Auto-scroll interval ID */
         this.autoScrollInterval = null;

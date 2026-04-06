@@ -9,6 +9,7 @@
  * that search. Only stores queries that returned results.
  */
 import { escapeHtml } from '../utils/html.js';
+import { STORAGE_SEARCH_HISTORY } from '../constants.js';
 
 export class SearchHistory {
     /**
@@ -18,7 +19,7 @@ export class SearchHistory {
         this.app = app;
 
         /** @type {string} localStorage key */
-        this.storageKey = 'ihymns_search_history';
+        this.storageKey = STORAGE_SEARCH_HISTORY;
 
         /** @type {number} Maximum stored queries */
         this.maxItems = 10;
