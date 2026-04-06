@@ -170,7 +170,16 @@ export class Favorites {
         if (countEl) countEl.textContent = `${favorites.length} song${favorites.length !== 1 ? 's' : ''}`;
         if (clearAllBtn) {
             clearAllBtn.classList.remove('d-none');
-            clearAllBtn.addEventListener('click', () => {
+
+            /*
+             * FIX (#79): Use replaceWith(clone) to remove all prior event
+             * listeners before binding a fresh one. This prevents listener
+             * accumulation when the favourites page is visited multiple times.
+             */
+            const freshBtn = clearAllBtn.cloneNode(true);
+            clearAllBtn.replaceWith(freshBtn);
+
+            freshBtn.addEventListener('click', () => {
                 if (confirm('Remove all favourites?')) {
                     this.clearAll();
                     this.loadFavoritesList();
