@@ -133,6 +133,9 @@ export class Router {
                 return { page: 'setlist', params: {} };
             case 'settings':
                 return { page: 'settings', params: {} };
+            case 'stats':
+            case 'statistics':
+                return { page: 'stats', params: {} };
             case 'help':
                 return { page: 'help', params: {} };
             case 'terms':
@@ -250,6 +253,7 @@ export class Router {
             'favorites': 'Favourites — ' + appName,
             'setlist': 'Set Lists — ' + appName,
             'settings': 'Settings — ' + appName,
+            'stats': 'Usage Statistics — ' + appName,
             'help': 'Help — ' + appName,
             'terms': 'Terms of Use — ' + appName,
             'privacy': 'Privacy Policy — ' + appName,
@@ -343,6 +347,130 @@ export class Router {
             this.app.search.initSearchPage();
             this.app.numpad.initSearchPageNumpad();
         }
+
+        /* Populate usage statistics (#120) */
+        if (page === 'stats') {
+            this.populateStats();
+        }
+    }
+
+    /**
+     * Populate the statistics page with client-side data (#120).
+     * Reads from localStorage: history, favourites, setlists, search history.
+     */
+    populateStats() {
+        /* History data */
+        let history = [];
+        try { history = JSON.parse(localStorage.getItem('ihymns_history')) || []; } catch {}
+
+        /* Favourites data */
+        let favorites = [];
+        try { favorites = JSON.parse(localStorage.getItem('ihymns_favorites')) || []; } catch {}
+
+        /* Set lists data */
+        let setlists = [];
+        try { setlists = JSON.parse(localStorage.getItem('ihymns_setlists')) || []; } catch {}
+
+        /* Search history data */
+        let searches = [];
+        try { searches = JSON.parse(localStorage.getItem('ihymns_search_history')) || []; } catch {}
+
+        /* Summary counts */
+        const el = (id) => document.getElementById(id);
+        if (el('stats-total-views')) el('stats-total-views').textContent = history.length;
+        if (el('stats-total-favorites')) el('stats-total-favorites').textContent = favorites.length;
+        if (el('stats-total-setlists')) el('stats-total-setlists').textContent = setlists.length;
+        if (el('stats-total-searches')) el('stats-total-searches').textContent = searches.length;
+
+        /* Most viewed songs — count occurrences in history */
+        if (history.length > 0) {
+            const viewCounts = {};
+            for (const entry of history) {
+                if (!viewCounts[entry.id]) {
+                    viewCounts[entry.id] = { ...entry, count: 0 };
+                }
+                viewCounts[entry.id].count++;
+            }
+            const sorted = Object.values(viewCounts).sort((a, b) => b.count - a.count).slice(0, 10);
+            const maxCount = sorted[0]?.count || 1;
+
+            const container = el('stats-most-viewed');
+            if (container) {
+                container.innerHTML = sorted.map(s => `
+                    <div class="d-flex align-items-center gap-2 mb-2">
+                        <a href="/song/${this.escapeHtml(s.id)}" class="text-decoration-none flex-grow-1 text-truncate"
+                           data-navigate="song" data-song-id="${this.escapeHtml(s.id)}">
+                            <span class="song-number-badge song-number-badge-sm" data-songbook="${this.escapeHtml(s.songbook)}">${s.number || '?'}</span>
+                            <span class="ms-1">${this.escapeHtml(s.title)}</span>
+                        </a>
+                        <div class="stats-bar-wrap">
+                            <div class="stats-bar" style="width: ${(s.count / maxCount * 100).toFixed(0)}%"></div>
+                        </div>
+                        <span class="badge bg-secondary">${s.count}</span>
+                    </div>
+                `).join('');
+            }
+        }
+
+        /* Favourites by songbook */
+        if (favorites.length > 0) {
+            const bySongbook = {};
+            for (const fav of favorites) {
+                const sb = fav.songbook || 'Unknown';
+                bySongbook[sb] = (bySongbook[sb] || 0) + 1;
+            }
+            const sorted = Object.entries(bySongbook).sort((a, b) => b[1] - a[1]);
+            const maxCount = sorted[0]?.[1] || 1;
+
+            const container = el('stats-favorites-by-songbook');
+            if (container) {
+                container.innerHTML = sorted.map(([sb, count]) => `
+                    <div class="d-flex align-items-center gap-2 mb-2">
+                        <span class="song-number-badge song-number-badge-sm" data-songbook="${this.escapeHtml(sb)}">${this.escapeHtml(sb)}</span>
+                        <div class="stats-bar-wrap">
+                            <div class="stats-bar bg-danger" style="width: ${(count / maxCount * 100).toFixed(0)}%"></div>
+                        </div>
+                        <span class="badge bg-secondary">${count}</span>
+                    </div>
+                `).join('');
+            }
+        }
+
+        /* Search trends — frequency list */
+        if (searches.length > 0) {
+            const termCounts = {};
+            for (const s of searches) {
+                const term = (s.query || s).toString().toLowerCase().trim();
+                if (term) termCounts[term] = (termCounts[term] || 0) + 1;
+            }
+            const sorted = Object.entries(termCounts).sort((a, b) => b[1] - a[1]).slice(0, 15);
+
+            const container = el('stats-search-trends');
+            if (container) {
+                container.innerHTML = '<div class="d-flex flex-wrap gap-2">' +
+                    sorted.map(([term, count]) =>
+                        `<span class="badge bg-body-secondary text-body">${this.escapeHtml(term)} <span class="text-muted">(${count})</span></span>`
+                    ).join('') + '</div>';
+            }
+        }
+
+        /* Time-based activity */
+        const now = new Date();
+        const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const weekStart = new Date(todayStart); weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+        let today = 0, week = 0, month = 0;
+        for (const entry of history) {
+            const d = new Date(entry.viewedAt);
+            if (d >= todayStart) today++;
+            if (d >= weekStart) week++;
+            if (d >= monthStart) month++;
+        }
+
+        if (el('stats-views-today')) el('stats-views-today').textContent = today;
+        if (el('stats-views-week')) el('stats-views-week').textContent = week;
+        if (el('stats-views-month')) el('stats-views-month').textContent = month;
     }
 
     /**

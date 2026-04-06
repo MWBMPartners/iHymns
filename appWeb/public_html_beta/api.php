@@ -123,6 +123,10 @@ if ($page !== null) {
             require __DIR__ . '/includes/pages/settings.php';
             break;
 
+        case 'stats':
+            require __DIR__ . '/includes/pages/stats.php';
+            break;
+
         case 'help':
             require __DIR__ . '/includes/pages/help.php';
             break;

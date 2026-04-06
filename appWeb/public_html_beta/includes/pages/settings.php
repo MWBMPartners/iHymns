@@ -287,6 +287,17 @@ declare(strict_types=1);
                 </button>
             </div>
 
+            <!-- Usage statistics link (#120) -->
+            <div>
+                <a href="/stats"
+                   class="btn btn-outline-info btn-sm"
+                   data-navigate="stats"
+                   aria-label="View usage statistics">
+                    <i class="fa-solid fa-chart-simple me-1" aria-hidden="true"></i>
+                    Usage Statistics
+                </a>
+            </div>
+
             <!-- Reset settings -->
             <div>
                 <button type="button"
