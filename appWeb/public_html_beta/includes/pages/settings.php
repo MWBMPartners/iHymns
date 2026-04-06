@@ -200,24 +200,59 @@ declare(strict_types=1);
                 </small>
             </div>
 
-            <!-- Download all songs for offline -->
+            <!-- Download songs for offline -->
             <div class="mb-3">
                 <label class="form-label fw-semibold">Offline Songs</label>
-                <div class="d-flex flex-wrap align-items-center gap-2">
+
+                <!-- Per-songbook download options -->
+                <div class="mb-2" id="offline-songbook-list">
+                    <?php
+                        $offlineSongbooks = $songData->getSongbooks();
+                        foreach ($offlineSongbooks as $book):
+                            if (($book['songCount'] ?? 0) > 0):
+                    ?>
+                    <div class="d-flex align-items-center justify-content-between py-1 border-bottom">
+                        <div class="d-flex align-items-center gap-2">
+                            <span class="badge songbook-badge" data-songbook="<?= htmlspecialchars($book['id']) ?>">
+                                <?= htmlspecialchars($book['id']) ?>
+                            </span>
+                            <span class="small"><?= htmlspecialchars($book['name']) ?></span>
+                            <span class="text-muted small">(<?= (int)$book['songCount'] ?> songs)</span>
+                        </div>
+                        <div class="d-flex align-items-center gap-2">
+                            <span class="small text-muted offline-songbook-status" data-songbook="<?= htmlspecialchars($book['id']) ?>"></span>
+                            <button type="button"
+                                    class="btn btn-outline-success btn-sm btn-download-songbook"
+                                    data-songbook-id="<?= htmlspecialchars($book['id']) ?>"
+                                    aria-label="Download <?= htmlspecialchars($book['name']) ?> for offline use">
+                                <i class="fa-solid fa-cloud-arrow-down" aria-hidden="true"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <?php
+                            endif;
+                        endforeach;
+                    ?>
+                </div>
+
+                <!-- Download all button -->
+                <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
                     <button type="button" class="btn btn-outline-success btn-sm" id="download-all-songs-btn"
                             aria-label="Download all songs for offline use">
                         <i class="fa-solid fa-cloud-arrow-down me-1" aria-hidden="true"></i>
-                        Download All Songs
+                        Download All Songbooks
                     </button>
                     <span id="download-songs-status" class="small text-muted"></span>
                 </div>
+
+                <!-- Progress bar (shared across all download operations) -->
                 <div class="progress mt-2 d-none" id="download-songs-progress" style="height: 6px;">
                     <div class="progress-bar progress-bar-striped progress-bar-animated"
                          id="download-songs-bar" role="progressbar"
                          aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" style="width: 0%"></div>
                 </div>
                 <small class="text-muted mt-1 d-block">
-                    Save all songs to your device so they are available without an internet connection.
+                    Save songs to your device for offline access. Download individual songbooks or all at once.
                 </small>
             </div>
 

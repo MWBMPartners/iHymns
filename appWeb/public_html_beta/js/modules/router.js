@@ -276,6 +276,16 @@ export class Router {
             this.app.transpose.initSongPage();
             this.app.readingProgress.initSongPage();
 
+            /* Save Offline button — check cache state and bind click */
+            const saveOfflineBtn = document.querySelector('.btn-save-offline');
+            if (saveOfflineBtn) {
+                const songId = saveOfflineBtn.dataset.songId;
+                this.app.settings.checkSongCacheStatus(songId, saveOfflineBtn);
+                saveOfflineBtn.addEventListener('click', () => {
+                    this.app.settings.saveSongOffline(songId, saveOfflineBtn);
+                });
+            }
+
             /* Precache this song for offline access (#105) */
             if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
                 const songApiUrl = this.buildApiUrl('song', params);

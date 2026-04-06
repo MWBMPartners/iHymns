@@ -273,6 +273,14 @@ export class Settings {
             downloadBtn.addEventListener('click', () => this.downloadAllSongs());
         }
 
+        /* Per-songbook download buttons */
+        document.querySelectorAll('.btn-download-songbook').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const songbookId = btn.dataset.songbookId;
+                if (songbookId) this.downloadSongbook(songbookId, btn);
+            });
+        });
+
         /* Listen for progress messages from service worker */
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.addEventListener('message', (event) => {
@@ -281,6 +289,9 @@ export class Settings {
                 }
             });
         }
+
+        /* Check which songbooks are already cached */
+        this.updateSongbookCacheStatus();
 
         /* Reset settings button */
         const resetBtn = document.getElementById('reset-settings-btn');
@@ -399,6 +410,19 @@ export class Settings {
     }
 
     /**
+     * Ensure songs.json is fetched and cached locally for download operations.
+     * @returns {Promise<Array>} Array of song objects
+     */
+    async getSongsData() {
+        if (this._songsDataCache) return this._songsDataCache;
+        const response = await fetch(this.app.config.dataUrl);
+        if (!response.ok) throw new Error('Failed to fetch song data');
+        const data = await response.json();
+        this._songsDataCache = data.songs || [];
+        return this._songsDataCache;
+    }
+
+    /**
      * Download all songs for offline use.
      * Fetches songs.json to get the full song list, then sends all IDs
      * to the service worker for background caching.
@@ -413,30 +437,27 @@ export class Settings {
             return;
         }
 
-        /* Disable button to prevent double-click */
         btn.disabled = true;
         btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin me-1" aria-hidden="true"></i> Preparing...';
         if (statusEl) statusEl.textContent = '';
         if (progressWrap) progressWrap.classList.remove('d-none');
 
         try {
-            /* Fetch the full song list */
-            const response = await fetch(this.app.config.dataUrl);
-            if (!response.ok) throw new Error('Failed to fetch song data');
-            const data = await response.json();
-            const songs = data.songs || [];
+            const songs = await this.getSongsData();
 
             if (songs.length === 0) {
                 this.app.showToast('No songs found to download', 'warning');
                 btn.disabled = false;
-                btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down me-1" aria-hidden="true"></i> Download All Songs';
+                btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down me-1" aria-hidden="true"></i> Download All Songbooks';
                 return;
             }
 
             const songIds = songs.map(s => s.id);
             if (statusEl) statusEl.textContent = `Downloading 0 / ${songIds.length} songs...`;
 
-            /* Send all song IDs to the service worker */
+            /* Disable all songbook buttons during bulk download */
+            document.querySelectorAll('.btn-download-songbook').forEach(b => b.disabled = true);
+
             navigator.serviceWorker.controller.postMessage({
                 type: 'CACHE_ALL_SONGS',
                 songIds: songIds,
@@ -446,7 +467,54 @@ export class Settings {
             console.error('[Settings] Download all songs error:', error);
             this.app.showToast('Failed to start download. Please try again.', 'danger');
             btn.disabled = false;
-            btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down me-1" aria-hidden="true"></i> Download All Songs';
+            btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down me-1" aria-hidden="true"></i> Download All Songbooks';
+            if (progressWrap) progressWrap.classList.add('d-none');
+        }
+    }
+
+    /**
+     * Download a single songbook for offline use.
+     * @param {string} songbookId Songbook abbreviation (e.g. 'CP', 'MP')
+     * @param {HTMLElement} btn The clicked button element
+     */
+    async downloadSongbook(songbookId, btn) {
+        if (!('serviceWorker' in navigator) || !navigator.serviceWorker.controller) {
+            this.app.showToast('Offline downloads require an active service worker.', 'warning');
+            return;
+        }
+
+        const statusEl = document.getElementById('download-songs-status');
+        const progressWrap = document.getElementById('download-songs-progress');
+        const originalHtml = btn.innerHTML;
+
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i>';
+        if (progressWrap) progressWrap.classList.remove('d-none');
+
+        try {
+            const songs = await this.getSongsData();
+            const songbookSongs = songs.filter(s => s.songbook === songbookId);
+
+            if (songbookSongs.length === 0) {
+                this.app.showToast(`No songs found in ${songbookId}`, 'warning');
+                btn.disabled = false;
+                btn.innerHTML = originalHtml;
+                return;
+            }
+
+            const songIds = songbookSongs.map(s => s.id);
+            if (statusEl) statusEl.textContent = `Downloading ${songbookId}: 0 / ${songIds.length}...`;
+
+            navigator.serviceWorker.controller.postMessage({
+                type: 'CACHE_ALL_SONGS',
+                songIds: songIds,
+            });
+
+        } catch (error) {
+            console.error(`[Settings] Download songbook ${songbookId} error:`, error);
+            this.app.showToast(`Failed to download ${songbookId}. Please try again.`, 'danger');
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
             if (progressWrap) progressWrap.classList.add('d-none');
         }
     }
@@ -474,7 +542,7 @@ export class Settings {
         if (completed + failed >= total) {
             if (btn) {
                 btn.disabled = false;
-                btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down me-1" aria-hidden="true"></i> Download All Songs';
+                btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down me-1" aria-hidden="true"></i> Download All Songbooks';
             }
             if (progressBar) {
                 progressBar.classList.remove('progress-bar-animated', 'progress-bar-striped');
@@ -485,6 +553,11 @@ export class Settings {
                     ? `Done — ${completed} saved, ${failed} failed`
                     : `All ${completed} songs saved for offline use`;
             }
+            /* Re-enable all songbook buttons */
+            document.querySelectorAll('.btn-download-songbook').forEach(b => {
+                b.disabled = false;
+                b.innerHTML = '<i class="fa-solid fa-cloud-arrow-down" aria-hidden="true"></i>';
+            });
             this.app.showToast(
                 failed > 0
                     ? `Downloaded ${completed} songs (${failed} failed)`
@@ -492,6 +565,125 @@ export class Settings {
                 failed > 0 ? 'warning' : 'success'
             );
             this.updateCacheStatus();
+            this.updateSongbookCacheStatus();
+        }
+    }
+
+    /**
+     * Check how many songs from each songbook are cached and update the UI.
+     */
+    async updateSongbookCacheStatus() {
+        if (!('caches' in window)) return;
+
+        try {
+            const cache = await caches.open('ihymns-recent-songs');
+            const keys = await cache.keys();
+            const cachedUrls = new Set(keys.map(k => new URL(k.url).searchParams.get('id')));
+            const songs = await this.getSongsData();
+
+            /* Group songs by songbook */
+            const songbooks = {};
+            songs.forEach(s => {
+                if (!songbooks[s.songbook]) songbooks[s.songbook] = { total: 0, cached: 0 };
+                songbooks[s.songbook].total++;
+                if (cachedUrls.has(s.id)) songbooks[s.songbook].cached++;
+            });
+
+            /* Update status labels */
+            document.querySelectorAll('.offline-songbook-status').forEach(el => {
+                const id = el.dataset.songbook;
+                const info = songbooks[id];
+                if (!info) return;
+
+                if (info.cached === 0) {
+                    el.textContent = '';
+                } else if (info.cached >= info.total) {
+                    el.textContent = 'All saved';
+                    el.classList.add('text-success');
+                    el.classList.remove('text-muted');
+                } else {
+                    el.textContent = `${info.cached} / ${info.total}`;
+                }
+            });
+
+            /* Update download buttons — show checkmark if fully cached */
+            document.querySelectorAll('.btn-download-songbook').forEach(btn => {
+                const id = btn.dataset.songbookId;
+                const info = songbooks[id];
+                if (info && info.cached >= info.total) {
+                    btn.classList.remove('btn-outline-success');
+                    btn.classList.add('btn-success');
+                    btn.innerHTML = '<i class="fa-solid fa-check" aria-hidden="true"></i>';
+                    btn.title = `${id} — all songs saved offline`;
+                }
+            });
+        } catch {
+            /* Ignore — non-critical */
+        }
+    }
+
+    /**
+     * Save a single song for offline use (called from song page button).
+     * @param {string} songId The song ID (e.g. 'CP-0001')
+     * @param {HTMLElement} btn The clicked button
+     */
+    async saveSongOffline(songId, btn) {
+        if (!('serviceWorker' in navigator) || !navigator.serviceWorker.controller) {
+            this.app.showToast('Service worker not ready. Please reload.', 'warning');
+            return;
+        }
+
+        const originalHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin me-1" aria-hidden="true"></i> Saving...';
+
+        /* Use CACHE_SONG message — same protocol the router already uses */
+        const apiUrl = `/api?page=song&id=${encodeURIComponent(songId)}`;
+        navigator.serviceWorker.controller.postMessage({
+            type: 'CACHE_SONG',
+            url: apiUrl,
+        });
+
+        /* Brief delay then check if cached (SW caches asynchronously) */
+        setTimeout(async () => {
+            try {
+                const cache = await caches.open('ihymns-recent-songs');
+                const match = await cache.match(apiUrl);
+                if (match) {
+                    btn.classList.remove('btn-outline-secondary');
+                    btn.classList.add('btn-success');
+                    btn.innerHTML = '<i class="fa-solid fa-check me-1" aria-hidden="true"></i> <span>Saved Offline</span>';
+                    btn.disabled = true;
+                } else {
+                    btn.disabled = false;
+                    btn.innerHTML = originalHtml;
+                }
+            } catch {
+                btn.disabled = false;
+                btn.innerHTML = originalHtml;
+            }
+        }, 1500);
+    }
+
+    /**
+     * Check if a specific song is already cached and update the button state.
+     * @param {string} songId Song ID
+     * @param {HTMLElement} btn The save-offline button
+     */
+    async checkSongCacheStatus(songId, btn) {
+        if (!('caches' in window)) return;
+        try {
+            const cache = await caches.open('ihymns-recent-songs');
+            const apiUrl = `/api?page=song&id=${encodeURIComponent(songId)}`;
+            const match = await cache.match(apiUrl);
+            if (match) {
+                btn.classList.remove('btn-outline-secondary');
+                btn.classList.add('btn-success');
+                btn.innerHTML = '<i class="fa-solid fa-check me-1" aria-hidden="true"></i> <span>Saved Offline</span>';
+                btn.disabled = true;
+            }
+        } catch {
+            /* Ignore */
         }
     }
 

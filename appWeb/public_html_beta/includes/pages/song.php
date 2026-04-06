@@ -168,6 +168,15 @@ $components  = $song['components'] ?? [];
                     Compare
                 </button>
 
+                <!-- Save offline button -->
+                <button type="button"
+                        class="btn btn-outline-secondary btn-sm btn-save-offline"
+                        data-song-id="<?= htmlspecialchars($song['id']) ?>"
+                        aria-label="Save this song for offline use">
+                    <i class="fa-solid fa-download me-1" aria-hidden="true"></i>
+                    <span>Save Offline</span>
+                </button>
+
                 <!-- Print button -->
                 <button type="button"
                         class="btn btn-outline-secondary btn-sm btn-print"
