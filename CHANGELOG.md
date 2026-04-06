@@ -117,7 +117,7 @@
 - Built `tools/parse-songs.js` — song data parser (fully annotated, ~500 lines)
 - Generated `data/songs.json` — 3,612 songs parsed (5.22 MB), with structured components, writer/composer credits, audio/sheet music flags
 - 31 songs have no lyrics (empty source files — placeholder entries in source data)
-- Built Web PWA core (Milestone 2) in `appWeb/public_html_beta/`:
+- Built Web PWA core (Milestone 2) in `appWeb/public_html/`:
   - `index.php` — main SPA layout with Bootstrap 5.3, responsive navbar, search, dark mode toggle
   - `includes/infoAppVer.php` — centralised version metadata with auto-computed copyright year
   - `css/styles.css` — custom styles: songbook cards, song list, lyrics view, dark mode, animations
@@ -136,7 +136,7 @@
 ### 🏗 Changed — 2026-04-05
 
 - Set up new project directory structure: `appWeb/`, `apple/`, `android/`, `tools/`, `data/`, `help/`, `.github/workflows/`
-- Configured `appWeb/` with deployment structure: `public_html/`, `public_html_beta/`, `public_html_dev/`, `private_html/`
+- Configured `appWeb/` with deployment structure: `public_html/`, `data_share/`, `private_html/`
 - Added song editor feature to Phase 1 plan (developer tool in `appWeb/private_html/editor/`)
 - Added smart install banner feature (PWA install or app store links)
 - Added auto-update checking with regular polling

@@ -191,7 +191,7 @@ $components  = $song['components'] ?? [];
                 <button type="button"
                         class="btn btn-outline-secondary btn-sm btn-print"
                         aria-label="Print this song"
-                        onclick="window.print()">
+                        data-action="print">
                     <i class="fa-solid fa-print me-1" aria-hidden="true"></i>
                     Print
                 </button>
@@ -199,9 +199,17 @@ $components  = $song['components'] ?? [];
         </div>
     </div>
 
-    <!-- Song lyrics -->
+    <!-- Song lyrics (#160: arrangement-aware rendering) -->
     <div class="song-lyrics" role="region" aria-label="Song lyrics">
-        <?php foreach ($components as $component): ?>
+        <?php
+            /* Use arrangement order if present, otherwise display sequentially */
+            $arrangement = $song['arrangement'] ?? null;
+            $renderOrder = $arrangement
+                ? array_map(fn($i) => $components[$i] ?? null, $arrangement)
+                : $components;
+            $renderOrder = array_filter($renderOrder);
+        ?>
+        <?php foreach ($renderOrder as $component): ?>
             <?php
                 $type   = $component['type'] ?? 'verse';
                 $number = $component['number'] ?? null;

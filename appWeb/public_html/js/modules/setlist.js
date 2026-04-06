@@ -18,6 +18,8 @@
  */
 
 import { toTitleCase } from '../utils/text.js';
+import { escapeHtml } from '../utils/html.js';
+import { STORAGE_SETLISTS, STORAGE_OWNER_ID } from '../constants.js';
 
 export class SetList {
     /**
@@ -27,7 +29,7 @@ export class SetList {
         this.app = app;
 
         /** @type {string} localStorage key */
-        this.storageKey = 'ihymns_setlists';
+        this.storageKey = STORAGE_SETLISTS;
 
         /** @type {string|null} Currently active set list ID (for navigation) */
         this.activeSetListId = null;
@@ -200,17 +202,17 @@ export class SetList {
                 <div class="list-group" id="setlist-list">
                     ${lists.map(list => `
                         <div class="list-group-item list-group-item-action d-flex align-items-center gap-3 setlist-item"
-                             data-setlist-id="${this.escapeHtml(list.id)}" role="button" tabindex="0">
+                             data-setlist-id="${escapeHtml(list.id)}" role="button" tabindex="0">
                             <div class="flex-grow-1">
-                                <strong>${this.escapeHtml(list.name)}</strong>
+                                <strong>${escapeHtml(list.name)}</strong>
                                 <small class="text-muted d-block">
                                     ${list.songs.length} song${list.songs.length !== 1 ? 's' : ''}
                                     &middot; Created ${this.formatDate(list.createdAt)}
                                 </small>
                             </div>
                             <button type="button" class="btn btn-sm btn-outline-danger btn-delete-setlist"
-                                    data-setlist-id="${this.escapeHtml(list.id)}"
-                                    aria-label="Delete set list ${this.escapeHtml(list.name)}">
+                                    data-setlist-id="${escapeHtml(list.id)}"
+                                    aria-label="Delete set list ${escapeHtml(list.name)}">
                                 <i class="fa-solid fa-trash-can" aria-hidden="true"></i>
                             </button>
                         </div>
@@ -283,14 +285,14 @@ export class SetList {
                 <div class="list-group" id="setlist-songs">
                     ${list.songs.map((song, index) => `
                         <div class="list-group-item d-flex align-items-center gap-2 setlist-song-item"
-                             data-song-id="${this.escapeHtml(song.id)}" data-index="${index}"
+                             data-song-id="${escapeHtml(song.id)}" data-index="${index}"
                              draggable="true">
                             <span class="text-muted fw-bold me-1" style="min-width:24px">${index + 1}.</span>
-                            <span class="song-number-badge" data-songbook="${this.escapeHtml(song.songbook)}">${song.number || '?'}</span>
+                            <span class="song-number-badge" data-songbook="${escapeHtml(song.songbook)}">${song.number || '?'}</span>
                             <div class="flex-grow-1">
-                                <a href="/song/${this.escapeHtml(song.id)}" data-navigate="song"
-                                   class="text-decoration-none">${this.escapeHtml(toTitleCase(song.title))}</a>
-                                <small class="text-muted d-block">${this.escapeHtml(song.songbook)}</small>
+                                <a href="/song/${escapeHtml(song.id)}" data-navigate="song"
+                                   class="text-decoration-none">${escapeHtml(toTitleCase(song.title))}</a>
+                                <small class="text-muted d-block">${escapeHtml(song.songbook)}</small>
                             </div>
                             <button type="button" class="btn btn-sm btn-outline-secondary btn-move-up"
                                     data-index="${index}" ${index === 0 ? 'disabled' : ''}
@@ -303,7 +305,7 @@ export class SetList {
                                 <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
                             </button>
                             <button type="button" class="btn btn-sm btn-outline-danger btn-remove-song"
-                                    data-song-id="${this.escapeHtml(song.id)}"
+                                    data-song-id="${escapeHtml(song.id)}"
                                     aria-label="Remove from set list">
                                 <i class="fa-solid fa-xmark" aria-hidden="true"></i>
                             </button>
@@ -319,7 +321,7 @@ export class SetList {
                 </button>
             </div>
             <div class="d-flex justify-content-between align-items-center mb-3">
-                <h2 class="h5 mb-0">${this.escapeHtml(list.name)}</h2>
+                <h2 class="h5 mb-0">${escapeHtml(list.name)}</h2>
                 <div class="btn-group btn-group-sm">
                     <button type="button" class="btn btn-outline-secondary" id="setlist-rename-btn"
                             aria-label="Rename set list" title="Rename">
@@ -513,8 +515,8 @@ export class SetList {
         const listOptions = lists.length > 0
             ? lists.map(l => `
                 <button type="button" class="list-group-item list-group-item-action setlist-option"
-                        data-setlist-id="${this.escapeHtml(l.id)}">
-                    <strong>${this.escapeHtml(l.name)}</strong>
+                        data-setlist-id="${escapeHtml(l.id)}">
+                    <strong>${escapeHtml(l.name)}</strong>
                     <small class="text-muted d-block">${l.songs.length} song${l.songs.length !== 1 ? 's' : ''}</small>
                 </button>`).join('')
             : '<p class="text-muted text-center py-3">No set lists yet</p>';
@@ -530,7 +532,7 @@ export class SetList {
                         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                     </div>
                     <div class="modal-body">
-                        <p class="text-muted small">Adding: <strong>${this.escapeHtml(toTitleCase(song.title))}</strong></p>
+                        <p class="text-muted small">Adding: <strong>${escapeHtml(toTitleCase(song.title))}</strong></p>
                         <div class="list-group mb-3" id="setlist-options">
                             ${listOptions}
                         </div>
@@ -647,7 +649,7 @@ export class SetList {
         navEl.innerHTML = `
             <div>
                 ${nav.prev
-                    ? `<a href="/song/${this.escapeHtml(nav.prev.id)}" data-navigate="song"
+                    ? `<a href="/song/${escapeHtml(nav.prev.id)}" data-navigate="song"
                          class="btn btn-sm btn-outline-primary">
                          <i class="fa-solid fa-chevron-left me-1" aria-hidden="true"></i> Prev
                        </a>`
@@ -658,11 +660,11 @@ export class SetList {
             </div>
             <small class="text-center">
                 <i class="fa-solid fa-list-ol me-1" aria-hidden="true"></i>
-                ${this.escapeHtml(nav.listName)} — ${nav.position}/${nav.total}
+                ${escapeHtml(nav.listName)} — ${nav.position}/${nav.total}
             </small>
             <div>
                 ${nav.next
-                    ? `<a href="/song/${this.escapeHtml(nav.next.id)}" data-navigate="song"
+                    ? `<a href="/song/${escapeHtml(nav.next.id)}" data-navigate="song"
                          class="btn btn-sm btn-outline-primary">
                          Next <i class="fa-solid fa-chevron-right ms-1" aria-hidden="true"></i>
                        </a>`
@@ -682,34 +684,99 @@ export class SetList {
     }
 
     /* =====================================================================
-     * SHAREABLE SET LISTS (#147)
+     * SHAREABLE SET LISTS (#147, #155 server-side persistent storage)
+     *
+     * Shared setlists are stored server-side as private JSON files in
+     * appWeb/data_share/setlist_json/. Each gets a short hex ID (8 chars).
+     * The owner is identified by a random UUID stored in localStorage.
+     * Legacy base64-encoded URLs (pre-#155) are still supported as fallback.
      * ===================================================================== */
 
     /**
-     * Generate a shareable URL for a set list.
-     * Encodes the set list name and song IDs as base64 JSON in the URL.
+     * Get or create a persistent owner UUID for this browser.
+     * Used to identify who created a shared setlist so only they can update it.
      *
-     * @param {string} listId Set list ID
-     * @returns {string|null} Shareable URL or null if list not found
+     * @returns {string} UUID string
      */
-    generateShareLink(listId) {
+    getOwnerId() {
+        let id = localStorage.getItem(STORAGE_OWNER_ID);
+        if (!id) {
+            id = crypto.randomUUID?.() || (
+                /* Fallback for older browsers: generate UUID v4 */
+                'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+                    const r = (Math.random() * 16) | 0;
+                    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+                })
+            );
+            localStorage.setItem(STORAGE_OWNER_ID, id);
+        }
+        return id;
+    }
+
+    /**
+     * Generate a shareable URL by saving the setlist to the server.
+     * Returns a short, clean URL like /setlist/shared/a1b2c3d4.
+     *
+     * If the setlist already has a shareId (from a previous share), it
+     * sends an update request so the same link reflects the latest content.
+     *
+     * @param {string} listId Local setlist ID
+     * @returns {Promise<string|null>} Shareable URL or null on failure
+     */
+    async generateShareLink(listId) {
         const list = this.getById(listId);
         if (!list) return null;
 
-        const data = {
-            n: list.name,
-            s: list.songs.map(s => s.id),
-            v: 1,
+        const payload = {
+            name: list.name,
+            songs: list.songs.map(s => s.id),
+            owner: this.getOwnerId(),
         };
 
-        const json = JSON.stringify(data);
-        const encoded = btoa(unescape(encodeURIComponent(json)));
+        /* If this list was shared before, include the server-side ID for update */
+        if (list.shareId) {
+            payload.id = list.shareId;
+        }
 
-        return window.location.origin + '/setlist/shared/' + encoded;
+        try {
+            const response = await fetch(`${this.app.config.apiUrl}?action=setlist_share`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                },
+                body: JSON.stringify(payload),
+            });
+
+            if (!response.ok) {
+                const err = await response.json().catch(() => ({}));
+                console.error('Share failed:', err.error || response.statusText);
+                return null;
+            }
+
+            const result = await response.json();
+
+            /* Store the server-side share ID on the local setlist for future updates.
+             * Re-fetch all lists, find this one, update it, and save back. */
+            if (result.id) {
+                const allLists = this.getAll();
+                const target = allLists.find(l => l.id === listId);
+                if (target) {
+                    target.shareId = result.id;
+                    this.saveAll(allLists);
+                }
+            }
+
+            return window.location.origin + result.url;
+        } catch (error) {
+            console.error('Share request failed:', error);
+            return null;
+        }
     }
 
     /**
      * Share a set list via the Web Share API or copy-to-clipboard fallback.
+     * Posts the setlist to the server first to get a persistent short URL.
      *
      * @param {string} listId Set list ID
      */
@@ -717,14 +784,20 @@ export class SetList {
         const list = this.getById(listId);
         if (!list) return;
 
-        const shareUrl = this.generateShareLink(listId);
-        if (!shareUrl) return;
+        /* Show a brief loading indicator */
+        this.app.showToast('Creating share link...', 'info', 1500);
+
+        const shareUrl = await this.generateShareLink(listId);
+        if (!shareUrl) {
+            this.app.showToast('Failed to create share link. Please try again.', 'danger', 3000);
+            return;
+        }
 
         /* Try native Web Share API first.
          * IMPORTANT: Only pass title + url (no text). Some platforms (macOS, iOS)
          * concatenate text and url when the user chooses "Copy", resulting in
-         * a broken link like "https://…/eyJ… Test Setlist — 4 songs". Omitting
-         * text ensures the clipboard only contains the clean URL. */
+         * a broken link. Omitting text ensures the clipboard only contains
+         * the clean URL. */
         if (navigator.share) {
             try {
                 await navigator.share({
@@ -755,12 +828,13 @@ export class SetList {
     }
 
     /**
-     * Parse base64-encoded shared set list data from a URL.
+     * Parse legacy base64-encoded shared set list data from a URL.
+     * Kept for backwards compatibility with links created before #155.
      *
      * @param {string} encodedData Base64-encoded JSON string
      * @returns {{ name: string, songIds: string[], version: number }|null}
      */
-    parseSharedSetlist(encodedData) {
+    parseLegacySharedSetlist(encodedData) {
         try {
             const json = decodeURIComponent(escape(atob(encodedData)));
             const data = JSON.parse(json);
@@ -773,6 +847,33 @@ export class SetList {
                 name: data.n,
                 songIds: data.s,
                 version: data.v || 1,
+            };
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * Fetch shared setlist data from the server by short ID.
+     *
+     * @param {string} shareId 8-character hex ID
+     * @returns {Promise<{ name: string, songIds: string[] }|null>}
+     */
+    async fetchSharedSetlist(shareId) {
+        try {
+            const url = `${this.app.config.apiUrl}?action=setlist_get&id=${encodeURIComponent(shareId)}`;
+            const response = await fetch(url, {
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            });
+
+            if (!response.ok) return null;
+
+            const data = await response.json();
+            if (!data || !data.name || !Array.isArray(data.songs)) return null;
+
+            return {
+                name: data.name,
+                songIds: data.songs,
             };
         } catch {
             return null;
@@ -827,19 +928,31 @@ export class SetList {
 
     /**
      * Initialise the shared set list page.
-     * Decodes URL data, renders the read-only view, and binds import button.
+     * Detects whether the URL contains a short server-side ID (8 hex chars)
+     * or a legacy base64 string, then loads data accordingly.
      *
-     * @param {string} encodedData Base64-encoded set list data from the URL
+     * @param {string} shareData Short ID or legacy base64 string from the URL
      */
-    initSharedSetListPage(encodedData) {
+    async initSharedSetListPage(shareData) {
         const loadingEl = document.getElementById('shared-setlist-loading');
         const errorEl = document.getElementById('shared-setlist-error');
         const contentEl = document.getElementById('shared-setlist-content');
 
         if (!loadingEl || !errorEl || !contentEl) return;
 
-        /* Decode the shared data */
-        const sharedData = this.parseSharedSetlist(encodedData);
+        /* Determine if this is a server-side short ID or legacy base64 data.
+         * Short IDs are 8 hex characters; legacy base64 strings are longer
+         * and contain characters outside the hex range. */
+        let sharedData = null;
+        const isShortId = /^[a-f0-9]{6,16}$/.test(shareData);
+
+        if (isShortId) {
+            /* Fetch from server-side storage (#155) */
+            sharedData = await this.fetchSharedSetlist(shareData);
+        } else {
+            /* Legacy base64 fallback (pre-#155) */
+            sharedData = this.parseLegacySharedSetlist(shareData);
+        }
 
         if (!sharedData) {
             loadingEl.classList.add('d-none');
@@ -861,12 +974,12 @@ export class SetList {
         if (songsContainer) {
             songsContainer.innerHTML = sharedData.songIds.map((songId, index) => `
                 <div class="list-group-item d-flex align-items-center gap-2 shared-song-item"
-                     data-song-id="${this.escapeHtml(songId)}">
+                     data-song-id="${escapeHtml(songId)}">
                     <span class="text-muted fw-bold me-1" style="min-width:24px">${index + 1}.</span>
                     <span class="song-number-badge" data-songbook="">...</span>
                     <div class="flex-grow-1">
-                        <a href="/song/${this.escapeHtml(songId)}" data-navigate="song"
-                           class="text-decoration-none shared-song-title">${this.escapeHtml(songId)}</a>
+                        <a href="/song/${escapeHtml(songId)}" data-navigate="song"
+                           class="text-decoration-none shared-song-title">${escapeHtml(songId)}</a>
                         <small class="text-muted d-block shared-song-meta">Loading...</small>
                     </div>
                 </div>
@@ -997,7 +1110,7 @@ export class SetList {
      * @returns {string}
      */
     generateId() {
-        return Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
+        return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
     }
 
     /**
@@ -1061,7 +1174,7 @@ export class SetList {
 
         /* Build running order summary */
         const orderSummary = list.songs.map((song, i) =>
-            `<tr><td class="pe-3 text-muted">${i + 1}.</td><td>${this.escapeHtml(toTitleCase(song.title))}</td><td class="text-muted">${this.escapeHtml(song.songbook)} #${song.number || '?'}</td></tr>`
+            `<tr><td class="pe-3 text-muted">${i + 1}.</td><td>${escapeHtml(toTitleCase(song.title))}</td><td class="text-muted">${escapeHtml(song.songbook)} #${song.number || '?'}</td></tr>`
         ).join('');
 
         /* Build individual song pages */
@@ -1072,8 +1185,8 @@ export class SetList {
                 <div class="print-song-page">
                     <div class="print-song-header">
                         <span class="print-song-order">${index + 1}</span>
-                        <h2>${this.escapeHtml(toTitleCase(page.song.title))}</h2>
-                        <p class="print-song-meta">${this.escapeHtml(page.song.songbook)} #${page.song.number || '?'}</p>
+                        <h2>${escapeHtml(toTitleCase(page.song.title))}</h2>
+                        <p class="print-song-meta">${escapeHtml(page.song.songbook)} #${page.song.number || '?'}</p>
                     </div>
                     <div class="print-song-content">${page.html}</div>
                 </div>`;
@@ -1083,7 +1196,7 @@ export class SetList {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>${this.escapeHtml(list.name)} — iHymns Set List</title>
+    <title>${escapeHtml(list.name)} — iHymns Set List</title>
     <style>
         @page { margin: 2cm; size: A4; }
         * { box-sizing: border-box; }
@@ -1125,7 +1238,7 @@ export class SetList {
 <body>
     <!-- Cover Page -->
     <div class="print-cover">
-        <h1>${this.escapeHtml(list.name)}</h1>
+        <h1>${escapeHtml(list.name)}</h1>
         <p class="print-date">${dateStr}</p>
         <p class="print-song-count">${list.songs.length} song${list.songs.length !== 1 ? 's' : ''}</p>
     </div>
@@ -1154,9 +1267,4 @@ export class SetList {
      * @param {string} str
      * @returns {string}
      */
-    escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str || '';
-        return div.innerHTML;
-    }
 }

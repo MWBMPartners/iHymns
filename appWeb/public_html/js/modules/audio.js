@@ -20,6 +20,7 @@
  *   MIDI files are expected at: /data/audio/{SONG_ID}.mid
  *   e.g., /data/audio/CP-0001.mid
  */
+import { escapeHtml } from '../utils/html.js';
 
 export class Audio {
     /**
@@ -575,7 +576,7 @@ export class Audio {
         const url = this.app.config.audioBasePath + encodeURIComponent(songId) + '.mid';
         const statusEl = player.querySelector('#audio-status');
         if (statusEl) {
-            statusEl.innerHTML = `<a href="${this.escapeHtml(url)}" download class="text-decoration-underline">Download MIDI file</a>`;
+            statusEl.innerHTML = `<a href="${escapeHtml(url)}" download class="text-decoration-underline">Download MIDI file</a>`;
         }
     }
 

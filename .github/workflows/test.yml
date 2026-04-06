@@ -101,7 +101,7 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Lint JavaScript (ESLint)
         run: |
-          JS_DIR="appWeb/public_html_beta/js"
+          JS_DIR="appWeb/public_html/js"
 
           # Check if there are any JS files to lint
           JS_FILES=$(find "$JS_DIR" -name '*.js' -type f 2>/dev/null || true)
@@ -176,7 +176,7 @@ jobs:
           # List of JSON files to validate
           JSON_FILES=(
             "data/songs.json"
-            "appWeb/public_html_beta/manifest.json"
+            "appWeb/public_html/manifest.json"
             "appWeb/public_html/manifest.json"
           )
 
@@ -208,7 +208,7 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Lint HTML (HTMLHint)
         run: |
-          HTML_FILES=$(find appWeb/public_html_beta/ -name '*.html' -type f 2>/dev/null || true)
+          HTML_FILES=$(find appWeb/public_html/ -name '*.html' -type f 2>/dev/null || true)
 
           if [ -z "$HTML_FILES" ]; then
             echo "No HTML files found. Skipping HTMLHint."
@@ -219,7 +219,7 @@ jobs:
 
           # Check if htmlhint is available locally, otherwise use npx
           if command -v htmlhint &>/dev/null || npx htmlhint --version &>/dev/null; then
-            npx htmlhint appWeb/public_html_beta/**/*.html || {
+            npx htmlhint appWeb/public_html/**/*.html || {
               echo "::warning::HTMLHint found issues. Review the output above."
               # Non-blocking — HTML lint issues are advisory
               exit 0

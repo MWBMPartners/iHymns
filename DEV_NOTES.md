@@ -334,23 +334,24 @@ Words and music by ...  ← Writer/composer credits (some files only)
 | Branch | Source Directory | SFTP Path Secret | Environment |
 | --- | --- | --- | --- |
 | `main` | `appWeb/public_html/` | `SFTP_LIVE_PATH` | Production |
-| `beta` | `appWeb/public_html_beta/` | `SFTP_BETA_PATH` | Beta |
-| `alpha` | `appWeb/public_html_dev/` | `SFTP_DEV_PATH` | Alpha/Dev |
+| `beta` | `appWeb/public_html/` | `SFTP_BETA_PATH` | Beta |
+| `alpha` | `appWeb/public_html/` | `SFTP_DEV_PATH` | Alpha/Dev |
 
 ### Deployment Flow
 
-1. Development happens in `appWeb/public_html_beta/`
-2. Push to `beta` → auto version bump → minify JS/CSS/HTML → SFTP deploy to beta
-3. Merge `beta` → `main` → rsync beta into `public_html/` → SFTP deploy to live
-4. Push to `alpha` → SFTP deploy to dev server
-5. Uses `lftp mirror --reverse --delete --only-newer` for efficient sync
+1. All development happens in `appWeb/public_html/`
+2. Push to `alpha` → SFTP uploads `public_html/` → remote `public_html_dev/`
+3. Push to `beta` → auto version bump → minify → SFTP uploads `public_html/` → remote `public_html_beta/`
+4. Push to `main` → SFTP uploads `public_html/` → remote `public_html/`
+5. All branches also deploy `appWeb/data_share/` → remote `data_share/` (without `--delete`)
+6. Uses `lftp mirror --reverse --delete --only-newer` for efficient sync
 
 ### Commit Message Flags
 
 | Flag | Effect |
 | --- | --- |
 | `[deploy all]` | Force full SFTP upload even if no files changed |
-| `[skip sync]` | Skip the beta→production rsync on main branch |
+| `[skip sync]` | (Deprecated — no longer used) |
 | `[skip ci]` | Skip changelog, version-bump, and deploy workflows |
 
 ### Version Numbering
@@ -360,7 +361,7 @@ Words and music by ...  ← Writer/composer credits (some files only)
   - `BREAKING CHANGE` or `!:` → major bump
   - `feat(...):` → minor bump
   - Everything else → patch bump
-- Version stored in `appWeb/public_html_beta/includes/infoAppVer.php`
+- Version stored in `appWeb/public_html/includes/infoAppVer.php`
 - Build metadata (SHA, date) injected at deploy time
 - Git tags `v*` trigger GitHub Releases
 

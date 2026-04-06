@@ -8,6 +8,8 @@
  * spacing, verse number toggle, chorus highlighting, presentation
  * mode (fullscreen), and auto-scroll. Settings persist in localStorage.
  */
+import { escapeHtml } from '../utils/html.js';
+import { STORAGE_DISPLAY } from '../constants.js';
 
 export class Display {
     /**
@@ -17,7 +19,7 @@ export class Display {
         this.app = app;
 
         /** @type {string} localStorage key */
-        this.storageKey = 'ihymns_display';
+        this.storageKey = STORAGE_DISPLAY;
 
         /** @type {number|null} Auto-scroll interval ID */
         this.autoScrollInterval = null;
@@ -404,8 +406,8 @@ export class Display {
         overlay.innerHTML = `
             <div class="presentation-header">
                 <div class="presentation-title">
-                    ${songNum ? `<span class="presentation-number">${this.escapeHtml(songNum)}</span>` : ''}
-                    <span>${this.escapeHtml(title)}</span>
+                    ${songNum ? `<span class="presentation-number">${escapeHtml(songNum)}</span>` : ''}
+                    <span>${escapeHtml(title)}</span>
                 </div>
                 <button type="button" class="btn btn-light btn-sm" id="presentation-close-btn"
                         aria-label="Exit presentation mode">
@@ -479,9 +481,4 @@ export class Display {
      * @param {string} str
      * @returns {string}
      */
-    escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str || '';
-        return div.innerHTML;
-    }
 }

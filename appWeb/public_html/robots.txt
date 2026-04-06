@@ -1,0 +1,17 @@
+# ==========================================================================
+# iHymns — robots.txt
+#
+# Guides search engine crawlers on what to index.
+# ==========================================================================
+
+User-agent: *
+Allow: /
+
+# Exclude private/API paths
+Disallow: /api
+Disallow: /bridge.html
+
+# Sitemap location
+Sitemap: https://ihymns.app/sitemap.xml
+Sitemap: https://beta.ihymns.app/sitemap.xml
+Sitemap: https://alpha.ihymns.app/sitemap.xml

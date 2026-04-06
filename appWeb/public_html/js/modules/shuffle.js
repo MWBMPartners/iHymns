@@ -8,6 +8,7 @@
  * the entire collection or from a specific songbook. Uses the PHP
  * API's random endpoint for server-side randomness.
  */
+import { escapeHtml } from '../utils/html.js';
 
 export class Shuffle {
     constructor(app) {
@@ -57,7 +58,7 @@ export class Shuffle {
                                     data-shuffle-book="${this.escapeAttr(b.id)}"
                                     aria-label="Random song from ${this.escapeAttr(b.name)}">
                                 <i class="fa-solid fa-book me-2" aria-hidden="true"></i>
-                                ${this.escapeHtml(b.name)}
+                                ${escapeHtml(b.name)}
                                 <span class="badge bg-body-secondary ms-auto">${b.songCount}</span>
                             </button>
                         `).join('');
@@ -117,12 +118,6 @@ export class Shuffle {
         } finally {
             this.isLoading = false;
         }
-    }
-
-    escapeHtml(str) {
-        const d = document.createElement('div');
-        d.textContent = str || '';
-        return d.innerHTML;
     }
 
     escapeAttr(str) {

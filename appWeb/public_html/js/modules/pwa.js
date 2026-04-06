@@ -10,6 +10,8 @@
  * Banner dismissal is remembered in localStorage.
  */
 
+import { STORAGE_PWA_BANNER_DISMISSED } from '../constants.js';
+
 export class PWA {
     constructor(app) {
         this.app = app;
@@ -18,7 +20,7 @@ export class PWA {
         this.deferredPrompt = null;
 
         /** @type {string} localStorage key for banner dismissal */
-        this.dismissKey = 'ihymns_pwa_banner_dismissed';
+        this.dismissKey = STORAGE_PWA_BANNER_DISMISSED;
     }
 
     /**

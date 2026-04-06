@@ -304,7 +304,7 @@ console.log('');
 console.log('📋 JSON Validity Tests');
 
 test('manifest.json is valid', () => {
-    const manifestPath = path.join(PROJECT_ROOT, 'appWeb', 'public_html_beta', 'manifest.json');
+    const manifestPath = path.join(PROJECT_ROOT, 'appWeb', 'public_html', 'manifest.json');
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
     assert.ok(manifest.name, 'manifest.json missing name');
     assert.ok(manifest.short_name, 'manifest.json missing short_name');

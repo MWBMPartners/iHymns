@@ -58,25 +58,24 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 
 | Branch | Purpose | Deploys To |
 | --- | --- | --- |
-| `beta` | Active development | `public_html_beta/` → beta server |
-| `main` | Production releases | `public_html/` → live server |
-| `alpha` | Experimental | `public_html_dev/` → dev server |
+| `alpha` | Experimental | `public_html/` → remote `public_html_dev/` |
+| `beta` | Active development | `public_html/` → remote `public_html_beta/` |
+| `main` | Production releases | `public_html/` → remote `public_html/` |
 
 ### Web Directory Structure
 
-- `appWeb/public_html/` — Production (auto-synced from beta on main merge)
-- `appWeb/public_html_beta/` — Beta (primary development target)
-- `appWeb/public_html_dev/` — Alpha/dev (experimental)
+- `appWeb/public_html/` — Single source directory (deployed to all environments)
+- `appWeb/data_share/` — Shared data (songs.json, setlists; deployed alongside public_html)
 - `appWeb/private_html/` — Private admin tools, song editor (separate SFTP path)
-- `appWeb/data/songs.json` — Shared song data (copied into each deploy dir during CI)
 
 ### Automated Deployment
 
 - GitHub Actions with `lftp` for SFTP mirroring (modelled on phpWhoIs)
-- `data/songs.json` copied INTO each deploy directory during CI (no parent path gymnastics)
+- All branches deploy from `appWeb/public_html/`; branch determines remote SFTP path
+- `appWeb/data_share/` deployed alongside (without `--delete` to preserve runtime data)
+- `.env-channel` file injected by CI for server-side environment detection
 - `vars.SFTP_ENABLED` kill switch
 - `[deploy all]` commit flag forces full upload
-- `[skip sync]` skips beta→production sync
 - `[skip ci]` skips all workflows
 
 ### Version Numbering
@@ -133,12 +132,14 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 | `data/songs.json` | Canonical song database (single source of truth) |
 | `tools/parse-songs.js` | Parses .SourceSongData/ → songs.json |
 | `tools/build-web.js` | Web build/packaging script |
-| `appWeb/public_html_beta/includes/infoAppVer.php` | App version metadata |
-| `appWeb/public_html_beta/includes/components/*.php` | Modular PHP components |
-| `appWeb/public_html_beta/includes/pages/*.php` | Page templates (song, writer, privacy, terms, settings) |
-| `appWeb/public_html_beta/js/modules/*.js` | ES modules (router, analytics, gestures, settings, etc.) |
-| `appWeb/public_html_beta/js/utils/*.js` | JS utilities (text.js) |
-| `appWeb/public_html_beta/includes/config.php` | App configuration (analytics, features) |
+| `appWeb/public_html/includes/infoAppVer.php` | App version metadata |
+| `appWeb/public_html/includes/components/*.php` | Modular PHP components |
+| `appWeb/public_html/includes/pages/*.php` | Page templates (song, writer, privacy, terms, settings) |
+| `appWeb/public_html/js/modules/*.js` | ES modules (router, analytics, gestures, settings, etc.) |
+| `appWeb/public_html/js/utils/*.js` | JS utilities (html.js, text.js) |
+| `appWeb/public_html/js/constants.js` | Centralised localStorage key constants (#139) |
+| `appWeb/public_html/api.php` | Server-side API (songs, setlists, search) |
+| `appWeb/public_html/includes/config.php` | App configuration (analytics, features) |
 | `appWeb/private_html/editor/` | Song editor (dev tool) |
 | `appApple/iHymns/iHymns/Services/AppInfo.swift` | Apple app info |
 | `appAndroid/.../AppInfo.kt` | Android app info |

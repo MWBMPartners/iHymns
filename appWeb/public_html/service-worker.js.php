@@ -102,6 +102,15 @@ const PRECACHE_ASSETS = [
 let autoUpdateOfflineSongs = false;
 
 /**
+ * In-flight navigation request map (#140).
+ * Prevents duplicate fetches when rapid SPA navigation fires multiple
+ * fetch events for the same URL concurrently. If a request for a URL
+ * is already in-flight, subsequent requests share the same promise.
+ * @type {Map<string, Promise<Response>>}
+ */
+const inflightNavigations = new Map();
+
+/**
  * Send a message to all controlled clients.
  * @param {object} data Message payload
  */
@@ -247,30 +256,48 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
-    /* --- Song data (songs.json): network-first, cache for offline --- */
-    if (url.pathname.endsWith('/songs.json')) {
+    /* --- Song data (served via API): network-first, cache for offline (#154) --- */
+    if (url.pathname === '/api' && url.searchParams.get('action') === 'songs_json') {
         event.respondWith(networkFirstWithCache(event.request));
         return;
     }
 
     /* --- Navigation requests: network-first, offline shell fallback --- */
+    /* Deduplicates concurrent fetches for the same URL (#140) */
     if (event.request.mode === 'navigate') {
-        event.respondWith(
-            fetch(event.request)
-                .then(response => {
-                    /* Cache the navigation response for offline */
+        const navKey = url.pathname + url.search;
+        const inflight = inflightNavigations.get(navKey);
+
+        if (inflight) {
+            /* Another fetch for this URL is already in-flight — share it */
+            event.respondWith(inflight.then(r => r.clone()));
+            return;
+        }
+
+        const navigationPromise = fetch(event.request)
+            .then(response => {
+                /* Only cache successful (2xx) responses — never cache
+                 * redirects (301/302) as that causes infinite redirect
+                 * loops when served from cache (#140) */
+                if (response.ok) {
                     const clone = response.clone();
                     caches.open(CACHE_VERSION).then(cache => {
                         cache.put(event.request, clone);
                     });
-                    return response;
-                })
-                .catch(() => {
-                    /* Offline — serve cached version or the app shell */
-                    return caches.match(event.request)
-                        .then(cached => cached || caches.match('/'));
-                })
-        );
+                }
+                return response;
+            })
+            .catch(() => {
+                /* Offline — serve cached version or the app shell */
+                return caches.match(event.request)
+                    .then(cached => cached || caches.match('/'));
+            })
+            .finally(() => {
+                inflightNavigations.delete(navKey);
+            });
+
+        inflightNavigations.set(navKey, navigationPromise);
+        event.respondWith(navigationPromise.then(r => r.clone()));
         return;
     }
 

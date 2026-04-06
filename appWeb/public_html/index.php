@@ -61,6 +61,15 @@ if ($appDevStatus !== null) {
     $versionDisplay .= ' ' . $appDevStatus;
 }
 
+/** On alpha: append build timestamp (yyyymmddhhmmss) for tracking deploys */
+$commitDate = $app["Application"]["Version"]["Repo"]["Commit"]["Date"] ?? null;
+if ($appDevStatus === 'Alpha' && $commitDate !== null) {
+    $buildStamp = preg_replace('/[^0-9]/', '', $commitDate);
+    if (strlen($buildStamp) >= 12) {
+        $versionDisplay .= ' · ' . substr($buildStamp, 0, 14);
+    }
+}
+
 /** Library configuration shorthand */
 $libs = APP_CONFIG['libraries'];
 
@@ -1034,7 +1043,7 @@ if (!empty($breadcrumbItems)) {
             devStatus:      <?= json_encode($appDevStatus) ?>,
             appUrl:         <?= json_encode($appUrl) ?>,
             apiUrl:         '/api',
-            dataUrl:        '/data/songs.json',
+            dataUrl:        '/api?action=songs_json',
             nativeApps:     <?= json_encode(APP_CONFIG['native_apps']) ?>,
             features:       <?= json_encode(APP_CONFIG['features']) ?>,
             fuseJsCdn:      <?= json_encode($libs['fusejs']['js_cdn']) ?>,

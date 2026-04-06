@@ -1,0 +1,13 @@
+# ==========================================================================
+# iHymns — Shared Setlist JSON Storage
+#
+# This directory stores server-side shared setlist JSON files created
+# via the Share Set List feature (#155). Files are created and read
+# exclusively by PHP (api.php) — never served directly.
+#
+# SECURITY: This directory is outside the public web root, but this
+# .htaccess provides defence-in-depth in case of misconfiguration.
+# ==========================================================================
+
+# Deny all direct access
+Deny from all

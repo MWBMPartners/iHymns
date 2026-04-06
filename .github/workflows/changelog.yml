@@ -66,11 +66,7 @@ jobs:
       - name: Read current version
         id: version
         run: |
-          # Try production file first, then beta
-          VERSION_FILE="appWeb/public_html_beta/includes/infoAppVer.php"
-          if [ "${{ github.ref_name }}" = "main" ] && [ -f "appWeb/public_html/includes/infoAppVer.php" ]; then
-            VERSION_FILE="appWeb/public_html/includes/infoAppVer.php"
-          fi
+          VERSION_FILE="appWeb/public_html/includes/infoAppVer.php"
 
           # Extract version number from the PHP file
           VERSION=$(grep -oP '\["Version"\]\["Number"\]\s*=\s*"\K[^"]+' "$VERSION_FILE" 2>/dev/null || echo "Unreleased")

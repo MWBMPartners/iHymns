@@ -85,20 +85,30 @@ $app["Application"]["Version"]["Number"] = "0.1.7";
 $app["Application"]["Version"]["Name"] = NULL;
 
 /**
- * Development status: dynamically determined from the deployment directory.
+ * Development status: determined from the server's deployment directory.
  *
- * - If the file is in a directory containing "public_html_dev" → "Alpha"
- * - If the file is in a directory containing "public_html_beta" → "Beta"
- * - Otherwise (production public_html/) → NULL (no development label)
+ * Since all branches deploy from the same source (appWeb/public_html/),
+ * the environment is detected from the server-side DOCUMENT_ROOT or
+ * SCRIPT_FILENAME path, which reflects the SFTP destination directory:
+ *   - Remote path contains "public_html_dev"  → "Alpha"
+ *   - Remote path contains "public_html_beta" → "Beta"
+ *   - Otherwise (production public_html/)     → NULL (no label)
  *
- * This allows the same codebase to show the correct status label
- * depending on which server directory it is deployed to.
+ * Fallback: checks for a .env-channel file injected by CI/CD.
  */
+$serverPath = $_SERVER['DOCUMENT_ROOT'] ?? $_SERVER['SCRIPT_FILENAME'] ?? __DIR__;
+$envChannelFile = dirname(__DIR__) . '/.env-channel';
 $app["Application"]["Version"]["Development"]["Status"] = match (true) {
-    /* Alpha/dev deployment — directory path contains "public_html_dev" */
-    str_contains(__DIR__, 'public_html_dev') => "Alpha",
-    /* Beta deployment — directory path contains "public_html_beta" */
-    str_contains(__DIR__, 'public_html_beta') => "Beta",
+    /* Alpha/dev deployment — server path contains "public_html_dev" */
+    str_contains($serverPath, 'public_html_dev') => "Alpha",
+    /* Beta deployment — server path contains "public_html_beta" */
+    str_contains($serverPath, 'public_html_beta') => "Beta",
+    /* CI/CD injected channel file fallback */
+    file_exists($envChannelFile) => match (trim(file_get_contents($envChannelFile))) {
+        'alpha' => "Alpha",
+        'beta'  => "Beta",
+        default => null,
+    },
     /* Production deployment — no development status label */
     default => null,
 };

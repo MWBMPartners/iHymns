@@ -25,12 +25,17 @@ var songData = {
 };
 
 /**
- * Possible relative paths for auto-loading the song data file.
- * The canonical location is data/songs.json at the project root.
- * Multiple paths are tried because the relative path varies depending
- * on whether the editor is served locally or deployed to a server.
+ * Primary load/save endpoint — the editor's PHP API reads/writes
+ * directly from/to appWeb/data_share/song_data/songs.json (#154).
+ */
+var EDITOR_API_URL = 'api.php';
+
+/**
+ * Fallback relative paths for loading songs.json when the PHP API
+ * is not available (e.g., running the editor without PHP).
  */
 var SONGS_URL_CANDIDATES = [
+    'api.php?action=load',                    /* Primary: PHP API reads from data_share/ */
     '../data/songs.json',                     /* Deployed server: data/ inside private_html/ */
     '../../data/songs.json',                  /* Alternative: data/ one up from private_html/ */
     '../../../data/songs.json',               /* Local dev: relative to appWeb/private_html/editor/ → appWeb/data/ */
@@ -188,8 +193,10 @@ function _fetchAndParseSongs(target) {
 /**
  * saveSongsToFile()
  * -----------------
- * Serialises the current `songData` to a pretty-printed JSON string and triggers
- * a browser download of the resulting file as "songs.json".
+ * Serialises the current `songData` to a pretty-printed JSON string and saves
+ * it directly to the server via the editor PHP API (#154). This writes to the
+ * canonical appWeb/data_share/song_data/songs.json file. Falls back to a
+ * browser download if the server save fails.
  */
 function saveSongsToFile() {
     /* Run validation first; abort if the data is not valid. */
@@ -208,6 +215,47 @@ function saveSongsToFile() {
     /* Serialise with 2-space indentation for human readability. */
     var jsonString = JSON.stringify(songData, null, 2);
 
+    /* Try saving via the PHP API first (writes directly to data_share/) */
+    fetch(EDITOR_API_URL + '?action=save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: jsonString,
+    })
+    .then(function (response) {
+        return response.json().then(function (data) {
+            if (response.ok && data.success) {
+                /* Server save succeeded */
+                lastSaveTime = new Date();
+                modifiedSongIds.clear();
+                renderSongList();
+                updateStatusBar();
+                showToast(
+                    'Saved ' + data.songs + ' songs to server (' + Math.round(data.bytes / 1024) + ' KB).',
+                    'success'
+                );
+            } else {
+                /* Server returned an error — fall back to download */
+                showToast('Server save failed: ' + (data.error || 'Unknown error') + '. Downloading instead.', 'warning');
+                downloadSongsJson(jsonString);
+            }
+        });
+    })
+    .catch(function (err) {
+        /* Network error — fall back to browser download */
+        showToast('Server unavailable: ' + err.message + '. Downloading instead.', 'warning');
+        downloadSongsJson(jsonString);
+    });
+}
+
+/**
+ * downloadSongsJson(jsonString)
+ * -----------------------------
+ * Fallback: triggers a browser download of the songs.json data when the
+ * server-side save is not available.
+ *
+ * @param {string} jsonString - The JSON string to download.
+ */
+function downloadSongsJson(jsonString) {
     /* Create a Blob (binary large object) from the JSON string. */
     var blob = new Blob([jsonString], { type: 'application/json' });
 
@@ -232,7 +280,7 @@ function saveSongsToFile() {
     updateStatusBar();
 
     /* Confirm to the user. */
-    showToast('songs.json downloaded.', 'success');
+    showToast('songs.json downloaded (manual placement required).', 'info');
 }
 
 /* ========================================================================
@@ -403,6 +451,9 @@ function selectSong(songId) {
     /* Render the structure / arrangement components. */
     renderComponents(song);
 
+    /* Render the arrangement editor (#161). */
+    renderArrangement(song);
+
     /* Render the writers list. */
     renderWriters(song);
 
@@ -498,7 +549,7 @@ var COMPONENT_TYPES = [
  */
 function renderComponents(song) {
     /* Grab the container element. */
-    var container = document.getElementById('components-container');
+    var container = document.getElementById('componentList');
     if (!container) return;
 
     /* Clear any existing cards. */
@@ -535,6 +586,7 @@ function renderComponents(song) {
         typeSelect.addEventListener('change', function () {
             comp.type = typeSelect.value;
             markModified(song.id);
+            renderArrangement(song); // refresh arrangement chips (#161)
             renderPreview(song); // refresh preview
         });
 
@@ -549,6 +601,7 @@ function renderComponents(song) {
         numInput.addEventListener('input', function () {
             comp.number = numInput.value ? parseInt(numInput.value, 10) : null;
             markModified(song.id);
+            renderArrangement(song); // refresh arrangement chips (#161)
             renderPreview(song);
         });
 
@@ -663,8 +716,9 @@ function addComponent() {
     /* Mark as modified. */
     markModified(song.id);
 
-    /* Re-render the component cards and preview. */
+    /* Re-render the component cards, arrangement, and preview. */
     renderComponents(song);
+    renderArrangement(song);
     renderPreview(song);
 }
 
@@ -672,6 +726,7 @@ function addComponent() {
  * removeComponent(song, index)
  * ----------------------------
  * Removes the component at the given index after user confirmation.
+ * Also updates the arrangement array to account for shifted indexes.
  *
  * @param {Object} song  - The parent song object.
  * @param {number} index - Zero-based index of the component to remove.
@@ -685,11 +740,25 @@ function removeComponent(song, index) {
     /* Splice the component out of the array. */
     song.components.splice(index, 1);
 
+    /* Update arrangement indexes: remove references to the deleted component,
+       and decrement any indexes that were above it (#161). */
+    if (song.arrangement && Array.isArray(song.arrangement)) {
+        song.arrangement = song.arrangement
+            .filter(function (i) { return i !== index; })
+            .map(function (i) { return i > index ? i - 1 : i; });
+
+        /* Clear arrangement if it's now empty. */
+        if (song.arrangement.length === 0) {
+            song.arrangement = null;
+        }
+    }
+
     /* Mark as modified. */
     markModified(song.id);
 
     /* Re-render. */
     renderComponents(song);
+    renderArrangement(song);
     renderPreview(song);
 }
 
@@ -697,6 +766,7 @@ function removeComponent(song, index) {
  * moveComponent(song, index, direction)
  * -------------------------------------
  * Swaps the component at `index` with its neighbour in the given direction.
+ * Also updates the arrangement array to reflect the new positions.
  *
  * @param {Object} song      - The parent song object.
  * @param {number} index     - Current zero-based position.
@@ -714,11 +784,21 @@ function moveComponent(song, index, direction) {
     song.components[index] = song.components[target];
     song.components[target] = temp;
 
+    /* Update arrangement indexes to reflect the swap (#161). */
+    if (song.arrangement && Array.isArray(song.arrangement)) {
+        song.arrangement = song.arrangement.map(function (i) {
+            if (i === index) return target;
+            if (i === target) return index;
+            return i;
+        });
+    }
+
     /* Mark as modified. */
     markModified(song.id);
 
     /* Re-render so the new order is visible. */
     renderComponents(song);
+    renderArrangement(song);
     renderPreview(song);
 }
 
@@ -734,6 +814,344 @@ function autoResizeTextarea(el) {
     el.style.height = 'auto';
     /* Set height to the scroll height (content height). */
     el.style.height = el.scrollHeight + 'px';
+}
+
+/* ========================================================================
+ *  SECTION 5B — Arrangement Editor (#161)
+ *
+ *  Allows customisation of the song arrangement (display order) using
+ *  human-readable component labels (e.g. "Verse 1, Chorus") instead of
+ *  raw component indexes.
+ * ======================================================================== */
+
+/**
+ * getComponentLabel(comp)
+ * -----------------------
+ * Returns a human-readable label for a component, e.g. "Verse 1", "Chorus", "Bridge".
+ *
+ * @param {Object} comp - A component object with `type` and optional `number`.
+ * @returns {string} Human-readable label.
+ */
+function getComponentLabel(comp) {
+    var label = comp.type.charAt(0).toUpperCase() + comp.type.slice(1);
+    if (comp.number != null) {
+        label += ' ' + comp.number;
+    }
+    return label;
+}
+
+/**
+ * findComponentIndex(song, label)
+ * -------------------------------
+ * Finds the index of a component matching the given human-readable label.
+ * Matching is case-insensitive. Supports labels like "Verse 1", "Chorus", "Refrain".
+ * If a type has only one component and no number is specified, it matches.
+ *
+ * @param {Object}  song  - The song with components array.
+ * @param {string}  label - Human-readable label to search for.
+ * @returns {number} Component index, or -1 if not found.
+ */
+function findComponentIndex(song, label) {
+    var trimmed = label.trim().toLowerCase();
+    if (!trimmed || !song.components) return -1;
+
+    /* Try exact match first (type + number). */
+    for (var i = 0; i < song.components.length; i++) {
+        var comp = song.components[i];
+        var compLabel = getComponentLabel(comp).toLowerCase();
+        if (compLabel === trimmed) return i;
+    }
+
+    /* If no number was given, match the first component of that type. */
+    for (var j = 0; j < song.components.length; j++) {
+        var c = song.components[j];
+        if (c.type.toLowerCase() === trimmed) return j;
+    }
+
+    return -1;
+}
+
+/**
+ * arrangementToLabels(song)
+ * -------------------------
+ * Converts the song's arrangement index array into a comma-separated
+ * string of human-readable labels.
+ *
+ * @param {Object} song - The song with components and arrangement arrays.
+ * @returns {string} Comma-separated labels, or empty string if no arrangement.
+ */
+function arrangementToLabels(song) {
+    if (!song.arrangement || !Array.isArray(song.arrangement)) return '';
+    if (!song.components) return '';
+
+    return song.arrangement.map(function (idx) {
+        var comp = song.components[idx];
+        if (!comp) return '?';
+        return getComponentLabel(comp);
+    }).join(', ');
+}
+
+/**
+ * labelsToArrangement(song, labelsStr)
+ * -------------------------------------
+ * Parses a comma-separated string of human-readable component labels
+ * into an arrangement index array. Returns an object with:
+ *   - arrangement: array of valid indexes (null if input is empty)
+ *   - errors: array of unrecognised label strings
+ *
+ * @param {Object} song      - The song with components array.
+ * @param {string} labelsStr - Comma-separated labels string.
+ * @returns {{ arrangement: number[]|null, errors: string[] }}
+ */
+function labelsToArrangement(song, labelsStr) {
+    var trimmed = labelsStr.trim();
+    if (!trimmed) return { arrangement: null, errors: [] };
+
+    var labels = trimmed.split(',');
+    var arrangement = [];
+    var errors = [];
+
+    labels.forEach(function (label) {
+        var l = label.trim();
+        if (!l) return; /* skip empty entries from double commas */
+
+        var idx = findComponentIndex(song, l);
+        if (idx === -1) {
+            errors.push(l);
+        } else {
+            arrangement.push(idx);
+        }
+    });
+
+    return {
+        arrangement: arrangement.length > 0 ? arrangement : null,
+        errors: errors
+    };
+}
+
+/**
+ * autoGenerateArrangement(song)
+ * -----------------------------
+ * Generates an arrangement that inserts the chorus/refrain after each verse.
+ * Same logic as the parser (tools/parse-songs.js).
+ *
+ * @param {Object} song - The song with components array.
+ * @returns {number[]|null} Arrangement index array, or null if no chorus/refrain found.
+ */
+function autoGenerateArrangement(song) {
+    if (!song.components || song.components.length === 0) return null;
+
+    /* Find the first chorus or refrain. */
+    var refrainIndex = -1;
+    for (var i = 0; i < song.components.length; i++) {
+        var type = song.components[i].type;
+        if (type === 'chorus' || type === 'refrain') {
+            refrainIndex = i;
+            break;
+        }
+    }
+
+    if (refrainIndex === -1) return null;
+
+    /* Build arrangement: chorus/refrain after each verse, other components in place. */
+    var arrangement = [];
+    for (var j = 0; j < song.components.length; j++) {
+        var comp = song.components[j];
+        if (comp.type === 'verse') {
+            arrangement.push(j);
+            arrangement.push(refrainIndex);
+        } else if (j !== refrainIndex) {
+            arrangement.push(j);
+        }
+    }
+
+    return arrangement;
+}
+
+/**
+ * renderArrangement(song)
+ * -----------------------
+ * Renders the arrangement editor UI: chips display, text input, and feedback.
+ * Called when a song is loaded and whenever components change.
+ *
+ * @param {Object} song - The song to render arrangement for.
+ */
+function renderArrangement(song) {
+    var chipsContainer = document.getElementById('arrangement-chips');
+    var input = document.getElementById('arrangement-input');
+    var feedback = document.getElementById('arrangement-feedback');
+
+    if (!chipsContainer || !input || !feedback) return;
+
+    /* Clear previous state. */
+    chipsContainer.innerHTML = '';
+    feedback.style.display = 'none';
+    feedback.textContent = '';
+
+    if (!song) {
+        input.value = '';
+        return;
+    }
+
+    /* Convert arrangement to labels and show in input. */
+    var labelsStr = arrangementToLabels(song);
+    input.value = labelsStr;
+
+    if (!song.arrangement || !Array.isArray(song.arrangement) || song.arrangement.length === 0) {
+        /* Show sequential order as muted chips. */
+        chipsContainer.innerHTML = '<span class="text-muted small">Sequential order (no custom arrangement)</span>';
+        return;
+    }
+
+    /* Render coloured chips for each arrangement entry. */
+    song.arrangement.forEach(function (idx, pos) {
+        var comp = song.components[idx];
+        if (!comp) return;
+
+        var chip = document.createElement('span');
+        chip.className = 'badge rounded-pill';
+        chip.textContent = getComponentLabel(comp);
+        chip.title = 'Position ' + (pos + 1) + ' → Component index ' + idx;
+
+        /* Colour chips by type. */
+        var type = comp.type;
+        if (type === 'chorus' || type === 'refrain') {
+            chip.style.backgroundColor = '#f59e0b';
+            chip.style.color = '#1a1a1a';
+        } else if (type === 'verse') {
+            chip.style.backgroundColor = '#3b82f6';
+            chip.style.color = '#ffffff';
+        } else if (type === 'bridge') {
+            chip.style.backgroundColor = '#8b5cf6';
+            chip.style.color = '#ffffff';
+        } else {
+            chip.style.backgroundColor = '#6b7280';
+            chip.style.color = '#ffffff';
+        }
+
+        chipsContainer.appendChild(chip);
+    });
+}
+
+/**
+ * applyArrangementFromInput(song)
+ * --------------------------------
+ * Reads the arrangement text input, parses labels, validates, and applies
+ * the arrangement to the song. Shows feedback on errors.
+ *
+ * @param {Object} song - The song to update.
+ */
+function applyArrangementFromInput(song) {
+    var input = document.getElementById('arrangement-input');
+    var feedback = document.getElementById('arrangement-feedback');
+    if (!input || !feedback || !song) return;
+
+    var result = labelsToArrangement(song, input.value);
+
+    if (result.errors.length > 0) {
+        /* Show error feedback for unrecognised labels. */
+        feedback.style.display = 'block';
+        feedback.className = 'small mb-2 text-danger';
+        feedback.textContent = 'Unrecognised: ' + result.errors.join(', ')
+            + '. Available: ' + song.components.map(getComponentLabel).join(', ');
+        return;
+    }
+
+    /* Apply the arrangement (or clear it). */
+    song.arrangement = result.arrangement;
+
+    /* Clear error feedback. */
+    feedback.style.display = 'none';
+
+    /* Show success feedback briefly. */
+    if (result.arrangement) {
+        feedback.style.display = 'block';
+        feedback.className = 'small mb-2 text-success';
+        feedback.textContent = 'Arrangement applied (' + result.arrangement.length + ' items).';
+    } else {
+        feedback.style.display = 'block';
+        feedback.className = 'small mb-2 text-info';
+        feedback.textContent = 'Arrangement cleared — using sequential order.';
+    }
+
+    /* Mark as modified and re-render. */
+    markModified(song.id);
+    renderArrangement(song);
+    renderPreview(song);
+
+    /* Auto-hide feedback after 3 seconds. */
+    setTimeout(function () {
+        feedback.style.display = 'none';
+    }, 3000);
+}
+
+/**
+ * bindArrangementListeners()
+ * --------------------------
+ * Attaches event listeners to the arrangement editor UI elements.
+ * Called once on page load from bindGlobalEventListeners().
+ */
+function bindArrangementListeners() {
+    /* Apply button. */
+    var btnApply = document.getElementById('btnApplyArrangement');
+    if (btnApply) {
+        btnApply.addEventListener('click', function () {
+            if (!currentSongId) return;
+            var song = findSongById(currentSongId);
+            if (song) applyArrangementFromInput(song);
+        });
+    }
+
+    /* Enter key in input also applies. */
+    var input = document.getElementById('arrangement-input');
+    if (input) {
+        input.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                if (!currentSongId) return;
+                var song = findSongById(currentSongId);
+                if (song) applyArrangementFromInput(song);
+            }
+        });
+    }
+
+    /* Auto-generate button (chorus after each verse). */
+    var btnAuto = document.getElementById('btnArrangementAuto');
+    if (btnAuto) {
+        btnAuto.addEventListener('click', function () {
+            if (!currentSongId) return;
+            var song = findSongById(currentSongId);
+            if (!song) return;
+
+            var arrangement = autoGenerateArrangement(song);
+            if (arrangement === null) {
+                showToast('No chorus or refrain found to auto-arrange.', 'warning');
+                return;
+            }
+
+            song.arrangement = arrangement;
+            markModified(song.id);
+            renderArrangement(song);
+            renderPreview(song);
+            showToast('Arrangement auto-generated.', 'success');
+        });
+    }
+
+    /* Sequential / clear button. */
+    var btnSeq = document.getElementById('btnArrangementSequential');
+    if (btnSeq) {
+        btnSeq.addEventListener('click', function () {
+            if (!currentSongId) return;
+            var song = findSongById(currentSongId);
+            if (!song) return;
+
+            song.arrangement = null;
+            markModified(song.id);
+            renderArrangement(song);
+            renderPreview(song);
+            showToast('Arrangement cleared — sequential order.', 'info');
+        });
+    }
 }
 
 /* ========================================================================
@@ -1123,8 +1541,19 @@ function renderPreview(song) {
     /* Horizontal rule to separate header from content. */
     container.appendChild(document.createElement('hr'));
 
-    /* Render each component. */
-    (song.components || []).forEach(function (comp) {
+    /* Determine render order: use arrangement if present, otherwise sequential (#161). */
+    var components = song.components || [];
+    var renderOrder;
+    if (song.arrangement && Array.isArray(song.arrangement) && song.arrangement.length > 0) {
+        renderOrder = song.arrangement
+            .map(function (idx) { return components[idx] || null; })
+            .filter(function (c) { return c !== null; });
+    } else {
+        renderOrder = components;
+    }
+
+    /* Render each component in the determined order. */
+    renderOrder.forEach(function (comp) {
         /* Component label, e.g. "Verse 1" or "Chorus". */
         var heading = document.createElement('h6');
         heading.className = 'mt-3 mb-1 fw-bold text-uppercase small';
@@ -1277,8 +1706,11 @@ function clearEditForm() {
     setVal('edit-copyright', '');
 
     /* Clear components container. */
-    var compContainer = document.getElementById('components-container');
+    var compContainer = document.getElementById('componentList');
     if (compContainer) compContainer.innerHTML = '';
+
+    /* Clear arrangement editor (#161). */
+    renderArrangement(null);
 
     /* Clear writers container. */
     var writersContainer = document.getElementById('writers-container');
@@ -1624,6 +2056,9 @@ function warnBeforeUnload(event) {
 function init() {
     /* Bind all UI event listeners. */
     bindGlobalEventListeners();
+
+    /* Bind arrangement editor listeners (#161). */
+    bindArrangementListeners();
 
     /* Register the beforeunload handler for unsaved-changes protection. */
     window.addEventListener('beforeunload', warnBeforeUnload);
