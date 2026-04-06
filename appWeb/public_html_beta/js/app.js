@@ -25,6 +25,8 @@ import { PWA } from './modules/pwa.js';
 import { Shuffle } from './modules/shuffle.js';
 import { Numpad } from './modules/numpad.js';
 import { Share } from './modules/share.js';
+import { Audio } from './modules/audio.js';
+import { SheetMusic } from './modules/sheet-music.js';
 
 /**
  * iHymnsApp — Main application class
@@ -62,6 +64,12 @@ class iHymnsApp {
 
         /** @type {Share} Song sharing module */
         this.share = null;
+
+        /** @type {Audio} MIDI audio playback module (#90) */
+        this.audio = null;
+
+        /** @type {SheetMusic} PDF sheet music viewer module (#91) */
+        this.sheetMusic = null;
     }
 
     /**
@@ -106,6 +114,14 @@ class iHymnsApp {
             /* Share module */
             this.share = new Share(this);
             this.share.init();
+
+            /* Audio playback module (#90) */
+            this.audio = new Audio(this);
+            this.audio.init();
+
+            /* Sheet music viewer (#91) */
+            this.sheetMusic = new SheetMusic(this);
+            this.sheetMusic.init();
 
             /* --- Set up global event listeners --- */
             this.bindGlobalEvents();
@@ -199,32 +215,24 @@ class iHymnsApp {
                 this.handleAction(action.dataset.action, action);
             }
 
-            /*
-             * Audio button — currently not implemented (#80).
-             * Shows a "coming soon" toast until the audio module is built.
-             */
+            /* Audio button — opens the MIDI player (#90) */
             const audioBtn = e.target.closest('.btn-audio');
             if (audioBtn) {
                 e.preventDefault();
-                this.showToast(
-                    '<i class="fa-solid fa-headphones me-2" aria-hidden="true"></i>'
-                    + 'Audio playback is coming soon!',
-                    'info', 3000
-                );
+                const songId = audioBtn.dataset.songId;
+                if (songId && this.audio) {
+                    this.audio.handleAudioClick(songId);
+                }
             }
 
-            /*
-             * Sheet music button — currently not implemented (#80).
-             * Shows a "coming soon" toast until the sheet music module is built.
-             */
+            /* Sheet music button — opens the PDF viewer (#91) */
             const sheetBtn = e.target.closest('.btn-sheet-music');
             if (sheetBtn) {
                 e.preventDefault();
-                this.showToast(
-                    '<i class="fa-solid fa-file-pdf me-2" aria-hidden="true"></i>'
-                    + 'Sheet music viewer is coming soon!',
-                    'info', 3000
-                );
+                const songId = sheetBtn.dataset.songId;
+                if (songId && this.sheetMusic) {
+                    this.sheetMusic.handleSheetMusicClick(songId);
+                }
             }
         });
 

@@ -107,6 +107,22 @@ define('APP_CONFIG', [
             'js_cdn'     => 'https://cdn.jsdelivr.net/npm/fuse.js@7.1.0/dist/fuse.min.mjs',
             'js_local'   => 'vendor/fuse/fuse.min.mjs',
         ],
+
+        /* Tone.js 15.1 — Web Audio framework for MIDI playback (#90) */
+        'tonejs' => [
+            'version'    => '15.1.22',
+            'js_cdn'     => 'https://cdn.jsdelivr.net/npm/tone@15.1.22/build/Tone.min.js',
+            'js_local'   => 'vendor/tone/Tone.min.js',
+        ],
+
+        /* PDF.js 4.9 — PDF rendering for sheet music viewer (#91) */
+        'pdfjs' => [
+            'version'    => '4.9.124',
+            'js_cdn'     => 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.9.124/build/pdf.min.mjs',
+            'worker_cdn' => 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.9.124/build/pdf.worker.min.mjs',
+            'js_local'   => 'vendor/pdfjs/pdf.min.mjs',
+            'worker_local' => 'vendor/pdfjs/pdf.worker.min.mjs',
+        ],
     ],
 
     /* -----------------------------------------------------------------
