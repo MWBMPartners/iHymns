@@ -144,19 +144,11 @@
     # Enforce HTTPS via HTTP Strict Transport Security (1 year)
     Header set Strict-Transport-Security "max-age=31536000; includeSubDomains"
 
-    # Content-Security-Policy: restrict resource loading to trusted sources
-    # - default-src 'self': only allow resources from same origin by default
-    # - script-src: allow self + CDN scripts (jsdelivr, cloudflare)
-    # - style-src: allow self + CDN styles + 'unsafe-inline' for Bootstrap inline styles
-    # - font-src: allow self + CDN fonts (jsdelivr for Bootstrap Icons)
-    # - img-src: allow self + data URIs (for inline SVGs/icons)
-    # - connect-src: allow self (for fetch/XHR to own server)
-    # - worker-src: allow self (for service worker)
-    # - media-src: allow self (for MIDI audio files)
-    # - object-src 'none': block Flash/plugin embeds entirely
-    # - base-uri 'self': restrict <base> tag to same origin
-    # - form-action 'self': restrict form submissions to same origin
-    Header set Content-Security-Policy "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; font-src 'self' https://cdn.jsdelivr.net; img-src 'self' data:; connect-src 'self'; worker-src 'self'; media-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self';"
+    # NOTE: Content-Security-Policy temporarily removed.
+    # The CSP was correctly configured but service worker cache poisoning
+    # caused CDN resources to return 503. CSP will be re-enabled once
+    # the poisoned caches have been cleared across all users.
+    # See GitHub issue for re-enabling CSP after cache purge is complete.
 </IfModule>
 
 # ----------------------------------------------------------------------------
