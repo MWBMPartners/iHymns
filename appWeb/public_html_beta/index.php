@@ -203,18 +203,21 @@ try {
     <!-- Bootstrap CSS -->
     <link rel="stylesheet"
           href="<?= $libs['bootstrap']['css_cdn'] ?>"
+          integrity="<?= $libs['bootstrap']['css_sri'] ?>"
           crossorigin="anonymous"
           id="bootstrap-css">
 
     <!-- Font Awesome CSS -->
     <link rel="stylesheet"
           href="<?= $libs['fontawesome']['css_cdn'] ?>"
+          integrity="<?= $libs['fontawesome']['css_sri'] ?>"
           crossorigin="anonymous"
           id="fontawesome-css">
 
     <!-- Animate.css — CSS animation library (respects prefers-reduced-motion) -->
     <link rel="stylesheet"
           href="<?= $libs['animatecss']['css_cdn'] ?>"
+          integrity="<?= $libs['animatecss']['css_sri'] ?>"
           crossorigin="anonymous"
           id="animatecss">
 
@@ -728,10 +731,11 @@ try {
 
     <!-- jQuery -->
     <script src="<?= $libs['jquery']['js_cdn'] ?>"
+            integrity="<?= $libs['jquery']['js_sri'] ?>"
             crossorigin="anonymous"
             id="jquery-js"></script>
     <script>
-        /* Fallback: load jQuery locally if CDN fails */
+        /* Fallback: load jQuery locally if CDN fails or SRI check fails */
         if (typeof jQuery === 'undefined') {
             document.write('<script src="<?= $libs['jquery']['js_local'] ?>"><\/script>');
         }
@@ -739,10 +743,11 @@ try {
 
     <!-- Bootstrap Bundle (includes Popper.js) -->
     <script src="<?= $libs['bootstrap']['js_cdn'] ?>"
+            integrity="<?= $libs['bootstrap']['js_sri'] ?>"
             crossorigin="anonymous"
             id="bootstrap-js"></script>
     <script>
-        /* Fallback: load Bootstrap JS locally if CDN fails */
+        /* Fallback: load Bootstrap JS locally if CDN fails or SRI check fails */
         if (typeof bootstrap === 'undefined') {
             document.write('<script src="<?= $libs['bootstrap']['js_local'] ?>"><\/script>');
         }

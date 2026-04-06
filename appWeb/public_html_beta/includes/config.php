@@ -75,7 +75,9 @@ define('APP_CONFIG', [
         'bootstrap' => [
             'version'    => '5.3.6',
             'css_cdn'    => 'https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/css/bootstrap.min.css',
+            'css_sri'    => 'sha384-4Q6Gf2aSP4eDXB8Miphtr37CMZZQ5oXLH2yaXMJ2w8e2ZtHTl7GptT4jmndRuHDT',
             'js_cdn'     => 'https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/js/bootstrap.bundle.min.js',
+            'js_sri'     => 'sha384-j1CDi7MgGQ12Z7Qab0qlWQ/Qqz24Gc6BM0thvEMVjHnfYGF0rmFCozFSxQBxwHKO',
             'css_local'  => 'vendor/bootstrap/bootstrap.min.css',
             'js_local'   => 'vendor/bootstrap/bootstrap.bundle.min.js',
         ],
@@ -84,6 +86,7 @@ define('APP_CONFIG', [
         'fontawesome' => [
             'version'    => '6.7.2',
             'css_cdn'    => 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css',
+            'css_sri'    => 'sha384-nRgPTkuX86pH8yjPJUAFuASXQSSl2/bBUiNV47vSYpKFxHJhbcrGnmlYpYJMeD7a',
             'css_local'  => 'vendor/fontawesome/css/all.min.css',
         ],
 
@@ -91,6 +94,7 @@ define('APP_CONFIG', [
         'jquery' => [
             'version'    => '3.7.1',
             'js_cdn'     => 'https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js',
+            'js_sri'     => 'sha384-1H217gwSVyLSIfaLxHbE7dRb3v4mYCKbpQvzx0cegeju1MVsGrX5xXxAvs/HgeFs',
             'js_local'   => 'vendor/jquery/jquery.min.js',
         ],
 
@@ -98,28 +102,40 @@ define('APP_CONFIG', [
         'animatecss' => [
             'version'    => '4.1.1',
             'css_cdn'    => 'https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css',
+            'css_sri'    => 'sha384-Gu3KVV2H9d+yA4QDpVB7VcOyhJlAVrcXd0thEjr4KznfaFPLe0xQJyonVxONa4ZC',
             'css_local'  => 'vendor/animate/animate.min.css',
         ],
 
-        /* Fuse.js 7.1 — Client-side fuzzy search */
+        /* Fuse.js 7.1 — Client-side fuzzy search
+         * NOTE: Loaded via dynamic import() — SRI not supported by browsers
+         * for ES module imports. Hash stored for reference only. */
         'fusejs' => [
             'version'    => '7.1.0',
             'js_cdn'     => 'https://cdn.jsdelivr.net/npm/fuse.js@7.1.0/dist/fuse.min.mjs',
+            'js_sri'     => 'sha384-811P6qTvNGdeioyBs0y+XTVXngjnK9rDj1bK7eeYjJcOVKGY3c5nDbCmE61nrHul',
             'js_local'   => 'vendor/fuse/fuse.min.mjs',
         ],
 
-        /* Tone.js 15.1 — Web Audio framework for MIDI playback (#90) */
+        /* Tone.js 15.1 — Web Audio framework for MIDI playback (#90)
+         * NOTE: jsDelivr auto-minifies Tone.js (no Tone.min.js in npm package),
+         * so the served content hash differs from the source. SRI hash stored
+         * for the non-minified source; verify against CDN if switching URL. */
         'tonejs' => [
             'version'    => '15.1.22',
-            'js_cdn'     => 'https://cdn.jsdelivr.net/npm/tone@15.1.22/build/Tone.min.js',
+            'js_cdn'     => 'https://cdn.jsdelivr.net/npm/tone@15.1.22/build/Tone.js',
+            'js_sri'     => 'sha384-NWoslxaf/3dYwQk+uGziDYJFdsjBpVlU1WpFRexuDFcIk/5PJpCbpVXia2Uikeix',
             'js_local'   => 'vendor/tone/Tone.min.js',
         ],
 
-        /* PDF.js 4.9 — PDF rendering for sheet music viewer (#91) */
+        /* PDF.js 4.9 — PDF rendering for sheet music viewer (#91)
+         * NOTE: Loaded via dynamic import() — SRI not supported by browsers
+         * for ES module imports. Hashes stored for reference only. */
         'pdfjs' => [
             'version'    => '4.9.124',
             'js_cdn'     => 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.9.124/build/pdf.min.mjs',
+            'js_sri'     => 'sha384-fxC9og0KaUwjhnUZmpdzl0G6njIZnnkS/8mWNomcEPWK3GzJzp8elGfMjbh5OmnQ',
             'worker_cdn' => 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.9.124/build/pdf.worker.min.mjs',
+            'worker_sri' => 'sha384-crCBoB141cuC+Cg34QibH3jxI+0kRpZIM+ZcpICrs0Cr1BvnkRPE3V++Ct0Dfuih',
             'js_local'   => 'vendor/pdfjs/pdf.min.mjs',
             'worker_local' => 'vendor/pdfjs/pdf.worker.min.mjs',
         ],
