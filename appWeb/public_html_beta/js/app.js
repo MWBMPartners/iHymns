@@ -29,6 +29,7 @@ import { Audio } from './modules/audio.js';
 import { SheetMusic } from './modules/sheet-music.js';
 import { History } from './modules/history.js';
 import { SetList } from './modules/setlist.js';
+import { Display } from './modules/display.js';
 
 /**
  * iHymnsApp — Main application class
@@ -78,6 +79,9 @@ class iHymnsApp {
 
         /** @type {SetList} Worship set list / playlist (#94) */
         this.setList = null;
+
+        /** @type {Display} Display preferences & presentation mode (#95) */
+        this.display = null;
     }
 
     /**
@@ -138,6 +142,10 @@ class iHymnsApp {
             /* Worship set list / playlist (#94) */
             this.setList = new SetList(this);
             this.setList.init();
+
+            /* Display preferences & presentation mode (#95) */
+            this.display = new Display(this);
+            this.display.init();
 
             /* --- Set up global event listeners --- */
             this.bindGlobalEvents();

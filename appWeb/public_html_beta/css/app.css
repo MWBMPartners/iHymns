@@ -1182,3 +1182,113 @@ body.reduce-motion .page-content.page-leaving {
 body.reduce-motion .scroll-to-top-btn {
     transition: none;
 }
+
+/* ==========================================================================
+   DISPLAY PREFERENCES & PRESENTATION MODE (#95)
+   ========================================================================== */
+
+/* Display toolbar */
+.display-toolbar {
+    font-size: 0.85rem;
+}
+
+/* Line spacing variants */
+.song-lyrics.spacing-compact .lyric-line {
+    margin-bottom: 0 !important;
+    line-height: 1.3;
+}
+
+.song-lyrics.spacing-normal .lyric-line {
+    margin-bottom: 0.25rem;
+    line-height: 1.6;
+}
+
+.song-lyrics.spacing-spacious .lyric-line {
+    margin-bottom: 0.5rem;
+    line-height: 2.0;
+}
+
+/* Chorus highlighting — enhanced distinction */
+.song-lyrics.chorus-highlight .lyric-chorus {
+    border-left: 4px solid var(--bs-primary, #6366f1);
+    padding-left: 1rem;
+    background: rgba(99, 102, 241, 0.05);
+    border-radius: 0 0.25rem 0.25rem 0;
+}
+
+[data-bs-theme="dark"] .song-lyrics.chorus-highlight .lyric-chorus {
+    background: rgba(99, 102, 241, 0.1);
+}
+
+/* Chorus plain — no distinction */
+.song-lyrics.chorus-plain .lyric-chorus {
+    border-left: none;
+    padding-left: 0;
+    background: none;
+}
+
+/* Presentation mode overlay */
+.presentation-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 9999;
+    background: var(--bs-body-bg, #fff);
+    color: var(--bs-body-color, #000);
+    overflow-y: auto;
+    padding: 2rem;
+}
+
+.presentation-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 2px solid var(--bs-border-color, #dee2e6);
+}
+
+.presentation-title {
+    font-size: 2rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.presentation-number {
+    background: var(--bs-primary, #6366f1);
+    color: #fff;
+    border-radius: 0.5rem;
+    padding: 0.25rem 0.75rem;
+    font-size: 1.5rem;
+}
+
+.presentation-lyrics {
+    font-size: 2em;
+    line-height: 1.8;
+    max-width: 900px;
+    margin: 0 auto;
+}
+
+.presentation-lyrics .lyric-component {
+    margin-bottom: 2rem;
+}
+
+.presentation-lyrics .lyric-label {
+    font-size: 0.5em;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--bs-secondary-color, #6c757d);
+    margin-bottom: 0.5rem;
+}
+
+/* Hide header/footer/scroll-to-top in presentation mode */
+body.presentation-active #app-header,
+body.presentation-active #app-footer,
+body.presentation-active .scroll-to-top-btn {
+    display: none !important;
+}

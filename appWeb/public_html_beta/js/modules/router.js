@@ -90,6 +90,9 @@ export class Router {
         /* Load the page via AJAX with transitions */
         await this.loadPage(apiUrl);
 
+        /* Clean up previous page state (#95) */
+        this.app.display.cleanup();
+
         /* Run post-load hooks (e.g., initialise favourites on song pages) */
         this.afterPageLoad(page, params);
 
@@ -267,6 +270,7 @@ export class Router {
             this.app.share.initSongPage();
             this.app.setList.initSongPage();
             this.app.setList.renderSongNavigation();
+            this.app.display.initSongPage();
 
             /* Record song view in history (#92) */
             const songPage = document.querySelector('.page-song');
