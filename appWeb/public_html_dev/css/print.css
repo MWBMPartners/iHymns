@@ -1,0 +1,108 @@
+/**
+ * iHymns — Print Stylesheet
+ *
+ * Copyright (c) 2026 iHymns. All rights reserved.
+ *
+ * PURPOSE:
+ * Optimised layout for printing song lyrics. Hides navigation,
+ * adjusts colours for print, and ensures clean, readable output.
+ */
+
+@media print {
+    /* Hide non-essential elements */
+    .app-header,
+    .app-footer,
+    .pwa-install-banner,
+    #skip-nav,
+    .btn-favourite,
+    .btn-share,
+    .btn-audio,
+    .btn-sheet-music,
+    .btn-print,
+    .song-navigation,
+    .toast-container,
+    .modal {
+        display: none !important;
+    }
+
+    /* Reset page layout */
+    body {
+        background: #ffffff !important;
+        color: #000000 !important;
+        font-size: 12pt;
+        line-height: 1.5;
+    }
+
+    .main-content {
+        padding: 0 !important;
+        min-height: auto !important;
+    }
+
+    .page-content {
+        padding: 0 !important;
+        max-width: 100% !important;
+    }
+
+    /* Song header */
+    .card-song-header {
+        border: none !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+        border-left: 3px solid #000000 !important;
+        border-radius: 0 !important;
+    }
+
+    /* Lyrics */
+    .song-lyrics {
+        font-size: 12pt !important;
+    }
+
+    .lyric-component {
+        break-inside: avoid;
+        page-break-inside: avoid;
+    }
+
+    .lyric-chorus,
+    .lyric-refrain {
+        background-color: #f5f5f5 !important;
+        border-left-color: #000000 !important;
+    }
+
+    .lyric-label {
+        color: #333333 !important;
+    }
+
+    /* Links */
+    a {
+        color: #000000 !important;
+        text-decoration: none !important;
+    }
+
+    /* Copyright */
+    .song-copyright {
+        border-top: 1px solid #cccccc !important;
+        padding-top: 0.5rem !important;
+        font-size: 9pt !important;
+        color: #666666 !important;
+    }
+
+    /* Page breaks */
+    .page-song {
+        page-break-before: avoid;
+    }
+
+    /* Badges */
+    .badge {
+        border: 1px solid #cccccc !important;
+        background: transparent !important;
+        color: #000000 !important;
+    }
+
+    .song-number-badge,
+    .song-number-badge-lg {
+        background: #000000 !important;
+        color: #ffffff !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+}

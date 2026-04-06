@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- iHymns favicon: music note on a purple circle -->
+  <!-- Copyright © 2026 iHymns -->
+  <circle cx="32" cy="32" r="30" fill="#6f42c1"/>
+  <g fill="#ffffff" transform="translate(16, 10)">
+    <!-- Music note stem -->
+    <rect x="22" y="4" width="3" height="30" rx="1.5"/>
+    <!-- Music note flag -->
+    <path d="M25 4 C25 4 32 6 32 14 C32 18 28 16 25 14" fill="#ffffff"/>
+    <!-- Music note head -->
+    <ellipse cx="16" cy="36" rx="8" ry="6" transform="rotate(-20, 16, 36)"/>
+    <!-- Second note stem -->
+    <rect x="6" y="12" width="3" height="28" rx="1.5"/>
+    <!-- Second note head -->
+    <ellipse cx="0" cy="42" rx="7" ry="5" transform="rotate(-20, 0, 42)"/>
+    <!-- Beam connecting the two notes -->
+    <rect x="6" y="10" width="19" height="3" rx="1.5" transform="rotate(-8, 15, 11)"/>
+  </g>
+</svg>
