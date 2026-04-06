@@ -242,6 +242,22 @@ export class Settings {
             });
         }
 
+        /* Export data button (#103) */
+        const exportBtn = document.getElementById('export-data-btn');
+        if (exportBtn) {
+            exportBtn.addEventListener('click', () => this.exportUserData());
+        }
+
+        /* Import data input (#103) */
+        const importInput = document.getElementById('import-data-input');
+        if (importInput) {
+            importInput.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (file) this.importUserData(file);
+                importInput.value = '';
+            });
+        }
+
         /* Reset settings button */
         const resetBtn = document.getElementById('reset-settings-btn');
         if (resetBtn) {
@@ -265,6 +281,91 @@ export class Settings {
 
         /* Cache status */
         this.updateCacheStatus();
+    }
+
+    /* =====================================================================
+     * IMPORT / EXPORT USER DATA (#103)
+     * ===================================================================== */
+
+    /**
+     * Export favourites and set lists as a JSON file download.
+     */
+    exportUserData() {
+        const data = {
+            version: 1,
+            exportedAt: new Date().toISOString(),
+            app: 'iHymns',
+            favorites: JSON.parse(localStorage.getItem('ihymns_favorites') || '[]'),
+            setlists: JSON.parse(localStorage.getItem('ihymns_setlists') || '[]'),
+            history: JSON.parse(localStorage.getItem('ihymns_history') || '[]'),
+        };
+
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `ihymns-backup-${new Date().toISOString().slice(0, 10)}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+
+        this.app.showToast('Data exported successfully', 'success', 2000);
+    }
+
+    /**
+     * Import favourites and set lists from a JSON file.
+     * @param {File} file The uploaded JSON file
+     */
+    async importUserData(file) {
+        try {
+            const text = await file.text();
+            const data = JSON.parse(text);
+
+            /* Validate structure */
+            if (!data || data.app !== 'iHymns' || !data.version) {
+                this.app.showToast('Invalid backup file', 'danger', 3000);
+                return;
+            }
+
+            const favCount = (data.favorites || []).length;
+            const setCount = (data.setlists || []).length;
+            const histCount = (data.history || []).length;
+
+            const mode = confirm(
+                `Found: ${favCount} favourites, ${setCount} set lists, ${histCount} history entries.\n\n` +
+                `OK = Replace existing data\nCancel = Merge with existing data`
+            ) ? 'replace' : 'merge';
+
+            if (mode === 'replace') {
+                if (data.favorites) localStorage.setItem('ihymns_favorites', JSON.stringify(data.favorites));
+                if (data.setlists) localStorage.setItem('ihymns_setlists', JSON.stringify(data.setlists));
+                if (data.history) localStorage.setItem('ihymns_history', JSON.stringify(data.history));
+            } else {
+                /* Merge: add non-duplicate entries */
+                if (data.favorites) {
+                    const existing = JSON.parse(localStorage.getItem('ihymns_favorites') || '[]');
+                    const existingIds = new Set(existing.map(f => f.id));
+                    const merged = [...existing, ...data.favorites.filter(f => !existingIds.has(f.id))];
+                    localStorage.setItem('ihymns_favorites', JSON.stringify(merged));
+                }
+                if (data.setlists) {
+                    const existing = JSON.parse(localStorage.getItem('ihymns_setlists') || '[]');
+                    const existingIds = new Set(existing.map(l => l.id));
+                    const merged = [...existing, ...data.setlists.filter(l => !existingIds.has(l.id))];
+                    localStorage.setItem('ihymns_setlists', JSON.stringify(merged));
+                }
+                if (data.history) {
+                    const existing = JSON.parse(localStorage.getItem('ihymns_history') || '[]');
+                    const existingIds = new Set(existing.map(h => h.id));
+                    const merged = [...existing, ...data.history.filter(h => !existingIds.has(h.id))];
+                    localStorage.setItem('ihymns_history', JSON.stringify(merged.slice(0, 20)));
+                }
+            }
+
+            this.app.showToast(`Data imported (${mode})`, 'success', 2000);
+        } catch (error) {
+            console.error('[Settings] Import error:', error);
+            this.app.showToast('Failed to import data. Check the file format.', 'danger', 3000);
+        }
     }
 
     /**

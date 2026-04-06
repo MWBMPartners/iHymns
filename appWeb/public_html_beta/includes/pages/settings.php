@@ -164,6 +164,26 @@ declare(strict_types=1);
                 Data &amp; Storage
             </h2>
 
+            <!-- Import/Export (#103) -->
+            <div class="mb-3">
+                <label class="form-label fw-semibold">Favourites &amp; Set Lists</label>
+                <div class="d-flex flex-wrap gap-2">
+                    <button type="button" class="btn btn-outline-primary btn-sm" id="export-data-btn">
+                        <i class="fa-solid fa-file-export me-1" aria-hidden="true"></i>
+                        Export Data
+                    </button>
+                    <label class="btn btn-outline-secondary btn-sm mb-0" for="import-data-input">
+                        <i class="fa-solid fa-file-import me-1" aria-hidden="true"></i>
+                        Import Data
+                    </label>
+                    <input type="file" id="import-data-input" accept=".json" class="d-none"
+                           aria-label="Import favourites and set lists from JSON file">
+                </div>
+                <small class="text-muted mt-1 d-block">
+                    Back up or restore your favourites and set lists as a JSON file.
+                </small>
+            </div>
+
             <!-- Cache info -->
             <div class="mb-3">
                 <p class="mb-2">
