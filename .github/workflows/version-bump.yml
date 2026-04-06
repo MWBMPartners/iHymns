@@ -23,6 +23,7 @@ name: Version Bump
 on:
   push:
     branches:
+      - alpha
       - beta
     paths:
       - 'appWeb/**'
