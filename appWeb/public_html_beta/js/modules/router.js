@@ -124,6 +124,9 @@ export class Router {
             case 'favorites':
             case 'favourites':
                 return { page: 'favorites', params: {} };
+            case 'setlist':
+            case 'setlists':
+                return { page: 'setlist', params: {} };
             case 'settings':
                 return { page: 'settings', params: {} };
             case 'help':
@@ -241,6 +244,7 @@ export class Router {
             'song': 'Song — ' + appName,
             'search': 'Search — ' + appName,
             'favorites': 'Favourites — ' + appName,
+            'setlist': 'Set Lists — ' + appName,
             'settings': 'Settings — ' + appName,
             'help': 'Help — ' + appName,
             'terms': 'Terms of Use — ' + appName,
@@ -261,6 +265,8 @@ export class Router {
         if (page === 'song') {
             this.app.favorites.initSongPage();
             this.app.share.initSongPage();
+            this.app.setList.initSongPage();
+            this.app.setList.renderSongNavigation();
 
             /* Record song view in history (#92) */
             const songPage = document.querySelector('.page-song');
@@ -289,6 +295,11 @@ export class Router {
         /* Initialise settings controls on settings page */
         if (page === 'settings') {
             this.app.settings.initSettingsPage();
+        }
+
+        /* Initialise set list page controls (#94) */
+        if (page === 'setlist') {
+            this.app.setList.initSetListPage();
         }
 
         /* Initialise search page controls */

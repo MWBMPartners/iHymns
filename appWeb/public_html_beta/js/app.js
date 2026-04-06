@@ -28,6 +28,7 @@ import { Share } from './modules/share.js';
 import { Audio } from './modules/audio.js';
 import { SheetMusic } from './modules/sheet-music.js';
 import { History } from './modules/history.js';
+import { SetList } from './modules/setlist.js';
 
 /**
  * iHymnsApp — Main application class
@@ -74,6 +75,9 @@ class iHymnsApp {
 
         /** @type {History} Recently viewed songs history (#92) */
         this.history = null;
+
+        /** @type {SetList} Worship set list / playlist (#94) */
+        this.setList = null;
     }
 
     /**
@@ -130,6 +134,10 @@ class iHymnsApp {
             /* Recently viewed history (#92) */
             this.history = new History(this);
             this.history.init();
+
+            /* Worship set list / playlist (#94) */
+            this.setList = new SetList(this);
+            this.setList.init();
 
             /* --- Set up global event listeners --- */
             this.bindGlobalEvents();

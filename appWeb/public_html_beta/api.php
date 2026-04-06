@@ -115,6 +115,10 @@ if ($page !== null) {
             require __DIR__ . '/includes/pages/favorites.php';
             break;
 
+        case 'setlist':
+            require __DIR__ . '/includes/pages/setlist.php';
+            break;
+
         case 'settings':
             require __DIR__ . '/includes/pages/settings.php';
             break;

@@ -152,6 +152,14 @@ $components  = $song['components'] ?? [];
                     </button>
                 <?php endif; ?>
 
+                <!-- Add to set list (#94) -->
+                <button type="button"
+                        class="btn btn-outline-secondary btn-sm btn-add-to-setlist"
+                        aria-label="Add to set list">
+                    <i class="fa-solid fa-list-ol me-1" aria-hidden="true"></i>
+                    Set List
+                </button>
+
                 <!-- Print button -->
                 <button type="button"
                         class="btn btn-outline-secondary btn-sm btn-print"
