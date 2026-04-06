@@ -100,7 +100,7 @@ jobs:
           # Git / GitHub
           EXCLUDES+=" --exclude .git/ --exclude .github/ --exclude .gitkeep --exclude .gitignore --exclude .gitattributes"
           # Documentation
-          EXCLUDES+=" --exclude README.md --exclude CHANGELOG.md --exclude DEV_NOTES.md --exclude CLAUDE.md"
+          EXCLUDES+=" --exclude README.md --exclude DEV_NOTES.md --exclude CLAUDE.md"
           # Apache auth (server-managed, never overwrite)
           EXCLUDES+=" --exclude .htpasswd --exclude '.htpasswd-*' --exclude '.htpasswd.example'"
           # VS Code
@@ -120,7 +120,7 @@ jobs:
         id: changes
         run: |
           SOURCE_DIR="${{ steps.target.outputs.source_dir }}"
-          EXCLUDES="CHANGELOG\.md|README\.md|DEV_NOTES\.md|CLAUDE\.md|\.DS_Store|Thumbs\.db|\.gitkeep|\.gitignore|\.gitattributes|\.vscode|\.idea|\.xcodeproj|\.xcworkspace|\.xcuserdata|\.editorconfig|\.sublime-"
+          EXCLUDES="README\.md|DEV_NOTES\.md|CLAUDE\.md|\.DS_Store|Thumbs\.db|\.gitkeep|\.gitignore|\.gitattributes|\.vscode|\.idea|\.xcodeproj|\.xcworkspace|\.xcuserdata|\.editorconfig|\.sublime-"
           COMMIT_MSG=$(git log -1 --pretty=format:"%s")
 
           # Force full deploy if commit message contains [deploy all]
