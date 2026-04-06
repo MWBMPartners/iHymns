@@ -20,45 +20,94 @@ export class SongOfTheDay {
         this.app = app;
 
         /**
-         * Calendar-themed keyword sets.
-         * Each entry: { keywords[], dateCheck(date) → boolean }
+         * Calendar-themed keyword sets (#163).
+         * Each entry: { name, keywords[], check(date) → boolean }
+         * Order matters — first matching theme wins. More specific dates
+         * (e.g. Good Friday) should come before broader ranges (e.g. Lent).
          */
         this.calendarThemes = [
+            /* ---- CHRISTMAS SEASON ---- */
             {
-                name: 'Christmas',
-                keywords: ['christmas', 'bethlehem', 'manger', 'born', 'nativity', 'holy night', 'silent night', 'noel', 'away in a', 'infant holy', 'unto us a child'],
-                check: (d) => (d.getMonth() === 11 && d.getDate() >= 20 && d.getDate() <= 31) ||
-                              (d.getMonth() === 0 && d.getDate() <= 6) /* Advent–Epiphany */
+                name: 'Advent',
+                keywords: ['advent', 'come thou long-expected', 'o come o come emmanuel', 'prepare', 'watchman', 'waiting', 'prophecy', 'promised', 'messiah', 'herald', 'lo he comes'],
+                check: (d) => this.isAdvent(d) && !(d.getMonth() === 11 && d.getDate() >= 24)
             },
             {
-                name: 'Easter',
-                keywords: ['risen', 'resurrection', 'he is risen', 'easter', 'alive', 'tomb', 'hallelujah', 'victory'],
-                check: (d) => this.isEasterSunday(d) || this.isDaysFromEaster(d, 1) /* Easter Sunday + Monday */
+                name: 'Christmas',
+                keywords: ['christmas', 'bethlehem', 'manger', 'born', 'nativity', 'holy night', 'silent night', 'noel', 'away in a', 'infant holy', 'unto us a child', 'hark the herald', 'joy to the world', 'o come all ye faithful', 'incarnate', 'god with us', 'emmanuel', 'swaddling'],
+                check: (d) => (d.getMonth() === 11 && d.getDate() >= 24 && d.getDate() <= 31) ||
+                              (d.getMonth() === 0 && d.getDate() <= 6) /* Christmas Eve–Epiphany */
+            },
+            {
+                name: 'Epiphany',
+                keywords: ['wise men', 'magi', 'star', 'gold', 'frankincense', 'myrrh', 'kings', 'manifest', 'epiphany', 'light of the world', 'nations'],
+                check: (d) => d.getMonth() === 0 && d.getDate() >= 6 && d.getDate() <= 12
+            },
+
+            /* ---- EASTER SEASON (specific dates first) ---- */
+            {
+                name: 'Palm Sunday',
+                keywords: ['hosanna', 'palm', 'ride on', 'triumphant', 'jerusalem', 'blessed is he', 'king is coming', 'open the gates', 'majesty'],
+                check: (d) => this.isDaysFromEaster(d, -7)
+            },
+            {
+                name: 'Holy Week',
+                keywords: ['gethsemane', 'agony', 'betrayed', 'upper room', 'bread and wine', 'communion', 'last supper', 'wash', 'servant', 'cross', 'calvary', 'suffering', 'lamb', 'sacrifice'],
+                check: (d) => this.isEasterRange(d, -6, -3) /* Monday–Thursday of Holy Week */
             },
             {
                 name: 'Good Friday',
-                keywords: ['cross', 'calvary', 'crucified', 'blood', 'sacrifice', 'suffering', 'lamb of god', 'were you there'],
-                check: (d) => this.isDaysFromEaster(d, -2) /* Good Friday */
+                keywords: ['cross', 'calvary', 'crucified', 'blood', 'sacrifice', 'suffering', 'lamb of god', 'were you there', 'old rugged cross', 'when i survey', 'atonement', 'wounded', 'pierced', 'forgive them', 'it is finished', 'nailed'],
+                check: (d) => this.isDaysFromEaster(d, -2) || this.isDaysFromEaster(d, -1) /* Good Friday + Saturday */
             },
             {
-                name: 'Palm Sunday',
-                keywords: ['hosanna', 'palm', 'king', 'ride on', 'triumphant', 'jerusalem'],
-                check: (d) => this.isDaysFromEaster(d, -7) /* Palm Sunday */
+                name: 'Easter',
+                keywords: ['risen', 'resurrection', 'he is risen', 'easter', 'alive', 'tomb', 'hallelujah', 'victory', 'death where is', 'christ arose', 'up from the grave', 'morning', 'rolled away', 'conquered', 'lives'],
+                check: (d) => this.isEasterRange(d, 0, 7) /* Easter Sunday + week */
+            },
+            {
+                name: 'Ascension',
+                keywords: ['ascend', 'ascension', 'throne', 'exalted', 'crowned', 'reign', 'majesty', 'right hand', 'lifted up', 'king of kings', 'lord of lords', 'crown him'],
+                check: (d) => this.isEasterRange(d, 38, 40) /* Ascension Thursday ± 1 */
             },
             {
                 name: 'Pentecost',
-                keywords: ['spirit', 'holy spirit', 'pentecost', 'fire', 'wind', 'breath of god', 'come holy'],
-                check: (d) => this.isDaysFromEaster(d, 49) /* Pentecost = Easter + 49 days */
+                keywords: ['spirit', 'holy spirit', 'pentecost', 'fire', 'wind', 'breath of god', 'come holy', 'fill me', 'power from on high', 'tongue', 'comforter', 'counselor', 'advocate'],
+                check: (d) => this.isEasterRange(d, 49, 50) /* Pentecost Sunday + Monday */
             },
+
+            /* ---- LENT (broad range, after specific Holy Week dates) ---- */
+            {
+                name: 'Lent',
+                keywords: ['repent', 'repentance', 'forgive', 'mercy', 'humble', 'cleanse', 'search me', 'create in me', 'broken', 'contrite', 'ashes', 'fast', 'surrender', 'wilderness', 'temptation', 'refine'],
+                check: (d) => this.isEasterRange(d, -46, -8) /* Ash Wednesday to week before Palm Sunday */
+            },
+
+            /* ---- OTHER SEASONS ---- */
             {
                 name: 'New Year',
-                keywords: ['new', 'beginning', 'great is thy faithfulness', 'morning', 'mercy', 'grace', 'hope'],
-                check: (d) => d.getMonth() === 0 && d.getDate() === 1
+                keywords: ['new', 'beginning', 'great is thy faithfulness', 'morning', 'mercy', 'grace', 'hope', 'new year', 'fresh', 'renew', 'guide me'],
+                check: (d) => d.getMonth() === 0 && d.getDate() >= 1 && d.getDate() <= 3
+            },
+            {
+                name: 'Reformation',
+                keywords: ['mighty fortress', 'reformation', 'faith alone', 'grace alone', 'scripture', 'word of god', 'stand', 'truth', 'anchor', 'foundation', 'rock'],
+                check: (d) => d.getMonth() === 9 && d.getDate() >= 29 && d.getDate() <= 31 /* Oct 29–31 */
             },
             {
                 name: 'Harvest',
-                keywords: ['harvest', 'thanksgiving', 'thank', 'grateful', 'praise', 'bountiful', 'sow', 'reap', 'fields'],
-                check: (d) => d.getMonth() === 9 && d.getDate() >= 1 && d.getDate() <= 7 /* Early October */
+                keywords: ['harvest', 'thanksgiving', 'thank', 'grateful', 'bountiful', 'sow', 'reap', 'fields', 'provision', 'all good gifts', 'come ye thankful', 'fruit'],
+                check: (d) => d.getMonth() === 9 && d.getDate() >= 1 && d.getDate() <= 14 /* Early–mid October */
+            },
+            {
+                name: 'Remembrance',
+                keywords: ['peace', 'rest', 'eternal', 'remember', 'honour', 'fallen', 'comfort', 'shelter', 'refuge', 'everlasting arms', 'safe'],
+                check: (d) => d.getMonth() === 10 && d.getDate() >= 9 && d.getDate() <= 11 /* Remembrance (Nov 9–11) */
+            },
+            {
+                name: 'Trinity Sunday',
+                keywords: ['trinity', 'three in one', 'triune', 'father son', 'holy holy holy', 'godhead', 'three persons'],
+                check: (d) => this.isDaysFromEaster(d, 56) /* Trinity Sunday = Pentecost + 7 */
             },
         ];
     }
@@ -135,24 +184,61 @@ export class SongOfTheDay {
     }
 
     /**
-     * Find a themed song by keyword matching in titles.
-     * Uses deterministic selection from matches so all users see the same one.
+     * Find a themed song by keyword matching in titles AND lyrics (#163).
+     * Title matches are weighted higher than lyrics-only matches.
+     * Uses deterministic selection so all users see the same song.
      * @param {Array} songs
      * @param {string[]} keywords
      * @param {Date} date
      * @returns {object|null}
      */
     findThemedSong(songs, keywords, date) {
-        const matches = songs.filter(song => {
-            const title = (song.title || '').toLowerCase();
-            return keywords.some(kw => title.includes(kw));
-        });
+        const titleMatches = [];
+        const lyricsMatches = [];
 
-        if (matches.length === 0) return null;
+        for (const song of songs) {
+            const title = (song.title || '').toLowerCase();
+            const titleHit = keywords.some(kw => title.includes(kw));
+
+            if (titleHit) {
+                titleMatches.push(song);
+                continue;
+            }
+
+            /* Search first-verse lyrics if title didn't match */
+            const lyrics = this.getSongLyrics(song).toLowerCase();
+            if (lyrics && keywords.some(kw => lyrics.includes(kw))) {
+                lyricsMatches.push(song);
+            }
+        }
+
+        /* Prefer title matches; fall back to lyrics matches */
+        const pool = titleMatches.length > 0 ? titleMatches : lyricsMatches;
+        if (pool.length === 0) return null;
 
         /* Deterministic pick from matches using date seed */
         const seed = this.dateSeed(date);
-        return matches[seed % matches.length];
+        return pool[seed % pool.length];
+    }
+
+    /**
+     * Extract searchable lyrics text from a song's components.
+     * Returns the first 2 components' lines joined as a single string.
+     * @param {object} song
+     * @returns {string}
+     */
+    getSongLyrics(song) {
+        const components = song.components || [];
+        const lines = [];
+        for (let i = 0; i < Math.min(components.length, 2); i++) {
+            const comp = components[i];
+            if (comp.lines && comp.lines.length > 0) {
+                lines.push(...comp.lines);
+            } else if (comp.lyrics) {
+                lines.push(comp.lyrics);
+            }
+        }
+        return lines.join(' ');
     }
 
     /**
@@ -261,8 +347,40 @@ export class SongOfTheDay {
     }
 
     /**
-     * Escape HTML for safe insertion.
-     * @param {string} str
-     * @returns {string}
+     * Check if a date falls within a range of days from Easter (#163).
+     * @param {Date} d
+     * @param {number} startOffset Start of range (days from Easter, inclusive)
+     * @param {number} endOffset   End of range (days from Easter, inclusive)
+     * @returns {boolean}
      */
+    isEasterRange(d, startOffset, endOffset) {
+        const easter = this.easterDate(d.getFullYear());
+        const easterMs = easter.getTime();
+        const dayMs = 86400000;
+        const dateMs = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+        return dateMs >= easterMs + startOffset * dayMs &&
+               dateMs <= easterMs + endOffset * dayMs;
+    }
+
+    /**
+     * Check if a date falls within the Advent season (#163).
+     * Advent starts 4 Sundays before Christmas (Nov 27 – Dec 3)
+     * and runs until December 23.
+     * @param {Date} d
+     * @returns {boolean}
+     */
+    isAdvent(d) {
+        const year = d.getFullYear();
+        /* Find the 4th Sunday before Christmas Day (Dec 25). */
+        /* Christmas Day's day-of-week: 0=Sun..6=Sat */
+        const xmas = new Date(year, 11, 25);
+        const xmasDay = xmas.getDay();
+        /* Days back to the previous Sunday (or Christmas itself if Sunday) */
+        const daysBack = xmasDay === 0 ? 7 : xmasDay;
+        /* 4th Sunday before Christmas */
+        const adventStart = new Date(year, 11, 25 - daysBack - 21);
+        const adventEnd = new Date(year, 11, 23);
+        const dateOnly = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+        return dateOnly >= adventStart && dateOnly <= adventEnd;
+    }
 }
