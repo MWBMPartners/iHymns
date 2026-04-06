@@ -49,6 +49,7 @@ $songbooks = $songData->getSongbooks();
     </div>
 
     <!-- Quick Action Buttons -->
+    <section id="quick-actions" aria-label="Quick actions">
     <div class="row g-3 mb-4">
         <!-- Search by text -->
         <div class="col-6 col-md-3">
@@ -98,6 +99,7 @@ $songbooks = $songData->getSongbooks();
             </a>
         </div>
     </div>
+    </section>
 
     <!-- Recent songbooks quick tabs (#121) — populated by JS -->
     <div id="recent-songbooks" class="d-none mb-4"></div>
@@ -105,40 +107,42 @@ $songbooks = $songData->getSongbooks();
     <!-- Song of the Day (#108) — populated by JS -->
     <div id="song-of-the-day"></div>
 
-    <!-- Songbook Cards Grid -->
-    <h2 class="h5 mb-3">
-        <i class="fa-solid fa-book-open me-2" aria-hidden="true"></i>
-        Songbooks
-    </h2>
+    <!-- Songbook Cards Grid (#151 — section ID for sitelink eligibility) -->
+    <section id="songbooks" aria-label="Songbooks">
+        <h2 class="h5 mb-3">
+            <i class="fa-solid fa-book-open me-2" aria-hidden="true"></i>
+            Songbooks
+        </h2>
 
-    <div class="row g-3 mb-4">
-        <?php foreach ($songbooks as $index => $book): ?>
-            <?php if (($book['songCount'] ?? 0) > 0): ?>
-                <div class="col-6 col-md-4 col-lg-3">
-                    <a href="/songbook/<?= htmlspecialchars($book['id']) ?>"
-                       class="card card-songbook h-100 text-decoration-none"
-                       data-navigate="songbook"
-                       data-songbook-id="<?= htmlspecialchars($book['id']) ?>"
-                       aria-label="<?= htmlspecialchars($book['name']) ?> — <?= $book['songCount'] ?> songs">
-                        <div class="card-body text-center">
-                            <!-- Songbook icon with colour variation -->
-                            <div class="songbook-icon songbook-icon-<?= htmlspecialchars($book['id']) ?> mb-2">
-                                <i class="fa-solid fa-book" aria-hidden="true"></i>
+        <div class="row g-3 mb-4">
+            <?php foreach ($songbooks as $index => $book): ?>
+                <?php if (($book['songCount'] ?? 0) > 0): ?>
+                    <div class="col-6 col-md-4 col-lg-3" id="songbook-<?= htmlspecialchars($book['id']) ?>">
+                        <a href="/songbook/<?= htmlspecialchars($book['id']) ?>"
+                           class="card card-songbook h-100 text-decoration-none"
+                           data-navigate="songbook"
+                           data-songbook-id="<?= htmlspecialchars($book['id']) ?>"
+                           aria-label="<?= htmlspecialchars($book['name']) ?> — <?= $book['songCount'] ?> songs">
+                            <div class="card-body text-center">
+                                <!-- Songbook icon with colour variation -->
+                                <div class="songbook-icon songbook-icon-<?= htmlspecialchars($book['id']) ?> mb-2">
+                                    <i class="fa-solid fa-book" aria-hidden="true"></i>
+                                </div>
+                                <h3 class="card-title h6 mb-1">
+                                    <?= htmlspecialchars($book['name']) ?>
+                                </h3>
+                                <span class="badge bg-body-secondary rounded-pill">
+                                    <?= htmlspecialchars($book['id']) ?>
+                                </span>
+                                <p class="card-text text-muted small mt-2 mb-0">
+                                    <?= number_format($book['songCount']) ?> songs
+                                </p>
                             </div>
-                            <h3 class="card-title h6 mb-1">
-                                <?= htmlspecialchars($book['name']) ?>
-                            </h3>
-                            <span class="badge bg-body-secondary rounded-pill">
-                                <?= htmlspecialchars($book['id']) ?>
-                            </span>
-                            <p class="card-text text-muted small mt-2 mb-0">
-                                <?= number_format($book['songCount']) ?> songs
-                            </p>
-                        </div>
-                    </a>
-                </div>
-            <?php endif; ?>
-        <?php endforeach; ?>
-    </div>
+                        </a>
+                    </div>
+                <?php endif; ?>
+            <?php endforeach; ?>
+        </div>
+    </section>
 
 </section>

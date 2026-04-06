@@ -33,7 +33,7 @@ if ($song === null) {
 
 /* Extract metadata for convenience */
 $songNumber  = (int)$song['number'];
-$songTitle   = $song['title'] ?? 'Untitled';
+$songTitle   = toTitleCase($song['title'] ?? 'Untitled');
 $songbook    = $song['songbook'] ?? '';
 $bookName    = $song['songbookName'] ?? '';
 $writers     = $song['writers'] ?? [];
@@ -51,21 +51,27 @@ $components  = $song['components'] ?? [];
      ================================================================ -->
 <article class="page-song" aria-label="<?= htmlspecialchars($songTitle) ?>" data-song-id="<?= htmlspecialchars($song['id']) ?>" data-songbook="<?= htmlspecialchars($songbook) ?>" data-song-number="<?= (int)$songNumber ?>"<?php if (!empty($song['capo'])): ?> data-capo="<?= (int)$song['capo'] ?>"<?php endif; ?><?php if (!empty($song['key'])): ?> data-key="<?= htmlspecialchars($song['key']) ?>"<?php endif; ?>>
 
-    <!-- Breadcrumb navigation -->
+    <!-- Breadcrumb navigation with schema.org markup (#151) -->
     <nav aria-label="Breadcrumb" class="mb-3">
-        <ol class="breadcrumb">
-            <li class="breadcrumb-item">
-                <a href="/songbooks" data-navigate="songbooks">Songbooks</a>
+        <ol class="breadcrumb" itemscope itemtype="https://schema.org/BreadcrumbList">
+            <li class="breadcrumb-item" itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+                <a href="/songbooks" data-navigate="songbooks" itemprop="item">
+                    <span itemprop="name">Songbooks</span>
+                </a>
+                <meta itemprop="position" content="1">
             </li>
-            <li class="breadcrumb-item">
+            <li class="breadcrumb-item" itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
                 <a href="/songbook/<?= htmlspecialchars($songbook) ?>"
                    data-navigate="songbook"
-                   data-songbook-id="<?= htmlspecialchars($songbook) ?>">
-                    <?= htmlspecialchars($bookName) ?>
+                   data-songbook-id="<?= htmlspecialchars($songbook) ?>"
+                   itemprop="item">
+                    <span itemprop="name"><?= htmlspecialchars($bookName) ?></span>
                 </a>
+                <meta itemprop="position" content="2">
             </li>
-            <li class="breadcrumb-item active" aria-current="page">
-                #<?= $songNumber ?>
+            <li class="breadcrumb-item active" aria-current="page" itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+                <span itemprop="name">#<?= $songNumber ?></span>
+                <meta itemprop="position" content="3">
             </li>
         </ol>
     </nav>
@@ -94,14 +100,18 @@ $components  = $song['components'] ?? [];
                         <p class="mb-1">
                             <i class="fa-solid fa-pen-fancy me-2 text-muted" aria-hidden="true"></i>
                             <strong>Words:</strong>
-                            <?= htmlspecialchars(implode(', ', $writers)) ?>
+                            <?php foreach ($writers as $i => $w): ?><a href="/writer/<?= htmlspecialchars(urlencode(strtolower(str_replace(' ', '-', $w)))) ?>"
+                                   class="writer-link"
+                                   data-navigate="writer"><?= htmlspecialchars($w) ?></a><?php if ($i < count($writers) - 1): ?>, <?php endif; ?><?php endforeach; ?>
                         </p>
                     <?php endif; ?>
                     <?php if (!empty($composers)): ?>
                         <p class="mb-0">
                             <i class="fa-solid fa-music me-2 text-muted" aria-hidden="true"></i>
                             <strong>Music:</strong>
-                            <?= htmlspecialchars(implode(', ', $composers)) ?>
+                            <?php foreach ($composers as $i => $c): ?><a href="/writer/<?= htmlspecialchars(urlencode(strtolower(str_replace(' ', '-', $c)))) ?>"
+                                   class="writer-link"
+                                   data-navigate="writer"><?= htmlspecialchars($c) ?></a><?php if ($i < count($composers) - 1): ?>, <?php endif; ?><?php endforeach; ?>
                         </p>
                     <?php endif; ?>
                 </div>

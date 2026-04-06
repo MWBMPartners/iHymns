@@ -8,6 +8,8 @@
  * localStorage. Provides toggle, list, and clear functionality.
  */
 
+import { toTitleCase } from '../utils/text.js';
+
 export class Favorites {
     constructor(app) {
         this.app = app;
@@ -421,7 +423,7 @@ export class Favorites {
                            onclick="event.stopPropagation()">
                     <span class="song-number-badge" data-songbook="${this.escapeHtml(fav.songbook)}">${fav.number || '?'}</span>
                     <div class="song-info flex-grow-1">
-                        <span class="song-title">${this.escapeHtml(fav.title)}</span>
+                        <span class="song-title">${this.escapeHtml(toTitleCase(fav.title))}</span>
                         <small class="text-muted d-block">${this.escapeHtml(fav.songbook)}${tagsHtml}</small>
                     </div>
                     <button type="button" class="btn btn-sm btn-link text-muted fav-edit-tags p-0 me-2"

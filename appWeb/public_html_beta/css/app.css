@@ -294,6 +294,17 @@
     background-size: 6px 6px !important;
 }
 
+/* Theme dropdown alignment (#146) */
+#theme-dropdown-btn + .dropdown-menu .dropdown-item {
+    display: flex;
+    align-items: center;
+}
+
+#theme-dropdown-btn + .dropdown-menu .dropdown-item i {
+    width: 1.25em;
+    text-align: center;
+}
+
 /* ==========================================================================
    2. BASE / RESET STYLES
    ========================================================================== */
@@ -2002,4 +2013,63 @@ body.reduce-motion .related-songs-chevron {
     border-radius: 4px;
     background: var(--bs-secondary-bg, #e9ecef);
     color: var(--bs-body-color);
+}
+
+/* =========================================================================
+ * WRITER/COMPOSER LINKS (#145)
+ * ========================================================================= */
+
+.writer-link {
+    color: inherit;
+    text-decoration: none;
+    border-bottom: 1px dotted var(--bs-secondary-color, #6c757d);
+    transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.writer-link:hover {
+    color: var(--accent-solid, var(--bs-primary));
+    border-bottom-style: solid;
+    border-bottom-color: var(--accent-solid, var(--bs-primary));
+    text-decoration: none;
+}
+
+.writer-link:focus-visible {
+    outline: 2px solid var(--accent-solid, var(--bs-primary));
+    outline-offset: 2px;
+    border-radius: 2px;
+}
+
+/* =========================================================================
+ * GESTURE PEEK INDICATORS — Swipe edge feedback (#143)
+ * ========================================================================= */
+
+.gesture-peek {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    width: 40px;
+    z-index: 9999;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.05s linear;
+}
+
+.gesture-peek--left {
+    left: 0;
+    background: linear-gradient(to right,
+        var(--bs-primary, #0d6efd),
+        transparent);
+}
+
+.gesture-peek--right {
+    right: 0;
+    background: linear-gradient(to left,
+        var(--bs-primary, #0d6efd),
+        transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .gesture-peek {
+        display: none;
+    }
 }

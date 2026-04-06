@@ -121,6 +121,11 @@ $ogType        = 'website';
 $ogImage       = $appUrl . '/assets/icon-512.png';
 $ogImageAlt    = $appName . ' logo';
 
+/* JSON-LD structured data — built during OG detection, rendered in <head> */
+$jsonLdScripts   = [];
+$breadcrumbItems = [];
+$pageType        = 'home'; /* 'home', 'song', 'songbook', or 'other' */
+
 /* Detect specific page routes for customised OG tags */
 try {
     $songData = new SongData();
@@ -129,6 +134,7 @@ try {
     if (preg_match('#^/song/([A-Za-z]+-\d+)$#', $requestPath, $matches)) {
         $ogSong = $songData->getSongById($matches[1]);
         if ($ogSong !== null) {
+            $pageType = 'song';
             $ogTitle = htmlspecialchars($ogSong['title']) . ' — '
                      . htmlspecialchars($ogSong['songbookName'])
                      . ' #' . (int)$ogSong['number'];
@@ -144,19 +150,112 @@ try {
                 $ogDescription .= '. "' . implode(' / ', $firstLines) . '..."';
             }
             $ogType = 'article';
+
+            /* JSON-LD: MusicComposition */
+            $musicComposition = [
+                '@context' => 'https://schema.org',
+                '@type'    => 'MusicComposition',
+                'name'     => $ogSong['title'],
+                'inLanguage' => $locale,
+            ];
+            if (!empty($ogSong['composers'])) {
+                $musicComposition['composer'] = array_map(
+                    fn($name) => ['@type' => 'Person', 'name' => $name],
+                    $ogSong['composers']
+                );
+            }
+            if (!empty($ogSong['writers'])) {
+                $musicComposition['lyricist'] = array_map(
+                    fn($name) => ['@type' => 'Person', 'name' => $name],
+                    $ogSong['writers']
+                );
+            }
+            if (!empty($ogSong['songbookName'])) {
+                $musicComposition['isPartOf'] = [
+                    '@type' => 'MusicAlbum',
+                    'name'  => $ogSong['songbookName'],
+                ];
+            }
+            $jsonLdScripts[] = $musicComposition;
+
+            /* Breadcrumb: Home > Songbooks > Songbook Name > #N */
+            $songbookId = $ogSong['songbook'] ?? '';
+            $breadcrumbItems = [
+                ['name' => 'Home',      'url' => getCanonicalUrl('/')],
+                ['name' => 'Songbooks', 'url' => getCanonicalUrl('/songbooks')],
+                ['name' => $ogSong['songbookName'], 'url' => getCanonicalUrl('/songbook/' . $songbookId)],
+                ['name' => '#' . (int)$ogSong['number'], 'url' => $canonicalUrl],
+            ];
         }
     }
     /* Songbook page: /songbook/CP */
     elseif (preg_match('#^/songbook/([A-Za-z]+)$#', $requestPath, $matches)) {
         $ogBook = $songData->getSongbook($matches[1]);
         if ($ogBook !== null) {
+            $pageType = 'songbook';
             $ogTitle = htmlspecialchars($ogBook['name']) . ' — ' . $appName;
             $ogDescription = 'Browse ' . number_format($ogBook['songCount'])
                            . ' songs from ' . $ogBook['name'] . ' on ' . $appName;
+
+            /* Breadcrumb: Home > Songbooks > Songbook Name */
+            $breadcrumbItems = [
+                ['name' => 'Home',      'url' => getCanonicalUrl('/')],
+                ['name' => 'Songbooks', 'url' => getCanonicalUrl('/songbooks')],
+                ['name' => $ogBook['name'], 'url' => $canonicalUrl],
+            ];
         }
+    }
+    /* Songbooks listing page */
+    elseif ($requestPath === '/songbooks') {
+        $pageType = 'other';
+        $breadcrumbItems = [
+            ['name' => 'Home',      'url' => getCanonicalUrl('/')],
+            ['name' => 'Songbooks', 'url' => $canonicalUrl],
+        ];
+    }
+    /* Home page */
+    elseif ($requestPath === '/' || $requestPath === '') {
+        $pageType = 'home';
+    }
+    else {
+        $pageType = 'other';
     }
 } catch (\RuntimeException $e) {
     /* If song data isn't available, use defaults — no fatal error */
+}
+
+/* JSON-LD: WebSite schema with SearchAction (home page only) */
+if ($pageType === 'home') {
+    $siteUrl = getCanonicalUrl('/');
+    $jsonLdScripts[] = [
+        '@context'        => 'https://schema.org',
+        '@type'           => 'WebSite',
+        'name'            => $appName,
+        'url'             => $siteUrl,
+        'potentialAction'  => [
+            '@type'       => 'SearchAction',
+            'target'      => $siteUrl . 'search?q={search_term_string}',
+            'query-input' => 'required name=search_term_string',
+        ],
+    ];
+}
+
+/* JSON-LD: BreadcrumbList (all pages except home) */
+if (!empty($breadcrumbItems)) {
+    $breadcrumbListItems = [];
+    foreach ($breadcrumbItems as $pos => $item) {
+        $breadcrumbListItems[] = [
+            '@type'    => 'ListItem',
+            'position' => $pos + 1,
+            'name'     => $item['name'],
+            'item'     => $item['url'],
+        ];
+    }
+    $jsonLdScripts[] = [
+        '@context'        => 'https://schema.org',
+        '@type'           => 'BreadcrumbList',
+        'itemListElement' => $breadcrumbListItems,
+    ];
 }
 
 ?>
@@ -306,6 +405,13 @@ try {
         })(window,document,"clarity","script",<?= json_encode(APP_CONFIG['analytics']['clarity_id']) ?>);
     </script>
     <?php endif; ?>
+
+    <!-- ================================================================
+         JSON-LD STRUCTURED DATA — SEO (#151)
+         ================================================================ -->
+    <?php foreach ($jsonLdScripts as $jsonLd): ?>
+    <script type="application/ld+json" nonce="<?= $cspNonce ?>"><?= json_encode($jsonLd, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) ?></script>
+    <?php endforeach; ?>
 </head>
 
 <body class="d-flex flex-column min-vh-100">

@@ -167,7 +167,7 @@ if (isset($app["Application"]["Copyright"]["UseVendor"]) && $app["Application"][
     $app["Application"]["Copyright"]["Full"] = "&copy; " . $app["Application"]["Copyright"]["Year"]["Display"] . " " . $app["Application"]["Vendor"]["Name"] . ". " . $app["Application"]["Copyright"]["RightsStatement"];
 }
 else {
-    $app["Application"]["Copyright"]["Full"] = "&copy; " . $app["Application"]["Copyright"]["Year"]["Display"] . ". " . $app["Application"]["Name"] . "." .$app["Application"]["Copyright"]["RightsStatement"];
+    $app["Application"]["Copyright"]["Full"] = "&copy; " . $app["Application"]["Copyright"]["Year"]["Display"] . " " . $app["Application"]["Name"] . ". " . $app["Application"]["Copyright"]["RightsStatement"];
 }
 
 /* =========================================================================

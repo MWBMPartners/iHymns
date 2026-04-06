@@ -38,14 +38,18 @@ if ($book === null) {
      ================================================================ -->
 <section class="page-songbook" aria-label="<?= htmlspecialchars($book['name']) ?>">
 
-    <!-- Breadcrumb navigation -->
+    <!-- Breadcrumb navigation with schema.org markup (#151) -->
     <nav aria-label="Breadcrumb" class="mb-3">
-        <ol class="breadcrumb">
-            <li class="breadcrumb-item">
-                <a href="/songbooks" data-navigate="songbooks">Songbooks</a>
+        <ol class="breadcrumb" itemscope itemtype="https://schema.org/BreadcrumbList">
+            <li class="breadcrumb-item" itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+                <a href="/songbooks" data-navigate="songbooks" itemprop="item">
+                    <span itemprop="name">Songbooks</span>
+                </a>
+                <meta itemprop="position" content="1">
             </li>
-            <li class="breadcrumb-item active" aria-current="page">
-                <?= htmlspecialchars($book['name']) ?>
+            <li class="breadcrumb-item active" aria-current="page" itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+                <span itemprop="name"><?= htmlspecialchars($book['name']) ?></span>
+                <meta itemprop="position" content="2">
             </li>
         </ol>
     </nav>
@@ -90,14 +94,14 @@ if ($book === null) {
                data-navigate="song"
                data-song-id="<?= htmlspecialchars($song['id']) ?>"
                role="listitem"
-               aria-label="Song <?= (int)$song['number'] ?>: <?= htmlspecialchars($song['title']) ?>">
+               aria-label="Song <?= (int)$song['number'] ?>: <?= htmlspecialchars(toTitleCase($song['title'])) ?>">
                 <!-- Song number badge -->
                 <span class="song-number-badge" data-songbook="<?= htmlspecialchars($bookId) ?>" aria-hidden="true">
                     <?= (int)$song['number'] ?>
                 </span>
                 <!-- Song info -->
                 <div class="song-info flex-grow-1">
-                    <span class="song-title"><?= htmlspecialchars($song['title']) ?></span>
+                    <span class="song-title"><?= htmlspecialchars(toTitleCase($song['title'])) ?></span>
                     <?php if (!empty($song['writers'])): ?>
                         <small class="song-writers text-muted d-block">
                             <?= htmlspecialchars(implode(', ', $song['writers'])) ?>

@@ -41,6 +41,7 @@ import { SongOfTheDay } from './modules/song-of-the-day.js';
 import { OfflineIndicator } from './modules/offline-indicator.js';
 import { StorageBridge } from './modules/storage-bridge.js';
 import { SubdomainSync } from './modules/subdomain-sync.js';
+import { Gestures } from './modules/gestures.js';
 
 /**
  * iHymnsApp — Main application class
@@ -126,6 +127,9 @@ class iHymnsApp {
 
         /** @type {SubdomainSync} Subdomain cookie sync (#133) */
         this.subdomainSync = null;
+
+        /** @type {Gestures} Touch gesture navigation (#143) */
+        this.gestures = null;
     }
 
     /**
@@ -259,6 +263,10 @@ class iHymnsApp {
             /* Offline status indicator (#112) */
             this.offlineIndicator = new OfflineIndicator(this);
             this.offlineIndicator.init();
+
+            /* Touch gesture navigation (#143) */
+            this.gestures = new Gestures(this);
+            this.gestures.init();
 
             /* --- Set up global event listeners --- */
             this.bindGlobalEvents();
@@ -478,7 +486,8 @@ class iHymnsApp {
         const scrollBtn = document.getElementById('scroll-to-top-btn');
         if (scrollBtn) {
             window.addEventListener('scroll', () => {
-                const show = window.scrollY > 300;
+                const nearBottom = (window.innerHeight + window.scrollY) >= (document.body.offsetHeight - 200);
+                const show = window.scrollY > 300 && !nearBottom;
                 scrollBtn.classList.toggle('visible', show);
                 scrollBtn.setAttribute('aria-hidden', String(!show));
                 scrollBtn.tabIndex = show ? 0 : -1;

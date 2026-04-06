@@ -13,6 +13,8 @@
  * to index.php, and this router handles the rest client-side.
  */
 
+import { toTitleCase } from '../utils/text.js';
+
 export class Router {
     /**
      * @param {object} app Reference to the main iHymnsApp instance
@@ -75,6 +77,17 @@ export class Router {
         /* Parse the route into an API request */
         const { page, params } = this.parseRoute(path);
 
+        /* For song pages, replace the URL with the canonical zero-padded form
+         * so that /song/MP-1 silently becomes /song/MP-0001 in the address bar.
+         * This ensures consistent URLs for bookmarking, sharing, and SEO. */
+        if (page === 'song' && params.id) {
+            const canonicalPath = `/song/${params.id}`;
+            if (canonicalPath !== path) {
+                window.history.replaceState({ path: canonicalPath }, '', canonicalPath);
+                this.currentPath = canonicalPath;
+            }
+        }
+
         /* Update the active footer nav item */
         this.updateActiveNav(page);
 
@@ -122,7 +135,7 @@ export class Router {
             case 'songbooks':
                 return { page: 'songbooks', params: {} };
             case 'song':
-                return { page: 'song', params: { id: segments[1] || '' } };
+                return { page: 'song', params: { id: this.normalizeSongId(segments[1] || '') } };
             case 'search':
                 return { page: 'search', params: {} };
             case 'favorites':
@@ -130,12 +143,17 @@ export class Router {
                 return { page: 'favorites', params: {} };
             case 'setlist':
             case 'setlists':
+                if (segments[1] === 'shared' && segments[2]) {
+                    return { page: 'setlist-shared', params: { data: segments[2] } };
+                }
                 return { page: 'setlist', params: {} };
             case 'settings':
                 return { page: 'settings', params: {} };
             case 'stats':
             case 'statistics':
                 return { page: 'stats', params: {} };
+            case 'writer':
+                return { page: 'writer', params: { id: segments[1] || '' } };
             case 'help':
                 return { page: 'help', params: {} };
             case 'terms':
@@ -145,6 +163,31 @@ export class Router {
             default:
                 return { page: 'not-found', params: {} };
         }
+    }
+
+    /**
+     * Normalise a song ID to its canonical zero-padded format.
+     *
+     * Accepts flexible formats like 'MP-1', 'MP-01', 'MP-001' and
+     * normalises them to the canonical 4-digit padded form 'MP-0001'.
+     * This ensures consistent URLs for SEO and caching.
+     *
+     * @param {string} id Song ID in any format (e.g., 'MP-1', 'mp-01')
+     * @returns {string} Canonical ID (e.g., 'MP-0001') or original if not parseable
+     */
+    normalizeSongId(id) {
+        if (!id) return id;
+
+        /* Match pattern: letters, hyphen, digits */
+        const match = id.match(/^([A-Za-z]+)-0*(\d+)$/);
+        if (!match) return id;
+
+        const prefix = match[1].toUpperCase();
+        const number = match[2];
+
+        /* Pad the number to 4 digits (the canonical format) */
+        const padded = number.padStart(4, '0');
+        return `${prefix}-${padded}`;
     }
 
     /**
@@ -252,8 +295,10 @@ export class Router {
             'search': 'Search — ' + appName,
             'favorites': 'Favourites — ' + appName,
             'setlist': 'Set Lists — ' + appName,
+            'setlist-shared': 'Shared Set List — ' + appName,
             'settings': 'Settings — ' + appName,
             'stats': 'Usage Statistics — ' + appName,
+            'writer': 'Writer — ' + appName,
             'help': 'Help — ' + appName,
             'terms': 'Terms of Use — ' + appName,
             'privacy': 'Privacy Policy — ' + appName,
@@ -339,6 +384,11 @@ export class Router {
             this.app.setList.initSetListPage();
         }
 
+        /* Initialise shared set list page (#147) */
+        if (page === 'setlist-shared') {
+            this.app.setList.initSharedSetListPage(params.data);
+        }
+
         /* Initialise songbook index (#111) and track visit (#121) */
         if (page === 'songbook') {
             this.app.songbookIndex.initSongbookPage();
@@ -404,7 +454,7 @@ export class Router {
                         <a href="/song/${this.escapeHtml(s.id)}" class="text-decoration-none flex-grow-1 text-truncate"
                            data-navigate="song" data-song-id="${this.escapeHtml(s.id)}">
                             <span class="song-number-badge song-number-badge-sm" data-songbook="${this.escapeHtml(s.songbook)}">${s.number || '?'}</span>
-                            <span class="ms-1">${this.escapeHtml(s.title)}</span>
+                            <span class="ms-1">${this.escapeHtml(toTitleCase(s.title))}</span>
                         </a>
                         <div class="stats-bar-wrap">
                             <div class="stats-bar" style="width: ${(s.count / maxCount * 100).toFixed(0)}%"></div>
@@ -534,7 +584,7 @@ export class Router {
                    role="listitem">
                     <span class="song-number-badge" data-songbook="${this.escapeHtml(song.songbook)}">${song.number || '?'}</span>
                     <div class="song-info flex-grow-1">
-                        <span class="song-title">${this.escapeHtml(song.title)}</span>
+                        <span class="song-title">${this.escapeHtml(toTitleCase(song.title))}</span>
                         <small class="text-muted d-block">${this.escapeHtml(song.songbookName || song.songbook)}</small>
                     </div>
                     <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>
