@@ -12,68 +12,100 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 - **Copyright**: © 2026– MWBM Partners Ltd
 - **License**: Proprietary (third-party components retain their own licenses)
 - **GitHub Repo**: <https://github.com/MWBMPartners/iHymns>
+- **Current Version**: 0.1.0 (pre-release, Phase 1)
 
 ---
 
 ## 📐 Two-Phase Approach
 
-### Phase ONE (Current) — v1.x.x
+### Phase ONE (Current) — v0.x.x (pre-release)
 
 - Songs sourced from local `.SourceSongData/` text files
-- Parsed into structured JSON (`data/songs.json`)
-- 5 songbooks, ~7,415 songs total
-- Songbooks: Carol Praise (CP), Junior Praise (JP), Mission Praise (MP), SDA Hymnal (SDAH), The Church Hymnal (CH)
+- Parsed into structured JSON (`data/songs.json`) — single canonical copy
+- 6 songbooks, 3,612 songs: CP (243), JP (617), MP (1355), SDAH (695), CH (702), Misc (0)
 - Some songbooks include MIDI audio and PDF sheet music
-- Includes a **Song Editor** (developer tool) for editing JSON data (structure, writers, CCLI numbers)
+- Song Editor (developer tool) in `appWeb/private_html/editor/` (HTTP Basic Auth)
+- Phase 1 is a first iteration — don't over-engineer file-based data distribution
 
 ### Phase TWO (Future) — v2.x.x
 
 - Songs sourced from iLyrics dB API (<https://github.com/MWBMPartners/iLyricsDB>)
 - MySQL backend, Christian songs only
 - Same frontend UI, different data source
-- **Apple TV Remote Control**: iPhone/iPad controls tvOS lyrics display over LAN (Bonjour/mDNS)
+- Apple TV Remote Control: iPhone/iPad controls tvOS lyrics display over LAN
 
 ---
 
-## 🖥 Target Platforms (in delivery order)
+## 🖥 Target Platforms
 
-1. **Web/Browser PWA** — HTML5, CSS3+, Bootstrap 5.3, Vanilla JS (ES2024+), Vite, Fuse.js
-2. **Apple iOS/iPadOS/tvOS** — Native Swift 6.3 / SwiftUI, App Store + direct distribution, signed & notarised
-3. **Android** — Kotlin / Jetpack Compose
+| Platform | Technology | Directory | Status |
+| --- | --- | --- | --- |
+| Web/PWA | PHP 8.5+, Bootstrap 5.3, Vanilla JS, Fuse.js | `appWeb/` | Core + Enhanced complete |
+| Apple (iOS/iPadOS/tvOS/visionOS/macOS/watchOS) | Swift 6.3, SwiftUI | `appApple/` | Code complete |
+| Android (+ Fire OS, Android TV) | Kotlin 2.1, Jetpack Compose | `appAndroid/` | Code complete |
+
+### Application IDs
+
+- Web/PWA: `Ltd.MWBMPartners.iHymns.PWA`
+- Apple: `Ltd.MWBMPartners.iHymns.Apple`
+- Android: `Ltd.MWBMPartners.iHymns.Android`
 
 ---
 
 ## 🚀 Deployment & Versioning
 
+### Branches
+
+| Branch | Purpose | Deploys To |
+| --- | --- | --- |
+| `beta` | Active development | `public_html_beta/` → beta server |
+| `main` | Production releases | `public_html/` → live server |
+| `alpha` | Experimental | `public_html_dev/` → dev server |
+
 ### Web Directory Structure
 
-- `appWeb/public_html/` — Production release (auto-synced from beta on main merge)
-- `appWeb/public_html_beta/` — Beta release (primary development target)
-- `appWeb/public_html_dev/` — Alpha/dev release (experimental)
-- `appWeb/private_html/` — Private (admin tools, song editor)
+- `appWeb/public_html/` — Production (auto-synced from beta on main merge)
+- `appWeb/public_html_beta/` — Beta (primary development target)
+- `appWeb/public_html_dev/` — Alpha/dev (experimental)
+- `appWeb/private_html/` — Private admin tools, song editor (separate SFTP path)
+- `appWeb/data/songs.json` — Shared song data (copied into each deploy dir during CI)
 
-### Automated Deployment (phpWhoIs pattern)
+### Automated Deployment
 
-- GitHub Actions with `lftp` for SFTP mirroring
-- Push to `beta` → deploy `public_html_beta/` to beta server
-- Push to `main` → sync beta→production → deploy `public_html/` to live server
-- Credentials via GitHub Secrets; `vars.SFTP_ENABLED` kill switch
+- GitHub Actions with `lftp` for SFTP mirroring (modelled on phpWhoIs)
+- `data/songs.json` copied INTO each deploy directory during CI (no parent path gymnastics)
+- `vars.SFTP_ENABLED` kill switch
+- `[deploy all]` commit flag forces full upload
+- `[skip sync]` skips beta→production sync
+- `[skip ci]` skips all workflows
 
-### Version Numbering (Automated Semver)
+### Version Numbering
 
-- `v1.x.x` = Phase 1 (local JSON data)
+- `v0.x.x` = Phase 1 pre-release (current)
+- `v1.x.x` = Phase 1 stable
 - `v2.x.x` = Phase 2 (iLyrics dB integration)
 - Auto-bumped via conventional commits on push to `beta`
 
 ---
 
+## 🎨 Design
+
+- **Colour scheme**: Clean neutral slate/grey — professional, easy on the eyes
+- **Navbar**: Solid dark slate `#1e293b`, no gradient
+- **Songbook cards**: ALL same soft grey gradient, no rainbow
+- **Accent**: Muted teal `#0d9488`
+- **Dark mode**: Charcoal blue `#0f172a`
+- **Colourblind mode**: CVD-safe palette (Wong 2011)
+- **Accessibility**: WCAG 2.1 AA, skip-to-content, focus indicators, reduced motion
+
+---
+
 ## 📏 Development Standards
 
+- **PHP**: 8.5+ with `declare(strict_types=1)`, `str_contains()`, match expressions
 - **Detailed code annotations**: Comments on every code block (ideally every line)
-- **Modular architecture**: Each feature in its own module/file
-- **Human-readable formatting**: Proper indentation, line breaks, spacing
-- **Automated copyright year**: `© 2026–<current year>` resolved at build time
-- **Accessibility**: WCAG 2.1 AA compliant
+- **Modular architecture**: PHP components (`includes/components/`), JS ES modules
+- **Automated copyright year**: `© 2026–<current year>` resolved at runtime
 - **Clean code**: All linting/security checks must pass with zero issues
 
 ---
@@ -83,62 +115,39 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 1. Create GitHub Issue before work; close when done
 2. Run syntax/lint/security checks; fix ALL issues
 3. Ensure accessibility compliance
-4. Apple: Swift 6.3/SwiftUI, App Store guidelines, signed & notarised
-5. Build in auto-update checking
-6. Update ALL documentation (README, CHANGELOG, PROJECT_STATUS, DEV_NOTES, help docs, GitHub Issues/Wiki, .claude/ memory)
-7. Update .gitignore (VS Code, Xcode, macOS, Windows, Raspberry Pi)
-8. COMMIT changes (do NOT push — user pushes manually)
-9. Clean up temp files
+4. Update ALL documentation (README, CHANGELOG, PROJECT_STATUS, DEV_NOTES, help, .claude/)
+5. Update .gitignore
+6. COMMIT changes (push only when asked)
+7. Clean up temp files
 
 ---
 
-## 📂 Song Data Format
+## 🗂 Key Files
 
-Songs are in `.SourceSongData/<Songbook Name> [<Abbreviation>]/`
-
-**Filename pattern**: `<number> (<abbrev>) - <Title>.txt`
-
-- Some use zero-padded numbers (e.g., `0001` for MP, `001` for JP/CP)
-- Some songbooks also have `_audio.mid` and `_music.pdf` companion files
-
-**Text file format**:
-
-- Line 1: Title in double quotes
-- Blank line
-- Verse number (standalone digit) or label ("Refrain", "Chorus")
-- Lyrics lines
-- Some files end with writer/composer credits
+| File | Purpose |
+| --- | --- |
+| `data/songs.json` | Canonical song database (single source of truth) |
+| `tools/parse-songs.js` | Parses .SourceSongData/ → songs.json |
+| `tools/build-web.js` | Web build/packaging script |
+| `appWeb/public_html_beta/includes/infoAppVer.php` | App version metadata |
+| `appWeb/public_html_beta/includes/components/*.php` | Modular PHP components |
+| `appWeb/private_html/editor/` | Song editor (dev tool) |
+| `appApple/iHymns/iHymns/Services/AppInfo.swift` | Apple app info |
+| `appAndroid/.../AppInfo.kt` | Android app info |
+| `tests/test-song-parser.js` | 33 unit tests |
 
 ---
 
-## 🗂 Project Structure
+## 📝 SFTP Secrets Required
 
-See `Project_Plan.md` for full directory tree. Key directories:
+| Secret | Purpose |
+| --- | --- |
+| `SFTP_HOST`, `SFTP_USER`, `SFTP_KEY`/`SFTP_PASSWORD` | Server connection |
+| `SFTP_LIVE_PATH`, `SFTP_BETA_PATH`, `SFTP_DEV_PATH` | Deploy directories |
+| `SFTP_PRIVATE_PATH` | Song editor deploy directory |
+| `SFTP_ENABLED` (Variable) | Kill switch (`true` to enable) |
 
-- `.claude/` — Claude context, memory, project brief
-- `.github/workflows/` — CI/CD pipelines (deploy, version bump, changelog, tests)
-- `.SourceSongData/` — Raw song text files (NEVER modify)
-- `tools/` — Build tools & data parsers
-- `data/` — Generated structured song data (JSON)
-- `appWeb/` — Web PWA application (public_html, public_html_beta, public_html_dev, private_html)
-- `appApple/` — Native Apple app (Swift/SwiftUI)
-- `appAndroid/` — Android app (future)
-- `help/` — User documentation (Markdown)
-
----
-
-## 📝 Documentation Requirements
-
-- `README.md` — Project overview (includes plan summary)
-- `Project_Plan.md` — Detailed project plan
-- `PROJECT_STATUS.md` — Current status tracker
-- `CHANGELOG.md` — Detailed change log (automated)
-- `DEV_NOTES.md` — Developer notes
-- `help/` — User-facing documentation (Markdown + in-app)
-- `.claude/` — Claude memory, prompts, project brief
-
-All markdown files must be well-formatted with emojis for readability.
-All documentation must be updated after every change.
+See `DEV_NOTES.md` for full setup guide including Apple, Android, and Fire OS.
 
 ---
 
