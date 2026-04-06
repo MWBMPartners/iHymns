@@ -432,20 +432,41 @@ export class Router {
         );
         if (!badges.length) return;
 
+        const toLinear = c => c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+        const rootStyles = getComputedStyle(document.documentElement);
+
         badges.forEach(badge => {
-            const bg = getComputedStyle(badge).backgroundColor;
-            if (!bg || bg === 'transparent' || bg === 'rgba(0, 0, 0, 0)') return;
+            let rgb = null;
 
-            /* Parse rgb(r, g, b) or rgba(r, g, b, a) */
-            const m = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
-            if (!m) return;
+            /* Try 1: read the solid CSS variable from data-songbook attribute (#159) */
+            const bookId = badge.dataset?.songbook
+                || badge.className?.match(/songbook-icon-(\w+)/)?.[1];
+            if (bookId) {
+                const solidColor = rootStyles.getPropertyValue(`--songbook-${bookId}-solid`).trim();
+                if (solidColor) {
+                    /* Parse hex (#rrggbb) or rgb() */
+                    const hex = solidColor.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+                    if (hex) {
+                        rgb = [parseInt(hex[1], 16), parseInt(hex[2], 16), parseInt(hex[3], 16)];
+                    } else {
+                        const rgbM = solidColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+                        if (rgbM) rgb = [parseInt(rgbM[1], 10), parseInt(rgbM[2], 10), parseInt(rgbM[3], 10)];
+                    }
+                }
+            }
 
-            const r = parseInt(m[1], 10) / 255;
-            const g = parseInt(m[2], 10) / 255;
-            const b = parseInt(m[3], 10) / 255;
+            /* Try 2: fall back to computed backgroundColor (for non-gradient badges) */
+            if (!rgb) {
+                const bg = getComputedStyle(badge).backgroundColor;
+                if (!bg || bg === 'transparent' || bg === 'rgba(0, 0, 0, 0)') return;
+                const m = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+                if (!m) return;
+                rgb = [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)];
+            }
 
-            /* sRGB → linear */
-            const toLinear = c => c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+            const r = rgb[0] / 255;
+            const g = rgb[1] / 255;
+            const b = rgb[2] / 255;
             const L = 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
 
             /* Light backgrounds (L > 0.4) get dark text; dark backgrounds get white */

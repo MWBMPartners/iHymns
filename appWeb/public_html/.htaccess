@@ -62,6 +62,16 @@ RewriteRule ^api$ api.php [QSA,L]
 RewriteRule ^service-worker\.js$ service-worker.js.php [L]
 
 # ==========================================================================
+# SITEMAP ROUTING (#151)
+#
+# /sitemap.xml → sitemap.xml.php
+# The sitemap is generated dynamically by PHP to include all songs,
+# songbooks, writers, and static pages from the song database.
+# ==========================================================================
+
+RewriteRule ^sitemap\.xml$ sitemap.xml.php [L]
+
+# ==========================================================================
 # STATIC ASSET PASSTHROUGH
 #
 # Allow direct access to static files (CSS, JS, images, fonts, data).

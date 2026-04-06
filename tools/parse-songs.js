@@ -601,9 +601,34 @@ function parseSongFile(filePath, filename, songbookConfig) {
   const hasSheetMusic = fs.existsSync(sheetMusicPath);
 
   /* -----------------------------------------------------------------------
-   * STEP 5: Construct and return the structured song object
+   * STEP 5: Generate song arrangement (#160)
+   *
+   * If the song has a refrain or chorus, auto-generate an arrangement
+   * that interleaves it after each verse. When absent, the renderer
+   * falls back to sequential component order.
    * ----------------------------------------------------------------------- */
-  return {
+  let arrangement = null;
+  const refrainIndex = components.findIndex(
+    c => c.type === 'refrain' || c.type === 'chorus'
+  );
+  if (refrainIndex !== -1) {
+    arrangement = [];
+    for (let i = 0; i < components.length; i++) {
+      const comp = components[i];
+      if (comp.type === 'verse') {
+        arrangement.push(i);
+        arrangement.push(refrainIndex);
+      } else if (i !== refrainIndex) {
+        /* Non-verse, non-refrain components (bridge, pre-chorus, etc.) */
+        arrangement.push(i);
+      }
+    }
+  }
+
+  /* -----------------------------------------------------------------------
+   * STEP 6: Construct and return the structured song object
+   * ----------------------------------------------------------------------- */
+  const song = {
     id: songId,
     number: songNumber,
     title: title,
@@ -617,6 +642,10 @@ function parseSongFile(filePath, filename, songbookConfig) {
     hasSheetMusic: hasSheetMusic,
     components: components
   };
+  if (arrangement) {
+    song.arrangement = arrangement;
+  }
+  return song;
 }
 
 /**
