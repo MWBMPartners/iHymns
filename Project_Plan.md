@@ -186,9 +186,9 @@ iHymns/
 ├── data/                       # Generated structured song data
 │   └── songs.json              # Unified song database
 ├── appWeb/                     # Web PWA application
-│   ├── public_html/            # 🟢 PRODUCTION release (auto-synced from beta)
-│   ├── public_html_beta/       # 🟡 BETA release (dev target)
-│   │   ├── index.html
+│   ├── public_html/            # 🟢 Web app source (all environments)
+│   │   ├── index.php
+│   │   ├── api.php             # Server-side API (songs, setlists)
 │   │   ├── css/
 │   │   ├── js/
 │   │   │   ├── app.js          # Main application entry
@@ -197,6 +197,7 @@ iHymns/
 │   │   │   │   ├── songbook.js # Songbook navigation
 │   │   │   │   ├── song-view.js# Song display/rendering
 │   │   │   │   ├── favorites.js# User favorites (localStorage)
+│   │   │   │   ├── setlist.js  # Setlist management & sharing
 │   │   │   │   ├── settings.js # User preferences
 │   │   │   │   ├── help.js     # In-app help system
 │   │   │   │   └── updater.js  # Update checker
@@ -204,10 +205,13 @@ iHymns/
 │   │   │       └── helpers.js  # Shared utility functions
 │   │   ├── assets/             # Images, icons, fonts
 │   │   ├── includes/
-│   │   │   └── infoAppVer.js   # Version metadata (auto-bumped)
-│   │   ├── service-worker.js   # PWA offline support
+│   │   │   ├── infoAppVer.php  # Version metadata (auto-bumped)
+│   │   │   └── config.php      # App configuration
+│   │   ├── service-worker.js.php # PWA offline support
 │   │   └── manifest.json       # PWA manifest
-│   ├── public_html_dev/        # 🔴 ALPHA/DEV release (experimental)
+│   ├── data_share/             # 📦 Shared data (songs, setlists)
+│   │   ├── song_data/          # songs.json (runtime copy)
+│   │   └── setlist_json/       # Shared setlist JSON files
 │   └── private_html/           # 🔒 PRIVATE (admin tools, song editor)
 │       └── editor/             # Song editor tool
 ├── appApple/                   # Native Apple app (Swift/SwiftUI)
@@ -245,18 +249,21 @@ iHymns/
 
 | Directory | Purpose | Deployed To | Trigger |
 | --- | --- | --- | --- |
-| `appWeb/public_html/` | Production release | Live server (SFTP) | Push to `main` |
-| `appWeb/public_html_beta/` | Beta release (dev target) | Beta server (SFTP) | Push to `beta` |
-| `appWeb/public_html_dev/` | Alpha/dev release | Dev server (SFTP) | Push to `dev` |
+| `appWeb/public_html/` | Web app source (all envs) | Remote `public_html/` | Push to `main` |
+| `appWeb/public_html/` | Same source | Remote `public_html_beta/` | Push to `beta` |
+| `appWeb/public_html/` | Same source | Remote `public_html_dev/` | Push to `alpha` |
+| `appWeb/data_share/` | Shared data (songs, setlists) | Remote `data_share/` | All branches |
 | `appWeb/private_html/` | Private (admin/editor) | Private server (SFTP) | Push to `main` |
 
-**Deployment flow** (modelled on [phpWhoIs](https://github.com/MWBMPartners/phpWhoIs)):
+**Deployment flow:**
 
-1. Development happens in `appWeb/public_html_beta/`
-2. Push to `beta` branch → auto version bump → minify → SFTP deploy to beta server
-3. Merge `beta` → `main` → rsync beta into `public_html/` → SFTP deploy to live server
-4. GitHub Actions with `lftp` for SFTP mirroring
-5. Credentials via GitHub Secrets (`SFTP_HOST`, `SFTP_KEY`, etc.)
+1. All development happens in `appWeb/public_html/`
+2. Push to `alpha` → SFTP uploads to remote `public_html_dev/`
+3. Push to `beta` → auto version bump → minify → SFTP uploads to remote `public_html_beta/`
+4. Push to `main` → SFTP uploads to remote `public_html/`
+5. All branches deploy `data_share/` alongside (without `--delete` to preserve runtime data)
+6. GitHub Actions with `lftp` for SFTP mirroring
+7. Credentials via GitHub Secrets (`SFTP_HOST`, `SFTP_KEY`, etc.)
 6. `vars.SFTP_ENABLED` kill switch for deployment
 
 ### Version Numbering (Automated Semver)
@@ -266,7 +273,7 @@ iHymns/
 | `v1.x.x` | Phase 1 | Local song data (JSON from .SourceSongData) |
 | `v2.x.x` | Phase 2 | iLyrics dB backend integration |
 
-- Version stored in `appWeb/public_html_beta/includes/infoAppVer.js`
+- Version stored in `appWeb/public_html/includes/infoAppVer.php`
 - Auto-bumped via GitHub Actions on every push to `beta`:
   - `BREAKING CHANGE` or `!:` in commit → **major** bump
   - `feat(...):` prefix → **minor** bump

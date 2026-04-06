@@ -65,9 +65,8 @@ iHymns/
 ├── tools/                # Build tools & song data parser
 ├── data/                 # Generated song data (JSON)
 ├── appWeb/               # Web PWA application
-│   ├── public_html/      #   Production release (auto-synced from beta)
-│   ├── public_html_beta/ #   Beta release (primary dev target)
-│   ├── public_html_dev/  #   Alpha/dev release
+│   ├── public_html/      #   Web app source (deployed to all environments)
+│   ├── data_share/       #   Shared data (songs.json, setlists)
 │   └── private_html/     #   Private (admin tools, song editor)
 ├── appApple/             # Native Apple app (Swift/SwiftUI)
 ├── appAndroid/           # Android app (future)

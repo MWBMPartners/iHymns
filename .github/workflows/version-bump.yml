@@ -67,7 +67,7 @@ jobs:
       - name: Read current version
         id: current
         run: |
-          VERSION_FILE="appWeb/public_html_beta/includes/infoAppVer.php"
+          VERSION_FILE="appWeb/public_html/includes/infoAppVer.php"
 
           # Extract the version string from the PHP file
           # Matches: $app["Application"]["Version"]["Number"] = "X.Y.Z";
@@ -147,7 +147,7 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Update version in infoAppVer.php
         run: |
-          VERSION_FILE="appWeb/public_html_beta/includes/infoAppVer.php"
+          VERSION_FILE="appWeb/public_html/includes/infoAppVer.php"
           OLD_VERSION="${{ steps.current.outputs.current }}"
           NEW_VERSION="${{ steps.new_version.outputs.version }}"
 
@@ -171,6 +171,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add appWeb/public_html_beta/includes/infoAppVer.php
+          git add appWeb/public_html/includes/infoAppVer.php
           git commit -m "chore: bump version to ${NEW_VERSION} [skip ci]"
           git push
