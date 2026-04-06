@@ -159,6 +159,13 @@ define('APP_CONFIG', [
         /* Plausible Analytics domain (e.g., 'ihymns.app') — privacy-focused */
         'plausible_domain'    => null,
 
+        /* Matomo (self-hosted) — URL and site ID */
+        'matomo_url'          => null,  /* e.g., 'https://analytics.example.com' */
+        'matomo_site_id'      => null,  /* e.g., '1' */
+
+        /* Fathom Analytics — site ID (privacy-focused) */
+        'fathom_site_id'      => null,  /* e.g., 'ABCDEFGH' */
+
         /* Custom analytics endpoint for self-hosted solutions (e.g., Matomo) */
         'custom_endpoint'     => null,
         'custom_site_id'      => null,

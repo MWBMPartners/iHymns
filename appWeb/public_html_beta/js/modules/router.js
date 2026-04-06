@@ -408,6 +408,41 @@ export class Router {
         if (page === 'stats') {
             this.populateStats();
         }
+
+        /* Auto-fix badge text contrast for all songbook badges (#152) */
+        this.fixBadgeContrast();
+    }
+
+    /**
+     * Automatically set badge text colour (dark/light) based on the
+     * computed background luminance.  Uses WCAG relative-luminance
+     * formula so any future songbook colour is handled automatically.
+     */
+    fixBadgeContrast() {
+        const badges = document.querySelectorAll(
+            '.song-number-badge, .song-number-badge-lg, .songbook-icon'
+        );
+        if (!badges.length) return;
+
+        badges.forEach(badge => {
+            const bg = getComputedStyle(badge).backgroundColor;
+            if (!bg || bg === 'transparent' || bg === 'rgba(0, 0, 0, 0)') return;
+
+            /* Parse rgb(r, g, b) or rgba(r, g, b, a) */
+            const m = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+            if (!m) return;
+
+            const r = parseInt(m[1], 10) / 255;
+            const g = parseInt(m[2], 10) / 255;
+            const b = parseInt(m[3], 10) / 255;
+
+            /* sRGB → linear */
+            const toLinear = c => c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+            const L = 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
+
+            /* Light backgrounds (L > 0.4) get dark text; dark backgrounds get white */
+            badge.style.color = L > 0.4 ? '#1a1a1a' : '#ffffff';
+        });
     }
 
     /**
@@ -546,29 +581,63 @@ export class Router {
             const currentSong = songs.find(s => s.id === currentSongId);
             if (!currentSong) return;
 
+            /* --- Metadata signals --- */
             const currentWriters = new Set((currentSong.writers || []).map(w => w.toLowerCase()));
             const currentComposers = new Set((currentSong.composers || []).map(c => c.toLowerCase()));
             const currentSongbook = currentSong.songbook || '';
+
+            /* --- Content similarity: extract significant terms from lyrics --- */
+            const currentTerms = this._extractTerms(currentSong);
+            const currentTermSet = new Set(currentTerms);
+
+            /* Build IDF (inverse document frequency) for the corpus on first run.
+             * Cached on the class instance so subsequent calls are instant. */
+            if (!this._idfCache) {
+                this._idfCache = this._buildIdf(songs);
+            }
+            const idf = this._idfCache;
+
+            /* TF vector for the current song */
+            const currentTf = this._termFrequency(currentTerms);
 
             /* Score each song for relatedness */
             const scored = [];
             for (const song of songs) {
                 if (song.id === currentSongId) continue;
-                let score = 0;
 
-                /* +3 per shared writer */
+                /* --- Metadata score (max ~10 typically) --- */
+                let metaScore = 0;
                 for (const w of (song.writers || [])) {
-                    if (currentWriters.has(w.toLowerCase())) score += 3;
+                    if (currentWriters.has(w.toLowerCase())) metaScore += 3;
                 }
-                /* +2 per shared composer */
                 for (const c of (song.composers || [])) {
-                    if (currentComposers.has(c.toLowerCase())) score += 2;
+                    if (currentComposers.has(c.toLowerCase())) metaScore += 2;
                 }
-                /* +1 for same songbook */
-                if (song.songbook === currentSongbook) score += 1;
+                if (song.songbook === currentSongbook) metaScore += 1;
 
-                if (score > 0) {
-                    scored.push({ song, score });
+                /* --- Content score: TF-IDF cosine similarity (0–1) --- */
+                const candidateTerms = this._extractTerms(song);
+                /* Quick check: skip cosine calc if no term overlap */
+                let hasOverlap = false;
+                for (const t of candidateTerms) {
+                    if (currentTermSet.has(t)) { hasOverlap = true; break; }
+                }
+
+                let contentScore = 0;
+                if (hasOverlap) {
+                    const candidateTf = this._termFrequency(candidateTerms);
+                    contentScore = this._cosineSimilarity(currentTf, candidateTf, idf);
+                }
+
+                /* --- Combined score ---
+                 * Content similarity is scaled to 0–15 so it carries more weight
+                 * than metadata (writer +3, composer +2, songbook +1).
+                 * A song with very similar lyrics but different writers will
+                 * rank higher than one with the same writer but unrelated lyrics. */
+                const combinedScore = metaScore + (contentScore * 15);
+
+                if (combinedScore > 0.5) {
+                    scored.push({ song, score: combinedScore });
                 }
             }
 
@@ -596,10 +665,131 @@ export class Router {
 
             container.classList.remove('d-none');
 
+            /* Fix badge contrast for newly rendered badges */
+            this.fixBadgeContrast();
+
         } catch (err) {
             /* Non-critical — silently skip if songs data unavailable */
             console.warn('[Router] Failed to load related songs:', err.message);
         }
+    }
+
+    /* -----------------------------------------------------------------------
+     * Content-based similarity helpers (#118 enhancement)
+     * Uses TF-IDF cosine similarity on lyric text to find thematically
+     * related songs regardless of writer/composer overlap.
+     * ----------------------------------------------------------------------- */
+
+    /** Common English stop words + hymn-specific filler to exclude */
+    static STOP_WORDS = new Set([
+        'a','an','the','and','or','but','in','on','at','to','for','of','with',
+        'is','am','are','was','were','be','been','being','have','has','had',
+        'do','does','did','will','would','shall','should','may','might','can',
+        'could','i','me','my','we','us','our','you','your','he','him','his',
+        'she','her','it','its','they','them','their','this','that','these',
+        'those','not','no','nor','so','if','then','than','too','very','just',
+        'all','each','every','both','few','more','most','some','any','such',
+        'from','by','as','up','out','off','over','into','through','about',
+        'again','once','here','there','when','where','how','what','which',
+        'who','whom','why','oh','o','la','da','na','yeah','amen',
+    ]);
+
+    /**
+     * Extract significant terms from a song's lyrics + title.
+     * Lowercased, stop-words removed, short words filtered.
+     *
+     * @param {object} song Song object with components and title
+     * @returns {string[]} Array of significant terms
+     */
+    _extractTerms(song) {
+        let text = (song.title || '') + ' ';
+        for (const c of (song.components || [])) {
+            for (const line of (c.lines || [])) {
+                text += line + ' ';
+            }
+        }
+        return text
+            .toLowerCase()
+            .replace(/[^a-z\s'-]/g, ' ')
+            .split(/\s+/)
+            .filter(w => w.length > 2 && !Router.STOP_WORDS.has(w));
+    }
+
+    /**
+     * Build term frequency map from an array of terms.
+     *
+     * @param {string[]} terms
+     * @returns {Map<string, number>}
+     */
+    _termFrequency(terms) {
+        const tf = new Map();
+        for (const t of terms) {
+            tf.set(t, (tf.get(t) || 0) + 1);
+        }
+        return tf;
+    }
+
+    /**
+     * Build inverse document frequency map across the entire corpus.
+     * IDF = log(N / df) where df = number of documents containing the term.
+     *
+     * @param {object[]} songs All songs
+     * @returns {Map<string, number>}
+     */
+    _buildIdf(songs) {
+        const N = songs.length;
+        const df = new Map();
+
+        for (const song of songs) {
+            const seen = new Set();
+            const terms = this._extractTerms(song);
+            for (const t of terms) {
+                if (!seen.has(t)) {
+                    df.set(t, (df.get(t) || 0) + 1);
+                    seen.add(t);
+                }
+            }
+        }
+
+        const idf = new Map();
+        for (const [term, count] of df) {
+            idf.set(term, Math.log(N / count));
+        }
+        return idf;
+    }
+
+    /**
+     * Compute cosine similarity between two TF vectors using IDF weighting.
+     *
+     * @param {Map<string, number>} tfA TF map for song A
+     * @param {Map<string, number>} tfB TF map for song B
+     * @param {Map<string, number>} idf IDF map
+     * @returns {number} Similarity score 0–1
+     */
+    _cosineSimilarity(tfA, tfB, idf) {
+        let dot = 0, magA = 0, magB = 0;
+
+        /* Only iterate over terms in A — terms not in B contribute 0 to dot product */
+        for (const [term, freqA] of tfA) {
+            const w = idf.get(term) || 0;
+            const wA = freqA * w;
+            magA += wA * wA;
+
+            const freqB = tfB.get(term);
+            if (freqB) {
+                dot += wA * (freqB * w);
+            }
+        }
+
+        /* Magnitude of B */
+        for (const [term, freqB] of tfB) {
+            const w = idf.get(term) || 0;
+            const wB = freqB * w;
+            magB += wB * wB;
+        }
+
+        const denom = Math.sqrt(magA) * Math.sqrt(magB);
+        return denom > 0 ? dot / denom : 0;
     }
 
     /**

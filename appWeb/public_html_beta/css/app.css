@@ -721,7 +721,7 @@ body.banner-visible.search-open .main-content {
 .songbook-icon-CP   { background: var(--songbook-CP);   box-shadow: 0 2px 8px rgba(var(--songbook-CP-shadow), 0.3); }
 .songbook-icon-JP   { background: var(--songbook-JP);   box-shadow: 0 2px 8px rgba(var(--songbook-JP-shadow), 0.3); }
 .songbook-icon-MP   { background: var(--songbook-MP);   box-shadow: 0 2px 8px rgba(var(--songbook-MP-shadow), 0.3); }
-.songbook-icon-SDAH { background: var(--songbook-SDAH); box-shadow: 0 2px 8px rgba(var(--songbook-SDAH-shadow), 0.3); color: #1a1a1a; }
+.songbook-icon-SDAH { background: var(--songbook-SDAH); box-shadow: 0 2px 8px rgba(var(--songbook-SDAH-shadow), 0.3); }
 .songbook-icon-CH   { background: var(--songbook-CH);   box-shadow: 0 2px 8px rgba(var(--songbook-CH-shadow), 0.3); }
 .songbook-icon-Misc { background: var(--songbook-Misc); box-shadow: 0 2px 8px rgba(var(--songbook-Misc-shadow), 0.3); }
 
@@ -799,7 +799,7 @@ body.banner-visible.search-open .main-content {
 .song-number-badge[data-songbook="CP"]   { background: var(--songbook-CP); }
 .song-number-badge[data-songbook="JP"]   { background: var(--songbook-JP); }
 .song-number-badge[data-songbook="MP"]   { background: var(--songbook-MP); }
-.song-number-badge[data-songbook="SDAH"] { background: var(--songbook-SDAH); color: #1a1a1a; }
+.song-number-badge[data-songbook="SDAH"] { background: var(--songbook-SDAH); }
 .song-number-badge[data-songbook="CH"]   { background: var(--songbook-CH); }
 .song-number-badge[data-songbook="Misc"] { background: var(--songbook-Misc); }
 
@@ -823,7 +823,7 @@ body.banner-visible.search-open .main-content {
 .song-number-badge-lg[data-songbook="CP"]   { background: var(--songbook-CP);   box-shadow: 0 2px 8px rgba(var(--songbook-CP-shadow), 0.3); }
 .song-number-badge-lg[data-songbook="JP"]   { background: var(--songbook-JP);   box-shadow: 0 2px 8px rgba(var(--songbook-JP-shadow), 0.3); }
 .song-number-badge-lg[data-songbook="MP"]   { background: var(--songbook-MP);   box-shadow: 0 2px 8px rgba(var(--songbook-MP-shadow), 0.3); }
-.song-number-badge-lg[data-songbook="SDAH"] { background: var(--songbook-SDAH); box-shadow: 0 2px 8px rgba(var(--songbook-SDAH-shadow), 0.3); color: #1a1a1a; }
+.song-number-badge-lg[data-songbook="SDAH"] { background: var(--songbook-SDAH); box-shadow: 0 2px 8px rgba(var(--songbook-SDAH-shadow), 0.3); }
 .song-number-badge-lg[data-songbook="CH"]   { background: var(--songbook-CH);   box-shadow: 0 2px 8px rgba(var(--songbook-CH-shadow), 0.3); }
 .song-number-badge-lg[data-songbook="Misc"] { background: var(--songbook-Misc); box-shadow: 0 2px 8px rgba(var(--songbook-Misc-shadow), 0.3); }
 
@@ -2110,4 +2110,104 @@ body.reduce-motion .related-songs-chevron {
     }
     #page-content { transition: none; }
     .song-list-item { animation: none; opacity: 1; transform: none; }
+}
+
+/* ==========================================================================
+ * ANALYTICS CONSENT BANNER — GDPR / Privacy compliance
+ * Fixed to bottom of viewport, above footer but below modals.
+ * Uses the app's glass effect for consistency.
+ * ========================================================================= */
+
+.analytics-consent-banner {
+    position: fixed;
+    bottom: var(--footer-total-height, 88px);
+    left: 0;
+    right: 0;
+    z-index: 1045; /* Above footer (1030) but below modals (1050+) */
+    padding: 12px 16px;
+    background: var(--glass-bg);
+    border-top: 1px solid var(--glass-border);
+    backdrop-filter: blur(16px) saturate(180%);
+    -webkit-backdrop-filter: blur(16px) saturate(180%);
+    box-shadow: 0 -2px 16px rgba(0, 0, 0, 0.12);
+    transform: translateY(100%);
+    opacity: 0;
+    transition: transform var(--transition-slow), opacity var(--transition-normal);
+}
+
+.analytics-consent-banner.show {
+    transform: translateY(0);
+    opacity: 1;
+}
+
+.analytics-consent-banner .consent-link {
+    color: var(--accent-solid, #6366f1);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.analytics-consent-banner .consent-link:hover {
+    opacity: 0.8;
+}
+
+/* Dark theme: ensure button contrast */
+[data-bs-theme="dark"] .analytics-consent-banner .btn-outline-light {
+    border-color: rgba(255, 255, 255, 0.4);
+    color: rgba(255, 255, 255, 0.85);
+}
+
+[data-bs-theme="dark"] .analytics-consent-banner .btn-light {
+    background: rgba(255, 255, 255, 0.9);
+    color: #1e1b4b;
+}
+
+/* High-contrast overrides */
+[data-ihymns-theme="high-contrast"] .analytics-consent-banner {
+    background: #ffffff;
+    border-top: 3px solid #000000;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+}
+
+[data-ihymns-theme="high-contrast"] .analytics-consent-banner .btn-outline-light {
+    border-color: #000000;
+    color: #000000;
+}
+
+/* Responsive: stack vertically on very small screens */
+@media (max-width: 480px) {
+    .analytics-consent-banner .d-flex.flex-wrap {
+        flex-direction: column;
+        text-align: center;
+    }
+    .analytics-consent-banner .d-flex.gap-2 {
+        justify-content: center;
+    }
+}
+
+/* Reduced motion: instant show */
+@media (prefers-reduced-motion: reduce) {
+    .analytics-consent-banner {
+        transition: none;
+    }
+}
+
+.reduce-motion .analytics-consent-banner {
+    transition: none;
+}
+
+/* ==========================================================================
+ * PRIVACY SETTINGS SECTION — Analytics consent toggle on Settings page
+ * ========================================================================= */
+
+.privacy-consent-status {
+    font-weight: 600;
+}
+
+.privacy-consent-status.text-success {
+    color: var(--bs-success) !important;
+}
+
+.privacy-consent-status.text-danger {
+    color: var(--bs-danger) !important;
 }

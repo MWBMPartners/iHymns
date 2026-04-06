@@ -5,7 +5,7 @@
  *
  * PURPOSE:
  * Manages user preferences: theme (light/dark/high-contrast/system),
- * reduce motion (disabled by default as per requirements), reduce
+ * reduce motion (off by default, animations enabled), reduce
  * transparency, and lyrics font size. All settings are persisted
  * in localStorage.
  */
@@ -20,10 +20,10 @@ export class Settings {
         /** @type {string} localStorage key prefix */
         this.storagePrefix = 'ihymns_';
 
-        /** Default settings — reduce motion is ON by default (animations disabled) */
+        /** Default settings — reduce motion is OFF by default (animations enabled) */
         this.defaults = {
             theme: 'system',
-            reduceMotion: true,       /* Animations disabled by default */
+            reduceMotion: false,      /* Animations enabled by default */
             reduceTransparency: false,
             fontSize: 18,
         };
@@ -52,9 +52,125 @@ export class Settings {
                 const theme = btn.dataset.theme;
                 this.set('theme', theme);
                 this.applyTheme(theme);
+                /* Track theme change analytics */
+                if (this.app.analytics) {
+                    this.app.analytics.trackThemeChange(theme);
+                }
                 this.app.showToast(`Theme changed to ${this.getThemeLabel(theme)}`, 'success', 2000);
             });
         });
+
+        /* Analytics consent banner */
+        this.initConsentBanner();
+    }
+
+    /* =====================================================================
+     * ANALYTICS CONSENT — GDPR/privacy compliance
+     *
+     * localStorage key: ihymns_analytics_consent
+     *   - 'granted'  : user accepted analytics
+     *   - 'denied'   : user declined analytics
+     *   - absent     : not yet decided (show banner)
+     *
+     * Rules:
+     *   - DNT active           -> never show banner (server omits it)
+     *   - Plausible-only       -> no banner needed (cookieless)
+     *   - GA4 and/or Clarity   -> show banner if no stored consent
+     *   - Decline              -> GA4 & Clarity blocked; Plausible continues
+     *   - Accept               -> all analytics allowed
+     * ===================================================================== */
+
+    /** @type {string} localStorage key for analytics consent */
+    static CONSENT_KEY = 'ihymns_analytics_consent';
+
+    /**
+     * Get the current analytics consent state.
+     * @returns {'granted'|'denied'|null}
+     */
+    getAnalyticsConsent() {
+        return localStorage.getItem(Settings.CONSENT_KEY);
+    }
+
+    /**
+     * Set the analytics consent state and persist it.
+     * @param {'granted'|'denied'} value
+     */
+    setAnalyticsConsent(value) {
+        localStorage.setItem(Settings.CONSENT_KEY, value);
+        this.app.syncStorage(Settings.CONSENT_KEY);
+    }
+
+    /**
+     * Initialise the consent banner — show it if needed, bind buttons.
+     */
+    initConsentBanner() {
+        const banner = document.getElementById('analytics-consent-banner');
+        if (!banner) return; /* Banner not rendered (DNT active or Plausible-only) */
+
+        const consent = this.getAnalyticsConsent();
+        if (consent) return; /* Already decided */
+
+        /* Show the banner with a slight delay for smooth entry */
+        requestAnimationFrame(() => {
+            banner.classList.remove('d-none');
+            /* Force reflow before adding .show for CSS transition */
+            banner.offsetHeight; // eslint-disable-line no-unused-expressions
+            banner.classList.add('show');
+        });
+
+        /* Accept button */
+        const acceptBtn = document.getElementById('consent-accept');
+        if (acceptBtn) {
+            acceptBtn.addEventListener('click', () => {
+                this.setAnalyticsConsent('granted');
+                this.hideConsentBanner();
+                /* Reload to let PHP inline scripts load GA4/Clarity with consent set */
+                this.app.showToast('Analytics enabled. Thank you!', 'success', 2000);
+                setTimeout(() => window.location.reload(), 600);
+            });
+        }
+
+        /* Decline button */
+        const declineBtn = document.getElementById('consent-decline');
+        if (declineBtn) {
+            declineBtn.addEventListener('click', () => {
+                this.setAnalyticsConsent('denied');
+                this.hideConsentBanner();
+                this.app.showToast('Analytics disabled', 'info', 2000);
+            });
+        }
+    }
+
+    /**
+     * Hide the consent banner with animation.
+     */
+    hideConsentBanner() {
+        const banner = document.getElementById('analytics-consent-banner');
+        if (!banner) return;
+        banner.classList.remove('show');
+        banner.addEventListener('transitionend', () => {
+            banner.classList.add('d-none');
+        }, { once: true });
+        /* Fallback if transition doesn't fire (reduce-motion) */
+        setTimeout(() => banner.classList.add('d-none'), 500);
+    }
+
+    /**
+     * Update the consent status label on the settings page.
+     * @param {HTMLElement} el The status element
+     * @param {string|null} consent Current consent value
+     */
+    updateConsentStatusLabel(el, consent) {
+        if (consent === 'granted') {
+            el.textContent = 'Enabled';
+            el.className = 'privacy-consent-status text-success';
+        } else if (consent === 'denied') {
+            el.textContent = 'Disabled';
+            el.className = 'privacy-consent-status text-danger';
+        } else {
+            el.textContent = 'Not set';
+            el.className = 'privacy-consent-status text-muted';
+        }
     }
 
     /**
@@ -116,6 +232,9 @@ export class Settings {
         document.querySelectorAll('meta[name="theme-color"]').forEach(meta => {
             meta.setAttribute('content', themeColor);
         });
+
+        /* Re-evaluate badge text contrast after theme change (#152) */
+        requestAnimationFrame(() => this.app.router?.fixBadgeContrast());
     }
 
     /**
@@ -244,6 +363,31 @@ export class Settings {
             });
         }
 
+        /* Analytics consent toggle (Privacy section) */
+        const consentToggle = document.getElementById('setting-analytics-consent');
+        const consentStatus = document.getElementById('analytics-consent-status');
+        if (consentToggle) {
+            const current = this.getAnalyticsConsent();
+            consentToggle.checked = current === 'granted';
+            if (consentStatus) {
+                this.updateConsentStatusLabel(consentStatus, current);
+            }
+            consentToggle.addEventListener('change', () => {
+                const newValue = consentToggle.checked ? 'granted' : 'denied';
+                this.setAnalyticsConsent(newValue);
+                if (consentStatus) {
+                    this.updateConsentStatusLabel(consentStatus, newValue);
+                }
+                if (newValue === 'granted') {
+                    this.app.showToast('Analytics enabled. Reloading...', 'success', 1500);
+                    setTimeout(() => window.location.reload(), 600);
+                } else {
+                    this.app.showToast('Analytics disabled. Reloading...', 'info', 1500);
+                    setTimeout(() => window.location.reload(), 600);
+                }
+            });
+        }
+
         /* Clear cache button */
         const clearCacheBtn = document.getElementById('clear-cache-btn');
         if (clearCacheBtn) {
@@ -331,6 +475,7 @@ export class Settings {
                     localStorage.removeItem('ihymns_default_songbook');
                     localStorage.removeItem('ihymns_transition');
                     localStorage.removeItem('ihymns_auto_update_songs');
+                    localStorage.removeItem(Settings.CONSENT_KEY);
                     /* Clear shared subdomain cookie (#133) */
                     this.app.subdomainSync?.clear();
                     /* Re-apply defaults */

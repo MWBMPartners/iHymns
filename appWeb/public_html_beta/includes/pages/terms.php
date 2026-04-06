@@ -125,10 +125,72 @@ $appUrl = $app["Application"]["Website"]["URL"];
         </div>
     </div>
 
+    <!-- Offline Use & Caching -->
+    <div class="card card-settings mb-3">
+        <div class="card-body">
+            <h2 class="h6 mb-3">5. Offline Use &amp; Caching</h2>
+            <p>
+                <?= htmlspecialchars($appName) ?> may be installed as a Progressive Web App (PWA)
+                and used offline. When you download songs or songbooks for offline use:
+            </p>
+            <ul>
+                <li>Cached content is stored locally on your device for personal/congregational use only</li>
+                <li>Offline access does not change the licensing requirements set out in Section 2</li>
+                <li>You remain responsible for holding appropriate CCLI licensing or songbook ownership</li>
+            </ul>
+        </div>
+    </div>
+
+    <!-- Sharing & Set Lists -->
+    <div class="card card-settings mb-3">
+        <div class="card-body">
+            <h2 class="h6 mb-3">6. Sharing &amp; Set Lists</h2>
+            <p>
+                <?= htmlspecialchars($appName) ?> provides features to share song information and set lists:
+            </p>
+            <ul>
+                <li><strong>Song Sharing:</strong> You may share song titles, writer/composer names,
+                    and links using the built-in share feature. Sharing of full lyrics is subject to
+                    applicable copyright licensing.</li>
+                <li><strong>Set List Sharing:</strong> Shareable set list links encode song references
+                    into the URL. These links are intended for worship team coordination and must not
+                    be used for commercial redistribution of song content.</li>
+                <li><strong>Presentation Mode:</strong> The presentation/projection feature is provided
+                    for congregational worship use and remains subject to CCLI or equivalent licensing.</li>
+            </ul>
+        </div>
+    </div>
+
+    <!-- Third-Party Libraries -->
+    <div class="card card-settings mb-3">
+        <div class="card-body">
+            <h2 class="h6 mb-3">7. Third-Party Libraries &amp; Open Source</h2>
+            <p>
+                <?= htmlspecialchars($appName) ?> incorporates open-source software libraries
+                (including Bootstrap, jQuery, Font Awesome, Fuse.js, and others) which are used
+                under their respective licences. These libraries are the property of their
+                respective authors and are not claimed as part of <?= htmlspecialchars($appName) ?>.
+            </p>
+        </div>
+    </div>
+
+    <!-- Privacy & Analytics -->
+    <div class="card card-settings mb-3">
+        <div class="card-body">
+            <h2 class="h6 mb-3">8. Privacy &amp; Analytics</h2>
+            <p>
+                <?= htmlspecialchars($appName) ?> may use optional analytics services to understand
+                general usage patterns. Analytics are disabled by default and require your consent.
+                No personally identifiable information is collected. For full details, see our
+                <a href="/privacy" data-navigate="privacy">Privacy Policy</a>.
+            </p>
+        </div>
+    </div>
+
     <!-- Availability & Updates -->
     <div class="card card-settings mb-3">
         <div class="card-body">
-            <h2 class="h6 mb-3">5. Availability &amp; Updates</h2>
+            <h2 class="h6 mb-3">9. Availability &amp; Updates</h2>
             <p>
                 <?= htmlspecialchars($appName) ?> is provided on an "as is" and "as available"
                 basis. We make reasonable efforts to keep the service running but cannot
@@ -145,7 +207,7 @@ $appUrl = $app["Application"]["Website"]["URL"];
     <!-- Limitation of Liability -->
     <div class="card card-settings mb-3">
         <div class="card-body">
-            <h2 class="h6 mb-3">6. Limitation of Liability</h2>
+            <h2 class="h6 mb-3">10. Limitation of Liability</h2>
             <p>
                 To the fullest extent permitted by law, <?= htmlspecialchars($vendorName) ?>
                 shall not be liable for any direct, indirect, incidental, consequential, or
@@ -161,7 +223,7 @@ $appUrl = $app["Application"]["Website"]["URL"];
     <!-- Changes to Terms -->
     <div class="card card-settings mb-3">
         <div class="card-body">
-            <h2 class="h6 mb-3">7. Changes to These Terms</h2>
+            <h2 class="h6 mb-3">11. Changes to These Terms</h2>
             <p>
                 We may update these Terms of Use from time to time. Continued use of
                 <?= htmlspecialchars($appName) ?> after changes are posted constitutes
@@ -173,7 +235,7 @@ $appUrl = $app["Application"]["Website"]["URL"];
     <!-- Contact -->
     <div class="card card-settings mb-3">
         <div class="card-body">
-            <h2 class="h6 mb-3">8. Contact</h2>
+            <h2 class="h6 mb-3">12. Contact</h2>
             <p>
                 If you have questions about these Terms of Use, please visit
                 <a href="<?= htmlspecialchars($app["Application"]["Repo"]["Issues"]["URL"]) ?>"

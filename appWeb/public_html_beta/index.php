@@ -77,13 +77,18 @@ $textDir = APP_CONFIG['i18n']['text_direction'];
 
 $cspNonce = base64_encode(random_bytes(16));
 
+$cspMatomoUrl = '';
+if (!empty(APP_CONFIG['analytics']['matomo_url'])) {
+    $cspMatomoUrl = ' ' . rtrim(APP_CONFIG['analytics']['matomo_url'], '/');
+}
+
 $cspDirectives = [
     "default-src 'self'",
-    "script-src 'self' 'nonce-{$cspNonce}' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://www.googletagmanager.com https://plausible.io https://www.clarity.ms",
+    "script-src 'self' 'nonce-{$cspNonce}' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://www.googletagmanager.com https://plausible.io https://www.clarity.ms https://cdn.usefathom.com{$cspMatomoUrl}",
     "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
     "img-src 'self' data: https:",
     "font-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
-    "connect-src 'self' https://www.google-analytics.com https://plausible.io https://www.clarity.ms",
+    "connect-src 'self' https://www.google-analytics.com https://plausible.io https://www.clarity.ms https://*.usefathom.com{$cspMatomoUrl}",
     "frame-src 'self' https://sync.ihymns.app https://*.ihymns.app",
     "worker-src 'self' https://cdn.jsdelivr.net blob:",
     "manifest-src 'self'",
@@ -371,39 +376,85 @@ if (!empty($breadcrumbItems)) {
          DNT is respected: IP anonymisation is enforced when DNT=1.
          ================================================================ -->
     <?php if (!empty(APP_CONFIG['analytics']['google_analytics_id'])): ?>
-    <!-- Google Analytics 4 (GA4) -->
-    <script async src="https://www.googletagmanager.com/gtag/js?id=<?= htmlspecialchars(APP_CONFIG['analytics']['google_analytics_id']) ?>"></script>
+    <!-- Google Analytics 4 (GA4) — deferred until consent is granted -->
     <script nonce="<?= $cspNonce ?>">
-        window.dataLayer = window.dataLayer || [];
-        function gtag(){dataLayer.push(arguments);}
-        gtag('js', new Date());
-        gtag('config', <?= json_encode(APP_CONFIG['analytics']['google_analytics_id']) ?>, {
-            /* Anonymise IP when DNT is active */
-            <?php if (USER_DNT): ?>
-            'anonymize_ip': true,
-            'storage': 'none',
-            'client_storage': 'none',
-            <?php endif; ?>
-            'send_page_view': true
-        });
+        /**
+         * GA4 loader — only fires when analytics consent is 'granted'.
+         * When DNT is active the server never renders the consent banner
+         * and this block still loads but with privacy-safe defaults.
+         */
+        (function() {
+            var consent = localStorage.getItem('ihymns_analytics_consent');
+            var dnt = <?= json_encode(USER_DNT) ?>;
+            /* Load if: consent granted, OR DNT active (privacy mode), OR no consent banner needed (Plausible-only handled server-side) */
+            if (consent === 'granted' || dnt) {
+                var s = document.createElement('script');
+                s.async = true;
+                s.src = 'https://www.googletagmanager.com/gtag/js?id=' + <?= json_encode(APP_CONFIG['analytics']['google_analytics_id']) ?>;
+                document.head.appendChild(s);
+
+                window.dataLayer = window.dataLayer || [];
+                function gtag(){dataLayer.push(arguments);}
+                window.gtag = gtag;
+                gtag('js', new Date());
+                gtag('config', <?= json_encode(APP_CONFIG['analytics']['google_analytics_id']) ?>, {
+                    <?php if (USER_DNT): ?>
+                    'anonymize_ip': true,
+                    'storage': 'none',
+                    'client_storage': 'none',
+                    <?php endif; ?>
+                    'send_page_view': true
+                });
+            }
+        })();
     </script>
     <?php endif; ?>
 
     <?php if (!empty(APP_CONFIG['analytics']['plausible_domain'])): ?>
-    <!-- Plausible Analytics (privacy-focused, no cookies) -->
+    <!-- Plausible Analytics (privacy-focused, no cookies — always loads) -->
     <script defer data-domain="<?= htmlspecialchars(APP_CONFIG['analytics']['plausible_domain']) ?>"
             src="https://plausible.io/js/script.js"></script>
     <?php endif; ?>
 
     <?php if (!empty(APP_CONFIG['analytics']['clarity_id'])): ?>
-    <!-- Microsoft Clarity -->
+    <!-- Microsoft Clarity — deferred until consent is granted -->
     <script nonce="<?= $cspNonce ?>">
-        (function(c,l,a,r,i,t,y){
-            c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
-            t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
-            y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
-        })(window,document,"clarity","script",<?= json_encode(APP_CONFIG['analytics']['clarity_id']) ?>);
+        (function() {
+            var consent = localStorage.getItem('ihymns_analytics_consent');
+            var dnt = <?= json_encode(USER_DNT) ?>;
+            if (consent === 'granted' || dnt) {
+                (function(c,l,a,r,i,t,y){
+                    c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+                    t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+                    y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+                })(window,document,"clarity","script",<?= json_encode(APP_CONFIG['analytics']['clarity_id']) ?>);
+            }
+        })();
     </script>
+    <?php endif; ?>
+
+    <?php if (!empty(APP_CONFIG['analytics']['matomo_url']) && !empty(APP_CONFIG['analytics']['matomo_site_id'])): ?>
+    <!-- Matomo Analytics (self-hosted) -->
+    <script nonce="<?= $cspNonce ?>">
+        var _paq = window._paq = window._paq || [];
+        _paq.push(['trackPageView']);
+        _paq.push(['enableLinkTracking']);
+        <?php if (USER_DNT): ?>
+        _paq.push(['setDoNotTrack', true]);
+        <?php endif; ?>
+        (function() {
+            var u=<?= json_encode(rtrim(APP_CONFIG['analytics']['matomo_url'], '/') . '/') ?>;
+            _paq.push(['setTrackerUrl', u+'matomo.php']);
+            _paq.push(['setSiteId', <?= json_encode(APP_CONFIG['analytics']['matomo_site_id']) ?>]);
+            var d=document, g=d.createElement('script'), s=d.getElementsByTagName('script')[0];
+            g.async=true; g.src=u+'matomo.js'; s.parentNode.insertBefore(g,s);
+        })();
+    </script>
+    <?php endif; ?>
+
+    <?php if (!empty(APP_CONFIG['analytics']['fathom_site_id'])): ?>
+    <!-- Fathom Analytics (privacy-focused) -->
+    <script src="https://cdn.usefathom.com/script.js" data-site="<?= htmlspecialchars(APP_CONFIG['analytics']['fathom_site_id']) ?>" defer></script>
     <?php endif; ?>
 
     <!-- ================================================================
@@ -903,6 +954,38 @@ if (!empty($breadcrumbItems)) {
     </div>
 
     <!-- ================================================================
+         COOKIE / ANALYTICS CONSENT BANNER — GDPR compliance
+         Shows only when GA4 or Clarity is configured and user hasn't
+         already consented/declined. Plausible is cookieless so it
+         doesn't require consent. Hidden when DNT is active.
+         ================================================================ -->
+    <?php
+        $hasGa4     = !empty(APP_CONFIG['analytics']['google_analytics_id']);
+        $hasClarity = !empty(APP_CONFIG['analytics']['clarity_id']);
+        $hasPlausible = !empty(APP_CONFIG['analytics']['plausible_domain']);
+        $needsConsent = ($hasGa4 || $hasClarity) && !USER_DNT;
+    ?>
+    <?php if ($needsConsent): ?>
+    <div id="analytics-consent-banner" class="analytics-consent-banner d-none" role="dialog"
+         aria-label="Analytics consent"
+         data-has-ga4="<?= $hasGa4 ? '1' : '0' ?>"
+         data-has-clarity="<?= $hasClarity ? '1' : '0' ?>"
+         data-has-plausible="<?= $hasPlausible ? '1' : '0' ?>">
+        <div class="d-flex align-items-center justify-content-between gap-3 flex-wrap">
+            <p class="mb-0 small">
+                <i class="fa-solid fa-chart-simple me-1" aria-hidden="true"></i>
+                We use analytics to improve iHymns. No personal data is collected.
+                <a href="/privacy" data-navigate="privacy" class="consent-link">Learn more</a>
+            </p>
+            <div class="d-flex gap-2 flex-shrink-0">
+                <button type="button" class="btn btn-sm btn-outline-light" id="consent-decline">Decline</button>
+                <button type="button" class="btn btn-sm btn-light" id="consent-accept">Accept</button>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+
+    <!-- ================================================================
          SCRIPTS — CDN with local fallback
          ================================================================ -->
 
@@ -969,6 +1052,11 @@ if (!empty($breadcrumbItems)) {
             initialPath:    <?= json_encode($requestPath) ?>,
             songbooks:      <?= json_encode($songData->getSongbooks()) ?>,
             storageBridgeUrl: 'https://sync.ihymns.app/bridge.html',
+            analytics: {
+                hasGa4:       <?= json_encode(!empty(APP_CONFIG['analytics']['google_analytics_id'])) ?>,
+                hasClarity:   <?= json_encode(!empty(APP_CONFIG['analytics']['clarity_id'])) ?>,
+                hasPlausible: <?= json_encode(!empty(APP_CONFIG['analytics']['plausible_domain'])) ?>,
+            },
         };
     </script>
 

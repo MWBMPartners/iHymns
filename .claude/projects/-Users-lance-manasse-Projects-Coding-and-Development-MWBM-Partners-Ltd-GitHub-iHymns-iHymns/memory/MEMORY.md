@@ -5,3 +5,5 @@
 - [Web app can use PHP](feedback_php_web.md) — PHP 8.5+ on shared hosting (DreamHost)
 - [Phase 1 is first iteration](feedback_phase1_simplicity.md) — Don't over-engineer JSON file distribution, Phase 2 API fixes it
 - [Clean neutral colours](feedback_colours.md) — Slate/grey neutral scheme, no bright/vivid colours on songbook cards
+- [Web app directory structure](feedback_appweb_dir.md) — appWeb/ with public_html, public_html_beta, public_html_dev, private_html
+- [Phase 1 PWA enhancements](feedback_phase1_pwa_enhancements.md) — Analytics, gestures, writer pages, TF-IDF related songs, WCAG contrast, PWA icons
