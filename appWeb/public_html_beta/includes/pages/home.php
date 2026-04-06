@@ -99,6 +99,9 @@ $songbooks = $songData->getSongbooks();
         </div>
     </div>
 
+    <!-- Recent songbooks quick tabs (#121) — populated by JS -->
+    <div id="recent-songbooks" class="d-none mb-4"></div>
+
     <!-- Song of the Day (#108) — populated by JS -->
     <div id="song-of-the-day"></div>
 

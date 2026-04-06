@@ -309,6 +309,7 @@ export class Router {
                 const number = parseInt(songPage.dataset.songNumber, 10) || 0;
                 if (songId) {
                     this.app.history.recordView(songId, title, songbook, number);
+                    if (songbook) this.trackRecentSongbook(songbook);
                 }
 
                 /* Load related songs (#118) — async, non-blocking */
@@ -320,6 +321,7 @@ export class Router {
         if (page === 'home') {
             this.app.history.renderHomeSection();
             this.app.songOfTheDay.renderHomeSection();
+            this.renderRecentSongbooks();
         }
 
         /* Initialise favourites list on favorites page */
@@ -337,9 +339,10 @@ export class Router {
             this.app.setList.initSetListPage();
         }
 
-        /* Initialise songbook index (#111) */
+        /* Initialise songbook index (#111) and track visit (#121) */
         if (page === 'songbook') {
             this.app.songbookIndex.initSongbookPage();
+            this.trackRecentSongbook(params.id);
         }
 
         /* Initialise search page controls */
@@ -555,5 +558,69 @@ export class Router {
         const div = document.createElement('div');
         div.textContent = str || '';
         return div.innerHTML;
+    }
+
+    /* =====================================================================
+     * RECENT SONGBOOKS (#121)
+     * ===================================================================== */
+
+    /**
+     * Track a songbook visit in localStorage.
+     * Keeps the 5 most recent unique songbooks.
+     * @param {string} songbookId
+     */
+    trackRecentSongbook(songbookId) {
+        if (!songbookId) return;
+        const key = 'ihymns_recent_songbooks';
+        let recent = [];
+        try { recent = JSON.parse(localStorage.getItem(key)) || []; } catch {}
+
+        /* Move to front if already tracked */
+        recent = recent.filter(id => id !== songbookId);
+        recent.unshift(songbookId);
+        recent = recent.slice(0, 5);
+
+        localStorage.setItem(key, JSON.stringify(recent));
+    }
+
+    /**
+     * Render recent songbook tabs on the home page.
+     * Shows pill-style tabs for quick navigation.
+     */
+    renderRecentSongbooks() {
+        const container = document.getElementById('recent-songbooks');
+        if (!container) return;
+
+        let recent = [];
+        try { recent = JSON.parse(localStorage.getItem('ihymns_recent_songbooks')) || []; } catch {}
+
+        /* Only show if user has visited 2+ songbooks */
+        if (recent.length < 2) return;
+
+        const songbooks = this.config.songbooks || [];
+
+        const tabs = recent.map(id => {
+            const sb = songbooks.find(b => b.id === id);
+            const name = sb?.name || id;
+            return `<a href="/songbook/${this.escapeHtml(id)}"
+                       class="btn btn-sm btn-outline-secondary rounded-pill"
+                       data-navigate="songbook"
+                       data-songbook-id="${this.escapeHtml(id)}"
+                       aria-label="${this.escapeHtml(name)}">
+                        <span class="songbook-icon songbook-icon-${this.escapeHtml(id)} me-1"></span>
+                        ${this.escapeHtml(id)}
+                    </a>`;
+        }).join('');
+
+        container.innerHTML = `
+            <div class="d-flex align-items-center gap-2 mb-1">
+                <small class="text-muted fw-semibold">
+                    <i class="fa-solid fa-clock-rotate-left me-1" aria-hidden="true"></i>
+                    Recent
+                </small>
+            </div>
+            <div class="d-flex flex-wrap gap-2">${tabs}</div>
+        `;
+        container.classList.remove('d-none');
     }
 }
