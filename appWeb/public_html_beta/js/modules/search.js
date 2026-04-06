@@ -360,6 +360,10 @@ export class Search {
                 if (this.app.searchHistory) {
                     this.app.searchHistory.record(query);
                 }
+                /* Track search analytics */
+                if (this.app.analytics) {
+                    this.app.analytics.trackSearch(query, results.length);
+                }
             } else {
                 container.innerHTML = `
                     <div class="text-center text-muted py-4">

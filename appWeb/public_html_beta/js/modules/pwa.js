@@ -106,6 +106,11 @@ export class PWA {
             const { outcome } = await this.deferredPrompt.userChoice;
             this.deferredPrompt = null;
 
+            /* Track PWA install prompt outcome */
+            if (this.app.analytics) {
+                this.app.analytics.trackPwaInstall(outcome);
+            }
+
             if (outcome === 'accepted') {
                 this.hideInstallBanner();
             }

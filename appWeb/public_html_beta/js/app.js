@@ -42,6 +42,7 @@ import { OfflineIndicator } from './modules/offline-indicator.js';
 import { StorageBridge } from './modules/storage-bridge.js';
 import { SubdomainSync } from './modules/subdomain-sync.js';
 import { Gestures } from './modules/gestures.js';
+import { Analytics } from './modules/analytics.js';
 
 /**
  * iHymnsApp — Main application class
@@ -130,6 +131,9 @@ class iHymnsApp {
 
         /** @type {Gestures} Touch gesture navigation (#143) */
         this.gestures = null;
+
+        /** @type {Analytics} Unified analytics tracking */
+        this.analytics = null;
     }
 
     /**
@@ -267,6 +271,10 @@ class iHymnsApp {
             /* Touch gesture navigation (#143) */
             this.gestures = new Gestures(this);
             this.gestures.init();
+
+            /* Unified analytics tracking */
+            this.analytics = new Analytics(this);
+            this.analytics.init();
 
             /* --- Set up global event listeners --- */
             this.bindGlobalEvents();
@@ -1189,13 +1197,9 @@ class iHymnsApp {
      * @param {string} title Page title
      */
     trackPageView(path, title) {
-        /* Google Analytics 4 */
-        if (typeof gtag === 'function') {
-            gtag('event', 'page_view', {
-                page_path: path,
-                page_title: title,
-                /* IP anonymised server-side when DNT is active */
-            });
+        /* Delegate to unified analytics module */
+        if (this.analytics) {
+            this.analytics.trackPageView(path, title);
         }
     }
 }

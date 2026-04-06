@@ -306,6 +306,11 @@ export class Favorites {
             const added = this.toggle(songId, songTitle, songbook, number);
             this.updateFavoriteButton(btn, added);
 
+            /* Track favourite toggle analytics */
+            if (this.app.analytics) {
+                this.app.analytics.trackFavoriteToggle(songId, added);
+            }
+
             this.app.showToast(
                 added ? 'Added to favourites' : 'Removed from favourites',
                 added ? 'success' : 'info',
