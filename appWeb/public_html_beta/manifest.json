@@ -1,219 +1,251 @@
 {
-  "id": "ltd.mwbmpartners.ihymns.pwa",
-  "name": "iHymns — Christian Lyrics for Worship",
-  "short_name": "iHymns",
-  "description": "Search thousands of hymns and worship songs from multiple songbooks. Browse 6 songbooks with over 3,600 songs, full-text search, favourites, dark mode, and offline support.",
-  "categories": [
-    "books",
-    "education",
-    "entertainment",
-    "lifestyle",
-    "music"
-  ],
-  "background_color": "#fafafa",
-  "dir": "ltr",
-  "display": "standalone",
-  "display_override": [
-    "window-controls-overlay",
-    "standalone",
-    "minimal-ui"
-  ],
-  "file_handlers": [
-    {
-      "accept": {
-        "application/json": [".json"],
-        "text/plain": [".txt"]
-      },
-      "action": "index.php"
-    }
-  ],
-  "icons": [
-    {
-      "purpose": "any",
-      "sizes": "any",
-      "src": "assets/favicon.svg",
-      "type": "image/svg+xml"
-    },
-    {
-      "purpose": "any",
-      "sizes": "48x48",
-      "src": "assets/icon-48.png",
-      "type": "image/png"
-    },
-    {
-      "purpose": "any",
-      "sizes": "72x72",
-      "src": "assets/icon-72.png",
-      "type": "image/png"
-    },
-    {
-      "purpose": "any",
-      "sizes": "96x96",
-      "src": "assets/icon-96.png",
-      "type": "image/png"
-    },
-    {
-      "purpose": "any",
-      "sizes": "128x128",
-      "src": "assets/icon-128.png",
-      "type": "image/png"
-    },
-    {
-      "purpose": "any",
-      "sizes": "144x144",
-      "src": "assets/icon-144.png",
-      "type": "image/png"
-    },
-    {
-      "purpose": "any",
-      "sizes": "152x152",
-      "src": "assets/icon-152.png",
-      "type": "image/png"
-    },
-    {
-      "purpose": "any maskable",
-      "sizes": "192x192",
-      "src": "assets/icon-192.png",
-      "type": "image/png"
-    },
-    {
-      "purpose": "any",
-      "sizes": "256x256",
-      "src": "assets/icon-256.png",
-      "type": "image/png"
-    },
-    {
-      "purpose": "any",
-      "sizes": "384x384",
-      "src": "assets/icon-384.png",
-      "type": "image/png"
-    },
-    {
-      "purpose": "any maskable",
-      "sizes": "512x512",
-      "src": "assets/icon-512.png",
-      "type": "image/png"
-    }
-  ],
-  "lang": "en",
-  "launch_handler": {
-    "client_mode": "navigate-existing"
-  },
-  "note_taking": {
-    "new_note_url": "index.php#/favorites"
-  },
-  "orientation": "any",
-  "prefer_related_applications": false,
-  "protocol_handlers": [
-    {
-      "protocol": "web+ihymns",
-      "url": "index.php?song=%s"
-    }
-  ],
-  "related_applications": [
-    {
-      "platform": "itunes",
-      "url": "https://apps.apple.com/app/ihymns/id0000000000"
-    },
-    {
-      "platform": "play",
-      "url": "https://play.google.com/store/apps/details?id=ltd.mwbmpartners.ihymns"
-    },
-    {
-      "platform": "amazon",
-      "url": "https://www.amazon.com/dp/B0000000000"
-    }
-  ],
-  "scope": "./",
-  "scope_extensions": [
-    {
-      "origin": "https://ihymns.app"
-    }
-  ],
-  "screenshots": [
-    {
-      "form_factor": "wide",
-      "label": "Songbook browser — home screen",
-      "sizes": "1280x720",
-      "src": "assets/screenshots/home-wide.png",
-      "type": "image/png"
-    },
-    {
-      "form_factor": "wide",
-      "label": "Song lyrics view",
-      "sizes": "1280x720",
-      "src": "assets/screenshots/song-detail-wide.png",
-      "type": "image/png"
-    },
-    {
-      "form_factor": "narrow",
-      "label": "Songbook browser — mobile",
-      "sizes": "750x1334",
-      "src": "assets/screenshots/home-narrow.png",
-      "type": "image/png"
-    },
-    {
-      "form_factor": "narrow",
-      "label": "Song lyrics — mobile",
-      "sizes": "750x1334",
-      "src": "assets/screenshots/song-detail-narrow.png",
-      "type": "image/png"
-    }
-  ],
-  "serviceworker": {
-    "scope": "./",
-    "src": "service-worker.js"
-  },
-  "share_target": {
-    "action": "index.php",
-    "method": "GET",
-    "params": {
-      "text": "text",
-      "title": "title",
-      "url": "url"
-    }
-  },
-  "shortcuts": [
-    {
-      "description": "Search for a hymn by title, lyrics, or number",
-      "icons": [
+    "_comment": "iHymns — PWA Web App Manifest. Comprehensive configuration using all available parameters including experimental ones.",
+
+    "id": "ltd.mwbmpartners.ihymns.pwa",
+    "name": "iHymns — Christian Hymns & Worship Songs",
+    "short_name": "iHymns",
+    "description": "A multiplatform Christian lyrics application providing searchable hymn and worship song lyrics from multiple songbooks, designed to enhance worship. Features 5 songbooks with over 3,600 songs, full-text search, favourites, dark mode, high-contrast mode, and offline support.",
+    "version": "0.1.5",
+
+    "start_url": "/",
+    "scope": "/",
+    "display": "standalone",
+    "display_override": [
+        "window-controls-overlay",
+        "standalone",
+        "minimal-ui"
+    ],
+    "orientation": "any",
+
+    "theme_color": "#4f46e5",
+    "background_color": "#f8fafc",
+
+    "lang": "en",
+    "dir": "ltr",
+
+    "categories": [
+        "books",
+        "education",
+        "lifestyle",
+        "music",
+        "reference",
+        "utilities"
+    ],
+
+    "iarc_rating_id": "",
+
+    "prefer_related_applications": false,
+    "related_applications": [],
+
+    "icons": [
         {
-          "sizes": "96x96",
-          "src": "assets/icon-search.png",
-          "type": "image/png"
-        }
-      ],
-      "name": "Search Songs",
-      "short_name": "Search",
-      "url": "index.php#/search"
-    },
-    {
-      "description": "View your saved favourite songs",
-      "icons": [
+            "src": "/assets/favicon.svg",
+            "type": "image/svg+xml",
+            "sizes": "any",
+            "purpose": "any"
+        },
         {
-          "sizes": "96x96",
-          "src": "assets/icon-star.png",
-          "type": "image/png"
-        }
-      ],
-      "name": "Favourites",
-      "short_name": "Favourites",
-      "url": "index.php#/favorites"
-    },
-    {
-      "description": "Get help using iHymns",
-      "icons": [
+            "src": "/assets/icon-48.png",
+            "type": "image/png",
+            "sizes": "48x48",
+            "purpose": "any"
+        },
         {
-          "sizes": "96x96",
-          "src": "assets/icon-help.png",
-          "type": "image/png"
+            "src": "/assets/icon-72.png",
+            "type": "image/png",
+            "sizes": "72x72",
+            "purpose": "any"
+        },
+        {
+            "src": "/assets/icon-96.png",
+            "type": "image/png",
+            "sizes": "96x96",
+            "purpose": "any"
+        },
+        {
+            "src": "/assets/icon-128.png",
+            "type": "image/png",
+            "sizes": "128x128",
+            "purpose": "any"
+        },
+        {
+            "src": "/assets/icon-144.png",
+            "type": "image/png",
+            "sizes": "144x144",
+            "purpose": "any"
+        },
+        {
+            "src": "/assets/icon-152.png",
+            "type": "image/png",
+            "sizes": "152x152",
+            "purpose": "any"
+        },
+        {
+            "src": "/assets/icon-192.png",
+            "type": "image/png",
+            "sizes": "192x192",
+            "purpose": "any maskable"
+        },
+        {
+            "src": "/assets/icon-256.png",
+            "type": "image/png",
+            "sizes": "256x256",
+            "purpose": "any"
+        },
+        {
+            "src": "/assets/icon-384.png",
+            "type": "image/png",
+            "sizes": "384x384",
+            "purpose": "any"
+        },
+        {
+            "src": "/assets/icon-512.png",
+            "type": "image/png",
+            "sizes": "512x512",
+            "purpose": "any maskable"
         }
-      ],
-      "name": "Help",
-      "short_name": "Help",
-      "url": "index.php#/help"
+    ],
+
+    "screenshots": [
+        {
+            "src": "/assets/screenshots/home-wide.png",
+            "type": "image/png",
+            "sizes": "1280x720",
+            "form_factor": "wide",
+            "label": "iHymns home screen on desktop"
+        },
+        {
+            "src": "/assets/screenshots/song-detail-wide.png",
+            "type": "image/png",
+            "sizes": "1280x720",
+            "form_factor": "wide",
+            "label": "Song lyrics view on desktop"
+        },
+        {
+            "src": "/assets/screenshots/home-narrow.png",
+            "type": "image/png",
+            "sizes": "390x844",
+            "form_factor": "narrow",
+            "label": "iHymns home screen on mobile"
+        },
+        {
+            "src": "/assets/screenshots/song-detail-narrow.png",
+            "type": "image/png",
+            "sizes": "390x844",
+            "form_factor": "narrow",
+            "label": "Song lyrics view on mobile"
+        }
+    ],
+
+    "shortcuts": [
+        {
+            "name": "Search Songs",
+            "short_name": "Search",
+            "description": "Search for hymns and worship songs",
+            "url": "/search",
+            "icons": [
+                {
+                    "src": "/assets/icon-search.png",
+                    "sizes": "96x96",
+                    "type": "image/png"
+                }
+            ]
+        },
+        {
+            "name": "Favourites",
+            "short_name": "Favourites",
+            "description": "View your favourite songs",
+            "url": "/favorites",
+            "icons": [
+                {
+                    "src": "/assets/icon-star.png",
+                    "sizes": "96x96",
+                    "type": "image/png"
+                }
+            ]
+        },
+        {
+            "name": "Songbooks",
+            "short_name": "Books",
+            "description": "Browse all songbooks",
+            "url": "/songbooks",
+            "icons": [
+                {
+                    "src": "/assets/icon-book.png",
+                    "sizes": "96x96",
+                    "type": "image/png"
+                }
+            ]
+        },
+        {
+            "name": "Help",
+            "short_name": "Help",
+            "description": "Get help using iHymns",
+            "url": "/help",
+            "icons": [
+                {
+                    "src": "/assets/icon-help.png",
+                    "sizes": "96x96",
+                    "type": "image/png"
+                }
+            ]
+        }
+    ],
+
+    "share_target": {
+        "action": "/search",
+        "method": "GET",
+        "params": {
+            "text": "q",
+            "title": "q",
+            "url": "q"
+        }
+    },
+
+    "protocol_handlers": [
+        {
+            "protocol": "web+ihymns",
+            "url": "/song/%s"
+        }
+    ],
+
+    "file_handlers": [
+        {
+            "action": "/",
+            "accept": {
+                "application/json": [".json"],
+                "text/plain": [".txt"]
+            }
+        }
+    ],
+
+    "note_taking": {
+        "new_note_url": "/favorites"
+    },
+
+    "handle_links": "preferred",
+
+    "launch_handler": {
+        "client_mode": ["navigate-existing", "auto"]
+    },
+
+    "scope_extensions": [
+        {
+            "origin": "https://ihymns.app"
+        },
+        {
+            "origin": "https://www.ihymns.app"
+        }
+    ],
+
+    "edge_side_panel": {
+        "preferred_width": 400
+    },
+
+    "serviceworker": {
+        "src": "/service-worker.js",
+        "scope": "/",
+        "type": "classic",
+        "update_via_cache": "none"
     }
-  ],
-  "start_url": "index.php",
-  "theme_color": "#1e293b"
 }

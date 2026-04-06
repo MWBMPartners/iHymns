@@ -1,578 +1,271 @@
 /**
- * iHymns — Settings / Theme Module
+ * iHymns — Settings Module
  *
- * Copyright © 2026 MWBM Partners Ltd. All rights reserved.
- * This software is proprietary. Unauthorized copying, modification, or
- * distribution is strictly prohibited.
+ * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
  *
  * PURPOSE:
- * Manages user-facing settings including dark/light theme toggling,
- * the PWA install prompt banner, and periodic update checking.
- * Theme preference is persisted in localStorage so it survives
- * page reloads and browser restarts.
+ * Manages user preferences: theme (light/dark/high-contrast/system),
+ * reduce motion (disabled by default as per requirements), reduce
+ * transparency, and lyrics font size. All settings are persisted
+ * in localStorage.
  */
 
-/* =========================================================================
- * IMPORTS
- * ========================================================================= */
+export class Settings {
+    /**
+     * @param {object} app Reference to the main iHymnsApp instance
+     */
+    constructor(app) {
+        this.app = app;
 
-/**
- * Import the $ helper from our shared utilities module.
- * $ is a shorthand for document.querySelector — it returns the first DOM
- * element matching a CSS selector, or null if nothing matches.
- */
-import { $ } from '../utils/helpers.js';
+        /** @type {string} localStorage key prefix */
+        this.storagePrefix = 'ihymns_';
 
-/* =========================================================================
- * CONSTANTS
- * ========================================================================= */
-
-/**
- * THEME_STORAGE_KEY
- *
- * The localStorage key under which the user's chosen theme ('light' or
- * 'dark') is persisted. Using a namespaced key ('ihymns_theme') avoids
- * collisions with other apps on the same origin.
- */
-const THEME_STORAGE_KEY = 'ihymns_theme';
-
-/**
- * CB_STORAGE_KEY
- *
- * The localStorage key for the colourblind-friendly mode toggle.
- * Stores 'true' or 'false' (as strings).
- */
-const CB_STORAGE_KEY = 'ihymns_colourblind';
-
-/**
- * VERSION_STORAGE_KEY
- *
- * The localStorage key under which we store the last-known app version
- * string. We compare against the server response to detect updates.
- */
-const VERSION_STORAGE_KEY = 'ihymns_app_version';
-
-/**
- * VERSION_ENDPOINT
- *
- * The server-side endpoint that returns the current application version.
- * The response is expected to be JSON with at least a "version" field,
- * e.g. { "version": "1.2.3" }.
- */
-const VERSION_ENDPOINT = 'includes/infoAppVer.php?check=version';
-
-/**
- * DEFAULT_CHECK_INTERVAL_MINUTES
- *
- * How often (in minutes) the update checker runs by default, if the
- * caller does not supply a custom interval to initUpdateChecker().
- */
-const DEFAULT_CHECK_INTERVAL_MINUTES = 30;
-
-/* =========================================================================
- * MODULE-LEVEL STATE
- * ========================================================================= */
-
-/**
- * deferredInstallPrompt
- *
- * Holds the browser's BeforeInstallPromptEvent so we can trigger the
- * native PWA install dialog later when the user clicks our custom
- * install button. The browser fires 'beforeinstallprompt' only once
- * per page load, so we must capture and store it.
- */
-let deferredInstallPrompt = null;
-
-/**
- * updateCheckIntervalId
- *
- * Holds the ID returned by setInterval() for the periodic update
- * checker. Stored so we could clear it later if needed (e.g. when
- * the module is torn down or the user navigates away).
- */
-let updateCheckIntervalId = null;
-
-/* =========================================================================
- * THEME — INTERNAL HELPERS
- * ========================================================================= */
-
-/**
- * applyTheme(theme)
- *
- * Applies the given theme to the document and updates the toggle icons.
- * This is the single source of truth for visual theme state — both
- * initTheme() and toggleTheme() funnel through this function to avoid
- * duplicating DOM-manipulation logic.
- *
- * @param {string} theme - Either 'light' or 'dark'
- */
-function applyTheme(theme) {
-    /* Set the Bootstrap 5.3+ theme attribute on the root <html> element.
-       Bootstrap reads data-bs-theme to switch between its light and dark
-       colour palettes automatically. */
-    document.documentElement.setAttribute('data-bs-theme', theme);
-
-    /* Grab references to the two icon elements inside the toggle button.
-       #theme-icon-light shows a sun icon (visible when theme is dark,
-       indicating "click to switch to light").
-       #theme-icon-dark shows a moon icon (visible when theme is light,
-       indicating "click to switch to dark"). */
-    const iconLight = $('#theme-icon-light'); /* Sun icon element */
-    const iconDark  = $('#theme-icon-dark');  /* Moon icon element */
-
-    /* Only manipulate icons if both elements exist in the DOM.
-       They may be absent on pages that don't include the theme toggle. */
-    if (iconLight && iconDark) {
-        if (theme === 'dark') {
-            /* Dark mode is active:
-               - Show the sun icon (offers the user a way to go back to light)
-               - Hide the moon icon (dark is already active) */
-            iconLight.classList.remove('d-none'); /* Make sun visible */
-            iconDark.classList.add('d-none');     /* Hide moon */
-        } else {
-            /* Light mode is active:
-               - Show the moon icon (offers the user a way to switch to dark)
-               - Hide the sun icon (light is already active) */
-            iconLight.classList.add('d-none');    /* Hide sun */
-            iconDark.classList.remove('d-none');  /* Make moon visible */
-        }
-    }
-}
-
-/**
- * getSystemThemePreference()
- *
- * Queries the operating system / browser-level colour scheme preference
- * using the prefers-color-scheme media query. Returns 'dark' if the
- * user's OS is set to dark mode, otherwise returns 'light'.
- *
- * @returns {string} 'dark' or 'light'
- */
-function getSystemThemePreference() {
-    /* window.matchMedia evaluates a CSS media query and returns a
-       MediaQueryList whose .matches property is true/false. */
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)');
-
-    /* Return 'dark' if the system prefers dark, otherwise 'light' */
-    return prefersDark.matches ? 'dark' : 'light';
-}
-
-/* =========================================================================
- * THEME — EXPORTED FUNCTIONS
- * ========================================================================= */
-
-/**
- * initTheme()
- *
- * Initialises the application theme on page load. The precedence order is:
- *   1. User's explicit choice stored in localStorage (highest priority)
- *   2. Operating system / browser preference via prefers-color-scheme
- *   3. Falls back to 'light' if neither is available
- *
- * Call this once during app bootstrap (e.g. in main.js or DOMContentLoaded).
- */
-export function initTheme() {
-    /* Attempt to read the user's previously saved theme from localStorage.
-       This will be null if the user has never toggled the theme. */
-    const savedTheme = localStorage.getItem(THEME_STORAGE_KEY);
-
-    /* Determine which theme to apply: saved preference takes priority,
-       otherwise fall back to the system-level preference. */
-    const theme = savedTheme || getSystemThemePreference();
-
-    /* Apply the resolved theme to the DOM (sets data-bs-theme and icons) */
-    applyTheme(theme);
-}
-
-/**
- * toggleTheme()
- *
- * Toggles the theme between 'light' and 'dark'. Reads the current
- * theme from the <html> element's data-bs-theme attribute, flips it,
- * persists the new choice to localStorage, and applies it to the DOM.
- *
- * Designed to be called from a click handler on the theme toggle button.
- */
-export function toggleTheme() {
-    /* Read the currently active theme from the data-bs-theme attribute.
-       Default to 'light' if the attribute is somehow missing. */
-    const currentTheme = document.documentElement.getAttribute('data-bs-theme') || 'light';
-
-    /* Flip the theme: if currently light, switch to dark, and vice versa */
-    const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-
-    /* Persist the user's explicit choice so it survives page reloads.
-       This also means initTheme() will pick it up next time. */
-    localStorage.setItem(THEME_STORAGE_KEY, newTheme);
-
-    /* Apply the new theme to the DOM immediately */
-    applyTheme(newTheme);
-}
-
-/**
- * bindThemeToggle()
- *
- * Binds a click event listener to the #theme-toggle button element.
- * When clicked, it calls toggleTheme() to flip between light and dark.
- *
- * Call this once after the DOM is ready (e.g. in DOMContentLoaded or
- * after your page template has been rendered).
- */
-export function bindThemeToggle() {
-    /* Find the theme toggle button in the DOM */
-    const toggleBtn = $('#theme-toggle');
-
-    /* Only attach the listener if the button exists on this page.
-       Some pages (e.g. a minimal error page) might not have it. */
-    if (toggleBtn) {
-        /* Add a click event listener that triggers the theme toggle */
-        toggleBtn.addEventListener('click', toggleTheme);
-    }
-}
-
-/* =========================================================================
- * COLOURBLIND-FRIENDLY MODE
- * ========================================================================= */
-
-/**
- * initColourblindMode()
- *
- * Initialises the colourblind-friendly mode from localStorage.
- * When enabled, sets data-theme-cb="true" on <html> which activates
- * the CVD-safe colour palette defined in styles.css.
- */
-export function initColourblindMode() {
-    /* Read the stored preference (default: 'false') */
-    const cbEnabled = localStorage.getItem(CB_STORAGE_KEY) === 'true';
-
-    /* Apply the attribute to <html> */
-    if (cbEnabled) {
-        document.documentElement.setAttribute('data-theme-cb', 'true');
-    } else {
-        document.documentElement.removeAttribute('data-theme-cb');
-    }
-}
-
-/**
- * toggleColourblindMode()
- *
- * Toggles the colourblind-friendly mode on or off.
- * Persists to localStorage and updates the DOM attribute.
- *
- * @returns {boolean} The new state (true = enabled)
- */
-export function toggleColourblindMode() {
-    /* Check current state */
-    const isCurrentlyEnabled = document.documentElement.getAttribute('data-theme-cb') === 'true';
-
-    /* Flip the state */
-    const newState = !isCurrentlyEnabled;
-
-    /* Persist to localStorage */
-    localStorage.setItem(CB_STORAGE_KEY, String(newState));
-
-    /* Apply to DOM */
-    if (newState) {
-        document.documentElement.setAttribute('data-theme-cb', 'true');
-    } else {
-        document.documentElement.removeAttribute('data-theme-cb');
+        /** Default settings — reduce motion is ON by default (animations disabled) */
+        this.defaults = {
+            theme: 'system',
+            reduceMotion: true,       /* Animations disabled by default */
+            reduceTransparency: false,
+            fontSize: 18,
+        };
     }
 
-    return newState;
-}
+    /**
+     * Initialise settings — load from localStorage and apply.
+     */
+    init() {
+        /* Apply all saved settings on load */
+        this.applyTheme(this.get('theme'));
+        this.applyReduceMotion(this.get('reduceMotion'));
+        this.applyReduceTransparency(this.get('reduceTransparency'));
+        this.applyFontSize(this.get('fontSize'));
 
-/**
- * isColourblindMode()
- *
- * Returns whether colourblind-friendly mode is currently active.
- *
- * @returns {boolean}
- */
-export function isColourblindMode() {
-    return document.documentElement.getAttribute('data-theme-cb') === 'true';
-}
-
-/* =========================================================================
- * PWA INSTALL BANNER
- * ========================================================================= */
-
-/**
- * isAppInstalledStandalone()
- *
- * Checks whether the app is already running as an installed PWA
- * (i.e. in standalone display mode rather than in a browser tab).
- * Used to suppress the install banner when the app is already installed.
- *
- * @returns {boolean} true if running as a standalone PWA
- */
-function isAppInstalledStandalone() {
-    /* The display-mode: standalone media query matches when the PWA
-       has been added to the home screen / installed and is running
-       outside of the browser's normal UI. */
-    return window.matchMedia('(display-mode: standalone)').matches;
-}
-
-/**
- * initInstallBanner()
- *
- * Sets up the PWA install banner flow:
- *   1. Listens for the browser's 'beforeinstallprompt' event, which
- *      fires when the app meets PWA installability criteria.
- *   2. Captures the event so we can trigger it on demand.
- *   3. Shows the #install-banner element to invite the user to install.
- *   4. Binds the #install-btn to trigger the native install prompt.
- *   5. Hides the banner if the app is already installed (standalone mode).
- *
- * Call this once during app initialisation.
- */
-export function initInstallBanner() {
-    /* If the app is already installed as a standalone PWA, there is no
-       reason to show the install banner — exit early. */
-    if (isAppInstalledStandalone()) {
-        return; /* App is installed; nothing to do */
-    }
-
-    /* Listen for the 'beforeinstallprompt' event on the window.
-       This event is fired by Chromium-based browsers when the PWA
-       meets the installability criteria (has a manifest, service worker,
-       served over HTTPS, etc.). */
-    window.addEventListener('beforeinstallprompt', (event) => {
-        /* Prevent the browser's default mini-infobar from appearing.
-           We want to show our own custom install banner instead. */
-        event.preventDefault();
-
-        /* Store the event so we can call .prompt() on it later when
-           the user clicks our custom install button. */
-        deferredInstallPrompt = event;
-
-        /* Find the install banner element in the DOM */
-        const banner = $('#install-banner');
-
-        /* Show the banner by removing the Bootstrap 'd-none' utility class */
-        if (banner) {
-            banner.classList.remove('d-none'); /* Make the banner visible */
-        }
-    });
-
-    /* Bind the install button's click handler. When the user clicks
-       #install-btn, we trigger the deferred native install prompt. */
-    const installBtn = $('#install-btn');
-
-    if (installBtn) {
-        installBtn.addEventListener('click', async () => {
-            /* If we don't have a deferred prompt (e.g. the event never
-               fired, or the user already responded), do nothing. */
-            if (!deferredInstallPrompt) {
-                return; /* No prompt available to show */
+        /* Listen for system theme changes */
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+            if (this.get('theme') === 'system') {
+                this.applyTheme('system');
             }
+        });
 
-            /* Show the native browser install dialog */
-            deferredInstallPrompt.prompt();
-
-            /* Wait for the user to respond to the prompt (accept or dismiss) */
-            const choiceResult = await deferredInstallPrompt.userChoice;
-
-            /* Log the outcome for debugging purposes */
-            if (choiceResult.outcome === 'accepted') {
-                /* The user accepted the install prompt */
-                console.log('[iHymns] User accepted the PWA install prompt.');
-            } else {
-                /* The user dismissed the install prompt */
-                console.log('[iHymns] User dismissed the PWA install prompt.');
-            }
-
-            /* The prompt can only be used once. Clear the reference so we
-               don't try to re-trigger it. */
-            deferredInstallPrompt = null;
-
-            /* Hide the install banner since the prompt has been shown
-               (regardless of whether the user accepted or dismissed it). */
-            const banner = $('#install-banner');
-            if (banner) {
-                banner.classList.add('d-none'); /* Hide the banner */
-            }
+        /* Theme dropdown buttons in header */
+        document.querySelectorAll('[data-theme]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const theme = btn.dataset.theme;
+                this.set('theme', theme);
+                this.applyTheme(theme);
+                this.app.showToast(`Theme changed to ${this.getThemeLabel(theme)}`, 'success', 2000);
+            });
         });
     }
 
-    /* Listen for the 'appinstalled' event, which fires when the PWA
-       is successfully installed. Hide the banner in case it's still visible. */
-    window.addEventListener('appinstalled', () => {
-        /* Log the successful installation */
-        console.log('[iHymns] PWA was installed successfully.');
+    /**
+     * Get a setting value from localStorage (with default fallback).
+     *
+     * @param {string} key Setting key
+     * @returns {*} Setting value
+     */
+    get(key) {
+        const stored = localStorage.getItem(this.storagePrefix + key);
+        if (stored === null) return this.defaults[key];
 
-        /* Hide the install banner */
-        const banner = $('#install-banner');
-        if (banner) {
-            banner.classList.add('d-none'); /* Hide the banner */
-        }
-
-        /* Clear the deferred prompt reference as it's no longer needed */
-        deferredInstallPrompt = null;
-    });
-}
-
-/* =========================================================================
- * UPDATE CHECKER
- * ========================================================================= */
-
-/**
- * showUpdateToast(newVersion)
- *
- * Displays a Bootstrap toast notification informing the user that a
- * new version of the app is available. The toast encourages the user
- * to refresh the page to get the latest version.
- *
- * @param {string} newVersion - The version string of the available update
- */
-function showUpdateToast(newVersion) {
-    /* Find the update toast element in the DOM.
-       We expect an element with id="update-toast" to exist in the HTML,
-       styled as a Bootstrap toast component. */
-    const toastEl = $('#update-toast');
-
-    /* If the toast element doesn't exist in the DOM, fall back to a
-       simple console warning so the update isn't silently lost. */
-    if (!toastEl) {
-        console.warn(`[iHymns] Update available (v${newVersion}), but #update-toast element not found.`);
-        return; /* Cannot show a toast without the DOM element */
+        /* Parse booleans and numbers */
+        if (stored === 'true') return true;
+        if (stored === 'false') return false;
+        if (!isNaN(stored) && stored !== '') return Number(stored);
+        return stored;
     }
 
-    /* Optionally update the toast body text to include the new version.
-       Look for a .toast-body child to set the message. */
-    const toastBody = toastEl.querySelector('.toast-body');
-    if (toastBody) {
-        /* Set a user-friendly update message with the new version number */
-        toastBody.textContent = `A new version (v${newVersion}) is available. Please refresh to update.`;
+    /**
+     * Save a setting to localStorage.
+     *
+     * @param {string} key Setting key
+     * @param {*} value Setting value
+     */
+    set(key, value) {
+        localStorage.setItem(this.storagePrefix + key, String(value));
     }
 
-    /* Use Bootstrap's Toast API to show the notification.
-       bootstrap.Toast.getOrCreateInstance avoids creating duplicate
-       instances if the toast was already initialised. */
-    if (typeof bootstrap !== 'undefined' && bootstrap.Toast) {
-        /* Get or create a Bootstrap Toast instance for this element */
-        const toast = bootstrap.Toast.getOrCreateInstance(toastEl);
+    /**
+     * Apply a theme to the document.
+     *
+     * @param {string} theme Theme name: 'light', 'dark', 'high-contrast', or 'system'
+     */
+    applyTheme(theme) {
+        const html = document.documentElement;
+        let bsTheme = 'light';
+        let ihymnsTheme = theme;
 
-        /* Show the toast notification to the user */
-        toast.show();
-    } else {
-        /* Bootstrap JS is not loaded — fall back to manual visibility.
-           Add the 'show' class to make the toast visible via CSS. */
-        toastEl.classList.add('show');
-        console.warn('[iHymns] Bootstrap Toast API not available; using fallback.');
+        if (theme === 'system') {
+            /* Detect system preference */
+            bsTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            ihymnsTheme = bsTheme;
+        } else if (theme === 'dark') {
+            bsTheme = 'dark';
+        } else if (theme === 'high-contrast') {
+            /* High contrast uses light BS theme with custom overrides */
+            bsTheme = 'light';
+        }
+
+        html.setAttribute('data-bs-theme', bsTheme);
+        html.setAttribute('data-ihymns-theme', ihymnsTheme);
+
+        /* Update theme-color meta tags */
+        const themeColor = bsTheme === 'dark' ? '#1e1b4b' : '#4f46e5';
+        document.querySelectorAll('meta[name="theme-color"]').forEach(meta => {
+            meta.setAttribute('content', themeColor);
+        });
     }
-}
 
-/**
- * checkForUpdate()
- *
- * Performs a single update check by fetching the version endpoint on the
- * server. Compares the server version against the locally stored version.
- * If they differ, shows a toast notification and updates the stored version.
- *
- * This function is called both on initial setup and on each periodic
- * interval tick from initUpdateChecker().
- *
- * @returns {Promise<void>}
- */
-async function checkForUpdate() {
-    try {
-        /* Fetch the current version from the server.
-           We append a cache-busting timestamp parameter to prevent the
-           browser from serving a stale cached response. */
-        const response = await fetch(`${VERSION_ENDPOINT}&t=${Date.now()}`);
+    /**
+     * Apply reduce-motion preference.
+     *
+     * @param {boolean} enabled True to reduce motion
+     */
+    applyReduceMotion(enabled) {
+        document.body.classList.toggle('reduce-motion', enabled);
+    }
 
-        /* If the server responds with a non-OK status, bail out.
-           We don't want to show false update notifications based on
-           error responses. */
-        if (!response.ok) {
-            console.warn(`[iHymns] Update check failed: HTTP ${response.status}`);
-            return; /* Non-OK response; skip this check cycle */
-        }
+    /**
+     * Apply reduce-transparency preference.
+     *
+     * @param {boolean} enabled True to reduce transparency
+     */
+    applyReduceTransparency(enabled) {
+        document.body.classList.toggle('reduce-transparency', enabled);
+    }
 
-        /* Parse the JSON response body.
-           Expected format: { "version": "1.2.3", ... } */
-        const data = await response.json();
+    /**
+     * Apply lyrics font size.
+     *
+     * @param {number} size Font size in pixels
+     */
+    applyFontSize(size) {
+        document.documentElement.style.setProperty('--lyrics-font-size', size + 'px');
+    }
 
-        /* Extract the version string from the response */
-        const serverVersion = data.version;
+    /**
+     * Get a human-readable label for a theme name.
+     *
+     * @param {string} theme Theme key
+     * @returns {string} Human-readable label
+     */
+    getThemeLabel(theme) {
+        const labels = {
+            'light': 'Light',
+            'dark': 'Dark',
+            'high-contrast': 'High Contrast',
+            'system': 'System',
+        };
+        return labels[theme] || theme;
+    }
 
-        /* If the server didn't return a version field, we can't compare.
-           This guards against unexpected response formats. */
-        if (!serverVersion) {
-            console.warn('[iHymns] Update check: no "version" field in response.');
-            return; /* Missing version data; skip this check cycle */
-        }
+    /**
+     * Initialise the settings page controls (called after page loads).
+     */
+    initSettingsPage() {
+        /* Theme buttons */
+        document.querySelectorAll('[data-setting-theme]').forEach(btn => {
+            const theme = btn.dataset.settingTheme;
+            const isActive = this.get('theme') === theme;
+            btn.classList.toggle('active', isActive);
+            btn.setAttribute('aria-pressed', String(isActive));
 
-        /* Retrieve the locally stored version for comparison.
-           This is the version from the last successful check (or null
-           on the very first run). */
-        const localVersion = localStorage.getItem(VERSION_STORAGE_KEY);
+            btn.addEventListener('click', () => {
+                this.set('theme', theme);
+                this.applyTheme(theme);
 
-        /* If we have a local version and it differs from the server
-           version, an update is available. */
-        if (localVersion && localVersion !== serverVersion) {
-            /* Show the user a toast notification about the update */
-            showUpdateToast(serverVersion);
-
-            /* Also attempt to trigger a service worker update check.
-               If a service worker is registered, calling .update() will
-               fetch the SW script from the server and install a new
-               version if the script has changed. */
-            if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
-                navigator.serviceWorker.ready.then((registration) => {
-                    /* Ask the service worker to check for an updated script */
-                    registration.update();
+                /* Update all theme buttons */
+                document.querySelectorAll('[data-setting-theme]').forEach(b => {
+                    b.classList.toggle('active', b.dataset.settingTheme === theme);
+                    b.setAttribute('aria-pressed', String(b.dataset.settingTheme === theme));
                 });
-            }
+            });
+        });
+
+        /* Reduce motion toggle */
+        const motionToggle = document.getElementById('setting-reduce-motion');
+        if (motionToggle) {
+            motionToggle.checked = this.get('reduceMotion');
+            motionToggle.addEventListener('change', () => {
+                this.set('reduceMotion', motionToggle.checked);
+                this.applyReduceMotion(motionToggle.checked);
+            });
         }
 
-        /* Persist the server version as the new local version.
-           On first run (localVersion is null), this seeds the stored
-           version without triggering an "update available" toast. */
-        localStorage.setItem(VERSION_STORAGE_KEY, serverVersion);
+        /* Reduce transparency toggle */
+        const transparencyToggle = document.getElementById('setting-reduce-transparency');
+        if (transparencyToggle) {
+            transparencyToggle.checked = this.get('reduceTransparency');
+            transparencyToggle.addEventListener('change', () => {
+                this.set('reduceTransparency', transparencyToggle.checked);
+                this.applyReduceTransparency(transparencyToggle.checked);
+            });
+        }
 
-    } catch (error) {
-        /* Network errors, JSON parse errors, etc. are caught here.
-           We log a warning but don't crash — the next interval tick
-           will try again automatically. */
-        console.warn('[iHymns] Update check encountered an error:', error);
+        /* Font size slider */
+        const fontSlider = document.getElementById('setting-font-size');
+        const fontValue = document.getElementById('font-size-value');
+        if (fontSlider) {
+            fontSlider.value = this.get('fontSize');
+            if (fontValue) fontValue.textContent = this.get('fontSize') + 'px';
+
+            fontSlider.addEventListener('input', () => {
+                const size = Number(fontSlider.value);
+                this.set('fontSize', size);
+                this.applyFontSize(size);
+                if (fontValue) fontValue.textContent = size + 'px';
+            });
+        }
+
+        /* Clear cache button */
+        const clearCacheBtn = document.getElementById('clear-cache-btn');
+        if (clearCacheBtn) {
+            clearCacheBtn.addEventListener('click', async () => {
+                if ('caches' in window) {
+                    const keys = await caches.keys();
+                    await Promise.all(keys.map(key => caches.delete(key)));
+                    this.app.showToast('Cache cleared successfully', 'success');
+                }
+            });
+        }
+
+        /* Reset settings button */
+        const resetBtn = document.getElementById('reset-settings-btn');
+        if (resetBtn) {
+            resetBtn.addEventListener('click', () => {
+                if (confirm('Reset all settings to defaults? Your favourites will not be affected.')) {
+                    Object.keys(this.defaults).forEach(key => {
+                        localStorage.removeItem(this.storagePrefix + key);
+                    });
+                    /* Re-apply defaults */
+                    this.applyTheme(this.defaults.theme);
+                    this.applyReduceMotion(this.defaults.reduceMotion);
+                    this.applyReduceTransparency(this.defaults.reduceTransparency);
+                    this.applyFontSize(this.defaults.fontSize);
+                    this.app.showToast('Settings reset to defaults', 'success');
+                    /* Reload settings page to update controls */
+                    this.app.router.navigate('/settings');
+                }
+            });
+        }
+
+        /* Cache status */
+        this.updateCacheStatus();
     }
-}
 
-/**
- * initUpdateChecker(intervalMinutes)
- *
- * Starts a periodic update checker that runs at a fixed interval.
- * On each tick, it fetches the version endpoint and compares versions.
- * If a new version is detected, a toast notification is shown.
- *
- * The first check runs immediately (so the user learns about updates
- * as soon as possible), and subsequent checks run on the interval.
- *
- * @param {number} [intervalMinutes=30] - How often to check, in minutes.
- *                                         Defaults to 30 minutes.
- */
-export function initUpdateChecker(intervalMinutes = DEFAULT_CHECK_INTERVAL_MINUTES) {
-    /* Clear any previously running update checker interval to prevent
-       duplicate timers if initUpdateChecker is called more than once. */
-    if (updateCheckIntervalId !== null) {
-        clearInterval(updateCheckIntervalId); /* Stop the old timer */
-        updateCheckIntervalId = null;         /* Reset the reference */
+    /**
+     * Update the cache status display on the settings page.
+     */
+    async updateCacheStatus() {
+        const statusEl = document.getElementById('cache-status');
+        if (!statusEl) return;
+
+        if ('caches' in window) {
+            const keys = await caches.keys();
+            statusEl.textContent = keys.length > 0 ? `Active (${keys.length} cache(s))` : 'No caches';
+            statusEl.className = keys.length > 0 ? 'badge bg-success' : 'badge bg-secondary';
+        } else {
+            statusEl.textContent = 'Not supported';
+            statusEl.className = 'badge bg-warning';
+        }
     }
-
-    /* Convert the interval from minutes to milliseconds.
-       setInterval expects milliseconds, so we multiply by 60,000. */
-    const intervalMs = intervalMinutes * 60 * 1000;
-
-    /* Run the first update check immediately rather than waiting for
-       the first interval tick. This ensures the user is notified of
-       updates as soon as the app loads. */
-    checkForUpdate();
-
-    /* Start the periodic interval timer. Each tick calls checkForUpdate()
-       which fetches the version endpoint and compares versions. */
-    updateCheckIntervalId = setInterval(checkForUpdate, intervalMs);
-
-    /* Log the checker configuration for debugging */
-    console.log(`[iHymns] Update checker started (interval: ${intervalMinutes} min).`);
 }

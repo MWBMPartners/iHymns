@@ -1,0 +1,1124 @@
+/**
+ * iHymns — Main Application Stylesheet
+ *
+ * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ *
+ * DESIGN PHILOSOPHY:
+ * Modern, sleek, and dimensional — NOT flat. Uses:
+ *   - Subtle gradients for depth
+ *   - Layered box shadows for elevation
+ *   - Glassmorphism (backdrop-filter blur) on fixed elements
+ *   - Rounded corners for friendly, approachable feel
+ *   - Smooth transitions for interactive elements
+ *
+ * THEMES:
+ *   - Light: Clean whites with indigo/violet accent gradients
+ *   - Dark: Deep navy/slate with luminous accent highlights
+ *   - High Contrast: Maximum readability, distinct colour pairs,
+ *     thick borders, enhanced focus indicators for accessibility
+ *
+ * STRUCTURE:
+ *   1. CSS Custom Properties (theme variables)
+ *   2. Base / Reset styles
+ *   3. Layout (header, footer, main content)
+ *   4. Components (cards, buttons, badges, lists)
+ *   5. Page-specific styles
+ *   6. Animations & Transitions
+ *   7. Utility classes
+ *   8. Responsive breakpoints
+ *   9. Reduced motion overrides
+ */
+
+/* ==========================================================================
+   1. CSS CUSTOM PROPERTIES — Theme Variables
+   ========================================================================== */
+
+:root {
+    /* --- Layout dimensions --- */
+    --header-height: 56px;
+    --search-bar-height: 56px;
+    --footer-nav-height: 60px;
+    --footer-info-height: 28px;
+    --footer-total-height: calc(var(--footer-nav-height) + var(--footer-info-height));
+    --install-banner-height: 48px;
+
+    /* --- Transition timing --- */
+    --transition-fast: 150ms ease;
+    --transition-normal: 250ms ease;
+    --transition-slow: 400ms cubic-bezier(0.4, 0, 0.2, 1);
+
+    /* --- Border radius --- */
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 16px;
+    --radius-xl: 24px;
+    --radius-pill: 50px;
+
+    /* --- Lyrics font size (adjustable via settings) --- */
+    --lyrics-font-size: 18px;
+}
+
+/* ---------------------------------------------------------------------------
+   LIGHT THEME (default)
+   --------------------------------------------------------------------------- */
+[data-bs-theme="light"],
+:root {
+    /* Primary accent gradient */
+    --accent-start: #6366f1;    /* Indigo 500 */
+    --accent-end: #8b5cf6;      /* Violet 500 */
+    --accent-solid: #6366f1;
+
+    /* Surfaces */
+    --surface-bg: #f8fafc;          /* Slate 50 */
+    --surface-card: #ffffff;
+    --surface-elevated: #ffffff;
+
+    /* Glass effect */
+    --glass-bg: rgba(255, 255, 255, 0.85);
+    --glass-border: rgba(255, 255, 255, 0.6);
+    --glass-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+
+    /* Text */
+    --text-primary: #1e293b;        /* Slate 800 */
+    --text-secondary: #64748b;      /* Slate 500 */
+    --text-muted: #94a3b8;          /* Slate 400 */
+
+    /* Header & footer */
+    --header-bg: var(--glass-bg);
+    --header-shadow: 0 1px 12px rgba(0, 0, 0, 0.08);
+    --footer-bg: var(--glass-bg);
+    --footer-shadow: 0 -1px 12px rgba(0, 0, 0, 0.06);
+
+    /* Cards */
+    --card-shadow: 0 2px 8px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+    --card-shadow-hover: 0 8px 24px rgba(0, 0, 0, 0.1), 0 2px 8px rgba(0, 0, 0, 0.06);
+    --card-border: rgba(0, 0, 0, 0.06);
+
+    /* Install banner */
+    --banner-bg: linear-gradient(135deg, #6366f1, #8b5cf6);
+    --banner-text: #ffffff;
+
+    /* Song components */
+    --lyric-chorus-bg: rgba(99, 102, 241, 0.06);
+    --lyric-chorus-border: #6366f1;
+
+    /* Numpad */
+    --numpad-btn-bg: #f1f5f9;
+    --numpad-btn-hover: #e2e8f0;
+    --numpad-btn-active: #cbd5e1;
+
+    /* Songbook icon colours */
+    --songbook-0: linear-gradient(135deg, #6366f1, #818cf8);
+    --songbook-1: linear-gradient(135deg, #ec4899, #f472b6);
+    --songbook-2: linear-gradient(135deg, #14b8a6, #2dd4bf);
+    --songbook-3: linear-gradient(135deg, #f59e0b, #fbbf24);
+    --songbook-4: linear-gradient(135deg, #ef4444, #f87171);
+}
+
+/* ---------------------------------------------------------------------------
+   DARK THEME
+   --------------------------------------------------------------------------- */
+[data-bs-theme="dark"] {
+    /* Primary accent gradient — brighter for dark background */
+    --accent-start: #818cf8;
+    --accent-end: #a78bfa;
+    --accent-solid: #818cf8;
+
+    /* Surfaces */
+    --surface-bg: #0f172a;          /* Slate 900 */
+    --surface-card: #1e293b;        /* Slate 800 */
+    --surface-elevated: #334155;    /* Slate 700 */
+
+    /* Glass effect */
+    --glass-bg: rgba(15, 23, 42, 0.88);
+    --glass-border: rgba(51, 65, 85, 0.5);
+    --glass-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+
+    /* Text */
+    --text-primary: #f1f5f9;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+
+    /* Header & footer */
+    --header-bg: var(--glass-bg);
+    --header-shadow: 0 1px 12px rgba(0, 0, 0, 0.3);
+    --footer-bg: var(--glass-bg);
+    --footer-shadow: 0 -1px 12px rgba(0, 0, 0, 0.25);
+
+    /* Cards */
+    --card-shadow: 0 2px 8px rgba(0, 0, 0, 0.2), 0 1px 2px rgba(0, 0, 0, 0.15);
+    --card-shadow-hover: 0 8px 24px rgba(0, 0, 0, 0.35), 0 2px 8px rgba(0, 0, 0, 0.2);
+    --card-border: rgba(255, 255, 255, 0.06);
+
+    /* Install banner */
+    --banner-bg: linear-gradient(135deg, #4f46e5, #7c3aed);
+    --banner-text: #ffffff;
+
+    /* Song components */
+    --lyric-chorus-bg: rgba(129, 140, 248, 0.1);
+    --lyric-chorus-border: #818cf8;
+
+    /* Numpad */
+    --numpad-btn-bg: #334155;
+    --numpad-btn-hover: #475569;
+    --numpad-btn-active: #64748b;
+
+    /* Songbook icon colours — more saturated for dark */
+    --songbook-0: linear-gradient(135deg, #818cf8, #a5b4fc);
+    --songbook-1: linear-gradient(135deg, #f472b6, #f9a8d4);
+    --songbook-2: linear-gradient(135deg, #2dd4bf, #5eead4);
+    --songbook-3: linear-gradient(135deg, #fbbf24, #fde68a);
+    --songbook-4: linear-gradient(135deg, #f87171, #fca5a5);
+}
+
+/* ---------------------------------------------------------------------------
+   HIGH CONTRAST THEME — Colour-blind friendly
+   Maximum readability: strong borders, distinct colours, no subtle gradients
+   --------------------------------------------------------------------------- */
+[data-ihymns-theme="high-contrast"] {
+    /* Override Bootstrap theme for high contrast */
+    --accent-start: #0000cc;
+    --accent-end: #0000cc;
+    --accent-solid: #0000cc;
+
+    --surface-bg: #ffffff;
+    --surface-card: #ffffff;
+    --surface-elevated: #ffffff;
+
+    --glass-bg: #ffffff;
+    --glass-border: #000000;
+    --glass-shadow: none;
+
+    --text-primary: #000000;
+    --text-secondary: #333333;
+    --text-muted: #555555;
+
+    --header-bg: #ffffff;
+    --header-shadow: 0 2px 0 #000000;
+    --footer-bg: #ffffff;
+    --footer-shadow: 0 -2px 0 #000000;
+
+    --card-shadow: none;
+    --card-shadow-hover: none;
+    --card-border: #000000;
+
+    --banner-bg: #0000cc;
+    --banner-text: #ffffff;
+
+    --lyric-chorus-bg: #ffffcc;
+    --lyric-chorus-border: #000000;
+
+    --numpad-btn-bg: #e0e0e0;
+    --numpad-btn-hover: #cccccc;
+    --numpad-btn-active: #999999;
+
+    --songbook-0: #0000cc;
+    --songbook-1: #cc0000;
+    --songbook-2: #006600;
+    --songbook-3: #cc6600;
+    --songbook-4: #660066;
+}
+
+/* High contrast overrides: thick borders and underlined links */
+[data-ihymns-theme="high-contrast"] .card {
+    border: 2px solid #000000 !important;
+    box-shadow: none !important;
+}
+
+[data-ihymns-theme="high-contrast"] a:not(.btn) {
+    text-decoration: underline !important;
+    text-underline-offset: 3px;
+}
+
+[data-ihymns-theme="high-contrast"] .btn {
+    border-width: 2px !important;
+    font-weight: 700 !important;
+}
+
+[data-ihymns-theme="high-contrast"] :focus-visible {
+    outline: 3px solid #000000 !important;
+    outline-offset: 2px !important;
+}
+
+[data-ihymns-theme="high-contrast"] .songbook-icon {
+    background: var(--songbook-0) !important;
+    border: 2px solid #000000;
+}
+
+[data-ihymns-theme="high-contrast"] .songbook-icon-1 { background: var(--songbook-1) !important; }
+[data-ihymns-theme="high-contrast"] .songbook-icon-2 { background: var(--songbook-2) !important; }
+[data-ihymns-theme="high-contrast"] .songbook-icon-3 { background: var(--songbook-3) !important; }
+[data-ihymns-theme="high-contrast"] .songbook-icon-4 { background: var(--songbook-4) !important; }
+
+/* ==========================================================================
+   2. BASE / RESET STYLES
+   ========================================================================== */
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+html {
+    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+}
+
+body {
+    background-color: var(--surface-bg);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+}
+
+/* Focus indicators — accessible and attractive */
+:focus-visible {
+    outline: 2px solid var(--accent-solid);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+}
+
+/* Selection colour */
+::selection {
+    background-color: rgba(99, 102, 241, 0.25);
+    color: inherit;
+}
+
+/* ==========================================================================
+   3. LAYOUT — Header, Footer, Main Content
+   ========================================================================== */
+
+/* ---------------------------------------------------------------------------
+   Fixed Top Header
+   --------------------------------------------------------------------------- */
+.app-header {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 1030;
+    background: var(--header-bg);
+    backdrop-filter: blur(16px) saturate(180%);
+    -webkit-backdrop-filter: blur(16px) saturate(180%);
+    box-shadow: var(--header-shadow);
+    border-bottom: 1px solid var(--card-border);
+}
+
+/* Account for install banner pushing header down */
+.pwa-install-banner:not(.d-none) ~ .app-header {
+    top: var(--install-banner-height);
+}
+
+.app-header .navbar {
+    min-height: var(--header-height);
+    padding: 0;
+}
+
+.app-header .navbar-brand {
+    color: var(--text-primary);
+    font-size: 1.15rem;
+    letter-spacing: -0.01em;
+    transition: opacity var(--transition-fast);
+}
+
+.app-header .navbar-brand:hover {
+    opacity: 0.8;
+    text-decoration: none;
+}
+
+/* Header icon buttons */
+.btn-header-icon {
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-md);
+    border: none;
+    background: transparent;
+    color: var(--text-primary);
+    transition: background-color var(--transition-fast), transform var(--transition-fast);
+}
+
+.btn-header-icon:hover {
+    background-color: rgba(99, 102, 241, 0.1);
+    color: var(--accent-solid);
+}
+
+.btn-header-icon:active {
+    transform: scale(0.92);
+}
+
+/* Collapsible search bar */
+.header-search-bar {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height var(--transition-slow), opacity var(--transition-normal);
+    opacity: 0;
+    background: var(--header-bg);
+    border-top: 1px solid var(--card-border);
+}
+
+.header-search-bar.open {
+    max-height: var(--search-bar-height);
+    opacity: 1;
+}
+
+/* ---------------------------------------------------------------------------
+   Main Content Area
+   Padding accounts for fixed header and footer heights
+   --------------------------------------------------------------------------- */
+.main-content {
+    padding-top: calc(var(--header-height) + 8px);
+    padding-bottom: calc(var(--footer-total-height) + 8px);
+    min-height: 100vh;
+}
+
+/* Adjust when install banner is visible */
+body.banner-visible .main-content {
+    padding-top: calc(var(--header-height) + var(--install-banner-height) + 8px);
+}
+
+/* Adjust when search bar is open */
+body.search-open .main-content {
+    padding-top: calc(var(--header-height) + var(--search-bar-height) + 8px);
+}
+
+body.banner-visible.search-open .main-content {
+    padding-top: calc(var(--header-height) + var(--install-banner-height) + var(--search-bar-height) + 8px);
+}
+
+/* Page loader spinner */
+.page-loader {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 50vh;
+}
+
+.page-loader .spinner-container {
+    text-align: center;
+}
+
+.page-loader.hidden {
+    display: none;
+}
+
+/* Page content transitions */
+.page-content {
+    transition: opacity var(--transition-normal), transform var(--transition-normal);
+}
+
+.page-content.page-entering {
+    opacity: 0;
+    transform: translateY(12px);
+}
+
+.page-content.page-visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.page-content.page-leaving {
+    opacity: 0;
+    transform: translateY(-8px);
+}
+
+/* ---------------------------------------------------------------------------
+   Fixed Bottom Footer
+   --------------------------------------------------------------------------- */
+.app-footer {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 1030;
+    background: var(--footer-bg);
+    backdrop-filter: blur(16px) saturate(180%);
+    -webkit-backdrop-filter: blur(16px) saturate(180%);
+    box-shadow: var(--footer-shadow);
+    border-top: 1px solid var(--card-border);
+}
+
+/* Footer navigation — app-style square buttons */
+.footer-nav {
+    height: var(--footer-nav-height);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-bottom: 1px solid var(--card-border);
+}
+
+.footer-nav-items {
+    display: flex;
+    width: 100%;
+    max-width: 500px;
+    justify-content: space-around;
+    padding: 0 8px;
+}
+
+.footer-nav-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    padding: 6px 12px;
+    border-radius: var(--radius-md);
+    text-decoration: none;
+    color: var(--text-muted);
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    transition: color var(--transition-fast), background-color var(--transition-fast),
+                transform var(--transition-fast);
+    min-width: 48px;
+    min-height: 44px;
+}
+
+.footer-nav-item i {
+    font-size: 1.15rem;
+    margin-bottom: 1px;
+}
+
+.footer-nav-item:hover {
+    color: var(--accent-solid);
+    background-color: rgba(99, 102, 241, 0.08);
+}
+
+.footer-nav-item:active {
+    transform: scale(0.92);
+}
+
+.footer-nav-item.active {
+    color: var(--accent-solid);
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.12), rgba(139, 92, 246, 0.08));
+}
+
+/* Footer info bar — copyright and version */
+.footer-info {
+    height: var(--footer-info-height);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    padding: 0 12px;
+}
+
+.footer-link {
+    color: var(--text-muted);
+    text-decoration: none;
+    transition: color var(--transition-fast);
+}
+
+.footer-link:hover {
+    color: var(--accent-solid);
+    text-decoration: underline;
+}
+
+/* ==========================================================================
+   4. COMPONENTS — Cards, Buttons, Badges, Lists
+   ========================================================================== */
+
+/* ---------------------------------------------------------------------------
+   PWA Install Banner
+   --------------------------------------------------------------------------- */
+.pwa-install-banner {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 1040;
+    background: var(--banner-bg);
+    color: var(--banner-text);
+    font-size: 0.85rem;
+    min-height: var(--install-banner-height);
+}
+
+.btn-install-app {
+    background: rgba(255, 255, 255, 0.2);
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: var(--radius-pill);
+    font-weight: 600;
+    font-size: 0.8rem;
+    transition: background var(--transition-fast);
+}
+
+.btn-install-app:hover {
+    background: rgba(255, 255, 255, 0.35);
+    color: #ffffff;
+}
+
+/* ---------------------------------------------------------------------------
+   Cards — Elevated with depth
+   --------------------------------------------------------------------------- */
+.card {
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-md);
+    box-shadow: var(--card-shadow);
+    background: var(--surface-card);
+    transition: box-shadow var(--transition-normal), transform var(--transition-normal),
+                border-color var(--transition-normal);
+}
+
+.card-songbook {
+    cursor: pointer;
+}
+
+.card-songbook:hover {
+    box-shadow: var(--card-shadow-hover);
+    transform: translateY(-2px);
+    border-color: var(--accent-solid);
+    color: inherit;
+}
+
+.card-songbook:active {
+    transform: translateY(0) scale(0.98);
+}
+
+.card-song-header {
+    background: var(--surface-card);
+    border-left: 4px solid var(--accent-solid);
+}
+
+.card-settings {
+    background: var(--surface-card);
+}
+
+/* ---------------------------------------------------------------------------
+   Songbook icon — Coloured circle with gradient
+   --------------------------------------------------------------------------- */
+.songbook-icon {
+    width: 48px;
+    height: 48px;
+    border-radius: var(--radius-md);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #ffffff;
+    font-size: 1.2rem;
+    background: var(--songbook-0);
+    box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+}
+
+.songbook-icon-0 { background: var(--songbook-0); box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3); }
+.songbook-icon-1 { background: var(--songbook-1); box-shadow: 0 2px 8px rgba(236, 72, 153, 0.3); }
+.songbook-icon-2 { background: var(--songbook-2); box-shadow: 0 2px 8px rgba(20, 184, 166, 0.3); }
+.songbook-icon-3 { background: var(--songbook-3); box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3); }
+.songbook-icon-4 { background: var(--songbook-4); box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3); }
+
+/* ---------------------------------------------------------------------------
+   Action card buttons (home page)
+   --------------------------------------------------------------------------- */
+.btn-action-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 1.25rem 0.75rem;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-md);
+    background: var(--surface-card);
+    color: var(--text-primary);
+    box-shadow: var(--card-shadow);
+    transition: box-shadow var(--transition-normal), transform var(--transition-normal),
+                border-color var(--transition-normal);
+    text-decoration: none;
+}
+
+.btn-action-card:hover {
+    box-shadow: var(--card-shadow-hover);
+    transform: translateY(-2px);
+    border-color: var(--accent-solid);
+    color: var(--accent-solid);
+}
+
+.btn-action-card:active {
+    transform: translateY(0) scale(0.97);
+}
+
+.btn-action-card i {
+    color: var(--accent-solid);
+}
+
+/* ---------------------------------------------------------------------------
+   Song list items
+   --------------------------------------------------------------------------- */
+.song-list-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    border-color: var(--card-border);
+    background: var(--surface-card);
+    transition: background-color var(--transition-fast), transform var(--transition-fast);
+}
+
+.song-list-item:hover {
+    background-color: rgba(99, 102, 241, 0.04);
+}
+
+.song-list-item:active {
+    transform: scale(0.99);
+}
+
+.song-number-badge {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 40px;
+    height: 36px;
+    padding: 0 8px;
+    border-radius: var(--radius-sm);
+    background: linear-gradient(135deg, var(--accent-start), var(--accent-end));
+    color: #ffffff;
+    font-weight: 700;
+    font-size: 0.85rem;
+    flex-shrink: 0;
+}
+
+.song-number-badge-lg {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 56px;
+    height: 48px;
+    padding: 0 12px;
+    border-radius: var(--radius-md);
+    background: linear-gradient(135deg, var(--accent-start), var(--accent-end));
+    color: #ffffff;
+    font-weight: 700;
+    font-size: 1.1rem;
+    flex-shrink: 0;
+    box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+}
+
+.song-title {
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.song-indicators {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   Hero section (home page)
+   --------------------------------------------------------------------------- */
+.hero-section {
+    padding: 2rem 1rem;
+    border-radius: var(--radius-lg);
+    background: linear-gradient(135deg,
+        rgba(99, 102, 241, 0.08),
+        rgba(139, 92, 246, 0.06),
+        rgba(236, 72, 153, 0.04)
+    );
+    border: 1px solid var(--card-border);
+}
+
+[data-bs-theme="dark"] .hero-section {
+    background: linear-gradient(135deg,
+        rgba(99, 102, 241, 0.12),
+        rgba(139, 92, 246, 0.08),
+        rgba(236, 72, 153, 0.06)
+    );
+}
+
+.hero-title {
+    font-size: 1.8rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    background: linear-gradient(135deg, var(--accent-start), var(--accent-end));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.hero-subtitle {
+    color: var(--text-secondary);
+    font-size: 1.05rem;
+    margin-bottom: 1rem;
+}
+
+/* ==========================================================================
+   5. PAGE-SPECIFIC STYLES
+   ========================================================================== */
+
+/* ---------------------------------------------------------------------------
+   Song Lyrics
+   --------------------------------------------------------------------------- */
+.song-lyrics {
+    font-size: var(--lyrics-font-size);
+    line-height: 1.7;
+}
+
+.lyric-component {
+    margin-bottom: 1.5rem;
+    padding-left: 1rem;
+    border-left: 3px solid transparent;
+}
+
+.lyric-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    margin-bottom: 0.25rem;
+}
+
+.lyric-line {
+    margin-bottom: 0.15rem;
+}
+
+/* Verse styling */
+.lyric-verse {
+    border-left-color: var(--card-border);
+}
+
+/* Chorus styling — highlighted */
+.lyric-chorus,
+.lyric-refrain {
+    background-color: var(--lyric-chorus-bg);
+    border-left-color: var(--lyric-chorus-border);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    padding: 0.75rem 1rem;
+}
+
+/* Bridge styling */
+.lyric-bridge,
+.lyric-pre-chorus {
+    border-left-color: var(--accent-end);
+    font-style: italic;
+}
+
+/* Song copyright */
+.song-copyright {
+    font-size: 0.85rem;
+}
+
+/* ---------------------------------------------------------------------------
+   Numeric Keypad
+   --------------------------------------------------------------------------- */
+.numpad-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+}
+
+.numpad-grid-page {
+    max-width: 320px;
+    margin: 0 auto;
+}
+
+.btn-numpad {
+    aspect-ratio: 1.4;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.4rem;
+    font-weight: 600;
+    border-radius: var(--radius-md);
+    background: var(--numpad-btn-bg);
+    color: var(--text-primary);
+    border: 1px solid var(--card-border);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06);
+    transition: background var(--transition-fast), transform var(--transition-fast),
+                box-shadow var(--transition-fast);
+}
+
+.btn-numpad:hover {
+    background: var(--numpad-btn-hover);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+.btn-numpad:active {
+    background: var(--numpad-btn-active);
+    transform: scale(0.95);
+    box-shadow: none;
+}
+
+.btn-numpad-action {
+    background: #fee2e2;
+    color: #dc2626;
+}
+
+[data-bs-theme="dark"] .btn-numpad-action {
+    background: rgba(239, 68, 68, 0.2);
+    color: #fca5a5;
+}
+
+.btn-numpad-go {
+    background: linear-gradient(135deg, var(--accent-start), var(--accent-end));
+    color: #ffffff;
+    border-color: transparent;
+}
+
+.btn-numpad-go:hover {
+    opacity: 0.9;
+    color: #ffffff;
+}
+
+.numpad-input {
+    font-size: 1.8rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    border: 2px solid var(--card-border);
+    border-radius: var(--radius-md);
+}
+
+.numpad-results .list-group-item {
+    cursor: pointer;
+    transition: background-color var(--transition-fast);
+}
+
+.numpad-results .list-group-item:hover {
+    background-color: rgba(99, 102, 241, 0.06);
+}
+
+/* ---------------------------------------------------------------------------
+   Shuffle modal button
+   --------------------------------------------------------------------------- */
+.btn-shuffle-option {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-md);
+    background: var(--surface-card);
+    color: var(--text-primary);
+    transition: all var(--transition-fast);
+    text-align: left;
+}
+
+.btn-shuffle-option:hover {
+    border-color: var(--accent-solid);
+    background: rgba(99, 102, 241, 0.04);
+    color: var(--accent-solid);
+}
+
+/* ---------------------------------------------------------------------------
+   Theme option buttons (settings page)
+   --------------------------------------------------------------------------- */
+.btn-theme-option {
+    padding: 0.5rem 1rem;
+    border: 2px solid var(--card-border);
+    border-radius: var(--radius-md);
+    background: var(--surface-card);
+    color: var(--text-primary);
+    font-weight: 500;
+    transition: all var(--transition-fast);
+}
+
+.btn-theme-option:hover {
+    border-color: var(--accent-solid);
+    color: var(--accent-solid);
+}
+
+.btn-theme-option[aria-pressed="true"],
+.btn-theme-option.active {
+    background: linear-gradient(135deg, var(--accent-start), var(--accent-end));
+    color: #ffffff;
+    border-color: transparent;
+}
+
+/* ---------------------------------------------------------------------------
+   Search results
+   --------------------------------------------------------------------------- */
+.search-results .list-group-item {
+    border-color: var(--card-border);
+}
+
+/* ---------------------------------------------------------------------------
+   Accordion (help page)
+   --------------------------------------------------------------------------- */
+.accordion-help .accordion-button {
+    font-weight: 600;
+}
+
+.accordion-help .accordion-button:focus {
+    box-shadow: 0 0 0 2px var(--accent-solid);
+}
+
+/* ---------------------------------------------------------------------------
+   About list (settings page)
+   --------------------------------------------------------------------------- */
+.about-list dt {
+    color: var(--text-secondary);
+}
+
+/* ---------------------------------------------------------------------------
+   Favourite button states
+   --------------------------------------------------------------------------- */
+.btn-favourite[aria-pressed="true"] {
+    background-color: #dc2626;
+    border-color: #dc2626;
+    color: #ffffff;
+}
+
+.btn-favourite[aria-pressed="true"] i {
+    font-weight: 900;
+}
+
+/* ==========================================================================
+   6. ANIMATIONS & TRANSITIONS
+   ========================================================================== */
+
+/* Page transition keyframes */
+@keyframes fadeInUp {
+    from {
+        opacity: 0;
+        transform: translateY(16px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes fadeOutUp {
+    from {
+        opacity: 1;
+        transform: translateY(0);
+    }
+    to {
+        opacity: 0;
+        transform: translateY(-8px);
+    }
+}
+
+/* Spinner pulse */
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+/* Reduced transparency mode */
+body.reduce-transparency .app-header,
+body.reduce-transparency .app-footer {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: var(--surface-card);
+}
+
+body.reduce-transparency .pwa-install-banner {
+    background: var(--accent-solid);
+}
+
+/* ==========================================================================
+   7. UTILITY CLASSES
+   ========================================================================== */
+
+/* Gradient text */
+.text-gradient {
+    background: linear-gradient(135deg, var(--accent-start), var(--accent-end));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+/* ==========================================================================
+   8. RESPONSIVE BREAKPOINTS
+   ========================================================================== */
+
+/* Small screens (phones) */
+@media (max-width: 575.98px) {
+    .hero-title {
+        font-size: 1.4rem;
+    }
+
+    .hero-subtitle {
+        font-size: 0.95rem;
+    }
+
+    .songbook-icon {
+        width: 40px;
+        height: 40px;
+        font-size: 1rem;
+    }
+
+    .footer-nav-item {
+        padding: 4px 8px;
+        font-size: 0.6rem;
+    }
+
+    .footer-nav-item i {
+        font-size: 1rem;
+    }
+
+    .song-number-badge-lg {
+        min-width: 48px;
+        height: 40px;
+        font-size: 1rem;
+    }
+
+    .numpad-grid {
+        gap: 6px;
+    }
+
+    .btn-numpad {
+        font-size: 1.2rem;
+    }
+}
+
+/* Medium screens and up */
+@media (min-width: 768px) {
+    .page-content {
+        max-width: 960px;
+        margin: 0 auto;
+    }
+}
+
+/* Large screens */
+@media (min-width: 1200px) {
+    .page-content {
+        max-width: 1140px;
+    }
+}
+
+/* ==========================================================================
+   9. REDUCED MOTION — Accessibility override
+   Respects OS-level and app-level motion preferences.
+   Disables all animations and transitions for users who need it.
+   ========================================================================== */
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* App-level reduced motion (toggled via settings, disabled by default) */
+body.reduce-motion *,
+body.reduce-motion *::before,
+body.reduce-motion *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+}
+
+body.reduce-motion .page-content {
+    transition: none !important;
+}
+
+body.reduce-motion .page-content.page-entering,
+body.reduce-motion .page-content.page-leaving {
+    transform: none !important;
+}
