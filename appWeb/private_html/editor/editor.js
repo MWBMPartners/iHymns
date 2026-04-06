@@ -31,7 +31,8 @@ var songData = {
  * on whether the editor is served locally or deployed to a server.
  */
 var SONGS_URL_CANDIDATES = [
-    '../../data/songs.json',                  /* Deployed server: shared data/ is one up from private_html/ */
+    '../data/songs.json',                     /* Deployed server: data/ inside private_html/ */
+    '../../data/songs.json',                  /* Alternative: data/ one up from private_html/ */
     '../../../data/songs.json',               /* Local dev: relative to appWeb/private_html/editor/ → appWeb/data/ */
     '../../../../data/songs.json',            /* Local dev: relative to editor/ → project root data/ */
     'data/songs.json'                         /* Fallback: same directory */

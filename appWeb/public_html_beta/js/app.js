@@ -84,13 +84,12 @@ const appState = {
  */
 async function loadSongData() {
     /* Define possible paths where songs.json might be found.
-       On the server, it lives at ../data/songs.json (one directory up from
-       public_html/). In local dev, the predev script copies it to data/. */
+       On the server, it lives at data/songs.json inside the deployed directory
+       (copied there during CI/CD deployment). Same data across all environments. */
     const possiblePaths = [
-        '../data/songs.json',
         'data/songs.json',
-        '../../data/songs.json',
-        '../../../data/songs.json'
+        '../data/songs.json',
+        '../../data/songs.json'
     ];
 
     /* Try each path until one succeeds */
