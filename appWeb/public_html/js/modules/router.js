@@ -851,31 +851,71 @@ export class Router {
     }
 
     /**
-     * Render recent songbook tabs on the home page.
-     * Shows pill-style tabs for quick navigation.
+     * Render recent song quick-access badges on the home page (#162).
+     * Shows compact song number badges for the most recently viewed songs,
+     * colour-coded by songbook. Falls back to recent songbooks if no
+     * song history is available.
      */
     renderRecentSongbooks() {
         const container = document.getElementById('recent-songbooks');
         if (!container) return;
 
-        let recent = [];
-        try { recent = JSON.parse(localStorage.getItem(STORAGE_RECENT_SONGBOOKS)) || []; } catch {}
+        /* Try to read recent song history first (#162) */
+        let history = [];
+        try { history = JSON.parse(localStorage.getItem(STORAGE_HISTORY)) || []; } catch {}
 
-        /* Only show if user has visited 2+ songbooks */
-        if (recent.length < 2) return;
+        if (history.length < 2) {
+            /* Fall back to recent songbooks if insufficient song history */
+            let recent = [];
+            try { recent = JSON.parse(localStorage.getItem(STORAGE_RECENT_SONGBOOKS)) || []; } catch {}
+            if (recent.length < 2) return;
 
-        const songbooks = this.config.songbooks || [];
+            const songbooks = this.config.songbooks || [];
+            const tabs = recent.map(id => {
+                const sb = songbooks.find(b => b.id === id);
+                const name = sb?.name || id;
+                return `<a href="/songbook/${escapeHtml(id)}"
+                           class="btn btn-sm btn-outline-secondary rounded-pill"
+                           data-navigate="songbook"
+                           data-songbook-id="${escapeHtml(id)}"
+                           aria-label="${escapeHtml(name)}">
+                            <span class="songbook-icon songbook-icon-${escapeHtml(id)} me-1"></span>
+                            ${escapeHtml(id)}
+                        </a>`;
+            }).join('');
 
-        const tabs = recent.map(id => {
-            const sb = songbooks.find(b => b.id === id);
-            const name = sb?.name || id;
-            return `<a href="/songbook/${escapeHtml(id)}"
-                       class="btn btn-sm btn-outline-secondary rounded-pill"
-                       data-navigate="songbook"
-                       data-songbook-id="${escapeHtml(id)}"
-                       aria-label="${escapeHtml(name)}">
-                        <span class="songbook-icon songbook-icon-${escapeHtml(id)} me-1"></span>
-                        ${escapeHtml(id)}
+            container.innerHTML = `
+                <div class="d-flex align-items-center gap-2 mb-1">
+                    <small class="text-muted fw-semibold">
+                        <i class="fa-solid fa-clock-rotate-left me-1" aria-hidden="true"></i>
+                        Recent
+                    </small>
+                </div>
+                <div class="d-flex flex-wrap gap-2">${tabs}</div>
+            `;
+            container.classList.remove('d-none');
+            return;
+        }
+
+        /* Show recent songs with song number badges */
+        const recentSongs = history.slice(0, 8);
+        const badges = recentSongs.map(h => {
+            const songbook = escapeHtml(h.songbook || '');
+            const num = h.number || '?';
+            const title = escapeHtml(h.title || '');
+            return `<a href="/song/${escapeHtml(h.id)}"
+                       class="text-decoration-none text-center"
+                       data-navigate="song"
+                       data-song-id="${escapeHtml(h.id)}"
+                       title="${title} — ${songbook} #${num}"
+                       aria-label="${title}, ${songbook} number ${num}"
+                       style="min-width: 52px;">
+                        <span class="song-number-badge d-flex align-items-center justify-content-center mx-auto"
+                              data-songbook="${songbook}"
+                              style="width: 42px; height: 42px; border-radius: 10px; font-size: 0.85rem; font-weight: 600;">
+                            ${num}
+                        </span>
+                        <small class="text-muted d-block mt-1" style="font-size: 0.65rem;">${songbook}</small>
                     </a>`;
         }).join('');
 
@@ -886,8 +926,11 @@ export class Router {
                     Recent
                 </small>
             </div>
-            <div class="d-flex flex-wrap gap-2">${tabs}</div>
+            <div class="d-flex flex-wrap gap-2">${badges}</div>
         `;
         container.classList.remove('d-none');
+
+        /* Fix badge text contrast for recently rendered badges */
+        this.fixBadgeContrast();
     }
 }
