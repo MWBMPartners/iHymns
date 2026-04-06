@@ -376,38 +376,60 @@ if (!empty($breadcrumbItems)) {
          DNT is respected: IP anonymisation is enforced when DNT=1.
          ================================================================ -->
     <?php if (!empty(APP_CONFIG['analytics']['google_analytics_id'])): ?>
-    <!-- Google Analytics 4 (GA4) -->
-    <script async src="https://www.googletagmanager.com/gtag/js?id=<?= htmlspecialchars(APP_CONFIG['analytics']['google_analytics_id']) ?>"></script>
+    <!-- Google Analytics 4 (GA4) — deferred until consent is granted -->
     <script nonce="<?= $cspNonce ?>">
-        window.dataLayer = window.dataLayer || [];
-        function gtag(){dataLayer.push(arguments);}
-        gtag('js', new Date());
-        gtag('config', <?= json_encode(APP_CONFIG['analytics']['google_analytics_id']) ?>, {
-            /* Anonymise IP when DNT is active */
-            <?php if (USER_DNT): ?>
-            'anonymize_ip': true,
-            'storage': 'none',
-            'client_storage': 'none',
-            <?php endif; ?>
-            'send_page_view': true
-        });
+        /**
+         * GA4 loader — only fires when analytics consent is 'granted'.
+         * When DNT is active the server never renders the consent banner
+         * and this block still loads but with privacy-safe defaults.
+         */
+        (function() {
+            var consent = localStorage.getItem('ihymns_analytics_consent');
+            var dnt = <?= json_encode(USER_DNT) ?>;
+            /* Load if: consent granted, OR DNT active (privacy mode), OR no consent banner needed (Plausible-only handled server-side) */
+            if (consent === 'granted' || dnt) {
+                var s = document.createElement('script');
+                s.async = true;
+                s.src = 'https://www.googletagmanager.com/gtag/js?id=' + <?= json_encode(APP_CONFIG['analytics']['google_analytics_id']) ?>;
+                document.head.appendChild(s);
+
+                window.dataLayer = window.dataLayer || [];
+                function gtag(){dataLayer.push(arguments);}
+                window.gtag = gtag;
+                gtag('js', new Date());
+                gtag('config', <?= json_encode(APP_CONFIG['analytics']['google_analytics_id']) ?>, {
+                    <?php if (USER_DNT): ?>
+                    'anonymize_ip': true,
+                    'storage': 'none',
+                    'client_storage': 'none',
+                    <?php endif; ?>
+                    'send_page_view': true
+                });
+            }
+        })();
     </script>
     <?php endif; ?>
 
     <?php if (!empty(APP_CONFIG['analytics']['plausible_domain'])): ?>
-    <!-- Plausible Analytics (privacy-focused, no cookies) -->
+    <!-- Plausible Analytics (privacy-focused, no cookies — always loads) -->
     <script defer data-domain="<?= htmlspecialchars(APP_CONFIG['analytics']['plausible_domain']) ?>"
             src="https://plausible.io/js/script.js"></script>
     <?php endif; ?>
 
     <?php if (!empty(APP_CONFIG['analytics']['clarity_id'])): ?>
-    <!-- Microsoft Clarity -->
+    <!-- Microsoft Clarity — deferred until consent is granted -->
     <script nonce="<?= $cspNonce ?>">
-        (function(c,l,a,r,i,t,y){
-            c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
-            t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
-            y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
-        })(window,document,"clarity","script",<?= json_encode(APP_CONFIG['analytics']['clarity_id']) ?>);
+        (function() {
+            var consent = localStorage.getItem('ihymns_analytics_consent');
+            var dnt = <?= json_encode(USER_DNT) ?>;
+            if (consent === 'granted' || dnt) {
+                (function(c,l,a,r,i,t,y){
+                    c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+                    t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+                    y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+                })(window,document,"clarity","script",<?= json_encode(APP_CONFIG['analytics']['clarity_id']) ?>);
+            }
+        })();
     </script>
     <?php endif; ?>
 
@@ -1030,6 +1052,11 @@ if (!empty($breadcrumbItems)) {
             initialPath:    <?= json_encode($requestPath) ?>,
             songbooks:      <?= json_encode($songData->getSongbooks()) ?>,
             storageBridgeUrl: 'https://sync.ihymns.app/bridge.html',
+            analytics: {
+                hasGa4:       <?= json_encode(!empty(APP_CONFIG['analytics']['google_analytics_id'])) ?>,
+                hasClarity:   <?= json_encode(!empty(APP_CONFIG['analytics']['clarity_id'])) ?>,
+                hasPlausible: <?= json_encode(!empty(APP_CONFIG['analytics']['plausible_domain'])) ?>,
+            },
         };
     </script>
 
