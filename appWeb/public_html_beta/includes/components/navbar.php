@@ -20,7 +20,7 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=../../"></head><body>Redirecting to <a href="../../">iHymns</a>...</body></html>');
 }
 ?>
-    <nav class="navbar navbar-expand-lg sticky-top shadow-sm" id="main-navbar" role="banner">
+    <nav class="navbar navbar-expand-lg shadow-sm" id="main-navbar" role="banner">
         <div class="container-fluid">
 
             <!-- App brand/logo: clicking returns to the home/songbooks view -->

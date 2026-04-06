@@ -218,18 +218,37 @@ body {
     transition: background-color var(--ihymns-transition), color var(--ihymns-transition);
 }
 
-/* The main content area should expand to fill available space (pushes footer down) */
+/* The main content area: fills space between fixed header and footer */
 #app-content {
     flex: 1;
+    /* Add padding to account for fixed header and footer heights */
+    padding-top: 70px;
+    padding-bottom: 50px;
+    overflow-y: auto;
 }
 
 /* =========================================================================
  * NAVBAR STYLES
  * ========================================================================= */
 
-/* The main navigation bar: solid colour, clean and professional */
+/* The main navigation bar: fixed at the top, always visible */
 #main-navbar {
     background-color: var(--ihymns-navbar-bg) !important;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 1030;
+}
+
+/* The footer: fixed at the bottom, always visible */
+#app-footer {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 1020;
+    background-color: var(--ihymns-bg);
 }
 
 /* Navbar brand text: white, bold, with hover effect */
