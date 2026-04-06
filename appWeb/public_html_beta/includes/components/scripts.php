@@ -30,28 +30,5 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     <!-- PDF.js 4.9: PDF rendering for sheet music viewer -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf.min.mjs" type="module"></script>
 
-    <!-- Unregister any existing service worker to prevent stale cache issues -->
-    <!-- This runs BEFORE the app JS to ensure a clean slate -->
-    <script>
-    if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.getRegistrations().then(function(registrations) {
-            registrations.forEach(function(registration) {
-                registration.unregister().then(function() {
-                    console.log('[iHymns] Service worker unregistered for beta');
-                });
-            });
-        });
-        /* Also clear all caches to remove poisoned entries */
-        if ('caches' in window) {
-            caches.keys().then(function(names) {
-                names.forEach(function(name) {
-                    caches.delete(name);
-                    console.log('[iHymns] Cache deleted:', name);
-                });
-            });
-        }
-    }
-    </script>
-
     <!-- iHymns application entry point (ES module) -->
     <script type="module" src="js/app.js"></script>

@@ -534,11 +534,9 @@ async function init() {
     /* Listen for hash changes (e.g., user clicks back/forward or a link) */
     window.addEventListener('hashchange', handleRoute);
 
-    /* --- Step 8: Service worker --- */
-    /* Service worker registration disabled for beta to prevent cache issues.
-       The scripts.php component actively unregisters any existing SW.
-       Re-enable for production builds. */
-    // registerServiceWorker();
+    /* --- Step 8: Register service worker --- */
+    /* Register the PWA service worker for offline support */
+    registerServiceWorker();
 
     /* --- Step 9: Initialise PWA install banner --- */
     /* Set up the install prompt for users who haven't installed the PWA */
