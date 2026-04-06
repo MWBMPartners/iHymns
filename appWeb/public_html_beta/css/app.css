@@ -1469,7 +1469,7 @@ body.reduce-motion .quick-jump-picker {
 .compare-overlay {
     position: fixed;
     inset: 0;
-    z-index: 1080;
+    z-index: 1075;
     background: var(--bs-body-bg, #fff);
     color: var(--bs-body-color, #000);
     display: flex;
@@ -1695,7 +1695,7 @@ body.reduce-motion .shortcuts-overlay {
 
 /* Songbook-specific accent colours */
 .reading-progress-bar[data-songbook="CP"] { background: var(--songbook-CP, #6366f1); }
-.reading-progress-bar[data-songbook="JP"] { background: var(--songbook-JP, #10b981); }
+.reading-progress-bar[data-songbook="JP"] { background: var(--songbook-JP, #ec4899); }
 .reading-progress-bar[data-songbook="MP"] { background: var(--songbook-MP, #f59e0b); }
 .reading-progress-bar[data-songbook="SDAH"] { background: var(--songbook-SDAH, #ef4444); }
 .reading-progress-bar[data-songbook="CH"] { background: var(--songbook-CH, #8b5cf6); }

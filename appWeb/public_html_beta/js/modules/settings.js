@@ -301,13 +301,18 @@ export class Settings {
      * Export favourites and set lists as a JSON file download.
      */
     exportUserData() {
+        const safeParse = (key) => {
+            try { return JSON.parse(localStorage.getItem(key) || '[]'); }
+            catch { return []; }
+        };
+
         const data = {
             version: 1,
             exportedAt: new Date().toISOString(),
             app: 'iHymns',
-            favorites: JSON.parse(localStorage.getItem('ihymns_favorites') || '[]'),
-            setlists: JSON.parse(localStorage.getItem('ihymns_setlists') || '[]'),
-            history: JSON.parse(localStorage.getItem('ihymns_history') || '[]'),
+            favorites: safeParse('ihymns_favorites'),
+            setlists: safeParse('ihymns_setlists'),
+            history: safeParse('ihymns_history'),
         };
 
         const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });

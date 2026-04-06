@@ -298,8 +298,8 @@ self.addEventListener('message', (event) => {
                         await Promise.all(toDelete.map(k => cache.delete(k)));
                     }
                 }
-            } catch {
-                /* Ignore network errors — song may already be cached */
+            } catch (error) {
+                console.warn('[SW] Failed to cache song:', event.data.url, error.message);
             }
         });
     }

@@ -100,7 +100,7 @@ export class SearchHistory {
         html += '<div class="d-flex flex-wrap gap-1">';
 
         history.forEach(query => {
-            html += `<span class="badge bg-body-secondary search-history-chip" role="button" tabindex="0" aria-label="Search for ${this.escapeHtml(query)}">
+            html += `<span class="badge bg-body-secondary search-history-chip" role="button" tabindex="0" data-query="${this.escapeHtml(query)}" aria-label="Search for ${this.escapeHtml(query)}">
                 <i class="fa-solid fa-clock-rotate-left me-1 opacity-50" aria-hidden="true"></i>
                 ${this.escapeHtml(query)}
                 <button type="button" class="btn-close btn-close-sm ms-1 search-history-remove" data-query="${this.escapeHtml(query)}" aria-label="Remove"></button>
@@ -114,10 +114,8 @@ export class SearchHistory {
         container.querySelectorAll('.search-history-chip').forEach(chip => {
             chip.addEventListener('click', (e) => {
                 if (e.target.closest('.search-history-remove')) return;
-                const text = chip.textContent.trim();
-                /* Get the actual query from the chip (skip the icon text) */
-                const query = chip.textContent.replace(/\s*×?\s*$/, '').trim();
-                if (onSelect) onSelect(query);
+                const query = chip.dataset.query;
+                if (query && onSelect) onSelect(query);
             });
 
             chip.addEventListener('keydown', (e) => {

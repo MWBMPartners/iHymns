@@ -199,19 +199,20 @@ export class Compare {
         overlay.querySelector('#compare-close-btn')?.addEventListener('click', () => this.closeComparison());
 
         /* Escape to close */
-        const escHandler = (e) => {
-            if (e.key === 'Escape') {
-                this.closeComparison();
-                document.removeEventListener('keydown', escHandler);
-            }
+        this._escHandler = (e) => {
+            if (e.key === 'Escape') this.closeComparison();
         };
-        document.addEventListener('keydown', escHandler);
+        document.addEventListener('keydown', this._escHandler);
     }
 
     /** Close the comparison overlay */
     closeComparison() {
         document.body.classList.remove('compare-active');
         document.getElementById('compare-overlay')?.remove();
+        if (this._escHandler) {
+            document.removeEventListener('keydown', this._escHandler);
+            this._escHandler = null;
+        }
     }
 
     /**
