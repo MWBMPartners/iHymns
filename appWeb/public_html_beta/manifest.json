@@ -1,5 +1,8 @@
 {
-  "background_color": "#fafafa",
+  "id": "ltd.mwbmpartners.ihymns.pwa",
+  "name": "iHymns — Christian Lyrics for Worship",
+  "short_name": "iHymns",
+  "description": "Search thousands of hymns and worship songs from multiple songbooks. Browse 6 songbooks with over 3,600 songs, full-text search, favourites, dark mode, and offline support.",
   "categories": [
     "books",
     "education",
@@ -7,7 +10,7 @@
     "lifestyle",
     "music"
   ],
-  "description": "Search thousands of hymns and worship songs from multiple songbooks. Browse 6 songbooks with over 3,600 songs, full-text search, favourites, dark mode, and offline support.",
+  "background_color": "#fafafa",
   "dir": "ltr",
   "display": "standalone",
   "display_override": [
@@ -92,12 +95,10 @@
       "type": "image/png"
     }
   ],
-  "id": "ltd.mwbmpartners.ihymns.pwa",
   "lang": "en",
   "launch_handler": {
     "client_mode": "navigate-existing"
   },
-  "name": "iHymns — Christian Lyrics for Worship",
   "orientation": "any",
   "prefer_related_applications": false,
   "protocol_handlers": [
@@ -165,7 +166,6 @@
       "url": "url"
     }
   },
-  "short_name": "iHymns",
   "shortcuts": [
     {
       "description": "Search for a hymn by title, lyrics, or number",
