@@ -408,6 +408,41 @@ export class Router {
         if (page === 'stats') {
             this.populateStats();
         }
+
+        /* Auto-fix badge text contrast for all songbook badges (#152) */
+        this.fixBadgeContrast();
+    }
+
+    /**
+     * Automatically set badge text colour (dark/light) based on the
+     * computed background luminance.  Uses WCAG relative-luminance
+     * formula so any future songbook colour is handled automatically.
+     */
+    fixBadgeContrast() {
+        const badges = document.querySelectorAll(
+            '.song-number-badge, .song-number-badge-lg, .songbook-icon'
+        );
+        if (!badges.length) return;
+
+        badges.forEach(badge => {
+            const bg = getComputedStyle(badge).backgroundColor;
+            if (!bg || bg === 'transparent' || bg === 'rgba(0, 0, 0, 0)') return;
+
+            /* Parse rgb(r, g, b) or rgba(r, g, b, a) */
+            const m = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+            if (!m) return;
+
+            const r = parseInt(m[1], 10) / 255;
+            const g = parseInt(m[2], 10) / 255;
+            const b = parseInt(m[3], 10) / 255;
+
+            /* sRGB → linear */
+            const toLinear = c => c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+            const L = 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
+
+            /* Light backgrounds (L > 0.4) get dark text; dark backgrounds get white */
+            badge.style.color = L > 0.4 ? '#1a1a1a' : '#ffffff';
+        });
     }
 
     /**

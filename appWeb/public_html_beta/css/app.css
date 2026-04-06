@@ -721,7 +721,7 @@ body.banner-visible.search-open .main-content {
 .songbook-icon-CP   { background: var(--songbook-CP);   box-shadow: 0 2px 8px rgba(var(--songbook-CP-shadow), 0.3); }
 .songbook-icon-JP   { background: var(--songbook-JP);   box-shadow: 0 2px 8px rgba(var(--songbook-JP-shadow), 0.3); }
 .songbook-icon-MP   { background: var(--songbook-MP);   box-shadow: 0 2px 8px rgba(var(--songbook-MP-shadow), 0.3); }
-.songbook-icon-SDAH { background: var(--songbook-SDAH); box-shadow: 0 2px 8px rgba(var(--songbook-SDAH-shadow), 0.3); color: #1a1a1a; }
+.songbook-icon-SDAH { background: var(--songbook-SDAH); box-shadow: 0 2px 8px rgba(var(--songbook-SDAH-shadow), 0.3); }
 .songbook-icon-CH   { background: var(--songbook-CH);   box-shadow: 0 2px 8px rgba(var(--songbook-CH-shadow), 0.3); }
 .songbook-icon-Misc { background: var(--songbook-Misc); box-shadow: 0 2px 8px rgba(var(--songbook-Misc-shadow), 0.3); }
 
@@ -799,7 +799,7 @@ body.banner-visible.search-open .main-content {
 .song-number-badge[data-songbook="CP"]   { background: var(--songbook-CP); }
 .song-number-badge[data-songbook="JP"]   { background: var(--songbook-JP); }
 .song-number-badge[data-songbook="MP"]   { background: var(--songbook-MP); }
-.song-number-badge[data-songbook="SDAH"] { background: var(--songbook-SDAH); color: #1a1a1a; }
+.song-number-badge[data-songbook="SDAH"] { background: var(--songbook-SDAH); }
 .song-number-badge[data-songbook="CH"]   { background: var(--songbook-CH); }
 .song-number-badge[data-songbook="Misc"] { background: var(--songbook-Misc); }
 
@@ -823,7 +823,7 @@ body.banner-visible.search-open .main-content {
 .song-number-badge-lg[data-songbook="CP"]   { background: var(--songbook-CP);   box-shadow: 0 2px 8px rgba(var(--songbook-CP-shadow), 0.3); }
 .song-number-badge-lg[data-songbook="JP"]   { background: var(--songbook-JP);   box-shadow: 0 2px 8px rgba(var(--songbook-JP-shadow), 0.3); }
 .song-number-badge-lg[data-songbook="MP"]   { background: var(--songbook-MP);   box-shadow: 0 2px 8px rgba(var(--songbook-MP-shadow), 0.3); }
-.song-number-badge-lg[data-songbook="SDAH"] { background: var(--songbook-SDAH); box-shadow: 0 2px 8px rgba(var(--songbook-SDAH-shadow), 0.3); color: #1a1a1a; }
+.song-number-badge-lg[data-songbook="SDAH"] { background: var(--songbook-SDAH); box-shadow: 0 2px 8px rgba(var(--songbook-SDAH-shadow), 0.3); }
 .song-number-badge-lg[data-songbook="CH"]   { background: var(--songbook-CH);   box-shadow: 0 2px 8px rgba(var(--songbook-CH-shadow), 0.3); }
 .song-number-badge-lg[data-songbook="Misc"] { background: var(--songbook-Misc); box-shadow: 0 2px 8px rgba(var(--songbook-Misc-shadow), 0.3); }
 

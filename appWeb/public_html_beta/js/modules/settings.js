@@ -116,6 +116,9 @@ export class Settings {
         document.querySelectorAll('meta[name="theme-color"]').forEach(meta => {
             meta.setAttribute('content', themeColor);
         });
+
+        /* Re-evaluate badge text contrast after theme change (#152) */
+        requestAnimationFrame(() => this.app.router?.fixBadgeContrast());
     }
 
     /**
