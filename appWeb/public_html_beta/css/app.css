@@ -896,6 +896,16 @@ body.banner-visible.search-open .main-content {
     font-style: italic;
 }
 
+/* Lyrics content protection — prevent copying */
+.song-lyrics,
+.presentation-lyrics {
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+}
+
 /* Song copyright */
 .song-copyright {
     font-size: 0.85rem;
