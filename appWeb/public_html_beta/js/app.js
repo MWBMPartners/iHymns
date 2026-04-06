@@ -38,6 +38,7 @@ import { ReadingProgress } from './modules/reading-progress.js';
 import { SongbookIndex } from './modules/songbook-index.js';
 import { SearchHistory } from './modules/search-history.js';
 import { SongOfTheDay } from './modules/song-of-the-day.js';
+import { OfflineIndicator } from './modules/offline-indicator.js';
 
 /**
  * iHymnsApp — Main application class
@@ -114,6 +115,9 @@ class iHymnsApp {
 
         /** @type {SongOfTheDay} Song of the Day (#108) */
         this.songOfTheDay = null;
+
+        /** @type {OfflineIndicator} Offline status indicator (#112) */
+        this.offlineIndicator = null;
     }
 
     /**
@@ -210,6 +214,10 @@ class iHymnsApp {
             /* Song of the Day (#108) */
             this.songOfTheDay = new SongOfTheDay(this);
             this.songOfTheDay.init();
+
+            /* Offline status indicator (#112) */
+            this.offlineIndicator = new OfflineIndicator(this);
+            this.offlineIndicator.init();
 
             /* --- Set up global event listeners --- */
             this.bindGlobalEvents();

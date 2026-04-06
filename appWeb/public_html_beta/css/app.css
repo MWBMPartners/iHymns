@@ -1835,3 +1835,47 @@ body.reduce-motion .song-list-item.alphabet-highlight {
 .card-song-of-the-day .card-title:hover {
     color: var(--bs-primary, #6366f1);
 }
+
+/* ==========================================================================
+   OFFLINE STATUS INDICATOR (#112)
+   ========================================================================== */
+
+.offline-banner {
+    position: sticky;
+    top: var(--header-height, 56px);
+    z-index: 1030;
+    text-align: center;
+    font-size: 0.85rem;
+    padding: 0.4rem 1rem;
+    transition: opacity 0.3s ease, max-height 0.3s ease;
+    max-height: 3rem;
+    overflow: hidden;
+}
+
+.offline-banner-hidden {
+    opacity: 0;
+    max-height: 0;
+    padding: 0;
+}
+
+.offline-banner-offline {
+    background: var(--bs-warning-bg-subtle, #fff3cd);
+    color: var(--bs-warning-text-emphasis, #664d03);
+    border-bottom: 1px solid var(--bs-warning-border-subtle, #ffe69c);
+}
+
+.offline-banner-online {
+    background: var(--bs-success-bg-subtle, #d1e7dd);
+    color: var(--bs-success-text-emphasis, #0a3622);
+    border-bottom: 1px solid var(--bs-success-border-subtle, #a3cfbb);
+}
+
+.offline-banner-content {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+body.reduce-motion .offline-banner {
+    transition: none;
+}
