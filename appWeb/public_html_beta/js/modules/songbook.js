@@ -63,7 +63,8 @@ import { isFavorite, toggleFavorite } from './favorites.js';
  * headers. Provides a unified, professional look rather than a rainbow
  * of different colours. Matches the iLyrics dB brand aesthetic.
  */
-const SONGBOOK_GRADIENT = 'linear-gradient(135deg, #c8a06c 0%, #ddc09c 100%)';
+/* Clean neutral gradient: soft slate — matches the professional colour scheme */
+const SONGBOOK_GRADIENT = 'linear-gradient(135deg, #e2e8f0 0%, #f1f5f9 100%)';
 
 /* =========================================================================
  * PRIVATE HELPERS

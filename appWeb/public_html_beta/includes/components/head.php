@@ -36,9 +36,9 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     <!-- Description: used by search engines and social media previews -->
     <meta name="description" content="<?php echo htmlspecialchars($app["Application"]["Description"]["Synopsis"]); ?>">
 
-    <!-- Theme colour: warm amber matching iLyrics dB branding -->
-    <meta name="theme-color" content="#d76600" media="(prefers-color-scheme: light)">
-    <meta name="theme-color" content="#3d2800" media="(prefers-color-scheme: dark)">
+    <!-- Theme colour: slate for browser address bar -->
+    <meta name="theme-color" content="#1e293b" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#0f172a" media="(prefers-color-scheme: dark)">
 
     <!-- Apple-specific meta tags for PWA/home screen behaviour -->
     <meta name="apple-mobile-web-app-capable" content="yes">

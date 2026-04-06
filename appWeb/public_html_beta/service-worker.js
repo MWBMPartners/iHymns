@@ -17,7 +17,7 @@
  * ========================================================================= */
 
 /* Cache version: increment this when deploying new versions to bust the cache */
-const CACHE_VERSION = 'ihymns-v1.0.0-alpha.1';
+const CACHE_VERSION = 'ihymns-v0.1.1';
 
 /* Static assets to pre-cache during service worker installation */
 /* These files are cached immediately so the app works offline on first install */

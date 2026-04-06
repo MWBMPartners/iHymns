@@ -5,8 +5,8 @@
   "start_url": "index.php",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#fff8ef",
-  "theme_color": "#d76600",
+  "background_color": "#fafafa",
+  "theme_color": "#1e293b",
   "scope": "./",
   "icons": [
     {
@@ -22,7 +22,7 @@
       "purpose": "any maskable"
     }
   ],
-  "categories": ["music", "entertainment", "education"],
+  "categories": ["music", "entertainment", "education", "books"],
   "lang": "en",
   "dir": "ltr"
 }

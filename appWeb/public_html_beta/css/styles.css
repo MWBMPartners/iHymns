@@ -19,148 +19,99 @@
 
 :root {
     /* ===================================================================
-     * LIGHT MODE — Warm amber palette aligned with iLyrics dB branding
+     * LIGHT MODE — Clean, neutral, professional
+     * Slate grey primary with subtle teal accent. Easy on the eyes.
      * =================================================================== */
 
-    /* Primary brand colour: dark amber (matches iLyrics dB --ildb-primary) */
-    --ihymns-primary: #b45309;
+    /* Primary: calm slate blue — professional, trustworthy */
+    --ihymns-primary: #475569;
 
-    /* Primary hover/active state: deeper amber */
-    --ihymns-primary-hover: #92400e;
+    /* Primary hover: slightly darker slate */
+    --ihymns-primary-hover: #334155;
 
-    /* Primary light variant: bright amber for subtle highlights */
-    --ihymns-primary-light: #d97706;
+    /* Primary light: softer slate for highlights */
+    --ihymns-primary-light: #64748b;
 
-    /* Primary soft: very pale gold background tint */
-    --ihymns-primary-soft: #fff4d6;
+    /* Primary soft: very faint grey-blue tint for backgrounds */
+    --ihymns-primary-soft: #f1f5f9;
 
-    /* Secondary colour: warm stone grey (matches iLyrics dB) */
-    --ihymns-secondary: #78716c;
+    /* Secondary: neutral grey */
+    --ihymns-secondary: #6b7280;
 
-    /* Accent colour: burnt orange for CTAs and highlights */
-    --ihymns-accent: #c2410c;
+    /* Accent: muted teal — subtle, not shouty */
+    --ihymns-accent: #0d9488;
 
-    /* Hero/theme colour: vivid amber-orange (navbar, PWA theme) */
-    --ihymns-hero: #d76600;
+    /* Success: soft green */
+    --ihymns-success: #16a34a;
 
-    /* Success colour: green for positive states */
-    --ihymns-success: #10b981;
+    /* Danger: soft red */
+    --ihymns-danger: #dc2626;
 
-    /* Danger colour: red for errors and warnings */
-    --ihymns-danger: #ef4444;
+    /* Background: clean white with very slight warmth */
+    --ihymns-bg: #fafafa;
 
-    /* Background colour: warm cream (matches iLyrics dB PWA background) */
-    --ihymns-bg: #fff8ef;
-
-    /* Card background: white */
+    /* Card background: pure white */
     --ihymns-card-bg: #ffffff;
 
-    /* Subtle background for alternating song list rows */
-    --ihymns-row-alt: #fef7ed;
+    /* Subtle background for alternating rows */
+    --ihymns-row-alt: #f8fafc;
 
     /* Text colours */
-    --ihymns-text: #1c1917;
-    --ihymns-text-muted: #78716c;
+    --ihymns-text: #1e293b;
+    --ihymns-text-muted: #94a3b8;
 
-    /* Navbar gradient: warm brown-to-amber (matches iLyrics dB) */
-    --ihymns-navbar-bg: linear-gradient(135deg, #6e3500, #a04a00, #d76600);
+    /* Navbar: solid slate (no gradient — clean and professional) */
+    --ihymns-navbar-bg: #1e293b;
 
-    /* Surface glow gradient for cards/headers */
-    --ihymns-surface-glow: linear-gradient(135deg, #fff4cf 0%, #ffd87b 42%, #ff9f1c 100%);
+    /* Focus ring */
+    --ihymns-focus-ring: #0d9488;
 
-    /* Focus ring colour (for accessibility) */
-    --ihymns-focus-ring: #d97706;
-
-    /* The maximum width for lyric text (for comfortable reading) */
+    /* Max width for comfortable lyric reading */
     --ihymns-lyrics-max-width: 680px;
 
-    /* Border radius used consistently across cards, buttons, etc. */
+    /* Consistent border radius */
     --ihymns-border-radius: 0.75rem;
 
-    /* Transition duration for smooth hover/focus effects */
+    /* Transition speed */
     --ihymns-transition: 0.2s ease;
 }
 
 /* ===================================================================
- * DARK MODE — Golden yellow on dark backgrounds
+ * DARK MODE — Soft whites on dark charcoal
  * =================================================================== */
 [data-bs-theme="dark"] {
-    /* Primary: golden yellow (matches iLyrics dB dark mode) */
-    --ihymns-primary: #fbbf24;
-
-    /* Primary hover: amber */
-    --ihymns-primary-hover: #f59e0b;
-
-    /* Primary light: light gold */
-    --ihymns-primary-light: #fde68a;
-
-    /* Primary soft: very dark brown tint */
-    --ihymns-primary-soft: #2d1f0d;
-
-    /* Accent: light orange */
-    --ihymns-accent: #fb923c;
-
-    /* Background: deep dark */
-    --ihymns-bg: #0f0d0a;
-
-    /* Card background: dark warm brown */
-    --ihymns-card-bg: #1c1710;
-
-    /* Alternating row: slightly lighter */
-    --ihymns-row-alt: #252018;
-
-    /* Text colours for dark mode */
-    --ihymns-text: #fef3e2;
-    --ihymns-text-muted: #a8a29e;
-
-    /* Navbar gradient: dark warm tones */
-    --ihymns-navbar-bg: linear-gradient(135deg, #1a1005, #3d2800, #5c3d00);
-
-    /* Surface glow: warm dark gradient */
-    --ihymns-surface-glow: linear-gradient(135deg, #7c3f00 0%, #d97706 48%, #ffd86a 100%);
-
-    /* Focus ring: bright gold for visibility on dark bg */
-    --ihymns-focus-ring: #fbbf24;
+    --ihymns-primary: #94a3b8;
+    --ihymns-primary-hover: #cbd5e1;
+    --ihymns-primary-light: #64748b;
+    --ihymns-primary-soft: #1e293b;
+    --ihymns-secondary: #6b7280;
+    --ihymns-accent: #2dd4bf;
+    --ihymns-bg: #0f172a;
+    --ihymns-card-bg: #1e293b;
+    --ihymns-row-alt: #1e293b;
+    --ihymns-text: #e2e8f0;
+    --ihymns-text-muted: #64748b;
+    --ihymns-navbar-bg: #0f172a;
+    --ihymns-focus-ring: #2dd4bf;
 }
 
 /* ===================================================================
  * COLOURBLIND-FRIENDLY MODE — CVD-safe palette (Wong, 2011)
- * Activated via data-theme-cb="true" on <html>
- * Works in both light and dark modes
  * =================================================================== */
 [data-theme-cb="true"] {
-    /* Primary: blue (CVD-safe, distinguishable by all colour vision types) */
     --ihymns-primary: #0072b2;
     --ihymns-primary-hover: #005a8c;
     --ihymns-primary-light: #56b4e9;
     --ihymns-primary-soft: #e0f0ff;
-
-    /* Accent: orange (CVD-safe, high contrast with blue) */
     --ihymns-accent: #e69f00;
-
-    /* Hero: blue variant */
-    --ihymns-hero: #0072b2;
-
-    /* Success: teal-green (CVD-safe) */
     --ihymns-success: #009e73;
-
-    /* Danger: vermillion (CVD-safe) */
     --ihymns-danger: #d55e00;
-
-    /* Secondary: sky blue */
     --ihymns-secondary: #56b4e9;
-
-    /* Focus ring: bright orange for visibility */
     --ihymns-focus-ring: #e69f00;
-
-    /* Navbar: blue gradient */
-    --ihymns-navbar-bg: linear-gradient(135deg, #003d5c, #005a8c, #0072b2);
-
-    /* Surface glow: blue-tinted */
-    --ihymns-surface-glow: linear-gradient(135deg, #e0f0ff 0%, #56b4e9 42%, #0072b2 100%);
+    --ihymns-navbar-bg: #003d5c;
 }
 
-/* Colourblind + dark mode combination */
+/* Colourblind + dark mode */
 [data-bs-theme="dark"][data-theme-cb="true"] {
     --ihymns-primary: #56b4e9;
     --ihymns-primary-hover: #3a9fd9;
@@ -170,8 +121,7 @@
     --ihymns-success: #33c29a;
     --ihymns-danger: #e87530;
     --ihymns-focus-ring: #56b4e9;
-    --ihymns-navbar-bg: linear-gradient(135deg, #0a1520, #0d3050, #155080);
-    --ihymns-surface-glow: linear-gradient(135deg, #0d3050 0%, #0072b2 48%, #56b4e9 100%);
+    --ihymns-navbar-bg: #0a1520;
 }
 
 /* =========================================================================
@@ -277,13 +227,9 @@ body {
  * NAVBAR STYLES
  * ========================================================================= */
 
-/* The main navigation bar: warm amber gradient matching iLyrics dB */
+/* The main navigation bar: solid colour, clean and professional */
 #main-navbar {
-    /* Use the navbar gradient variable (changes per theme) */
-    background: var(--ihymns-navbar-bg) !important;
-
-    /* Slight transparency for a modern frosted-glass effect */
-    backdrop-filter: blur(10px);
+    background-color: var(--ihymns-navbar-bg) !important;
 }
 
 /* Navbar brand text: white, bold, with hover effect */
@@ -416,24 +362,23 @@ body {
 /* Hover effect: lift the card up slightly and increase shadow */
 .songbook-card:hover {
     transform: translateY(-4px);
-    box-shadow: 0 8px 24px rgba(180, 83, 9, 0.2);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
 }
 
-/* Dark mode hover: warm golden shadow */
+/* Dark mode hover */
 [data-bs-theme="dark"] .songbook-card:hover {
-    box-shadow: 0 8px 24px rgba(251, 191, 36, 0.2);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }
 
 /* Songbook card header: background set via inline style from JS */
-/* Uses a single soft warm amber gradient for all cards */
 .songbook-card-header {
     padding: 1.25rem;
-    color: #3d2400;
+    color: var(--ihymns-text);
 }
 
-/* Dark mode: slightly lighter text for readability on the amber header */
+/* Dark mode: light header gradient, dark text still works */
 [data-bs-theme="dark"] .songbook-card-header {
-    color: #3d2400;
+    color: #1e293b;
 }
 
 /* Songbook card body: contains the song count and description */
@@ -444,7 +389,7 @@ body {
 /* Song count badge inside the card */
 .songbook-song-count {
     display: inline-block;
-    background-color: var(--ihymns-accent);
+    background-color: var(--ihymns-primary);
     color: #ffffff;
     font-weight: 600;
     font-size: 0.8rem;
