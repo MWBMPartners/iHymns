@@ -538,6 +538,13 @@ try {
                     <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
                     <span>Search</span>
                 </a>
+                <button type="button"
+                   class="footer-nav-item"
+                   data-action="open-numpad"
+                   aria-label="Search by song number">
+                    <i class="fa-solid fa-hashtag" aria-hidden="true"></i>
+                    <span>Number</span>
+                </button>
                 <a href="/songbooks"
                    class="footer-nav-item"
                    data-navigate="songbooks"
