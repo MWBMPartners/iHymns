@@ -53,6 +53,11 @@ export class Share {
         /* Build the permalink URL */
         const permalink = window.location.origin + '/song/' + songId;
 
+        /* Extract rich metadata from the current song page (#123) */
+        const songPage = document.querySelector('.page-song');
+        const metadata = this.extractSongMetadata(songPage, title);
+        const richText = this.buildShareText(metadata, permalink);
+
         /* Populate modal content */
         const titleEl = document.getElementById('share-song-title');
         const urlInput = document.getElementById('share-url-input');
@@ -70,8 +75,8 @@ export class Share {
                 nativeBtn.onclick = async () => {
                     try {
                         await navigator.share({
-                            title: title + ' — iHymns',
-                            text: `Check out "${title}" on iHymns`,
+                            title: metadata.fullTitle,
+                            text: richText,
                             url: permalink,
                         });
                     } catch (error) {
@@ -86,17 +91,15 @@ export class Share {
             }
         }
 
-        /* Copy button */
+        /* Copy URL button */
         const copyBtn = document.getElementById('share-copy-btn');
         if (copyBtn) {
             copyBtn.onclick = async () => {
                 try {
                     await navigator.clipboard.writeText(permalink);
                     if (copyConfirm) copyConfirm.classList.remove('d-none');
-                    /* Hide confirmation after 3 seconds */
                     setTimeout(() => copyConfirm?.classList.add('d-none'), 3000);
                 } catch {
-                    /* Fallback: select the input text */
                     if (urlInput) {
                         urlInput.select();
                         document.execCommand('copy');
@@ -105,7 +108,85 @@ export class Share {
             };
         }
 
+        /* Copy formatted text button (#123) */
+        const copyTextBtn = document.getElementById('share-copy-text-btn');
+        if (copyTextBtn) {
+            copyTextBtn.onclick = async () => {
+                try {
+                    await navigator.clipboard.writeText(richText + '\n' + permalink);
+                    this.app.showToast('Song details copied', 'success', 2000);
+                } catch {
+                    console.warn('[Share] Failed to copy text');
+                }
+            };
+        }
+
         /* Show the modal */
         new bootstrap.Modal(modal).show();
+    }
+
+    /**
+     * Extract metadata from the rendered song page (#123).
+     * @param {HTMLElement|null} songPage The .page-song element
+     * @param {string} fallbackTitle Title fallback
+     * @returns {object} Metadata object
+     */
+    extractSongMetadata(songPage, fallbackTitle) {
+        const meta = {
+            title: fallbackTitle,
+            fullTitle: fallbackTitle + ' — iHymns',
+            songbook: '',
+            number: '',
+            writers: '',
+            composers: '',
+            firstVerse: '',
+        };
+
+        if (!songPage) return meta;
+
+        const songbook = songPage.dataset.songbook || '';
+        const number = songPage.dataset.songNumber || '';
+        meta.songbook = songbook;
+        meta.number = number;
+        meta.fullTitle = `${fallbackTitle} — ${songbook} #${number}`;
+
+        /* Extract writers/composers */
+        const writersEl = songPage.querySelector('.song-meta p:first-child');
+        const composersEl = songPage.querySelector('.song-meta p:last-child');
+        if (writersEl) meta.writers = writersEl.textContent.replace(/Words:\s*/, '').trim();
+        if (composersEl && composersEl !== writersEl) {
+            meta.composers = composersEl.textContent.replace(/Music:\s*/, '').trim();
+        }
+
+        /* Extract first verse snippet */
+        const firstComponent = songPage.querySelector('.lyric-component .lyric-lines');
+        if (firstComponent) {
+            const lines = firstComponent.querySelectorAll('.lyric-line');
+            const snippetLines = [...lines].slice(0, 2).map(l => l.textContent.trim());
+            if (snippetLines.length > 0) {
+                meta.firstVerse = snippetLines.join(' / ');
+                if (lines.length > 2) meta.firstVerse += '...';
+            }
+        }
+
+        return meta;
+    }
+
+    /**
+     * Build formatted share text from metadata (#123).
+     * @param {object} meta Song metadata
+     * @param {string} permalink Song URL
+     * @returns {string} Formatted text
+     */
+    buildShareText(meta, permalink) {
+        let text = `"${meta.title}"`;
+        if (meta.songbook && meta.number) {
+            text += ` (${meta.songbook} #${meta.number})`;
+        }
+        if (meta.writers) text += `\nWords: ${meta.writers}`;
+        if (meta.composers) text += `\nMusic: ${meta.composers}`;
+        if (meta.firstVerse) text += `\n\n${meta.firstVerse}`;
+        text += '\n\n— iHymns';
+        return text;
     }
 }

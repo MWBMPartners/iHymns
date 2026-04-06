@@ -138,6 +138,11 @@ try {
             if (!empty($ogSong['writers'])) {
                 $ogDescription .= '. Written by ' . implode(', ', $ogSong['writers']);
             }
+            /* Add first verse snippet for richer previews (#123) */
+            if (!empty($ogSong['components'][0]['lines'])) {
+                $firstLines = array_slice($ogSong['components'][0]['lines'], 0, 2);
+                $ogDescription .= '. "' . implode(' / ', $firstLines) . '..."';
+            }
             $ogType = 'article';
         }
     }
@@ -716,14 +721,19 @@ try {
                         </button>
                     </div>
 
-                    <!-- Native share / social buttons -->
+                    <!-- Share action buttons -->
                     <div class="d-grid gap-2">
                         <button type="button"
-                                class="btn btn-primary"
-                                id="share-native-btn"
-                                class="d-none">
+                                class="btn btn-primary d-none"
+                                id="share-native-btn">
                             <i class="fa-solid fa-share-from-square me-2" aria-hidden="true"></i>
                             Share via...
+                        </button>
+                        <button type="button"
+                                class="btn btn-outline-secondary"
+                                id="share-copy-text-btn">
+                            <i class="fa-solid fa-quote-left me-2" aria-hidden="true"></i>
+                            Copy Song Details
                         </button>
                     </div>
 
