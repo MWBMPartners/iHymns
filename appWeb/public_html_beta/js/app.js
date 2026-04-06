@@ -772,8 +772,12 @@ class iHymnsApp {
         const container = document.getElementById('toast-container');
         if (!container) return;
 
+        /* Whitelist valid Bootstrap toast types */
+        const validTypes = ['primary', 'secondary', 'success', 'danger', 'warning', 'info'];
+        const safeType = validTypes.includes(type) ? type : 'info';
+
         const toastEl = document.createElement('div');
-        toastEl.className = `toast align-items-center text-bg-${type} border-0`;
+        toastEl.className = `toast align-items-center text-bg-${safeType} border-0`;
         toastEl.setAttribute('role', 'alert');
         toastEl.setAttribute('aria-live', 'assertive');
         toastEl.setAttribute('aria-atomic', 'true');
