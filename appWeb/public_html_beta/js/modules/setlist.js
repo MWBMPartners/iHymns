@@ -720,14 +720,15 @@ export class SetList {
         const shareUrl = this.generateShareLink(listId);
         if (!shareUrl) return;
 
-        const shareText = `${list.name} — ${list.songs.length} song${list.songs.length !== 1 ? 's' : ''}`;
-
-        /* Try native Web Share API first */
+        /* Try native Web Share API first.
+         * IMPORTANT: Only pass title + url (no text). Some platforms (macOS, iOS)
+         * concatenate text and url when the user chooses "Copy", resulting in
+         * a broken link like "https://…/eyJ… Test Setlist — 4 songs". Omitting
+         * text ensures the clipboard only contains the clean URL. */
         if (navigator.share) {
             try {
                 await navigator.share({
                     title: list.name + ' — iHymns Set List',
-                    text: shareText,
                     url: shareUrl,
                 });
                 return;
@@ -737,12 +738,12 @@ export class SetList {
             }
         }
 
-        /* Fallback: copy link to clipboard */
+        /* Fallback: copy bare URL to clipboard */
         try {
             await navigator.clipboard.writeText(shareUrl);
             this.app.showToast('Share link copied to clipboard', 'success', 3000);
         } catch {
-            /* Last resort fallback */
+            /* Last resort fallback for older browsers */
             const textarea = document.createElement('textarea');
             textarea.value = shareUrl;
             document.body.appendChild(textarea);
