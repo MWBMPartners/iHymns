@@ -225,7 +225,8 @@ export class Router {
         this.abortController = new AbortController();
 
         try {
-            /* Start exit transition */
+            /* Start loading bar and exit transition in parallel */
+            this.app.transitions.startLoading();
             await this.app.transitions.pageOut(content);
 
             /* Fetch the page content from the API */
@@ -246,7 +247,8 @@ export class Router {
             /* Inject the new content */
             content.innerHTML = html;
 
-            /* Start enter transition */
+            /* Complete loading bar and start enter transition */
+            this.app.transitions.completeLoading();
             await this.app.transitions.pageIn(content);
 
         } catch (error) {
@@ -256,6 +258,7 @@ export class Router {
             }
 
             console.error('[Router] Failed to load page:', error);
+            this.app.transitions.completeLoading();
             content.innerHTML = `
                 <div class="alert alert-danger mt-4" role="alert">
                     <i class="fa-solid fa-triangle-exclamation me-2" aria-hidden="true"></i>

@@ -463,45 +463,75 @@ body.banner-visible.search-open .main-content {
     display: none;
 }
 
-/* Page content transitions (#106) — configurable types */
-.page-content {
-    transition: opacity var(--transition-normal), transform var(--transition-normal);
+/* Page transitions (#149) */
+#page-content {
+    transition: opacity 0.25s ease, transform 0.25s ease;
 }
 
-.page-content.page-visible {
+#page-content.page-leaving {
+    opacity: 0;
+    transform: translateY(-8px);
+}
+
+#page-content.page-entering {
+    opacity: 0;
+    transform: translateY(8px);
+}
+
+#page-content.page-visible {
     opacity: 1;
-    transform: none;
+    transform: translateY(0);
 }
 
-/* Fade transition */
-.page-content[data-transition="fade"].page-entering {
+/* Staggered list items (#149) */
+.page-song .song-list-item,
+.page-songbook .song-list-item,
+.page-favorites .song-list-item {
     opacity: 0;
+    transform: translateY(10px);
+    animation: fadeSlideIn 0.3s ease forwards;
 }
 
-.page-content[data-transition="fade"].page-leaving {
-    opacity: 0;
+@keyframes fadeSlideIn {
+    to { opacity: 1; transform: translateY(0); }
 }
 
-/* Slide transition */
-.page-content[data-transition="slide"].page-entering {
+/* Apply stagger delay to list items */
+.song-list-item:nth-child(1) { animation-delay: 0.02s; }
+.song-list-item:nth-child(2) { animation-delay: 0.04s; }
+.song-list-item:nth-child(3) { animation-delay: 0.06s; }
+.song-list-item:nth-child(4) { animation-delay: 0.08s; }
+.song-list-item:nth-child(5) { animation-delay: 0.1s; }
+.song-list-item:nth-child(n+6) { animation-delay: 0.12s; }
+
+/* Loading progress bar (#149) */
+.page-loading-bar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--accent-start, #6366f1), var(--accent-end, #8b5cf6));
+    z-index: 9999;
+    width: 0%;
     opacity: 0;
-    transform: translateX(30px);
+    transition: width 0.4s ease, opacity 0.2s ease;
+    pointer-events: none;
 }
 
-.page-content[data-transition="slide"].page-leaving {
-    opacity: 0;
-    transform: translateX(-30px);
+.page-loading-bar.loading {
+    opacity: 1;
+    width: 80%;
+    transition: width 8s cubic-bezier(0.1, 0.05, 0, 1), opacity 0.2s ease;
 }
 
-/* Crossfade transition (fade + subtle scale) */
-.page-content[data-transition="crossfade"].page-entering {
-    opacity: 0;
-    transform: scale(0.97);
+.page-loading-bar.complete {
+    opacity: 1;
+    width: 100%;
+    transition: width 0.15s ease, opacity 0.3s ease 0.2s;
 }
 
-.page-content[data-transition="crossfade"].page-leaving {
+.page-loading-bar.complete.fade-out {
     opacity: 0;
-    transform: scale(1.02);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1233,12 +1263,18 @@ body.reduce-motion *::after {
     scroll-behavior: auto !important;
 }
 
-body.reduce-motion .page-content {
+body.reduce-motion #page-content {
     transition: none !important;
 }
 
-body.reduce-motion .page-content.page-entering,
-body.reduce-motion .page-content.page-leaving {
+body.reduce-motion #page-content.page-entering,
+body.reduce-motion #page-content.page-leaving {
+    opacity: 1 !important;
+    transform: none !important;
+}
+
+body.reduce-motion .song-list-item {
+    animation: none !important;
     opacity: 1 !important;
     transform: none !important;
 }
@@ -2072,4 +2108,6 @@ body.reduce-motion .related-songs-chevron {
     .gesture-peek {
         display: none;
     }
+    #page-content { transition: none; }
+    .song-list-item { animation: none; opacity: 1; transform: none; }
 }
