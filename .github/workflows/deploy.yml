@@ -88,12 +88,39 @@ jobs:
             echo "channel=alpha" >> $GITHUB_OUTPUT
           fi
 
+      # -- Build shared lftp exclude flags for all mirror commands --
+      # Excludes repo metadata, IDE/editor files, OS artefacts, and
+      # documentation that should never be deployed to SFTP servers.
+      - name: Build SFTP exclude flags
+        id: excludes
+        run: |
+          EXCLUDES=""
+          # OS artefacts
+          EXCLUDES+=" --exclude .DS_Store --exclude Thumbs.db"
+          # Git / GitHub
+          EXCLUDES+=" --exclude .git/ --exclude .github/ --exclude .gitkeep --exclude .gitignore --exclude .gitattributes"
+          # Documentation
+          EXCLUDES+=" --exclude README.md --exclude CHANGELOG.md --exclude DEV_NOTES.md --exclude CLAUDE.md"
+          # Apache auth (server-managed, never overwrite)
+          EXCLUDES+=" --exclude .htpasswd --exclude '.htpasswd-*' --exclude '.htpasswd.example'"
+          # VS Code
+          EXCLUDES+=" --exclude .vscode/"
+          # JetBrains IDEs (IntelliJ, WebStorm, PhpStorm)
+          EXCLUDES+=" --exclude .idea/"
+          # Xcode
+          EXCLUDES+=" --exclude '*.xcodeproj' --exclude '*.xcworkspace' --exclude .xcuserdata/"
+          # Sublime Text
+          EXCLUDES+=" --exclude '*.sublime-project' --exclude '*.sublime-workspace'"
+          # Editor config & temp files
+          EXCLUDES+=" --exclude .editorconfig --exclude '*.swp' --exclude '*.swo' --exclude '*~'"
+          echo "flags=$EXCLUDES" >> $GITHUB_OUTPUT
+
       # -- Check if deployable files changed in the last 5 commits --
       - name: Get changed files
         id: changes
         run: |
           SOURCE_DIR="${{ steps.target.outputs.source_dir }}"
-          EXCLUDES="CHANGELOG.md|README.md|DEV_NOTES.md|\.DS_Store|\.gitkeep|\.gitignore"
+          EXCLUDES="CHANGELOG\.md|README\.md|DEV_NOTES\.md|CLAUDE\.md|\.DS_Store|Thumbs\.db|\.gitkeep|\.gitignore|\.gitattributes|\.vscode|\.idea|\.xcodeproj|\.xcworkspace|\.xcuserdata|\.editorconfig|\.sublime-"
           COMMIT_MSG=$(git log -1 --pretty=format:"%s")
 
           # Force full deploy if commit message contains [deploy all]
@@ -275,7 +302,7 @@ jobs:
           cat > /tmp/lftp_script.txt <<LFTP_EOF
           set sftp:connect-program "ssh -o StrictHostKeyChecking=no -i $HOME/.ssh/deploy_key -p ${SFTP_PORT}"
           open sftp://${SFTP_USER}@${SFTP_HOST}:${SFTP_PORT}
-          mirror --reverse --delete --verbose --only-newer --no-empty-dirs --exclude .DS_Store --exclude .gitkeep --exclude .gitignore --exclude README.md --exclude CHANGELOG.md --exclude DEV_NOTES.md --exclude .htpasswd --exclude '.htpasswd-*' --exclude '.htpasswd.example' ${SOURCE_DIR} ${REMOTE_PATH}
+          mirror --reverse --delete --verbose --only-newer --no-empty-dirs ${{ steps.excludes.outputs.flags }} ${SOURCE_DIR} ${REMOTE_PATH}
           bye
           LFTP_EOF
           lftp -f /tmp/lftp_script.txt
@@ -294,8 +321,7 @@ jobs:
           lftp -u "${SFTP_USER},${SFTP_PASS}" \
             -e "set sftp:auto-confirm yes; set ssl:verify-certificate no; \
             mirror --reverse --delete --verbose --only-newer --no-empty-dirs \
-            --exclude .DS_Store --exclude .gitkeep --exclude .gitignore \
-            --exclude README.md --exclude CHANGELOG.md --exclude DEV_NOTES.md \
+            ${{ steps.excludes.outputs.flags }} \
             ${SOURCE_DIR} ${REMOTE_PATH}; bye" \
             "sftp://${SFTP_HOST}:${SFTP_PORT}"
 
@@ -352,7 +378,7 @@ jobs:
           cat > /tmp/lftp_private.txt <<LFTP_EOF
           set sftp:connect-program "ssh -o StrictHostKeyChecking=no -i $HOME/.ssh/deploy_key -p ${SFTP_PORT}"
           open sftp://${SFTP_USER}@${SFTP_HOST}:${SFTP_PORT}
-          mirror --reverse --delete --verbose --only-newer --no-empty-dirs --exclude .DS_Store --exclude .gitkeep --exclude .gitignore --exclude .htpasswd --exclude '.htpasswd-*' --exclude '.htpasswd.example' appWeb/private_html/ ${REMOTE_PATH}
+          mirror --reverse --delete --verbose --only-newer --no-empty-dirs ${{ steps.excludes.outputs.flags }} appWeb/private_html/ ${REMOTE_PATH}
           bye
           LFTP_EOF
           lftp -f /tmp/lftp_private.txt
@@ -378,8 +404,7 @@ jobs:
           lftp -u "${SFTP_USER},${SFTP_PASS}" \
             -e "set sftp:auto-confirm yes; set ssl:verify-certificate no; \
             mirror --reverse --delete --verbose --only-newer --no-empty-dirs \
-            --exclude .DS_Store --exclude .gitkeep --exclude .gitignore \
-            --exclude .htpasswd --exclude '.htpasswd-*' --exclude '.htpasswd.example' \
+            ${{ steps.excludes.outputs.flags }} \
             appWeb/private_html/ ${REMOTE_PATH}; bye" \
             "sftp://${SFTP_HOST}:${SFTP_PORT}"
           echo "Private HTML deployed to ${REMOTE_PATH}"
@@ -409,7 +434,7 @@ jobs:
           cat > /tmp/lftp_datashare.txt <<LFTP_EOF
           set sftp:connect-program "ssh -o StrictHostKeyChecking=no -i $HOME/.ssh/deploy_key -p ${SFTP_PORT}"
           open sftp://${SFTP_USER}@${SFTP_HOST}:${SFTP_PORT}
-          mirror --reverse --verbose --only-newer --no-empty-dirs --exclude .DS_Store --exclude .gitkeep --exclude .gitignore appWeb/data_share/ ${DATA_SHARE_PATH}
+          mirror --reverse --verbose --only-newer --no-empty-dirs ${{ steps.excludes.outputs.flags }} appWeb/data_share/ ${DATA_SHARE_PATH}
           bye
           LFTP_EOF
           lftp -f /tmp/lftp_datashare.txt
@@ -430,7 +455,7 @@ jobs:
           lftp -u "${SFTP_USER},${SFTP_PASS}" \
             -e "set sftp:auto-confirm yes; set ssl:verify-certificate no; \
             mirror --reverse --verbose --only-newer --no-empty-dirs \
-            --exclude .DS_Store --exclude .gitkeep --exclude .gitignore \
+            ${{ steps.excludes.outputs.flags }} \
             appWeb/data_share/ ${DATA_SHARE_PATH}; bye" \
             "sftp://${SFTP_HOST}:${SFTP_PORT}"
           echo "Data share deployed to ${DATA_SHARE_PATH}"
