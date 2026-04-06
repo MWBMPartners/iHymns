@@ -107,6 +107,11 @@ RewriteRule ^ index.php [QSA,L]
     # Web App Manifest
     AddType application/manifest+json .json
 
+    # Apple App Site Association — must be application/json (#99)
+    <FilesMatch "apple-app-site-association">
+        ForceType application/json
+    </FilesMatch>
+
     # SVG
     AddType image/svg+xml .svg .svgz
     AddEncoding gzip .svgz

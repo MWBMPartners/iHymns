@@ -179,6 +179,8 @@ try {
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="<?= htmlspecialchars($appName) ?>">
+    <!-- Smart App Banner — prompts iOS Safari to install native app (#99) -->
+    <meta name="apple-itunes-app" content="app-id=0000000000, app-argument=<?= htmlspecialchars($requestPath) ?>">
     <meta name="msapplication-TileColor" content="#4f46e5">
     <meta name="msapplication-config" content="none">
     <meta name="format-detection" content="telephone=no">
