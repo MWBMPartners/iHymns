@@ -30,6 +30,7 @@ import { SheetMusic } from './modules/sheet-music.js';
 import { History } from './modules/history.js';
 import { SetList } from './modules/setlist.js';
 import { Display } from './modules/display.js';
+import { Compare } from './modules/compare.js';
 
 /**
  * iHymnsApp — Main application class
@@ -82,6 +83,9 @@ class iHymnsApp {
 
         /** @type {Display} Display preferences & presentation mode (#95) */
         this.display = null;
+
+        /** @type {Compare} Side-by-side song comparison (#102) */
+        this.compare = null;
     }
 
     /**
@@ -146,6 +150,10 @@ class iHymnsApp {
             /* Display preferences & presentation mode (#95) */
             this.display = new Display(this);
             this.display.init();
+
+            /* Side-by-side song comparison (#102) */
+            this.compare = new Compare(this);
+            this.compare.init();
 
             /* --- Set up global event listeners --- */
             this.bindGlobalEvents();

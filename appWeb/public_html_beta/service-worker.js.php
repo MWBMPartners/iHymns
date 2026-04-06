@@ -78,6 +78,7 @@ const PRECACHE_ASSETS = [
     '/js/modules/shuffle.js',
     '/js/modules/numpad.js',
     '/js/modules/share.js',
+    '/js/modules/compare.js',
     '/manifest.json',
     '/assets/favicon.svg',
 ];

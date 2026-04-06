@@ -160,6 +160,14 @@ $components  = $song['components'] ?? [];
                     Set List
                 </button>
 
+                <!-- Compare with another song (#102) -->
+                <button type="button"
+                        class="btn btn-outline-secondary btn-sm btn-compare"
+                        aria-label="Compare with another song">
+                    <i class="fa-solid fa-columns me-1" aria-hidden="true"></i>
+                    Compare
+                </button>
+
                 <!-- Print button -->
                 <button type="button"
                         class="btn btn-outline-secondary btn-sm btn-print"
