@@ -51,8 +51,14 @@ $app = [];
  * APPLICATION IDENTITY
  * ========================================================================= */
 
-/* Unique reverse-domain application identifier */
-$app["Application"]["ID"] = "Ltd.MWBMPartners.iHymns.PWA";
+/* Shared base application identifier (common across all platforms) */
+$app["Application"]["ID_Base"] = "Ltd.MWBMPartners.iHymns";
+
+/* Platform-specific suffix */
+$app["Application"]["ID_Platform"] = "PWA";
+
+/* Full unique reverse-domain application identifier */
+$app["Application"]["ID"] = $app["Application"]["ID_Base"] . "." . $app["Application"]["ID_Platform"];
 
 /* Short application name (used in titles, manifests, UI) */
 $app["Application"]["Name"] = "iHymns";

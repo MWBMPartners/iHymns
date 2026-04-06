@@ -52,8 +52,14 @@ object AppInfo {
      */
     object Application {
 
-        /* Unique reverse-domain application identifier */
-        const val ID = "Ltd.MWBMPartners.iHymns.Android"
+        /* Shared base application identifier (common across all platforms) */
+        const val ID_BASE = "Ltd.MWBMPartners.iHymns"
+
+        /* Platform-specific suffix */
+        const val ID_PLATFORM = "Android"
+
+        /* Full unique reverse-domain application identifier */
+        const val ID = "$ID_BASE.$ID_PLATFORM"
 
         /* Short application name (used in titles, UI) */
         const val NAME = "iHymns"
