@@ -706,6 +706,14 @@ try {
     </div>
 
     <!-- ================================================================
+         SCROLL-TO-TOP BUTTON (#97)
+         ================================================================ -->
+    <button type="button" id="scroll-to-top-btn" class="scroll-to-top-btn"
+            aria-label="Scroll to top" aria-hidden="true" tabindex="-1">
+        <i class="fa-solid fa-chevron-up" aria-hidden="true"></i>
+    </button>
+
+    <!-- ================================================================
          TOAST NOTIFICATIONS — For non-intrusive user feedback
          ================================================================ -->
     <div class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index: 1090;" id="toast-container"

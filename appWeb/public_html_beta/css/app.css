@@ -1122,3 +1122,63 @@ body.reduce-motion .page-content.page-entering,
 body.reduce-motion .page-content.page-leaving {
     transform: none !important;
 }
+
+/* ==========================================================================
+   SCROLL-TO-TOP BUTTON (#97)
+   ========================================================================== */
+
+.scroll-to-top-btn {
+    position: fixed;
+    bottom: 110px; /* above fixed footer */
+    right: 20px;
+    z-index: 1050;
+    width: 48px;
+    height: 48px;
+    border: none;
+    border-radius: 50%;
+    background: var(--bs-primary, #6366f1);
+    color: #fff;
+    font-size: 1.2rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+    cursor: pointer;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(10px);
+    transition: opacity 0.3s ease, visibility 0.3s ease, transform 0.3s ease, background-color 0.2s ease;
+}
+
+.scroll-to-top-btn.visible {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
+}
+
+.scroll-to-top-btn:hover,
+.scroll-to-top-btn:focus-visible {
+    background: var(--bs-primary-dark, #4f46e5);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+}
+
+.scroll-to-top-btn:focus-visible {
+    outline: 3px solid var(--bs-primary, #6366f1);
+    outline-offset: 3px;
+}
+
+/* High contrast theme */
+[data-bs-theme="high-contrast"] .scroll-to-top-btn {
+    border: 2px solid #fff;
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+    .scroll-to-top-btn {
+        transition: none;
+    }
+}
+
+body.reduce-motion .scroll-to-top-btn {
+    transition: none;
+}

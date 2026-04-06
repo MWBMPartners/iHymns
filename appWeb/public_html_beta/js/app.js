@@ -254,6 +254,24 @@ class iHymnsApp {
                 }
             });
         });
+
+        /* --- Scroll-to-top button (#97) --- */
+        const scrollBtn = document.getElementById('scroll-to-top-btn');
+        if (scrollBtn) {
+            window.addEventListener('scroll', () => {
+                const show = window.scrollY > 300;
+                scrollBtn.classList.toggle('visible', show);
+                scrollBtn.setAttribute('aria-hidden', String(!show));
+                scrollBtn.tabIndex = show ? 0 : -1;
+            }, { passive: true });
+
+            scrollBtn.addEventListener('click', () => {
+                window.scrollTo({
+                    top: 0,
+                    behavior: document.body.classList.contains('reduce-motion') ? 'auto' : 'smooth'
+                });
+            });
+        }
     }
 
     /**
