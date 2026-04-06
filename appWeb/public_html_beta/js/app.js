@@ -1,562 +1,830 @@
 /**
- * iHymns — Main Application Entry Point
+ * iHymns — Main Application Entry Point (ES Module)
  *
- * Copyright © 2026 MWBM Partners Ltd. All rights reserved.
- * This software is proprietary. Unauthorized copying, modification, or
- * distribution is strictly prohibited.
- *
- * Third-party components retain their respective licenses.
+ * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
  *
  * PURPOSE:
- * This is the main JavaScript entry point for the iHymns web PWA.
- * It initialises all modules, loads song data, sets up the SPA router,
- * and orchestrates the application lifecycle.
+ * Bootstraps the iHymns single-page application. Initialises all
+ * modules, sets up the router, loads initial content, and coordinates
+ * between the various subsystems (search, favourites, settings, PWA, etc.).
  *
  * ARCHITECTURE:
- * - app.js (this file): orchestration, data loading, routing
- * - modules/songbook.js: songbook grid and song list views
- * - modules/song-view.js: individual song lyrics display
- * - modules/search.js: Fuse.js search index and search UI
- * - modules/favorites.js: favourites management (localStorage)
- * - modules/settings.js: dark mode, PWA install, update checker
- * - utils/helpers.js: shared DOM helpers and utilities
+ * - Uses History API (pushState) for clean URL routing
+ * - Pages are loaded via AJAX from the PHP API
+ * - Page transitions provide smooth, app-like navigation
+ * - All user preferences stored in localStorage
+ * - Service worker handles offline caching
  */
 
-/* =========================================================================
- * MODULE IMPORTS
- * ========================================================================= */
-
-/* Import DOM helper functions from the shared utilities module */
-import { $, getHashRoute, setHashRoute } from './utils/helpers.js';
-
-/* Import the songbook grid and song list rendering functions */
-import { renderSongbookGrid, renderSongList } from './modules/songbook.js';
-
-/* Import the song detail (lyrics) view rendering function */
-import { renderSongDetail } from './modules/song-view.js';
-
-/* Import search initialisation, binding, and rendering functions */
-import { initSearch, bindSearchInput } from './modules/search.js';
-
-/* Import favourites rendering function */
-import { renderFavorites } from './modules/favorites.js';
-
-/* Import the in-app help view rendering function */
-import { renderHelpView } from './modules/help.js';
-
-/* Import settings/theme functions for dark mode, colourblind mode, install banner, and updates */
-import { initTheme, bindThemeToggle, initInstallBanner, initUpdateChecker, initColourblindMode, toggleColourblindMode } from './modules/settings.js';
-
-/* =========================================================================
- * APPLICATION STATE
- * ========================================================================= */
+import { Router } from './modules/router.js';
+import { Transitions } from './modules/transitions.js';
+import { Settings } from './modules/settings.js';
+import { Search } from './modules/search.js';
+import { Favorites } from './modules/favorites.js';
+import { PWA } from './modules/pwa.js';
+import { Shuffle } from './modules/shuffle.js';
+import { Numpad } from './modules/numpad.js';
+import { Share } from './modules/share.js';
+import { Audio } from './modules/audio.js';
+import { SheetMusic } from './modules/sheet-music.js';
+import { History } from './modules/history.js';
+import { SetList } from './modules/setlist.js';
+import { Display } from './modules/display.js';
+import { Compare } from './modules/compare.js';
+import { Shortcuts } from './modules/shortcuts.js';
+import { Request } from './modules/request.js';
+import { Transpose } from './modules/transpose.js';
+import { ReadingProgress } from './modules/reading-progress.js';
+import { SongbookIndex } from './modules/songbook-index.js';
+import { SearchHistory } from './modules/search-history.js';
+import { SongOfTheDay } from './modules/song-of-the-day.js';
+import { OfflineIndicator } from './modules/offline-indicator.js';
 
 /**
- * appState holds the global application state.
- * - songData:  The parsed song database (loaded from data/songs.json)
- * - isLoading: Whether song data is currently being fetched
- * - currentView: The name of the currently active view (for routing)
+ * iHymnsApp — Main application class
+ *
+ * Coordinates all modules and manages the application lifecycle.
  */
-const appState = {
-    songData: null,
-    isLoading: true,
-    currentView: 'home'
-};
+class iHymnsApp {
+    constructor() {
+        /** @type {object} Application configuration from PHP */
+        this.config = window.iHymnsConfig || {};
 
-/* =========================================================================
- * DATA LOADING
- * ========================================================================= */
+        /** @type {Router} SPA router instance */
+        this.router = null;
 
-/**
- * loadSongData()
- *
- * Fetches the song database (songs.json) from the data/ directory.
- * The JSON file is generated by the parse-songs.js tool and contains
- * all songbooks and songs in a structured format.
- *
- * The path uses '../../../data/songs.json' because the web app lives in
- * appWeb/public_html_beta/ and the data file is at the project root's data/.
- * On a deployed server, this path may need to be adjusted (e.g., to a
- * PHP endpoint that serves the JSON, or a different relative path).
- *
- * @returns {Promise<object>} The parsed song data object
- * @throws {Error} If the fetch fails or JSON is invalid
- */
-async function loadSongData() {
-    /* Define possible paths where songs.json might be found.
-       On the server, it lives at data/songs.json inside the deployed directory
-       (copied there during CI/CD deployment). Same data across all environments. */
-    const possiblePaths = [
-        'data/songs.json',
-        '../data/songs.json',
-        '../../data/songs.json'
-    ];
+        /** @type {Transitions} Page transition manager */
+        this.transitions = null;
 
-    /* Try each path until one succeeds */
-    for (const dataPath of possiblePaths) {
+        /** @type {Settings} User settings manager */
+        this.settings = null;
+
+        /** @type {Search} Search module */
+        this.search = null;
+
+        /** @type {Favorites} Favourites manager */
+        this.favorites = null;
+
+        /** @type {PWA} PWA installation manager */
+        this.pwa = null;
+
+        /** @type {Shuffle} Random song picker */
+        this.shuffle = null;
+
+        /** @type {Numpad} Numeric keypad controller */
+        this.numpad = null;
+
+        /** @type {Share} Song sharing module */
+        this.share = null;
+
+        /** @type {Audio} MIDI audio playback module (#90) */
+        this.audio = null;
+
+        /** @type {SheetMusic} PDF sheet music viewer module (#91) */
+        this.sheetMusic = null;
+
+        /** @type {History} Recently viewed songs history (#92) */
+        this.history = null;
+
+        /** @type {SetList} Worship set list / playlist (#94) */
+        this.setList = null;
+
+        /** @type {Display} Display preferences & presentation mode (#95) */
+        this.display = null;
+
+        /** @type {Compare} Side-by-side song comparison (#102) */
+        this.compare = null;
+
+        /** @type {Shortcuts} Keyboard shortcuts help overlay (#104) */
+        this.shortcuts = null;
+
+        /** @type {Request} Missing song request form (#107) */
+        this.request = null;
+
+        /** @type {Transpose} Transpose / capo indicator (#101) */
+        this.transpose = null;
+
+        /** @type {ReadingProgress} Scroll-linked reading progress (#109) */
+        this.readingProgress = null;
+
+        /** @type {SongbookIndex} Songbook alphabetical index (#111) */
+        this.songbookIndex = null;
+
+        /** @type {SearchHistory} Recent search terms (#110) */
+        this.searchHistory = null;
+
+        /** @type {SongOfTheDay} Song of the Day (#108) */
+        this.songOfTheDay = null;
+
+        /** @type {OfflineIndicator} Offline status indicator (#112) */
+        this.offlineIndicator = null;
+    }
+
+    /**
+     * Initialise the application.
+     * Called once when the DOM is ready.
+     */
+    async init() {
         try {
-            /* Fetch the JSON file from the server */
-            const response = await fetch(dataPath);
+            /* --- Initialise core modules --- */
 
-            /* Check if the response is OK (HTTP 200) */
-            if (response.ok) {
-                /* Parse the JSON response into a JavaScript object */
-                const data = await response.json();
+            /* Settings must be first — it sets theme, motion prefs, etc. */
+            this.settings = new Settings(this);
+            this.settings.init();
 
-                /* Log success to the console for debugging */
-                console.log(`[iHymns] Song data loaded from ${dataPath}: ${data.songs.length} songs`);
+            /* Page transitions */
+            this.transitions = new Transitions(this);
 
-                /* Return the parsed data */
-                return data;
-            }
-        } catch (err) {
-            /* This path didn't work, try the next one */
-            continue;
-        }
-    }
+            /* Router — handles URL navigation and AJAX page loading */
+            this.router = new Router(this);
+            this.router.init();
 
-    /* If no path worked, throw an error */
-    throw new Error('Could not load songs.json from any expected path');
-}
+            /* Search module */
+            this.search = new Search(this);
+            this.search.init();
 
-/* =========================================================================
- * SPA ROUTER
- * ========================================================================= */
+            /* Favourites module */
+            this.favorites = new Favorites(this);
+            this.favorites.init();
 
-/**
- * handleRoute()
- *
- * The main SPA router function. Reads the current URL hash and renders
- * the appropriate view in the #app-content container.
- *
- * Route patterns:
- *   #/               → Home (songbook grid)
- *   #/songbook/<ID>  → Song list for a specific songbook
- *   #/song/<SONG_ID> → Song detail view (lyrics)
- *   #/favorites      → Favourites view
- *   #/help           → Help view (future)
- *   (anything else)  → Home (fallback)
- */
-function handleRoute() {
-    /* Get the #app-content container where views are rendered */
-    const container = $('#app-content');
+            /* PWA installation manager */
+            this.pwa = new PWA(this);
+            this.pwa.init();
 
-    /* If song data hasn't loaded yet, do nothing (loading spinner is shown) */
-    if (!appState.songData) {
-        return;
-    }
+            /* Shuffle / random song */
+            this.shuffle = new Shuffle(this);
+            this.shuffle.init();
 
-    /* Parse the current URL hash into route segments */
-    const route = getHashRoute();
+            /* Numeric keypad */
+            this.numpad = new Numpad(this);
+            this.numpad.init();
 
-    /* Extract the first segment to determine the view type */
-    const viewType = route.segments[0] || '';
+            /* Share module */
+            this.share = new Share(this);
+            this.share.init();
 
-    /* Extract the second segment (used as an ID parameter) */
-    const viewParam = route.segments[1] || '';
+            /* Audio playback module (#90) */
+            this.audio = new Audio(this);
+            this.audio.init();
 
-    /* Route to the appropriate view based on the first segment */
-    switch (viewType) {
+            /* Sheet music viewer (#91) */
+            this.sheetMusic = new SheetMusic(this);
+            this.sheetMusic.init();
 
-        /* --- Songbook View: show all songs in a specific songbook --- */
-        case 'songbook':
-            /* Update the current view name in app state */
-            appState.currentView = 'songbook';
+            /* Recently viewed history (#92) */
+            this.history = new History(this);
+            this.history.init();
 
-            /* Render the song list for the specified songbook ID */
-            renderSongList(appState.songData, viewParam, container);
+            /* Worship set list / playlist (#94) */
+            this.setList = new SetList(this);
+            this.setList.init();
 
-            /* Update the active nav link */
-            updateActiveNav('songbooks');
-            break;
+            /* Display preferences & presentation mode (#95) */
+            this.display = new Display(this);
+            this.display.init();
 
-        /* --- Song Detail View: show lyrics for a specific song --- */
-        case 'song':
-            /* Update the current view name in app state */
-            appState.currentView = 'song';
+            /* Side-by-side song comparison (#102) */
+            this.compare = new Compare(this);
+            this.compare.init();
 
-            /* Find the song object by its ID (e.g., "CH-0003") */
-            const song = appState.songData.songs.find(s => s.id === viewParam);
+            /* Keyboard shortcuts help overlay (#104) */
+            this.shortcuts = new Shortcuts(this);
+            this.shortcuts.init();
 
-            /* If the song exists, render its detail view */
-            if (song) {
-                renderSongDetail(song, container);
-            } else {
-                /* Song not found: show an error message */
-                /* Use textContent to safely display the user-controlled viewParam */
-                container.innerHTML = '';
-                const errorDiv = document.createElement('div');
-                errorDiv.className = 'text-center py-5 view-fade-in';
-                errorDiv.innerHTML = `
-                    <i class="bi bi-exclamation-triangle fs-1 text-warning"></i>
-                    <h3 class="mt-3">Song Not Found</h3>
-                    <p class="text-muted"></p>
-                    <a href="#/" class="btn btn-primary mt-2">
-                        <i class="bi bi-house me-1"></i>Back to Songbooks
-                    </a>
-                `;
-                /* Safely set the user-controlled parameter as text, not HTML */
-                errorDiv.querySelector('p').textContent = `The song "${viewParam}" could not be found.`;
-                container.appendChild(errorDiv);
-            }
+            /* Missing song request form (#107) */
+            this.request = new Request(this);
+            this.request.init();
 
-            /* Clear the active nav (song detail is not a nav item) */
-            updateActiveNav('');
-            break;
+            /* Transpose / capo indicator (#101) */
+            this.transpose = new Transpose(this);
+            this.transpose.init();
 
-        /* --- Favourites View: show saved favourite songs --- */
-        case 'favorites':
-            /* Update the current view name in app state */
-            appState.currentView = 'favorites';
+            /* Scroll-linked reading progress (#109) */
+            this.readingProgress = new ReadingProgress(this);
+            this.readingProgress.init();
 
-            /* Render the favourites list */
-            renderFavorites(appState.songData, container);
+            /* Songbook alphabetical index (#111) */
+            this.songbookIndex = new SongbookIndex(this);
+            this.songbookIndex.init();
 
-            /* Update the active nav link */
-            updateActiveNav('favorites');
-            break;
+            /* Recent search terms (#110) */
+            this.searchHistory = new SearchHistory(this);
+            this.searchHistory.init();
 
-        /* --- Help View: placeholder for future in-app help --- */
-        case 'help':
-            /* Update the current view name in app state */
-            appState.currentView = 'help';
+            /* Song of the Day (#108) */
+            this.songOfTheDay = new SongOfTheDay(this);
+            this.songOfTheDay.init();
 
-            /* Render a simple help placeholder */
-            renderHelpView(container);
+            /* Offline status indicator (#112) */
+            this.offlineIndicator = new OfflineIndicator(this);
+            this.offlineIndicator.init();
 
-            /* Update the active nav link */
-            updateActiveNav('help');
-            break;
+            /* --- Set up global event listeners --- */
+            this.bindGlobalEvents();
 
-        /* --- Home (default): show songbook grid --- */
-        default:
-            /* Update the current view name in app state */
-            appState.currentView = 'home';
+            /* --- Show first-launch disclaimer if needed --- */
+            this.checkDisclaimer();
 
-            /* Render the songbook grid (home view) */
-            renderSongbookGrid(appState.songData, container);
+            /* --- Register service worker --- */
+            this.registerServiceWorker();
 
-            /* Update the active nav link */
-            updateActiveNav('songbooks');
-            break;
-    }
+            /* --- Load initial page based on current URL --- */
+            await this.router.handleCurrentRoute();
 
-    /* Scroll to the top of the page on each route change */
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+            /* --- Hide the loading spinner --- */
+            this.hideLoader();
 
-    /* Update the browser tab title to reflect the current view */
-    updateDocumentTitle(viewType, viewParam);
-}
+            console.log(`[iHymns] v${this.config.version} initialised successfully`);
 
-/**
- * updateDocumentTitle(viewType, viewParam)
- *
- * Updates the browser tab title based on the current route.
- * This helps users identify the page in their browser tabs and history,
- * and improves SEO for bookmarked/shared deep links.
- *
- * @param {string} viewType  - The view type segment (e.g., 'songbook', 'song', 'favorites')
- * @param {string} viewParam - The view parameter (e.g., songbook ID or song ID)
- */
-function updateDocumentTitle(viewType, viewParam) {
-    /* Base app name used as suffix in all titles */
-    const baseName = 'iHymns';
-
-    /* Build title based on the current view */
-    switch (viewType) {
-
-        case 'songbook': {
-            /* Find the songbook name from the song data */
-            const songbook = appState.songData.songbooks.find(sb => sb.id === viewParam);
-
-            /* Set title to "Songbook Name — iHymns" */
-            document.title = songbook
-                ? `${songbook.name} — ${baseName}`
-                : `Songbook — ${baseName}`;
-            break;
-        }
-
-        case 'song': {
-            /* Find the song from the song data */
-            const song = appState.songData.songs.find(s => s.id === viewParam);
-
-            /* Set title to "Song Title — Songbook — iHymns" */
-            document.title = song
-                ? `${song.title} — ${song.songbookName} #${song.number} — ${baseName}`
-                : `Song — ${baseName}`;
-            break;
-        }
-
-        case 'favorites':
-            /* Set title for favourites view */
-            document.title = `Favourites — ${baseName}`;
-            break;
-
-        case 'help':
-            /* Set title for help view */
-            document.title = `Help — ${baseName}`;
-            break;
-
-        default:
-            /* Home/default: just the app name with tagline */
-            document.title = `${baseName} — Christian Lyrics for Worship`;
-            break;
-    }
-}
-
-/**
- * updateActiveNav(navName)
- *
- * Updates the visual "active" state of navigation links in the navbar.
- * Only one nav link should appear active at a time.
- *
- * @param {string} navName - The nav item to mark active: 'songbooks', 'favorites', 'help', or ''
- */
-function updateActiveNav(navName) {
-    /* Get references to all navigation link elements */
-    const navSongbooks = $('#nav-songbooks');
-    const navFavorites = $('#nav-favorites');
-    const navHelp = $('#nav-help');
-
-    /* Remove 'active' class and aria-current from all nav links */
-    [navSongbooks, navFavorites, navHelp].forEach(link => {
-        if (link) {
-            link.classList.remove('active');
-            link.removeAttribute('aria-current');
-        }
-    });
-
-    /* Map the navName to the corresponding element */
-    const navMap = {
-        'songbooks': navSongbooks,
-        'favorites': navFavorites,
-        'help': navHelp
-    };
-
-    /* Add 'active' class and aria-current to the matching nav link */
-    const activeLink = navMap[navName];
-    if (activeLink) {
-        activeLink.classList.add('active');
-        activeLink.setAttribute('aria-current', 'page');
-    }
-}
-
-/* =========================================================================
- * NAVIGATION EVENT BINDING
- * ========================================================================= */
-
-/**
- * bindNavigation()
- *
- * Binds click event listeners to the navbar navigation links.
- * Each link navigates to the corresponding hash route.
- */
-function bindNavigation() {
-    /* Brand/logo click: navigate to home (songbook grid) */
-    const navBrand = $('#nav-brand');
-    if (navBrand) {
-        navBrand.addEventListener('click', (e) => {
-            e.preventDefault();
-            setHashRoute('/');
-        });
-    }
-
-    /* Songbooks nav link: navigate to home */
-    const navSongbooks = $('#nav-songbooks');
-    if (navSongbooks) {
-        navSongbooks.addEventListener('click', (e) => {
-            e.preventDefault();
-            setHashRoute('/');
-        });
-    }
-
-    /* Favourites nav link: navigate to favourites view */
-    const navFavorites = $('#nav-favorites');
-    if (navFavorites) {
-        navFavorites.addEventListener('click', (e) => {
-            e.preventDefault();
-            setHashRoute('/favorites');
-        });
-    }
-
-    /* Help nav link: navigate to help view */
-    const navHelp = $('#nav-help');
-    if (navHelp) {
-        navHelp.addEventListener('click', (e) => {
-            e.preventDefault();
-            setHashRoute('/help');
-        });
-    }
-
-    /* Footer help link: navigate to help view */
-    const footerHelp = $('#footer-help');
-    if (footerHelp) {
-        footerHelp.addEventListener('click', (e) => {
-            e.preventDefault();
-            setHashRoute('/help');
-        });
-    }
-}
-
-/* =========================================================================
- * SERVICE WORKER REGISTRATION
- * ========================================================================= */
-
-/**
- * registerServiceWorker()
- *
- * Registers the PWA service worker for offline capability and caching.
- * Only registers if the browser supports service workers.
- */
-async function registerServiceWorker() {
-    /* Check if the browser supports service workers */
-    if ('serviceWorker' in navigator) {
-        try {
-            /* Register the service worker script */
-            const registration = await navigator.serviceWorker.register('service-worker.js');
-
-            /* Log success for debugging */
-            console.log('[iHymns] Service Worker registered:', registration.scope);
         } catch (error) {
-            /* Log failure (non-critical — app still works without SW) */
-            console.warn('[iHymns] Service Worker registration failed:', error);
+            console.error('[iHymns] Initialisation error:', error);
+            this.hideLoader();
+            this.showError('Failed to initialise the application. Please refresh the page.');
+        }
+    }
+
+    /**
+     * Bind global event listeners for keyboard shortcuts,
+     * navigation links, and action buttons.
+     */
+    bindGlobalEvents() {
+        /** @type {string} Number buffer for quick-jump (#96) */
+        this.quickJumpBuffer = '';
+        /** @type {number|null} Quick-jump timeout ID */
+        this.quickJumpTimer = null;
+
+        /* --- Keyboard shortcuts --- */
+        document.addEventListener('keydown', (e) => {
+            /* Don't trigger shortcuts when typing in inputs */
+            const tag = (e.target.tagName || '').toLowerCase();
+            if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+
+            /* Quick-jump: capture digit keys (#96) */
+            if (e.key >= '0' && e.key <= '9') {
+                e.preventDefault();
+                this.quickJumpAppend(e.key);
+                return;
+            }
+
+            /* Quick-jump: Enter confirms, Escape cancels (#96) */
+            if (this.quickJumpBuffer) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    this.quickJumpGo();
+                    return;
+                }
+                if (e.key === 'Escape') {
+                    e.preventDefault();
+                    this.quickJumpClear();
+                    return;
+                }
+                if (e.key === 'Backspace') {
+                    e.preventDefault();
+                    this.quickJumpBuffer = this.quickJumpBuffer.slice(0, -1);
+                    if (this.quickJumpBuffer) {
+                        this.quickJumpShowIndicator();
+                        this.quickJumpResetTimer();
+                    } else {
+                        this.quickJumpClear();
+                    }
+                    return;
+                }
+            }
+
+            switch (e.key) {
+                case '?':
+                    /* Toggle keyboard shortcuts help (#104) */
+                    e.preventDefault();
+                    this.shortcuts.toggle();
+                    return;
+                case '/':
+                    /* Open search */
+                    e.preventDefault();
+                    this.search.toggleHeaderSearch(true);
+                    break;
+                case '#':
+                    /* Open numpad modal */
+                    e.preventDefault();
+                    this.numpad.openModal();
+                    break;
+                case 'Escape':
+                    /* Close shortcuts overlay or search bar */
+                    if (this.shortcuts.visible) {
+                        this.shortcuts.hide();
+                    } else {
+                        this.search.toggleHeaderSearch(false);
+                    }
+                    break;
+                case 'f':
+                case 'F':
+                    /* Toggle favourite on song page */
+                    this.favorites.toggleCurrentSong();
+                    break;
+                case 'ArrowLeft':
+                    /* Previous song (if on song page) */
+                    this.navigateSongDirection('prev');
+                    break;
+                case 'ArrowRight':
+                    /* Next song (if on song page) */
+                    this.navigateSongDirection('next');
+                    break;
+            }
+        });
+
+        /* Ctrl+K shortcut for search */
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+                e.preventDefault();
+                this.search.toggleHeaderSearch(true);
+            }
+        });
+
+        /* --- Navigation click handler (event delegation) --- */
+        document.addEventListener('click', (e) => {
+            const link = e.target.closest('[data-navigate]');
+            if (link) {
+                e.preventDefault();
+                const href = link.getAttribute('href');
+                if (href) {
+                    this.router.navigate(href);
+                }
+            }
+
+            /* Action buttons (home page) */
+            const action = e.target.closest('[data-action]');
+            if (action) {
+                e.preventDefault();
+                this.handleAction(action.dataset.action, action);
+            }
+
+            /* Audio button — opens the MIDI player (#90) */
+            const audioBtn = e.target.closest('.btn-audio');
+            if (audioBtn) {
+                e.preventDefault();
+                const songId = audioBtn.dataset.songId;
+                if (songId && this.audio) {
+                    this.audio.handleAudioClick(songId);
+                }
+            }
+
+            /* Sheet music button — opens the PDF viewer (#91) */
+            const sheetBtn = e.target.closest('.btn-sheet-music');
+            if (sheetBtn) {
+                e.preventDefault();
+                const songId = sheetBtn.dataset.songId;
+                if (songId && this.sheetMusic) {
+                    this.sheetMusic.handleSheetMusicClick(songId);
+                }
+            }
+
+            /* Missing song request button (#107) */
+            const requestBtn = e.target.closest('.btn-request-song');
+            if (requestBtn) {
+                e.preventDefault();
+                this.request.showRequestModal(requestBtn.dataset.prefill || '');
+            }
+        });
+
+        /* --- Footer navigation active state --- */
+        document.querySelectorAll('.footer-nav-item').forEach(item => {
+            item.addEventListener('click', (e) => {
+                e.preventDefault();
+                const href = item.getAttribute('href');
+                if (href) {
+                    this.router.navigate(href);
+                }
+            });
+        });
+
+        /* --- Scroll-to-top button (#97) --- */
+        const scrollBtn = document.getElementById('scroll-to-top-btn');
+        if (scrollBtn) {
+            window.addEventListener('scroll', () => {
+                const show = window.scrollY > 300;
+                scrollBtn.classList.toggle('visible', show);
+                scrollBtn.setAttribute('aria-hidden', String(!show));
+                scrollBtn.tabIndex = show ? 0 : -1;
+            }, { passive: true });
+
+            scrollBtn.addEventListener('click', () => {
+                window.scrollTo({
+                    top: 0,
+                    behavior: document.body.classList.contains('reduce-motion') ? 'auto' : 'smooth'
+                });
+            });
+        }
+    }
+
+    /**
+     * Handle action button clicks (data-action attribute).
+     *
+     * @param {string} action The action name
+     * @param {HTMLElement} el The clicked element
+     */
+    handleAction(action, el) {
+        switch (action) {
+            case 'open-search':
+                this.router.navigate('/search');
+                break;
+            case 'open-numpad':
+                this.numpad.openModal(el.dataset.numpadBook || null);
+                break;
+            case 'open-shuffle':
+                this.shuffle.openModal();
+                break;
+            case 'shuffle-book':
+                this.shuffle.shuffleFromBook(el.dataset.shuffleBook || null);
+                break;
+        }
+    }
+
+    /**
+     * Navigate to the previous or next song (if on song page).
+     *
+     * @param {string} direction 'prev' or 'next'
+     */
+    navigateSongDirection(direction) {
+        const songPage = document.querySelector('.page-song');
+        if (!songPage) return;
+
+        const selector = direction === 'prev'
+            ? '.song-navigation a:first-child'
+            : '.song-navigation a:last-child';
+        const link = songPage.querySelector(selector);
+        if (link) {
+            const href = link.getAttribute('href');
+            if (href) this.router.navigate(href);
+        }
+    }
+
+    /* =====================================================================
+     * QUICK-JUMP — Keyboard number navigation (#96)
+     * ===================================================================== */
+
+    /**
+     * Append a digit to the quick-jump buffer and show/update the indicator.
+     * @param {string} digit Single digit character
+     */
+    quickJumpAppend(digit) {
+        this.quickJumpBuffer += digit;
+        this.quickJumpShowIndicator();
+        this.quickJumpResetTimer();
+    }
+
+    /** Show or update the floating quick-jump indicator */
+    quickJumpShowIndicator() {
+        let indicator = document.getElementById('quick-jump-indicator');
+        if (!indicator) {
+            indicator = document.createElement('div');
+            indicator.id = 'quick-jump-indicator';
+            indicator.className = 'quick-jump-indicator';
+            indicator.setAttribute('role', 'status');
+            indicator.setAttribute('aria-live', 'polite');
+            document.body.appendChild(indicator);
+        }
+        indicator.innerHTML = `
+            <div class="quick-jump-number">${this.escapeHtml(this.quickJumpBuffer)}</div>
+            <small class="quick-jump-hint">Press Enter or wait...</small>`;
+        indicator.classList.add('visible');
+    }
+
+    /** Clear the quick-jump buffer and hide the indicator */
+    quickJumpClear() {
+        this.quickJumpBuffer = '';
+        clearTimeout(this.quickJumpTimer);
+        this.quickJumpTimer = null;
+        const indicator = document.getElementById('quick-jump-indicator');
+        if (indicator) indicator.classList.remove('visible');
+    }
+
+    /** Reset the auto-navigate timer (1.5s after last digit) */
+    quickJumpResetTimer() {
+        clearTimeout(this.quickJumpTimer);
+        this.quickJumpTimer = setTimeout(() => this.quickJumpGo(), 1500);
+    }
+
+    /**
+     * Execute the quick-jump navigation.
+     * Uses default songbook if set, otherwise shows a quick picker.
+     */
+    quickJumpGo() {
+        const number = this.quickJumpBuffer;
+        this.quickJumpClear();
+
+        if (!number) return;
+
+        const defaultBook = localStorage.getItem('ihymns_default_songbook');
+        if (defaultBook) {
+            const padded = number.padStart(4, '0');
+            this.router.navigate(`/song/${defaultBook}-${padded}`);
+        } else {
+            /* Show quick songbook picker */
+            this.quickJumpShowPicker(number);
+        }
+    }
+
+    /**
+     * Show a quick songbook picker for the typed number.
+     * @param {string} number The typed song number
+     */
+    quickJumpShowPicker(number) {
+        document.getElementById('quick-jump-picker')?.remove();
+
+        const songbooks = this.config.songbooks || [];
+        const picker = document.createElement('div');
+        picker.id = 'quick-jump-picker';
+        picker.className = 'quick-jump-picker';
+        picker.setAttribute('role', 'dialog');
+        picker.setAttribute('aria-label', 'Select songbook');
+
+        /* Build songbook buttons from config or use fallback */
+        const bookButtons = songbooks.length > 0
+            ? songbooks.map(b => `
+                <button type="button" class="btn btn-outline-primary btn-sm quick-jump-book"
+                        data-book="${this.escapeHtml(b.id)}">
+                    ${this.escapeHtml(b.id)}
+                </button>`).join('')
+            : ['CP', 'JP', 'MP', 'SDAH', 'CH'].map(id => `
+                <button type="button" class="btn btn-outline-primary btn-sm quick-jump-book"
+                        data-book="${id}">${id}</button>`).join('');
+
+        picker.innerHTML = `
+            <div class="quick-jump-picker-content">
+                <p class="mb-2 fw-bold">Song #${this.escapeHtml(number)}</p>
+                <p class="text-muted small mb-2">Select songbook:</p>
+                <div class="d-flex flex-wrap gap-2 justify-content-center">
+                    ${bookButtons}
+                </div>
+                <div class="form-check mt-2">
+                    <input class="form-check-input" type="checkbox" id="quick-jump-remember">
+                    <label class="form-check-label small" for="quick-jump-remember">Remember choice</label>
+                </div>
+            </div>`;
+
+        document.body.appendChild(picker);
+
+        /* Animate in */
+        requestAnimationFrame(() => picker.classList.add('visible'));
+
+        /* Bind songbook buttons */
+        picker.querySelectorAll('.quick-jump-book').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const bookId = btn.dataset.book;
+                const remember = document.getElementById('quick-jump-remember')?.checked;
+                if (remember) {
+                    localStorage.setItem('ihymns_default_songbook', bookId);
+                }
+                picker.remove();
+                const padded = number.padStart(4, '0');
+                this.router.navigate(`/song/${bookId}-${padded}`);
+            });
+        });
+
+        /* Close on click outside */
+        const closeHandler = (e) => {
+            if (!picker.contains(e.target)) {
+                picker.remove();
+                document.removeEventListener('click', closeHandler);
+            }
+        };
+        setTimeout(() => document.addEventListener('click', closeHandler), 100);
+
+        /* Close on Escape */
+        const escHandler = (e) => {
+            if (e.key === 'Escape') {
+                picker.remove();
+                document.removeEventListener('keydown', escHandler);
+            }
+        };
+        document.addEventListener('keydown', escHandler);
+    }
+
+    /**
+     * Check if the first-launch disclaimer has been accepted.
+     * If not, show the disclaimer modal.
+     */
+    checkDisclaimer() {
+        const accepted = localStorage.getItem('ihymns_disclaimer_accepted');
+        if (accepted) return;
+
+        const modal = document.getElementById('disclaimer-modal');
+        if (!modal) return;
+
+        /* Show the modal using Bootstrap */
+        const bsModal = new bootstrap.Modal(modal);
+        bsModal.show();
+
+        /* Handle acceptance */
+        const acceptBtn = document.getElementById('disclaimer-accept-btn');
+        if (acceptBtn) {
+            acceptBtn.addEventListener('click', () => {
+                localStorage.setItem('ihymns_disclaimer_accepted', 'true');
+                bsModal.hide();
+            });
+        }
+    }
+
+    /**
+     * Register the service worker for offline support and handle updates (#83).
+     *
+     * When a new service worker is detected (updatefound), we track its
+     * installation state. Once installed and waiting, a toast notification
+     * is shown to the user offering to refresh for the new version.
+     */
+    registerServiceWorker() {
+        if (!('serviceWorker' in navigator)) return;
+
+        navigator.serviceWorker.register('/service-worker.js', {
+            scope: '/'
+        }).then(registration => {
+            console.log('[iHymns] Service worker registered:', registration.scope);
+
+            /* Check for updates periodically (every hour) */
+            setInterval(() => registration.update(), 60 * 60 * 1000);
+
+            /*
+             * Listen for a new service worker being found (#83).
+             * This fires when the browser detects an updated service-worker.js.
+             */
+            registration.addEventListener('updatefound', () => {
+                const newWorker = registration.installing;
+                if (!newWorker) return;
+
+                newWorker.addEventListener('statechange', () => {
+                    /*
+                     * The new worker is installed and waiting to activate.
+                     * Only show the notification if there's already an active
+                     * controller (i.e., this isn't the very first install).
+                     */
+                    if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                        this.showUpdateNotification(registration);
+                    }
+                });
+            });
+
+        }).catch(error => {
+            console.warn('[iHymns] Service worker registration failed:', error);
+        });
+    }
+
+    /**
+     * Show an update-available toast notification (#83).
+     * Offers the user a "Refresh" button that activates the new
+     * service worker and reloads the page.
+     *
+     * @param {ServiceWorkerRegistration} registration
+     */
+    showUpdateNotification(registration) {
+        const container = document.getElementById('toast-container');
+        if (!container) return;
+
+        const toastEl = document.createElement('div');
+        toastEl.className = 'toast align-items-center text-bg-primary border-0';
+        toastEl.setAttribute('role', 'alert');
+        toastEl.setAttribute('aria-live', 'assertive');
+        toastEl.setAttribute('aria-atomic', 'true');
+        toastEl.innerHTML = `
+            <div class="d-flex">
+                <div class="toast-body">
+                    <i class="fa-solid fa-arrow-rotate-right me-2" aria-hidden="true"></i>
+                    A new version of ${this.escapeHtml(this.config.appName)} is available.
+                    <button type="button" class="btn btn-sm btn-light ms-2" id="sw-update-btn">
+                        Refresh
+                    </button>
+                </div>
+                <button type="button" class="btn-close btn-close-white me-2 m-auto"
+                        data-bs-dismiss="toast" aria-label="Close"></button>
+            </div>`;
+
+        container.appendChild(toastEl);
+
+        const toast = new bootstrap.Toast(toastEl, { autohide: false });
+        toast.show();
+
+        /* Handle the refresh button click */
+        const refreshBtn = toastEl.querySelector('#sw-update-btn');
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', () => {
+                /* Tell the waiting service worker to skip waiting and activate */
+                if (registration.waiting) {
+                    registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+                }
+            });
+        }
+
+        /*
+         * Listen for the new service worker taking control, then reload.
+         * This fires after the waiting worker calls skipWaiting().
+         */
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+            window.location.reload();
+        }, { once: true });
+
+        /* Clean up toast element after dismissed */
+        toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
+    }
+
+    /**
+     * Escape HTML for safe insertion into innerHTML.
+     * @param {string} str
+     * @returns {string}
+     */
+    escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str || '';
+        return div.innerHTML;
+    }
+
+    /**
+     * Hide the initial page loader spinner.
+     */
+    hideLoader() {
+        const loader = document.getElementById('page-loader');
+        if (loader) {
+            loader.classList.add('hidden');
+        }
+    }
+
+    /**
+     * Display an error message to the user.
+     *
+     * @param {string} message Error message text
+     */
+    showError(message) {
+        const content = document.getElementById('page-content');
+        if (content) {
+            content.innerHTML = `
+                <div class="alert alert-danger mt-4" role="alert">
+                    <i class="fa-solid fa-triangle-exclamation me-2" aria-hidden="true"></i>
+                    ${this.escapeHtml(message)}
+                </div>`;
+        }
+    }
+
+    /**
+     * Show a toast notification.
+     *
+     * @param {string} message Toast message
+     * @param {string} type Bootstrap alert type (success, danger, warning, info)
+     * @param {number} duration Auto-dismiss in ms (0 = don't auto-dismiss)
+     */
+    showToast(message, type = 'info', duration = 3000) {
+        const container = document.getElementById('toast-container');
+        if (!container) return;
+
+        /* Whitelist valid Bootstrap toast types */
+        const validTypes = ['primary', 'secondary', 'success', 'danger', 'warning', 'info'];
+        const safeType = validTypes.includes(type) ? type : 'info';
+
+        const toastEl = document.createElement('div');
+        toastEl.className = `toast align-items-center text-bg-${safeType} border-0`;
+        toastEl.setAttribute('role', 'alert');
+        toastEl.setAttribute('aria-live', 'assertive');
+        toastEl.setAttribute('aria-atomic', 'true');
+        toastEl.innerHTML = `
+            <div class="d-flex">
+                <div class="toast-body">${this.escapeHtml(message)}</div>
+                <button type="button" class="btn-close btn-close-white me-2 m-auto"
+                        data-bs-dismiss="toast" aria-label="Close"></button>
+            </div>`;
+
+        container.appendChild(toastEl);
+
+        const toast = new bootstrap.Toast(toastEl, {
+            autohide: duration > 0,
+            delay: duration
+        });
+        toast.show();
+
+        /* Clean up after hidden */
+        toastEl.addEventListener('hidden.bs.toast', () => {
+            toastEl.remove();
+        });
+    }
+
+    /**
+     * Send a page view event to analytics (respects DNT).
+     *
+     * @param {string} path Page path
+     * @param {string} title Page title
+     */
+    trackPageView(path, title) {
+        /* Google Analytics 4 */
+        if (typeof gtag === 'function') {
+            gtag('event', 'page_view', {
+                page_path: path,
+                page_title: title,
+                /* IP anonymised server-side when DNT is active */
+            });
         }
     }
 }
 
-/* =========================================================================
- * APPLICATION INITIALISATION
- * ========================================================================= */
+/* ==========================================================================
+   APPLICATION BOOTSTRAP — Wait for DOM ready, then initialise
+   ========================================================================== */
 
-/**
- * init()
- *
- * The main initialisation function. Called when the DOM is ready.
- * Performs the following steps:
- *   1. Initialise theme (dark/light mode)
- *   2. Bind navigation event listeners
- *   3. Load song data from JSON
- *   4. Initialise search index
- *   5. Bind search input events
- *   6. Handle the initial route
- *   7. Set up hash change listener for SPA routing
- *   8. Register service worker
- *   9. Initialise PWA install banner
- *  10. Start update checker
- */
-async function init() {
-    /* Log application start for debugging */
-    console.log('[iHymns] Initialising application...');
-
-    /* --- Step 1: Initialise theme --- */
-    /* Apply the user's saved theme preference or system default */
-    initTheme();
-
-    /* Apply colourblind-friendly mode if previously enabled */
-    initColourblindMode();
-
-    /* Bind the dark mode toggle button event listener */
-    bindThemeToggle();
-
-    /* Bind the colourblind mode toggle button */
-    const cbToggle = $('#cb-toggle');
-    if (cbToggle) {
-        cbToggle.addEventListener('click', () => {
-            const newState = toggleColourblindMode();
-            /* Update button visual to reflect state */
-            cbToggle.classList.toggle('active', newState);
-            cbToggle.setAttribute('aria-pressed', String(newState));
-        });
-        /* Set initial visual state */
-        const cbEnabled = document.documentElement.getAttribute('data-theme-cb') === 'true';
-        cbToggle.classList.toggle('active', cbEnabled);
-        cbToggle.setAttribute('aria-pressed', String(cbEnabled));
-    }
-
-    /* --- Step 2: Bind navigation --- */
-    /* Set up click handlers for all navbar links */
-    bindNavigation();
-
-    /* --- Step 3: Load song data --- */
-    try {
-        /* Fetch and parse the song database */
-        appState.songData = await loadSongData();
-
-        /* Mark loading as complete */
-        appState.isLoading = false;
-
-        /* --- Step 4: Initialise search index --- */
-        /* Build the Fuse.js search index from the loaded song data */
-        initSearch(appState.songData);
-
-        /* --- Step 5: Bind search input --- */
-        /* Set up search input events (debounced input, clear button, etc.) */
-        const container = $('#app-content');
-        bindSearchInput(container);
-
-        /* --- Step 6: Handle the initial route --- */
-        /* Render the view matching the current URL hash */
-        handleRoute();
-
-    } catch (error) {
-        /* Song data failed to load: show an error message to the user */
-        console.error('[iHymns] Failed to load song data:', error);
-
-        /* Get the content container */
-        const container = $('#app-content');
-
-        /* Display a user-friendly error message */
-        /* Use textContent for the error.message to prevent XSS */
-        container.innerHTML = '';
-        const errorContainer = document.createElement('div');
-        errorContainer.className = 'text-center py-5';
-        errorContainer.innerHTML = `
-            <i class="bi bi-exclamation-triangle fs-1 text-danger"></i>
-            <h3 class="mt-3">Unable to Load Songs</h3>
-            <p class="text-muted">
-                The song database could not be loaded. Please check your connection
-                and try refreshing the page.
-            </p>
-            <button class="btn btn-primary mt-2" onclick="location.reload()">
-                <i class="bi bi-arrow-clockwise me-1"></i>Retry
-            </button>
-            <p class="text-muted small mt-3"></p>
-        `;
-        /* Safely set the error message as text, not HTML */
-        errorContainer.querySelector('p.small').textContent = `Error: ${error.message}`;
-        container.appendChild(errorContainer);
-
-        /* Stop further initialisation since we have no data */
-        return;
-    }
-
-    /* --- Step 7: Set up SPA routing --- */
-    /* Listen for hash changes (e.g., user clicks back/forward or a link) */
-    window.addEventListener('hashchange', handleRoute);
-
-    /* --- Step 8: Register service worker --- */
-    /* Register the PWA service worker for offline support */
-    registerServiceWorker();
-
-    /* --- Step 9: Initialise PWA install banner --- */
-    /* Set up the install prompt for users who haven't installed the PWA */
-    initInstallBanner();
-
-    /* --- Step 10: Start update checker --- */
-    /* Check for app updates every 30 minutes */
-    initUpdateChecker(30);
-
-    /* Log successful initialisation */
-    console.log('[iHymns] Application initialised successfully.');
-}
-
-/* =========================================================================
- * DOM READY — START THE APPLICATION
- * ========================================================================= */
-
-/**
- * Wait for the DOM to be fully loaded before initialising the app.
- * Using 'DOMContentLoaded' ensures all HTML elements are available
- * before we try to access them via querySelector.
- */
-document.addEventListener('DOMContentLoaded', init);
+document.addEventListener('DOMContentLoaded', () => {
+    window.iHymnsApp = new iHymnsApp();
+    window.iHymnsApp.init();
+});
