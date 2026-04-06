@@ -180,8 +180,13 @@ export class Favorites {
             const freshBtn = clearAllBtn.cloneNode(true);
             clearAllBtn.replaceWith(freshBtn);
 
-            freshBtn.addEventListener('click', () => {
-                if (confirm('Remove all favourites?')) {
+            freshBtn.addEventListener('click', async () => {
+                const ok = await this.app.showConfirm('Remove all favourites?', {
+                    title: 'Clear Favourites',
+                    okText: 'Remove All',
+                    okClass: 'btn-danger',
+                });
+                if (ok) {
                     this.clearAll();
                     this.loadFavoritesList();
                     this.app.showToast('All favourites removed', 'info');

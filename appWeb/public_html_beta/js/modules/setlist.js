@@ -232,10 +232,15 @@ export class SetList {
 
             /* Bind delete buttons */
             container.querySelectorAll('.btn-delete-setlist').forEach(btn => {
-                btn.addEventListener('click', (e) => {
+                btn.addEventListener('click', async (e) => {
                     e.stopPropagation();
                     const id = btn.dataset.setlistId;
-                    if (confirm('Delete this set list?')) {
+                    const ok = await this.app.showConfirm('Delete this set list?', {
+                        title: 'Delete Set List',
+                        okText: 'Delete',
+                        okClass: 'btn-danger',
+                    });
+                    if (ok) {
                         this.delete(id);
                         this.renderSetListOverview();
                         this.app.showToast('Set list deleted', 'info', 2000);
@@ -345,8 +350,11 @@ export class SetList {
         });
 
         /* Rename */
-        container.querySelector('#setlist-rename-btn')?.addEventListener('click', () => {
-            const name = prompt('Rename set list:', list.name);
+        container.querySelector('#setlist-rename-btn')?.addEventListener('click', async () => {
+            const name = await this.app.showPrompt('Rename set list:', list.name, {
+                title: 'Rename Set List',
+                okText: 'Rename',
+            });
             if (name && name.trim()) {
                 this.rename(listId, name.trim());
                 this.renderSetListDetail(listId);
@@ -541,12 +549,16 @@ export class SetList {
         });
 
         /* Create new set list */
-        modal.querySelector('#create-new-setlist-btn')?.addEventListener('click', () => {
-            const name = prompt('Set list name:', '');
+        modal.querySelector('#create-new-setlist-btn')?.addEventListener('click', async () => {
+            bsModal.hide();
+            const name = await this.app.showPrompt('Set list name:', '', {
+                title: 'New Set List',
+                okText: 'Create',
+                placeholder: 'e.g. Sunday Morning Worship',
+            });
             if (name && name.trim()) {
                 const newList = this.create(name.trim());
                 this.addSong(newList.id, song);
-                bsModal.hide();
                 this.app.showToast(`Created "${name.trim()}" and added song`, 'success', 2000);
             }
         });
@@ -558,8 +570,12 @@ export class SetList {
     /**
      * Show the create set list dialog (from set list page).
      */
-    showCreateDialog() {
-        const name = prompt('Set list name:', '');
+    async showCreateDialog() {
+        const name = await this.app.showPrompt('Set list name:', '', {
+            title: 'New Set List',
+            okText: 'Create',
+            placeholder: 'e.g. Sunday Morning Worship',
+        });
         if (name && name.trim()) {
             this.create(name.trim());
             this.renderSetListOverview();

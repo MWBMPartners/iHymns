@@ -886,6 +886,193 @@ class iHymnsApp {
     }
 
     /**
+     * Show a custom confirm dialog replacing native confirm() (#114).
+     * Returns a Promise that resolves to true (OK) or false (Cancel).
+     *
+     * @param {string} message The confirm message
+     * @param {object} opts Options: { title, okText, cancelText, okClass }
+     * @returns {Promise<boolean>}
+     */
+    showConfirm(message, opts = {}) {
+        return new Promise((resolve) => {
+            const {
+                title = 'Confirm',
+                okText = 'OK',
+                cancelText = 'Cancel',
+                okClass = 'btn-primary',
+            } = opts;
+
+            const id = 'ihymns-confirm-' + Date.now();
+            const modal = document.createElement('div');
+            modal.className = 'modal fade';
+            modal.id = id;
+            modal.setAttribute('tabindex', '-1');
+            modal.setAttribute('aria-labelledby', id + '-label');
+            modal.innerHTML = `
+                <div class="modal-dialog modal-dialog-centered">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title" id="${id}-label">${this.escapeHtml(title)}</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <div class="modal-body">${this.escapeHtml(message)}</div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">${this.escapeHtml(cancelText)}</button>
+                            <button type="button" class="btn ${okClass}" id="${id}-ok">${this.escapeHtml(okText)}</button>
+                        </div>
+                    </div>
+                </div>`;
+
+            document.body.appendChild(modal);
+            const bsModal = new bootstrap.Modal(modal);
+
+            let resolved = false;
+            modal.querySelector(`#${id}-ok`).addEventListener('click', () => {
+                resolved = true;
+                bsModal.hide();
+            });
+            modal.addEventListener('hidden.bs.modal', () => {
+                modal.remove();
+                resolve(resolved);
+            });
+
+            bsModal.show();
+        });
+    }
+
+    /**
+     * Show a custom prompt dialog replacing native prompt() (#114).
+     * Returns a Promise that resolves to the entered string or null (cancelled).
+     *
+     * @param {string} message The prompt message
+     * @param {string} defaultValue Default input value
+     * @param {object} opts Options: { title, okText, cancelText, placeholder }
+     * @returns {Promise<string|null>}
+     */
+    showPrompt(message, defaultValue = '', opts = {}) {
+        return new Promise((resolve) => {
+            const {
+                title = 'Input',
+                okText = 'OK',
+                cancelText = 'Cancel',
+                placeholder = '',
+            } = opts;
+
+            const id = 'ihymns-prompt-' + Date.now();
+            const modal = document.createElement('div');
+            modal.className = 'modal fade';
+            modal.id = id;
+            modal.setAttribute('tabindex', '-1');
+            modal.setAttribute('aria-labelledby', id + '-label');
+            modal.innerHTML = `
+                <div class="modal-dialog modal-dialog-centered">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title" id="${id}-label">${this.escapeHtml(title)}</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <div class="modal-body">
+                            <label for="${id}-input" class="form-label">${this.escapeHtml(message)}</label>
+                            <input type="text" class="form-control" id="${id}-input"
+                                   value="${this.escapeHtml(defaultValue)}"
+                                   placeholder="${this.escapeHtml(placeholder)}">
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">${this.escapeHtml(cancelText)}</button>
+                            <button type="button" class="btn btn-primary" id="${id}-ok">${this.escapeHtml(okText)}</button>
+                        </div>
+                    </div>
+                </div>`;
+
+            document.body.appendChild(modal);
+            const bsModal = new bootstrap.Modal(modal);
+            const input = modal.querySelector(`#${id}-input`);
+
+            let result = null;
+            const submit = () => {
+                result = input.value;
+                bsModal.hide();
+            };
+
+            modal.querySelector(`#${id}-ok`).addEventListener('click', submit);
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') submit();
+            });
+            modal.addEventListener('hidden.bs.modal', () => {
+                modal.remove();
+                resolve(result);
+            });
+            modal.addEventListener('shown.bs.modal', () => {
+                input.focus();
+                input.select();
+            });
+
+            bsModal.show();
+        });
+    }
+
+    /**
+     * Show a custom choice dialog with two action options (#114).
+     * Used for import mode selection (Replace vs Merge).
+     *
+     * @param {string} message The message
+     * @param {object} opts { title, option1Text, option2Text, option1Class, option2Class }
+     * @returns {Promise<string|null>} 'option1', 'option2', or null if dismissed
+     */
+    showChoice(message, opts = {}) {
+        return new Promise((resolve) => {
+            const {
+                title = 'Choose',
+                option1Text = 'Option 1',
+                option2Text = 'Option 2',
+                option1Class = 'btn-primary',
+                option2Class = 'btn-secondary',
+            } = opts;
+
+            const id = 'ihymns-choice-' + Date.now();
+            const modal = document.createElement('div');
+            modal.className = 'modal fade';
+            modal.id = id;
+            modal.setAttribute('tabindex', '-1');
+            modal.setAttribute('aria-labelledby', id + '-label');
+            modal.innerHTML = `
+                <div class="modal-dialog modal-dialog-centered">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title" id="${id}-label">${this.escapeHtml(title)}</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <div class="modal-body">${this.escapeHtml(message)}</div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                            <button type="button" class="btn ${option2Class}" id="${id}-opt2">${this.escapeHtml(option2Text)}</button>
+                            <button type="button" class="btn ${option1Class}" id="${id}-opt1">${this.escapeHtml(option1Text)}</button>
+                        </div>
+                    </div>
+                </div>`;
+
+            document.body.appendChild(modal);
+            const bsModal = new bootstrap.Modal(modal);
+
+            let result = null;
+            modal.querySelector(`#${id}-opt1`).addEventListener('click', () => {
+                result = 'option1';
+                bsModal.hide();
+            });
+            modal.querySelector(`#${id}-opt2`).addEventListener('click', () => {
+                result = 'option2';
+                bsModal.hide();
+            });
+            modal.addEventListener('hidden.bs.modal', () => {
+                modal.remove();
+                resolve(result);
+            });
+
+            bsModal.show();
+        });
+    }
+
+    /**
      * Hide the initial page loader spinner.
      */
     hideLoader() {

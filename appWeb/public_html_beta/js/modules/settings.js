@@ -319,8 +319,12 @@ export class Settings {
         /* Reset settings button */
         const resetBtn = document.getElementById('reset-settings-btn');
         if (resetBtn) {
-            resetBtn.addEventListener('click', () => {
-                if (confirm('Reset all settings to defaults? Your favourites will not be affected.')) {
+            resetBtn.addEventListener('click', async () => {
+                const ok = await this.app.showConfirm(
+                    'Reset all settings to defaults? Your favourites will not be affected.',
+                    { title: 'Reset Settings', okText: 'Reset', okClass: 'btn-danger' }
+                );
+                if (ok) {
                     Object.keys(this.defaults).forEach(key => {
                         localStorage.removeItem(this.storagePrefix + key);
                     });
@@ -397,10 +401,18 @@ export class Settings {
             const setCount = (data.setlists || []).length;
             const histCount = (data.history || []).length;
 
-            const mode = confirm(
-                `Found: ${favCount} favourites, ${setCount} set lists, ${histCount} history entries.\n\n` +
-                `OK = Replace existing data\nCancel = Merge with existing data`
-            ) ? 'replace' : 'merge';
+            const choice = await this.app.showChoice(
+                `Found: ${favCount} favourites, ${setCount} set lists, ${histCount} history entries.`,
+                {
+                    title: 'Import Data',
+                    option1Text: 'Replace existing',
+                    option2Text: 'Merge with existing',
+                    option1Class: 'btn-warning',
+                    option2Class: 'btn-primary',
+                }
+            );
+            if (!choice) return; /* Dismissed */
+            const mode = choice === 'option1' ? 'replace' : 'merge';
 
             if (mode === 'replace') {
                 if (data.favorites) localStorage.setItem('ihymns_favorites', JSON.stringify(data.favorites));
