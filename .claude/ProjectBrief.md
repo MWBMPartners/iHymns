@@ -12,7 +12,7 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 - **Copyright**: © 2026– MWBM Partners Ltd
 - **License**: Proprietary (third-party components retain their own licenses)
 - **GitHub Repo**: <https://github.com/MWBMPartners/iHymns>
-- **Current Version**: 0.1.0 (pre-release, Phase 1)
+- **Current Version**: 0.1.6 (pre-release, Phase 1)
 
 ---
 
@@ -40,7 +40,7 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 
 | Platform | Technology | Directory | Status |
 | --- | --- | --- | --- |
-| Web/PWA | PHP 8.5+, Bootstrap 5.3, Vanilla JS, Fuse.js | `appWeb/` | Core + Enhanced complete |
+| Web/PWA | PHP 8.5+, Bootstrap 5.3.6, Vanilla JS (ES modules), Fuse.js | `appWeb/` | Core + Enhanced complete |
 | Apple (iOS/iPadOS/tvOS/visionOS/macOS/watchOS) | Swift 6.3, SwiftUI | `appApple/` | Code complete |
 | Android (+ Fire OS, Android TV) | Kotlin 2.1, Jetpack Compose | `appAndroid/` | Code complete |
 
@@ -103,6 +103,10 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 ## 📏 Development Standards
 
 - **PHP**: 8.5+ with `declare(strict_types=1)`, `str_contains()`, match expressions
+- **JS**: ES modules architecture (25+ modules in `js/modules/`, utilities in `js/utils/`)
+- **Security**: Content Security Policy with per-request nonces, SRI hashes on CDN resources
+- **Analytics**: GA4, Plausible, Clarity, Matomo, Fathom — GDPR consent banner required
+- **Accessibility**: WCAG 2.1 AA, automated badge contrast via relative luminance
 - **Detailed code annotations**: Comments on every code block (ideally every line)
 - **Modular architecture**: PHP components (`includes/components/`), JS ES modules
 - **Automated copyright year**: `© 2026–<current year>` resolved at runtime
@@ -131,6 +135,10 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 | `tools/build-web.js` | Web build/packaging script |
 | `appWeb/public_html_beta/includes/infoAppVer.php` | App version metadata |
 | `appWeb/public_html_beta/includes/components/*.php` | Modular PHP components |
+| `appWeb/public_html_beta/includes/pages/*.php` | Page templates (song, writer, privacy, terms, settings) |
+| `appWeb/public_html_beta/js/modules/*.js` | ES modules (router, analytics, gestures, settings, etc.) |
+| `appWeb/public_html_beta/js/utils/*.js` | JS utilities (text.js) |
+| `appWeb/public_html_beta/includes/config.php` | App configuration (analytics, features) |
 | `appWeb/private_html/editor/` | Song editor (dev tool) |
 | `appApple/iHymns/iHymns/Services/AppInfo.swift` | Apple app info |
 | `appAndroid/.../AppInfo.kt` | Android app info |
@@ -151,4 +159,4 @@ See `DEV_NOTES.md` for full setup guide including Apple, Android, and Fire OS.
 
 ---
 
-Last updated: 2026-04-05
+Last updated: 2026-04-06
