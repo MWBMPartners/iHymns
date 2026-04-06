@@ -267,6 +267,21 @@ export class Settings {
             });
         }
 
+        /* Download all songs for offline */
+        const downloadBtn = document.getElementById('download-all-songs-btn');
+        if (downloadBtn) {
+            downloadBtn.addEventListener('click', () => this.downloadAllSongs());
+        }
+
+        /* Listen for progress messages from service worker */
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.addEventListener('message', (event) => {
+                if (event.data?.type === 'CACHE_ALL_SONGS_PROGRESS') {
+                    this.updateDownloadProgress(event.data);
+                }
+            });
+        }
+
         /* Reset settings button */
         const resetBtn = document.getElementById('reset-settings-btn');
         if (resetBtn) {
@@ -380,6 +395,103 @@ export class Settings {
         } catch (error) {
             console.error('[Settings] Import error:', error);
             this.app.showToast('Failed to import data. Check the file format.', 'danger', 3000);
+        }
+    }
+
+    /**
+     * Download all songs for offline use.
+     * Fetches songs.json to get the full song list, then sends all IDs
+     * to the service worker for background caching.
+     */
+    async downloadAllSongs() {
+        const btn = document.getElementById('download-all-songs-btn');
+        const statusEl = document.getElementById('download-songs-status');
+        const progressWrap = document.getElementById('download-songs-progress');
+
+        if (!btn || !('serviceWorker' in navigator) || !navigator.serviceWorker.controller) {
+            this.app.showToast('Offline downloads require an active service worker. Please reload and try again.', 'warning');
+            return;
+        }
+
+        /* Disable button to prevent double-click */
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin me-1" aria-hidden="true"></i> Preparing...';
+        if (statusEl) statusEl.textContent = '';
+        if (progressWrap) progressWrap.classList.remove('d-none');
+
+        try {
+            /* Fetch the full song list */
+            const response = await fetch(this.app.config.dataUrl);
+            if (!response.ok) throw new Error('Failed to fetch song data');
+            const data = await response.json();
+            const songs = data.songs || [];
+
+            if (songs.length === 0) {
+                this.app.showToast('No songs found to download', 'warning');
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down me-1" aria-hidden="true"></i> Download All Songs';
+                return;
+            }
+
+            const songIds = songs.map(s => s.id);
+            if (statusEl) statusEl.textContent = `Downloading 0 / ${songIds.length} songs...`;
+
+            /* Send all song IDs to the service worker */
+            navigator.serviceWorker.controller.postMessage({
+                type: 'CACHE_ALL_SONGS',
+                songIds: songIds,
+            });
+
+        } catch (error) {
+            console.error('[Settings] Download all songs error:', error);
+            this.app.showToast('Failed to start download. Please try again.', 'danger');
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down me-1" aria-hidden="true"></i> Download All Songs';
+            if (progressWrap) progressWrap.classList.add('d-none');
+        }
+    }
+
+    /**
+     * Update the download progress UI from service worker messages.
+     * @param {object} data Progress data: { completed, failed, total }
+     */
+    updateDownloadProgress(data) {
+        const btn = document.getElementById('download-all-songs-btn');
+        const statusEl = document.getElementById('download-songs-status');
+        const progressWrap = document.getElementById('download-songs-progress');
+        const progressBar = document.getElementById('download-songs-bar');
+
+        const { completed, failed, total } = data;
+        const percent = Math.round(((completed + failed) / total) * 100);
+
+        if (statusEl) statusEl.textContent = `Downloading ${completed + failed} / ${total} songs...`;
+        if (progressBar) {
+            progressBar.style.width = percent + '%';
+            progressBar.setAttribute('aria-valuenow', String(percent));
+        }
+
+        /* Download complete */
+        if (completed + failed >= total) {
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down me-1" aria-hidden="true"></i> Download All Songs';
+            }
+            if (progressBar) {
+                progressBar.classList.remove('progress-bar-animated', 'progress-bar-striped');
+                progressBar.classList.add(failed > 0 ? 'bg-warning' : 'bg-success');
+            }
+            if (statusEl) {
+                statusEl.textContent = failed > 0
+                    ? `Done — ${completed} saved, ${failed} failed`
+                    : `All ${completed} songs saved for offline use`;
+            }
+            this.app.showToast(
+                failed > 0
+                    ? `Downloaded ${completed} songs (${failed} failed)`
+                    : `All ${completed} songs downloaded for offline use`,
+                failed > 0 ? 'warning' : 'success'
+            );
+            this.updateCacheStatus();
         }
     }
 

@@ -200,6 +200,27 @@ declare(strict_types=1);
                 </small>
             </div>
 
+            <!-- Download all songs for offline -->
+            <div class="mb-3">
+                <label class="form-label fw-semibold">Offline Songs</label>
+                <div class="d-flex flex-wrap align-items-center gap-2">
+                    <button type="button" class="btn btn-outline-success btn-sm" id="download-all-songs-btn"
+                            aria-label="Download all songs for offline use">
+                        <i class="fa-solid fa-cloud-arrow-down me-1" aria-hidden="true"></i>
+                        Download All Songs
+                    </button>
+                    <span id="download-songs-status" class="small text-muted"></span>
+                </div>
+                <div class="progress mt-2 d-none" id="download-songs-progress" style="height: 6px;">
+                    <div class="progress-bar progress-bar-striped progress-bar-animated"
+                         id="download-songs-bar" role="progressbar"
+                         aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" style="width: 0%"></div>
+                </div>
+                <small class="text-muted mt-1 d-block">
+                    Save all songs to your device so they are available without an internet connection.
+                </small>
+            </div>
+
             <!-- Cache info -->
             <div class="mb-3">
                 <p class="mb-2">

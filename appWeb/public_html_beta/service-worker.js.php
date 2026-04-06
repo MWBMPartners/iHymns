@@ -52,12 +52,12 @@ $swVersion = $app['Application']['Version']['Number'] ?? '0.0.0';
 const CACHE_VERSION = 'ihymns-v<?= $swVersion ?>';
 
 /**
- * Recently viewed songs cache (#105).
+ * Songs cache (#105).
  * Separate bucket so it survives app version cache purges.
- * Limited to 20 entries via eviction in the message handler.
+ * Stores recently viewed songs and bulk-downloaded songs for offline use.
  */
 const RECENT_CACHE = 'ihymns-recent-songs';
-const RECENT_CACHE_LIMIT = 20;
+const RECENT_CACHE_LIMIT = 2000;
 
 /**
  * Assets to pre-cache during service worker installation.
@@ -282,6 +282,50 @@ self.addEventListener('message', (event) => {
     if (event.data.type === 'SKIP_WAITING') {
         console.log('[SW] Received SKIP_WAITING — activating now');
         self.skipWaiting();
+    }
+
+    /* Download all songs for offline use */
+    if (event.data.type === 'CACHE_ALL_SONGS' && Array.isArray(event.data.songIds)) {
+        const songIds = event.data.songIds;
+        const total = songIds.length;
+        let completed = 0;
+        let failed = 0;
+
+        caches.open(RECENT_CACHE).then(async (cache) => {
+            /* Process in batches of 5 to avoid overwhelming the server */
+            const BATCH_SIZE = 5;
+            for (let i = 0; i < songIds.length; i += BATCH_SIZE) {
+                const batch = songIds.slice(i, i + BATCH_SIZE);
+                const results = await Promise.allSettled(
+                    batch.map(async (id) => {
+                        const url = `/api?page=song&id=${encodeURIComponent(id)}`;
+                        /* Skip if already cached */
+                        const existing = await cache.match(url);
+                        if (existing) { completed++; return; }
+                        const response = await fetch(url);
+                        if (response.ok) {
+                            await cache.put(url, response);
+                            completed++;
+                        } else {
+                            failed++;
+                        }
+                    })
+                );
+
+                /* Report progress back to client */
+                const clients = await self.clients.matchAll();
+                clients.forEach(client => {
+                    client.postMessage({
+                        type: 'CACHE_ALL_SONGS_PROGRESS',
+                        completed,
+                        failed,
+                        total,
+                    });
+                });
+            }
+
+            /* Remove the LRU limit for bulk downloads — keep all songs */
+        });
     }
 
     /* Proactively cache a recently viewed song page (#105) */
