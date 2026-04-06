@@ -35,8 +35,14 @@ define('APP_ROOT', dirname(__DIR__));
 /** Path to the includes directory */
 define('APP_INCLUDES', __DIR__);
 
+/** Path to the shared data directory (outside the web root for security) */
+define('APP_DATA_SHARE', dirname(APP_ROOT) . '/data_share');
+
 /** Path to the song data JSON file */
-define('APP_DATA_FILE', APP_ROOT . '/data/songs.json');
+define('APP_DATA_FILE', APP_DATA_SHARE . '/song_data/songs.json');
+
+/** Path to the shared setlist JSON directory */
+define('APP_SETLIST_SHARE_DIR', APP_DATA_SHARE . '/setlist_json');
 
 /* =========================================================================
  * DO NOT TRACK (DNT) DETECTION

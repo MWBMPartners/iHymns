@@ -25,12 +25,17 @@ var songData = {
 };
 
 /**
- * Possible relative paths for auto-loading the song data file.
- * The canonical location is data/songs.json at the project root.
- * Multiple paths are tried because the relative path varies depending
- * on whether the editor is served locally or deployed to a server.
+ * Primary load/save endpoint — the editor's PHP API reads/writes
+ * directly from/to appWeb/data_share/song_data/songs.json (#154).
+ */
+var EDITOR_API_URL = 'api.php';
+
+/**
+ * Fallback relative paths for loading songs.json when the PHP API
+ * is not available (e.g., running the editor without PHP).
  */
 var SONGS_URL_CANDIDATES = [
+    'api.php?action=load',                    /* Primary: PHP API reads from data_share/ */
     '../data/songs.json',                     /* Deployed server: data/ inside private_html/ */
     '../../data/songs.json',                  /* Alternative: data/ one up from private_html/ */
     '../../../data/songs.json',               /* Local dev: relative to appWeb/private_html/editor/ → appWeb/data/ */
@@ -188,8 +193,10 @@ function _fetchAndParseSongs(target) {
 /**
  * saveSongsToFile()
  * -----------------
- * Serialises the current `songData` to a pretty-printed JSON string and triggers
- * a browser download of the resulting file as "songs.json".
+ * Serialises the current `songData` to a pretty-printed JSON string and saves
+ * it directly to the server via the editor PHP API (#154). This writes to the
+ * canonical appWeb/data_share/song_data/songs.json file. Falls back to a
+ * browser download if the server save fails.
  */
 function saveSongsToFile() {
     /* Run validation first; abort if the data is not valid. */
@@ -208,6 +215,47 @@ function saveSongsToFile() {
     /* Serialise with 2-space indentation for human readability. */
     var jsonString = JSON.stringify(songData, null, 2);
 
+    /* Try saving via the PHP API first (writes directly to data_share/) */
+    fetch(EDITOR_API_URL + '?action=save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: jsonString,
+    })
+    .then(function (response) {
+        return response.json().then(function (data) {
+            if (response.ok && data.success) {
+                /* Server save succeeded */
+                lastSaveTime = new Date();
+                modifiedSongIds.clear();
+                renderSongList();
+                updateStatusBar();
+                showToast(
+                    'Saved ' + data.songs + ' songs to server (' + Math.round(data.bytes / 1024) + ' KB).',
+                    'success'
+                );
+            } else {
+                /* Server returned an error — fall back to download */
+                showToast('Server save failed: ' + (data.error || 'Unknown error') + '. Downloading instead.', 'warning');
+                downloadSongsJson(jsonString);
+            }
+        });
+    })
+    .catch(function (err) {
+        /* Network error — fall back to browser download */
+        showToast('Server unavailable: ' + err.message + '. Downloading instead.', 'warning');
+        downloadSongsJson(jsonString);
+    });
+}
+
+/**
+ * downloadSongsJson(jsonString)
+ * -----------------------------
+ * Fallback: triggers a browser download of the songs.json data when the
+ * server-side save is not available.
+ *
+ * @param {string} jsonString - The JSON string to download.
+ */
+function downloadSongsJson(jsonString) {
     /* Create a Blob (binary large object) from the JSON string. */
     var blob = new Blob([jsonString], { type: 'application/json' });
 
@@ -232,7 +280,7 @@ function saveSongsToFile() {
     updateStatusBar();
 
     /* Confirm to the user. */
-    showToast('songs.json downloaded.', 'success');
+    showToast('songs.json downloaded (manual placement required).', 'info');
 }
 
 /* ========================================================================

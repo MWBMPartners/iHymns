@@ -177,17 +177,17 @@ jobs:
             fi
           fi
 
-      # -- Copy songs.json INTO each deployment source directory --
-      # songs.json is identical across all environments, so we copy the
-      # canonical data/songs.json directly into the source dir at data/songs.json.
-      # The app loads it from data/songs.json (same directory, no ../ needed).
-      - name: Copy songs.json into deployment source
+      # -- Copy songs.json into the shared data directory (#154) --
+      # Songs data is stored outside the web root in data_share/song_data/
+      # and served to JS clients via the PHP API (api.php?action=songs_json).
+      # This ensures a single source of truth across all environments.
+      - name: Copy songs.json into shared data directory
         if: steps.changes.outputs.has_changes == 'true'
         run: |
-          SOURCE_DIR="${{ steps.target.outputs.source_dir }}"
-          mkdir -p "${SOURCE_DIR}data"
-          cp data/songs.json "${SOURCE_DIR}data/songs.json"
-          echo "Copied data/songs.json into ${SOURCE_DIR}data/"
+          mkdir -p appWeb/data_share/song_data
+          mkdir -p appWeb/data_share/setlist_json
+          cp data/songs.json appWeb/data_share/song_data/songs.json
+          echo "Copied data/songs.json into appWeb/data_share/song_data/"
 
       - name: Install minification tools
         if: steps.changes.outputs.has_changes == 'true'
@@ -433,6 +433,57 @@ jobs:
             appWeb/private_html/ ${REMOTE_PATH}; bye" \
             "sftp://${SFTP_HOST}:${SFTP_PORT}"
           echo "Private HTML deployed to ${REMOTE_PATH}"
+
+      # ================================================================
+      # DATA_SHARE DEPLOYMENT (#154)
+      # Uploads appWeb/data_share/ (songs.json + shared setlists) to the
+      # server. The remote path is derived from the main deploy path
+      # (sibling directory). Uses --no-delete to preserve server-side
+      # shared setlist JSON files that are not in the repository.
+      # ================================================================
+
+      # -- Deploy data_share/ via SFTP (SSH key) --
+      - name: Deploy data_share via SFTP (SSH key)
+        if: steps.changes.outputs.has_changes == 'true' && steps.auth.outputs.method == 'key'
+        env:
+          SFTP_USER: ${{ secrets.SFTP_USER }}
+          SFTP_HOST: ${{ secrets.SFTP_HOST }}
+          SFTP_PORT: ${{ steps.port.outputs.port }}
+          SFTP_KEY: ${{ secrets.SFTP_KEY }}
+          REMOTE_PATH: ${{ steps.target.outputs.remote_path }}
+        run: |
+          # Derive data_share remote path from the deploy target path
+          # e.g., /home/user/public_html_beta/ → /home/user/data_share/
+          DATA_SHARE_PATH=$(dirname "$REMOTE_PATH")/data_share/
+          echo "Deploying data_share to: $DATA_SHARE_PATH"
+          cat > /tmp/lftp_datashare.txt <<LFTP_EOF
+          set sftp:connect-program "ssh -o StrictHostKeyChecking=no -i $HOME/.ssh/deploy_key -p ${SFTP_PORT}"
+          open sftp://${SFTP_USER}@${SFTP_HOST}:${SFTP_PORT}
+          mirror --reverse --verbose --only-newer --no-empty-dirs --exclude .DS_Store --exclude .gitkeep --exclude .gitignore appWeb/data_share/ ${DATA_SHARE_PATH}
+          bye
+          LFTP_EOF
+          lftp -f /tmp/lftp_datashare.txt
+          echo "Data share deployed to ${DATA_SHARE_PATH}"
+
+      # -- Deploy data_share/ via SFTP (password) --
+      - name: Deploy data_share via SFTP (password)
+        if: steps.changes.outputs.has_changes == 'true' && steps.auth.outputs.method == 'password'
+        env:
+          SFTP_USER: ${{ secrets.SFTP_USER }}
+          SFTP_PASS: ${{ secrets.SFTP_PASSWORD }}
+          SFTP_HOST: ${{ secrets.SFTP_HOST }}
+          SFTP_PORT: ${{ steps.port.outputs.port }}
+          REMOTE_PATH: ${{ steps.target.outputs.remote_path }}
+        run: |
+          DATA_SHARE_PATH=$(dirname "$REMOTE_PATH")/data_share/
+          echo "Deploying data_share to: $DATA_SHARE_PATH"
+          lftp -u "${SFTP_USER},${SFTP_PASS}" \
+            -e "set sftp:auto-confirm yes; set ssl:verify-certificate no; \
+            mirror --reverse --verbose --only-newer --no-empty-dirs \
+            --exclude .DS_Store --exclude .gitkeep --exclude .gitignore \
+            appWeb/data_share/ ${DATA_SHARE_PATH}; bye" \
+            "sftp://${SFTP_HOST}:${SFTP_PORT}"
+          echo "Data share deployed to ${DATA_SHARE_PATH}"
 
       # ================================================================
       # DEPLOYMENT SUMMARY
