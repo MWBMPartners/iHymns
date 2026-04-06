@@ -1,7 +1,7 @@
 /**
  * iHymns — Main Application Stylesheet
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * DESIGN PHILOSOPHY:
  * Modern, sleek, and dimensional — NOT flat. Uses:
@@ -294,6 +294,17 @@
     background-size: 6px 6px !important;
 }
 
+/* Theme dropdown alignment (#146) */
+#theme-dropdown-btn + .dropdown-menu .dropdown-item {
+    display: flex;
+    align-items: center;
+}
+
+#theme-dropdown-btn + .dropdown-menu .dropdown-item i {
+    width: 1.25em;
+    text-align: center;
+}
+
 /* ==========================================================================
    2. BASE / RESET STYLES
    ========================================================================== */
@@ -452,45 +463,75 @@ body.banner-visible.search-open .main-content {
     display: none;
 }
 
-/* Page content transitions (#106) — configurable types */
-.page-content {
-    transition: opacity var(--transition-normal), transform var(--transition-normal);
+/* Page transitions (#149) */
+#page-content {
+    transition: opacity 0.25s ease, transform 0.25s ease;
 }
 
-.page-content.page-visible {
+#page-content.page-leaving {
+    opacity: 0;
+    transform: translateY(-8px);
+}
+
+#page-content.page-entering {
+    opacity: 0;
+    transform: translateY(8px);
+}
+
+#page-content.page-visible {
     opacity: 1;
-    transform: none;
+    transform: translateY(0);
 }
 
-/* Fade transition */
-.page-content[data-transition="fade"].page-entering {
+/* Staggered list items (#149) */
+.page-song .song-list-item,
+.page-songbook .song-list-item,
+.page-favorites .song-list-item {
     opacity: 0;
+    transform: translateY(10px);
+    animation: fadeSlideIn 0.3s ease forwards;
 }
 
-.page-content[data-transition="fade"].page-leaving {
-    opacity: 0;
+@keyframes fadeSlideIn {
+    to { opacity: 1; transform: translateY(0); }
 }
 
-/* Slide transition */
-.page-content[data-transition="slide"].page-entering {
+/* Apply stagger delay to list items */
+.song-list-item:nth-child(1) { animation-delay: 0.02s; }
+.song-list-item:nth-child(2) { animation-delay: 0.04s; }
+.song-list-item:nth-child(3) { animation-delay: 0.06s; }
+.song-list-item:nth-child(4) { animation-delay: 0.08s; }
+.song-list-item:nth-child(5) { animation-delay: 0.1s; }
+.song-list-item:nth-child(n+6) { animation-delay: 0.12s; }
+
+/* Loading progress bar (#149) */
+.page-loading-bar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--accent-start, #6366f1), var(--accent-end, #8b5cf6));
+    z-index: 9999;
+    width: 0%;
     opacity: 0;
-    transform: translateX(30px);
+    transition: width 0.4s ease, opacity 0.2s ease;
+    pointer-events: none;
 }
 
-.page-content[data-transition="slide"].page-leaving {
-    opacity: 0;
-    transform: translateX(-30px);
+.page-loading-bar.loading {
+    opacity: 1;
+    width: 80%;
+    transition: width 8s cubic-bezier(0.1, 0.05, 0, 1), opacity 0.2s ease;
 }
 
-/* Crossfade transition (fade + subtle scale) */
-.page-content[data-transition="crossfade"].page-entering {
-    opacity: 0;
-    transform: scale(0.97);
+.page-loading-bar.complete {
+    opacity: 1;
+    width: 100%;
+    transition: width 0.15s ease, opacity 0.3s ease 0.2s;
 }
 
-.page-content[data-transition="crossfade"].page-leaving {
+.page-loading-bar.complete.fade-out {
     opacity: 0;
-    transform: scale(1.02);
 }
 
 /* ---------------------------------------------------------------------------
@@ -532,18 +573,21 @@ body.banner-visible.search-open .main-content {
     align-items: center;
     justify-content: center;
     gap: 2px;
-    padding: 6px 12px;
+    padding: 6px 10px;
+    border: none;
+    background: none;
     border-radius: var(--radius-md);
     text-decoration: none;
     color: var(--text-muted);
-    font-size: 0.65rem;
+    font-size: 0.6rem;
     font-weight: 600;
     letter-spacing: 0.02em;
     text-transform: uppercase;
     transition: color var(--transition-fast), background-color var(--transition-fast),
                 transform var(--transition-fast);
-    min-width: 48px;
+    min-width: 44px;
     min-height: 44px;
+    cursor: pointer;
 }
 
 .footer-nav-item i {
@@ -677,7 +721,7 @@ body.banner-visible.search-open .main-content {
 .songbook-icon-CP   { background: var(--songbook-CP);   box-shadow: 0 2px 8px rgba(var(--songbook-CP-shadow), 0.3); }
 .songbook-icon-JP   { background: var(--songbook-JP);   box-shadow: 0 2px 8px rgba(var(--songbook-JP-shadow), 0.3); }
 .songbook-icon-MP   { background: var(--songbook-MP);   box-shadow: 0 2px 8px rgba(var(--songbook-MP-shadow), 0.3); }
-.songbook-icon-SDAH { background: var(--songbook-SDAH); box-shadow: 0 2px 8px rgba(var(--songbook-SDAH-shadow), 0.3); }
+.songbook-icon-SDAH { background: var(--songbook-SDAH); box-shadow: 0 2px 8px rgba(var(--songbook-SDAH-shadow), 0.3); color: #1a1a1a; }
 .songbook-icon-CH   { background: var(--songbook-CH);   box-shadow: 0 2px 8px rgba(var(--songbook-CH-shadow), 0.3); }
 .songbook-icon-Misc { background: var(--songbook-Misc); box-shadow: 0 2px 8px rgba(var(--songbook-Misc-shadow), 0.3); }
 
@@ -755,7 +799,7 @@ body.banner-visible.search-open .main-content {
 .song-number-badge[data-songbook="CP"]   { background: var(--songbook-CP); }
 .song-number-badge[data-songbook="JP"]   { background: var(--songbook-JP); }
 .song-number-badge[data-songbook="MP"]   { background: var(--songbook-MP); }
-.song-number-badge[data-songbook="SDAH"] { background: var(--songbook-SDAH); }
+.song-number-badge[data-songbook="SDAH"] { background: var(--songbook-SDAH); color: #1a1a1a; }
 .song-number-badge[data-songbook="CH"]   { background: var(--songbook-CH); }
 .song-number-badge[data-songbook="Misc"] { background: var(--songbook-Misc); }
 
@@ -779,7 +823,7 @@ body.banner-visible.search-open .main-content {
 .song-number-badge-lg[data-songbook="CP"]   { background: var(--songbook-CP);   box-shadow: 0 2px 8px rgba(var(--songbook-CP-shadow), 0.3); }
 .song-number-badge-lg[data-songbook="JP"]   { background: var(--songbook-JP);   box-shadow: 0 2px 8px rgba(var(--songbook-JP-shadow), 0.3); }
 .song-number-badge-lg[data-songbook="MP"]   { background: var(--songbook-MP);   box-shadow: 0 2px 8px rgba(var(--songbook-MP-shadow), 0.3); }
-.song-number-badge-lg[data-songbook="SDAH"] { background: var(--songbook-SDAH); box-shadow: 0 2px 8px rgba(var(--songbook-SDAH-shadow), 0.3); }
+.song-number-badge-lg[data-songbook="SDAH"] { background: var(--songbook-SDAH); box-shadow: 0 2px 8px rgba(var(--songbook-SDAH-shadow), 0.3); color: #1a1a1a; }
 .song-number-badge-lg[data-songbook="CH"]   { background: var(--songbook-CH);   box-shadow: 0 2px 8px rgba(var(--songbook-CH-shadow), 0.3); }
 .song-number-badge-lg[data-songbook="Misc"] { background: var(--songbook-Misc); box-shadow: 0 2px 8px rgba(var(--songbook-Misc-shadow), 0.3); }
 
@@ -894,6 +938,16 @@ body.banner-visible.search-open .main-content {
 .lyric-pre-chorus {
     border-left-color: var(--accent-end);
     font-style: italic;
+}
+
+/* Lyrics content protection — prevent copying */
+.song-lyrics,
+.presentation-lyrics {
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
 }
 
 /* Song copyright */
@@ -1143,12 +1197,13 @@ body.reduce-transparency .pwa-install-banner {
     }
 
     .footer-nav-item {
-        padding: 4px 8px;
-        font-size: 0.6rem;
+        padding: 4px 6px;
+        font-size: 0.55rem;
+        min-width: 38px;
     }
 
     .footer-nav-item i {
-        font-size: 1rem;
+        font-size: 0.9rem;
     }
 
     .song-number-badge-lg {
@@ -1208,12 +1263,18 @@ body.reduce-motion *::after {
     scroll-behavior: auto !important;
 }
 
-body.reduce-motion .page-content {
+body.reduce-motion #page-content {
     transition: none !important;
 }
 
-body.reduce-motion .page-content.page-entering,
-body.reduce-motion .page-content.page-leaving {
+body.reduce-motion #page-content.page-entering,
+body.reduce-motion #page-content.page-leaving {
+    opacity: 1 !important;
+    transform: none !important;
+}
+
+body.reduce-motion .song-list-item {
+    animation: none !important;
     opacity: 1 !important;
     transform: none !important;
 }
@@ -1878,4 +1939,175 @@ body.reduce-motion .song-list-item.alphabet-highlight {
 
 body.reduce-motion .offline-banner {
     transition: none;
+}
+
+/* =========================================================================
+ * TOAST & PROGRESS — CSP-compliant replacements for inline styles (#117)
+ * ========================================================================= */
+
+#toast-container {
+    z-index: 1090;
+}
+
+.progress-thin {
+    height: 6px;
+}
+
+/* =========================================================================
+ * RELATED SONGS — Collapsible section on song pages (#118)
+ * ========================================================================= */
+
+.related-songs h2 {
+    cursor: pointer;
+}
+
+.related-songs h2[aria-expanded="false"] .related-songs-chevron {
+    transform: rotate(-90deg);
+}
+
+.related-songs-chevron {
+    transition: transform 0.2s ease;
+}
+
+body.reduce-motion .related-songs-chevron {
+    transition: none;
+}
+
+/* =========================================================================
+ * BATCH FAVOURITES — Select mode toolbar (#119)
+ * ========================================================================= */
+
+.favorites-batch-toolbar {
+    position: sticky;
+    bottom: 4rem;
+    z-index: 100;
+}
+
+#favorites-list .song-list-item.active {
+    background-color: var(--bs-primary-bg-subtle, #cfe2ff);
+}
+
+.fav-tag-badge {
+    font-size: 0.6rem;
+    padding: 0.15em 0.45em;
+    vertical-align: middle;
+}
+
+.fav-edit-tags {
+    opacity: 0.5;
+    transition: opacity 0.15s;
+}
+
+/* =========================================================================
+ * HEADER LOGO DROPDOWN — Navigation menu from app logo
+ * ========================================================================= */
+
+#logo-nav-btn {
+    border: none;
+    background: none;
+    cursor: pointer;
+    padding: 0;
+}
+
+#logo-nav-btn::after {
+    font-size: 0.6em;
+    vertical-align: middle;
+    opacity: 0.5;
+}
+
+.song-list-item:hover .fav-edit-tags {
+    opacity: 1;
+}
+
+/* =========================================================================
+ * USAGE STATISTICS — Simple bar charts (#120)
+ * ========================================================================= */
+
+.stats-bar-wrap {
+    flex: 0 0 80px;
+    height: 8px;
+    background: var(--bs-tertiary-bg, #e9ecef);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.stats-bar {
+    height: 100%;
+    background: var(--bs-primary, #0d6efd);
+    border-radius: 4px;
+    min-width: 4px;
+}
+
+.song-number-badge-sm {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.5rem;
+    height: 1.5rem;
+    font-size: 0.65rem;
+    font-weight: 700;
+    border-radius: 4px;
+    background: var(--bs-secondary-bg, #e9ecef);
+    color: var(--bs-body-color);
+}
+
+/* =========================================================================
+ * WRITER/COMPOSER LINKS (#145)
+ * ========================================================================= */
+
+.writer-link {
+    color: inherit;
+    text-decoration: none;
+    border-bottom: 1px dotted var(--bs-secondary-color, #6c757d);
+    transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.writer-link:hover {
+    color: var(--accent-solid, var(--bs-primary));
+    border-bottom-style: solid;
+    border-bottom-color: var(--accent-solid, var(--bs-primary));
+    text-decoration: none;
+}
+
+.writer-link:focus-visible {
+    outline: 2px solid var(--accent-solid, var(--bs-primary));
+    outline-offset: 2px;
+    border-radius: 2px;
+}
+
+/* =========================================================================
+ * GESTURE PEEK INDICATORS — Swipe edge feedback (#143)
+ * ========================================================================= */
+
+.gesture-peek {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    width: 40px;
+    z-index: 9999;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.05s linear;
+}
+
+.gesture-peek--left {
+    left: 0;
+    background: linear-gradient(to right,
+        var(--bs-primary, #0d6efd),
+        transparent);
+}
+
+.gesture-peek--right {
+    right: 0;
+    background: linear-gradient(to left,
+        var(--bs-primary, #0d6efd),
+        transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .gesture-peek {
+        display: none;
+    }
+    #page-content { transition: none; }
+    .song-list-item { animation: none; opacity: 1; transform: none; }
 }

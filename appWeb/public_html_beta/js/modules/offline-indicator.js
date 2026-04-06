@@ -1,7 +1,7 @@
 /**
  * iHymns — Offline Status Indicator Module (#112)
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Monitors online/offline status and displays a non-intrusive banner

@@ -1,7 +1,7 @@
 /**
  * iHymns — Missing Song Request Module (#107)
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Provides a form for users to report missing songs or request additions.

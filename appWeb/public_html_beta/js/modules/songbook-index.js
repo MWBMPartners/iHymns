@@ -1,7 +1,7 @@
 /**
  * iHymns — Songbook Table of Contents / Alphabetical Index (#111)
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Adds an alphabetical jump-to-letter index and a sort toggle (by number

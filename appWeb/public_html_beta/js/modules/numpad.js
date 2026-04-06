@@ -1,7 +1,7 @@
 /**
  * iHymns — Numeric Keypad Module
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Provides a touch-friendly numeric keypad for searching songs by

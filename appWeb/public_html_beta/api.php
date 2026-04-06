@@ -5,7 +5,7 @@ declare(strict_types=1);
 /**
  * iHymns — AJAX API Endpoint
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Handles all AJAX requests from the iHymns SPA frontend.
@@ -119,8 +119,27 @@ if ($page !== null) {
             require __DIR__ . '/includes/pages/setlist.php';
             break;
 
+        case 'setlist-shared':
+            require __DIR__ . '/includes/pages/setlist-shared.php';
+            break;
+
         case 'settings':
             require __DIR__ . '/includes/pages/settings.php';
+            break;
+
+        case 'stats':
+            require __DIR__ . '/includes/pages/stats.php';
+            break;
+
+        case 'writer':
+            /* Requires writer slug parameter */
+            $writerId = isset($_GET['id']) ? trim($_GET['id']) : '';
+            if ($writerId === '') {
+                http_response_code(400);
+                echo '<div class="alert alert-warning" role="alert">Writer ID is required.</div>';
+                break;
+            }
+            require __DIR__ . '/includes/pages/writer.php';
             break;
 
         case 'help':

@@ -5,7 +5,7 @@ declare(strict_types=1);
 /**
  * iHymns — Main Application Entry Point
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * This is the single-page application (SPA) shell for iHymns.
@@ -69,6 +69,33 @@ $locale = APP_CONFIG['i18n']['default_locale'];
 $textDir = APP_CONFIG['i18n']['text_direction'];
 
 /* =========================================================================
+ * CONTENT SECURITY POLICY (CSP) — #117
+ *
+ * Generate a per-request nonce for inline scripts and send a strict CSP
+ * header. This is the primary defence against XSS exploitation.
+ * ========================================================================= */
+
+$cspNonce = base64_encode(random_bytes(16));
+
+$cspDirectives = [
+    "default-src 'self'",
+    "script-src 'self' 'nonce-{$cspNonce}' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://www.googletagmanager.com https://plausible.io https://www.clarity.ms",
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
+    "img-src 'self' data: https:",
+    "font-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
+    "connect-src 'self' https://www.google-analytics.com https://plausible.io https://www.clarity.ms",
+    "frame-src 'self' https://sync.ihymns.app https://*.ihymns.app",
+    "worker-src 'self' https://cdn.jsdelivr.net blob:",
+    "manifest-src 'self'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'self'",
+    "upgrade-insecure-requests",
+];
+
+header("Content-Security-Policy: " . implode('; ', $cspDirectives));
+
+/* =========================================================================
  * OPEN GRAPH META TAGS — Dynamic per-page social sharing previews
  *
  * When a social media platform or messaging app fetches a shared URL,
@@ -94,6 +121,11 @@ $ogType        = 'website';
 $ogImage       = $appUrl . '/assets/icon-512.png';
 $ogImageAlt    = $appName . ' logo';
 
+/* JSON-LD structured data — built during OG detection, rendered in <head> */
+$jsonLdScripts   = [];
+$breadcrumbItems = [];
+$pageType        = 'home'; /* 'home', 'song', 'songbook', or 'other' */
+
 /* Detect specific page routes for customised OG tags */
 try {
     $songData = new SongData();
@@ -102,6 +134,7 @@ try {
     if (preg_match('#^/song/([A-Za-z]+-\d+)$#', $requestPath, $matches)) {
         $ogSong = $songData->getSongById($matches[1]);
         if ($ogSong !== null) {
+            $pageType = 'song';
             $ogTitle = htmlspecialchars($ogSong['title']) . ' — '
                      . htmlspecialchars($ogSong['songbookName'])
                      . ' #' . (int)$ogSong['number'];
@@ -111,20 +144,118 @@ try {
             if (!empty($ogSong['writers'])) {
                 $ogDescription .= '. Written by ' . implode(', ', $ogSong['writers']);
             }
+            /* Add first verse snippet for richer previews (#123) */
+            if (!empty($ogSong['components'][0]['lines'])) {
+                $firstLines = array_slice($ogSong['components'][0]['lines'], 0, 2);
+                $ogDescription .= '. "' . implode(' / ', $firstLines) . '..."';
+            }
             $ogType = 'article';
+
+            /* JSON-LD: MusicComposition */
+            $musicComposition = [
+                '@context' => 'https://schema.org',
+                '@type'    => 'MusicComposition',
+                'name'     => $ogSong['title'],
+                'inLanguage' => $locale,
+            ];
+            if (!empty($ogSong['composers'])) {
+                $musicComposition['composer'] = array_map(
+                    fn($name) => ['@type' => 'Person', 'name' => $name],
+                    $ogSong['composers']
+                );
+            }
+            if (!empty($ogSong['writers'])) {
+                $musicComposition['lyricist'] = array_map(
+                    fn($name) => ['@type' => 'Person', 'name' => $name],
+                    $ogSong['writers']
+                );
+            }
+            if (!empty($ogSong['songbookName'])) {
+                $musicComposition['isPartOf'] = [
+                    '@type' => 'MusicAlbum',
+                    'name'  => $ogSong['songbookName'],
+                ];
+            }
+            $jsonLdScripts[] = $musicComposition;
+
+            /* Breadcrumb: Home > Songbooks > Songbook Name > #N */
+            $songbookId = $ogSong['songbook'] ?? '';
+            $breadcrumbItems = [
+                ['name' => 'Home',      'url' => getCanonicalUrl('/')],
+                ['name' => 'Songbooks', 'url' => getCanonicalUrl('/songbooks')],
+                ['name' => $ogSong['songbookName'], 'url' => getCanonicalUrl('/songbook/' . $songbookId)],
+                ['name' => '#' . (int)$ogSong['number'], 'url' => $canonicalUrl],
+            ];
         }
     }
     /* Songbook page: /songbook/CP */
     elseif (preg_match('#^/songbook/([A-Za-z]+)$#', $requestPath, $matches)) {
         $ogBook = $songData->getSongbook($matches[1]);
         if ($ogBook !== null) {
+            $pageType = 'songbook';
             $ogTitle = htmlspecialchars($ogBook['name']) . ' — ' . $appName;
             $ogDescription = 'Browse ' . number_format($ogBook['songCount'])
                            . ' songs from ' . $ogBook['name'] . ' on ' . $appName;
+
+            /* Breadcrumb: Home > Songbooks > Songbook Name */
+            $breadcrumbItems = [
+                ['name' => 'Home',      'url' => getCanonicalUrl('/')],
+                ['name' => 'Songbooks', 'url' => getCanonicalUrl('/songbooks')],
+                ['name' => $ogBook['name'], 'url' => $canonicalUrl],
+            ];
         }
+    }
+    /* Songbooks listing page */
+    elseif ($requestPath === '/songbooks') {
+        $pageType = 'other';
+        $breadcrumbItems = [
+            ['name' => 'Home',      'url' => getCanonicalUrl('/')],
+            ['name' => 'Songbooks', 'url' => $canonicalUrl],
+        ];
+    }
+    /* Home page */
+    elseif ($requestPath === '/' || $requestPath === '') {
+        $pageType = 'home';
+    }
+    else {
+        $pageType = 'other';
     }
 } catch (\RuntimeException $e) {
     /* If song data isn't available, use defaults — no fatal error */
+}
+
+/* JSON-LD: WebSite schema with SearchAction (home page only) */
+if ($pageType === 'home') {
+    $siteUrl = getCanonicalUrl('/');
+    $jsonLdScripts[] = [
+        '@context'        => 'https://schema.org',
+        '@type'           => 'WebSite',
+        'name'            => $appName,
+        'url'             => $siteUrl,
+        'potentialAction'  => [
+            '@type'       => 'SearchAction',
+            'target'      => $siteUrl . 'search?q={search_term_string}',
+            'query-input' => 'required name=search_term_string',
+        ],
+    ];
+}
+
+/* JSON-LD: BreadcrumbList (all pages except home) */
+if (!empty($breadcrumbItems)) {
+    $breadcrumbListItems = [];
+    foreach ($breadcrumbItems as $pos => $item) {
+        $breadcrumbListItems[] = [
+            '@type'    => 'ListItem',
+            'position' => $pos + 1,
+            'name'     => $item['name'],
+            'item'     => $item['url'],
+        ];
+    }
+    $jsonLdScripts[] = [
+        '@context'        => 'https://schema.org',
+        '@type'           => 'BreadcrumbList',
+        'itemListElement' => $breadcrumbListItems,
+    ];
 }
 
 ?>
@@ -203,18 +334,21 @@ try {
     <!-- Bootstrap CSS -->
     <link rel="stylesheet"
           href="<?= $libs['bootstrap']['css_cdn'] ?>"
+          integrity="<?= $libs['bootstrap']['css_sri'] ?>"
           crossorigin="anonymous"
           id="bootstrap-css">
 
     <!-- Font Awesome CSS -->
     <link rel="stylesheet"
           href="<?= $libs['fontawesome']['css_cdn'] ?>"
+          integrity="<?= $libs['fontawesome']['css_sri'] ?>"
           crossorigin="anonymous"
           id="fontawesome-css">
 
     <!-- Animate.css — CSS animation library (respects prefers-reduced-motion) -->
     <link rel="stylesheet"
           href="<?= $libs['animatecss']['css_cdn'] ?>"
+          integrity="<?= $libs['animatecss']['css_sri'] ?>"
           crossorigin="anonymous"
           id="animatecss">
 
@@ -239,7 +373,7 @@ try {
     <?php if (!empty(APP_CONFIG['analytics']['google_analytics_id'])): ?>
     <!-- Google Analytics 4 (GA4) -->
     <script async src="https://www.googletagmanager.com/gtag/js?id=<?= htmlspecialchars(APP_CONFIG['analytics']['google_analytics_id']) ?>"></script>
-    <script>
+    <script nonce="<?= $cspNonce ?>">
         window.dataLayer = window.dataLayer || [];
         function gtag(){dataLayer.push(arguments);}
         gtag('js', new Date());
@@ -263,7 +397,7 @@ try {
 
     <?php if (!empty(APP_CONFIG['analytics']['clarity_id'])): ?>
     <!-- Microsoft Clarity -->
-    <script>
+    <script nonce="<?= $cspNonce ?>">
         (function(c,l,a,r,i,t,y){
             c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
             t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
@@ -271,6 +405,13 @@ try {
         })(window,document,"clarity","script",<?= json_encode(APP_CONFIG['analytics']['clarity_id']) ?>);
     </script>
     <?php endif; ?>
+
+    <!-- ================================================================
+         JSON-LD STRUCTURED DATA — SEO (#151)
+         ================================================================ -->
+    <?php foreach ($jsonLdScripts as $jsonLd): ?>
+    <script type="application/ld+json" nonce="<?= $cspNonce ?>"><?= json_encode($jsonLd, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) ?></script>
+    <?php endforeach; ?>
 </head>
 
 <body class="d-flex flex-column min-vh-100">
@@ -321,17 +462,45 @@ try {
     <header id="app-header" class="app-header" role="banner">
         <nav class="navbar navbar-expand" aria-label="Main navigation">
             <div class="container-fluid px-3">
-                <!-- App Logo & Name -->
-                <a class="navbar-brand d-flex align-items-center gap-2"
-                   href="/"
-                   data-navigate="home"
-                   aria-label="<?= htmlspecialchars($appName) ?> Home">
-                    <i class="fa-solid fa-music fa-lg" aria-hidden="true"></i>
-                    <span class="fw-bold"><?= htmlspecialchars($appName) ?></span>
-                    <?php if ($appDevStatus): ?>
-                        <span class="badge bg-warning text-dark ms-1 small"><?= htmlspecialchars($appDevStatus) ?></span>
-                    <?php endif; ?>
-                </a>
+                <!-- App Logo & Name — Dropdown navigation -->
+                <div class="dropdown">
+                    <button type="button"
+                            class="navbar-brand d-flex align-items-center gap-2 dropdown-toggle"
+                            data-bs-toggle="dropdown"
+                            aria-expanded="false"
+                            aria-label="<?= htmlspecialchars($appName) ?> navigation menu"
+                            id="logo-nav-btn">
+                        <i class="fa-solid fa-music fa-lg" aria-hidden="true"></i>
+                        <span class="fw-bold"><?= htmlspecialchars($appName) ?></span>
+                        <?php if ($appDevStatus): ?>
+                            <span class="badge bg-warning text-dark ms-1 small"><?= htmlspecialchars($appDevStatus) ?></span>
+                        <?php endif; ?>
+                    </button>
+                    <ul class="dropdown-menu" aria-labelledby="logo-nav-btn">
+                        <li><a class="dropdown-item" href="/" data-navigate="home">
+                            <i class="fa-solid fa-house me-2" aria-hidden="true"></i> Home
+                        </a></li>
+                        <li><a class="dropdown-item" href="/songbooks" data-navigate="songbooks">
+                            <i class="fa-solid fa-book-open me-2" aria-hidden="true"></i> Songbooks
+                        </a></li>
+                        <li><a class="dropdown-item" href="/favorites" data-navigate="favorites">
+                            <i class="fa-solid fa-heart me-2" aria-hidden="true"></i> Favourites
+                        </a></li>
+                        <li><a class="dropdown-item" href="/setlist" data-navigate="setlist">
+                            <i class="fa-solid fa-list-ol me-2" aria-hidden="true"></i> Set Lists
+                        </a></li>
+                        <li><hr class="dropdown-divider"></li>
+                        <li><a class="dropdown-item" href="/stats" data-navigate="stats">
+                            <i class="fa-solid fa-chart-simple me-2" aria-hidden="true"></i> Statistics
+                        </a></li>
+                        <li><a class="dropdown-item" href="/settings" data-navigate="settings">
+                            <i class="fa-solid fa-gear me-2" aria-hidden="true"></i> Settings
+                        </a></li>
+                        <li><a class="dropdown-item" href="/help" data-navigate="help">
+                            <i class="fa-solid fa-circle-question me-2" aria-hidden="true"></i> Help
+                        </a></li>
+                    </ul>
+                </div>
 
                 <!-- Right-side header actions -->
                 <div class="d-flex align-items-center gap-2">
@@ -412,10 +581,9 @@ try {
                                autocomplete="off"
                                spellcheck="false">
                         <button type="button"
-                                class="btn btn-outline-secondary"
+                                class="btn btn-outline-secondary d-none"
                                 id="search-clear-btn"
-                                aria-label="Clear search"
-                                style="display: none;">
+                                aria-label="Clear search">
                             <i class="fa-solid fa-xmark" aria-hidden="true"></i>
                         </button>
                     </div>
@@ -475,6 +643,13 @@ try {
                     <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
                     <span>Search</span>
                 </a>
+                <button type="button"
+                   class="footer-nav-item"
+                   data-action="open-numpad"
+                   aria-label="Search by song number">
+                    <i class="fa-solid fa-hashtag" aria-hidden="true"></i>
+                    <span>Number</span>
+                </button>
                 <a href="/songbooks"
                    class="footer-nav-item"
                    data-navigate="songbooks"
@@ -686,14 +861,19 @@ try {
                         </button>
                     </div>
 
-                    <!-- Native share / social buttons -->
+                    <!-- Share action buttons -->
                     <div class="d-grid gap-2">
                         <button type="button"
-                                class="btn btn-primary"
-                                id="share-native-btn"
-                                style="display: none;">
+                                class="btn btn-primary d-none"
+                                id="share-native-btn">
                             <i class="fa-solid fa-share-from-square me-2" aria-hidden="true"></i>
                             Share via...
+                        </button>
+                        <button type="button"
+                                class="btn btn-outline-secondary"
+                                id="share-copy-text-btn">
+                            <i class="fa-solid fa-quote-left me-2" aria-hidden="true"></i>
+                            Copy Song Details
                         </button>
                     </div>
 
@@ -718,7 +898,7 @@ try {
     <!-- ================================================================
          TOAST NOTIFICATIONS — For non-intrusive user feedback
          ================================================================ -->
-    <div class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index: 1090;" id="toast-container"
+    <div class="toast-container position-fixed bottom-0 end-0 p-3" id="toast-container"
          aria-live="polite" aria-atomic="true">
     </div>
 
@@ -728,30 +908,38 @@ try {
 
     <!-- jQuery -->
     <script src="<?= $libs['jquery']['js_cdn'] ?>"
+            integrity="<?= $libs['jquery']['js_sri'] ?>"
             crossorigin="anonymous"
             id="jquery-js"></script>
-    <script>
-        /* Fallback: load jQuery locally if CDN fails */
+    <script nonce="<?= $cspNonce ?>">
+        /* Fallback: load jQuery locally if CDN fails or SRI check fails (#117) */
         if (typeof jQuery === 'undefined') {
-            document.write('<script src="<?= $libs['jquery']['js_local'] ?>"><\/script>');
+            var s = document.createElement('script');
+            s.src = '/<?= $libs['jquery']['js_local'] ?>';
+            s.async = false;
+            document.head.appendChild(s);
         }
     </script>
 
     <!-- Bootstrap Bundle (includes Popper.js) -->
     <script src="<?= $libs['bootstrap']['js_cdn'] ?>"
+            integrity="<?= $libs['bootstrap']['js_sri'] ?>"
             crossorigin="anonymous"
             id="bootstrap-js"></script>
-    <script>
-        /* Fallback: load Bootstrap JS locally if CDN fails */
+    <script nonce="<?= $cspNonce ?>">
+        /* Fallback: load Bootstrap JS locally if CDN fails or SRI check fails (#117) */
         if (typeof bootstrap === 'undefined') {
-            document.write('<script src="<?= $libs['bootstrap']['js_local'] ?>"><\/script>');
+            var s = document.createElement('script');
+            s.src = '/<?= $libs['bootstrap']['js_local'] ?>';
+            s.async = false;
+            document.head.appendChild(s);
         }
     </script>
 
     <!-- ================================================================
          iHymns Application Configuration — PHP to JavaScript bridge
          ================================================================ -->
-    <script>
+    <script nonce="<?= $cspNonce ?>">
         /**
          * Global application configuration object.
          * Passes server-side PHP configuration to the client-side JavaScript.
@@ -780,6 +968,7 @@ try {
             locale:         <?= json_encode($locale) ?>,
             initialPath:    <?= json_encode($requestPath) ?>,
             songbooks:      <?= json_encode($songData->getSongbooks()) ?>,
+            storageBridgeUrl: 'https://sync.ihymns.app/bridge.html',
         };
     </script>
 

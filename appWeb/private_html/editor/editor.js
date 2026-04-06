@@ -3,7 +3,7 @@
  * ====================================
  * Plain JavaScript (no ES modules). Relies on Bootstrap 5.3 loaded globally via CDN.
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  * This software is proprietary and confidential. Unauthorised copying, distribution,
  * or modification of this file, via any medium, is strictly prohibited.
  */

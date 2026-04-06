@@ -1,7 +1,7 @@
 /**
  * iHymns — Song Comparison Module (#102)
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Allows side-by-side comparison of two songs. Users pick a second

@@ -1,7 +1,7 @@
 # ==========================================================================
 # iHymns — Apache Configuration (.htaccess)
 #
-# Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+# Copyright (c) 2026 iHymns. All rights reserved.
 #
 # PURPOSE:
 # Handles URL rewriting for clean URLs (no .php extensions visible),

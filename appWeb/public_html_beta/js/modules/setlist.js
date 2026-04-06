@@ -1,7 +1,7 @@
 /**
  * iHymns — Set List / Playlist Module (#94)
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Allows users to create ordered set lists (playlists) of songs for
@@ -16,6 +16,8 @@
  *     songs: [{ id, title, songbook, number }, ...]
  *   }, ...]
  */
+
+import { toTitleCase } from '../utils/text.js';
 
 export class SetList {
     /**
@@ -56,6 +58,7 @@ export class SetList {
      */
     saveAll(lists) {
         localStorage.setItem(this.storageKey, JSON.stringify(lists));
+        this.app.syncStorage(this.storageKey);
     }
 
     /**
@@ -231,10 +234,15 @@ export class SetList {
 
             /* Bind delete buttons */
             container.querySelectorAll('.btn-delete-setlist').forEach(btn => {
-                btn.addEventListener('click', (e) => {
+                btn.addEventListener('click', async (e) => {
                     e.stopPropagation();
                     const id = btn.dataset.setlistId;
-                    if (confirm('Delete this set list?')) {
+                    const ok = await this.app.showConfirm('Delete this set list?', {
+                        title: 'Delete Set List',
+                        okText: 'Delete',
+                        okClass: 'btn-danger',
+                    });
+                    if (ok) {
                         this.delete(id);
                         this.renderSetListOverview();
                         this.app.showToast('Set list deleted', 'info', 2000);
@@ -281,7 +289,7 @@ export class SetList {
                             <span class="song-number-badge" data-songbook="${this.escapeHtml(song.songbook)}">${song.number || '?'}</span>
                             <div class="flex-grow-1">
                                 <a href="/song/${this.escapeHtml(song.id)}" data-navigate="song"
-                                   class="text-decoration-none">${this.escapeHtml(song.title)}</a>
+                                   class="text-decoration-none">${this.escapeHtml(toTitleCase(song.title))}</a>
                                 <small class="text-muted d-block">${this.escapeHtml(song.songbook)}</small>
                             </div>
                             <button type="button" class="btn btn-sm btn-outline-secondary btn-move-up"
@@ -317,6 +325,10 @@ export class SetList {
                             aria-label="Rename set list" title="Rename">
                         <i class="fa-solid fa-pen" aria-hidden="true"></i>
                     </button>
+                    <button type="button" class="btn btn-outline-secondary" id="setlist-share-btn"
+                            aria-label="Share set list" title="Share">
+                        <i class="fa-solid fa-share-nodes" aria-hidden="true"></i>
+                    </button>
                     <button type="button" class="btn btn-outline-secondary" id="setlist-export-btn"
                             aria-label="Export set list as text" title="Export">
                         <i class="fa-solid fa-file-export" aria-hidden="true"></i>
@@ -343,9 +355,17 @@ export class SetList {
             this.renderSetListOverview();
         });
 
+        /* Share (#147) */
+        container.querySelector('#setlist-share-btn')?.addEventListener('click', () => {
+            this.shareSetlist(listId);
+        });
+
         /* Rename */
-        container.querySelector('#setlist-rename-btn')?.addEventListener('click', () => {
-            const name = prompt('Rename set list:', list.name);
+        container.querySelector('#setlist-rename-btn')?.addEventListener('click', async () => {
+            const name = await this.app.showPrompt('Rename set list:', list.name, {
+                title: 'Rename Set List',
+                okText: 'Rename',
+            });
             if (name && name.trim()) {
                 this.rename(listId, name.trim());
                 this.renderSetListDetail(listId);
@@ -510,7 +530,7 @@ export class SetList {
                         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                     </div>
                     <div class="modal-body">
-                        <p class="text-muted small">Adding: <strong>${this.escapeHtml(song.title)}</strong></p>
+                        <p class="text-muted small">Adding: <strong>${this.escapeHtml(toTitleCase(song.title))}</strong></p>
                         <div class="list-group mb-3" id="setlist-options">
                             ${listOptions}
                         </div>
@@ -540,12 +560,16 @@ export class SetList {
         });
 
         /* Create new set list */
-        modal.querySelector('#create-new-setlist-btn')?.addEventListener('click', () => {
-            const name = prompt('Set list name:', '');
+        modal.querySelector('#create-new-setlist-btn')?.addEventListener('click', async () => {
+            bsModal.hide();
+            const name = await this.app.showPrompt('Set list name:', '', {
+                title: 'New Set List',
+                okText: 'Create',
+                placeholder: 'e.g. Sunday Morning Worship',
+            });
             if (name && name.trim()) {
                 const newList = this.create(name.trim());
                 this.addSong(newList.id, song);
-                bsModal.hide();
                 this.app.showToast(`Created "${name.trim()}" and added song`, 'success', 2000);
             }
         });
@@ -557,8 +581,12 @@ export class SetList {
     /**
      * Show the create set list dialog (from set list page).
      */
-    showCreateDialog() {
-        const name = prompt('Set list name:', '');
+    async showCreateDialog() {
+        const name = await this.app.showPrompt('Set list name:', '', {
+            title: 'New Set List',
+            okText: 'Create',
+            placeholder: 'e.g. Sunday Morning Worship',
+        });
         if (name && name.trim()) {
             this.create(name.trim());
             this.renderSetListOverview();
@@ -654,6 +682,257 @@ export class SetList {
     }
 
     /* =====================================================================
+     * SHAREABLE SET LISTS (#147)
+     * ===================================================================== */
+
+    /**
+     * Generate a shareable URL for a set list.
+     * Encodes the set list name and song IDs as base64 JSON in the URL.
+     *
+     * @param {string} listId Set list ID
+     * @returns {string|null} Shareable URL or null if list not found
+     */
+    generateShareLink(listId) {
+        const list = this.getById(listId);
+        if (!list) return null;
+
+        const data = {
+            n: list.name,
+            s: list.songs.map(s => s.id),
+            v: 1,
+        };
+
+        const json = JSON.stringify(data);
+        const encoded = btoa(unescape(encodeURIComponent(json)));
+
+        return window.location.origin + '/setlist/shared/' + encoded;
+    }
+
+    /**
+     * Share a set list via the Web Share API or copy-to-clipboard fallback.
+     *
+     * @param {string} listId Set list ID
+     */
+    async shareSetlist(listId) {
+        const list = this.getById(listId);
+        if (!list) return;
+
+        const shareUrl = this.generateShareLink(listId);
+        if (!shareUrl) return;
+
+        const shareText = `${list.name} — ${list.songs.length} song${list.songs.length !== 1 ? 's' : ''}`;
+
+        /* Try native Web Share API first */
+        if (navigator.share) {
+            try {
+                await navigator.share({
+                    title: list.name + ' — iHymns Set List',
+                    text: shareText,
+                    url: shareUrl,
+                });
+                return;
+            } catch (error) {
+                if (error.name === 'AbortError') return;
+                /* Fall through to clipboard copy */
+            }
+        }
+
+        /* Fallback: copy link to clipboard */
+        try {
+            await navigator.clipboard.writeText(shareUrl);
+            this.app.showToast('Share link copied to clipboard', 'success', 3000);
+        } catch {
+            /* Last resort fallback */
+            const textarea = document.createElement('textarea');
+            textarea.value = shareUrl;
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand('copy');
+            textarea.remove();
+            this.app.showToast('Share link copied to clipboard', 'success', 3000);
+        }
+    }
+
+    /**
+     * Parse base64-encoded shared set list data from a URL.
+     *
+     * @param {string} encodedData Base64-encoded JSON string
+     * @returns {{ name: string, songIds: string[], version: number }|null}
+     */
+    parseSharedSetlist(encodedData) {
+        try {
+            const json = decodeURIComponent(escape(atob(encodedData)));
+            const data = JSON.parse(json);
+
+            if (!data || !data.n || !Array.isArray(data.s)) {
+                return null;
+            }
+
+            return {
+                name: data.n,
+                songIds: data.s,
+                version: data.v || 1,
+            };
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * Import a shared set list into the user's local set lists.
+     * Fetches song metadata from the API, then creates a new local set list.
+     *
+     * @param {{ name: string, songIds: string[] }} sharedData Parsed shared data
+     * @returns {object} The newly created set list
+     */
+    async importSharedSetlist(sharedData) {
+        const newList = this.create(sharedData.name);
+
+        /* Fetch song metadata for each song ID in parallel */
+        const songResults = await Promise.all(
+            sharedData.songIds.map(async (songId) => {
+                try {
+                    const url = `${this.app.config.apiUrl}?action=song_data&id=${encodeURIComponent(songId)}`;
+                    const response = await fetch(url, {
+                        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+                    });
+                    if (!response.ok) return null;
+                    const json = await response.json();
+                    if (json.song) {
+                        return {
+                            id: json.song.id || songId,
+                            title: json.song.title || '',
+                            songbook: json.song.songbook || '',
+                            number: json.song.number || 0,
+                        };
+                    }
+                    return null;
+                } catch {
+                    /* If fetch fails, add with just the ID */
+                    return { id: songId, title: songId, songbook: '', number: 0 };
+                }
+            })
+        );
+
+        /* Add songs to the new list in order */
+        for (const song of songResults) {
+            if (song) {
+                this.addSong(newList.id, song);
+            }
+        }
+
+        return this.getById(newList.id);
+    }
+
+    /**
+     * Initialise the shared set list page.
+     * Decodes URL data, renders the read-only view, and binds import button.
+     *
+     * @param {string} encodedData Base64-encoded set list data from the URL
+     */
+    initSharedSetListPage(encodedData) {
+        const loadingEl = document.getElementById('shared-setlist-loading');
+        const errorEl = document.getElementById('shared-setlist-error');
+        const contentEl = document.getElementById('shared-setlist-content');
+
+        if (!loadingEl || !errorEl || !contentEl) return;
+
+        /* Decode the shared data */
+        const sharedData = this.parseSharedSetlist(encodedData);
+
+        if (!sharedData) {
+            loadingEl.classList.add('d-none');
+            errorEl.classList.remove('d-none');
+            return;
+        }
+
+        /* Populate the header */
+        const titleEl = document.getElementById('shared-setlist-title');
+        const countEl = document.getElementById('shared-setlist-count');
+        const pluralEl = document.getElementById('shared-setlist-plural');
+
+        if (titleEl) titleEl.textContent = sharedData.name;
+        if (countEl) countEl.textContent = sharedData.songIds.length;
+        if (pluralEl) pluralEl.textContent = sharedData.songIds.length !== 1 ? 's' : '';
+
+        /* Render song list (initially with just IDs, then enrich with metadata) */
+        const songsContainer = document.getElementById('shared-setlist-songs');
+        if (songsContainer) {
+            songsContainer.innerHTML = sharedData.songIds.map((songId, index) => `
+                <div class="list-group-item d-flex align-items-center gap-2 shared-song-item"
+                     data-song-id="${this.escapeHtml(songId)}">
+                    <span class="text-muted fw-bold me-1" style="min-width:24px">${index + 1}.</span>
+                    <span class="song-number-badge" data-songbook="">...</span>
+                    <div class="flex-grow-1">
+                        <a href="/song/${this.escapeHtml(songId)}" data-navigate="song"
+                           class="text-decoration-none shared-song-title">${this.escapeHtml(songId)}</a>
+                        <small class="text-muted d-block shared-song-meta">Loading...</small>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        /* Show content, hide loading */
+        loadingEl.classList.add('d-none');
+        contentEl.classList.remove('d-none');
+
+        /* Enrich song items with metadata from the API */
+        this.enrichSharedSongItems(sharedData.songIds);
+
+        /* Bind import buttons */
+        const importHandler = async () => {
+            const imported = await this.importSharedSetlist(sharedData);
+            if (imported) {
+                this.app.showToast(`Set list "${sharedData.name}" imported with ${imported.songs.length} songs`, 'success', 3000);
+                this.app.router.navigate('/setlist');
+            } else {
+                this.app.showToast('Failed to import set list', 'danger', 3000);
+            }
+        };
+
+        document.getElementById('shared-setlist-import-btn')?.addEventListener('click', importHandler);
+        document.getElementById('shared-setlist-import-btn-bottom')?.addEventListener('click', importHandler);
+    }
+
+    /**
+     * Enrich shared song list items with metadata fetched from the API.
+     * Updates song titles, numbers, and songbook badges in-place.
+     *
+     * @param {string[]} songIds Array of song IDs
+     */
+    async enrichSharedSongItems(songIds) {
+        await Promise.all(
+            songIds.map(async (songId) => {
+                try {
+                    const url = `${this.app.config.apiUrl}?action=song_data&id=${encodeURIComponent(songId)}`;
+                    const response = await fetch(url, {
+                        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+                    });
+                    if (!response.ok) return;
+                    const json = await response.json();
+                    if (!json.song) return;
+
+                    const item = document.querySelector(`.shared-song-item[data-song-id="${CSS.escape(songId)}"]`);
+                    if (!item) return;
+
+                    const titleEl = item.querySelector('.shared-song-title');
+                    const metaEl = item.querySelector('.shared-song-meta');
+                    const badge = item.querySelector('.song-number-badge');
+
+                    if (titleEl) titleEl.textContent = toTitleCase(json.song.title) || songId;
+                    if (metaEl) metaEl.textContent = json.song.songbook || '';
+                    if (badge) {
+                        badge.textContent = json.song.number || '?';
+                        badge.dataset.songbook = json.song.songbook || '';
+                    }
+                } catch {
+                    /* Non-critical — leave placeholder text */
+                }
+            })
+        );
+    }
+
+    /* =====================================================================
      * EXPORT & SHARE
      * ===================================================================== */
 
@@ -702,7 +981,7 @@ export class SetList {
     formatSetListText(list) {
         let text = `${list.name}\n${'='.repeat(list.name.length)}\n\n`;
         list.songs.forEach((song, i) => {
-            text += `${i + 1}. ${song.title} (${song.songbook} #${song.number})\n`;
+            text += `${i + 1}. ${toTitleCase(song.title)} (${song.songbook} #${song.number})\n`;
         });
         text += `\n— Generated by iHymns`;
         return text;
@@ -781,7 +1060,7 @@ export class SetList {
 
         /* Build running order summary */
         const orderSummary = list.songs.map((song, i) =>
-            `<tr><td class="pe-3 text-muted">${i + 1}.</td><td>${this.escapeHtml(song.title)}</td><td class="text-muted">${this.escapeHtml(song.songbook)} #${song.number || '?'}</td></tr>`
+            `<tr><td class="pe-3 text-muted">${i + 1}.</td><td>${this.escapeHtml(toTitleCase(song.title))}</td><td class="text-muted">${this.escapeHtml(song.songbook)} #${song.number || '?'}</td></tr>`
         ).join('');
 
         /* Build individual song pages */
@@ -792,7 +1071,7 @@ export class SetList {
                 <div class="print-song-page">
                     <div class="print-song-header">
                         <span class="print-song-order">${index + 1}</span>
-                        <h2>${this.escapeHtml(page.song.title)}</h2>
+                        <h2>${this.escapeHtml(toTitleCase(page.song.title))}</h2>
                         <p class="print-song-meta">${this.escapeHtml(page.song.songbook)} #${page.song.number || '?'}</p>
                     </div>
                     <div class="print-song-content">${page.html}</div>

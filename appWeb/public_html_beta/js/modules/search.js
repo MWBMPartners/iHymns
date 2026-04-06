@@ -1,7 +1,7 @@
 /**
  * iHymns — Search Module
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Handles all search functionality including the header search bar
@@ -86,7 +86,7 @@ export class Search {
             clearBtn.addEventListener('click', () => {
                 if (searchInput) {
                     searchInput.value = '';
-                    clearBtn.style.display = 'none';
+                    clearBtn.classList.add('d-none');
                     searchInput.focus();
                 }
             });
@@ -95,7 +95,7 @@ export class Search {
         /* Show/hide clear button based on input */
         if (searchInput && clearBtn) {
             searchInput.addEventListener('input', () => {
-                clearBtn.style.display = searchInput.value ? 'block' : 'none';
+                clearBtn.classList.toggle('d-none', !searchInput.value);
             });
         }
 
@@ -237,6 +237,7 @@ export class Search {
             lyricsToggle.addEventListener('change', () => {
                 this.lyricsSearchEnabled = lyricsToggle.checked;
                 localStorage.setItem('ihymns_search_lyrics', String(this.lyricsSearchEnabled));
+                this.app.syncStorage('ihymns_search_lyrics');
 
                 /* Build lyrics index on first enable */
                 if (this.lyricsSearchEnabled && !this.fuseLyricsIndex && this.FuseClass && this.songsData) {

@@ -1,7 +1,7 @@
 /**
  * iHymns — Audio Playback Module (#90)
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Provides MIDI audio playback for songs that have associated .mid files.

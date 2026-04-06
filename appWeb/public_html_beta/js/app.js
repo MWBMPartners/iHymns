@@ -1,7 +1,7 @@
 /**
  * iHymns — Main Application Entry Point (ES Module)
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Bootstraps the iHymns single-page application. Initialises all
@@ -39,6 +39,9 @@ import { SongbookIndex } from './modules/songbook-index.js';
 import { SearchHistory } from './modules/search-history.js';
 import { SongOfTheDay } from './modules/song-of-the-day.js';
 import { OfflineIndicator } from './modules/offline-indicator.js';
+import { StorageBridge } from './modules/storage-bridge.js';
+import { SubdomainSync } from './modules/subdomain-sync.js';
+import { Gestures } from './modules/gestures.js';
 
 /**
  * iHymnsApp — Main application class
@@ -118,6 +121,15 @@ class iHymnsApp {
 
         /** @type {OfflineIndicator} Offline status indicator (#112) */
         this.offlineIndicator = null;
+
+        /** @type {StorageBridge} Cross-domain storage bridge (#133) */
+        this.storageBridge = null;
+
+        /** @type {SubdomainSync} Subdomain cookie sync (#133) */
+        this.subdomainSync = null;
+
+        /** @type {Gestures} Touch gesture navigation (#143) */
+        this.gestures = null;
     }
 
     /**
@@ -128,9 +140,42 @@ class iHymnsApp {
         try {
             /* --- Initialise core modules --- */
 
+            /* Subdomain cookie sync — pull settings from other *.ihymns.app
+             * subdomains BEFORE applying settings, so shared preferences
+             * are available immediately (#133, Layer 1). */
+            this.subdomainSync = new SubdomainSync();
+            this.subdomainSync.init();
+
             /* Settings must be first — it sets theme, motion prefs, etc. */
             this.settings = new Settings(this);
             this.settings.init();
+
+            /* Cross-domain storage bridge (#133) — initialise in background.
+             * Modules use localStorage directly (synchronous). The bridge
+             * syncs data across domains asynchronously without blocking. */
+            if (this.config.storageBridgeUrl) {
+                this.storageBridge = new StorageBridge(this.config.storageBridgeUrl);
+                this.storageBridge.init().then((connected) => {
+                    if (connected) {
+                        /* Pull any settings from other domains and re-apply */
+                        this.storageBridge.getAll().then((data) => {
+                            let needsRefresh = false;
+                            for (const [key, value] of Object.entries(data)) {
+                                if (localStorage.getItem(key) !== value) {
+                                    localStorage.setItem(key, value);
+                                    needsRefresh = true;
+                                }
+                            }
+                            if (needsRefresh) {
+                                /* Re-apply settings that may have been updated */
+                                this.settings.applyTheme(this.settings.get('theme'));
+                                this.settings.applyReduceMotion(this.settings.get('reduceMotion'));
+                                this.settings.applyFontSize(this.settings.get('fontSize'));
+                            }
+                        });
+                    }
+                });
+            }
 
             /* Page transitions */
             this.transitions = new Transitions(this);
@@ -219,6 +264,10 @@ class iHymnsApp {
             this.offlineIndicator = new OfflineIndicator(this);
             this.offlineIndicator.init();
 
+            /* Touch gesture navigation (#143) */
+            this.gestures = new Gestures(this);
+            this.gestures.init();
+
             /* --- Set up global event listeners --- */
             this.bindGlobalEvents();
 
@@ -227,6 +276,9 @@ class iHymnsApp {
 
             /* --- Register service worker --- */
             this.registerServiceWorker();
+
+            /* --- Listen for service worker messages (#131, #132) --- */
+            this.initServiceWorkerMessaging();
 
             /* --- Load initial page based on current URL --- */
             await this.router.handleCurrentRoute();
@@ -328,6 +380,40 @@ class iHymnsApp {
                     /* Next song (if on song page) */
                     this.navigateSongDirection('next');
                     break;
+                case 'p':
+                case 'P':
+                    /* Toggle presentation mode (#125) */
+                    this.display.togglePresentationMode();
+                    break;
+                case 'l':
+                case 'L':
+                    /* Navigate to set list page (#125) */
+                    e.preventDefault();
+                    this.router.navigate('/setlist');
+                    break;
+                case 's':
+                case 'S':
+                    /* Toggle auto-scroll on song pages (#125) */
+                    if (document.querySelector('.song-lyrics')) {
+                        this.display.toggleAutoScroll();
+                    }
+                    break;
+                case '+':
+                case '=':
+                    /* Increase font size (#125) */
+                    this.display.adjustFontSize(1);
+                    break;
+                case '-':
+                    /* Decrease font size (#125) */
+                    this.display.adjustFontSize(-1);
+                    break;
+                case ' ':
+                    /* Pause/resume auto-scroll (#125) */
+                    if (this.display.autoScrollActive) {
+                        e.preventDefault();
+                        this.display.toggleAutoScroll();
+                    }
+                    break;
             }
         });
 
@@ -400,7 +486,8 @@ class iHymnsApp {
         const scrollBtn = document.getElementById('scroll-to-top-btn');
         if (scrollBtn) {
             window.addEventListener('scroll', () => {
-                const show = window.scrollY > 300;
+                const nearBottom = (window.innerHeight + window.scrollY) >= (document.body.offsetHeight - 200);
+                const show = window.scrollY > 300 && !nearBottom;
                 scrollBtn.classList.toggle('visible', show);
                 scrollBtn.setAttribute('aria-hidden', String(!show));
                 scrollBtn.tabIndex = show ? 0 : -1;
@@ -725,6 +812,95 @@ class iHymnsApp {
     }
 
     /**
+     * Initialise service worker message listener (#131, #132).
+     * Handles song update notifications and auto-update confirmations.
+     */
+    initServiceWorkerMessaging() {
+        if (!('serviceWorker' in navigator)) return;
+
+        /* Send auto-update preference to SW on init */
+        navigator.serviceWorker.ready.then(() => {
+            const autoUpdate = localStorage.getItem('ihymns_auto_update_songs') === 'true';
+            navigator.serviceWorker.controller?.postMessage({
+                type: 'SET_AUTO_UPDATE',
+                enabled: autoUpdate,
+            });
+        });
+
+        navigator.serviceWorker.addEventListener('message', (event) => {
+            if (!event.data) return;
+
+            /* A cached song has a newer version available — ask user (#131) */
+            if (event.data.type === 'SONG_UPDATE_AVAILABLE') {
+                this.showSongUpdateNotification(event.data.songId, event.data.url);
+            }
+
+            /* A song was auto-updated or manually updated (#131) */
+            if (event.data.type === 'SONG_UPDATED') {
+                if (event.data.auto) {
+                    console.log(`[iHymns] Song ${event.data.songId} auto-updated in cache`);
+                } else {
+                    this.showToast('Song updated to latest version', 'success', 2000);
+                }
+            }
+        });
+    }
+
+    /**
+     * Show a notification that a cached song has an update available (#131).
+     * Offers an "Update" button to re-cache the new version.
+     *
+     * @param {string} songId Song ID (e.g. 'CP-0001')
+     * @param {string} url The API URL for the updated song
+     */
+    showSongUpdateNotification(songId, url) {
+        const container = document.getElementById('toast-container');
+        if (!container) return;
+
+        const toastEl = document.createElement('div');
+        toastEl.className = 'toast align-items-center text-bg-info border-0';
+        toastEl.setAttribute('role', 'alert');
+        toastEl.setAttribute('aria-live', 'polite');
+        toastEl.setAttribute('aria-atomic', 'true');
+        toastEl.innerHTML = `
+            <div class="d-flex">
+                <div class="toast-body">
+                    <i class="fa-solid fa-rotate me-1" aria-hidden="true"></i>
+                    Song ${this.escapeHtml(songId)} has been updated.
+                    <button type="button" class="btn btn-sm btn-light ms-2 btn-update-song"
+                            data-song-id="${this.escapeHtml(songId)}"
+                            data-url="${this.escapeHtml(url)}">
+                        Update
+                    </button>
+                </div>
+                <button type="button" class="btn-close btn-close-white me-2 m-auto"
+                        data-bs-dismiss="toast" aria-label="Close"></button>
+            </div>`;
+
+        container.appendChild(toastEl);
+
+        const toast = new bootstrap.Toast(toastEl, { autohide: false });
+        toast.show();
+
+        /* Handle the update button */
+        const updateBtn = toastEl.querySelector('.btn-update-song');
+        if (updateBtn) {
+            updateBtn.addEventListener('click', () => {
+                navigator.serviceWorker.controller?.postMessage({
+                    type: 'UPDATE_SONG_CACHE',
+                    songId: updateBtn.dataset.songId,
+                    url: updateBtn.dataset.url,
+                });
+                updateBtn.disabled = true;
+                updateBtn.textContent = 'Updating...';
+                toast.hide();
+            });
+        }
+
+        toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
+    }
+
+    /**
      * Escape HTML for safe insertion into innerHTML.
      * @param {string} str
      * @returns {string}
@@ -733,6 +909,210 @@ class iHymnsApp {
         const div = document.createElement('div');
         div.textContent = str || '';
         return div.innerHTML;
+    }
+
+    /**
+     * Sync a localStorage key to the cross-domain storage bridge (#133).
+     * Call this after any direct localStorage.setItem() for ihymns_ keys.
+     * Non-blocking — failures are silent.
+     *
+     * @param {string} key Full localStorage key (e.g. 'ihymns_favorites')
+     */
+    syncStorage(key) {
+        const value = localStorage.getItem(key);
+        /* Layer 1: Subdomain cookie sync (*.ihymns.app) */
+        this.subdomainSync?.sync(key);
+        /* Layer 2: Iframe bridge (cross-domain / large data) */
+        if (value !== null && this.storageBridge) {
+            this.storageBridge.set(key, value);
+        }
+    }
+
+    /**
+     * Show a custom confirm dialog replacing native confirm() (#114).
+     * Returns a Promise that resolves to true (OK) or false (Cancel).
+     *
+     * @param {string} message The confirm message
+     * @param {object} opts Options: { title, okText, cancelText, okClass }
+     * @returns {Promise<boolean>}
+     */
+    showConfirm(message, opts = {}) {
+        return new Promise((resolve) => {
+            const {
+                title = 'Confirm',
+                okText = 'OK',
+                cancelText = 'Cancel',
+                okClass = 'btn-primary',
+            } = opts;
+
+            const id = 'ihymns-confirm-' + Date.now();
+            const modal = document.createElement('div');
+            modal.className = 'modal fade';
+            modal.id = id;
+            modal.setAttribute('tabindex', '-1');
+            modal.setAttribute('aria-labelledby', id + '-label');
+            modal.innerHTML = `
+                <div class="modal-dialog modal-dialog-centered">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title" id="${id}-label">${this.escapeHtml(title)}</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <div class="modal-body">${this.escapeHtml(message)}</div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">${this.escapeHtml(cancelText)}</button>
+                            <button type="button" class="btn ${okClass}" id="${id}-ok">${this.escapeHtml(okText)}</button>
+                        </div>
+                    </div>
+                </div>`;
+
+            document.body.appendChild(modal);
+            const bsModal = new bootstrap.Modal(modal);
+
+            let resolved = false;
+            modal.querySelector(`#${id}-ok`).addEventListener('click', () => {
+                resolved = true;
+                bsModal.hide();
+            });
+            modal.addEventListener('hidden.bs.modal', () => {
+                modal.remove();
+                resolve(resolved);
+            });
+
+            bsModal.show();
+        });
+    }
+
+    /**
+     * Show a custom prompt dialog replacing native prompt() (#114).
+     * Returns a Promise that resolves to the entered string or null (cancelled).
+     *
+     * @param {string} message The prompt message
+     * @param {string} defaultValue Default input value
+     * @param {object} opts Options: { title, okText, cancelText, placeholder }
+     * @returns {Promise<string|null>}
+     */
+    showPrompt(message, defaultValue = '', opts = {}) {
+        return new Promise((resolve) => {
+            const {
+                title = 'Input',
+                okText = 'OK',
+                cancelText = 'Cancel',
+                placeholder = '',
+            } = opts;
+
+            const id = 'ihymns-prompt-' + Date.now();
+            const modal = document.createElement('div');
+            modal.className = 'modal fade';
+            modal.id = id;
+            modal.setAttribute('tabindex', '-1');
+            modal.setAttribute('aria-labelledby', id + '-label');
+            modal.innerHTML = `
+                <div class="modal-dialog modal-dialog-centered">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title" id="${id}-label">${this.escapeHtml(title)}</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <div class="modal-body">
+                            <label for="${id}-input" class="form-label">${this.escapeHtml(message)}</label>
+                            <input type="text" class="form-control" id="${id}-input"
+                                   value="${this.escapeHtml(defaultValue)}"
+                                   placeholder="${this.escapeHtml(placeholder)}">
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">${this.escapeHtml(cancelText)}</button>
+                            <button type="button" class="btn btn-primary" id="${id}-ok">${this.escapeHtml(okText)}</button>
+                        </div>
+                    </div>
+                </div>`;
+
+            document.body.appendChild(modal);
+            const bsModal = new bootstrap.Modal(modal);
+            const input = modal.querySelector(`#${id}-input`);
+
+            let result = null;
+            const submit = () => {
+                result = input.value;
+                bsModal.hide();
+            };
+
+            modal.querySelector(`#${id}-ok`).addEventListener('click', submit);
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') submit();
+            });
+            modal.addEventListener('hidden.bs.modal', () => {
+                modal.remove();
+                resolve(result);
+            });
+            modal.addEventListener('shown.bs.modal', () => {
+                input.focus();
+                input.select();
+            });
+
+            bsModal.show();
+        });
+    }
+
+    /**
+     * Show a custom choice dialog with two action options (#114).
+     * Used for import mode selection (Replace vs Merge).
+     *
+     * @param {string} message The message
+     * @param {object} opts { title, option1Text, option2Text, option1Class, option2Class }
+     * @returns {Promise<string|null>} 'option1', 'option2', or null if dismissed
+     */
+    showChoice(message, opts = {}) {
+        return new Promise((resolve) => {
+            const {
+                title = 'Choose',
+                option1Text = 'Option 1',
+                option2Text = 'Option 2',
+                option1Class = 'btn-primary',
+                option2Class = 'btn-secondary',
+            } = opts;
+
+            const id = 'ihymns-choice-' + Date.now();
+            const modal = document.createElement('div');
+            modal.className = 'modal fade';
+            modal.id = id;
+            modal.setAttribute('tabindex', '-1');
+            modal.setAttribute('aria-labelledby', id + '-label');
+            modal.innerHTML = `
+                <div class="modal-dialog modal-dialog-centered">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title" id="${id}-label">${this.escapeHtml(title)}</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <div class="modal-body">${this.escapeHtml(message)}</div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                            <button type="button" class="btn ${option2Class}" id="${id}-opt2">${this.escapeHtml(option2Text)}</button>
+                            <button type="button" class="btn ${option1Class}" id="${id}-opt1">${this.escapeHtml(option1Text)}</button>
+                        </div>
+                    </div>
+                </div>`;
+
+            document.body.appendChild(modal);
+            const bsModal = new bootstrap.Modal(modal);
+
+            let result = null;
+            modal.querySelector(`#${id}-opt1`).addEventListener('click', () => {
+                result = 'option1';
+                bsModal.hide();
+            });
+            modal.querySelector(`#${id}-opt2`).addEventListener('click', () => {
+                result = 'option2';
+                bsModal.hide();
+            });
+            modal.addEventListener('hidden.bs.modal', () => {
+                modal.remove();
+                resolve(result);
+            });
+
+            bsModal.show();
+        });
     }
 
     /**

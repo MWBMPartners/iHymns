@@ -5,7 +5,7 @@ declare(strict_types=1);
 /**
  * iHymns — Song Data Handler
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Provides server-side access to the song database (songs.json).
@@ -28,6 +28,44 @@ declare(strict_types=1);
 if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     http_response_code(403);
     exit('Access denied.');
+}
+
+/* =========================================================================
+ * TITLE CASE HELPER (#148)
+ * ========================================================================= */
+
+/**
+ * Convert a string to Title Case, following English title capitalisation rules.
+ * Minor words (articles, conjunctions, short prepositions) are lowercased
+ * unless they are the first or last word. Hyphenated parts are each capitalised.
+ *
+ * @param string $str The input string (may be ALL CAPS, lowercase, or mixed)
+ * @return string The title-cased string
+ */
+function toTitleCase(string $str): string
+{
+    $minor = ['a','an','and','as','at','but','by','for','in','nor','of','on','or','so','the','to','up','yet'];
+    $words = preg_split('/\s+/', mb_strtolower(trim($str)));
+    $lastIndex = count($words) - 1;
+    foreach ($words as $i => &$word) {
+        /* Handle hyphenated words — capitalise each part */
+        if (strpos($word, '-') !== false) {
+            $word = implode('-', array_map(
+                fn($p) => mb_strtoupper(mb_substr($p, 0, 1)) . mb_substr($p, 1),
+                explode('-', $word)
+            ));
+            /* Still apply first/last rule to the whole hyphenated word */
+            if ($i !== 0 && $i !== $lastIndex) {
+                continue;
+            }
+        }
+        /* Always capitalise first and last word; capitalise non-minor words */
+        if ($i === 0 || $i === $lastIndex || !in_array($word, $minor)) {
+            $word = mb_strtoupper(mb_substr($word, 0, 1)) . mb_substr($word, 1);
+        }
+    }
+    unset($word);
+    return implode(' ', $words);
 }
 
 class SongData
@@ -100,7 +138,14 @@ class SongData
      */
     public function getSongbooks(): array
     {
-        return $this->data['songbooks'] ?? [];
+        $books = $this->data['songbooks'] ?? [];
+        usort($books, function (array $a, array $b): int {
+            $normalize = function (string $s): string {
+                return preg_replace('/^(the|a|an)\s+/i', '', strtolower(trim($s)));
+            };
+            return strcmp($normalize($a['name'] ?? ''), $normalize($b['name'] ?? ''));
+        });
+        return $books;
     }
 
     /**
@@ -164,17 +209,35 @@ class SongData
     /**
      * Get a single song by its unique ID (e.g., 'CP-0001').
      *
-     * @param string $id Song ID in the format 'BOOK-NUMBER'
+     * Supports flexible ID formats: 'MP-1', 'MP-01', 'MP-001', and 'MP-0001'
+     * all resolve to the same song. The lookup extracts the alphabetic prefix
+     * and numeric suffix, strips leading zeros, then matches by songbook code
+     * and number.
+     *
+     * @param string $id Song ID in the format 'BOOK-NUMBER' (zero-padding optional)
      * @return array|null Song object or null if not found
      */
     public function getSongById(string $id): ?array
     {
         $id = strtoupper(trim($id));
+
+        /* Try exact match first (fast path for canonical IDs) */
         foreach ($this->data['songs'] ?? [] as $song) {
             if (strtoupper($song['id']) === $id) {
                 return $song;
             }
         }
+
+        /* No exact match — try normalized matching.
+         * Extract the alphabetic prefix and numeric part, then compare
+         * against each song's songbook code and number. */
+        if (preg_match('/^([A-Z]+)-0*(\d+)$/', $id, $matches)) {
+            $prefix = $matches[1];
+            $number = (int) $matches[2];
+
+            return $this->getSongByNumber($prefix, $number);
+        }
+
         return null;
     }
 

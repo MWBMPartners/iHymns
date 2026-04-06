@@ -1,7 +1,7 @@
 /**
  * iHymns — Display Preferences & Presentation Mode Module (#95)
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Provides per-song display controls: font size adjustment, line
@@ -27,7 +27,7 @@ export class Display {
 
         /** Default display preferences */
         this.defaults = {
-            fontSize: 1.0,          /* Multiplier: 0.8, 1.0, 1.2, 1.5, 2.0 */
+            fontSize: 1.0,          /* Multiplier: 0.5 – 5.0 */
             lineSpacing: 'normal',  /* compact, normal, spacious */
             showVerseNumbers: true,
             highlightChorus: true,
@@ -62,6 +62,7 @@ export class Display {
             const stored = JSON.parse(localStorage.getItem(this.storageKey)) || {};
             stored[key] = value;
             localStorage.setItem(this.storageKey, JSON.stringify(stored));
+            this.app.syncStorage(this.storageKey);
         } catch {
             /* Ignore storage errors */
         }
@@ -84,6 +85,30 @@ export class Display {
         this.applyLineSpacing(lyricsEl);
         this.applyVerseNumbers(lyricsEl);
         this.applyChorusHighlight(lyricsEl);
+
+        /* Protect lyrics content — prevent copy/paste and right-click */
+        this.protectLyrics(lyricsEl);
+    }
+
+    /**
+     * Prevent copy, cut, text selection, and right-click on lyrics content.
+     * Scoped to the lyrics element only so the rest of the app remains usable.
+     * @param {HTMLElement} lyricsEl
+     */
+    protectLyrics(lyricsEl) {
+        /* Prevent text selection via CSS */
+        lyricsEl.style.userSelect = 'none';
+        lyricsEl.style.webkitUserSelect = 'none';
+
+        /* Prevent copy and cut */
+        lyricsEl.addEventListener('copy', (e) => e.preventDefault());
+        lyricsEl.addEventListener('cut', (e) => e.preventDefault());
+
+        /* Prevent right-click context menu */
+        lyricsEl.addEventListener('contextmenu', (e) => e.preventDefault());
+
+        /* Prevent drag (which can be used to extract text) */
+        lyricsEl.addEventListener('dragstart', (e) => e.preventDefault());
     }
 
     /**
@@ -164,14 +189,17 @@ export class Display {
      * @param {HTMLElement} lyricsEl
      */
     bindToolbarEvents(lyricsEl) {
-        const fontSteps = [0.8, 1.0, 1.2, 1.5, 2.0];
+        const fontSteps = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0];
 
         /* Font size down */
         document.getElementById('display-font-down')?.addEventListener('click', () => {
             const current = this.get('fontSize');
-            const idx = fontSteps.indexOf(current);
-            if (idx > 0) {
-                this.set('fontSize', fontSteps[idx - 1]);
+            /* Find closest step at or below current, then go one lower */
+            let idx = fontSteps.findIndex(s => s >= current);
+            if (idx < 0) idx = fontSteps.length - 1;
+            if (fontSteps[idx] === current) idx--;
+            if (idx >= 0) {
+                this.set('fontSize', fontSteps[idx]);
                 this.applyFontSize(lyricsEl);
                 this.updateFontLabel();
             }
@@ -180,9 +208,10 @@ export class Display {
         /* Font size up */
         document.getElementById('display-font-up')?.addEventListener('click', () => {
             const current = this.get('fontSize');
-            const idx = fontSteps.indexOf(current);
-            if (idx < fontSteps.length - 1) {
-                this.set('fontSize', fontSteps[idx + 1]);
+            /* Find closest step above current */
+            const idx = fontSteps.findIndex(s => s > current);
+            if (idx >= 0) {
+                this.set('fontSize', fontSteps[idx]);
                 this.applyFontSize(lyricsEl);
                 this.updateFontLabel();
             }
@@ -220,6 +249,52 @@ export class Display {
     /* =====================================================================
      * APPLY PREFERENCES
      * ===================================================================== */
+
+    /** Font size steps for adjustment */
+    static FONT_STEPS = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0];
+
+    /**
+     * Adjust font size by one step up or down (#125).
+     * @param {number} direction 1 for increase, -1 for decrease
+     */
+    adjustFontSize(direction) {
+        const lyricsEl = document.querySelector('.song-lyrics');
+        if (!lyricsEl) return;
+
+        const steps = Display.FONT_STEPS;
+        const current = this.get('fontSize');
+
+        if (direction > 0) {
+            const idx = steps.findIndex(s => s > current);
+            if (idx >= 0) {
+                this.set('fontSize', steps[idx]);
+                this.applyFontSize(lyricsEl);
+                this.updateFontLabel();
+            }
+        } else {
+            let idx = steps.findIndex(s => s >= current);
+            if (idx < 0) idx = steps.length - 1;
+            if (steps[idx] === current) idx--;
+            if (idx >= 0) {
+                this.set('fontSize', steps[idx]);
+                this.applyFontSize(lyricsEl);
+                this.updateFontLabel();
+            }
+        }
+    }
+
+    /**
+     * Toggle presentation mode from keyboard (#125).
+     */
+    togglePresentationMode() {
+        const overlay = document.getElementById('presentation-overlay');
+        if (overlay) {
+            this.exitPresentationMode();
+        } else {
+            const lyricsEl = document.querySelector('.song-lyrics');
+            if (lyricsEl) this.enterPresentationMode(lyricsEl);
+        }
+    }
 
     /** Apply font size to lyrics element */
     applyFontSize(lyricsEl) {
@@ -342,6 +417,10 @@ export class Display {
             </div>`;
 
         document.body.appendChild(overlay);
+
+        /* Protect lyrics in presentation mode too */
+        const presLyrics = overlay.querySelector('.presentation-lyrics');
+        if (presLyrics) this.protectLyrics(presLyrics);
 
         /* Enter fullscreen */
         if (overlay.requestFullscreen) {

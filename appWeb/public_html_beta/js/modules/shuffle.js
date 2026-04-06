@@ -1,7 +1,7 @@
 /**
  * iHymns — Shuffle Module
  *
- * Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+ * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
  * Provides random song selection. Users can pick a random song from
