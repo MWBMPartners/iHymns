@@ -372,6 +372,40 @@ class iHymnsApp {
                     /* Next song (if on song page) */
                     this.navigateSongDirection('next');
                     break;
+                case 'p':
+                case 'P':
+                    /* Toggle presentation mode (#125) */
+                    this.display.togglePresentationMode();
+                    break;
+                case 'l':
+                case 'L':
+                    /* Navigate to set list page (#125) */
+                    e.preventDefault();
+                    this.router.navigate('/setlist');
+                    break;
+                case 's':
+                case 'S':
+                    /* Toggle auto-scroll on song pages (#125) */
+                    if (document.querySelector('.song-lyrics')) {
+                        this.display.toggleAutoScroll();
+                    }
+                    break;
+                case '+':
+                case '=':
+                    /* Increase font size (#125) */
+                    this.display.adjustFontSize(1);
+                    break;
+                case '-':
+                    /* Decrease font size (#125) */
+                    this.display.adjustFontSize(-1);
+                    break;
+                case ' ':
+                    /* Pause/resume auto-scroll (#125) */
+                    if (this.display.autoScrollActive) {
+                        e.preventDefault();
+                        this.display.toggleAutoScroll();
+                    }
+                    break;
             }
         });
 

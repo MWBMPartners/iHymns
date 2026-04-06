@@ -83,6 +83,26 @@ export class Shortcuts {
                                 <dd>Toggle favourite</dd>
                             </div>
                             <div class="shortcut-row">
+                                <dt><kbd>P</kbd></dt>
+                                <dd>Presentation mode</dd>
+                            </div>
+                            <div class="shortcut-row">
+                                <dt><kbd>L</kbd></dt>
+                                <dd>Open set lists</dd>
+                            </div>
+                            <div class="shortcut-row">
+                                <dt><kbd>S</kbd></dt>
+                                <dd>Auto-scroll</dd>
+                            </div>
+                            <div class="shortcut-row">
+                                <dt><kbd>Space</kbd></dt>
+                                <dd>Pause auto-scroll</dd>
+                            </div>
+                            <div class="shortcut-row">
+                                <dt><kbd>+</kbd> / <kbd>-</kbd></dt>
+                                <dd>Font size</dd>
+                            </div>
+                            <div class="shortcut-row">
                                 <dt><kbd>Esc</kbd></dt>
                                 <dd>Close overlay / search</dd>
                             </div>

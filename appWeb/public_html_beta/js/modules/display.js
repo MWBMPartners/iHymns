@@ -250,6 +250,52 @@ export class Display {
      * APPLY PREFERENCES
      * ===================================================================== */
 
+    /** Font size steps for adjustment */
+    static FONT_STEPS = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0];
+
+    /**
+     * Adjust font size by one step up or down (#125).
+     * @param {number} direction 1 for increase, -1 for decrease
+     */
+    adjustFontSize(direction) {
+        const lyricsEl = document.querySelector('.song-lyrics');
+        if (!lyricsEl) return;
+
+        const steps = Display.FONT_STEPS;
+        const current = this.get('fontSize');
+
+        if (direction > 0) {
+            const idx = steps.findIndex(s => s > current);
+            if (idx >= 0) {
+                this.set('fontSize', steps[idx]);
+                this.applyFontSize(lyricsEl);
+                this.updateFontLabel();
+            }
+        } else {
+            let idx = steps.findIndex(s => s >= current);
+            if (idx < 0) idx = steps.length - 1;
+            if (steps[idx] === current) idx--;
+            if (idx >= 0) {
+                this.set('fontSize', steps[idx]);
+                this.applyFontSize(lyricsEl);
+                this.updateFontLabel();
+            }
+        }
+    }
+
+    /**
+     * Toggle presentation mode from keyboard (#125).
+     */
+    togglePresentationMode() {
+        const overlay = document.getElementById('presentation-overlay');
+        if (overlay) {
+            this.exitPresentationMode();
+        } else {
+            const lyricsEl = document.querySelector('.song-lyrics');
+            if (lyricsEl) this.enterPresentationMode(lyricsEl);
+        }
+    }
+
     /** Apply font size to lyrics element */
     applyFontSize(lyricsEl) {
         const size = this.get('fontSize');
