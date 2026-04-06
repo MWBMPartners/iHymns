@@ -572,10 +572,10 @@ export class Audio {
     showDownloadLink(songId) {
         const player = document.getElementById('audio-player');
         if (!player) return;
-        const url = this.app.config.audioBasePath + songId + '.mid';
+        const url = this.app.config.audioBasePath + encodeURIComponent(songId) + '.mid';
         const statusEl = player.querySelector('#audio-status');
         if (statusEl) {
-            statusEl.innerHTML = `<a href="${url}" download class="text-decoration-underline">Download MIDI file</a>`;
+            statusEl.innerHTML = `<a href="${this.escapeHtml(url)}" download class="text-decoration-underline">Download MIDI file</a>`;
         }
     }
 

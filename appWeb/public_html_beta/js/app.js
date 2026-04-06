@@ -756,7 +756,7 @@ class iHymnsApp {
             content.innerHTML = `
                 <div class="alert alert-danger mt-4" role="alert">
                     <i class="fa-solid fa-triangle-exclamation me-2" aria-hidden="true"></i>
-                    ${message}
+                    ${this.escapeHtml(message)}
                 </div>`;
         }
     }
@@ -779,7 +779,7 @@ class iHymnsApp {
         toastEl.setAttribute('aria-atomic', 'true');
         toastEl.innerHTML = `
             <div class="d-flex">
-                <div class="toast-body">${message}</div>
+                <div class="toast-body">${this.escapeHtml(message)}</div>
                 <button type="button" class="btn-close btn-close-white me-2 m-auto"
                         data-bs-dismiss="toast" aria-label="Close"></button>
             </div>`;

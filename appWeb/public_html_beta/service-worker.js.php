@@ -286,6 +286,12 @@ self.addEventListener('message', (event) => {
 
     /* Proactively cache a recently viewed song page (#105) */
     if (event.data.type === 'CACHE_SONG' && event.data.url) {
+        /* Validate URL origin to prevent cache poisoning */
+        try {
+            const cacheUrl = new URL(event.data.url, self.location.origin);
+            if (cacheUrl.origin !== self.location.origin) return;
+        } catch { return; }
+
         caches.open(RECENT_CACHE).then(async (cache) => {
             try {
                 const response = await fetch(event.data.url);
