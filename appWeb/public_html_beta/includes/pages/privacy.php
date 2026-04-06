@@ -58,14 +58,34 @@ $appUrl = $app["Application"]["Website"]["URL"];
             <h3 class="small fw-bold mt-3">2.1 Data Stored Locally on Your Device</h3>
             <p>The following data is stored in your browser's local storage and <strong>never</strong> sent to our servers:</p>
             <ul>
-                <li><strong>Favourites:</strong> Your saved favourite songs</li>
-                <li><strong>Settings:</strong> Theme preference, font size, motion preference, and other display settings</li>
-                <li><strong>Disclaimer acceptance:</strong> Whether you have accepted the terms of use disclaimer</li>
-                <li><strong>PWA install banner:</strong> Whether you have dismissed the install prompt</li>
+                <li><strong>Favourites:</strong> Your saved favourite songs and any tags/categories you assign</li>
+                <li><strong>Set Lists:</strong> Custom song collections you create for worship services</li>
+                <li><strong>Browsing History:</strong> Recently viewed songs (for quick access on the home page)</li>
+                <li><strong>Search History:</strong> Recent search queries (for search suggestions)</li>
+                <li><strong>Display Settings:</strong> Theme preference, font size, motion/transparency preferences, and other display options</li>
+                <li><strong>Recent Songbooks:</strong> Which songbooks you have recently browsed</li>
+                <li><strong>Analytics Consent:</strong> Your choice to accept or decline analytics tracking</li>
+                <li><strong>PWA Install Banner:</strong> Whether you have dismissed the install prompt</li>
+                <li><strong>Disclaimer Acceptance:</strong> Whether you have accepted the terms of use disclaimer</li>
             </ul>
             <p>This data remains entirely on your device. You can clear it at any time via the Settings page or by clearing your browser data.</p>
 
-            <h3 class="small fw-bold mt-3">2.2 Data Collected via Analytics</h3>
+            <h3 class="small fw-bold mt-3">2.2 Analytics Consent</h3>
+            <p>
+                Analytics tracking is <strong>disabled by default</strong>. When you first visit
+                <?= htmlspecialchars($appName) ?>, you may be shown a consent banner asking whether
+                you wish to allow analytics. You can:
+            </p>
+            <ul>
+                <li><strong>Accept:</strong> Analytics services will be activated for your session</li>
+                <li><strong>Decline:</strong> No analytics data will be collected (privacy-focused services like Plausible may still run as they do not use cookies)</li>
+            </ul>
+            <p>
+                You can change your analytics preference at any time from the <strong>Settings &gt; Privacy</strong>
+                section. Your consent choice is stored locally in your browser and is never sent to our servers.
+            </p>
+
+            <h3 class="small fw-bold mt-3">2.3 Data Collected via Analytics (When Consented)</h3>
             <p>If analytics services are enabled, we may collect:</p>
             <ul>
                 <li>Pages visited and general usage patterns (aggregate, non-personal)</li>
@@ -106,17 +126,26 @@ $appUrl = $app["Application"]["Website"]["URL"];
         </div>
     </div>
 
-    <!-- Cookies -->
+    <!-- Cookies & Cross-Domain Sync -->
     <div class="card card-settings mb-3">
         <div class="card-body">
-            <h2 class="h6 mb-3">4. Cookies</h2>
+            <h2 class="h6 mb-3">4. Cookies &amp; Cross-Domain Synchronisation</h2>
             <p>
-                <?= htmlspecialchars($appName) ?> does <strong>not</strong> set any first-party
-                cookies. All user preferences are stored in browser local storage.
+                <?= htmlspecialchars($appName) ?> uses <strong>one first-party cookie</strong>
+                (<code>ihymns_sync</code>) solely for synchronising your display preferences
+                (theme, font size, motion settings) across <?= htmlspecialchars($appName) ?>
+                subdomains (e.g., <code>beta.ihymns.net</code>, <code>ihymns.app</code>). This
+                cookie contains only your settings preferences — no personal or tracking data.
             </p>
             <p>
-                Third-party analytics services (if enabled) may set their own cookies in
-                accordance with their respective privacy policies. When DNT is active,
+                Additionally, a lightweight cross-domain storage bridge (using a hidden iframe)
+                may be used to keep your localStorage preferences in sync if you access
+                <?= htmlspecialchars($appName) ?> from multiple subdomains. This mechanism
+                transfers only your app settings and never collects personal information.
+            </p>
+            <p>
+                Third-party analytics services (if enabled and consented to) may set their own
+                cookies in accordance with their respective privacy policies. When DNT is active,
                 third-party tracking cookies are suppressed where possible.
             </p>
         </div>
@@ -131,7 +160,8 @@ $appUrl = $app["Application"]["Website"]["URL"];
                 worker to cache application assets for offline use. This cached data:
             </p>
             <ul>
-                <li>Includes only application code, styles, and song data</li>
+                <li>Includes application code, styles, and song data</li>
+                <li>May include individual songs or entire songbooks if you choose to download them for offline use</li>
                 <li>Does not include any personal information</li>
                 <li>Is stored locally in your browser's cache storage</li>
                 <li>Can be cleared at any time via Settings or your browser settings</li>
@@ -139,21 +169,58 @@ $appUrl = $app["Application"]["Website"]["URL"];
         </div>
     </div>
 
+    <!-- Sharing Features -->
+    <div class="card card-settings mb-3">
+        <div class="card-body">
+            <h2 class="h6 mb-3">6. Sharing Features</h2>
+            <p>
+                <?= htmlspecialchars($appName) ?> provides several sharing features. When you use them,
+                you control what is shared:
+            </p>
+            <ul>
+                <li><strong>Share Song:</strong> Uses your device's native share sheet (Web Share API)
+                    or copies song details to clipboard. Only the song title, songbook name, and a link are shared — no personal data.</li>
+                <li><strong>Shareable Set Lists:</strong> When you share a set list, the song IDs and
+                    set list name are encoded into the URL. Anyone with the link can view the set list.
+                    No personal data is included in the shared link.</li>
+                <li><strong>Copy Song Details:</strong> Copies song metadata (title, writer, composer) to
+                    your clipboard. This data does not leave your device unless you paste it elsewhere.</li>
+            </ul>
+        </div>
+    </div>
+
+    <!-- Security Measures -->
+    <div class="card card-settings mb-3">
+        <div class="card-body">
+            <h2 class="h6 mb-3">7. Security Measures</h2>
+            <p>
+                <?= htmlspecialchars($appName) ?> implements several technical measures to protect
+                your browsing experience:
+            </p>
+            <ul>
+                <li><strong>Content Security Policy (CSP):</strong> Restricts which scripts, styles, and connections are allowed, preventing cross-site scripting attacks</li>
+                <li><strong>Subresource Integrity (SRI):</strong> Verifies that third-party libraries loaded from CDNs have not been tampered with</li>
+                <li><strong>HTTPS:</strong> All data in transit is encrypted via TLS</li>
+                <li><strong>No Server-Side Storage:</strong> No personal data is stored on our servers — all user data remains in your browser</li>
+            </ul>
+        </div>
+    </div>
+
     <!-- Third-Party Services -->
     <div class="card card-settings mb-3">
         <div class="card-body">
-            <h2 class="h6 mb-3">6. Third-Party Services</h2>
+            <h2 class="h6 mb-3">8. Third-Party Services</h2>
             <p>
                 <?= htmlspecialchars($appName) ?> may use the following third-party services,
                 each governed by their own privacy policies:
             </p>
             <ul>
-                <li><strong>CDN providers</strong> (jsDelivr, cdnjs) — for loading CSS and JavaScript libraries</li>
-                <li><strong>Google Analytics</strong> (if enabled) — for anonymous usage statistics</li>
-                <li><strong>Microsoft Clarity</strong> (if enabled) — for anonymous usage heatmaps</li>
-                <li><strong>Plausible Analytics</strong> (if enabled) — privacy-focused analytics</li>
+                <li><strong>CDN providers</strong> (jsDelivr, cdnjs) — for loading libraries including Bootstrap, jQuery, Font Awesome, Animate.css, Fuse.js, Tone.js, and PDF.js. These providers may log access in their server logs.</li>
+                <li><strong>Google Analytics 4</strong> (if enabled and consented) — anonymous usage statistics. <a href="https://policies.google.com/privacy" target="_blank" rel="noopener noreferrer">Privacy policy</a></li>
+                <li><strong>Microsoft Clarity</strong> (if enabled and consented) — anonymous usage heatmaps. <a href="https://privacy.microsoft.com/privacystatement" target="_blank" rel="noopener noreferrer">Privacy policy</a></li>
+                <li><strong>Plausible Analytics</strong> (if enabled) — privacy-focused, cookieless analytics. <a href="https://plausible.io/data-policy" target="_blank" rel="noopener noreferrer">Data policy</a></li>
                 <li><strong>Matomo</strong> (if enabled) — self-hosted analytics</li>
-                <li><strong>Fathom Analytics</strong> (if enabled) — privacy-focused analytics</li>
+                <li><strong>Fathom Analytics</strong> (if enabled) — privacy-focused analytics. <a href="https://usefathom.com/legal/privacy" target="_blank" rel="noopener noreferrer">Privacy policy</a></li>
             </ul>
         </div>
     </div>
@@ -161,7 +228,7 @@ $appUrl = $app["Application"]["Website"]["URL"];
     <!-- Data Retention -->
     <div class="card card-settings mb-3">
         <div class="card-body">
-            <h2 class="h6 mb-3">7. Data Retention</h2>
+            <h2 class="h6 mb-3">9. Data Retention</h2>
             <p>
                 Since <?= htmlspecialchars($appName) ?> does not collect personal data,
                 there is no personal data to retain or delete on our servers.
@@ -177,12 +244,14 @@ $appUrl = $app["Application"]["Website"]["URL"];
     <!-- Your Rights -->
     <div class="card card-settings mb-3">
         <div class="card-body">
-            <h2 class="h6 mb-3">8. Your Rights</h2>
+            <h2 class="h6 mb-3">10. Your Rights</h2>
             <p>You have the right to:</p>
             <ul>
-                <li><strong>Clear your data:</strong> All locally stored data can be cleared via Settings</li>
-                <li><strong>Enable DNT:</strong> Activate Do Not Track in your browser to anonymise analytics</li>
+                <li><strong>Control analytics:</strong> Accept or decline analytics via the consent banner, or change your preference in Settings &gt; Privacy at any time</li>
+                <li><strong>Clear your data:</strong> All locally stored data can be cleared via Settings &gt; Data &amp; Storage</li>
+                <li><strong>Enable DNT:</strong> Activate Do Not Track in your browser to anonymise any analytics</li>
                 <li><strong>Block analytics:</strong> Use browser extensions (e.g., uBlock Origin) to block analytics entirely</li>
+                <li><strong>Export your data:</strong> Export all locally stored data via Settings</li>
                 <li><strong>Uninstall:</strong> Remove the PWA from your device at any time</li>
             </ul>
         </div>
@@ -191,7 +260,7 @@ $appUrl = $app["Application"]["Website"]["URL"];
     <!-- Changes -->
     <div class="card card-settings mb-3">
         <div class="card-body">
-            <h2 class="h6 mb-3">9. Changes to This Policy</h2>
+            <h2 class="h6 mb-3">11. Changes to This Policy</h2>
             <p>
                 We may update this Privacy Policy from time to time. Continued use of
                 <?= htmlspecialchars($appName) ?> after changes are posted constitutes
@@ -203,7 +272,7 @@ $appUrl = $app["Application"]["Website"]["URL"];
     <!-- Contact -->
     <div class="card card-settings mb-3">
         <div class="card-body">
-            <h2 class="h6 mb-3">10. Contact</h2>
+            <h2 class="h6 mb-3">12. Contact</h2>
             <p>
                 If you have questions about this Privacy Policy, please visit
                 <a href="<?= htmlspecialchars($app["Application"]["Repo"]["Issues"]["URL"]) ?>"
