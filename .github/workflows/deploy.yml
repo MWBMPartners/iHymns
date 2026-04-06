@@ -70,30 +70,28 @@ jobs:
     # glob-expand them (variable expansion within double quotes is safe).
     env:
       LFTP_EXCLUDES: >-
-        --exclude .DS_Store
-        --exclude Thumbs.db
-        --exclude .git/
-        --exclude .github/
-        --exclude .gitkeep
-        --exclude .gitignore
-        --exclude .gitattributes
-        --exclude README.md
-        --exclude DEV_NOTES.md
-        --exclude CLAUDE.md
-        --exclude .htpasswd
-        --exclude .htpasswd-*
-        --exclude .htpasswd.example
-        --exclude .vscode/
-        --exclude .idea/
-        --exclude *.xcodeproj
-        --exclude *.xcworkspace
-        --exclude .xcuserdata/
-        --exclude *.sublime-project
-        --exclude *.sublime-workspace
-        --exclude .editorconfig
-        --exclude *.swp
-        --exclude *.swo
-        --exclude *~
+        --exclude ^\.DS_Store$
+        --exclude ^Thumbs\.db$
+        --exclude ^\.git/
+        --exclude ^\.github/
+        --exclude ^\.gitkeep$
+        --exclude ^\.gitignore$
+        --exclude ^\.gitattributes$
+        --exclude ^README\.md$
+        --exclude ^DEV_NOTES\.md$
+        --exclude ^CLAUDE\.md$
+        --exclude ^\.htpasswd
+        --exclude ^\.vscode/
+        --exclude ^\.idea/
+        --exclude \.xcodeproj$
+        --exclude \.xcworkspace$
+        --exclude ^\.xcuserdata/
+        --exclude \.sublime-project$
+        --exclude \.sublime-workspace$
+        --exclude ^\.editorconfig$
+        --exclude \.swp$
+        --exclude \.swo$
+        --exclude ~$
 
     steps:
       # -- Checkout code --
