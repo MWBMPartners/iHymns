@@ -83,8 +83,8 @@ export class Settings {
     set(key, value) {
         const fullKey = this.storagePrefix + key;
         localStorage.setItem(fullKey, String(value));
-        /* Sync to cross-domain bridge if connected (#133) */
-        this.app.storageBridge?.set(fullKey, String(value));
+        /* Sync to subdomain cookie + iframe bridge (#133) */
+        this.app.syncStorage(fullKey);
     }
 
     /**
@@ -327,6 +327,8 @@ export class Settings {
                     localStorage.removeItem('ihymns_default_songbook');
                     localStorage.removeItem('ihymns_transition');
                     localStorage.removeItem('ihymns_auto_update_songs');
+                    /* Clear shared subdomain cookie (#133) */
+                    this.app.subdomainSync?.clear();
                     /* Re-apply defaults */
                     this.applyTheme(this.defaults.theme);
                     this.applyReduceMotion(this.defaults.reduceMotion);

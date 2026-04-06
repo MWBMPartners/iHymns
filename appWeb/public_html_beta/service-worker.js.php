@@ -88,6 +88,7 @@ const PRECACHE_ASSETS = [
     '/js/modules/song-of-the-day.js',
     '/js/modules/offline-indicator.js',
     '/js/modules/storage-bridge.js',
+    '/js/modules/subdomain-sync.js',
     '/manifest.json',
     '/assets/favicon.svg',
 ];

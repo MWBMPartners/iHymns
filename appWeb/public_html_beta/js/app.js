@@ -40,6 +40,7 @@ import { SearchHistory } from './modules/search-history.js';
 import { SongOfTheDay } from './modules/song-of-the-day.js';
 import { OfflineIndicator } from './modules/offline-indicator.js';
 import { StorageBridge } from './modules/storage-bridge.js';
+import { SubdomainSync } from './modules/subdomain-sync.js';
 
 /**
  * iHymnsApp — Main application class
@@ -122,6 +123,9 @@ class iHymnsApp {
 
         /** @type {StorageBridge} Cross-domain storage bridge (#133) */
         this.storageBridge = null;
+
+        /** @type {SubdomainSync} Subdomain cookie sync (#133) */
+        this.subdomainSync = null;
     }
 
     /**
@@ -131,6 +135,12 @@ class iHymnsApp {
     async init() {
         try {
             /* --- Initialise core modules --- */
+
+            /* Subdomain cookie sync — pull settings from other *.ihymns.app
+             * subdomains BEFORE applying settings, so shared preferences
+             * are available immediately (#133, Layer 1). */
+            this.subdomainSync = new SubdomainSync();
+            this.subdomainSync.init();
 
             /* Settings must be first — it sets theme, motion prefs, etc. */
             this.settings = new Settings(this);
@@ -867,6 +877,9 @@ class iHymnsApp {
      */
     syncStorage(key) {
         const value = localStorage.getItem(key);
+        /* Layer 1: Subdomain cookie sync (*.ihymns.app) */
+        this.subdomainSync?.sync(key);
+        /* Layer 2: Iframe bridge (cross-domain / large data) */
         if (value !== null && this.storageBridge) {
             this.storageBridge.set(key, value);
         }
