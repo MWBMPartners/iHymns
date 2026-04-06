@@ -48,6 +48,9 @@ export class SheetMusic {
         /** @type {string|null} Currently loaded song ID */
         this.currentSongId = null;
 
+        /** @type {boolean} Whether a sheet music load is in progress (#115) */
+        this.isLoading = false;
+
         /** @type {HTMLElement|null} Modal element reference */
         this.modalEl = null;
 
@@ -65,6 +68,10 @@ export class SheetMusic {
      * @param {string} songId Song ID (e.g., 'CP-0001')
      */
     async handleSheetMusicClick(songId) {
+        /* Guard against rapid clicks opening multiple modals (#115) */
+        if (this.isLoading) return;
+        this.isLoading = true;
+
         this.currentSongId = songId;
         this.currentPage = 1;
 
@@ -80,6 +87,7 @@ export class SheetMusic {
             if (!loaded) {
                 this.updateStatus('PDF viewer unavailable.');
                 this.showDownloadFallback(songId);
+                this.isLoading = false;
                 return;
             }
         }
@@ -97,6 +105,8 @@ export class SheetMusic {
             console.error('[SheetMusic] Error loading PDF:', err);
             this.updateStatus('Sheet music not available for this song.');
             this.showDownloadFallback(songId);
+        } finally {
+            this.isLoading = false;
         }
     }
 
@@ -187,6 +197,7 @@ export class SheetMusic {
         modal.addEventListener('hidden.bs.modal', () => {
             this.pdfDoc = null;
             this.currentSongId = null;
+            this.isLoading = false;
             modal.remove();
         });
     }
