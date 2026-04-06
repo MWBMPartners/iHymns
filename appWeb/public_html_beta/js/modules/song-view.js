@@ -152,7 +152,11 @@ export function renderSongDetail(song, containerEl) {
      * controls (play/pause/stop) or a download link fallback.
      * Rendered between the action buttons and the lyrics section.
      * ----------------------------------------------------------------- */
-    renderAudioPlayer(song, wrapper);
+    /* Wrap audio/sheet-music rendering in try-catch to prevent errors
+       in these optional modules from breaking the entire lyrics view */
+    try { renderAudioPlayer(song, wrapper); } catch (e) {
+        console.warn('[iHymns] Audio player render error:', e);
+    }
 
     /* -----------------------------------------------------------------
      * 4b. SHEET MUSIC VIEWER
@@ -160,7 +164,9 @@ export function renderSongDetail(song, containerEl) {
      * Music" button that opens a modal PDF viewer, plus a download link.
      * Rendered after the audio player, before the lyrics section.
      * ----------------------------------------------------------------- */
-    renderSheetMusic(song, wrapper);
+    try { renderSheetMusic(song, wrapper); } catch (e) {
+        console.warn('[iHymns] Sheet music render error:', e);
+    }
 
     /* -----------------------------------------------------------------
      * 5. SONG COMPONENTS (LYRICS)

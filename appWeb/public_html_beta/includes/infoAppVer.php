@@ -72,7 +72,7 @@ $app["Application"]["Description"]["Keywords"] = "hymns, worship, lyrics, songbo
 /* Semantic version number (MAJOR.MINOR.PATCH) */
 /* Auto-bumped by the version-bump GitHub Action on push to beta */
 /* v1.x.x = Phase 1 (local JSON data), v2.x.x = Phase 2 (iLyrics dB) */
-$app["Application"]["Version"]["Number"] = "1.0.0";
+$app["Application"]["Version"]["Number"] = "0.1.0";
 
 /* Version name: human-readable release name (e.g., "Hymnal", NULL if unused) */
 $app["Application"]["Version"]["Name"] = NULL;

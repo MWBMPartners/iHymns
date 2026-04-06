@@ -61,8 +61,8 @@ jobs:
 
       # -----------------------------------------------------------------------
       # Step 2: Read the current version from infoAppVer.php
-      # Parses the line: $app['Version']['Number'] = '1.2.3';
-      # Also handles pre-release suffixes like '1.0.0-alpha.1'
+      # Parses the line: $app["Application"]["Version"]["Number"] = "X.Y.Z";
+      # Also handles pre-release suffixes like '0.1.0-beta.1'
       # -----------------------------------------------------------------------
       - name: Read current version
         id: current
@@ -70,7 +70,8 @@ jobs:
           VERSION_FILE="appWeb/public_html_beta/includes/infoAppVer.php"
 
           # Extract the version string from the PHP file
-          CURRENT=$(grep -oP "\\\$app\['Version'\]\['Number'\]\s*=\s*'\K[^']+" "$VERSION_FILE")
+          # Matches: $app["Application"]["Version"]["Number"] = "X.Y.Z";
+          CURRENT=$(grep -oP '\["Version"\]\["Number"\]\s*=\s*"\K[^"]+' "$VERSION_FILE")
 
           if [ -z "$CURRENT" ]; then
             echo "::error::Could not read version from $VERSION_FILE"
@@ -152,10 +153,12 @@ jobs:
 
           echo "Updating $VERSION_FILE: $OLD_VERSION -> $NEW_VERSION"
 
-          sed -i "s|\(\$app\['Version'\]\['Number'\]\s*=\s*'\)${OLD_VERSION}';|\1${NEW_VERSION}';|" "$VERSION_FILE"
+          # Replace version in double-quoted PHP format:
+          # $app["Application"]["Version"]["Number"] = "X.Y.Z";
+          sed -i "s|\(\"Version\"\]\[\"Number\"\]\s*=\s*\"\)${OLD_VERSION}\"|\1${NEW_VERSION}\"|" "$VERSION_FILE"
 
           # Verify the update was applied
-          grep "Version.*Number" "$VERSION_FILE"
+          grep 'Version.*Number' "$VERSION_FILE"
 
       # -----------------------------------------------------------------------
       # Step 6: Commit and push the version bump

@@ -514,24 +514,22 @@ export function renderSongList(songData, songbookId, containerEl) {
             className: 'song-list-content'
         });
 
-        /* Song title — escaped to prevent injection */
+        /* Song title — inline bold span */
         const titleEl = createElement('span', {
-            className: 'song-list-title',
-            innerHTML: escapeHtml(song.title)
-        });
+            className: 'song-list-title fw-semibold'
+        }, song.title);
 
-        /* Lyrics preview — first two lines of the first component */
+        /* Lyrics preview — inline span with left padding for separation */
         const previewText = getSongLyricsPreview(song);
-
-        /* Only create the preview element if there is preview text */
         const metaEl = createElement('span', {
-            className: 'song-list-meta',
-            innerHTML: escapeHtml(previewText)
-        });
+            className: 'song-list-meta ms-2'
+        }, previewText);
 
-        /* Assemble the content block */
+        /* Assemble: title then preview on the same line */
         contentEl.appendChild(titleEl);
-        contentEl.appendChild(metaEl);
+        if (previewText) {
+            contentEl.appendChild(metaEl);
+        }
 
         /* ---- 11d. Favourite toggle button ---- */
 
