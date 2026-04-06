@@ -312,6 +312,65 @@ declare(strict_types=1);
     </div>
 
     <!-- ============================================================
+         PRIVACY SECTION — Analytics consent management
+         ============================================================ -->
+    <?php
+        $settingsHasGa4     = !empty(APP_CONFIG['analytics']['google_analytics_id']);
+        $settingsHasClarity = !empty(APP_CONFIG['analytics']['clarity_id']);
+        $settingsHasPlausible = !empty(APP_CONFIG['analytics']['plausible_domain']);
+        $settingsNeedsConsent = ($settingsHasGa4 || $settingsHasClarity);
+    ?>
+    <?php if ($settingsNeedsConsent): ?>
+    <div class="card card-settings mb-3">
+        <div class="card-body">
+            <h2 class="h6 mb-3">
+                <i class="fa-solid fa-shield-halved me-2" aria-hidden="true"></i>
+                Privacy
+            </h2>
+
+            <!-- Analytics consent toggle -->
+            <div class="form-check form-switch mb-3">
+                <input class="form-check-input"
+                       type="checkbox"
+                       id="setting-analytics-consent"
+                       role="switch"
+                       aria-label="Allow analytics">
+                <label class="form-check-label" for="setting-analytics-consent">
+                    <strong>Analytics</strong>
+                    <span id="analytics-consent-status" class="privacy-consent-status text-muted ms-2">Not set</span>
+                    <small class="text-muted d-block">
+                        <?php if ($settingsHasGa4 && $settingsHasClarity): ?>
+                            Allow Google Analytics and Microsoft Clarity to collect anonymous usage data.
+                        <?php elseif ($settingsHasGa4): ?>
+                            Allow Google Analytics to collect anonymous usage data.
+                        <?php elseif ($settingsHasClarity): ?>
+                            Allow Microsoft Clarity to collect anonymous usage data.
+                        <?php endif; ?>
+                        No personal information is collected or shared.
+                        <?php if ($settingsHasPlausible): ?>
+                            <br>Plausible Analytics runs regardless (cookieless and privacy-friendly).
+                        <?php endif; ?>
+                    </small>
+                </label>
+            </div>
+
+            <?php if (defined('USER_DNT') && USER_DNT): ?>
+            <div class="alert alert-info small mb-3" role="alert">
+                <i class="fa-solid fa-eye-slash me-1" aria-hidden="true"></i>
+                Your browser's <strong>Do Not Track</strong> setting is active. Analytics tracking is
+                automatically restricted regardless of the toggle above.
+            </div>
+            <?php endif; ?>
+
+            <a href="/privacy" data-navigate="privacy" class="btn btn-outline-secondary btn-sm">
+                <i class="fa-solid fa-file-lines me-1" aria-hidden="true"></i>
+                Privacy Policy
+            </a>
+        </div>
+    </div>
+    <?php endif; ?>
+
+    <!-- ============================================================
          ABOUT SECTION
          ============================================================ -->
     <div class="card card-settings mb-3">
