@@ -21,24 +21,39 @@ declare(strict_types=1);
 $writerSlug = urldecode($writerId);
 $writerName = mb_convert_case(str_replace('-', ' ', $writerSlug), MB_CASE_TITLE, 'UTF-8');
 
-/* Find all songs where this person is a writer or composer (case-insensitive) */
+/* Find all songs where this person is a writer or composer.
+ * Uses case-insensitive comparison to handle inconsistent data casing.
+ * Also tries the raw slug-derived name AND the original slug as fallbacks. */
 $allSongs    = $songData->getSongs();
 $matchedSongs = [];
+
+/* Build a list of name variants to match against */
+$nameVariants = array_unique(array_map('mb_strtolower', [
+    $writerName,
+    str_replace('-', ' ', $writerSlug),
+    $writerSlug,
+]));
 
 foreach ($allSongs as $song) {
     $isWriter   = false;
     $isComposer = false;
 
     foreach ($song['writers'] ?? [] as $w) {
-        if (mb_strtolower($w) === mb_strtolower($writerName)) {
-            $isWriter = true;
-            break;
+        $wLower = mb_strtolower($w);
+        foreach ($nameVariants as $variant) {
+            if ($wLower === $variant) {
+                $isWriter = true;
+                break 2;
+            }
         }
     }
     foreach ($song['composers'] ?? [] as $c) {
-        if (mb_strtolower($c) === mb_strtolower($writerName)) {
-            $isComposer = true;
-            break;
+        $cLower = mb_strtolower($c);
+        foreach ($nameVariants as $variant) {
+            if ($cLower === $variant) {
+                $isComposer = true;
+                break 2;
+            }
         }
     }
 
