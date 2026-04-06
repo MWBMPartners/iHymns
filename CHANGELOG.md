@@ -25,6 +25,7 @@
 - fix: comprehensive code review + security hardening
 - fix: deploy sync detection + softer songbook card colours
 - fix: include data/songs.json inside each SFTP upload directory
+- fix: remove CSS background override on songbook card headers
 - fix: set Vendor Parent to NULL — MWBM Partners Ltd is the top-level vendor
 - fix: song editor loads songs.json from canonical data/ location
 - initial folder structure
