@@ -191,6 +191,15 @@ export class Settings {
             });
         }
 
+        /* Page transition style (#106) */
+        const transitionSelect = document.getElementById('setting-transition');
+        if (transitionSelect) {
+            transitionSelect.value = localStorage.getItem('ihymns_transition') || 'none';
+            transitionSelect.addEventListener('change', () => {
+                localStorage.setItem('ihymns_transition', transitionSelect.value);
+            });
+        }
+
         /* Reduce transparency toggle */
         const transparencyToggle = document.getElementById('setting-reduce-transparency');
         if (transparencyToggle) {
@@ -267,6 +276,7 @@ export class Settings {
                         localStorage.removeItem(this.storagePrefix + key);
                     });
                     localStorage.removeItem('ihymns_default_songbook');
+                    localStorage.removeItem('ihymns_transition');
                     /* Re-apply defaults */
                     this.applyTheme(this.defaults.theme);
                     this.applyReduceMotion(this.defaults.reduceMotion);

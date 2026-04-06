@@ -137,6 +137,22 @@ declare(strict_types=1);
                 </label>
             </div>
 
+            <!-- Page transition style (#106) -->
+            <div class="mb-3">
+                <label for="setting-transition" class="form-label fw-semibold">
+                    Page Transition
+                </label>
+                <select class="form-select" id="setting-transition" aria-label="Page transition style">
+                    <option value="none">None (instant)</option>
+                    <option value="fade">Fade</option>
+                    <option value="slide">Slide</option>
+                    <option value="crossfade">Crossfade</option>
+                </select>
+                <small class="text-muted mt-1 d-block">
+                    Overridden by Reduce Motion when enabled.
+                </small>
+            </div>
+
             <!-- Reduce transparency toggle -->
             <div class="form-check form-switch mb-0">
                 <input class="form-check-input"

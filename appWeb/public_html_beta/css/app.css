@@ -452,24 +452,45 @@ body.banner-visible.search-open .main-content {
     display: none;
 }
 
-/* Page content transitions */
+/* Page content transitions (#106) — configurable types */
 .page-content {
     transition: opacity var(--transition-normal), transform var(--transition-normal);
 }
 
-.page-content.page-entering {
-    opacity: 0;
-    transform: translateY(12px);
-}
-
 .page-content.page-visible {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
 }
 
-.page-content.page-leaving {
+/* Fade transition */
+.page-content[data-transition="fade"].page-entering {
     opacity: 0;
-    transform: translateY(-8px);
+}
+
+.page-content[data-transition="fade"].page-leaving {
+    opacity: 0;
+}
+
+/* Slide transition */
+.page-content[data-transition="slide"].page-entering {
+    opacity: 0;
+    transform: translateX(30px);
+}
+
+.page-content[data-transition="slide"].page-leaving {
+    opacity: 0;
+    transform: translateX(-30px);
+}
+
+/* Crossfade transition (fade + subtle scale) */
+.page-content[data-transition="crossfade"].page-entering {
+    opacity: 0;
+    transform: scale(0.97);
+}
+
+.page-content[data-transition="crossfade"].page-leaving {
+    opacity: 0;
+    transform: scale(1.02);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1193,6 +1214,7 @@ body.reduce-motion .page-content {
 
 body.reduce-motion .page-content.page-entering,
 body.reduce-motion .page-content.page-leaving {
+    opacity: 1 !important;
     transform: none !important;
 }
 
