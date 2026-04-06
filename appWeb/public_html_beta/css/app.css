@@ -1776,3 +1776,32 @@ body.reduce-motion .song-list-item.alphabet-highlight {
     animation: none;
     background: var(--bs-warning-bg-subtle, #fff3cd);
 }
+
+/* ==========================================================================
+   SEARCH HISTORY CHIPS (#110)
+   ========================================================================== */
+
+.search-history-chip {
+    cursor: pointer;
+    font-weight: normal;
+    font-size: 0.85rem;
+    padding: 0.35em 0.65em;
+    transition: background 0.15s ease;
+}
+
+.search-history-chip:hover {
+    opacity: 0.85;
+}
+
+.search-history-chip .btn-close-sm {
+    font-size: 0.55rem;
+    padding: 0;
+    width: 0.8em;
+    height: 0.8em;
+    opacity: 0.5;
+    vertical-align: middle;
+}
+
+.search-history-chip .btn-close-sm:hover {
+    opacity: 1;
+}

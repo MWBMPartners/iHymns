@@ -110,6 +110,9 @@ $songbooks = $songData->getSongbooks();
                 </label>
             </div>
 
+            <!-- Recent search history chips (#110) -->
+            <div id="search-history-container" class="mb-3"></div>
+
             <!-- Search results container -->
             <div id="text-search-results"
                  class="search-results"

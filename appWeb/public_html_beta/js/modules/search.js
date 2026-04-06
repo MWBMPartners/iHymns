@@ -256,6 +256,15 @@ export class Search {
             }
         }
 
+        /* Render search history chips (#110) */
+        const historyContainer = document.getElementById('search-history-container');
+        if (historyContainer && this.app.searchHistory) {
+            this.app.searchHistory.renderChips(historyContainer, (query) => {
+                input.value = query;
+                input.dispatchEvent(new Event('input'));
+            });
+        }
+
         /* Pre-fill from URL query string */
         const params = new URLSearchParams(window.location.search);
         const initialQuery = params.get('q');
@@ -346,6 +355,10 @@ export class Search {
             if (results && results.length > 0) {
                 const method = this.fuseIndex && !this.fuseFailed ? 'fuzzy' : 'basic';
                 container.innerHTML = this.renderSearchResults(results, results.length, method);
+                /* Record successful search (#110) */
+                if (this.app.searchHistory) {
+                    this.app.searchHistory.record(query);
+                }
             } else {
                 container.innerHTML = `
                     <div class="text-center text-muted py-4">

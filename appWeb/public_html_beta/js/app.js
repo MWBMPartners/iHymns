@@ -36,6 +36,7 @@ import { Request } from './modules/request.js';
 import { Transpose } from './modules/transpose.js';
 import { ReadingProgress } from './modules/reading-progress.js';
 import { SongbookIndex } from './modules/songbook-index.js';
+import { SearchHistory } from './modules/search-history.js';
 
 /**
  * iHymnsApp — Main application class
@@ -106,6 +107,9 @@ class iHymnsApp {
 
         /** @type {SongbookIndex} Songbook alphabetical index (#111) */
         this.songbookIndex = null;
+
+        /** @type {SearchHistory} Recent search terms (#110) */
+        this.searchHistory = null;
     }
 
     /**
@@ -194,6 +198,10 @@ class iHymnsApp {
             /* Songbook alphabetical index (#111) */
             this.songbookIndex = new SongbookIndex(this);
             this.songbookIndex.init();
+
+            /* Recent search terms (#110) */
+            this.searchHistory = new SearchHistory(this);
+            this.searchHistory.init();
 
             /* --- Set up global event listeners --- */
             this.bindGlobalEvents();
