@@ -8,6 +8,7 @@
  * quick-access chips below the search input. Clicking a chip re-runs
  * that search. Only stores queries that returned results.
  */
+import { escapeHtml } from '../utils/html.js';
 
 export class SearchHistory {
     /**
@@ -102,10 +103,10 @@ export class SearchHistory {
         html += '<div class="d-flex flex-wrap gap-1">';
 
         history.forEach(query => {
-            html += `<span class="badge bg-body-secondary search-history-chip" role="button" tabindex="0" data-query="${this.escapeHtml(query)}" aria-label="Search for ${this.escapeHtml(query)}">
+            html += `<span class="badge bg-body-secondary search-history-chip" role="button" tabindex="0" data-query="${escapeHtml(query)}" aria-label="Search for ${escapeHtml(query)}">
                 <i class="fa-solid fa-clock-rotate-left me-1 opacity-50" aria-hidden="true"></i>
-                ${this.escapeHtml(query)}
-                <button type="button" class="btn-close btn-close-sm ms-1 search-history-remove" data-query="${this.escapeHtml(query)}" aria-label="Remove"></button>
+                ${escapeHtml(query)}
+                <button type="button" class="btn-close btn-close-sm ms-1 search-history-remove" data-query="${escapeHtml(query)}" aria-label="Remove"></button>
             </span>`;
         });
 
@@ -150,9 +151,4 @@ export class SearchHistory {
      * @param {string} str
      * @returns {string}
      */
-    escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str || '';
-        return div.innerHTML;
-    }
 }

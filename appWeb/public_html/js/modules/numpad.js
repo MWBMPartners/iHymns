@@ -8,6 +8,7 @@
  * number. Works in the modal (global) and embedded on the search page.
  * Performs live search-as-you-type against the API.
  */
+import { escapeHtml } from '../utils/html.js';
 
 export class Numpad {
     constructor(app) {
@@ -171,7 +172,7 @@ export class Numpad {
                             <a href="/song/${song.id}"
                                class="list-group-item list-group-item-action py-2"
                                data-navigate="song" data-song-id="${song.id}">
-                                <strong>#${song.number}</strong> — ${this.escapeHtml(song.title)}
+                                <strong>#${song.number}</strong> — ${escapeHtml(song.title)}
                             </a>
                         `).join('') + '</div>';
 
@@ -237,11 +238,5 @@ export class Numpad {
         } catch (error) {
             console.error('[Numpad] Failed to load songbooks:', error);
         }
-    }
-
-    escapeHtml(str) {
-        const d = document.createElement('div');
-        d.textContent = str || '';
-        return d.innerHTML;
     }
 }

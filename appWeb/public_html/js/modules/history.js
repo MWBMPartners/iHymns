@@ -13,6 +13,7 @@
  *   [{ id: "CP-0001", title: "...", songbook: "CP", number: 1, viewedAt: "ISO" }, ...]
  *   Ordered by most recent first.
  */
+import { escapeHtml } from '../utils/html.js';
 
 export class History {
     /**
@@ -125,14 +126,14 @@ export class History {
             </div>
             <div class="list-group" id="recent-songs-list">
                 ${history.slice(0, 10).map(h => `
-                    <a href="/song/${this.escapeHtml(h.id)}"
+                    <a href="/song/${escapeHtml(h.id)}"
                        class="list-group-item list-group-item-action song-list-item"
                        data-navigate="song"
-                       data-song-id="${this.escapeHtml(h.id)}">
-                        <span class="song-number-badge" data-songbook="${this.escapeHtml(h.songbook)}">${h.number || '?'}</span>
+                       data-song-id="${escapeHtml(h.id)}">
+                        <span class="song-number-badge" data-songbook="${escapeHtml(h.songbook)}">${h.number || '?'}</span>
                         <div class="song-info flex-grow-1">
-                            <span class="song-title">${this.escapeHtml(h.title)}</span>
-                            <small class="text-muted d-block">${this.escapeHtml(h.songbook)}</small>
+                            <span class="song-title">${escapeHtml(h.title)}</span>
+                            <small class="text-muted d-block">${escapeHtml(h.songbook)}</small>
                         </div>
                         <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>
                     </a>
@@ -155,9 +156,4 @@ export class History {
      * @param {string} str
      * @returns {string}
      */
-    escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str || '';
-        return div.innerHTML;
-    }
 }

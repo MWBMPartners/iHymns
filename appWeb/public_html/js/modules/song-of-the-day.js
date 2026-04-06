@@ -10,6 +10,7 @@
  * (Christmas, Easter, Good Friday, etc.), a themed song is selected
  * by keyword matching instead.
  */
+import { escapeHtml } from '../utils/html.js';
 
 export class SongOfTheDay {
     /**
@@ -96,17 +97,17 @@ export class SongOfTheDay {
                             <h6 class="text-muted mb-1 fw-semibold text-uppercase" style="font-size: 0.7rem; letter-spacing: 0.05em;">
                                 ${this.getThemeLabel(today)}
                             </h6>
-                            <a href="/song/${this.escapeHtml(song.id)}"
+                            <a href="/song/${escapeHtml(song.id)}"
                                class="text-decoration-none"
                                data-navigate="song"
-                               data-song-id="${this.escapeHtml(song.id)}">
-                                <h5 class="card-title mb-1">${this.escapeHtml(song.title)}</h5>
+                               data-song-id="${escapeHtml(song.id)}">
+                                <h5 class="card-title mb-1">${escapeHtml(song.title)}</h5>
                             </a>
                             <p class="text-muted small mb-1">
-                                <span class="badge bg-body-secondary" data-songbook="${this.escapeHtml(song.songbook || '')}">${this.escapeHtml(song.songbook || '')}</span>
-                                #${song.number} &middot; ${this.escapeHtml(song.songbookName || '')}
+                                <span class="badge bg-body-secondary" data-songbook="${escapeHtml(song.songbook || '')}">${escapeHtml(song.songbook || '')}</span>
+                                #${song.number} &middot; ${escapeHtml(song.songbookName || '')}
                             </p>
-                            ${firstLine ? `<p class="fst-italic text-muted small mb-0">&ldquo;${this.escapeHtml(firstLine)}&rdquo;</p>` : ''}
+                            ${firstLine ? `<p class="fst-italic text-muted small mb-0">&ldquo;${escapeHtml(firstLine)}&rdquo;</p>` : ''}
                         </div>
                     </div>
                 </div>
@@ -264,9 +265,4 @@ export class SongOfTheDay {
      * @param {string} str
      * @returns {string}
      */
-    escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str || '';
-        return div.innerHTML;
-    }
 }

@@ -8,6 +8,7 @@
  * spacing, verse number toggle, chorus highlighting, presentation
  * mode (fullscreen), and auto-scroll. Settings persist in localStorage.
  */
+import { escapeHtml } from '../utils/html.js';
 
 export class Display {
     /**
@@ -404,8 +405,8 @@ export class Display {
         overlay.innerHTML = `
             <div class="presentation-header">
                 <div class="presentation-title">
-                    ${songNum ? `<span class="presentation-number">${this.escapeHtml(songNum)}</span>` : ''}
-                    <span>${this.escapeHtml(title)}</span>
+                    ${songNum ? `<span class="presentation-number">${escapeHtml(songNum)}</span>` : ''}
+                    <span>${escapeHtml(title)}</span>
                 </div>
                 <button type="button" class="btn btn-light btn-sm" id="presentation-close-btn"
                         aria-label="Exit presentation mode">
@@ -479,9 +480,4 @@ export class Display {
      * @param {string} str
      * @returns {string}
      */
-    escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str || '';
-        return div.innerHTML;
-    }
 }

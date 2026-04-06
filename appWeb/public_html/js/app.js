@@ -43,6 +43,7 @@ import { StorageBridge } from './modules/storage-bridge.js';
 import { SubdomainSync } from './modules/subdomain-sync.js';
 import { Gestures } from './modules/gestures.js';
 import { Analytics } from './modules/analytics.js';
+import { escapeHtml } from './utils/html.js';
 
 /**
  * iHymnsApp — Main application class
@@ -578,7 +579,7 @@ class iHymnsApp {
             document.body.appendChild(indicator);
         }
         indicator.innerHTML = `
-            <div class="quick-jump-number">${this.escapeHtml(this.quickJumpBuffer)}</div>
+            <div class="quick-jump-number">${escapeHtml(this.quickJumpBuffer)}</div>
             <small class="quick-jump-hint">Press Enter or wait...</small>`;
         indicator.classList.add('visible');
     }
@@ -636,8 +637,8 @@ class iHymnsApp {
         const bookButtons = songbooks.length > 0
             ? songbooks.map(b => `
                 <button type="button" class="btn btn-outline-primary btn-sm quick-jump-book"
-                        data-book="${this.escapeHtml(b.id)}">
-                    ${this.escapeHtml(b.id)}
+                        data-book="${escapeHtml(b.id)}">
+                    ${escapeHtml(b.id)}
                 </button>`).join('')
             : ['CP', 'JP', 'MP', 'SDAH', 'CH'].map(id => `
                 <button type="button" class="btn btn-outline-primary btn-sm quick-jump-book"
@@ -645,7 +646,7 @@ class iHymnsApp {
 
         picker.innerHTML = `
             <div class="quick-jump-picker-content">
-                <p class="mb-2 fw-bold">Song #${this.escapeHtml(number)}</p>
+                <p class="mb-2 fw-bold">Song #${escapeHtml(number)}</p>
                 <p class="text-muted small mb-2">Select songbook:</p>
                 <div class="d-flex flex-wrap gap-2 justify-content-center">
                     ${bookButtons}
@@ -782,7 +783,7 @@ class iHymnsApp {
             <div class="d-flex">
                 <div class="toast-body">
                     <i class="fa-solid fa-arrow-rotate-right me-2" aria-hidden="true"></i>
-                    A new version of ${this.escapeHtml(this.config.appName)} is available.
+                    A new version of ${escapeHtml(this.config.appName)} is available.
                     <button type="button" class="btn btn-sm btn-light ms-2" id="sw-update-btn">
                         Refresh
                     </button>
@@ -874,10 +875,10 @@ class iHymnsApp {
             <div class="d-flex">
                 <div class="toast-body">
                     <i class="fa-solid fa-rotate me-1" aria-hidden="true"></i>
-                    Song ${this.escapeHtml(songId)} has been updated.
+                    Song ${escapeHtml(songId)} has been updated.
                     <button type="button" class="btn btn-sm btn-light ms-2 btn-update-song"
-                            data-song-id="${this.escapeHtml(songId)}"
-                            data-url="${this.escapeHtml(url)}">
+                            data-song-id="${escapeHtml(songId)}"
+                            data-url="${escapeHtml(url)}">
                         Update
                     </button>
                 </div>
@@ -913,11 +914,6 @@ class iHymnsApp {
      * @param {string} str
      * @returns {string}
      */
-    escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str || '';
-        return div.innerHTML;
-    }
 
     /**
      * Sync a localStorage key to the cross-domain storage bridge (#133).
@@ -963,13 +959,13 @@ class iHymnsApp {
                 <div class="modal-dialog modal-dialog-centered">
                     <div class="modal-content">
                         <div class="modal-header">
-                            <h5 class="modal-title" id="${id}-label">${this.escapeHtml(title)}</h5>
+                            <h5 class="modal-title" id="${id}-label">${escapeHtml(title)}</h5>
                             <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                         </div>
-                        <div class="modal-body">${this.escapeHtml(message)}</div>
+                        <div class="modal-body">${escapeHtml(message)}</div>
                         <div class="modal-footer">
-                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">${this.escapeHtml(cancelText)}</button>
-                            <button type="button" class="btn ${okClass}" id="${id}-ok">${this.escapeHtml(okText)}</button>
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">${escapeHtml(cancelText)}</button>
+                            <button type="button" class="btn ${okClass}" id="${id}-ok">${escapeHtml(okText)}</button>
                         </div>
                     </div>
                 </div>`;
@@ -1019,18 +1015,18 @@ class iHymnsApp {
                 <div class="modal-dialog modal-dialog-centered">
                     <div class="modal-content">
                         <div class="modal-header">
-                            <h5 class="modal-title" id="${id}-label">${this.escapeHtml(title)}</h5>
+                            <h5 class="modal-title" id="${id}-label">${escapeHtml(title)}</h5>
                             <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                         </div>
                         <div class="modal-body">
-                            <label for="${id}-input" class="form-label">${this.escapeHtml(message)}</label>
+                            <label for="${id}-input" class="form-label">${escapeHtml(message)}</label>
                             <input type="text" class="form-control" id="${id}-input"
-                                   value="${this.escapeHtml(defaultValue)}"
-                                   placeholder="${this.escapeHtml(placeholder)}">
+                                   value="${escapeHtml(defaultValue)}"
+                                   placeholder="${escapeHtml(placeholder)}">
                         </div>
                         <div class="modal-footer">
-                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">${this.escapeHtml(cancelText)}</button>
-                            <button type="button" class="btn btn-primary" id="${id}-ok">${this.escapeHtml(okText)}</button>
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">${escapeHtml(cancelText)}</button>
+                            <button type="button" class="btn btn-primary" id="${id}-ok">${escapeHtml(okText)}</button>
                         </div>
                     </div>
                 </div>`;
@@ -1090,14 +1086,14 @@ class iHymnsApp {
                 <div class="modal-dialog modal-dialog-centered">
                     <div class="modal-content">
                         <div class="modal-header">
-                            <h5 class="modal-title" id="${id}-label">${this.escapeHtml(title)}</h5>
+                            <h5 class="modal-title" id="${id}-label">${escapeHtml(title)}</h5>
                             <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                         </div>
-                        <div class="modal-body">${this.escapeHtml(message)}</div>
+                        <div class="modal-body">${escapeHtml(message)}</div>
                         <div class="modal-footer">
                             <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-                            <button type="button" class="btn ${option2Class}" id="${id}-opt2">${this.escapeHtml(option2Text)}</button>
-                            <button type="button" class="btn ${option1Class}" id="${id}-opt1">${this.escapeHtml(option1Text)}</button>
+                            <button type="button" class="btn ${option2Class}" id="${id}-opt2">${escapeHtml(option2Text)}</button>
+                            <button type="button" class="btn ${option1Class}" id="${id}-opt1">${escapeHtml(option1Text)}</button>
                         </div>
                     </div>
                 </div>`;
@@ -1144,7 +1140,7 @@ class iHymnsApp {
             content.innerHTML = `
                 <div class="alert alert-danger mt-4" role="alert">
                     <i class="fa-solid fa-triangle-exclamation me-2" aria-hidden="true"></i>
-                    ${this.escapeHtml(message)}
+                    ${escapeHtml(message)}
                 </div>`;
         }
     }
@@ -1171,7 +1167,7 @@ class iHymnsApp {
         toastEl.setAttribute('aria-atomic', 'true');
         toastEl.innerHTML = `
             <div class="d-flex">
-                <div class="toast-body">${this.escapeHtml(message)}</div>
+                <div class="toast-body">${escapeHtml(message)}</div>
                 <button type="button" class="btn-close btn-close-white me-2 m-auto"
                         data-bs-dismiss="toast" aria-label="Close"></button>
             </div>`;

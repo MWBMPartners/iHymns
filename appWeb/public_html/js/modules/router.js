@@ -14,6 +14,7 @@
  */
 
 import { toTitleCase } from '../utils/text.js';
+import { escapeHtml } from '../utils/html.js';
 
 export class Router {
     /**
@@ -489,10 +490,10 @@ export class Router {
             if (container) {
                 container.innerHTML = sorted.map(s => `
                     <div class="d-flex align-items-center gap-2 mb-2">
-                        <a href="/song/${this.escapeHtml(s.id)}" class="text-decoration-none flex-grow-1 text-truncate"
-                           data-navigate="song" data-song-id="${this.escapeHtml(s.id)}">
-                            <span class="song-number-badge song-number-badge-sm" data-songbook="${this.escapeHtml(s.songbook)}">${s.number || '?'}</span>
-                            <span class="ms-1">${this.escapeHtml(toTitleCase(s.title))}</span>
+                        <a href="/song/${escapeHtml(s.id)}" class="text-decoration-none flex-grow-1 text-truncate"
+                           data-navigate="song" data-song-id="${escapeHtml(s.id)}">
+                            <span class="song-number-badge song-number-badge-sm" data-songbook="${escapeHtml(s.songbook)}">${s.number || '?'}</span>
+                            <span class="ms-1">${escapeHtml(toTitleCase(s.title))}</span>
                         </a>
                         <div class="stats-bar-wrap">
                             <div class="stats-bar" style="width: ${(s.count / maxCount * 100).toFixed(0)}%"></div>
@@ -517,7 +518,7 @@ export class Router {
             if (container) {
                 container.innerHTML = sorted.map(([sb, count]) => `
                     <div class="d-flex align-items-center gap-2 mb-2">
-                        <span class="song-number-badge song-number-badge-sm" data-songbook="${this.escapeHtml(sb)}">${this.escapeHtml(sb)}</span>
+                        <span class="song-number-badge song-number-badge-sm" data-songbook="${escapeHtml(sb)}">${escapeHtml(sb)}</span>
                         <div class="stats-bar-wrap">
                             <div class="stats-bar bg-danger" style="width: ${(count / maxCount * 100).toFixed(0)}%"></div>
                         </div>
@@ -540,7 +541,7 @@ export class Router {
             if (container) {
                 container.innerHTML = '<div class="d-flex flex-wrap gap-2">' +
                     sorted.map(([term, count]) =>
-                        `<span class="badge bg-body-secondary text-body">${this.escapeHtml(term)} <span class="text-muted">(${count})</span></span>`
+                        `<span class="badge bg-body-secondary text-body">${escapeHtml(term)} <span class="text-muted">(${count})</span></span>`
                     ).join('') + '</div>';
             }
         }
@@ -649,15 +650,15 @@ export class Router {
 
             /* Render related songs */
             itemsEl.innerHTML = related.map(({ song }) => `
-                <a href="/song/${this.escapeHtml(song.id)}"
+                <a href="/song/${escapeHtml(song.id)}"
                    class="list-group-item list-group-item-action song-list-item"
                    data-navigate="song"
-                   data-song-id="${this.escapeHtml(song.id)}"
+                   data-song-id="${escapeHtml(song.id)}"
                    role="listitem">
-                    <span class="song-number-badge" data-songbook="${this.escapeHtml(song.songbook)}">${song.number || '?'}</span>
+                    <span class="song-number-badge" data-songbook="${escapeHtml(song.songbook)}">${song.number || '?'}</span>
                     <div class="song-info flex-grow-1">
-                        <span class="song-title">${this.escapeHtml(toTitleCase(song.title))}</span>
-                        <small class="text-muted d-block">${this.escapeHtml(song.songbookName || song.songbook)}</small>
+                        <span class="song-title">${escapeHtml(toTitleCase(song.title))}</span>
+                        <small class="text-muted d-block">${escapeHtml(song.songbookName || song.songbook)}</small>
                     </div>
                     <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>
                 </a>
@@ -797,11 +798,6 @@ export class Router {
      * @param {string} str
      * @returns {string}
      */
-    escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str || '';
-        return div.innerHTML;
-    }
 
     /* =====================================================================
      * RECENT SONGBOOKS (#121)
@@ -845,13 +841,13 @@ export class Router {
         const tabs = recent.map(id => {
             const sb = songbooks.find(b => b.id === id);
             const name = sb?.name || id;
-            return `<a href="/songbook/${this.escapeHtml(id)}"
+            return `<a href="/songbook/${escapeHtml(id)}"
                        class="btn btn-sm btn-outline-secondary rounded-pill"
                        data-navigate="songbook"
-                       data-songbook-id="${this.escapeHtml(id)}"
-                       aria-label="${this.escapeHtml(name)}">
-                        <span class="songbook-icon songbook-icon-${this.escapeHtml(id)} me-1"></span>
-                        ${this.escapeHtml(id)}
+                       data-songbook-id="${escapeHtml(id)}"
+                       aria-label="${escapeHtml(name)}">
+                        <span class="songbook-icon songbook-icon-${escapeHtml(id)} me-1"></span>
+                        ${escapeHtml(id)}
                     </a>`;
         }).join('');
 

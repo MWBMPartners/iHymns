@@ -16,6 +16,7 @@
  *   - song.key (string): Original key (e.g. "G", "Am")
  *   - data-chord attributes on lyric lines for inline chord display
  */
+import { escapeHtml } from '../utils/html.js';
 
 export class Transpose {
     /**
@@ -87,8 +88,8 @@ export class Transpose {
             const transposedKey = this.transposeKey(originalKey, this.offset);
             html += `
                 <span class="transpose-key-display me-2">
-                    Key: <strong id="transpose-current-key">${this.escapeHtml(transposedKey)}</strong>
-                    ${this.offset !== 0 ? `<small class="text-muted">(original: ${this.escapeHtml(originalKey)})</small>` : ''}
+                    Key: <strong id="transpose-current-key">${escapeHtml(transposedKey)}</strong>
+                    ${this.offset !== 0 ? `<small class="text-muted">(original: ${escapeHtml(originalKey)})</small>` : ''}
                 </span>`;
         }
 
@@ -276,9 +277,4 @@ export class Transpose {
      * @param {string} str
      * @returns {string}
      */
-    escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str || '';
-        return div.innerHTML;
-    }
 }
