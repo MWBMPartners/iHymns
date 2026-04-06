@@ -473,6 +473,7 @@ export class Search {
         const response = await fetch(url, {
             headers: { 'X-Requested-With': 'XMLHttpRequest' }
         });
+        if (!response.ok) throw new Error(`Search API: HTTP ${response.status}`);
         const data = await response.json();
         return data.results || [];
     }
@@ -519,10 +520,4 @@ export class Search {
         return html;
     }
 
-    /**
-     * Escape HTML special characters to prevent XSS.
-     *
-     * @param {string} str Input string
-     * @returns {string} Escaped string
-     */
 }

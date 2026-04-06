@@ -110,15 +110,16 @@ switch ($action) {
 
         if ($filePath === null) {
             http_response_code(404);
+            error_log('[iHymns Editor] songs.json not found. Checked: ' . implode(', ', $candidatePaths));
             echo json_encode([
-                'error'   => 'songs.json not found.',
-                'checked' => $candidatePaths,
+                'error' => 'songs.json not found.',
             ]);
             break;
         }
 
         /* Stream the file contents directly (efficient for large files) */
-        header('X-Songs-Path: ' . $filePath);
+        header('Content-Type: application/json; charset=UTF-8');
+        header('X-Content-Type-Options: nosniff');
         readfile($filePath);
         break;
 
@@ -144,7 +145,7 @@ switch ($action) {
         $data = json_decode($rawBody, true);
         if ($data === null) {
             http_response_code(400);
-            echo json_encode(['error' => 'Invalid JSON: ' . json_last_error_msg()]);
+            echo json_encode(['error' => 'Invalid JSON format.']);
             break;
         }
 
@@ -159,9 +160,9 @@ switch ($action) {
         $writePath = getWritableSongsPath($candidatePaths);
         if ($writePath === null) {
             http_response_code(500);
+            error_log('[iHymns Editor] No writable path found. Checked: ' . implode(', ', $candidatePaths));
             echo json_encode([
-                'error'   => 'No writable path found for songs.json.',
-                'checked' => $candidatePaths,
+                'error' => 'No writable path found for songs.json.',
             ]);
             break;
         }
@@ -192,10 +193,8 @@ switch ($action) {
 
         echo json_encode([
             'success'  => true,
-            'path'     => $writePath,
             'bytes'    => $written,
             'songs'    => count($data['songs']),
-            'backupAt' => $backupPath,
         ]);
         break;
 

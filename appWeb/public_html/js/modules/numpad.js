@@ -227,12 +227,13 @@ export class Numpad {
             const url = new URL(this.app.config.apiUrl, window.location.origin);
             url.searchParams.set('action', 'songbooks');
             const response = await fetch(url);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const data = await response.json();
 
             if (data.songbooks) {
                 select.innerHTML = data.songbooks
                     .filter(b => b.songCount > 0)
-                    .map(b => `<option value="${b.id}">${b.name} (${b.id})</option>`)
+                    .map(b => `<option value="${escapeHtml(b.id)}">${escapeHtml(b.name)} (${escapeHtml(b.id)})</option>`)
                     .join('');
             }
         } catch (error) {

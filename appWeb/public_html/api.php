@@ -377,51 +377,67 @@ if ($action !== null) {
                 $candidateId = preg_replace('/[^a-f0-9]/', '', strtolower(trim($body['id'])));
                 $existingFile = $shareDir . '/' . $candidateId . '.json';
 
-                if ($candidateId !== '' && file_exists($existingFile)) {
+                if ($candidateId !== '') {
+                    if (!file_exists($existingFile)) {
+                        sendJson(['error' => 'Shared set list not found.'], 404);
+                        break;
+                    }
                     /* Verify ownership */
                     $existing = json_decode(file_get_contents($existingFile), true);
-                    if (is_array($existing) && ($existing['owner'] ?? '') === $ownerId) {
-                        $shareId = $candidateId;
-                    } else {
+                    if (!is_array($existing) || ($existing['owner'] ?? '') !== $ownerId) {
                         sendJson(['error' => 'You do not own this shared set list.'], 403);
                         break;
                     }
-                }
-            }
-
-            /* Generate a new short ID if not updating */
-            if ($shareId === null) {
-                $attempts = 0;
-                do {
-                    $shareId = bin2hex(random_bytes(4)); /* 8 hex chars */
-                    $attempts++;
-                } while (file_exists($shareDir . '/' . $shareId . '.json') && $attempts < 10);
-
-                if ($attempts >= 10) {
-                    sendJson(['error' => 'Unable to generate unique ID. Try again.'], 500);
-                    break;
+                    $shareId = $candidateId;
                 }
             }
 
             /* Build the shared setlist object */
             $now = gmdate('c');
+            $isUpdate = ($shareId !== null);
             $shareData = [
-                'id'      => $shareId,
                 'name'    => $setlistName,
                 'songs'   => $setlistSongs,
                 'owner'   => $ownerId,
-                'created' => !empty($body['id']) ? ($existing['created'] ?? $now) : $now,
+                'created' => $isUpdate ? ($existing['created'] ?? $now) : $now,
                 'updated' => $now,
                 'version' => 1,
             ];
 
-            /* Write to file */
-            $filePath = $shareDir . '/' . $shareId . '.json';
-            $written = file_put_contents(
-                $filePath,
-                json_encode($shareData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT),
-                LOCK_EX
-            );
+            if ($isUpdate) {
+                /* Updating existing — write directly */
+                $shareData['id'] = $shareId;
+                $filePath = $shareDir . '/' . $shareId . '.json';
+                $written = file_put_contents(
+                    $filePath,
+                    json_encode($shareData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT),
+                    LOCK_EX
+                );
+            } else {
+                /* Generate new ID with atomic file creation to prevent TOCTOU race */
+                $written = false;
+                $attempts = 0;
+                do {
+                    $shareId = bin2hex(random_bytes(4)); /* 8 hex chars */
+                    $filePath = $shareDir . '/' . $shareId . '.json';
+                    $shareData['id'] = $shareId;
+                    $jsonEncoded = json_encode($shareData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
+                    $attempts++;
+
+                    /* fopen 'x' mode fails if file already exists — atomic create */
+                    $fp = @fopen($filePath, 'x');
+                    if ($fp !== false) {
+                        $written = fwrite($fp, $jsonEncoded);
+                        fclose($fp);
+                        break;
+                    }
+                } while ($attempts < 10);
+
+                if ($written === false) {
+                    sendJson(['error' => 'Unable to generate unique ID. Try again.'], 500);
+                    break;
+                }
+            }
 
             if ($written === false) {
                 sendJson(['error' => 'Failed to save shared set list.'], 500);
@@ -498,6 +514,7 @@ function sendJson(array $data, int $statusCode = 200): void
 {
     http_response_code($statusCode);
     header('Content-Type: application/json; charset=UTF-8');
+    header('X-Content-Type-Options: nosniff');
     header('Cache-Control: no-cache, must-revalidate');
     echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 }

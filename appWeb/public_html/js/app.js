@@ -536,6 +536,9 @@ class iHymnsApp {
             case 'shuffle-book':
                 this.shuffle.shuffleFromBook(el.dataset.shuffleBook || null);
                 break;
+            case 'print':
+                window.print();
+                break;
         }
     }
 

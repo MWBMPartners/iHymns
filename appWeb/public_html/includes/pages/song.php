@@ -191,7 +191,7 @@ $components  = $song['components'] ?? [];
                 <button type="button"
                         class="btn btn-outline-secondary btn-sm btn-print"
                         aria-label="Print this song"
-                        onclick="window.print()">
+                        data-action="print">
                     <i class="fa-solid fa-print me-1" aria-hidden="true"></i>
                     Print
                 </button>
