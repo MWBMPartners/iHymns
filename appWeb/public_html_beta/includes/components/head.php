@@ -17,7 +17,8 @@
 /* Prevent direct access */
 if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     http_response_code(403);
-    exit('Direct access not allowed.');
+    header('Location: ' . dirname($_SERVER['REQUEST_URI'] ?? '', 3) . '/', true, 302);
+    exit('<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=../../"></head><body>Redirecting to <a href="../../">iHymns</a>...</body></html>');
 }
 ?>
     <!-- ================================================================
