@@ -5,7 +5,7 @@
  *
  * PURPOSE:
  * Manages user preferences: theme (light/dark/high-contrast/system),
- * reduce motion (disabled by default as per requirements), reduce
+ * reduce motion (off by default, animations enabled), reduce
  * transparency, and lyrics font size. All settings are persisted
  * in localStorage.
  */
@@ -20,10 +20,10 @@ export class Settings {
         /** @type {string} localStorage key prefix */
         this.storagePrefix = 'ihymns_';
 
-        /** Default settings — reduce motion is ON by default (animations disabled) */
+        /** Default settings — reduce motion is OFF by default (animations enabled) */
         this.defaults = {
             theme: 'system',
-            reduceMotion: true,       /* Animations disabled by default */
+            reduceMotion: false,      /* Animations enabled by default */
             reduceTransparency: false,
             fontSize: 18,
         };
