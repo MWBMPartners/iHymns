@@ -1901,3 +1901,23 @@ body.reduce-motion .offline-banner {
 .progress-thin {
     height: 6px;
 }
+
+/* =========================================================================
+ * RELATED SONGS — Collapsible section on song pages (#118)
+ * ========================================================================= */
+
+.related-songs h2 {
+    cursor: pointer;
+}
+
+.related-songs h2[aria-expanded="false"] .related-songs-chevron {
+    transform: rotate(-90deg);
+}
+
+.related-songs-chevron {
+    transition: transform 0.2s ease;
+}
+
+body.reduce-motion .related-songs-chevron {
+    transition: none;
+}

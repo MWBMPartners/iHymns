@@ -238,6 +238,20 @@ $components  = $song['components'] ?? [];
         </div>
     <?php endif; ?>
 
+    <!-- Related songs (#118) — populated client-side from songs.json -->
+    <section id="related-songs" class="related-songs mt-4 pt-3 border-top d-none" aria-label="Related songs">
+        <h2 class="h6 mb-3 d-flex align-items-center gap-2" role="button" data-bs-toggle="collapse" data-bs-target="#related-songs-list" aria-expanded="true" aria-controls="related-songs-list">
+            <i class="fa-solid fa-music me-1 text-muted" aria-hidden="true"></i>
+            Related Songs
+            <i class="fa-solid fa-chevron-down ms-auto small text-muted related-songs-chevron" aria-hidden="true"></i>
+        </h2>
+        <div class="collapse show" id="related-songs-list">
+            <div class="list-group list-group-flush" id="related-songs-items" role="list">
+                <!-- Rendered by JS -->
+            </div>
+        </div>
+    </section>
+
     <!-- Previous/Next navigation -->
     <?php
         /* Find previous and next songs in the same songbook */

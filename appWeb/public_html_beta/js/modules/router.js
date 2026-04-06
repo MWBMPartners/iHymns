@@ -306,6 +306,9 @@ export class Router {
                 if (songId) {
                     this.app.history.recordView(songId, title, songbook, number);
                 }
+
+                /* Load related songs (#118) — async, non-blocking */
+                this.loadRelatedSongs(songId);
             }
         }
 
@@ -340,5 +343,89 @@ export class Router {
             this.app.search.initSearchPage();
             this.app.numpad.initSearchPageNumpad();
         }
+    }
+
+    /**
+     * Find and render related songs for the current song page (#118).
+     * Uses songs.json data to match by shared writers, composers, and songbook.
+     * Runs asynchronously to avoid blocking page load.
+     *
+     * @param {string} currentSongId The current song's ID
+     */
+    async loadRelatedSongs(currentSongId) {
+        const container = document.getElementById('related-songs');
+        const itemsEl = document.getElementById('related-songs-items');
+        if (!container || !itemsEl) return;
+
+        try {
+            const songs = await this.app.settings.getSongsData();
+            const currentSong = songs.find(s => s.id === currentSongId);
+            if (!currentSong) return;
+
+            const currentWriters = new Set((currentSong.writers || []).map(w => w.toLowerCase()));
+            const currentComposers = new Set((currentSong.composers || []).map(c => c.toLowerCase()));
+            const currentSongbook = currentSong.songbook || '';
+
+            /* Score each song for relatedness */
+            const scored = [];
+            for (const song of songs) {
+                if (song.id === currentSongId) continue;
+                let score = 0;
+
+                /* +3 per shared writer */
+                for (const w of (song.writers || [])) {
+                    if (currentWriters.has(w.toLowerCase())) score += 3;
+                }
+                /* +2 per shared composer */
+                for (const c of (song.composers || [])) {
+                    if (currentComposers.has(c.toLowerCase())) score += 2;
+                }
+                /* +1 for same songbook */
+                if (song.songbook === currentSongbook) score += 1;
+
+                if (score > 0) {
+                    scored.push({ song, score });
+                }
+            }
+
+            if (scored.length === 0) return;
+
+            /* Sort by score descending, take top 5 */
+            scored.sort((a, b) => b.score - a.score);
+            const related = scored.slice(0, 5);
+
+            /* Render related songs */
+            itemsEl.innerHTML = related.map(({ song }) => `
+                <a href="/song/${this.escapeHtml(song.id)}"
+                   class="list-group-item list-group-item-action song-list-item"
+                   data-navigate="song"
+                   data-song-id="${this.escapeHtml(song.id)}"
+                   role="listitem">
+                    <span class="song-number-badge" data-songbook="${this.escapeHtml(song.songbook)}">${song.number || '?'}</span>
+                    <div class="song-info flex-grow-1">
+                        <span class="song-title">${this.escapeHtml(song.title)}</span>
+                        <small class="text-muted d-block">${this.escapeHtml(song.songbookName || song.songbook)}</small>
+                    </div>
+                    <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>
+                </a>
+            `).join('');
+
+            container.classList.remove('d-none');
+
+        } catch (err) {
+            /* Non-critical — silently skip if songs data unavailable */
+            console.warn('[Router] Failed to load related songs:', err.message);
+        }
+    }
+
+    /**
+     * Escape HTML to prevent XSS.
+     * @param {string} str
+     * @returns {string}
+     */
+    escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str || '';
+        return div.innerHTML;
     }
 }
