@@ -5,8 +5,17 @@
  *
  * PURPOSE:
  * Handles all search functionality including the header search bar
- * and the dedicated search page. Performs AJAX searches against
- * the PHP API with debounced input handling.
+ * and the dedicated search page. Uses Fuse.js for client-side fuzzy
+ * search with weighted field scoring and typo tolerance. Falls back
+ * to the server-side PHP API if Fuse.js fails to load.
+ *
+ * ARCHITECTURE (#82):
+ *   1. On first search interaction, Fuse.js is dynamically loaded
+ *      from CDN (with local fallback).
+ *   2. The songs.json data is fetched and a Fuse.js index is built.
+ *   3. Subsequent searches run entirely client-side (no network).
+ *   4. If either step fails, falls back to API-based substring search.
+ *   5. Offline search works when songs.json is cached by service worker.
  */
 
 export class Search {
@@ -21,6 +30,18 @@ export class Search {
 
         /** @type {number|null} Debounce timer ID */
         this.debounceTimer = null;
+
+        /** @type {object|null} Fuse.js instance (null until loaded) */
+        this.fuseIndex = null;
+
+        /** @type {Array|null} Raw songs data for songbook filtering */
+        this.songsData = null;
+
+        /** @type {boolean} True if Fuse.js has been attempted and failed */
+        this.fuseFailed = false;
+
+        /** @type {boolean} True if currently loading Fuse.js/data */
+        this.fuseLoading = false;
     }
 
     /**
@@ -68,6 +89,9 @@ export class Search {
                 clearBtn.style.display = searchInput.value ? 'block' : 'none';
             });
         }
+
+        /* Eagerly start loading Fuse.js in the background */
+        this.loadFuseIndex();
     }
 
     /**
@@ -96,6 +120,84 @@ export class Search {
             toggle?.setAttribute('aria-expanded', 'false');
         }
     }
+
+    /* =====================================================================
+     * FUSE.JS LOADING & INDEX BUILDING (#82)
+     * ===================================================================== */
+
+    /**
+     * Load Fuse.js from CDN (with local fallback) and build the search index.
+     * This runs asynchronously; search falls back to API until ready.
+     */
+    async loadFuseIndex() {
+        /* Don't re-attempt if already loaded, loading, or permanently failed */
+        if (this.fuseIndex || this.fuseLoading || this.fuseFailed) return;
+
+        this.fuseLoading = true;
+
+        try {
+            /* Step 1: Dynamically import Fuse.js from CDN */
+            let Fuse;
+            try {
+                const fuseModule = await import(this.app.config.fuseJsCdn);
+                Fuse = fuseModule.default || fuseModule;
+            } catch {
+                /* CDN failed — try local fallback */
+                console.warn('[Search] Fuse.js CDN failed, trying local fallback');
+                try {
+                    const fuseLocal = await import('/' + this.app.config.fuseJsLocal);
+                    Fuse = fuseLocal.default || fuseLocal;
+                } catch {
+                    throw new Error('Fuse.js could not be loaded from CDN or local');
+                }
+            }
+
+            /* Step 2: Fetch the song data (may be served from SW cache) */
+            const response = await fetch(this.app.config.dataUrl);
+            if (!response.ok) throw new Error('Failed to fetch songs.json');
+            const data = await response.json();
+
+            this.songsData = data.songs || [];
+
+            /* Step 3: Build the Fuse.js index with weighted field scoring */
+            this.fuseIndex = new Fuse(this.songsData, {
+                /**
+                 * Fuse.js search configuration:
+                 *   - keys: Fields to search, weighted by importance
+                 *   - threshold: 0 = exact match, 1 = match anything (0.35 = moderate fuzzy)
+                 *   - distance: How far from the expected position a match can be
+                 *   - minMatchCharLength: Minimum characters before considering a match
+                 *   - includeScore: Return match quality score for ranking
+                 *   - shouldSort: Sort results by relevance score
+                 *   - ignoreLocation: Search across the entire string (not just start)
+                 */
+                keys: [
+                    { name: 'title',        weight: 3.0 },  /* Title matches rank highest */
+                    { name: 'songbookName', weight: 1.5 },  /* Songbook name matches */
+                    { name: 'writers',      weight: 1.2 },  /* Writer/author matches */
+                    { name: 'composers',    weight: 1.0 },  /* Composer matches */
+                ],
+                threshold: 0.35,
+                distance: 200,
+                minMatchCharLength: 2,
+                includeScore: true,
+                shouldSort: true,
+                ignoreLocation: true,
+            });
+
+            console.log(`[Search] Fuse.js index built: ${this.songsData.length} songs`);
+
+        } catch (error) {
+            console.warn('[Search] Fuse.js loading failed, using API fallback:', error);
+            this.fuseFailed = true;
+        } finally {
+            this.fuseLoading = false;
+        }
+    }
+
+    /* =====================================================================
+     * SEARCH PAGE INTEGRATION
+     * ===================================================================== */
 
     /**
      * Initialise the search page controls (called after page loads).
@@ -143,8 +245,13 @@ export class Search {
         }
     }
 
+    /* =====================================================================
+     * SEARCH EXECUTION — Fuse.js (preferred) with API fallback
+     * ===================================================================== */
+
     /**
-     * Perform a search via the API and display results.
+     * Perform a search and display results.
+     * Uses Fuse.js if available; falls back to server-side API otherwise.
      *
      * @param {string} query Search query
      * @param {string} songbook Songbook filter (empty = all)
@@ -152,18 +259,18 @@ export class Search {
      */
     async performSearch(query, songbook, container) {
         try {
-            const url = new URL(this.app.config.apiUrl, window.location.origin);
-            url.searchParams.set('action', 'search');
-            url.searchParams.set('q', query);
-            if (songbook) url.searchParams.set('songbook', songbook);
+            let results;
 
-            const response = await fetch(url, {
-                headers: { 'X-Requested-With': 'XMLHttpRequest' }
-            });
-            const data = await response.json();
+            if (this.fuseIndex && !this.fuseFailed) {
+                /* --- Client-side fuzzy search via Fuse.js --- */
+                results = this.fuseSearch(query, songbook);
+            } else {
+                /* --- Fallback: server-side API search --- */
+                results = await this.apiSearch(query, songbook);
+            }
 
-            if (data.results && data.results.length > 0) {
-                container.innerHTML = this.renderSearchResults(data.results, data.total);
+            if (results && results.length > 0) {
+                container.innerHTML = this.renderSearchResults(results, results.length);
             } else {
                 container.innerHTML = `
                     <div class="text-center text-muted py-4">
@@ -183,6 +290,59 @@ export class Search {
     }
 
     /**
+     * Client-side fuzzy search using Fuse.js.
+     *
+     * @param {string} query Search query
+     * @param {string} songbook Songbook filter (empty = all)
+     * @returns {Array} Array of song summary objects
+     */
+    fuseSearch(query, songbook) {
+        let fuseResults = this.fuseIndex.search(query, { limit: 50 });
+
+        /* Apply songbook filter if specified */
+        if (songbook) {
+            const bookId = songbook.toUpperCase();
+            fuseResults = fuseResults.filter(r => (r.item.songbook || '').toUpperCase() === bookId);
+        }
+
+        /* Map Fuse.js results to the same format as API results */
+        return fuseResults.map(r => ({
+            id:           r.item.id,
+            number:       r.item.number,
+            title:        r.item.title,
+            songbook:     r.item.songbook,
+            songbookName: r.item.songbookName,
+            writers:      r.item.writers || [],
+            hasAudio:     r.item.hasAudio || false,
+            hasSheetMusic: r.item.hasSheetMusic || false,
+        }));
+    }
+
+    /**
+     * Server-side API search (fallback when Fuse.js is unavailable).
+     *
+     * @param {string} query Search query
+     * @param {string} songbook Songbook filter (empty = all)
+     * @returns {Promise<Array>} Array of song summary objects
+     */
+    async apiSearch(query, songbook) {
+        const url = new URL(this.app.config.apiUrl, window.location.origin);
+        url.searchParams.set('action', 'search');
+        url.searchParams.set('q', query);
+        if (songbook) url.searchParams.set('songbook', songbook);
+
+        const response = await fetch(url, {
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        });
+        const data = await response.json();
+        return data.results || [];
+    }
+
+    /* =====================================================================
+     * RENDERING
+     * ===================================================================== */
+
+    /**
      * Render search results as a list group.
      *
      * @param {Array} results Array of song summary objects
@@ -190,6 +350,7 @@ export class Search {
      * @returns {string} HTML string
      */
     renderSearchResults(results, total) {
+        const method = this.fuseIndex && !this.fuseFailed ? 'fuzzy' : 'basic';
         let html = `<p class="text-muted small mb-2">${total} result${total !== 1 ? 's' : ''} found</p>`;
         html += '<div class="list-group">';
 
@@ -204,8 +365,8 @@ export class Search {
                     <div class="song-info flex-grow-1">
                         <span class="song-title">${this.escapeHtml(song.title)}</span>
                         <small class="text-muted d-block">
-                            ${this.escapeHtml(song.songbookName)}
-                            ${writers ? ' · ' + this.escapeHtml(writers) : ''}
+                            ${this.escapeHtml(song.songbookName || '')}
+                            ${writers ? ' &middot; ' + this.escapeHtml(writers) : ''}
                         </small>
                     </div>
                     <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>
