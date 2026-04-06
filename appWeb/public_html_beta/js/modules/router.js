@@ -272,6 +272,15 @@ export class Router {
             this.app.setList.renderSongNavigation();
             this.app.display.initSongPage();
 
+            /* Precache this song for offline access (#105) */
+            if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+                const songApiUrl = this.buildApiUrl('song', params);
+                navigator.serviceWorker.controller.postMessage({
+                    type: 'CACHE_SONG',
+                    url: songApiUrl,
+                });
+            }
+
             /* Record song view in history (#92) */
             const songPage = document.querySelector('.page-song');
             if (songPage) {

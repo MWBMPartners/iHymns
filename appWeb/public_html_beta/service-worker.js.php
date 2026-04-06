@@ -52,6 +52,14 @@ $swVersion = $app['Application']['Version']['Number'] ?? '0.0.0';
 const CACHE_VERSION = 'ihymns-v<?= $swVersion ?>';
 
 /**
+ * Recently viewed songs cache (#105).
+ * Separate bucket so it survives app version cache purges.
+ * Limited to 20 entries via eviction in the message handler.
+ */
+const RECENT_CACHE = 'ihymns-recent-songs';
+const RECENT_CACHE_LIMIT = 20;
+
+/**
  * Assets to pre-cache during service worker installation.
  * These are the essential app shell files needed for offline access.
  * Only local files — CDN resources are never cached.
@@ -110,7 +118,7 @@ self.addEventListener('activate', (event) => {
                 /* Delete any caches that don't match the current version */
                 return Promise.all(
                     cacheNames
-                        .filter(name => name !== CACHE_VERSION)
+                        .filter(name => name !== CACHE_VERSION && name !== RECENT_CACHE)
                         .map(name => {
                             console.log('[SW] Deleting old cache:', name);
                             return caches.delete(name);
@@ -143,19 +151,37 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
-    /* --- API requests: network-only (always fresh data) --- */
+    /* --- API requests: network-first with cache for song pages (#105) --- */
     if (url.pathname.startsWith('/api')) {
+        const isSongPage = url.searchParams.get('page') === 'song';
         event.respondWith(
-            fetch(event.request).catch(() => {
-                /* API unavailable offline — return error JSON */
-                return new Response(
-                    JSON.stringify({ error: 'You appear to be offline. Please check your connection.' }),
-                    {
-                        status: 503,
-                        headers: { 'Content-Type': 'application/json' }
+            fetch(event.request)
+                .then(response => {
+                    /* Cache song page API responses for offline access */
+                    if (isSongPage && response.ok) {
+                        const clone = response.clone();
+                        caches.open(RECENT_CACHE).then(cache => {
+                            cache.put(event.request, clone);
+                        });
                     }
-                );
-            })
+                    return response;
+                })
+                .catch(() => {
+                    /* Offline: try recently viewed cache for song pages */
+                    if (isSongPage) {
+                        return caches.match(event.request).then(cached => {
+                            if (cached) return cached;
+                            return new Response(
+                                JSON.stringify({ error: 'You appear to be offline.' }),
+                                { status: 503, headers: { 'Content-Type': 'application/json' } }
+                            );
+                        });
+                    }
+                    return new Response(
+                        JSON.stringify({ error: 'You appear to be offline. Please check your connection.' }),
+                        { status: 503, headers: { 'Content-Type': 'application/json' } }
+                    );
+                })
         );
         return;
     }
@@ -242,8 +268,30 @@ async function networkFirstWithCache(request) {
  * ========================================================================= */
 
 self.addEventListener('message', (event) => {
-    if (event.data && event.data.type === 'SKIP_WAITING') {
+    if (!event.data) return;
+
+    if (event.data.type === 'SKIP_WAITING') {
         console.log('[SW] Received SKIP_WAITING — activating now');
         self.skipWaiting();
+    }
+
+    /* Proactively cache a recently viewed song page (#105) */
+    if (event.data.type === 'CACHE_SONG' && event.data.url) {
+        caches.open(RECENT_CACHE).then(async (cache) => {
+            try {
+                const response = await fetch(event.data.url);
+                if (response.ok) {
+                    await cache.put(event.data.url, response);
+                    /* Evict oldest entries if over limit */
+                    const keys = await cache.keys();
+                    if (keys.length > RECENT_CACHE_LIMIT) {
+                        const toDelete = keys.slice(0, keys.length - RECENT_CACHE_LIMIT);
+                        await Promise.all(toDelete.map(k => cache.delete(k)));
+                    }
+                }
+            } catch {
+                /* Ignore network errors — song may already be cached */
+            }
+        });
     }
 });
