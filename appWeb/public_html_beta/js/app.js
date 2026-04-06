@@ -27,6 +27,7 @@ import { Numpad } from './modules/numpad.js';
 import { Share } from './modules/share.js';
 import { Audio } from './modules/audio.js';
 import { SheetMusic } from './modules/sheet-music.js';
+import { History } from './modules/history.js';
 
 /**
  * iHymnsApp — Main application class
@@ -70,6 +71,9 @@ class iHymnsApp {
 
         /** @type {SheetMusic} PDF sheet music viewer module (#91) */
         this.sheetMusic = null;
+
+        /** @type {History} Recently viewed songs history (#92) */
+        this.history = null;
     }
 
     /**
@@ -122,6 +126,10 @@ class iHymnsApp {
             /* Sheet music viewer (#91) */
             this.sheetMusic = new SheetMusic(this);
             this.sheetMusic.init();
+
+            /* Recently viewed history (#92) */
+            this.history = new History(this);
+            this.history.init();
 
             /* --- Set up global event listeners --- */
             this.bindGlobalEvents();

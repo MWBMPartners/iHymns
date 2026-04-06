@@ -261,6 +261,24 @@ export class Router {
         if (page === 'song') {
             this.app.favorites.initSongPage();
             this.app.share.initSongPage();
+
+            /* Record song view in history (#92) */
+            const songPage = document.querySelector('.page-song');
+            if (songPage) {
+                const songId = songPage.dataset.songId || params.id || '';
+                const titleEl = songPage.querySelector('h1');
+                const title = titleEl ? titleEl.textContent.trim() : '';
+                const songbook = songPage.dataset.songbook || '';
+                const number = parseInt(songPage.dataset.songNumber, 10) || 0;
+                if (songId) {
+                    this.app.history.recordView(songId, title, songbook, number);
+                }
+            }
+        }
+
+        /* Render recently viewed section on home page (#92) */
+        if (page === 'home') {
+            this.app.history.renderHomeSection();
         }
 
         /* Initialise favourites list on favorites page */
