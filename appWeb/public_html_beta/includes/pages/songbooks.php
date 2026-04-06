@@ -47,7 +47,7 @@ $stats = $songData->getStats();
                         <div class="card-body">
                             <div class="d-flex align-items-start gap-3">
                                 <!-- Songbook icon -->
-                                <div class="songbook-icon songbook-icon-<?= $index % 5 ?> flex-shrink-0">
+                                <div class="songbook-icon songbook-icon-<?= htmlspecialchars($book['id']) ?> flex-shrink-0">
                                     <i class="fa-solid fa-book" aria-hidden="true"></i>
                                 </div>
                                 <div class="flex-grow-1">

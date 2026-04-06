@@ -149,6 +149,22 @@ define('APP_CONFIG', [
     ],
 
     /* -----------------------------------------------------------------
+     * Songbook colour map (#98)
+     *
+     * Each songbook gets a distinct accent colour used throughout the
+     * app: songbook grid icons, song number badges, song page borders.
+     * Colours are defined as [light, dark, solid, shadow_rgba].
+     * ----------------------------------------------------------------- */
+    'songbook_colours' => [
+        'CP'   => ['#6366f1', '#818cf8', '#6366f1', '99, 102, 241'],  /* Indigo */
+        'JP'   => ['#ec4899', '#f472b6', '#ec4899', '236, 72, 153'],  /* Pink */
+        'MP'   => ['#14b8a6', '#2dd4bf', '#14b8a6', '20, 184, 166'],  /* Teal */
+        'SDAH' => ['#f59e0b', '#fbbf24', '#f59e0b', '245, 158, 11'],  /* Amber */
+        'CH'   => ['#ef4444', '#f87171', '#ef4444', '239, 68, 68'],   /* Red */
+        'Misc' => ['#8b5cf6', '#a78bfa', '#8b5cf6', '139, 92, 246'], /* Violet */
+    ],
+
+    /* -----------------------------------------------------------------
      * Native app store URLs for PWA install banner redirection.
      * Set to null if no native app exists for that platform yet.
      * ----------------------------------------------------------------- */

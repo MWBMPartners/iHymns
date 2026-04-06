@@ -107,12 +107,25 @@
     --numpad-btn-hover: #e2e8f0;
     --numpad-btn-active: #cbd5e1;
 
-    /* Songbook icon colours */
-    --songbook-0: linear-gradient(135deg, #6366f1, #818cf8);
-    --songbook-1: linear-gradient(135deg, #ec4899, #f472b6);
-    --songbook-2: linear-gradient(135deg, #14b8a6, #2dd4bf);
-    --songbook-3: linear-gradient(135deg, #f59e0b, #fbbf24);
-    --songbook-4: linear-gradient(135deg, #ef4444, #f87171);
+    /* Songbook accent colours — per songbook ID (#98) */
+    --songbook-CP:   linear-gradient(135deg, #6366f1, #818cf8);
+    --songbook-JP:   linear-gradient(135deg, #ec4899, #f472b6);
+    --songbook-MP:   linear-gradient(135deg, #14b8a6, #2dd4bf);
+    --songbook-SDAH: linear-gradient(135deg, #f59e0b, #fbbf24);
+    --songbook-CH:   linear-gradient(135deg, #ef4444, #f87171);
+    --songbook-Misc: linear-gradient(135deg, #8b5cf6, #a78bfa);
+    --songbook-CP-solid: #6366f1;
+    --songbook-JP-solid: #ec4899;
+    --songbook-MP-solid: #14b8a6;
+    --songbook-SDAH-solid: #f59e0b;
+    --songbook-CH-solid: #ef4444;
+    --songbook-Misc-solid: #8b5cf6;
+    --songbook-CP-shadow: 99, 102, 241;
+    --songbook-JP-shadow: 236, 72, 153;
+    --songbook-MP-shadow: 20, 184, 166;
+    --songbook-SDAH-shadow: 245, 158, 11;
+    --songbook-CH-shadow: 239, 68, 68;
+    --songbook-Misc-shadow: 139, 92, 246;
 }
 
 /* ---------------------------------------------------------------------------
@@ -163,12 +176,19 @@
     --numpad-btn-hover: #475569;
     --numpad-btn-active: #64748b;
 
-    /* Songbook icon colours — more saturated for dark */
-    --songbook-0: linear-gradient(135deg, #818cf8, #a5b4fc);
-    --songbook-1: linear-gradient(135deg, #f472b6, #f9a8d4);
-    --songbook-2: linear-gradient(135deg, #2dd4bf, #5eead4);
-    --songbook-3: linear-gradient(135deg, #fbbf24, #fde68a);
-    --songbook-4: linear-gradient(135deg, #f87171, #fca5a5);
+    /* Songbook accent colours — brighter for dark (#98) */
+    --songbook-CP:   linear-gradient(135deg, #818cf8, #a5b4fc);
+    --songbook-JP:   linear-gradient(135deg, #f472b6, #f9a8d4);
+    --songbook-MP:   linear-gradient(135deg, #2dd4bf, #5eead4);
+    --songbook-SDAH: linear-gradient(135deg, #fbbf24, #fde68a);
+    --songbook-CH:   linear-gradient(135deg, #f87171, #fca5a5);
+    --songbook-Misc: linear-gradient(135deg, #a78bfa, #c4b5fd);
+    --songbook-CP-solid: #818cf8;
+    --songbook-JP-solid: #f472b6;
+    --songbook-MP-solid: #2dd4bf;
+    --songbook-SDAH-solid: #fbbf24;
+    --songbook-CH-solid: #f87171;
+    --songbook-Misc-solid: #a78bfa;
 }
 
 /* ---------------------------------------------------------------------------
@@ -212,11 +232,19 @@
     --numpad-btn-hover: #cccccc;
     --numpad-btn-active: #999999;
 
-    --songbook-0: #0000cc;
-    --songbook-1: #cc0000;
-    --songbook-2: #006600;
-    --songbook-3: #cc6600;
-    --songbook-4: #660066;
+    /* Songbook colours — high-contrast solid colours (#98) */
+    --songbook-CP:   #0000cc;
+    --songbook-JP:   #cc0000;
+    --songbook-MP:   #006600;
+    --songbook-SDAH: #cc6600;
+    --songbook-CH:   #660066;
+    --songbook-Misc: #006666;
+    --songbook-CP-solid: #0000cc;
+    --songbook-JP-solid: #cc0000;
+    --songbook-MP-solid: #006600;
+    --songbook-SDAH-solid: #cc6600;
+    --songbook-CH-solid: #660066;
+    --songbook-Misc-solid: #006666;
 }
 
 /* High contrast overrides: thick borders and underlined links */
@@ -241,14 +269,30 @@
 }
 
 [data-ihymns-theme="high-contrast"] .songbook-icon {
-    background: var(--songbook-0) !important;
     border: 2px solid #000000;
 }
 
-[data-ihymns-theme="high-contrast"] .songbook-icon-1 { background: var(--songbook-1) !important; }
-[data-ihymns-theme="high-contrast"] .songbook-icon-2 { background: var(--songbook-2) !important; }
-[data-ihymns-theme="high-contrast"] .songbook-icon-3 { background: var(--songbook-3) !important; }
-[data-ihymns-theme="high-contrast"] .songbook-icon-4 { background: var(--songbook-4) !important; }
+[data-ihymns-theme="high-contrast"] .songbook-icon-CP   { background: var(--songbook-CP) !important; }
+[data-ihymns-theme="high-contrast"] .songbook-icon-JP   { background: var(--songbook-JP) !important; }
+[data-ihymns-theme="high-contrast"] .songbook-icon-MP   { background: var(--songbook-MP) !important; }
+[data-ihymns-theme="high-contrast"] .songbook-icon-SDAH { background: var(--songbook-SDAH) !important; }
+[data-ihymns-theme="high-contrast"] .songbook-icon-CH   { background: var(--songbook-CH) !important; }
+[data-ihymns-theme="high-contrast"] .songbook-icon-Misc { background: var(--songbook-Misc) !important; }
+
+/* High contrast: pattern overlay on songbook badges for colour-blind users (#98) */
+[data-ihymns-theme="high-contrast"] .song-number-badge[data-songbook="JP"],
+[data-ihymns-theme="high-contrast"] .song-number-badge-lg[data-songbook="JP"] {
+    background-image: repeating-linear-gradient(45deg, transparent, transparent 3px, rgba(255,255,255,0.3) 3px, rgba(255,255,255,0.3) 6px) !important;
+}
+[data-ihymns-theme="high-contrast"] .song-number-badge[data-songbook="SDAH"],
+[data-ihymns-theme="high-contrast"] .song-number-badge-lg[data-songbook="SDAH"] {
+    background-image: repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(255,255,255,0.3) 3px, rgba(255,255,255,0.3) 6px) !important;
+}
+[data-ihymns-theme="high-contrast"] .song-number-badge[data-songbook="CH"],
+[data-ihymns-theme="high-contrast"] .song-number-badge-lg[data-songbook="CH"] {
+    background-image: radial-gradient(circle, rgba(255,255,255,0.3) 1px, transparent 1px) !important;
+    background-size: 6px 6px !important;
+}
 
 /* ==========================================================================
    2. BASE / RESET STYLES
@@ -604,15 +648,17 @@ body.banner-visible.search-open .main-content {
     justify-content: center;
     color: #ffffff;
     font-size: 1.2rem;
-    background: var(--songbook-0);
+    background: var(--songbook-CP);
     box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
 }
 
-.songbook-icon-0 { background: var(--songbook-0); box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3); }
-.songbook-icon-1 { background: var(--songbook-1); box-shadow: 0 2px 8px rgba(236, 72, 153, 0.3); }
-.songbook-icon-2 { background: var(--songbook-2); box-shadow: 0 2px 8px rgba(20, 184, 166, 0.3); }
-.songbook-icon-3 { background: var(--songbook-3); box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3); }
-.songbook-icon-4 { background: var(--songbook-4); box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3); }
+/* Songbook ID-based colour classes (#98) */
+.songbook-icon-CP   { background: var(--songbook-CP);   box-shadow: 0 2px 8px rgba(var(--songbook-CP-shadow), 0.3); }
+.songbook-icon-JP   { background: var(--songbook-JP);   box-shadow: 0 2px 8px rgba(var(--songbook-JP-shadow), 0.3); }
+.songbook-icon-MP   { background: var(--songbook-MP);   box-shadow: 0 2px 8px rgba(var(--songbook-MP-shadow), 0.3); }
+.songbook-icon-SDAH { background: var(--songbook-SDAH); box-shadow: 0 2px 8px rgba(var(--songbook-SDAH-shadow), 0.3); }
+.songbook-icon-CH   { background: var(--songbook-CH);   box-shadow: 0 2px 8px rgba(var(--songbook-CH-shadow), 0.3); }
+.songbook-icon-Misc { background: var(--songbook-Misc); box-shadow: 0 2px 8px rgba(var(--songbook-Misc-shadow), 0.3); }
 
 /* ---------------------------------------------------------------------------
    Action card buttons (home page)
@@ -684,6 +730,14 @@ body.banner-visible.search-open .main-content {
     flex-shrink: 0;
 }
 
+/* Songbook-specific badge colours (#98) */
+.song-number-badge[data-songbook="CP"]   { background: var(--songbook-CP); }
+.song-number-badge[data-songbook="JP"]   { background: var(--songbook-JP); }
+.song-number-badge[data-songbook="MP"]   { background: var(--songbook-MP); }
+.song-number-badge[data-songbook="SDAH"] { background: var(--songbook-SDAH); }
+.song-number-badge[data-songbook="CH"]   { background: var(--songbook-CH); }
+.song-number-badge[data-songbook="Misc"] { background: var(--songbook-Misc); }
+
 .song-number-badge-lg {
     display: flex;
     align-items: center;
@@ -699,6 +753,25 @@ body.banner-visible.search-open .main-content {
     flex-shrink: 0;
     box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
 }
+
+/* Songbook-specific large badge colours (#98) */
+.song-number-badge-lg[data-songbook="CP"]   { background: var(--songbook-CP);   box-shadow: 0 2px 8px rgba(var(--songbook-CP-shadow), 0.3); }
+.song-number-badge-lg[data-songbook="JP"]   { background: var(--songbook-JP);   box-shadow: 0 2px 8px rgba(var(--songbook-JP-shadow), 0.3); }
+.song-number-badge-lg[data-songbook="MP"]   { background: var(--songbook-MP);   box-shadow: 0 2px 8px rgba(var(--songbook-MP-shadow), 0.3); }
+.song-number-badge-lg[data-songbook="SDAH"] { background: var(--songbook-SDAH); box-shadow: 0 2px 8px rgba(var(--songbook-SDAH-shadow), 0.3); }
+.song-number-badge-lg[data-songbook="CH"]   { background: var(--songbook-CH);   box-shadow: 0 2px 8px rgba(var(--songbook-CH-shadow), 0.3); }
+.song-number-badge-lg[data-songbook="Misc"] { background: var(--songbook-Misc); box-shadow: 0 2px 8px rgba(var(--songbook-Misc-shadow), 0.3); }
+
+/* Songbook colour-coded left border on song pages (#98) */
+.page-song .card-song-header {
+    border-left: 4px solid var(--accent-solid);
+}
+.page-song[data-songbook="CP"]   .card-song-header { border-left-color: var(--songbook-CP-solid); }
+.page-song[data-songbook="JP"]   .card-song-header { border-left-color: var(--songbook-JP-solid); }
+.page-song[data-songbook="MP"]   .card-song-header { border-left-color: var(--songbook-MP-solid); }
+.page-song[data-songbook="SDAH"] .card-song-header { border-left-color: var(--songbook-SDAH-solid); }
+.page-song[data-songbook="CH"]   .card-song-header { border-left-color: var(--songbook-CH-solid); }
+.page-song[data-songbook="Misc"] .card-song-header { border-left-color: var(--songbook-Misc-solid); }
 
 .song-title {
     font-weight: 500;

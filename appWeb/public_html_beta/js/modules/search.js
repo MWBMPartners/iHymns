@@ -475,7 +475,7 @@ export class Search {
                    class="list-group-item list-group-item-action song-list-item"
                    data-navigate="song"
                    data-song-id="${this.escapeHtml(song.id)}">
-                    <span class="song-number-badge">${song.number}</span>
+                    <span class="song-number-badge" data-songbook="${this.escapeHtml(song.songbook || '')}">${song.number}</span>
                     <div class="song-info flex-grow-1">
                         <span class="song-title">${this.escapeHtml(song.title)}</span>
                         <small class="text-muted d-block">

@@ -75,7 +75,7 @@ $components  = $song['components'] ?? [];
         <div class="card-body">
             <!-- Song number and title -->
             <div class="d-flex align-items-start gap-3 mb-3">
-                <span class="song-number-badge-lg" aria-label="Song number <?= $songNumber ?>">
+                <span class="song-number-badge-lg" data-songbook="<?= htmlspecialchars($songbook) ?>" aria-label="Song number <?= $songNumber ?>">
                     <?= $songNumber ?>
                 </span>
                 <div class="flex-grow-1">

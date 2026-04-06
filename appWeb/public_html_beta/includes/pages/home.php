@@ -116,7 +116,7 @@ $songbooks = $songData->getSongbooks();
                        aria-label="<?= htmlspecialchars($book['name']) ?> — <?= $book['songCount'] ?> songs">
                         <div class="card-body text-center">
                             <!-- Songbook icon with colour variation -->
-                            <div class="songbook-icon songbook-icon-<?= $index % 5 ?> mb-2">
+                            <div class="songbook-icon songbook-icon-<?= htmlspecialchars($book['id']) ?> mb-2">
                                 <i class="fa-solid fa-book" aria-hidden="true"></i>
                             </div>
                             <h3 class="card-title h6 mb-1">

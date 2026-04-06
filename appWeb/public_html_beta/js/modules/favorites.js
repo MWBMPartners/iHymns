@@ -196,7 +196,7 @@ export class Favorites {
                    data-navigate="song"
                    data-song-id="${this.escapeHtml(fav.id)}"
                    role="listitem">
-                    <span class="song-number-badge">${fav.number || '?'}</span>
+                    <span class="song-number-badge" data-songbook="${this.escapeHtml(fav.songbook)}">${fav.number || '?'}</span>
                     <div class="song-info flex-grow-1">
                         <span class="song-title">${this.escapeHtml(fav.title)}</span>
                         <small class="text-muted d-block">${this.escapeHtml(fav.songbook)}</small>

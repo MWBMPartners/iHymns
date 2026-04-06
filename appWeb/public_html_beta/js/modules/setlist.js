@@ -278,7 +278,7 @@ export class SetList {
                              data-song-id="${this.escapeHtml(song.id)}" data-index="${index}"
                              draggable="true">
                             <span class="text-muted fw-bold me-1" style="min-width:24px">${index + 1}.</span>
-                            <span class="song-number-badge">${song.number || '?'}</span>
+                            <span class="song-number-badge" data-songbook="${this.escapeHtml(song.songbook)}">${song.number || '?'}</span>
                             <div class="flex-grow-1">
                                 <a href="/song/${this.escapeHtml(song.id)}" data-navigate="song"
                                    class="text-decoration-none">${this.escapeHtml(song.title)}</a>

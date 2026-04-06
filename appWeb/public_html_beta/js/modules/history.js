@@ -128,7 +128,7 @@ export class History {
                        class="list-group-item list-group-item-action song-list-item"
                        data-navigate="song"
                        data-song-id="${this.escapeHtml(h.id)}">
-                        <span class="song-number-badge">${h.number || '?'}</span>
+                        <span class="song-number-badge" data-songbook="${this.escapeHtml(h.songbook)}">${h.number || '?'}</span>
                         <div class="song-info flex-grow-1">
                             <span class="song-title">${this.escapeHtml(h.title)}</span>
                             <small class="text-muted d-block">${this.escapeHtml(h.songbook)}</small>

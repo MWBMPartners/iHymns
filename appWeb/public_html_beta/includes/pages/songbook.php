@@ -92,7 +92,7 @@ if ($book === null) {
                role="listitem"
                aria-label="Song <?= (int)$song['number'] ?>: <?= htmlspecialchars($song['title']) ?>">
                 <!-- Song number badge -->
-                <span class="song-number-badge" aria-hidden="true">
+                <span class="song-number-badge" data-songbook="<?= htmlspecialchars($bookId) ?>" aria-hidden="true">
                     <?= (int)$song['number'] ?>
                 </span>
                 <!-- Song info -->
