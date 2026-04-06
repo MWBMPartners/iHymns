@@ -258,11 +258,15 @@ self.addEventListener('fetch', (event) => {
         event.respondWith(
             fetch(event.request)
                 .then(response => {
-                    /* Cache the navigation response for offline */
-                    const clone = response.clone();
-                    caches.open(CACHE_VERSION).then(cache => {
-                        cache.put(event.request, clone);
-                    });
+                    /* Only cache successful (2xx) responses — never cache
+                     * redirects (301/302) as that causes infinite redirect
+                     * loops when served from cache (#140) */
+                    if (response.ok) {
+                        const clone = response.clone();
+                        caches.open(CACHE_VERSION).then(cache => {
+                            cache.put(event.request, clone);
+                        });
+                    }
                     return response;
                 })
                 .catch(() => {
