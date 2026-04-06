@@ -26,6 +26,7 @@
 - fix: clean up Web PWA UI — search bar, icons, songbook colours
 - fix: comprehensive code review + security hardening
 - fix: deploy sync detection + softer songbook card colours
+- fix: disable all caching on beta — nuke service worker + cache headers
 - fix: include data/songs.json inside each SFTP upload directory
 - fix: remove CSS background override on songbook card headers
 - fix: service worker never caches CDN resources — fixes 503 errors
@@ -40,6 +41,7 @@
 - refactor: update PHP code for PHP 8.5 compatibility
 - refactor: use DIRECTORY_SEPARATOR in all PHP require/include paths
 - refactor: use unique platform-specific Application IDs
+
 
 ## [0.1.3] — 2026-04-06
 - app refresh upload (early dev 1)

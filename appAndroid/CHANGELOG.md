@@ -7,6 +7,7 @@
 - refactor: single canonical songs.json — copy during build/deploy
 - refactor: use unique platform-specific Application IDs
 
+
 ## [0.1.3] — 2026-04-06
 - feat: Android — Kotlin/Jetpack Compose project setup
 - feat: Apple universal app — Xcode project setup (Swift 6.3 / SwiftUI)
