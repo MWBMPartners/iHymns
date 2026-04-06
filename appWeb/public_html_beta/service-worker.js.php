@@ -79,6 +79,7 @@ const PRECACHE_ASSETS = [
     '/js/modules/numpad.js',
     '/js/modules/share.js',
     '/js/modules/compare.js',
+    '/js/modules/shortcuts.js',
     '/manifest.json',
     '/assets/favicon.svg',
 ];

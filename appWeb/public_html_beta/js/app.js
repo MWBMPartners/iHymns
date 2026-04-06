@@ -31,6 +31,7 @@ import { History } from './modules/history.js';
 import { SetList } from './modules/setlist.js';
 import { Display } from './modules/display.js';
 import { Compare } from './modules/compare.js';
+import { Shortcuts } from './modules/shortcuts.js';
 
 /**
  * iHymnsApp — Main application class
@@ -86,6 +87,9 @@ class iHymnsApp {
 
         /** @type {Compare} Side-by-side song comparison (#102) */
         this.compare = null;
+
+        /** @type {Shortcuts} Keyboard shortcuts help overlay (#104) */
+        this.shortcuts = null;
     }
 
     /**
@@ -154,6 +158,10 @@ class iHymnsApp {
             /* Side-by-side song comparison (#102) */
             this.compare = new Compare(this);
             this.compare.init();
+
+            /* Keyboard shortcuts help overlay (#104) */
+            this.shortcuts = new Shortcuts(this);
+            this.shortcuts.init();
 
             /* --- Set up global event listeners --- */
             this.bindGlobalEvents();
@@ -228,6 +236,11 @@ class iHymnsApp {
             }
 
             switch (e.key) {
+                case '?':
+                    /* Toggle keyboard shortcuts help (#104) */
+                    e.preventDefault();
+                    this.shortcuts.toggle();
+                    return;
                 case '/':
                     /* Open search */
                     e.preventDefault();
@@ -239,8 +252,12 @@ class iHymnsApp {
                     this.numpad.openModal();
                     break;
                 case 'Escape':
-                    /* Close search bar */
-                    this.search.toggleHeaderSearch(false);
+                    /* Close shortcuts overlay or search bar */
+                    if (this.shortcuts.visible) {
+                        this.shortcuts.hide();
+                    } else {
+                        this.search.toggleHeaderSearch(false);
+                    }
                     break;
                 case 'f':
                 case 'F':
