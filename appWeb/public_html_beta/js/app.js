@@ -32,6 +32,7 @@ import { SetList } from './modules/setlist.js';
 import { Display } from './modules/display.js';
 import { Compare } from './modules/compare.js';
 import { Shortcuts } from './modules/shortcuts.js';
+import { Request } from './modules/request.js';
 
 /**
  * iHymnsApp — Main application class
@@ -90,6 +91,9 @@ class iHymnsApp {
 
         /** @type {Shortcuts} Keyboard shortcuts help overlay (#104) */
         this.shortcuts = null;
+
+        /** @type {Request} Missing song request form (#107) */
+        this.request = null;
     }
 
     /**
@@ -162,6 +166,10 @@ class iHymnsApp {
             /* Keyboard shortcuts help overlay (#104) */
             this.shortcuts = new Shortcuts(this);
             this.shortcuts.init();
+
+            /* Missing song request form (#107) */
+            this.request = new Request(this);
+            this.request.init();
 
             /* --- Set up global event listeners --- */
             this.bindGlobalEvents();
@@ -319,6 +327,13 @@ class iHymnsApp {
                 if (songId && this.sheetMusic) {
                     this.sheetMusic.handleSheetMusicClick(songId);
                 }
+            }
+
+            /* Missing song request button (#107) */
+            const requestBtn = e.target.closest('.btn-request-song');
+            if (requestBtn) {
+                e.preventDefault();
+                this.request.showRequestModal(requestBtn.dataset.prefill || '');
             }
         });
 

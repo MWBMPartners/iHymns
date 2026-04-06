@@ -80,6 +80,7 @@ const PRECACHE_ASSETS = [
     '/js/modules/share.js',
     '/js/modules/compare.js',
     '/js/modules/shortcuts.js',
+    '/js/modules/request.js',
     '/manifest.json',
     '/assets/favicon.svg',
 ];

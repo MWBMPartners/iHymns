@@ -188,4 +188,12 @@ $songbooks = $songData->getSongbooks();
 
     </div>
 
+    <!-- Missing song request link (#107) -->
+    <div class="text-center mt-4 pt-3 border-top">
+        <button type="button" class="btn btn-link text-muted btn-request-song" data-prefill="">
+            <i class="fa-solid fa-paper-plane me-1" aria-hidden="true"></i>
+            Can't find a song? Request it here
+        </button>
+    </div>
+
 </section>

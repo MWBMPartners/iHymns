@@ -352,6 +352,13 @@ export class Search {
                         <i class="fa-solid fa-face-sad-tear fa-2x mb-2 opacity-50" aria-hidden="true"></i>
                         <p>No results found for "<strong>${this.escapeHtml(query)}</strong>"</p>
                         <small>Try different keywords or check your spelling</small>
+                        <div class="mt-3">
+                            <button type="button" class="btn btn-outline-primary btn-sm btn-request-song"
+                                    data-prefill="${this.escapeHtml(query)}">
+                                <i class="fa-solid fa-paper-plane me-1" aria-hidden="true"></i>
+                                Can't find it? Request this song
+                            </button>
+                        </div>
                     </div>`;
             }
         } catch (error) {
