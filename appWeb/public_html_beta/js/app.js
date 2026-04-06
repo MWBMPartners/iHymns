@@ -308,24 +308,114 @@ class iHymnsApp {
     }
 
     /**
-     * Register the service worker for offline support.
+     * Register the service worker for offline support and handle updates (#83).
+     *
+     * When a new service worker is detected (updatefound), we track its
+     * installation state. Once installed and waiting, a toast notification
+     * is shown to the user offering to refresh for the new version.
      */
     registerServiceWorker() {
-        if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('/service-worker.js', {
-                scope: '/'
-            }).then(registration => {
-                console.log('[iHymns] Service worker registered:', registration.scope);
+        if (!('serviceWorker' in navigator)) return;
 
-                /* Check for updates periodically */
-                setInterval(() => {
-                    registration.update();
-                }, 60 * 60 * 1000); /* Every hour */
+        navigator.serviceWorker.register('/service-worker.js', {
+            scope: '/'
+        }).then(registration => {
+            console.log('[iHymns] Service worker registered:', registration.scope);
 
-            }).catch(error => {
-                console.warn('[iHymns] Service worker registration failed:', error);
+            /* Check for updates periodically (every hour) */
+            setInterval(() => registration.update(), 60 * 60 * 1000);
+
+            /*
+             * Listen for a new service worker being found (#83).
+             * This fires when the browser detects an updated service-worker.js.
+             */
+            registration.addEventListener('updatefound', () => {
+                const newWorker = registration.installing;
+                if (!newWorker) return;
+
+                newWorker.addEventListener('statechange', () => {
+                    /*
+                     * The new worker is installed and waiting to activate.
+                     * Only show the notification if there's already an active
+                     * controller (i.e., this isn't the very first install).
+                     */
+                    if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                        this.showUpdateNotification(registration);
+                    }
+                });
+            });
+
+        }).catch(error => {
+            console.warn('[iHymns] Service worker registration failed:', error);
+        });
+    }
+
+    /**
+     * Show an update-available toast notification (#83).
+     * Offers the user a "Refresh" button that activates the new
+     * service worker and reloads the page.
+     *
+     * @param {ServiceWorkerRegistration} registration
+     */
+    showUpdateNotification(registration) {
+        const container = document.getElementById('toast-container');
+        if (!container) return;
+
+        const toastEl = document.createElement('div');
+        toastEl.className = 'toast align-items-center text-bg-primary border-0';
+        toastEl.setAttribute('role', 'alert');
+        toastEl.setAttribute('aria-live', 'assertive');
+        toastEl.setAttribute('aria-atomic', 'true');
+        toastEl.innerHTML = `
+            <div class="d-flex">
+                <div class="toast-body">
+                    <i class="fa-solid fa-arrow-rotate-right me-2" aria-hidden="true"></i>
+                    A new version of ${this.escapeHtml(this.config.appName)} is available.
+                    <button type="button" class="btn btn-sm btn-light ms-2" id="sw-update-btn">
+                        Refresh
+                    </button>
+                </div>
+                <button type="button" class="btn-close btn-close-white me-2 m-auto"
+                        data-bs-dismiss="toast" aria-label="Close"></button>
+            </div>`;
+
+        container.appendChild(toastEl);
+
+        const toast = new bootstrap.Toast(toastEl, { autohide: false });
+        toast.show();
+
+        /* Handle the refresh button click */
+        const refreshBtn = toastEl.querySelector('#sw-update-btn');
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', () => {
+                /* Tell the waiting service worker to skip waiting and activate */
+                if (registration.waiting) {
+                    registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+                }
             });
         }
+
+        /*
+         * Listen for the new service worker taking control, then reload.
+         * This fires after the waiting worker calls skipWaiting().
+         */
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+            window.location.reload();
+        }, { once: true });
+
+        /* Clean up toast element after dismissed */
+        toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
+    }
+
+    /**
+     * Escape HTML for safe insertion into innerHTML.
+     * @param {string} str
+     * @returns {string}
+     */
+    escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str || '';
+        return div.innerHTML;
     }
 
     /**

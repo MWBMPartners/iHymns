@@ -87,10 +87,13 @@ self.addEventListener('install', (event) => {
                 console.log('[SW] Pre-caching app shell assets');
                 return cache.addAll(PRECACHE_ASSETS);
             })
-            .then(() => {
-                /* Skip waiting — activate immediately */
-                return self.skipWaiting();
-            })
+            /*
+             * NOTE (#83): We intentionally do NOT call self.skipWaiting() here.
+             * The new service worker waits in the "installed" state until the user
+             * clicks the "Refresh" button in the update notification, which sends
+             * a SKIP_WAITING message (handled below). This gives users control
+             * over when the update activates, preventing mid-session disruption.
+             */
     );
 });
 
@@ -228,3 +231,19 @@ async function networkFirstWithCache(request) {
         });
     }
 }
+
+/* =========================================================================
+ * MESSAGE EVENT — Handle SKIP_WAITING from the client (#83)
+ *
+ * When the user clicks the "Refresh" button in the update notification,
+ * the client sends a { type: 'SKIP_WAITING' } message. This tells the
+ * waiting service worker to activate immediately, replacing the old one.
+ * The client then receives a 'controllerchange' event and reloads.
+ * ========================================================================= */
+
+self.addEventListener('message', (event) => {
+    if (event.data && event.data.type === 'SKIP_WAITING') {
+        console.log('[SW] Received SKIP_WAITING — activating now');
+        self.skipWaiting();
+    }
+});
