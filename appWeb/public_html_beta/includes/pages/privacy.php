@@ -152,6 +152,8 @@ $appUrl = $app["Application"]["Website"]["URL"];
                 <li><strong>Google Analytics</strong> (if enabled) — for anonymous usage statistics</li>
                 <li><strong>Microsoft Clarity</strong> (if enabled) — for anonymous usage heatmaps</li>
                 <li><strong>Plausible Analytics</strong> (if enabled) — privacy-focused analytics</li>
+                <li><strong>Matomo</strong> (if enabled) — self-hosted analytics</li>
+                <li><strong>Fathom Analytics</strong> (if enabled) — privacy-focused analytics</li>
             </ul>
         </div>
     </div>
