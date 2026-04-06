@@ -176,11 +176,48 @@ class iHymnsApp {
      * navigation links, and action buttons.
      */
     bindGlobalEvents() {
+        /** @type {string} Number buffer for quick-jump (#96) */
+        this.quickJumpBuffer = '';
+        /** @type {number|null} Quick-jump timeout ID */
+        this.quickJumpTimer = null;
+
         /* --- Keyboard shortcuts --- */
         document.addEventListener('keydown', (e) => {
             /* Don't trigger shortcuts when typing in inputs */
             const tag = (e.target.tagName || '').toLowerCase();
             if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+
+            /* Quick-jump: capture digit keys (#96) */
+            if (e.key >= '0' && e.key <= '9') {
+                e.preventDefault();
+                this.quickJumpAppend(e.key);
+                return;
+            }
+
+            /* Quick-jump: Enter confirms, Escape cancels (#96) */
+            if (this.quickJumpBuffer) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    this.quickJumpGo();
+                    return;
+                }
+                if (e.key === 'Escape') {
+                    e.preventDefault();
+                    this.quickJumpClear();
+                    return;
+                }
+                if (e.key === 'Backspace') {
+                    e.preventDefault();
+                    this.quickJumpBuffer = this.quickJumpBuffer.slice(0, -1);
+                    if (this.quickJumpBuffer) {
+                        this.quickJumpShowIndicator();
+                        this.quickJumpResetTimer();
+                    } else {
+                        this.quickJumpClear();
+                    }
+                    return;
+                }
+            }
 
             switch (e.key) {
                 case '/':
@@ -330,6 +367,148 @@ class iHymnsApp {
             const href = link.getAttribute('href');
             if (href) this.router.navigate(href);
         }
+    }
+
+    /* =====================================================================
+     * QUICK-JUMP — Keyboard number navigation (#96)
+     * ===================================================================== */
+
+    /**
+     * Append a digit to the quick-jump buffer and show/update the indicator.
+     * @param {string} digit Single digit character
+     */
+    quickJumpAppend(digit) {
+        this.quickJumpBuffer += digit;
+        this.quickJumpShowIndicator();
+        this.quickJumpResetTimer();
+    }
+
+    /** Show or update the floating quick-jump indicator */
+    quickJumpShowIndicator() {
+        let indicator = document.getElementById('quick-jump-indicator');
+        if (!indicator) {
+            indicator = document.createElement('div');
+            indicator.id = 'quick-jump-indicator';
+            indicator.className = 'quick-jump-indicator';
+            indicator.setAttribute('role', 'status');
+            indicator.setAttribute('aria-live', 'polite');
+            document.body.appendChild(indicator);
+        }
+        indicator.innerHTML = `
+            <div class="quick-jump-number">${this.escapeHtml(this.quickJumpBuffer)}</div>
+            <small class="quick-jump-hint">Press Enter or wait...</small>`;
+        indicator.classList.add('visible');
+    }
+
+    /** Clear the quick-jump buffer and hide the indicator */
+    quickJumpClear() {
+        this.quickJumpBuffer = '';
+        clearTimeout(this.quickJumpTimer);
+        this.quickJumpTimer = null;
+        const indicator = document.getElementById('quick-jump-indicator');
+        if (indicator) indicator.classList.remove('visible');
+    }
+
+    /** Reset the auto-navigate timer (1.5s after last digit) */
+    quickJumpResetTimer() {
+        clearTimeout(this.quickJumpTimer);
+        this.quickJumpTimer = setTimeout(() => this.quickJumpGo(), 1500);
+    }
+
+    /**
+     * Execute the quick-jump navigation.
+     * Uses default songbook if set, otherwise shows a quick picker.
+     */
+    quickJumpGo() {
+        const number = this.quickJumpBuffer;
+        this.quickJumpClear();
+
+        if (!number) return;
+
+        const defaultBook = localStorage.getItem('ihymns_default_songbook');
+        if (defaultBook) {
+            const padded = number.padStart(4, '0');
+            this.router.navigate(`/song/${defaultBook}-${padded}`);
+        } else {
+            /* Show quick songbook picker */
+            this.quickJumpShowPicker(number);
+        }
+    }
+
+    /**
+     * Show a quick songbook picker for the typed number.
+     * @param {string} number The typed song number
+     */
+    quickJumpShowPicker(number) {
+        document.getElementById('quick-jump-picker')?.remove();
+
+        const songbooks = this.config.songbooks || [];
+        const picker = document.createElement('div');
+        picker.id = 'quick-jump-picker';
+        picker.className = 'quick-jump-picker';
+        picker.setAttribute('role', 'dialog');
+        picker.setAttribute('aria-label', 'Select songbook');
+
+        /* Build songbook buttons from config or use fallback */
+        const bookButtons = songbooks.length > 0
+            ? songbooks.map(b => `
+                <button type="button" class="btn btn-outline-primary btn-sm quick-jump-book"
+                        data-book="${this.escapeHtml(b.id)}">
+                    ${this.escapeHtml(b.id)}
+                </button>`).join('')
+            : ['CP', 'JP', 'MP', 'SDAH', 'CH'].map(id => `
+                <button type="button" class="btn btn-outline-primary btn-sm quick-jump-book"
+                        data-book="${id}">${id}</button>`).join('');
+
+        picker.innerHTML = `
+            <div class="quick-jump-picker-content">
+                <p class="mb-2 fw-bold">Song #${this.escapeHtml(number)}</p>
+                <p class="text-muted small mb-2">Select songbook:</p>
+                <div class="d-flex flex-wrap gap-2 justify-content-center">
+                    ${bookButtons}
+                </div>
+                <div class="form-check mt-2">
+                    <input class="form-check-input" type="checkbox" id="quick-jump-remember">
+                    <label class="form-check-label small" for="quick-jump-remember">Remember choice</label>
+                </div>
+            </div>`;
+
+        document.body.appendChild(picker);
+
+        /* Animate in */
+        requestAnimationFrame(() => picker.classList.add('visible'));
+
+        /* Bind songbook buttons */
+        picker.querySelectorAll('.quick-jump-book').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const bookId = btn.dataset.book;
+                const remember = document.getElementById('quick-jump-remember')?.checked;
+                if (remember) {
+                    localStorage.setItem('ihymns_default_songbook', bookId);
+                }
+                picker.remove();
+                const padded = number.padStart(4, '0');
+                this.router.navigate(`/song/${bookId}-${padded}`);
+            });
+        });
+
+        /* Close on click outside */
+        const closeHandler = (e) => {
+            if (!picker.contains(e.target)) {
+                picker.remove();
+                document.removeEventListener('click', closeHandler);
+            }
+        };
+        setTimeout(() => document.addEventListener('click', closeHandler), 100);
+
+        /* Close on Escape */
+        const escHandler = (e) => {
+            if (e.key === 'Escape') {
+                picker.remove();
+                document.removeEventListener('keydown', escHandler);
+            }
+        };
+        document.addEventListener('keydown', escHandler);
     }
 
     /**

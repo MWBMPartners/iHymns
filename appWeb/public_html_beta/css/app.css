@@ -1292,3 +1292,77 @@ body.presentation-active #app-footer,
 body.presentation-active .scroll-to-top-btn {
     display: none !important;
 }
+
+/* ==========================================================================
+   QUICK-JUMP NUMBER INDICATOR (#96)
+   ========================================================================== */
+
+.quick-jump-indicator {
+    position: fixed;
+    top: 80px;
+    right: 20px;
+    z-index: 1080;
+    background: var(--bs-primary, #6366f1);
+    color: #fff;
+    border-radius: 0.75rem;
+    padding: 0.75rem 1.25rem;
+    text-align: center;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    opacity: 0;
+    transform: translateX(20px);
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    pointer-events: none;
+}
+
+.quick-jump-indicator.visible {
+    opacity: 1;
+    transform: translateX(0);
+}
+
+.quick-jump-number {
+    font-size: 2rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.05em;
+}
+
+.quick-jump-hint {
+    opacity: 0.8;
+    display: block;
+}
+
+/* Quick-jump songbook picker */
+.quick-jump-picker {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) scale(0.9);
+    z-index: 1085;
+    background: var(--bs-body-bg, #fff);
+    color: var(--bs-body-color, #000);
+    border-radius: 1rem;
+    padding: 1.5rem;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    opacity: 0;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    text-align: center;
+    min-width: 280px;
+}
+
+.quick-jump-picker.visible {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+    .quick-jump-indicator,
+    .quick-jump-picker {
+        transition: none;
+    }
+}
+
+body.reduce-motion .quick-jump-indicator,
+body.reduce-motion .quick-jump-picker {
+    transition: none;
+}

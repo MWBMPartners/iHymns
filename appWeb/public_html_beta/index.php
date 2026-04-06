@@ -777,6 +777,7 @@ try {
             dnt:            <?= json_encode(USER_DNT) ?>,
             locale:         <?= json_encode($locale) ?>,
             initialPath:    <?= json_encode($requestPath) ?>,
+            songbooks:      <?= json_encode($songData->getSongbooks()) ?>,
         };
     </script>
 

@@ -216,6 +216,20 @@ export class Settings {
             });
         }
 
+        /* Default songbook dropdown (#96) */
+        const defaultBookSelect = document.getElementById('setting-default-songbook');
+        if (defaultBookSelect) {
+            defaultBookSelect.value = localStorage.getItem('ihymns_default_songbook') || '';
+            defaultBookSelect.addEventListener('change', () => {
+                const val = defaultBookSelect.value;
+                if (val) {
+                    localStorage.setItem('ihymns_default_songbook', val);
+                } else {
+                    localStorage.removeItem('ihymns_default_songbook');
+                }
+            });
+        }
+
         /* Clear cache button */
         const clearCacheBtn = document.getElementById('clear-cache-btn');
         if (clearCacheBtn) {
@@ -236,6 +250,7 @@ export class Settings {
                     Object.keys(this.defaults).forEach(key => {
                         localStorage.removeItem(this.storagePrefix + key);
                     });
+                    localStorage.removeItem('ihymns_default_songbook');
                     /* Re-apply defaults */
                     this.applyTheme(this.defaults.theme);
                     this.applyReduceMotion(this.defaults.reduceMotion);

@@ -62,6 +62,31 @@ declare(strict_types=1);
                 </small>
             </div>
 
+            <!-- Default songbook (#96) -->
+            <div class="mb-3">
+                <label for="setting-default-songbook" class="form-label fw-semibold">
+                    Default Songbook
+                </label>
+                <select class="form-select" id="setting-default-songbook" aria-label="Default songbook for quick-jump">
+                    <option value="">None (ask each time)</option>
+                    <?php
+                        $settingSongbooks = $songData->getSongbooks();
+                        foreach ($settingSongbooks as $book):
+                            if (($book['songCount'] ?? 0) > 0):
+                    ?>
+                        <option value="<?= htmlspecialchars($book['id']) ?>">
+                            <?= htmlspecialchars($book['name']) ?> (<?= htmlspecialchars($book['id']) ?>)
+                        </option>
+                    <?php
+                            endif;
+                        endforeach;
+                    ?>
+                </select>
+                <small class="text-muted mt-1 d-block">
+                    Used for keyboard quick-jump: type a song number from any page to navigate directly.
+                </small>
+            </div>
+
             <!-- Font size -->
             <div class="mb-0">
                 <label for="setting-font-size" class="form-label fw-semibold">
