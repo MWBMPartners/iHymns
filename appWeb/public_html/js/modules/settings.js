@@ -10,6 +10,17 @@
  * in localStorage.
  */
 
+import {
+    STORAGE_FAVORITES,
+    STORAGE_SETLISTS,
+    STORAGE_HISTORY,
+    STORAGE_TRANSITION,
+    STORAGE_DEFAULT_SONGBOOK,
+    STORAGE_AUTO_UPDATE_SONGS,
+    STORAGE_ANALYTICS_CONSENT,
+    STORAGE_SEARCH_HISTORY,
+} from '../constants.js';
+
 export class Settings {
     /**
      * @param {object} app Reference to the main iHymnsApp instance
@@ -81,7 +92,7 @@ export class Settings {
      * ===================================================================== */
 
     /** @type {string} localStorage key for analytics consent */
-    static CONSENT_KEY = 'ihymns_analytics_consent';
+    static CONSENT_KEY = STORAGE_ANALYTICS_CONSENT;
 
     /**
      * Get the current analytics consent state.
@@ -316,10 +327,10 @@ export class Settings {
         /* Page transition style (#106) */
         const transitionSelect = document.getElementById('setting-transition');
         if (transitionSelect) {
-            transitionSelect.value = localStorage.getItem('ihymns_transition') || 'none';
+            transitionSelect.value = localStorage.getItem(STORAGE_TRANSITION) || 'none';
             transitionSelect.addEventListener('change', () => {
-                localStorage.setItem('ihymns_transition', transitionSelect.value);
-                this.app.syncStorage('ihymns_transition');
+                localStorage.setItem(STORAGE_TRANSITION, transitionSelect.value);
+                this.app.syncStorage(STORAGE_TRANSITION);
             });
         }
 
@@ -351,15 +362,15 @@ export class Settings {
         /* Default songbook dropdown (#96) */
         const defaultBookSelect = document.getElementById('setting-default-songbook');
         if (defaultBookSelect) {
-            defaultBookSelect.value = localStorage.getItem('ihymns_default_songbook') || '';
+            defaultBookSelect.value = localStorage.getItem(STORAGE_DEFAULT_SONGBOOK) || '';
             defaultBookSelect.addEventListener('change', () => {
                 const val = defaultBookSelect.value;
                 if (val) {
-                    localStorage.setItem('ihymns_default_songbook', val);
+                    localStorage.setItem(STORAGE_DEFAULT_SONGBOOK, val);
                 } else {
-                    localStorage.removeItem('ihymns_default_songbook');
+                    localStorage.removeItem(STORAGE_DEFAULT_SONGBOOK);
                 }
-                this.app.syncStorage('ihymns_default_songbook');
+                this.app.syncStorage(STORAGE_DEFAULT_SONGBOOK);
             });
         }
 
@@ -433,11 +444,11 @@ export class Settings {
         /* Auto-update offline songs toggle (#132) */
         const autoUpdateToggle = document.getElementById('setting-auto-update-songs');
         if (autoUpdateToggle) {
-            autoUpdateToggle.checked = localStorage.getItem('ihymns_auto_update_songs') === 'true';
+            autoUpdateToggle.checked = localStorage.getItem(STORAGE_AUTO_UPDATE_SONGS) === 'true';
             autoUpdateToggle.addEventListener('change', () => {
                 const enabled = autoUpdateToggle.checked;
-                localStorage.setItem('ihymns_auto_update_songs', String(enabled));
-                this.app.syncStorage('ihymns_auto_update_songs');
+                localStorage.setItem(STORAGE_AUTO_UPDATE_SONGS, String(enabled));
+                this.app.syncStorage(STORAGE_AUTO_UPDATE_SONGS);
                 /* Inform the service worker of the new preference */
                 if (navigator.serviceWorker?.controller) {
                     navigator.serviceWorker.controller.postMessage({
@@ -472,9 +483,9 @@ export class Settings {
                     Object.keys(this.defaults).forEach(key => {
                         localStorage.removeItem(this.storagePrefix + key);
                     });
-                    localStorage.removeItem('ihymns_default_songbook');
-                    localStorage.removeItem('ihymns_transition');
-                    localStorage.removeItem('ihymns_auto_update_songs');
+                    localStorage.removeItem(STORAGE_DEFAULT_SONGBOOK);
+                    localStorage.removeItem(STORAGE_TRANSITION);
+                    localStorage.removeItem(STORAGE_AUTO_UPDATE_SONGS);
                     localStorage.removeItem(Settings.CONSENT_KEY);
                     /* Clear shared subdomain cookie (#133) */
                     this.app.subdomainSync?.clear();
@@ -511,9 +522,9 @@ export class Settings {
             version: 1,
             exportedAt: new Date().toISOString(),
             app: 'iHymns',
-            favorites: safeParse('ihymns_favorites'),
-            setlists: safeParse('ihymns_setlists'),
-            history: safeParse('ihymns_history'),
+            favorites: safeParse(STORAGE_FAVORITES),
+            setlists: safeParse(STORAGE_SETLISTS),
+            history: safeParse(STORAGE_HISTORY),
         };
 
         const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
@@ -560,35 +571,35 @@ export class Settings {
             const mode = choice === 'option1' ? 'replace' : 'merge';
 
             if (mode === 'replace') {
-                if (data.favorites) localStorage.setItem('ihymns_favorites', JSON.stringify(data.favorites));
-                if (data.setlists) localStorage.setItem('ihymns_setlists', JSON.stringify(data.setlists));
-                if (data.history) localStorage.setItem('ihymns_history', JSON.stringify(data.history));
+                if (data.favorites) localStorage.setItem(STORAGE_FAVORITES, JSON.stringify(data.favorites));
+                if (data.setlists) localStorage.setItem(STORAGE_SETLISTS, JSON.stringify(data.setlists));
+                if (data.history) localStorage.setItem(STORAGE_HISTORY, JSON.stringify(data.history));
             } else {
                 /* Merge: add non-duplicate entries */
                 if (data.favorites) {
-                    const existing = JSON.parse(localStorage.getItem('ihymns_favorites') || '[]');
+                    const existing = JSON.parse(localStorage.getItem(STORAGE_FAVORITES) || '[]');
                     const existingIds = new Set(existing.map(f => f.id));
                     const merged = [...existing, ...data.favorites.filter(f => !existingIds.has(f.id))];
-                    localStorage.setItem('ihymns_favorites', JSON.stringify(merged));
+                    localStorage.setItem(STORAGE_FAVORITES, JSON.stringify(merged));
                 }
                 if (data.setlists) {
-                    const existing = JSON.parse(localStorage.getItem('ihymns_setlists') || '[]');
+                    const existing = JSON.parse(localStorage.getItem(STORAGE_SETLISTS) || '[]');
                     const existingIds = new Set(existing.map(l => l.id));
                     const merged = [...existing, ...data.setlists.filter(l => !existingIds.has(l.id))];
-                    localStorage.setItem('ihymns_setlists', JSON.stringify(merged));
+                    localStorage.setItem(STORAGE_SETLISTS, JSON.stringify(merged));
                 }
                 if (data.history) {
-                    const existing = JSON.parse(localStorage.getItem('ihymns_history') || '[]');
+                    const existing = JSON.parse(localStorage.getItem(STORAGE_HISTORY) || '[]');
                     const existingIds = new Set(existing.map(h => h.id));
                     const merged = [...existing, ...data.history.filter(h => !existingIds.has(h.id))];
-                    localStorage.setItem('ihymns_history', JSON.stringify(merged.slice(0, 20)));
+                    localStorage.setItem(STORAGE_HISTORY, JSON.stringify(merged.slice(0, 20)));
                 }
             }
 
             /* Sync imported data to cross-domain bridge (#133) */
-            this.app.syncStorage('ihymns_favorites');
-            this.app.syncStorage('ihymns_setlists');
-            this.app.syncStorage('ihymns_history');
+            this.app.syncStorage(STORAGE_FAVORITES);
+            this.app.syncStorage(STORAGE_SETLISTS);
+            this.app.syncStorage(STORAGE_HISTORY);
 
             this.app.showToast(`Data imported (${mode})`, 'success', 2000);
         } catch (error) {

@@ -881,7 +881,73 @@ declare(strict_types=1);
                         <div class="mt-3 p-2 rounded" style="background-color: var(--ih-bg-card); border: 1px solid var(--ih-border);">
                             <small class="text-muted">
                                 <strong>Component types:</strong>
-                                Verse, Chorus, Refrain, Bridge, Pre-Chorus, Tag, Coda, Intro, Outro
+                                Verse, Chorus, Refrain, Bridge, Pre-Chorus, Tag, Coda, Intro, Outro, Interlude
+                            </small>
+                        </div>
+
+                        <!-- -------------------------------------------------
+                             ARRANGEMENT EDITOR (#161)
+                             Customise the display order of song components.
+                             Uses human-readable labels (e.g. "Verse 1, Chorus")
+                             instead of raw component indexes.
+                             ------------------------------------------------- -->
+                        <hr class="my-3">
+                        <h6 class="fw-semibold mb-2">
+                            <i class="bi bi-arrow-down-up me-1"></i>Arrangement
+                            <small class="text-muted fw-normal ms-2">(display order)</small>
+                        </h6>
+
+                        <!-- Arrangement chip display — rendered dynamically -->
+                        <div id="arrangement-chips" class="d-flex flex-wrap gap-1 mb-2" style="min-height: 32px;"></div>
+
+                        <!-- Arrangement text input for manual editing -->
+                        <div class="input-group input-group-sm mb-2">
+                            <input
+                                type="text"
+                                class="form-control"
+                                id="arrangement-input"
+                                placeholder="e.g. Verse 1, Chorus, Verse 2, Chorus, Verse 3, Chorus"
+                                aria-label="Arrangement order (comma-separated component labels)"
+                            >
+                            <button
+                                type="button"
+                                class="btn btn-outline-secondary"
+                                id="btnApplyArrangement"
+                                title="Apply arrangement"
+                            >
+                                <i class="bi bi-check-lg"></i> Apply
+                            </button>
+                        </div>
+
+                        <!-- Validation feedback -->
+                        <div id="arrangement-feedback" class="small mb-2" style="display: none;"></div>
+
+                        <!-- Quick action buttons -->
+                        <div class="d-flex flex-wrap gap-2 mb-2">
+                            <button
+                                type="button"
+                                class="btn btn-sm btn-outline-secondary"
+                                id="btnArrangementAuto"
+                                title="Insert chorus/refrain after each verse"
+                            >
+                                <i class="bi bi-magic me-1"></i>Auto: Chorus after each verse
+                            </button>
+                            <button
+                                type="button"
+                                class="btn btn-sm btn-outline-secondary"
+                                id="btnArrangementSequential"
+                                title="Use sequential order (clear arrangement)"
+                            >
+                                <i class="bi bi-arrow-down me-1"></i>Sequential (clear)
+                            </button>
+                        </div>
+
+                        <div class="p-2 rounded" style="background-color: var(--ih-bg-card); border: 1px solid var(--ih-border);">
+                            <small class="text-muted">
+                                <strong>Arrangement:</strong>
+                                Type component labels separated by commas. Use the name and number
+                                (e.g. <code>Verse 1</code>, <code>Chorus</code>, <code>Bridge</code>).
+                                Leave empty or click "Sequential" for default order.
                             </small>
                         </div>
                     </div>

@@ -1,0 +1,11 @@
+# ==========================================================================
+# iHymns — Song Data Storage
+#
+# This directory stores the canonical songs.json file, served to clients
+# exclusively via the PHP API (api.php?action=songs_json) — never directly.
+#
+# SECURITY: Defence-in-depth to prevent direct access to song data files.
+# ==========================================================================
+
+# Deny all direct access
+Deny from all

@@ -17,6 +17,8 @@
  *   4. If either step fails, falls back to API-based substring search.
  *   5. Offline search works when songs.json is cached by service worker.
  */
+import { escapeHtml } from '../utils/html.js';
+import { STORAGE_SEARCH_LYRICS } from '../constants.js';
 
 export class Search {
     /**
@@ -231,13 +233,13 @@ export class Search {
 
         /* Restore lyrics toggle state from localStorage */
         if (lyricsToggle) {
-            this.lyricsSearchEnabled = localStorage.getItem('ihymns_search_lyrics') === 'true';
+            this.lyricsSearchEnabled = localStorage.getItem(STORAGE_SEARCH_LYRICS) === 'true';
             lyricsToggle.checked = this.lyricsSearchEnabled;
 
             lyricsToggle.addEventListener('change', () => {
                 this.lyricsSearchEnabled = lyricsToggle.checked;
-                localStorage.setItem('ihymns_search_lyrics', String(this.lyricsSearchEnabled));
-                this.app.syncStorage('ihymns_search_lyrics');
+                localStorage.setItem(STORAGE_SEARCH_LYRICS, String(this.lyricsSearchEnabled));
+                this.app.syncStorage(STORAGE_SEARCH_LYRICS);
 
                 /* Build lyrics index on first enable */
                 if (this.lyricsSearchEnabled && !this.fuseLyricsIndex && this.FuseClass && this.songsData) {
@@ -368,11 +370,11 @@ export class Search {
                 container.innerHTML = `
                     <div class="text-center text-muted py-4">
                         <i class="fa-solid fa-face-sad-tear fa-2x mb-2 opacity-50" aria-hidden="true"></i>
-                        <p>No results found for "<strong>${this.escapeHtml(query)}</strong>"</p>
+                        <p>No results found for "<strong>${escapeHtml(query)}</strong>"</p>
                         <small>Try different keywords or check your spelling</small>
                         <div class="mt-3">
                             <button type="button" class="btn btn-outline-primary btn-sm btn-request-song"
-                                    data-prefill="${this.escapeHtml(query)}">
+                                    data-prefill="${escapeHtml(query)}">
                                 <i class="fa-solid fa-paper-plane me-1" aria-hidden="true"></i>
                                 Can't find it? Request this song
                             </button>
@@ -471,6 +473,7 @@ export class Search {
         const response = await fetch(url, {
             headers: { 'X-Requested-With': 'XMLHttpRequest' }
         });
+        if (!response.ok) throw new Error(`Search API: HTTP ${response.status}`);
         const data = await response.json();
         return data.results || [];
     }
@@ -493,19 +496,19 @@ export class Search {
         results.forEach(song => {
             const writers = (song.writers || []).join(', ');
             const snippet = song.lyricsSnippet
-                ? `<small class="text-muted d-block fst-italic"><i class="fa-solid fa-music me-1" aria-hidden="true"></i>&ldquo;${this.escapeHtml(song.lyricsSnippet)}&rdquo;</small>`
+                ? `<small class="text-muted d-block fst-italic"><i class="fa-solid fa-music me-1" aria-hidden="true"></i>&ldquo;${escapeHtml(song.lyricsSnippet)}&rdquo;</small>`
                 : '';
             html += `
-                <a href="/song/${this.escapeHtml(song.id)}"
+                <a href="/song/${escapeHtml(song.id)}"
                    class="list-group-item list-group-item-action song-list-item"
                    data-navigate="song"
-                   data-song-id="${this.escapeHtml(song.id)}">
-                    <span class="song-number-badge" data-songbook="${this.escapeHtml(song.songbook || '')}">${song.number}</span>
+                   data-song-id="${escapeHtml(song.id)}">
+                    <span class="song-number-badge" data-songbook="${escapeHtml(song.songbook || '')}">${song.number}</span>
                     <div class="song-info flex-grow-1">
-                        <span class="song-title">${this.escapeHtml(song.title)}</span>
+                        <span class="song-title">${escapeHtml(song.title)}</span>
                         <small class="text-muted d-block">
-                            ${this.escapeHtml(song.songbookName || '')}
-                            ${writers ? ' &middot; ' + this.escapeHtml(writers) : ''}
+                            ${escapeHtml(song.songbookName || '')}
+                            ${writers ? ' &middot; ' + escapeHtml(writers) : ''}
                         </small>
                         ${snippet}
                     </div>
@@ -517,15 +520,4 @@ export class Search {
         return html;
     }
 
-    /**
-     * Escape HTML special characters to prevent XSS.
-     *
-     * @param {string} str Input string
-     * @returns {string} Escaped string
-     */
-    escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str || '';
-        return div.innerHTML;
-    }
 }

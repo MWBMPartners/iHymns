@@ -8,6 +8,7 @@
  * number. Works in the modal (global) and embedded on the search page.
  * Performs live search-as-you-type against the API.
  */
+import { escapeHtml } from '../utils/html.js';
 
 export class Numpad {
     constructor(app) {
@@ -171,7 +172,7 @@ export class Numpad {
                             <a href="/song/${song.id}"
                                class="list-group-item list-group-item-action py-2"
                                data-navigate="song" data-song-id="${song.id}">
-                                <strong>#${song.number}</strong> — ${this.escapeHtml(song.title)}
+                                <strong>#${song.number}</strong> — ${escapeHtml(song.title)}
                             </a>
                         `).join('') + '</div>';
 
@@ -226,22 +227,17 @@ export class Numpad {
             const url = new URL(this.app.config.apiUrl, window.location.origin);
             url.searchParams.set('action', 'songbooks');
             const response = await fetch(url);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const data = await response.json();
 
             if (data.songbooks) {
                 select.innerHTML = data.songbooks
                     .filter(b => b.songCount > 0)
-                    .map(b => `<option value="${b.id}">${b.name} (${b.id})</option>`)
+                    .map(b => `<option value="${escapeHtml(b.id)}">${escapeHtml(b.name)} (${escapeHtml(b.id)})</option>`)
                     .join('');
             }
         } catch (error) {
             console.error('[Numpad] Failed to load songbooks:', error);
         }
-    }
-
-    escapeHtml(str) {
-        const d = document.createElement('div');
-        d.textContent = str || '';
-        return d.innerHTML;
     }
 }

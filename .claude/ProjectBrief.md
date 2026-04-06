@@ -136,7 +136,9 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 | `appWeb/public_html/includes/components/*.php` | Modular PHP components |
 | `appWeb/public_html/includes/pages/*.php` | Page templates (song, writer, privacy, terms, settings) |
 | `appWeb/public_html/js/modules/*.js` | ES modules (router, analytics, gestures, settings, etc.) |
-| `appWeb/public_html/js/utils/*.js` | JS utilities (text.js) |
+| `appWeb/public_html/js/utils/*.js` | JS utilities (html.js, text.js) |
+| `appWeb/public_html/js/constants.js` | Centralised localStorage key constants (#139) |
+| `appWeb/public_html/api.php` | Server-side API (songs, setlists, search) |
 | `appWeb/public_html/includes/config.php` | App configuration (analytics, features) |
 | `appWeb/private_html/editor/` | Song editor (dev tool) |
 | `appApple/iHymns/iHymns/Services/AppInfo.swift` | Apple app info |

@@ -9,12 +9,14 @@
  */
 
 import { toTitleCase } from '../utils/text.js';
+import { escapeHtml } from '../utils/html.js';
+import { STORAGE_FAVORITES, STORAGE_CUSTOM_TAGS } from '../constants.js';
 
 export class Favorites {
     constructor(app) {
         this.app = app;
         /** @type {string} localStorage key for favourites */
-        this.storageKey = 'ihymns_favorites';
+        this.storageKey = STORAGE_FAVORITES;
         /** @type {boolean} Whether select mode is active (#119) */
         this.selectMode = false;
         /** @type {Set<string>} Currently selected song IDs (#119) */
@@ -111,7 +113,7 @@ export class Favorites {
         }
         /* Merge with any custom tags stored separately */
         try {
-            const custom = JSON.parse(localStorage.getItem('ihymns_custom_tags')) || [];
+            const custom = JSON.parse(localStorage.getItem(STORAGE_CUSTOM_TAGS)) || [];
             custom.forEach(t => tagSet.add(t));
         } catch {}
         return [...tagSet].sort();
@@ -147,11 +149,11 @@ export class Favorites {
      */
     saveCustomTag(tag) {
         let custom = [];
-        try { custom = JSON.parse(localStorage.getItem('ihymns_custom_tags')) || []; } catch {}
+        try { custom = JSON.parse(localStorage.getItem(STORAGE_CUSTOM_TAGS)) || []; } catch {}
         if (!custom.includes(tag)) {
             custom.push(tag);
             custom.sort();
-            localStorage.setItem('ihymns_custom_tags', JSON.stringify(custom));
+            localStorage.setItem(STORAGE_CUSTOM_TAGS, JSON.stringify(custom));
         }
     }
 
@@ -167,7 +169,7 @@ export class Favorites {
         /* Build tag picker content */
         const tagHtml = allTags.map(tag => {
             const checked = currentTags.includes(tag) ? 'checked' : '';
-            const escaped = this.escapeHtml(tag);
+            const escaped = escapeHtml(tag);
             return `<label class="btn btn-sm ${checked ? 'btn-primary' : 'btn-outline-secondary'} rounded-pill tag-toggle-btn">
                         <input type="checkbox" class="d-none tag-checkbox" value="${escaped}" ${checked}> ${escaped}
                     </label>`;
@@ -190,7 +192,7 @@ export class Favorites {
                         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                     </div>
                     <div class="modal-body">
-                        <p class="text-muted small mb-2">${this.escapeHtml(songTitle)}</p>
+                        <p class="text-muted small mb-2">${escapeHtml(songTitle)}</p>
                         <div class="d-flex flex-wrap gap-2 mb-3">${tagHtml}</div>
                         <div class="input-group input-group-sm">
                             <input type="text" class="form-control" id="tag-custom-input"
@@ -226,7 +228,7 @@ export class Favorites {
             const tag = input.value.trim();
             if (!tag) return;
             /* Check if already exists */
-            const existing = modal.querySelector(`.tag-checkbox[value="${this.escapeHtml(tag)}"]`);
+            const existing = modal.querySelector(`.tag-checkbox[value="${escapeHtml(tag)}"]`);
             if (existing) {
                 existing.checked = true;
                 existing.closest('.tag-toggle-btn').className = 'btn btn-sm btn-primary rounded-pill tag-toggle-btn';
@@ -234,7 +236,7 @@ export class Favorites {
                 const container = modal.querySelector('.d-flex.flex-wrap');
                 const newBtn = document.createElement('label');
                 newBtn.className = 'btn btn-sm btn-primary rounded-pill tag-toggle-btn';
-                newBtn.innerHTML = `<input type="checkbox" class="d-none tag-checkbox" value="${this.escapeHtml(tag)}" checked> ${this.escapeHtml(tag)}`;
+                newBtn.innerHTML = `<input type="checkbox" class="d-none tag-checkbox" value="${escapeHtml(tag)}" checked> ${escapeHtml(tag)}`;
                 newBtn.addEventListener('click', (e) => {
                     e.preventDefault();
                     const cb = newBtn.querySelector('.tag-checkbox');
@@ -412,28 +414,28 @@ export class Favorites {
             listEl.innerHTML = favorites.map(fav => {
                 const tags = (fav.tags || []);
                 const tagsHtml = tags.length > 0
-                    ? `<span class="fav-tags ms-1">${tags.map(t => `<span class="badge bg-body-secondary text-body-secondary rounded-pill fav-tag-badge">${this.escapeHtml(t)}</span>`).join(' ')}</span>`
+                    ? `<span class="fav-tags ms-1">${tags.map(t => `<span class="badge bg-body-secondary text-body-secondary rounded-pill fav-tag-badge">${escapeHtml(t)}</span>`).join(' ')}</span>`
                     : '';
-                const tagsData = tags.map(t => this.escapeHtml(t)).join(',');
+                const tagsData = tags.map(t => escapeHtml(t)).join(',');
                 return `
-                <a href="/song/${this.escapeHtml(fav.id)}"
+                <a href="/song/${escapeHtml(fav.id)}"
                    class="list-group-item list-group-item-action song-list-item"
                    data-navigate="song"
-                   data-song-id="${this.escapeHtml(fav.id)}"
+                   data-song-id="${escapeHtml(fav.id)}"
                    data-tags="${tagsData}"
                    role="listitem">
                     <input type="checkbox" class="form-check-input fav-select-check d-none me-2"
-                           data-song-id="${this.escapeHtml(fav.id)}"
-                           aria-label="Select ${this.escapeHtml(fav.title)}"
+                           data-song-id="${escapeHtml(fav.id)}"
+                           aria-label="Select ${escapeHtml(fav.title)}"
                            onclick="event.stopPropagation()">
-                    <span class="song-number-badge" data-songbook="${this.escapeHtml(fav.songbook)}">${fav.number || '?'}</span>
+                    <span class="song-number-badge" data-songbook="${escapeHtml(fav.songbook)}">${fav.number || '?'}</span>
                     <div class="song-info flex-grow-1">
-                        <span class="song-title">${this.escapeHtml(toTitleCase(fav.title))}</span>
-                        <small class="text-muted d-block">${this.escapeHtml(fav.songbook)}${tagsHtml}</small>
+                        <span class="song-title">${escapeHtml(toTitleCase(fav.title))}</span>
+                        <small class="text-muted d-block">${escapeHtml(fav.songbook)}${tagsHtml}</small>
                     </div>
                     <button type="button" class="btn btn-sm btn-link text-muted fav-edit-tags p-0 me-2"
-                            data-song-id="${this.escapeHtml(fav.id)}"
-                            data-song-title="${this.escapeHtml(fav.title)}"
+                            data-song-id="${escapeHtml(fav.id)}"
+                            data-song-title="${escapeHtml(fav.title)}"
                             aria-label="Edit tags"
                             onclick="event.preventDefault(); event.stopPropagation();">
                         <i class="fa-solid fa-tags" aria-hidden="true"></i>
@@ -699,8 +701,8 @@ export class Favorites {
                 All <span class="badge bg-white text-primary ms-1">${favorites.length}</span>
             </button>` +
             tags.map(([tag, count]) =>
-                `<button type="button" class="btn btn-sm btn-outline-secondary rounded-pill tag-filter-btn" data-tag="${this.escapeHtml(tag)}">
-                    ${this.escapeHtml(tag)} <span class="badge bg-secondary ms-1">${count}</span>
+                `<button type="button" class="btn btn-sm btn-outline-secondary rounded-pill tag-filter-btn" data-tag="${escapeHtml(tag)}">
+                    ${escapeHtml(tag)} <span class="badge bg-secondary ms-1">${count}</span>
                 </button>`
             ).join('');
 
@@ -735,9 +737,4 @@ export class Favorites {
      * @param {string} str
      * @returns {string}
      */
-    escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str || '';
-        return div.innerHTML;
-    }
 }
