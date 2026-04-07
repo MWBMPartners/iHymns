@@ -102,8 +102,15 @@ final class AudioPlayerService {
     private func loadMIDI(from url: URL) {
         #if canImport(AVFoundation) && !os(watchOS)
         do {
-            // Use the default SoundFont
+            // Configure audio session for playback (iOS)
+            #if os(iOS)
+            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+            try? AVAudioSession.sharedInstance().setActive(true)
+            #endif
+
+            // Use bundled SoundFont if available, otherwise system default
             let soundBankURL = Bundle.main.url(forResource: "gs_instruments", withExtension: "dls")
+                ?? Bundle.main.url(forResource: "GeneralUser", withExtension: "sf2")
 
             if let soundBank = soundBankURL {
                 midiPlayer = try AVMIDIPlayer(contentsOf: url, soundBankURL: soundBank)
