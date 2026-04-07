@@ -25,19 +25,80 @@ struct SongDetailView: View {
     // MARK: State
     @State private var showingAddToSetList = false
     @State private var showingPresentation = false
+    @State private var scrollProgress: CGFloat = 0
+
+    /// Scaled font size based on user preferences.
+    private var scaledLyricsFont: Font {
+        let baseSize: CGFloat = 18
+        let scaled = baseSize * songStore.preferences.lyricsFontScale
+        return .system(size: scaled)
+    }
+
+    /// Related songs based on shared writers/composers/songbook.
+    private var relatedSongs: [Song] {
+        guard let songs = songStore.songData?.songs else { return [] }
+        let writerSet = Set(song.writers)
+        let composerSet = Set(song.composers)
+
+        var scored: [(Song, Int)] = []
+        for candidate in songs where candidate.id != song.id {
+            var score = 0
+            // Shared writers (highest signal)
+            if !writerSet.isEmpty && !Set(candidate.writers).isDisjoint(with: writerSet) { score += 3 }
+            // Shared composers
+            if !composerSet.isEmpty && !Set(candidate.composers).isDisjoint(with: composerSet) { score += 2 }
+            // Same songbook proximity
+            if candidate.songbook == song.songbook { score += 1 }
+            if score > 0 { scored.append((candidate, score)) }
+        }
+
+        return scored
+            .sorted { $0.1 > $1.1 }
+            .prefix(8)
+            .map(\.0)
+    }
 
     // MARK: Body
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                #if os(watchOS)
-                watchOSContent
-                #elseif os(tvOS)
-                tvOSContent
-                #else
-                standardContent
-                #endif
+        ZStack(alignment: .top) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    #if os(watchOS)
+                    watchOSContent
+                    #elseif os(tvOS)
+                    tvOSContent
+                    #else
+                    standardContent
+                    #endif
+                }
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: ScrollOffsetKey.self,
+                            value: -geo.frame(in: .named("scroll")).origin.y
+                        )
+                    }
+                )
             }
+            .coordinateSpace(name: "scroll")
+            .onPreferenceChange(ScrollOffsetKey.self) { offset in
+                // Estimate total height based on component count
+                let estimatedHeight = CGFloat(song.components.count * 200)
+                scrollProgress = min(1.0, max(0, offset / max(estimatedHeight, 1)))
+            }
+
+            // Reading progress bar
+            #if !os(watchOS) && !os(tvOS)
+            if song.components.count > 2 {
+                GeometryReader { geo in
+                    Rectangle()
+                        .fill(AmberTheme.songbookColor(song.songbook))
+                        .frame(width: geo.size.width * scrollProgress, height: 3)
+                        .animation(.linear(duration: 0.1), value: scrollProgress)
+                }
+                .frame(height: 3)
+            }
+            #endif
         }
         #if !os(watchOS) && !os(tvOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -60,9 +121,9 @@ struct SongDetailView: View {
         // Liquid Glass song header
         songHeader
 
-        // Lyric components with glass accents
+        // Lyric components in arrangement order, with scaled font
         VStack(alignment: .leading, spacing: 24) {
-            ForEach(Array(song.components.enumerated()), id: \.offset) { _, component in
+            ForEach(song.arrangedComponents, id: \.offset) { _, component in
                 componentView(for: component)
             }
         }
@@ -73,7 +134,16 @@ struct SongDetailView: View {
         creditsSection
             .padding(.horizontal, 20)
             .padding(.top, 32)
-            .padding(.bottom, 40)
+
+        // Related songs section
+        if !relatedSongs.isEmpty {
+            relatedSongsSection
+                .padding(.horizontal, 20)
+                .padding(.top, 24)
+        }
+
+        Spacer()
+            .frame(height: 40)
     }
     #endif
 
@@ -242,12 +312,16 @@ struct SongDetailView: View {
     // MARK: - Component View
     private func componentView(for component: SongComponent) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(componentLabel(for: component))
-                .font(Typography.componentLabel)
-                .foregroundStyle(AmberTheme.accent)
+            // Verse/chorus label — hidden when user toggles off
+            if songStore.preferences.showComponentLabels {
+                Text(componentLabel(for: component))
+                    .font(Typography.componentLabel)
+                    .foregroundStyle(AmberTheme.accent)
+            }
 
+            // Lyrics with user-scaled font size
             Text(component.lines.joined(separator: "\n"))
-                .font(.body)
+                .font(scaledLyricsFont)
                 .lineSpacing(songStore.preferences.lineSpacing.value)
         }
         .padding(.leading, isChorusType(component) ? 20 : 0)
@@ -387,6 +461,51 @@ struct SongDetailView: View {
         return lines.joined(separator: "\n")
     }
 
+    // MARK: - Related Songs
+    #if !os(watchOS) && !os(tvOS)
+    private var relatedSongsSection: some View {
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            Text("Related Songs")
+                .font(Typography.sectionHeader)
+                .foregroundStyle(AmberTheme.accent)
+
+            ForEach(relatedSongs.prefix(5), id: \.id) { related in
+                NavigationLink(destination: SongDetailView(song: related)) {
+                    HStack(spacing: Spacing.md) {
+                        Text("\(related.number)")
+                            .font(.caption.bold().monospacedDigit())
+                            .foregroundStyle(.white)
+                            .frame(width: 32, height: 32)
+                            .background(
+                                AmberTheme.songbookColor(related.songbook),
+                                in: RoundedRectangle(cornerRadius: 6)
+                            )
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(related.title)
+                                .font(.subheadline)
+                                .lineLimit(1)
+                            Text(related.songbookName)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding()
+        .liquidGlass(.thin, tint: AmberTheme.wash)
+    }
+    #endif
+
     #if os(macOS)
     private func printSong() {
         let printInfo = NSPrintInfo.shared
@@ -404,6 +523,15 @@ struct SongDetailView: View {
         printOperation.run()
     }
     #endif
+}
+
+// MARK: - ScrollOffsetKey
+/// Preference key for tracking scroll offset to drive the reading progress bar.
+private struct ScrollOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
 }
 
 // MARK: - AddSongToSetListPicker

@@ -150,6 +150,7 @@ struct PresentationView: View {
     // MARK: - Presentation Content
 
     private func presentationContent(song: Song) -> some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(spacing: Spacing.xl) {
                 // Song title
@@ -197,6 +198,30 @@ struct PresentationView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.horizontal, Spacing.xxl)
+        }
+        .onChange(of: currentComponentIndex) { _, newIndex in
+            withAnimation(.liquidGlassSpring) {
+                proxy.scrollTo(newIndex, anchor: .center)
+            }
+        }
+        .onChange(of: isAutoScrolling) { _, scrolling in
+            if scrolling { startAutoScroll(proxy: proxy, song: song) }
+        }
+        } // ScrollViewReader
+    }
+
+    /// Starts a timer-based auto-scroll that advances through components.
+    private func startAutoScroll(proxy: ScrollViewProxy, song: Song) {
+        Task {
+            while isAutoScrolling && currentComponentIndex < song.components.count - 1 {
+                try? await Task.sleep(for: .seconds(4))
+                guard isAutoScrolling else { break }
+                currentComponentIndex += 1
+                withAnimation(.liquidGlassSpring) {
+                    proxy.scrollTo(currentComponentIndex, anchor: .center)
+                }
+            }
+            isAutoScrolling = false
         }
     }
 
