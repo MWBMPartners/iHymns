@@ -66,6 +66,9 @@ struct ContentView: View {
             // Offline banner overlay
             offlineBanner
         }
+        .onChange(of: selectedTab) { _, newTab in
+            AnalyticsService.shared.trackScreen("\(newTab)")
+        }
         .onChange(of: deepLinkedSongId) { _, newValue in
             if newValue != nil {
                 showingDeepLinkedSong = true

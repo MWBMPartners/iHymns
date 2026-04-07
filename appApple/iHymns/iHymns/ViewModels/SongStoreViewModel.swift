@@ -326,7 +326,8 @@ class SongStore: ObservableObject {
 
     /// Toggles the favourite status of a song.
     func toggleFavorite(_ songId: String) {
-        if favorites.contains(songId) {
+        let wasFavorite = favorites.contains(songId)
+        if wasFavorite {
             favorites.remove(songId)
         } else {
             favorites.insert(songId)
@@ -334,6 +335,7 @@ class SongStore: ObservableObject {
         HapticManager.lightImpact()
         saveFavorites()
         syncWidgetData()
+        AnalyticsService.shared.track(.favoriteToggle(songId: songId, isFavorite: !wasFavorite))
     }
 
     /// Checks if a song is favourited.
@@ -357,6 +359,7 @@ class SongStore: ObservableObject {
         let setList = SetList(name: name)
         setLists.append(setList)
         saveSetLists()
+        AnalyticsService.shared.track(.setListCreate(name: name))
         return setList
     }
 

@@ -167,6 +167,7 @@ struct SearchView: View {
         .onSubmit(of: .search) {
             debouncedQuery = searchText
             songStore.recordSearch(searchText)
+            AnalyticsService.shared.track(.search(query: searchText, resultCount: searchResults.count))
         }
     }
 

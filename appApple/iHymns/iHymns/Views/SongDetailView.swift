@@ -118,6 +118,7 @@ struct SongDetailView: View {
         .navigationTitle(song.title)
         .onAppear {
             songStore.recordSongView(song)
+            AnalyticsService.shared.track(.songView(song))
             // Load per-song font scale override
             let saved = UserDefaults.standard.double(forKey: perSongFontKey)
             if saved > 0 { perSongFontScale = saved }
