@@ -210,6 +210,22 @@ struct SheetMusicView: View {
 #if canImport(PDFKit) && !os(watchOS) && !os(tvOS)
 import PDFKit
 
+#if os(macOS)
+struct PDFKitView: NSViewRepresentable {
+    let data: Data
+
+    func makeNSView(context: Context) -> PDFView {
+        let pdfView = PDFView()
+        pdfView.autoScales = true
+        pdfView.displayMode = .singlePageContinuous
+        pdfView.displayDirection = .vertical
+        pdfView.document = PDFDocument(data: data)
+        return pdfView
+    }
+
+    func updateNSView(_ nsView: PDFView, context: Context) {}
+}
+#else
 struct PDFKitView: UIViewRepresentable {
     let data: Data
 
@@ -224,6 +240,7 @@ struct PDFKitView: UIViewRepresentable {
 
     func updateUIView(_ uiView: PDFView, context: Context) {}
 }
+#endif
 #endif
 
 // MARK: - TransposeControlView
