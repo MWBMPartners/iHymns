@@ -154,6 +154,18 @@ struct SongDetailView: View {
         // Liquid Glass song header
         songHeader
 
+        // Audio player (if available)
+        if song.hasAudio {
+            AudioPlayerView(song: song)
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+        }
+
+        // Transpose controls
+        TransposeControlView(songId: song.id)
+            .padding(.horizontal, 20)
+            .padding(.top, song.hasAudio ? 8 : 16)
+
         // Lyric components in arrangement order, with scaled font
         VStack(alignment: .leading, spacing: 24) {
             ForEach(song.arrangedComponents, id: \.offset) { _, component in
@@ -462,6 +474,14 @@ struct SongDetailView: View {
                 showingAddToSetList = true
             } label: {
                 Label("Add to Set List", systemImage: "list.bullet.rectangle")
+            }
+        }
+
+        if song.hasSheetMusic {
+            ToolbarItem(placement: .automatic) {
+                NavigationLink(destination: SheetMusicView(song: song)) {
+                    Label("Sheet Music", systemImage: "doc.richtext")
+                }
             }
         }
 
