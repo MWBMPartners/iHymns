@@ -8,7 +8,7 @@ type: project
 
 **Domain**: iHymns.app | **Repo**: https://github.com/MWBMPartners/iHymns
 **Copyright**: MWBM Partners Ltd | **License**: Proprietary
-**Current version**: 0.1.6 (pre-release, Phase 1)
+**Current version**: 0.1.7 (pre-release, Phase 1)
 
 **Why:** Enhance worship by providing searchable hymn lyrics across platforms.
 
@@ -24,7 +24,9 @@ type: project
 - Security: CSP with per-request nonces, SRI hashes on all CDN resources
 - Analytics: GA4, Plausible, Clarity, Matomo, Fathom — GDPR consent required
 - Deployment: GitHub Actions + lftp SFTP (main→live, beta→beta, alpha→dev)
+- lftp `--exclude` uses **regex patterns**, NOT shell globs (critical: `\.xcodeproj$` not `*.xcodeproj`)
 - Working branch: `beta` (merge to `main` for production release)
+- Version bumps: only on `beta` branch (single source of truth); alpha uses build timestamps
 - Song editor (dev tool) in `appWeb/private_html/editor/` (HTTP Basic Auth protected)
 - Colour scheme: clean neutral slate/grey, NOT bright colours
 - WCAG contrast: Automated relative luminance calculation for songbook badges
@@ -38,7 +40,9 @@ type: project
 - `gestures.js` — Touch swipe navigation for song pages
 - `settings.js` — Theme, display prefs, analytics consent management
 - `transitions.js` — Page transition animations with loading bar
-- `favorites.js`, `setlists.js`, `search.js`, `song-of-day.js`, etc.
+- `pwa.js` — PWA install banner with platform detection (iOS Safari/Chrome/Edge/Firefox, macOS Safari, Android, desktop)
+- `song-of-the-day.js` — Deterministic date-seeded selection, 16 calendar themes, title + lyrics keyword matching
+- `favorites.js`, `setlists.js`, `search.js`, etc.
 
 **Key PHP Files:**
 - `index.php` — Main SPA shell, CSP headers, conditional analytics scripts
@@ -46,3 +50,5 @@ type: project
 - `includes/SongData.php` — Song data loading, flexible ID matching, alphabetical sort
 - `includes/config.php` — App configuration including analytics platform IDs
 - `includes/pages/*.php` — Page templates (song, writer, privacy, terms, settings, etc.)
+- `og-image.php` — Dynamic OG image generator (1200×630 PNG, centre-safe layout, contextual song images via ?song=ID)
+- `sitemap.xml.php` — Dynamic XML sitemap (all songs, songbooks, writers, static pages)

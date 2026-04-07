@@ -7,3 +7,4 @@
 - [Clean neutral colours](feedback_colours.md) — Slate/grey neutral scheme, no bright/vivid colours on songbook cards
 - [Web app directory structure](feedback_appweb_dir.md) — appWeb/ with public_html (single source), data_share, private_html
 - [Phase 1 PWA enhancements](feedback_phase1_pwa_enhancements.md) — Analytics, gestures, writer pages, TF-IDF related songs, WCAG contrast, PWA icons
+- [Phase 1 SEO/PWA/Social](feedback_phase1_seo_pwa_social.md) — OG images, PWA install banners, editor arrangement, Song of the Day expansion, CI/CD lftp regex fix, sitemap

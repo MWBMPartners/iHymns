@@ -498,17 +498,15 @@ if (!empty($breadcrumbItems)) {
          aria-label="Install application">
         <div class="container-fluid d-flex align-items-center justify-content-between py-2 px-3">
             <div class="d-flex align-items-center gap-2 flex-grow-1">
-                <i class="fa-solid fa-mobile-screen-button fa-lg" aria-hidden="true"></i>
-                <span class="pwa-install-text">
-                    Get the full <strong><?= htmlspecialchars($appName) ?></strong> experience!
-                </span>
+                <i class="pwa-banner-icon" aria-hidden="true"></i>
+                <span class="pwa-install-text"></span>
             </div>
             <button type="button"
-                    class="btn btn-sm btn-install-app me-2"
+                    class="btn btn-sm btn-install-app me-2 d-none"
                     id="pwa-install-btn"
                     aria-label="Install <?= htmlspecialchars($appName) ?> app">
-                <i class="fa-solid fa-download me-1" aria-hidden="true"></i>
-                <span>Install</span>
+                <i class="me-1" aria-hidden="true"></i>
+                <span></span>
             </button>
             <button type="button"
                     class="btn-close btn-close-white"
