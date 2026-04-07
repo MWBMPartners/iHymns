@@ -116,6 +116,37 @@ struct SettingsView: View {
                 Label("Data", systemImage: "arrow.triangle.2.circlepath")
             }
 
+            // MARK: Privacy & Analytics
+            Section {
+                let analytics = AnalyticsService.shared
+
+                HStack {
+                    Text("Analytics Consent")
+                    Spacer()
+                    Text(analytics.consent.rawValue.replacingOccurrences(of: "_", with: " ").capitalized)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                if analytics.consent == .notAsked || analytics.consent == .denied {
+                    Button("Enable Analytics") {
+                        Task {
+                            await analytics.requestTrackingPermission()
+                            analytics.grantConsent()
+                        }
+                    }
+                } else {
+                    Button("Disable Analytics") {
+                        analytics.denyConsent()
+                    }
+                    .foregroundStyle(.red)
+                }
+            } header: {
+                Label("Privacy & Analytics", systemImage: "hand.raised")
+            } footer: {
+                Text("Analytics help us improve iHymns. We use Plausible (privacy-focused, cookieless) and Supabase. No personal data is collected. You can change this at any time.")
+            }
+
             // MARK: History
             Section {
                 Button("Clear Search History") {
