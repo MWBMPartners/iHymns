@@ -114,6 +114,31 @@ struct HelpView: View {
                 }
             }
 
+            // Keyboard Shortcuts
+            #if !os(watchOS) && !os(tvOS)
+            Section {
+                DisclosureGroup {
+                    VStack(alignment: .leading, spacing: Spacing.sm) {
+                        ForEach(AppKeyboardShortcuts.all) { shortcut in
+                            HStack {
+                                Text(shortcut.key)
+                                    .font(.system(.body, design: .monospaced).bold())
+                                    .foregroundStyle(AmberTheme.accent)
+                                    .frame(width: 80, alignment: .leading)
+                                Text(shortcut.description)
+                                    .font(.subheadline)
+                                Spacer()
+                            }
+                        }
+                    }
+                    .padding(.vertical, 8)
+                } label: {
+                    Label("Keyboard Shortcuts", systemImage: "keyboard")
+                        .font(.headline)
+                }
+            }
+            #endif
+
             // Themes & Display
             Section {
                 DisclosureGroup(isExpanded: $themesExpanded) {
