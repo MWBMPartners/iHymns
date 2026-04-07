@@ -6,6 +6,8 @@
  * PURPOSE:
  * Manages the PWA install banner and beforeinstallprompt event.
  * Shows a dismissible banner at the top offering to install the app.
+ * On Safari (iOS/macOS), shows platform-specific install instructions
+ * since Safari does not support the beforeinstallprompt API.
  * On platforms with native apps, redirects to the app store instead.
  * Banner dismissal is remembered in localStorage.
  */
@@ -27,6 +29,12 @@ export class PWA {
      * Initialise PWA module — listen for install prompt and set up banner.
      */
     init() {
+        /* If running as installed PWA, don't show banner */
+        if (window.matchMedia('(display-mode: standalone)').matches ||
+            window.navigator.standalone === true) {
+            return;
+        }
+
         /* Capture the beforeinstallprompt event (Chrome, Edge, Samsung) */
         window.addEventListener('beforeinstallprompt', (e) => {
             e.preventDefault();
@@ -41,14 +49,17 @@ export class PWA {
             this.app.showToast('App installed successfully!', 'success');
         });
 
-        /* If running as installed PWA, don't show banner */
-        if (window.matchMedia('(display-mode: standalone)').matches ||
-            window.navigator.standalone === true) {
+        /* Check for native app redirect (app store) */
+        const nativeUrl = this.getNativeAppUrl();
+        if (nativeUrl) {
+            this.checkNativeAppRedirect();
             return;
         }
 
-        /* Show banner if not dismissed and on a platform with native app */
-        this.checkNativeAppRedirect();
+        /* Safari-specific: show manual install instructions */
+        if (this.isSafari()) {
+            this.showSafariBanner();
+        }
 
         /* Banner dismiss button */
         const dismissBtn = document.getElementById('pwa-install-dismiss');
@@ -64,6 +75,77 @@ export class PWA {
         if (installBtn) {
             installBtn.addEventListener('click', () => this.handleInstallClick());
         }
+    }
+
+    /**
+     * Detect Safari browser (iOS and macOS).
+     * Safari does not support beforeinstallprompt, so we need
+     * platform-specific install instructions.
+     *
+     * @returns {boolean} True if running in Safari
+     */
+    isSafari() {
+        const ua = navigator.userAgent || '';
+        /* Safari: has "Safari" in UA but NOT "Chrome", "CriOS", "FxiOS", "EdgiOS" */
+        const isSafariUA = /Safari/.test(ua) &&
+            !/Chrome|CriOS|FxiOS|EdgiOS|OPiOS/.test(ua);
+        return isSafariUA;
+    }
+
+    /**
+     * Detect iOS (iPhone/iPad/iPod).
+     *
+     * @returns {boolean} True if running on iOS
+     */
+    isIOS() {
+        const ua = navigator.userAgent || '';
+        return /iPad|iPhone|iPod/.test(ua) ||
+            (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    }
+
+    /**
+     * Show Safari-specific install banner with platform instructions.
+     */
+    showSafariBanner() {
+        if (localStorage.getItem(this.dismissKey)) return;
+
+        const banner = document.getElementById('pwa-install-banner');
+        if (!banner) return;
+
+        /* Update banner content for Safari */
+        const textEl = banner.querySelector('.pwa-install-text');
+        const installBtn = document.getElementById('pwa-install-btn');
+
+        if (this.isIOS()) {
+            /* iOS Safari: Share → Add to Home Screen */
+            if (textEl) {
+                textEl.innerHTML = 'Tap <strong><i class="fa-solid fa-arrow-up-from-bracket"></i> Share</strong>, then <strong>Add to Home Screen</strong>';
+            }
+            if (installBtn) {
+                installBtn.style.display = 'none';
+            }
+        } else {
+            /* macOS Safari: File → Add to Dock */
+            if (textEl) {
+                textEl.innerHTML = 'Install: <strong>File → Add to Dock</strong> for the best experience';
+            }
+            if (installBtn) {
+                installBtn.style.display = 'none';
+            }
+        }
+
+        /* Update the icon to match the platform */
+        const iconEl = banner.querySelector('.pwa-install-banner i.fa-mobile-screen-button');
+        if (iconEl) {
+            if (this.isIOS()) {
+                iconEl.className = 'fa-solid fa-arrow-up-from-bracket fa-lg';
+            } else {
+                iconEl.className = 'fa-solid fa-display fa-lg';
+            }
+        }
+
+        banner.classList.remove('d-none');
+        document.body.classList.add('banner-visible');
     }
 
     /**
@@ -151,7 +233,8 @@ export class PWA {
         const nativeApps = this.app.config.nativeApps || {};
         const ua = navigator.userAgent || '';
 
-        if (/iPad|iPhone|iPod/.test(ua) && nativeApps.ios) {
+        if ((/iPad|iPhone|iPod/.test(ua) ||
+            (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) && nativeApps.ios) {
             return nativeApps.ios;
         }
         if (/Android/.test(ua) && nativeApps.android) {
