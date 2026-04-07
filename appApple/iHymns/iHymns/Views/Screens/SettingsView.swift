@@ -63,6 +63,7 @@ struct SettingsView: View {
                         Text("Font Size")
                     }
                     .tint(AmberTheme.accent)
+                    .accessibilityValue("\(String(format: "%.1f", preferences.lyricsFontScale)) times")
                 }
 
                 Picker("Line Spacing", selection: $preferences.lineSpacing) {

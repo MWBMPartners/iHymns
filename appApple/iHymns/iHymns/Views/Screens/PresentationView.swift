@@ -240,6 +240,7 @@ struct PresentationView: View {
                         .frame(width: 44, height: 44)
                 }
                 .liquidGlass(.regular, tint: .white)
+                .accessibilityLabel("Previous verse")
 
                 // Font size controls
                 Button(action: { fontSize = max(20, fontSize - 4) }) {
@@ -248,6 +249,7 @@ struct PresentationView: View {
                         .frame(width: 44, height: 44)
                 }
                 .liquidGlass(.thin)
+                .accessibilityLabel("Decrease font size")
 
                 Button(action: { fontSize = min(80, fontSize + 4) }) {
                     Image(systemName: "textformat.size.larger")
@@ -255,6 +257,7 @@ struct PresentationView: View {
                         .frame(width: 44, height: 44)
                 }
                 .liquidGlass(.thin)
+                .accessibilityLabel("Increase font size")
 
                 // Auto-scroll toggle
                 Button(action: { isAutoScrolling.toggle() }) {
@@ -263,6 +266,7 @@ struct PresentationView: View {
                         .frame(width: 44, height: 44)
                 }
                 .liquidGlass(.regular, tint: isAutoScrolling ? AmberTheme.accent : nil)
+                .accessibilityLabel(isAutoScrolling ? "Pause auto-scroll" : "Start auto-scroll")
 
                 // Close
                 Button(action: { selectedSongId = nil }) {
@@ -271,6 +275,7 @@ struct PresentationView: View {
                         .frame(width: 44, height: 44)
                 }
                 .liquidGlass(.thin)
+                .accessibilityLabel("Close presentation")
 
                 // Next
                 Button(action: nextComponent) {
@@ -280,6 +285,7 @@ struct PresentationView: View {
                         .frame(width: 44, height: 44)
                 }
                 .liquidGlass(.regular, tint: .white)
+                .accessibilityLabel("Next verse")
             }
             .padding()
             .liquidGlass(.thick)

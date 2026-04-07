@@ -60,6 +60,7 @@ struct AudioPlayerView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(player.state == .idle)
+                    .accessibilityLabel("Stop audio")
 
                     // Play/Pause
                     Button {
@@ -91,6 +92,7 @@ struct AudioPlayerView: View {
                         .frame(width: 44, height: 44)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(player.state == .playing ? "Pause audio" : "Play audio")
                 }
 
                 Spacer()
@@ -283,6 +285,7 @@ struct TransposeControlView: View {
                         .background(.regularMaterial, in: Circle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Transpose down one semitone")
 
                 Text(transposeOffset == 0 ? "Original" : "\(transposeOffset > 0 ? "+" : "")\(transposeOffset)")
                     .font(.subheadline.monospacedDigit())
@@ -298,6 +301,7 @@ struct TransposeControlView: View {
                         .background(.regularMaterial, in: Circle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Transpose up one semitone")
 
                 if transposeOffset != 0 {
                     Button {
