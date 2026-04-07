@@ -96,6 +96,9 @@ struct LiquidGlassModifier: ViewModifier {
     /// Whether the user has requested reduced transparency.
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
+    /// Whether the user has requested reduced motion.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     func body(content: Content) -> some View {
         if reduceTransparency {
             // Fallback: solid background when transparency is reduced

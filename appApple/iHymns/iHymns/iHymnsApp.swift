@@ -57,6 +57,8 @@ struct iHymnsApp: App {
             ContentView(deepLinkedSongId: $deepLinkedSongId, quickAction: $quickAction)
                 .environmentObject(songStore)
                 .environment(networkMonitor)
+                .preferredColorScheme(songStore.preferences.theme.colorScheme)
+                .environment(\.dynamicTypeSize, .large)
                 .onOpenURL { url in
                     handleDeepLink(url)
                 }

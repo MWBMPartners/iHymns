@@ -47,8 +47,11 @@ struct SettingsView: View {
                 }
 
                 Toggle("Reduce Motion", isOn: $preferences.reduceMotion)
+                Toggle("Reduce Transparency", isOn: $preferences.reduceTransparency)
             } header: {
                 Label("Appearance", systemImage: "paintbrush")
+            } footer: {
+                Text("Theme applies immediately. Reduce Motion and Reduce Transparency follow your system Accessibility settings by default.")
             }
 
             // MARK: Lyrics Display

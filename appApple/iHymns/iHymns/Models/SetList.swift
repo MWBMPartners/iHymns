@@ -236,6 +236,9 @@ struct UserPreferences: Codable {
     /// Whether to reduce motion/animations.
     var reduceMotion: Bool = false
 
+    /// Whether to reduce transparency/blur effects.
+    var reduceTransparency: Bool = false
+
     /// Auto-scroll speed in pixels per second (0 = disabled).
     var autoScrollSpeed: Double = 0
 
