@@ -29,6 +29,7 @@ struct SongDetailView: View {
     @State private var scrollProgress: CGFloat = 0
     @State private var contentHeight: CGFloat = 1
     @State private var viewportHeight: CGFloat = 1
+    @State private var scrollDepthMilestones: Set<Int> = []
     @State private var swipeTargetSong: Song?
     @State private var showSwipeTarget = false
     @State private var perSongFontScale: Double?
@@ -100,6 +101,14 @@ struct SongDetailView: View {
             .onPreferenceChange(ScrollOffsetKey.self) { offset in
                 let scrollable = max(contentHeight - viewportHeight, 1)
                 scrollProgress = min(1.0, max(0, offset / scrollable))
+
+                // Fire scroll depth analytics at 25% thresholds
+                for milestone in [25, 50, 75, 100] {
+                    if scrollProgress >= Double(milestone) / 100.0 && !scrollDepthMilestones.contains(milestone) {
+                        scrollDepthMilestones.insert(milestone)
+                        AnalyticsService.shared.track(.scrollDepth(songId: song.id, percent: milestone))
+                    }
+                }
             }
 
             // Reading progress bar
