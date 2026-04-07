@@ -1,5 +1,33 @@
 # iHymns Apple — Changelog
 
+## [1.3.0] — 2026-04-08 — Apple-Native Features + Integration Wiring
+
+### Apple-Native Platform Features
+- feat: #204 CloudKit sync — push/pull favourites, set lists, tags across devices
+- feat: #205 App Intents — 5 Siri Shortcuts with natural language phrases
+- feat: #206 SharePlay — group worship sessions via GroupActivities
+- feat: #207 Interactive widgets — ToggleFavouriteFromWidgetIntent (iOS 17+)
+- feat: #208 Dynamic Island — Live Activity lifecycle wired into PresentationView
+- feat: #209 TipKit — 7 contextual feature discovery tips
+- feat: #210 AirPlay — lyrics projection manager with external display view
+- feat: #211 SwiftData — 4 model definitions with migration from UserDefaults
+- feat: #212 Focus Filters — songbook/tag/minimal mode filtering
+- feat: #213 visionOS — SpatialLyricsView with glassBackgroundEffect
+- feat: #214 App Clips — URL parser and lightweight entry view
+
+### Integration & Wiring
+- feat: #189 ScenePhase lifecycle — flush analytics on background, restart on active
+- feat: #204 CloudKit — init on launch, push on background, pull on active
+- feat: #208 Live Activities — start/update/end in PresentationView
+- feat: #205 App Intents store params in UserDefaults for app navigation
+- feat: #209 TipKit configured on launch (iOS 17+)
+- fix: #184 SoundFont — DEBUG logging when no bundled font found
+
+### Infrastructure
+- feat: #217 Universal Links — all ihymns.app URL patterns handled
+- feat: #218 Entitlements file + Info.plist with all required keys
+- feat: #220 PWA banner redirects Apple users to App Store when configured
+
 ## [1.2.0] — 2026-04-07 — Phase 1 Feature Complete (Issues #179–#190, #184)
 
 ### #179 Core Song Browsing
