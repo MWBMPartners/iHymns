@@ -94,11 +94,12 @@ struct iHymnsApp: App {
 
     /// Handles incoming URLs for deep linking and Handoff.
     /// Supports both custom scheme (ihymns://) and universal links.
+    /// Normalises short song IDs (e.g., "MP-1" → "MP-0001").
     private func handleDeepLink(_ url: URL) {
         // Handle ihymns://song/{songId}
         if url.scheme == "ihymns" {
             if url.host == "song", let songId = url.pathComponents.dropFirst().first {
-                deepLinkedSongId = songId
+                deepLinkedSongId = normaliseSongId(songId)
             }
         }
 
@@ -106,9 +107,20 @@ struct iHymnsApp: App {
         if url.host == "ihymns.app" {
             let components = url.pathComponents
             if components.count >= 3 && components[1] == "song" {
-                deepLinkedSongId = components[2]
+                deepLinkedSongId = normaliseSongId(components[2])
+            }
+            // Handle shared set lists: /setlist/shared/{id}
+            if components.count >= 4 && components[1] == "setlist" && components[2] == "shared" {
+                // TODO: Open shared set list
             }
         }
+    }
+
+    /// Normalises a song ID to the canonical format (e.g., "MP-1" → "MP-0001").
+    private func normaliseSongId(_ rawId: String) -> String {
+        let parts = rawId.split(separator: "-")
+        guard parts.count == 2, let number = Int(parts[1]) else { return rawId }
+        return "\(parts[0])-\(String(format: "%04d", number))"
     }
 
     // MARK: - Platform Setup
