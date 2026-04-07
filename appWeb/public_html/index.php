@@ -132,7 +132,7 @@ $canonicalUrl = getCanonicalUrl();
 $ogTitle       = $appName . ' — Christian Hymns & Worship Songs';
 $ogDescription = $appDesc;
 $ogType        = 'website';
-$ogImage       = $appUrl . '/assets/icon-512.png';
+$ogImage       = getCanonicalUrl('/og-image.php');
 $ogImageAlt    = $appName . ' logo';
 
 /* JSON-LD structured data — built during OG detection, rendered in <head> */
@@ -164,6 +164,8 @@ try {
                 $ogDescription .= '. "' . implode(' / ', $firstLines) . '..."';
             }
             $ogType = 'article';
+            $ogImage = getCanonicalUrl('/og-image.php?song=' . urlencode($matches[1]));
+            $ogImageAlt = 'Preview of "' . $ogSong['title'] . '" from ' . $ogSong['songbookName'];
 
             /* JSON-LD: MusicComposition */
             $musicComposition = [
@@ -304,12 +306,12 @@ if (!empty($breadcrumbItems)) {
     <meta property="og:url" content="<?= htmlspecialchars($canonicalUrl) ?>">
     <meta property="og:image" content="<?= htmlspecialchars($ogImage) ?>">
     <meta property="og:image:alt" content="<?= htmlspecialchars($ogImageAlt) ?>">
-    <meta property="og:image:width" content="512">
-    <meta property="og:image:height" content="512">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
     <meta property="og:locale" content="<?= htmlspecialchars($locale) ?>">
 
     <!-- Twitter Card (X / Twitter) -->
-    <meta name="twitter:card" content="summary">
+    <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="<?= htmlspecialchars($ogTitle) ?>">
     <meta name="twitter:description" content="<?= htmlspecialchars($ogDescription) ?>">
     <meta name="twitter:image" content="<?= htmlspecialchars($ogImage) ?>">
@@ -496,17 +498,15 @@ if (!empty($breadcrumbItems)) {
          aria-label="Install application">
         <div class="container-fluid d-flex align-items-center justify-content-between py-2 px-3">
             <div class="d-flex align-items-center gap-2 flex-grow-1">
-                <i class="fa-solid fa-mobile-screen-button fa-lg" aria-hidden="true"></i>
-                <span class="pwa-install-text">
-                    Get the full <strong><?= htmlspecialchars($appName) ?></strong> experience!
-                </span>
+                <i class="pwa-banner-icon" aria-hidden="true"></i>
+                <span class="pwa-install-text"></span>
             </div>
             <button type="button"
-                    class="btn btn-sm btn-install-app me-2"
+                    class="btn btn-sm btn-install-app me-2 d-none"
                     id="pwa-install-btn"
                     aria-label="Install <?= htmlspecialchars($appName) ?> app">
-                <i class="fa-solid fa-download me-1" aria-hidden="true"></i>
-                <span>Install</span>
+                <i class="me-1" aria-hidden="true"></i>
+                <span></span>
             </button>
             <button type="button"
                     class="btn-close btn-close-white"

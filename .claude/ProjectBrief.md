@@ -12,7 +12,7 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 - **Copyright**: © 2026– MWBM Partners Ltd
 - **License**: Proprietary (third-party components retain their own licenses)
 - **GitHub Repo**: <https://github.com/MWBMPartners/iHymns>
-- **Current Version**: 0.1.6 (pre-release, Phase 1)
+- **Current Version**: 0.1.7 (pre-release, Phase 1)
 
 ---
 
@@ -71,6 +71,7 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 ### Automated Deployment
 
 - GitHub Actions with `lftp` for SFTP mirroring (modelled on phpWhoIs)
+- lftp `--exclude` uses **regex patterns**, NOT shell globs (e.g. `\.xcodeproj$` not `*.xcodeproj`)
 - All branches deploy from `appWeb/public_html/`; branch determines remote SFTP path
 - `appWeb/data_share/` deployed alongside (without `--delete` to preserve runtime data)
 - `.env-channel` file injected by CI for server-side environment detection
@@ -83,7 +84,8 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 - `v0.x.x` = Phase 1 pre-release (current)
 - `v1.x.x` = Phase 1 stable
 - `v2.x.x` = Phase 2 (iLyrics dB integration)
-- Auto-bumped via conventional commits on push to `beta`
+- Auto-bumped via conventional commits on push to `beta` (single source of truth)
+- Alpha builds display commit date timestamp (yyyymmddhhmmss) in footer
 
 ---
 
@@ -139,6 +141,8 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 | `appWeb/public_html/js/utils/*.js` | JS utilities (html.js, text.js) |
 | `appWeb/public_html/js/constants.js` | Centralised localStorage key constants (#139) |
 | `appWeb/public_html/api.php` | Server-side API (songs, setlists, search) |
+| `appWeb/public_html/og-image.php` | Dynamic OG image generator (1200×630, contextual song images) |
+| `appWeb/public_html/sitemap.xml.php` | Dynamic XML sitemap from song database |
 | `appWeb/public_html/includes/config.php` | App configuration (analytics, features) |
 | `appWeb/private_html/editor/` | Song editor (dev tool) |
 | `appApple/iHymns/iHymns/Services/AppInfo.swift` | Apple app info |
@@ -160,4 +164,4 @@ See `DEV_NOTES.md` for full setup guide including Apple, Android, and Fire OS.
 
 ---
 
-Last updated: 2026-04-06
+Last updated: 2026-04-07
