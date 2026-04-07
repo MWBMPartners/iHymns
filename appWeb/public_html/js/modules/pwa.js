@@ -9,11 +9,15 @@
  *
  * Platform handling:
  *   - Chrome/Edge/Samsung (Android & desktop): uses beforeinstallprompt API
- *   - Safari iOS:  "Tap Share → Add to Home Screen" instructions
+ *   - Safari iOS:  "Tap Share below → Add to Home Screen" (iOS 15+ bottom bar)
  *   - Safari macOS: "File → Add to Dock" instructions
  *   - iOS non-Safari (Chrome, Edge, Firefox, Opera): guides user to open
  *     in Safari, since only Safari can install PWAs on iOS
  *   - Native app stores: redirects to app store if configured
+ *
+ * The banner HTML starts empty (no default content) — all text, icons, and
+ * buttons are populated by JS based on platform detection. This prevents
+ * the old generic banner content from flashing before JS loads. (#177)
  *
  * Banner dismissal is remembered in localStorage.
  */
@@ -64,7 +68,7 @@ export class PWA {
             });
         }
 
-        /* Install button */
+        /* Install button — default handler for Chrome/Edge beforeinstallprompt */
         const installBtn = document.getElementById('pwa-install-btn');
         if (installBtn) {
             installBtn.addEventListener('click', () => this.handleInstallClick());
@@ -81,42 +85,17 @@ export class PWA {
         const platform = this.detectPlatform();
 
         if (platform === 'ios-safari') {
+            /* iOS 15+ moved the Share button to the bottom toolbar (#177) */
             this.showPlatformBanner({
                 icon: 'fa-solid fa-arrow-up-from-bracket',
-                text: 'Tap <strong><i class="fa-solid fa-arrow-up-from-bracket"></i> Share</strong>, then <strong>Add to Home Screen</strong>',
+                text: 'Tap <strong><i class="fa-solid fa-arrow-up-from-bracket"></i> Share</strong> below, then <strong>Add to Home Screen</strong>',
                 showButton: false,
             });
-        } else if (platform === 'ios-chrome') {
+        } else if (platform.startsWith('ios-')) {
+            /* iOS non-Safari: Chrome, Edge, Firefox, Opera — guide to Safari */
             this.showPlatformBanner({
                 icon: 'fa-brands fa-safari',
-                text: 'To install, open in <strong>Safari</strong> → <strong><i class="fa-solid fa-arrow-up-from-bracket"></i> Share</strong> → <strong>Add to Home Screen</strong>',
-                showButton: true,
-                buttonIcon: 'fa-solid fa-copy',
-                buttonText: 'Copy Link',
-                buttonAction: () => this.copyCurrentUrl(),
-            });
-        } else if (platform === 'ios-edge') {
-            this.showPlatformBanner({
-                icon: 'fa-brands fa-safari',
-                text: 'To install, open in <strong>Safari</strong> → <strong><i class="fa-solid fa-arrow-up-from-bracket"></i> Share</strong> → <strong>Add to Home Screen</strong>',
-                showButton: true,
-                buttonIcon: 'fa-solid fa-copy',
-                buttonText: 'Copy Link',
-                buttonAction: () => this.copyCurrentUrl(),
-            });
-        } else if (platform === 'ios-firefox') {
-            this.showPlatformBanner({
-                icon: 'fa-brands fa-safari',
-                text: 'To install, open in <strong>Safari</strong> → <strong><i class="fa-solid fa-arrow-up-from-bracket"></i> Share</strong> → <strong>Add to Home Screen</strong>',
-                showButton: true,
-                buttonIcon: 'fa-solid fa-copy',
-                buttonText: 'Copy Link',
-                buttonAction: () => this.copyCurrentUrl(),
-            });
-        } else if (platform === 'ios-other') {
-            this.showPlatformBanner({
-                icon: 'fa-brands fa-safari',
-                text: 'To install, open in <strong>Safari</strong> → <strong><i class="fa-solid fa-arrow-up-from-bracket"></i> Share</strong> → <strong>Add to Home Screen</strong>',
+                text: 'To install, open in <strong>Safari</strong> then tap <strong>Share</strong> → <strong>Add to Home Screen</strong>',
                 showButton: true,
                 buttonIcon: 'fa-solid fa-copy',
                 buttonText: 'Copy Link',
@@ -174,6 +153,7 @@ export class PWA {
 
     /**
      * Show a platform-specific install banner.
+     * Populates the empty banner HTML with platform-appropriate content.
      *
      * @param {Object} opts Banner options
      * @param {string} opts.icon FontAwesome class for the leading icon
@@ -189,37 +169,36 @@ export class PWA {
         const banner = document.getElementById('pwa-install-banner');
         if (!banner) return;
 
-        /* Update icon */
-        const iconEl = banner.querySelector('.pwa-install-banner i.fa-mobile-screen-button, .pwa-install-banner i.fa-arrow-up-from-bracket, .pwa-install-banner i.fa-display, .pwa-install-banner i.fa-brands');
+        /* Populate icon */
+        const iconEl = banner.querySelector('.pwa-banner-icon');
         if (iconEl) {
-            iconEl.className = opts.icon + ' fa-lg';
+            iconEl.className = 'pwa-banner-icon ' + opts.icon + ' fa-lg';
         }
 
-        /* Update text */
+        /* Populate text */
         const textEl = banner.querySelector('.pwa-install-text');
         if (textEl) {
             textEl.innerHTML = opts.text;
         }
 
-        /* Update button */
+        /* Populate button */
         const installBtn = document.getElementById('pwa-install-btn');
         if (installBtn) {
             if (opts.showButton && opts.buttonText) {
-                installBtn.style.display = '';
+                installBtn.classList.remove('d-none');
                 const icon = installBtn.querySelector('i');
                 const span = installBtn.querySelector('span');
                 if (icon) icon.className = (opts.buttonIcon || 'fa-solid fa-download') + ' me-1';
                 if (span) span.textContent = opts.buttonText;
 
                 if (opts.buttonAction) {
-                    /* Replace click handler */
+                    /* Replace click handler by cloning the button */
                     const newBtn = installBtn.cloneNode(true);
                     installBtn.parentNode.replaceChild(newBtn, installBtn);
                     newBtn.addEventListener('click', opts.buttonAction);
                 }
-            } else {
-                installBtn.style.display = 'none';
             }
+            /* If showButton is false, button stays hidden (d-none from HTML) */
         }
 
         banner.classList.remove('d-none');
@@ -227,16 +206,37 @@ export class PWA {
     }
 
     /**
-     * Show the default PWA install banner if not previously dismissed.
+     * Show the default PWA install banner (Chrome/Edge/Samsung beforeinstallprompt).
+     * Populates the empty banner HTML with default install content.
      */
     showInstallBanner() {
         if (localStorage.getItem(this.dismissKey)) return;
 
         const banner = document.getElementById('pwa-install-banner');
-        if (banner) {
-            banner.classList.remove('d-none');
-            document.body.classList.add('banner-visible');
+        if (!banner) return;
+
+        /* Populate default content for Chrome/Edge/Samsung */
+        const iconEl = banner.querySelector('.pwa-banner-icon');
+        if (iconEl) {
+            iconEl.className = 'pwa-banner-icon fa-solid fa-mobile-screen-button fa-lg';
         }
+
+        const textEl = banner.querySelector('.pwa-install-text');
+        if (textEl) {
+            textEl.innerHTML = 'Get the full <strong>iHymns</strong> experience!';
+        }
+
+        const installBtn = document.getElementById('pwa-install-btn');
+        if (installBtn) {
+            installBtn.classList.remove('d-none');
+            const icon = installBtn.querySelector('i');
+            const span = installBtn.querySelector('span');
+            if (icon) icon.className = 'fa-solid fa-download me-1';
+            if (span) span.textContent = 'Install';
+        }
+
+        banner.classList.remove('d-none');
+        document.body.classList.add('banner-visible');
     }
 
     /**
@@ -310,23 +310,19 @@ export class PWA {
 
     /**
      * Check if the current platform has a native app available.
-     * If so, update the banner button to redirect to the app store.
+     * If so, populate the banner and redirect to the app store.
      */
     checkNativeAppRedirect() {
         const nativeUrl = this.getNativeAppUrl();
         if (!nativeUrl) return;
 
-        const installBtn = document.getElementById('pwa-install-btn');
-        if (installBtn) {
-            const icon = installBtn.querySelector('i');
-            const span = installBtn.querySelector('span');
-            if (icon) icon.className = 'fa-solid fa-arrow-up-right-from-square me-1';
-            if (span) span.textContent = 'Open App';
-        }
-
-        if (!localStorage.getItem(this.dismissKey)) {
-            this.showInstallBanner();
-        }
+        this.showPlatformBanner({
+            icon: 'fa-solid fa-mobile-screen-button',
+            text: 'Get the full <strong>iHymns</strong> experience!',
+            showButton: true,
+            buttonIcon: 'fa-solid fa-arrow-up-right-from-square',
+            buttonText: 'Open App',
+        });
     }
 
     /**
