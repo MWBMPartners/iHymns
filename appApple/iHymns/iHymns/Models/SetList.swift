@@ -80,6 +80,79 @@ struct SetList: Codable, Identifiable, Hashable {
     }
 }
 
+// MARK: - FavouriteTag
+
+/// A tag for categorising favourite songs.
+struct FavouriteTag: Codable, Identifiable, Hashable {
+
+    let id: UUID
+    var name: String
+    var isCustom: Bool
+
+    init(id: UUID = UUID(), name: String, isCustom: Bool = false) {
+        self.id = id
+        self.name = name
+        self.isCustom = isCustom
+    }
+
+    /// The 14 pre-defined tags matching the PWA.
+    static let predefined: [FavouriteTag] = [
+        FavouriteTag(name: "Praise"),
+        FavouriteTag(name: "Worship"),
+        FavouriteTag(name: "Communion"),
+        FavouriteTag(name: "Christmas"),
+        FavouriteTag(name: "Easter"),
+        FavouriteTag(name: "Weddings"),
+        FavouriteTag(name: "Funerals"),
+        FavouriteTag(name: "Baptism"),
+        FavouriteTag(name: "Opening"),
+        FavouriteTag(name: "Closing"),
+        FavouriteTag(name: "Fast"),
+        FavouriteTag(name: "Slow"),
+        FavouriteTag(name: "Choir"),
+        FavouriteTag(name: "Children"),
+    ]
+}
+
+/// Maps song IDs to their assigned tag names.
+struct FavouriteTagAssignment: Codable {
+    var songTags: [String: [String]]  // songId -> [tagName]
+
+    init() { songTags = [:] }
+
+    mutating func addTag(_ tag: String, to songId: String) {
+        var tags = songTags[songId] ?? []
+        if !tags.contains(tag) { tags.append(tag) }
+        songTags[songId] = tags
+    }
+
+    mutating func removeTag(_ tag: String, from songId: String) {
+        songTags[songId]?.removeAll { $0 == tag }
+        if songTags[songId]?.isEmpty == true { songTags.removeValue(forKey: songId) }
+    }
+
+    func tags(for songId: String) -> [String] {
+        songTags[songId] ?? []
+    }
+
+    func songIds(for tag: String) -> [String] {
+        songTags.filter { $0.value.contains(tag) }.map(\.key)
+    }
+}
+
+/// JSON-serializable backup of all user data for import/export.
+struct UserDataBackup: Codable {
+    let version: String
+    let exportDate: Date
+    let favorites: [String]
+    let setLists: [SetList]
+    let tags: FavouriteTagAssignment
+    let customTags: [FavouriteTag]
+    let preferences: UserPreferences
+
+    static let currentVersion = "1.0"
+}
+
 // MARK: - SearchHistory
 
 /// A single search history entry, stored in the recents list.

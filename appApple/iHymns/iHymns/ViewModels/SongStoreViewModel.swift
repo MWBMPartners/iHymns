@@ -49,6 +49,14 @@ class SongStore: ObservableObject {
     /// Recent search queries (most recent first, max 10).
     @Published var searchHistory: [SearchHistoryEntry]
 
+    // MARK: - Published: Tags
+
+    /// Song-to-tag assignments for favourites categorisation.
+    @Published var tagAssignments: FavouriteTagAssignment
+
+    /// Custom tags created by the user (in addition to the 14 predefined).
+    @Published var customTags: [FavouriteTag]
+
     // MARK: - Published: Preferences
 
     /// User display and behaviour preferences.
@@ -71,6 +79,8 @@ class SongStore: ObservableObject {
     private static let preferencesKey = "ihymns_preferences"
     private static let lastSyncKey = "ihymns_last_sync"
     private static let ownerIdKey = "ihymns_owner_id"
+    private static let tagAssignmentsKey = "ihymns_tag_assignments"
+    private static let customTagsKey = "ihymns_custom_tags"
 
     /// App Group identifier for widget data sharing.
     private static let appGroupId = "group.com.mwbm.ihymns"
@@ -135,6 +145,22 @@ class SongStore: ObservableObject {
             self.searchHistory = decoded
         } else {
             self.searchHistory = []
+        }
+
+        // Load tag assignments
+        if let tagData = UserDefaults.standard.data(forKey: SongStore.tagAssignmentsKey),
+           let decoded = try? JSONDecoder().decode(FavouriteTagAssignment.self, from: tagData) {
+            self.tagAssignments = decoded
+        } else {
+            self.tagAssignments = FavouriteTagAssignment()
+        }
+
+        // Load custom tags
+        if let customTagData = UserDefaults.standard.data(forKey: SongStore.customTagsKey),
+           let decoded = try? JSONDecoder().decode([FavouriteTag].self, from: customTagData) {
+            self.customTags = decoded
+        } else {
+            self.customTags = []
         }
 
         // Load preferences
@@ -384,6 +410,156 @@ class SongStore: ObservableObject {
         }
     }
 
+    /// Renames a set list.
+    func renameSetList(_ setListId: UUID, to newName: String) {
+        guard let index = setLists.firstIndex(where: { $0.id == setListId }) else { return }
+        setLists[index].name = newName
+        setLists[index].updatedAt = Date()
+        saveSetLists()
+    }
+
+    /// Duplicates a set list with a new name.
+    @discardableResult
+    func duplicateSetList(_ setListId: UUID) -> SetList? {
+        guard let original = setLists.first(where: { $0.id == setListId }) else { return nil }
+        let copy = SetList(name: "\(original.name) (Copy)", songIds: original.songIds)
+        setLists.append(copy)
+        saveSetLists()
+        return copy
+    }
+
+    // MARK: - Tag Management
+
+    /// All available tags (predefined + custom).
+    var allTags: [FavouriteTag] {
+        FavouriteTag.predefined + customTags
+    }
+
+    /// Adds a tag to a favourite song.
+    func addTag(_ tagName: String, to songId: String) {
+        tagAssignments.addTag(tagName, to: songId)
+        saveTagAssignments()
+    }
+
+    /// Removes a tag from a song.
+    func removeTag(_ tagName: String, from songId: String) {
+        tagAssignments.removeTag(tagName, from: songId)
+        saveTagAssignments()
+    }
+
+    /// Returns tags assigned to a song.
+    func tagsForSong(_ songId: String) -> [String] {
+        tagAssignments.tags(for: songId)
+    }
+
+    /// Returns favourite songs filtered by tag.
+    func favoriteSongs(withTag tag: String) -> [Song] {
+        let songIds = tagAssignments.songIds(for: tag)
+        return favoriteSongs.filter { songIds.contains($0.id) }
+    }
+
+    /// Creates a new custom tag.
+    func createCustomTag(_ name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard !allTags.contains(where: { $0.name.lowercased() == trimmed.lowercased() }) else { return }
+        customTags.append(FavouriteTag(name: trimmed, isCustom: true))
+        saveCustomTags()
+    }
+
+    /// Deletes a custom tag and removes all its assignments.
+    func deleteCustomTag(_ tagId: UUID) {
+        guard let tag = customTags.first(where: { $0.id == tagId }) else { return }
+        // Remove all assignments for this tag
+        for songId in tagAssignments.songIds(for: tag.name) {
+            tagAssignments.removeTag(tag.name, from: songId)
+        }
+        customTags.removeAll { $0.id == tagId }
+        saveCustomTags()
+        saveTagAssignments()
+    }
+
+    /// Batch removes multiple songs from favourites.
+    func removeFavorites(_ songIds: Set<String>) {
+        for songId in songIds {
+            favorites.remove(songId)
+        }
+        saveFavorites()
+        syncWidgetData()
+    }
+
+    /// Batch adds a tag to multiple songs.
+    func batchAddTag(_ tagName: String, to songIds: Set<String>) {
+        for songId in songIds {
+            tagAssignments.addTag(tagName, to: songId)
+        }
+        saveTagAssignments()
+    }
+
+    // MARK: - Backup / Restore
+
+    /// Exports all user data as a JSON-encodable backup.
+    func exportBackup() -> UserDataBackup {
+        UserDataBackup(
+            version: UserDataBackup.currentVersion,
+            exportDate: Date(),
+            favorites: Array(favorites),
+            setLists: setLists,
+            tags: tagAssignments,
+            customTags: customTags,
+            preferences: preferences
+        )
+    }
+
+    /// Exports backup as JSON Data.
+    func exportBackupJSON() -> Data? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return try? encoder.encode(exportBackup())
+    }
+
+    /// Imports user data from a backup, merging with existing data.
+    func importBackup(_ backup: UserDataBackup) {
+        // Merge favourites
+        favorites = favorites.union(Set(backup.favorites))
+        saveFavorites()
+
+        // Merge set lists (skip duplicates by name)
+        let existingNames = Set(setLists.map(\.name))
+        for setList in backup.setLists where !existingNames.contains(setList.name) {
+            setLists.append(setList)
+        }
+        saveSetLists()
+
+        // Merge tags
+        for (songId, tags) in backup.tags.songTags {
+            for tag in tags {
+                tagAssignments.addTag(tag, to: songId)
+            }
+        }
+        saveTagAssignments()
+
+        // Merge custom tags
+        let existingTagNames = Set(customTags.map { $0.name.lowercased() })
+        for tag in backup.customTags where !existingTagNames.contains(tag.name.lowercased()) {
+            customTags.append(tag)
+        }
+        saveCustomTags()
+
+        syncWidgetData()
+        HapticManager.success()
+    }
+
+    /// Imports backup from JSON Data.
+    func importBackupFromJSON(_ data: Data) -> Bool {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let backup = try? decoder.decode(UserDataBackup.self, from: data) else { return false }
+        importBackup(backup)
+        return true
+    }
+
     // MARK: - View History
 
     /// Records a song view in the history.
@@ -469,6 +645,18 @@ class SongStore: ObservableObject {
     private func saveSearchHistory() {
         if let data = try? JSONEncoder().encode(searchHistory) {
             UserDefaults.standard.set(data, forKey: SongStore.searchHistoryKey)
+        }
+    }
+
+    private func saveTagAssignments() {
+        if let data = try? JSONEncoder().encode(tagAssignments) {
+            UserDefaults.standard.set(data, forKey: SongStore.tagAssignmentsKey)
+        }
+    }
+
+    private func saveCustomTags() {
+        if let data = try? JSONEncoder().encode(customTags) {
+            UserDefaults.standard.set(data, forKey: SongStore.customTagsKey)
         }
     }
 

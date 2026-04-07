@@ -72,16 +72,68 @@ struct SetListsView: View {
 
     // MARK: - Set Lists List
 
+    @State private var renamingSetListId: UUID?
+    @State private var renameText: String = ""
+
     private var setListsList: some View {
         List {
             ForEach(songStore.setLists) { setList in
                 NavigationLink(destination: SetListDetailView(setList: setList)) {
                     setListRow(setList)
                 }
+                .swipeActions(edge: .trailing) {
+                    Button(role: .destructive) {
+                        if let idx = songStore.setLists.firstIndex(where: { $0.id == setList.id }) {
+                            songStore.deleteSetLists(at: IndexSet(integer: idx))
+                        }
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
+                .swipeActions(edge: .leading) {
+                    Button {
+                        songStore.duplicateSetList(setList.id)
+                        HapticManager.success()
+                    } label: {
+                        Label("Duplicate", systemImage: "doc.on.doc")
+                    }
+                    .tint(AmberTheme.accent)
+                }
+                .contextMenu {
+                    Button {
+                        renameText = setList.name
+                        renamingSetListId = setList.id
+                    } label: {
+                        Label("Rename", systemImage: "pencil")
+                    }
+                    Button {
+                        songStore.duplicateSetList(setList.id)
+                        HapticManager.success()
+                    } label: {
+                        Label("Duplicate", systemImage: "doc.on.doc")
+                    }
+                    Button(role: .destructive) {
+                        if let idx = songStore.setLists.firstIndex(where: { $0.id == setList.id }) {
+                            songStore.deleteSetLists(at: IndexSet(integer: idx))
+                        }
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
             }
-            .onDelete { offsets in
-                songStore.deleteSetLists(at: offsets)
+        }
+        .alert("Rename Set List", isPresented: Binding(
+            get: { renamingSetListId != nil },
+            set: { if !$0 { renamingSetListId = nil } }
+        )) {
+            TextField("Set list name", text: $renameText)
+            Button("Rename") {
+                if let id = renamingSetListId {
+                    songStore.renameSetList(id, to: renameText)
+                }
+                renamingSetListId = nil
             }
+            Button("Cancel", role: .cancel) { renamingSetListId = nil }
         }
     }
 
