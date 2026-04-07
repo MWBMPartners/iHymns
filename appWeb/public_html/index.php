@@ -132,7 +132,7 @@ $canonicalUrl = getCanonicalUrl();
 $ogTitle       = $appName . ' — Christian Hymns & Worship Songs';
 $ogDescription = $appDesc;
 $ogType        = 'website';
-$ogImage       = $appUrl . '/assets/icon-512.png';
+$ogImage       = getCanonicalUrl('/og-image.php');
 $ogImageAlt    = $appName . ' logo';
 
 /* JSON-LD structured data — built during OG detection, rendered in <head> */
@@ -164,6 +164,8 @@ try {
                 $ogDescription .= '. "' . implode(' / ', $firstLines) . '..."';
             }
             $ogType = 'article';
+            $ogImage = getCanonicalUrl('/og-image.php?song=' . urlencode($matches[1]));
+            $ogImageAlt = 'Preview of "' . $ogSong['title'] . '" from ' . $ogSong['songbookName'];
 
             /* JSON-LD: MusicComposition */
             $musicComposition = [
@@ -304,12 +306,12 @@ if (!empty($breadcrumbItems)) {
     <meta property="og:url" content="<?= htmlspecialchars($canonicalUrl) ?>">
     <meta property="og:image" content="<?= htmlspecialchars($ogImage) ?>">
     <meta property="og:image:alt" content="<?= htmlspecialchars($ogImageAlt) ?>">
-    <meta property="og:image:width" content="512">
-    <meta property="og:image:height" content="512">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
     <meta property="og:locale" content="<?= htmlspecialchars($locale) ?>">
 
     <!-- Twitter Card (X / Twitter) -->
-    <meta name="twitter:card" content="summary">
+    <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="<?= htmlspecialchars($ogTitle) ?>">
     <meta name="twitter:description" content="<?= htmlspecialchars($ogDescription) ?>">
     <meta name="twitter:image" content="<?= htmlspecialchars($ogImage) ?>">
