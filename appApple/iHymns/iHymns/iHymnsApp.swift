@@ -163,5 +163,10 @@ struct iHymnsApp: App {
 
         // Sync song data from API
         await songStore.syncFromAPI()
+
+        // Start analytics session heartbeat if consent granted
+        if AnalyticsService.shared.isTrackingEnabled {
+            AnalyticsService.shared.startSessionHeartbeat()
+        }
     }
 }
