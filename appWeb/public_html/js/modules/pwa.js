@@ -84,21 +84,46 @@ export class PWA {
         /* Platform-specific banners for browsers without beforeinstallprompt */
         const platform = this.detectPlatform();
 
-        if (platform === 'ios-safari') {
-            /* iOS 15+ moved the Share button to the bottom toolbar (#177) */
-            this.showPlatformBanner({
-                icon: 'fa-solid fa-arrow-up-from-bracket',
-                text: 'Tap <strong><i class="fa-solid fa-arrow-up-from-bracket"></i> Share</strong> below, then <strong>Add to Home Screen</strong>',
-                showButton: false,
-            });
-        } else if (platform.startsWith('ios-')) {
-            /* iOS non-Safari: cannot install PWAs — don't show banner */
+        if (platform === 'ios-safari' || platform.startsWith('ios-')) {
+            /* iOS: prefer native App Store app over PWA install (#220) */
+            const iosAppUrl = (this.app.config.nativeApps || {}).ios;
+            if (iosAppUrl) {
+                this.showPlatformBanner({
+                    icon: 'fa-brands fa-apple',
+                    text: 'Get the full <strong>iHymns</strong> app for the best experience',
+                    showButton: true,
+                    buttonIcon: 'fa-solid fa-arrow-up-right-from-square',
+                    buttonText: 'App Store',
+                    buttonAction: () => window.open(iosAppUrl, '_blank'),
+                });
+            } else if (platform === 'ios-safari') {
+                /* No native app yet — show PWA install instructions */
+                this.showPlatformBanner({
+                    icon: 'fa-solid fa-arrow-up-from-bracket',
+                    text: 'Tap <strong><i class="fa-solid fa-arrow-up-from-bracket"></i> Share</strong> below, then <strong>Add to Home Screen</strong>',
+                    showButton: false,
+                });
+            }
+            /* iOS non-Safari without native app: don't show banner */
         } else if (platform === 'macos-safari') {
-            this.showPlatformBanner({
-                icon: 'fa-solid fa-display',
-                text: 'Install: <strong>File → Add to Dock</strong> for the best experience',
-                showButton: false,
-            });
+            /* macOS: prefer native app or show dock instructions */
+            const macAppUrl = (this.app.config.nativeApps || {}).ios; /* same App Store link for universal app */
+            if (macAppUrl) {
+                this.showPlatformBanner({
+                    icon: 'fa-brands fa-apple',
+                    text: 'Get <strong>iHymns</strong> from the App Store for the best Mac experience',
+                    showButton: true,
+                    buttonIcon: 'fa-solid fa-arrow-up-right-from-square',
+                    buttonText: 'App Store',
+                    buttonAction: () => window.open(macAppUrl, '_blank'),
+                });
+            } else {
+                this.showPlatformBanner({
+                    icon: 'fa-solid fa-display',
+                    text: 'Install: <strong>File → Add to Dock</strong> for the best experience',
+                    showButton: false,
+                });
+            }
         }
         /* Desktop Chrome/Edge/etc. — wait for beforeinstallprompt (handled above) */
     }

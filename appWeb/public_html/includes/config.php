@@ -203,6 +203,16 @@ define('APP_CONFIG', [
     ],
 
     /* -----------------------------------------------------------------
+     * Native app store links — used by PWA module to redirect
+     * Apple/Android users to native app instead of PWA install.
+     * Set to null to disable app store redirect for that platform.
+     * ----------------------------------------------------------------- */
+    'native_apps' => [
+        'ios'     => null,  /* Apple App Store URL (set when published, e.g. 'https://apps.apple.com/app/ihymns/id0000000000') */
+        'android' => null,  /* Google Play Store URL (set when published) */
+    ],
+
+    /* -----------------------------------------------------------------
      * Feature flags — toggle features on/off
      * ----------------------------------------------------------------- */
     'features' => [
