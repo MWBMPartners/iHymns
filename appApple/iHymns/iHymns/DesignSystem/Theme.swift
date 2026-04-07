@@ -56,14 +56,16 @@ enum AmberTheme {
 
     /// Returns the brand colour associated with a specific songbook.
     /// These match the colours used in the web app's songbook cards.
+    /// Returns the brand colour associated with a specific songbook.
+    /// Colours match the PWA songbook colour map specification.
     static func songbookColor(_ id: String) -> Color {
         switch id.uppercased() {
-        case "CP":   return Color(hex: "dc2626")  // Red — Carol Praise
-        case "JP":   return Color(hex: "16a34a")  // Green — Junior Praise
-        case "MP":   return Color(hex: "2563eb")  // Blue — Mission Praise
-        case "SDAH": return Color(hex: "9333ea")  // Purple — Seventh-day Adventist Hymnal
-        case "CH":   return Color(hex: "ca8a04")  // Gold — The Church Hymnal
-        case "MISC": return Color(hex: "6b7280")  // Grey — Miscellaneous
+        case "CP":   return Color(hex: "4f46e5")  // Indigo — Carol Praise
+        case "JP":   return Color(hex: "ec4899")  // Pink — Junior Praise
+        case "MP":   return Color(hex: "14b8a6")  // Teal — Mission Praise
+        case "SDAH": return Color(hex: "f59e0b")  // Amber — Seventh-day Adventist Hymnal
+        case "CH":   return Color(hex: "ef4444")  // Red — The Church Hymnal
+        case "MISC": return Color(hex: "8b5cf6")  // Violet — Miscellaneous
         default:     return accent
         }
     }

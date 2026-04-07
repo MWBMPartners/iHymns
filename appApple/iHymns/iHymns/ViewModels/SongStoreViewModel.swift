@@ -250,20 +250,38 @@ class SongStore: ObservableObject {
         return songsBySongbook[id] ?? []
     }
 
-    /// Returns songs matching a local search query.
+    /// Returns songs matching a local search query using weighted fuzzy scoring.
     func searchSongsLocally(query: String) -> [Song] {
         guard !query.isEmpty, let songs = songData?.songs else { return [] }
-        let lowered = query.lowercased()
 
-        return songs.filter { song in
-            song.title.lowercased().contains(lowered) ||
-            String(song.number).contains(lowered) ||
-            song.songbookName.lowercased().contains(lowered) ||
-            song.songbook.lowercased().contains(lowered) ||
-            song.writers.contains { $0.lowercased().contains(lowered) } ||
-            song.composers.contains { $0.lowercased().contains(lowered) } ||
-            (preferences.searchLyrics && song.allLyrics.lowercased().contains(lowered))
+        return FuzzySearchEngine.search(
+            query: query,
+            in: songs,
+            includeLyrics: preferences.searchLyrics
+        )
+    }
+
+    /// Searches by song number within a specific songbook.
+    /// Matches songs whose number starts with the given prefix.
+    func searchByNumber(_ numberPrefix: String, songbook: String) -> [Song] {
+        let songs = songsForSongbook(songbook)
+        guard !numberPrefix.isEmpty else { return songs }
+        return songs.filter { String($0.number).hasPrefix(numberPrefix) }
+    }
+
+    /// Returns songs for a songbook sorted by the given mode.
+    func songsForSongbook(_ id: String, sortedBy sort: SongSortMode) -> [Song] {
+        let songs = songsForSongbook(id)
+        switch sort {
+        case .number: return songs
+        case .title:  return songs.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
         }
+    }
+
+    /// Sort modes for song lists within a songbook.
+    enum SongSortMode: String, CaseIterable {
+        case number = "Number"
+        case title = "A–Z"
     }
 
     /// Returns the computed Song of the Day based on the current date.

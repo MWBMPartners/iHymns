@@ -7,17 +7,21 @@
 import SwiftUI
 
 // MARK: - SongListView
-/// Displays a scrollable list of songs belonging to a specific songbook.
-/// Features alphabetical index strip, local search, and favourite indicators.
+/// Displays songs belonging to a specific songbook with:
+/// - Alphabetical jump-to-letter index strip
+/// - Sort toggle (by number or A-Z by title)
+/// - Local search filtering
+/// - Favourite star indicators
 struct SongListView: View {
 
     let songbookId: String
 
     @EnvironmentObject var songStore: SongStore
     @State private var searchText: String = ""
+    @State private var sortMode: SongStore.SongSortMode = .number
 
     private var filteredSongs: [Song] {
-        let allSongs = songStore.songsForSongbook(songbookId)
+        let allSongs = songStore.songsForSongbook(songbookId, sortedBy: sortMode)
 
         guard !searchText.isEmpty else { return allSongs }
 
@@ -25,6 +29,7 @@ struct SongListView: View {
         return allSongs.filter { song in
             song.title.lowercased().contains(query)
             || String(song.number).contains(query)
+            || song.writers.contains { $0.lowercased().contains(query) }
         }
     }
 
@@ -32,21 +37,54 @@ struct SongListView: View {
         songStore.songData?.songbooks.first { $0.id == songbookId }
     }
 
-    /// Available first letters for alphabetical index.
+    /// Available first letters for the alphabetical index strip.
     private var availableLetters: [String] {
         let letters = Set(filteredSongs.compactMap { $0.title.first.map { String($0).uppercased() } })
         return letters.sorted()
     }
 
     var body: some View {
-        List {
-            ForEach(filteredSongs, id: \.id) { song in
-                NavigationLink(destination: SongDetailView(song: song)) {
-                    SongRow(song: song, songStore: songStore)
+        ScrollViewReader { proxy in
+            ZStack(alignment: .trailing) {
+                List {
+                    // Sort toggle and count header
+                    Section {
+                        HStack {
+                            Text("\(filteredSongs.count) songs")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+
+                            Spacer()
+
+                            Picker("Sort", selection: $sortMode) {
+                                ForEach(SongStore.SongSortMode.allCases, id: \.self) { mode in
+                                    Text(mode.rawValue).tag(mode)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 140)
+                        }
+                        .listRowBackground(Color.clear)
+                    }
+
+                    // Song rows
+                    ForEach(filteredSongs, id: \.id) { song in
+                        NavigationLink(destination: SongDetailView(song: song)) {
+                            SongRow(song: song, songStore: songStore)
+                        }
+                        .id(song.title.prefix(1).uppercased())
+                    }
                 }
+                .listStyle(.plain)
+
+                // Alphabetical index strip (right edge)
+                #if !os(watchOS) && !os(tvOS)
+                if searchText.isEmpty && sortMode == .title && availableLetters.count > 5 {
+                    alphabeticalIndex(proxy: proxy)
+                }
+                #endif
             }
         }
-        .listStyle(.plain)
         .navigationTitle(songbook?.name ?? songbookId)
         #if !os(tvOS) && !os(watchOS)
         .navigationBarTitleDisplayMode(.large)
@@ -64,6 +102,36 @@ struct SongListView: View {
             }
         }
     }
+
+    // MARK: - Alphabetical Index Strip
+
+    #if !os(watchOS) && !os(tvOS)
+    private func alphabeticalIndex(proxy: ScrollViewProxy) -> some View {
+        VStack(spacing: 1) {
+            ForEach(availableLetters, id: \.self) { letter in
+                Button {
+                    HapticManager.selectionChanged()
+                    withAnimation(.liquidGlassQuick) {
+                        proxy.scrollTo(letter, anchor: .top)
+                    }
+                } label: {
+                    Text(letter)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(AmberTheme.accent)
+                        .frame(width: 16, height: 14)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(.ultraThinMaterial)
+        )
+        .padding(.trailing, 4)
+    }
+    #endif
 }
 
 // MARK: - SongRow
