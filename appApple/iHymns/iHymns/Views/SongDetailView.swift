@@ -25,7 +25,10 @@ struct SongDetailView: View {
     // MARK: State
     @State private var showingAddToSetList = false
     @State private var showingPresentation = false
+    @State private var showingCompare = false
     @State private var scrollProgress: CGFloat = 0
+    @State private var swipeTargetSong: Song?
+    @State private var showSwipeTarget = false
 
     /// Scaled font size based on user preferences.
     private var scaledLyricsFont: Font {
@@ -112,6 +115,36 @@ struct SongDetailView: View {
             AddSongToSetListPicker(songId: song.id)
                 .environmentObject(songStore)
         }
+        // Swipe gesture for navigating between songs within the same songbook
+        #if !os(watchOS) && !os(tvOS)
+        .gesture(
+            DragGesture(minimumDistance: 50, coordinateSpace: .local)
+                .onEnded { value in
+                    guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                    let velocity = abs(value.predictedEndTranslation.width / max(abs(value.translation.width), 1))
+                    guard velocity > 0.3 else { return }
+
+                    let songs = songStore.songsForSongbook(song.songbook)
+                    guard let currentIndex = songs.firstIndex(where: { $0.id == song.id }) else { return }
+
+                    if value.translation.width < 0 && currentIndex < songs.count - 1 {
+                        // Swipe left = next song
+                        swipeTargetSong = songs[currentIndex + 1]
+                        showSwipeTarget = true
+                    } else if value.translation.width > 0 && currentIndex > 0 {
+                        // Swipe right = previous song
+                        swipeTargetSong = songs[currentIndex - 1]
+                        showSwipeTarget = true
+                    }
+                }
+        )
+        .navigationDestination(isPresented: $showSwipeTarget) {
+            if let target = swipeTargetSong {
+                SongDetailView(song: target)
+                    .environmentObject(songStore)
+            }
+        }
+        #endif
     }
 
     // MARK: - Standard Content (iOS / iPadOS / macOS / visionOS)
@@ -358,11 +391,11 @@ struct SongDetailView: View {
                 .padding(.bottom, 8)
 
             if !song.writers.isEmpty {
-                creditRow(label: "Words", value: song.writers.joined(separator: ", "))
+                tappableCreditRow(label: "Words", names: song.writers)
             }
 
             if !song.composers.isEmpty {
-                creditRow(label: "Music", value: song.composers.joined(separator: ", "))
+                tappableCreditRow(label: "Music", names: song.composers)
             }
 
             if !song.copyright.isEmpty {
@@ -387,6 +420,27 @@ struct SongDetailView: View {
                 .foregroundStyle(.secondary)
         }
     }
+
+    /// Credit row where each name is tappable and navigates to the writer's page.
+    private func tappableCreditRow(label: String, names: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(Typography.componentLabel)
+                .foregroundStyle(AmberTheme.accent)
+
+            FlowLayout(spacing: 4) {
+                ForEach(names, id: \.self) { name in
+                    NavigationLink(destination: WriterDetailView(writerName: name)) {
+                        Text(name)
+                            .font(Typography.metadata)
+                            .foregroundStyle(AmberTheme.accent.opacity(0.8))
+                            .underline()
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
     #endif
 
     // MARK: - Toolbar Actions
@@ -408,6 +462,12 @@ struct SongDetailView: View {
                 showingAddToSetList = true
             } label: {
                 Label("Add to Set List", systemImage: "list.bullet.rectangle")
+            }
+        }
+
+        ToolbarItem(placement: .automatic) {
+            NavigationLink(destination: CompareView(songA: song)) {
+                Label("Compare", systemImage: "rectangle.on.rectangle")
             }
         }
 
