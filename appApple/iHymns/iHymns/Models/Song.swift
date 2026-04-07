@@ -75,7 +75,26 @@ struct Song: Codable, Identifiable, Hashable {
     /// that make up this song's full text.
     let components: [SongComponent]
 
+    /// Optional arrangement order specifying the display sequence of
+    /// components by index. When present, lyrics are rendered in this
+    /// order instead of the natural components array order.
+    /// Example: [0, 1, 2, 1, 3, 1] interleaves a refrain between verses.
+    let arrangement: [Int]?
+
     // MARK: - Computed Properties
+
+    /// Returns the components in arrangement order if an arrangement
+    /// is specified, otherwise returns the natural component order.
+    /// Each entry is a tuple of (index in arrangement, component).
+    var arrangedComponents: [(offset: Int, element: SongComponent)] {
+        guard let arrangement = arrangement, !arrangement.isEmpty else {
+            return Array(components.enumerated())
+        }
+        return arrangement.enumerated().compactMap { (idx, componentIndex) in
+            guard componentIndex >= 0 && componentIndex < components.count else { return nil }
+            return (idx, components[componentIndex])
+        }
+    }
 
     /// A short preview of the song's lyrics, built by taking the first
     /// two lines of the very first component and joining them with a

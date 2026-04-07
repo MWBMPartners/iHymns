@@ -7,101 +7,395 @@
 import SwiftUI
 
 // MARK: - FavoritesView
-/// Displays the user's favourited songs in a list.
-///
-/// The view mirrors the row format used in `SongListView` (number badge, title,
-/// lyrics preview, star indicator) so the experience is consistent. Songs can be
-/// removed from favourites via a swipe-to-delete gesture or by tapping the star
-/// in the detail view.
-///
-/// An empty state is shown when the user has no favourites, featuring a large
-/// star icon and instructional text.
+/// Favourites management with tag filtering, batch selection,
+/// and export/import capabilities.
 struct FavoritesView: View {
 
-    // MARK: Environment
-    /// The shared song store that provides the list of favourited songs and
-    /// methods to add/remove favourites.
     @EnvironmentObject var songStore: SongStore
+    @State private var searchText: String = ""
+    @State private var selectedTag: String?
+    @State private var isSelectionMode: Bool = false
+    @State private var selectedSongIds: Set<String> = []
+    @State private var showingTagPicker: Bool = false
+    @State private var tagPickerSongId: String?
+    @State private var showingNewTag: Bool = false
+    @State private var newTagName: String = ""
+    @State private var showingExportSheet: Bool = false
+    @State private var showingImportSheet: Bool = false
 
-    // MARK: Body
+    private var displayedFavorites: [Song] {
+        var songs = songStore.favoriteSongs
+
+        // Filter by tag
+        if let tag = selectedTag {
+            let taggedIds = Set(songStore.tagAssignments.songIds(for: tag))
+            songs = songs.filter { taggedIds.contains($0.id) }
+        }
+
+        // Filter by search text
+        if !searchText.isEmpty {
+            let query = searchText.lowercased()
+            songs = songs.filter {
+                $0.title.lowercased().contains(query) ||
+                $0.songbook.lowercased().contains(query) ||
+                String($0.number).contains(query)
+            }
+        }
+
+        return songs
+    }
+
+    /// All tags that have at least one favourite assigned.
+    private var usedTags: [String] {
+        let allFavIds = songStore.favorites
+        var tags = Set<String>()
+        for songId in allFavIds {
+            for tag in songStore.tagsForSong(songId) {
+                tags.insert(tag)
+            }
+        }
+        return tags.sorted()
+    }
+
     var body: some View {
         Group {
             if songStore.favoriteSongs.isEmpty {
-                // ── Empty State ──────────────────────────────────────────
-                // Shown when the user has not yet favourited any songs.
-                // Provides a friendly prompt with a star icon.
                 emptyState
             } else {
-                // ── Favourites List ──────────────────────────────────────
-                // A list of all favourited songs with swipe-to-remove support.
-                favouritesList
+                favouritesContent
             }
         }
         .navigationTitle("Favourites")
         #if !os(tvOS) && !os(watchOS)
         .navigationBarTitleDisplayMode(.large)
+        .toolbar { toolbarContent }
         #endif
+        .searchable(text: $searchText, prompt: "Filter favourites...")
+        .alert("New Tag", isPresented: $showingNewTag) {
+            TextField("Tag name", text: $newTagName)
+            Button("Create") {
+                songStore.createCustomTag(newTagName)
+                newTagName = ""
+            }
+            Button("Cancel", role: .cancel) { newTagName = "" }
+        }
+        .sheet(isPresented: $showingTagPicker) {
+            if let songId = tagPickerSongId {
+                TagPickerSheet(songId: songId)
+                    .environmentObject(songStore)
+            }
+        }
+    }
+
+    // MARK: - Tag Picker Sheet
+
+    /// Allows assigning/removing tags from a single song.
+    private struct TagPickerSheet: View {
+        let songId: String
+        @EnvironmentObject var songStore: SongStore
+        @Environment(\.dismiss) private var dismiss
+
+        var body: some View {
+            NavigationStack {
+                List {
+                    ForEach(songStore.allTags, id: \.name) { tag in
+                        let isAssigned = songStore.tagsForSong(songId).contains(tag.name)
+                        Button {
+                            if isAssigned {
+                                songStore.removeTag(tag.name, from: songId)
+                            } else {
+                                songStore.addTag(tag.name, to: songId)
+                            }
+                            HapticManager.selectionChanged()
+                        } label: {
+                            HStack {
+                                Text(tag.name)
+                                Spacer()
+                                if isAssigned {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(AmberTheme.accent)
+                                }
+                            }
+                        }
+                    }
+                }
+                .navigationTitle("Tag Song")
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { dismiss() }
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Empty State
-    /// A centred placeholder displayed when no songs have been favourited.
-    /// Uses `ContentUnavailableView` for a consistent system appearance.
+
     private var emptyState: some View {
         ContentUnavailableView {
-            // Primary label with a star icon
             Label("No Favourites Yet", systemImage: "star")
         } description: {
-            // Instructional text explaining how to add favourites
             Text("Tap the star icon on any song to add it to your favourites for quick access.")
-        } actions: {
-            // No action buttons needed; the user navigates elsewhere to favourite songs
         }
     }
 
-    // MARK: - Favourites List
-    /// The main list of favourited songs, each navigable to its detail view.
-    /// Swipe-to-delete removes the song from favourites without deleting it
-    /// from the songbook.
-    private var favouritesList: some View {
-        List {
-            // ── Favourite Song Rows ──────────────────────────────────────
-            // Each row uses the same `SongRow` component from SongListView
-            // for visual consistency across the app.
-            ForEach(songStore.favoriteSongs, id: \.id) { song in
-                NavigationLink(destination: SongDetailView(song: song)) {
-                    SongRow(song: song, songStore: songStore)
+    // MARK: - Content
+
+    private var favouritesContent: some View {
+        VStack(spacing: 0) {
+            // Tag filter strip
+            if !usedTags.isEmpty || !songStore.customTags.isEmpty {
+                tagFilterStrip
+            }
+
+            // Batch action bar
+            if isSelectionMode && !selectedSongIds.isEmpty {
+                batchActionBar
+            }
+
+            // Song list
+            List {
+                Section {
+                    Text("\(displayedFavorites.count) favourite\(displayedFavorites.count == 1 ? "" : "s")\(selectedTag.map { " tagged \"\($0)\"" } ?? "")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .listRowBackground(Color.clear)
+                }
+
+                ForEach(displayedFavorites, id: \.id) { song in
+                    if isSelectionMode {
+                        selectionRow(song: song)
+                    } else {
+                        NavigationLink(destination: SongDetailView(song: song)) {
+                            favouriteRow(song: song)
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) {
+                                songStore.toggleFavorite(song.id)
+                            } label: {
+                                Label("Remove", systemImage: "star.slash")
+                            }
+
+                            Button {
+                                tagPickerSongId = song.id
+                                showingTagPicker = true
+                            } label: {
+                                Label("Tag", systemImage: "tag")
+                            }
+                            .tint(AmberTheme.accent)
+                        }
+                    }
                 }
             }
-            // Swipe-to-delete gesture removes the song from favourites
-            .onDelete(perform: removeFromFavourites)
+            .listStyle(.plain)
         }
-        .listStyle(.plain)
     }
 
-    // MARK: - Remove From Favourites
-    /// Called when the user swipes to delete a row. Removes the corresponding
-    /// song from the favourites list in the song store.
-    ///
-    /// - Parameter offsets: The index set of rows the user swiped to delete.
-    private func removeFromFavourites(at offsets: IndexSet) {
-        // Map the row offsets to song IDs and toggle each one off
-        for index in offsets {
-            let song = songStore.favoriteSongs[index]
-            songStore.toggleFavorite(songId: song.id)
+    // MARK: - Tag Filter Strip
+
+    private var tagFilterStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Spacing.sm) {
+                // "All" chip
+                Button {
+                    selectedTag = nil
+                    HapticManager.selectionChanged()
+                } label: {
+                    Text("All")
+                        .font(.caption.bold())
+                        .foregroundStyle(selectedTag == nil ? .white : .primary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(
+                            selectedTag == nil
+                            ? AnyShapeStyle(AmberTheme.accent) : AnyShapeStyle(.regularMaterial)
+                        )
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+
+                ForEach(songStore.allTags, id: \.name) { tag in
+                    let isActive = selectedTag == tag.name
+                    Button {
+                        selectedTag = isActive ? nil : tag.name
+                        HapticManager.selectionChanged()
+                    } label: {
+                        Text(tag.name)
+                            .font(.caption.bold())
+                            .foregroundStyle(isActive ? .white : .primary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(
+                                isActive ? AnyShapeStyle(AmberTheme.accent) : AnyShapeStyle(.regularMaterial)
+                            )
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                // Add tag button
+                Button { showingNewTag = true } label: {
+                    Image(systemName: "plus")
+                        .font(.caption)
+                        .foregroundStyle(AmberTheme.accent)
+                        .padding(6)
+                        .background(.regularMaterial, in: Circle())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal)
+            .padding(.vertical, Spacing.sm)
         }
+    }
+
+    // MARK: - Batch Action Bar
+
+    private var batchActionBar: some View {
+        HStack(spacing: Spacing.md) {
+            Text("\(selectedSongIds.count) selected")
+                .font(.subheadline.bold())
+
+            Spacer()
+
+            // Batch tag
+            Menu {
+                ForEach(songStore.allTags, id: \.name) { tag in
+                    Button(tag.name) {
+                        songStore.batchAddTag(tag.name, to: selectedSongIds)
+                        HapticManager.success()
+                    }
+                }
+            } label: {
+                Label("Tag", systemImage: "tag")
+                    .font(.caption.bold())
+            }
+
+            // Batch remove
+            Button(role: .destructive) {
+                songStore.removeFavorites(selectedSongIds)
+                selectedSongIds.removeAll()
+                isSelectionMode = false
+            } label: {
+                Label("Remove", systemImage: "trash")
+                    .font(.caption.bold())
+            }
+        }
+        .padding(.horizontal)
+        .padding(.vertical, Spacing.sm)
+        .background(.regularMaterial)
+    }
+
+    // MARK: - Row Views
+
+    private func favouriteRow(song: Song) -> some View {
+        HStack(spacing: 14) {
+            SongRow(song: song, songStore: songStore)
+
+            // Tag badges
+            let tags = songStore.tagsForSong(song.id)
+            if !tags.isEmpty {
+                HStack(spacing: 2) {
+                    ForEach(tags.prefix(2), id: \.self) { tag in
+                        Text(tag)
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(.regularMaterial, in: Capsule())
+                    }
+                    if tags.count > 2 {
+                        Text("+\(tags.count - 2)")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    private func selectionRow(song: Song) -> some View {
+        Button {
+            if selectedSongIds.contains(song.id) {
+                selectedSongIds.remove(song.id)
+            } else {
+                selectedSongIds.insert(song.id)
+            }
+        } label: {
+            HStack {
+                Image(systemName: selectedSongIds.contains(song.id) ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(selectedSongIds.contains(song.id) ? AmberTheme.accent : .secondary)
+
+                SongRow(song: song, songStore: songStore)
+            }
+        }
+    }
+
+    // MARK: - Toolbar
+
+    #if !os(watchOS) && !os(tvOS)
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .primaryAction) {
+            Menu {
+                Button {
+                    isSelectionMode.toggle()
+                    if !isSelectionMode { selectedSongIds.removeAll() }
+                } label: {
+                    Label(isSelectionMode ? "Cancel Selection" : "Select", systemImage: "checkmark.circle")
+                }
+
+                if isSelectionMode {
+                    Button {
+                        selectedSongIds = Set(displayedFavorites.map(\.id))
+                    } label: {
+                        Label("Select All", systemImage: "checkmark.circle.fill")
+                    }
+                }
+
+                Divider()
+
+                ShareLink(
+                    item: exportFavoritesText(),
+                    subject: Text("My iHymns Favourites"),
+                    message: Text("Shared from iHymns")
+                ) {
+                    Label("Export as Text", systemImage: "doc.text")
+                }
+
+                if let jsonData = songStore.exportBackupJSON(),
+                   let jsonString = String(data: jsonData, encoding: .utf8) {
+                    ShareLink(
+                        item: jsonString,
+                        subject: Text("iHymns Backup"),
+                        message: Text("iHymns data backup")
+                    ) {
+                        Label("Export Backup (JSON)", systemImage: "arrow.up.doc")
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+        }
+    }
+    #endif
+
+    // MARK: - Helpers
+
+    private func exportFavoritesText() -> String {
+        var lines = ["My iHymns Favourites", ""]
+        for (index, song) in songStore.favoriteSongs.enumerated() {
+            let tags = songStore.tagsForSong(song.id)
+            let tagStr = tags.isEmpty ? "" : " [\(tags.joined(separator: ", "))]"
+            lines.append("\(index + 1). \(song.title) (\(song.songbook) #\(song.number))\(tagStr)")
+        }
+        lines.append("\nExported from iHymns — ihymns.app")
+        return lines.joined(separator: "\n")
     }
 }
 
 // MARK: - Preview
 #if DEBUG
-#Preview("With Favourites") {
-    NavigationStack {
-        FavoritesView()
-            .environmentObject(SongStore())
-    }
-}
-
-#Preview("Empty State") {
+#Preview {
     NavigationStack {
         FavoritesView()
             .environmentObject(SongStore())

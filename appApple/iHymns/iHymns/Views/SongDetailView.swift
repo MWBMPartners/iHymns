@@ -7,104 +7,282 @@
 import SwiftUI
 
 // MARK: - SongDetailView
-/// Presents the full lyrics and metadata for a single song.
-///
-/// The view is structured as a scrollable layout containing:
-/// 1. A title header with song number, title and songbook name.
-/// 2. Each lyric component (verses, choruses) rendered sequentially.
-/// 3. A credits section showing writers, composers and copyright.
-/// 4. Action buttons for favouriting, sharing and (on macOS) printing.
+/// Presents the full lyrics and metadata for a single song using
+/// Liquid Glass design language for visual depth and translucency.
 ///
 /// Platform adaptations:
-/// - **tvOS**: Font sizes are significantly increased so lyrics are legible
-///   from across a room for congregational singing.
-/// - **watchOS**: A minimal layout showing only the lyrics text to maximise
-///   the usable area on a small screen.
+/// - **iOS/iPadOS/macOS/visionOS**: Full layout with glass header, credits, toolbar
+/// - **tvOS**: Extra-large fonts for congregational reading from a distance
+/// - **watchOS**: Compact lyrics-only layout for the small screen
 struct SongDetailView: View {
 
     // MARK: Properties
-    /// The song model whose lyrics and metadata are displayed.
     let song: Song
 
     // MARK: Environment
-    /// The shared song store, used to toggle favourite status.
     @EnvironmentObject var songStore: SongStore
+
+    // MARK: State
+    @State private var showingAddToSetList = false
+    @State private var showingPresentation = false
+    @State private var showingCompare = false
+    @State private var scrollProgress: CGFloat = 0
+    @State private var contentHeight: CGFloat = 1
+    @State private var viewportHeight: CGFloat = 1
+    @State private var scrollDepthMilestones: Set<Int> = []
+    @State private var swipeTargetSong: Song?
+    @State private var showSwipeTarget = false
+    @State private var perSongFontScale: Double?
+
+    /// Per-song font override key.
+    private var perSongFontKey: String { "ihymns_font_\(song.id)" }
+
+    /// Effective font scale: per-song override or global preference.
+    private var effectiveFontScale: Double {
+        perSongFontScale ?? songStore.preferences.lyricsFontScale
+    }
+
+    /// Scaled font size based on effective preference.
+    private var scaledLyricsFont: Font {
+        let baseSize: CGFloat = 18
+        return .system(size: baseSize * effectiveFontScale)
+    }
+
+    /// Related songs based on shared writers/composers/songbook.
+    private var relatedSongs: [Song] {
+        guard let songs = songStore.songData?.songs else { return [] }
+        let writerSet = Set(song.writers)
+        let composerSet = Set(song.composers)
+
+        var scored: [(Song, Int)] = []
+        for candidate in songs where candidate.id != song.id {
+            var score = 0
+            // Shared writers (highest signal)
+            if !writerSet.isEmpty && !Set(candidate.writers).isDisjoint(with: writerSet) { score += 3 }
+            // Shared composers
+            if !composerSet.isEmpty && !Set(candidate.composers).isDisjoint(with: composerSet) { score += 2 }
+            // Same songbook proximity
+            if candidate.songbook == song.songbook { score += 1 }
+            if score > 0 { scored.append((candidate, score)) }
+        }
+
+        return scored
+            .sorted { $0.1 > $1.1 }
+            .prefix(8)
+            .map(\.0)
+    }
 
     // MARK: Body
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-
-                #if os(watchOS)
-                // ── watchOS: Compact lyrics-only layout ──────────────────
-                // On watchOS we skip the decorative header and metadata to
-                // preserve precious screen space. Only lyrics are shown.
-                watchOSContent
-
-                #elseif os(tvOS)
-                // ── tvOS: Large congregational display ───────────────────
-                // Everything is rendered at increased font sizes so the
-                // lyrics can be read from a distance on a television.
-                tvOSContent
-
-                #else
-                // ── iOS / iPadOS / macOS / visionOS ─────────────────────
-                standardContent
-                #endif
+        ZStack(alignment: .top) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    #if os(watchOS)
+                    watchOSContent
+                    #elseif os(tvOS)
+                    tvOSContent
+                    #else
+                    standardContent
+                    #endif
+                }
+                .background(
+                    GeometryReader { geo in
+                        Color.clear
+                            .preference(key: ScrollOffsetKey.self, value: -geo.frame(in: .named("scroll")).origin.y)
+                            .onAppear { contentHeight = geo.size.height }
+                            .onChange(of: geo.size.height) { _, h in contentHeight = h }
+                    }
+                )
             }
+            .coordinateSpace(name: "scroll")
+            .background(GeometryReader { geo in
+                Color.clear.onAppear { viewportHeight = geo.size.height }
+            })
+            .onPreferenceChange(ScrollOffsetKey.self) { offset in
+                let scrollable = max(contentHeight - viewportHeight, 1)
+                scrollProgress = min(1.0, max(0, offset / scrollable))
+
+                // Fire scroll depth analytics at 25% thresholds
+                for milestone in [25, 50, 75, 100] {
+                    if scrollProgress >= Double(milestone) / 100.0 && !scrollDepthMilestones.contains(milestone) {
+                        scrollDepthMilestones.insert(milestone)
+                        AnalyticsService.shared.track(.scrollDepth(songId: song.id, percent: milestone))
+                    }
+                }
+            }
+
+            // Reading progress bar
+            #if !os(watchOS) && !os(tvOS)
+            if song.components.count > 2 {
+                GeometryReader { geo in
+                    Rectangle()
+                        .fill(AmberTheme.songbookColor(song.songbook))
+                        .frame(width: geo.size.width * scrollProgress, height: 3)
+                        .animation(.linear(duration: 0.1), value: scrollProgress)
+                }
+                .frame(height: 3)
+            }
+            #endif
         }
         #if !os(watchOS) && !os(tvOS)
         .navigationBarTitleDisplayMode(.inline)
-        // Toolbar with action buttons (favourite, share, print)
         .toolbar { toolbarActions }
         #endif
         .navigationTitle(song.title)
+        .onAppear {
+            songStore.recordSongView(song)
+            AnalyticsService.shared.track(.songView(song))
+            // Load per-song font scale override
+            let saved = UserDefaults.standard.double(forKey: perSongFontKey)
+            if saved > 0 { perSongFontScale = saved }
+        }
+        .sheet(isPresented: $showingAddToSetList) {
+            AddSongToSetListPicker(songId: song.id)
+                .environmentObject(songStore)
+        }
+        // Swipe gesture for navigating between songs within the same songbook
+        #if !os(watchOS) && !os(tvOS)
+        .gesture(
+            DragGesture(minimumDistance: 50, coordinateSpace: .local)
+                .onEnded { value in
+                    guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                    let velocity = abs(value.predictedEndTranslation.width / max(abs(value.translation.width), 1))
+                    guard velocity > 0.3 else { return }
+
+                    let songs = songStore.songsForSongbook(song.songbook)
+                    guard let currentIndex = songs.firstIndex(where: { $0.id == song.id }) else { return }
+
+                    if value.translation.width < 0 && currentIndex < songs.count - 1 {
+                        // Swipe left = next song
+                        swipeTargetSong = songs[currentIndex + 1]
+                        showSwipeTarget = true
+                    } else if value.translation.width > 0 && currentIndex > 0 {
+                        // Swipe right = previous song
+                        swipeTargetSong = songs[currentIndex - 1]
+                        showSwipeTarget = true
+                    }
+                }
+        )
+        .navigationDestination(isPresented: $showSwipeTarget) {
+            if let target = swipeTargetSong {
+                SongDetailView(song: target)
+                    .environmentObject(songStore)
+            }
+        }
+        #endif
     }
 
     // MARK: - Standard Content (iOS / iPadOS / macOS / visionOS)
-    /// The full-featured layout for phones, tablets, desktops and spatial computing.
     #if !os(watchOS) && !os(tvOS)
     @ViewBuilder
     private var standardContent: some View {
-        // ── Song Header ──────────────────────────────────────────────────
-        // An amber gradient banner displaying the song number, title and
-        // the songbook it belongs to.
+        // Breadcrumb navigation
+        HStack(spacing: 4) {
+            NavigationLink(destination: SongListView(songbookId: song.songbook)) {
+                Text(song.songbookName)
+                    .font(.caption)
+                    .foregroundStyle(AmberTheme.accent)
+            }
+            .buttonStyle(.plain)
+            Image(systemName: "chevron.right")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text("#\(song.number)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 8)
+
+        // Liquid Glass song header
         songHeader
 
-        // ── Lyric Components ─────────────────────────────────────────────
-        // Iterate over each component (verse / chorus) and render it with
-        // appropriate styling. Choruses receive indentation and a leading
-        // amber accent bar to visually distinguish them from verses.
+        // Per-song font size control
+        HStack(spacing: Spacing.sm) {
+            Image(systemName: "textformat.size")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Slider(
+                value: Binding(
+                    get: { effectiveFontScale },
+                    set: { newVal in
+                        perSongFontScale = newVal
+                        UserDefaults.standard.set(newVal, forKey: perSongFontKey)
+                    }
+                ),
+                in: 0.5...3.0,
+                step: 0.1
+            )
+            .tint(AmberTheme.accent)
+
+            Text("\(String(format: "%.1f", effectiveFontScale))x")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 32)
+
+            if perSongFontScale != nil {
+                Button {
+                    perSongFontScale = nil
+                    UserDefaults.standard.removeObject(forKey: perSongFontKey)
+                } label: {
+                    Image(systemName: "arrow.counterclockwise")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 8)
+
+        // Audio player (if available)
+        if song.hasAudio {
+            AudioPlayerView(song: song)
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+        }
+
+        // Transpose controls
+        TransposeControlView(songId: song.id)
+            .padding(.horizontal, 20)
+            .padding(.top, song.hasAudio ? 8 : 16)
+
+        // Lyric components in arrangement order, with scaled font
         VStack(alignment: .leading, spacing: 24) {
-            ForEach(Array(song.components.enumerated()), id: \.offset) { _, component in
+            ForEach(song.arrangedComponents, id: \.offset) { _, component in
                 componentView(for: component)
             }
         }
         .padding(.horizontal, 20)
         .padding(.top, 24)
 
-        // ── Credits Section ──────────────────────────────────────────────
-        // Displays writer, composer and copyright information at the bottom.
+        // Credits section
         creditsSection
             .padding(.horizontal, 20)
             .padding(.top, 32)
-            .padding(.bottom, 40)
+
+        // Related songs section
+        if !relatedSongs.isEmpty {
+            relatedSongsSection
+                .padding(.horizontal, 20)
+                .padding(.top, 24)
+        }
+
+        Spacer()
+            .frame(height: 40)
     }
     #endif
 
     // MARK: - tvOS Content
-    /// A large-text layout optimised for television screens and congregational use.
     #if os(tvOS)
     @ViewBuilder
     private var tvOSContent: some View {
-        // Song title in extra-large bold text
         VStack(alignment: .leading, spacing: 16) {
             Text("\(song.number). \(song.title)")
                 .font(.system(size: 52, weight: .bold))
                 .foregroundStyle(AmberTheme.accent)
                 .padding(.bottom, 8)
 
-            // Songbook name
             Text(song.songbookName)
                 .font(.system(size: 28))
                 .foregroundStyle(.secondary)
@@ -112,7 +290,6 @@ struct SongDetailView: View {
         .padding(.horizontal, 60)
         .padding(.top, 40)
 
-        // Lyric components at TV-friendly sizes
         VStack(alignment: .leading, spacing: 40) {
             ForEach(Array(song.components.enumerated()), id: \.offset) { _, component in
                 tvOSComponentView(for: component)
@@ -123,24 +300,19 @@ struct SongDetailView: View {
         .padding(.bottom, 60)
     }
 
-    /// Renders a single lyric component (verse or chorus) with TV-sized fonts.
-    /// Choruses are indented and have a prominent leading accent bar.
     private func tvOSComponentView(for component: SongComponent) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            // Component label (e.g. "Verse 1" or "Chorus")
             Text(componentLabel(for: component))
                 .font(.system(size: 30, weight: .semibold))
                 .foregroundStyle(AmberTheme.accent)
 
-            // Lyric lines joined as a single text block
             Text(component.lines.joined(separator: "\n"))
                 .font(.system(size: 38))
                 .lineSpacing(10)
         }
-        .padding(.leading, component.type == "chorus" ? 40 : 0)
-        // Leading amber bar for choruses
+        .padding(.leading, isChorusType(component) ? 40 : 0)
         .overlay(alignment: .leading) {
-            if component.type == "chorus" {
+            if isChorusType(component) {
                 AmberTheme.accent
                     .frame(width: 6)
                     .clipShape(RoundedRectangle(cornerRadius: 3))
@@ -150,11 +322,9 @@ struct SongDetailView: View {
     #endif
 
     // MARK: - watchOS Content
-    /// A compact lyrics-only layout for watchOS.
     #if os(watchOS)
     @ViewBuilder
     private var watchOSContent: some View {
-        // Song number and title in a compact header
         VStack(alignment: .leading, spacing: 4) {
             Text("#\(song.number)")
                 .font(.caption2.bold())
@@ -165,35 +335,30 @@ struct SongDetailView: View {
         .padding(.horizontal, 8)
         .padding(.top, 8)
 
-        // Lyric components rendered compactly
         VStack(alignment: .leading, spacing: 16) {
             ForEach(Array(song.components.enumerated()), id: \.offset) { _, component in
                 VStack(alignment: .leading, spacing: 2) {
-                    // Component label
                     Text(componentLabel(for: component))
                         .font(.caption2.bold())
                         .foregroundStyle(AmberTheme.accent)
 
-                    // Lyric lines
                     Text(component.lines.joined(separator: "\n"))
                         .font(.caption)
                         .lineSpacing(2)
                 }
-                // Indent choruses slightly
-                .padding(.leading, component.type == "chorus" ? 8 : 0)
+                .padding(.leading, isChorusType(component) ? 8 : 0)
             }
         }
         .padding(.horizontal, 8)
         .padding(.top, 12)
         .padding(.bottom, 16)
 
-        // Favourite toggle button for watchOS
         Button {
-            songStore.toggleFavorite(songId: song.id)
+            songStore.toggleFavorite(song.id)
         } label: {
             Label(
-                songStore.isFavorite(songId: song.id) ? "Unfavourite" : "Favourite",
-                systemImage: songStore.isFavorite(songId: song.id) ? "star.fill" : "star"
+                songStore.isFavorite(song.id) ? "Unfavourite" : "Favourite",
+                systemImage: songStore.isFavorite(song.id) ? "star.fill" : "star"
             )
         }
         .padding(.horizontal, 8)
@@ -201,12 +366,11 @@ struct SongDetailView: View {
     }
     #endif
 
-    // MARK: - Song Header
-    /// An amber gradient banner displaying the song number, title and songbook.
+    // MARK: - Song Header (Liquid Glass)
     #if !os(watchOS) && !os(tvOS)
     private var songHeader: some View {
         ZStack(alignment: .bottomLeading) {
-            // Gradient background matching the app's amber brand
+            // Gradient background
             LinearGradient(
                 colors: [AmberTheme.accent, AmberTheme.light],
                 startPoint: .topLeading,
@@ -214,142 +378,205 @@ struct SongDetailView: View {
             )
             .frame(minHeight: 100)
 
-            // Overlaid text content
+            // Content overlaid on gradient
             VStack(alignment: .leading, spacing: 6) {
-                // Songbook name label
-                Text(song.songbookName)
-                    .font(.caption.bold())
-                    .foregroundStyle(.white.opacity(0.85))
-                    .textCase(.uppercase)
+                // Songbook badge with glass effect
+                HStack(spacing: 8) {
+                    Text(song.songbook)
+                        .font(.caption.bold())
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(
+                            Capsule()
+                                .fill(.ultraThinMaterial)
+                        )
+
+                    Text(song.songbookName)
+                        .font(.caption.bold())
+                        .foregroundStyle(.white.opacity(0.85))
+                        .textCase(.uppercase)
+                }
 
                 // Song number and title
                 Text("#\(song.number) — \(song.title)")
                     .font(.title2.bold())
                     .foregroundStyle(.white)
+
+                // Media availability badges
+                HStack(spacing: 8) {
+                    if song.hasAudio {
+                        mediaBadge(icon: "music.note", label: "Audio")
+                    }
+                    if song.hasSheetMusic {
+                        mediaBadge(icon: "doc.richtext", label: "Sheet Music")
+                    }
+                }
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 16)
             .padding(.top, 16)
         }
     }
+
+    private func mediaBadge(icon: String, label: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+            Text(label)
+        }
+        .font(.caption2)
+        .foregroundStyle(.white.opacity(0.8))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(
+            Capsule()
+                .fill(.white.opacity(0.2))
+        )
+    }
     #endif
 
-    // MARK: - Component View (Standard)
-    /// Renders a single lyric component (verse or chorus) for standard platforms.
-    ///
-    /// Verses are left-aligned with a label such as "Verse 1".
-    /// Choruses are indented with an amber leading accent bar to visually separate
-    /// them from verses, matching the web app's chorus styling.
+    // MARK: - Component View
     private func componentView(for component: SongComponent) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            // ── Component Label ──────────────────────────────────────────
-            // e.g. "Verse 1", "Verse 2", "Chorus"
-            Text(componentLabel(for: component))
-                .font(.subheadline.bold())
-                .foregroundStyle(AmberTheme.accent)
+            // Verse/chorus label — hidden when user toggles off
+            if songStore.preferences.showComponentLabels {
+                Text(componentLabel(for: component))
+                    .font(Typography.componentLabel)
+                    .foregroundStyle(AmberTheme.accent)
+            }
 
-            // ── Lyric Lines ──────────────────────────────────────────────
-            // All lines of the component joined with newlines.
+            // Lyrics with user-scaled font size (copy-protected)
             Text(component.lines.joined(separator: "\n"))
-                .font(.body)
-                .lineSpacing(4)
+                .font(scaledLyricsFont)
+                .lineSpacing(songStore.preferences.lineSpacing.value)
+                .textSelection(.disabled)
         }
-        // Indent choruses and add a leading amber accent bar
-        .padding(.leading, component.type == "chorus" ? 20 : 0)
+        .padding(.leading, isChorusType(component) ? 20 : 0)
         .overlay(alignment: .leading) {
-            // A thin amber bar on the left edge of chorus blocks
-            if component.type == "chorus" {
+            if isChorusType(component) && songStore.preferences.highlightChorus {
                 AmberTheme.accent
                     .frame(width: 4)
                     .clipShape(RoundedRectangle(cornerRadius: 2))
             }
         }
+        .componentAccessibility(
+            label: componentLabel(for: component),
+            lyrics: component.lines.joined(separator: " ")
+        )
     }
 
-    // MARK: - Component Label Helper
-    /// Generates a human-readable label for a lyric component.
-    ///
-    /// - Verses are labelled "Verse 1", "Verse 2", etc.
-    /// - Choruses are labelled "Chorus" (or "Refrain").
+    // MARK: - Component Label
     private func componentLabel(for component: SongComponent) -> String {
         switch component.type {
         case "verse":
-            // Include the verse number if it is present and non-nil
-            if let number = component.number {
-                return "Verse \(number)"
-            }
+            if let number = component.number { return "Verse \(number)" }
             return "Verse"
-        case "chorus":
-            return "Chorus"
-        default:
-            return component.type.capitalized
+        case "chorus":     return "Chorus"
+        case "refrain":    return "Refrain"
+        case "bridge":     return "Bridge"
+        case "pre-chorus": return "Pre-Chorus"
+        case "tag":        return "Tag"
+        case "coda":       return "Coda"
+        default:           return component.type.capitalized
         }
     }
 
     // MARK: - Credits Section
-    /// A section at the bottom of the lyrics showing writer, composer and
-    /// copyright attribution.
     #if !os(watchOS) && !os(tvOS)
     private var creditsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            // Horizontal divider separating lyrics from credits
             Divider()
                 .padding(.bottom, 8)
 
-            // Writers (lyricists)
             if !song.writers.isEmpty {
-                creditRow(label: "Words", value: song.writers.joined(separator: ", "))
+                tappableCreditRow(label: "Words", names: song.writers)
             }
 
-            // Composers
             if !song.composers.isEmpty {
-                creditRow(label: "Music", value: song.composers.joined(separator: ", "))
+                tappableCreditRow(label: "Music", names: song.composers)
             }
 
-            // Copyright notice
             if !song.copyright.isEmpty {
                 creditRow(label: "Copyright", value: song.copyright)
             }
 
-            // CCLI number if available
             if !song.ccli.isEmpty {
                 creditRow(label: "CCLI", value: song.ccli)
             }
         }
+        .padding()
+        .liquidGlass(.thin, tint: AmberTheme.wash)
     }
 
-    /// A single credit row with a bold label and a secondary-styled value.
     private func creditRow(label: String, value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
-                .font(.caption.bold())
+                .font(Typography.componentLabel)
                 .foregroundStyle(AmberTheme.accent)
             Text(value)
-                .font(.caption)
+                .font(Typography.metadata)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Credit row where each name is tappable and navigates to the writer's page.
+    private func tappableCreditRow(label: String, names: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(Typography.componentLabel)
+                .foregroundStyle(AmberTheme.accent)
+
+            FlowLayout(spacing: 4) {
+                ForEach(names, id: \.self) { name in
+                    NavigationLink(destination: WriterDetailView(writerName: name)) {
+                        Text(name)
+                            .font(Typography.metadata)
+                            .foregroundStyle(AmberTheme.accent.opacity(0.8))
+                            .underline()
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
         }
     }
     #endif
 
     // MARK: - Toolbar Actions
-    /// Toolbar buttons for favourite toggle, sharing and (macOS-only) printing.
     #if !os(watchOS) && !os(tvOS)
     @ToolbarContentBuilder
     private var toolbarActions: some ToolbarContent {
-        // ── Favourite Toggle ─────────────────────────────────────────────
-        // Tapping the star adds or removes the song from the user's favourites.
         ToolbarItem(placement: .automatic) {
             Button {
-                songStore.toggleFavorite(songId: song.id)
+                songStore.toggleFavorite(song.id)
             } label: {
-                Image(systemName: songStore.isFavorite(songId: song.id) ? "star.fill" : "star")
-                    .foregroundStyle(songStore.isFavorite(songId: song.id) ? AmberTheme.light : .secondary)
+                Image(systemName: songStore.isFavorite(song.id) ? "star.fill" : "star")
+                    .foregroundStyle(songStore.isFavorite(song.id) ? AmberTheme.light : .secondary)
             }
-            .accessibilityLabel(songStore.isFavorite(songId: song.id) ? "Remove from favourites" : "Add to favourites")
+            .accessibilityLabel(songStore.isFavorite(song.id) ? "Remove from favourites" : "Add to favourites")
         }
 
-        // ── Share Button ─────────────────────────────────────────────────
-        // Uses ShareLink to share the song title and first verse text.
+        ToolbarItem(placement: .automatic) {
+            Button {
+                showingAddToSetList = true
+            } label: {
+                Label("Add to Set List", systemImage: "list.bullet.rectangle")
+            }
+        }
+
+        if song.hasSheetMusic {
+            ToolbarItem(placement: .automatic) {
+                NavigationLink(destination: SheetMusicView(song: song)) {
+                    Label("Sheet Music", systemImage: "doc.richtext")
+                }
+            }
+        }
+
+        ToolbarItem(placement: .automatic) {
+            NavigationLink(destination: CompareView(songA: song)) {
+                Label("Compare", systemImage: "rectangle.on.rectangle")
+            }
+        }
+
         ToolbarItem(placement: .automatic) {
             ShareLink(
                 item: sharableText,
@@ -360,7 +587,6 @@ struct SongDetailView: View {
             }
         }
 
-        // ── Print Button (macOS only) ────────────────────────────────────
         #if os(macOS)
         ToolbarItem(placement: .automatic) {
             Button {
@@ -373,8 +599,12 @@ struct SongDetailView: View {
     }
     #endif
 
-    // MARK: - Sharable Text
-    /// Constructs a plain-text representation of the song suitable for sharing.
+    // MARK: - Helpers
+
+    private func isChorusType(_ component: SongComponent) -> Bool {
+        component.type == "chorus" || component.type == "refrain"
+    }
+
     private var sharableText: String {
         var lines: [String] = []
         lines.append("\(song.title) (#\(song.number))")
@@ -393,13 +623,55 @@ struct SongDetailView: View {
         if !song.composers.isEmpty {
             lines.append("Music: \(song.composers.joined(separator: ", "))")
         }
-
+        lines.append("\nShared from iHymns — ihymns.app")
         return lines.joined(separator: "\n")
     }
 
-    // MARK: - Print (macOS)
-    /// Triggers the macOS print dialog for the current song. This is a simplified
-    /// implementation that prints the sharable text.
+    // MARK: - Related Songs
+    #if !os(watchOS) && !os(tvOS)
+    private var relatedSongsSection: some View {
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            Text("Related Songs")
+                .font(Typography.sectionHeader)
+                .foregroundStyle(AmberTheme.accent)
+
+            ForEach(relatedSongs.prefix(5), id: \.id) { related in
+                NavigationLink(destination: SongDetailView(song: related)) {
+                    HStack(spacing: Spacing.md) {
+                        Text("\(related.number)")
+                            .font(.caption.bold().monospacedDigit())
+                            .foregroundStyle(.white)
+                            .frame(width: 32, height: 32)
+                            .background(
+                                AmberTheme.songbookColor(related.songbook),
+                                in: RoundedRectangle(cornerRadius: 6)
+                            )
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(related.title)
+                                .font(.subheadline)
+                                .lineLimit(1)
+                            Text(related.songbookName)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding()
+        .liquidGlass(.thin, tint: AmberTheme.wash)
+    }
+    #endif
+
     #if os(macOS)
     private func printSong() {
         let printInfo = NSPrintInfo.shared
@@ -417,6 +689,91 @@ struct SongDetailView: View {
         printOperation.run()
     }
     #endif
+}
+
+// MARK: - ScrollOffsetKey
+/// Preference key for tracking scroll offset to drive the reading progress bar.
+private struct ScrollOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+// MARK: - AddSongToSetListPicker
+
+/// Quick picker for adding a song to an existing set list.
+struct AddSongToSetListPicker: View {
+
+    let songId: String
+    @EnvironmentObject var songStore: SongStore
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var newSetListName = ""
+    @State private var showingNewSetList = false
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if songStore.setLists.isEmpty {
+                    ContentUnavailableView {
+                        Label("No Set Lists", systemImage: "list.bullet.rectangle")
+                    } description: {
+                        Text("Create a set list first, then add songs to it.")
+                    }
+                } else {
+                    ForEach(songStore.setLists) { setList in
+                        Button {
+                            songStore.addSongToSetList(songId, setListId: setList.id)
+                            HapticManager.success()
+                            dismiss()
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text(setList.name)
+                                        .font(.body)
+                                    Text("\(setList.songIds.count) songs")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "plus.circle")
+                                    .foregroundStyle(AmberTheme.accent)
+                            }
+                        }
+                    }
+                }
+
+                Section {
+                    Button {
+                        showingNewSetList = true
+                    } label: {
+                        Label("Create New Set List", systemImage: "plus")
+                    }
+                }
+            }
+            .navigationTitle("Add to Set List")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            .alert("New Set List", isPresented: $showingNewSetList) {
+                TextField("Set list name", text: $newSetListName)
+                Button("Create & Add") {
+                    let name = newSetListName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !name.isEmpty {
+                        let setList = songStore.createSetList(name: name)
+                        songStore.addSongToSetList(songId, setListId: setList.id)
+                        HapticManager.success()
+                        dismiss()
+                    }
+                    newSetListName = ""
+                }
+                Button("Cancel", role: .cancel) { newSetListName = "" }
+            }
+        }
+    }
 }
 
 // MARK: - Preview
@@ -446,11 +803,6 @@ struct SongDetailView: View {
                     SongComponent(type: "chorus", number: nil, lines: [
                         "Gloria, gloria in excelcis Deo;",
                         "Gloria, gloria, sing glory to God on high!"
-                    ]),
-                    SongComponent(type: "verse", number: 2, lines: [
-                        "They laid him in a manger...",
-                        "where the oxen feed on hay.",
-                        "Gloria, gloria..."
                     ])
                 ]
             )
