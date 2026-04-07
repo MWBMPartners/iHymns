@@ -261,6 +261,7 @@ struct SongbookListView: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .liquidGlass(.regular, tint: AmberTheme.songbookColor(songbook.id))
+        .songbookAccessibility(songbook)
     }
 
     // MARK: - Songbook Row (iPhone)
@@ -287,6 +288,7 @@ struct SongbookListView: View {
             Spacer()
         }
         .padding(.vertical, 4)
+        .songbookAccessibility(songbook)
     }
 
     // MARK: - watchOS Row

@@ -239,6 +239,9 @@ struct UserPreferences: Codable {
     /// Whether to reduce transparency/blur effects.
     var reduceTransparency: Bool = false
 
+    /// Whether to use colourblind-safe palette (Wong 2011 CVD-safe).
+    var useColourblindPalette: Bool = false
+
     /// Auto-scroll speed in pixels per second (0 = disabled).
     var autoScrollSpeed: Double = 0
 
