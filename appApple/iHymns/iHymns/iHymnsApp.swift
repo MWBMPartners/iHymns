@@ -29,6 +29,10 @@ struct iHymnsApp: App {
     /// The deep-linked song ID to navigate to, if any.
     @State private var deepLinkedSongId: String?
 
+    /// Shared set list ID from a deep link.
+    @State private var deepLinkedSetListId: String?
+    @State private var showingSharedSetList = false
+
     /// Whether the first-launch disclaimer has been accepted.
     @State private var disclaimerAccepted = DisclaimerManager.isAccepted
 
@@ -67,6 +71,12 @@ struct iHymnsApp: App {
                         handleDeepLink(url)
                     }
                     .checkForSongUpdates()
+                    .sheet(isPresented: $showingSharedSetList) {
+                        if let setListId = deepLinkedSetListId {
+                            SharedSetListView(shareId: setListId)
+                                .environmentObject(songStore)
+                        }
+                    }
                     .task {
                         await setupPlatformFeatures()
                     }
@@ -125,7 +135,8 @@ struct iHymnsApp: App {
             }
             // Handle shared set lists: /setlist/shared/{id}
             if components.count >= 4 && components[1] == "setlist" && components[2] == "shared" {
-                // TODO: Open shared set list
+                deepLinkedSetListId = components[3]
+                showingSharedSetList = true
             }
         }
     }
