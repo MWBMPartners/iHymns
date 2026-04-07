@@ -27,6 +27,8 @@ struct SongDetailView: View {
     @State private var showingPresentation = false
     @State private var showingCompare = false
     @State private var scrollProgress: CGFloat = 0
+    @State private var contentHeight: CGFloat = 1
+    @State private var viewportHeight: CGFloat = 1
     @State private var swipeTargetSong: Song?
     @State private var showSwipeTarget = false
     @State private var perSongFontScale: Double?
@@ -84,18 +86,20 @@ struct SongDetailView: View {
                 }
                 .background(
                     GeometryReader { geo in
-                        Color.clear.preference(
-                            key: ScrollOffsetKey.self,
-                            value: -geo.frame(in: .named("scroll")).origin.y
-                        )
+                        Color.clear
+                            .preference(key: ScrollOffsetKey.self, value: -geo.frame(in: .named("scroll")).origin.y)
+                            .onAppear { contentHeight = geo.size.height }
+                            .onChange(of: geo.size.height) { _, h in contentHeight = h }
                     }
                 )
             }
             .coordinateSpace(name: "scroll")
+            .background(GeometryReader { geo in
+                Color.clear.onAppear { viewportHeight = geo.size.height }
+            })
             .onPreferenceChange(ScrollOffsetKey.self) { offset in
-                // Estimate total height based on component count
-                let estimatedHeight = CGFloat(song.components.count * 200)
-                scrollProgress = min(1.0, max(0, offset / max(estimatedHeight, 1)))
+                let scrollable = max(contentHeight - viewportHeight, 1)
+                scrollProgress = min(1.0, max(0, offset / scrollable))
             }
 
             // Reading progress bar
