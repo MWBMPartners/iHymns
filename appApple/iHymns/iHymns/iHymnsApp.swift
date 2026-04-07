@@ -39,6 +39,12 @@ struct iHymnsApp: App {
     /// Quick action from Home Screen shortcut.
     @State private var quickAction: QuickAction?
 
+    /// Scene phase for lifecycle events.
+    @Environment(\.scenePhase) private var scenePhase
+
+    /// CloudKit sync manager.
+    @State private var cloudKitSync = CloudKitSyncManager()
+
     // MARK: - Quick Action Types
 
     enum QuickAction: String {
@@ -98,6 +104,23 @@ struct iHymnsApp: App {
         #if os(visionOS)
         .defaultSize(width: 1280, height: 720)
         #endif
+        .onChange(of: scenePhase) { _, newPhase in
+            switch newPhase {
+            case .background:
+                // Flush analytics and sync to CloudKit on background
+                AnalyticsService.shared.flushPendingEvents()
+                AnalyticsService.shared.stopSessionHeartbeat()
+                cloudKitSync.pushToCloud(songStore: songStore)
+            case .active:
+                // Restart heartbeat and pull CloudKit changes
+                if AnalyticsService.shared.isTrackingEnabled {
+                    AnalyticsService.shared.startSessionHeartbeat()
+                }
+                cloudKitSync.pullFromCloud(songStore: songStore)
+            default:
+                break
+            }
+        }
 
         #if os(macOS)
         // macOS: Settings window
@@ -171,6 +194,17 @@ struct iHymnsApp: App {
         if let songs = songStore.songData?.songs {
             await platformManager.indexSongsInSpotlight(songs: songs)
         }
+
+        // Setup CloudKit sync
+        cloudKitSync.setup()
+        cloudKitSync.pullFromCloud(songStore: songStore)
+
+        // Configure TipKit (iOS 17+)
+        #if swift(>=5.9)
+        if #available(iOS 17.0, macOS 14.0, watchOS 10.0, *) {
+            TipKitConfiguration.configure()
+        }
+        #endif
 
         // Sync song data from API
         await songStore.syncFromAPI()
