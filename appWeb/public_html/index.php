@@ -164,6 +164,8 @@ try {
                 $ogDescription .= '. "' . implode(' / ', $firstLines) . '..."';
             }
             $ogType = 'article';
+            $ogImage = getCanonicalUrl('/og-image.php?song=' . urlencode($matches[1]));
+            $ogImageAlt = 'Preview of "' . $ogSong['title'] . '" from ' . $ogSong['songbookName'];
 
             /* JSON-LD: MusicComposition */
             $musicComposition = [
