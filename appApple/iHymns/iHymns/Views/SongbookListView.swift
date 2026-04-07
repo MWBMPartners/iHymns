@@ -127,7 +127,7 @@ struct SongbookListView: View {
 
             // Song of the Day
             if let sotd = songStore.songOfTheDay {
-                Section("Song of the Day") {
+                Section {
                     NavigationLink(destination: SongDetailView(song: sotd)) {
                         HStack(spacing: Spacing.md) {
                             Image(systemName: "sparkles")
@@ -138,13 +138,27 @@ struct SongbookListView: View {
                                 Text(sotd.title)
                                     .font(.body.bold())
                                     .lineLimit(1)
-                                Text("\(sotd.songbook) #\(sotd.number)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+
+                                HStack(spacing: 6) {
+                                    Text("\(sotd.songbook) #\(sotd.number)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+
+                                    if let theme = songStore.songOfTheDayTheme {
+                                        Text(theme)
+                                            .font(.caption2.bold())
+                                            .foregroundStyle(.white)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 1)
+                                            .background(AmberTheme.accent, in: Capsule())
+                                    }
+                                }
                             }
                         }
                         .padding(.vertical, Spacing.xs)
                     }
+                } header: {
+                    Label("Song of the Day", systemImage: "sparkles")
                 }
             }
 

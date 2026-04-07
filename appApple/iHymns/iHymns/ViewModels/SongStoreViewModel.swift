@@ -310,15 +310,16 @@ class SongStore: ObservableObject {
         case title = "A–Z"
     }
 
-    /// Returns the computed Song of the Day based on the current date.
+    /// Returns the Song of the Day with calendar theme awareness.
     var songOfTheDay: Song? {
         guard let songs = songData?.songs, !songs.isEmpty else { return nil }
-        let calendar = Calendar.current
-        let dayOfYear = calendar.ordinality(of: .day, in: .year, for: Date()) ?? 1
-        let hour = calendar.component(.hour, from: Date())
-        let windowIndex = hour / 6  // 4 windows per day
-        let index = ((dayOfYear * 4) + windowIndex) % songs.count
-        return songs[index]
+        return SongOfTheDayEngine.selectSong(from: songs, for: Date())?.song
+    }
+
+    /// Returns the current calendar theme name, if any (e.g., "Christmas", "Easter").
+    var songOfTheDayTheme: String? {
+        guard let songs = songData?.songs, !songs.isEmpty else { return nil }
+        return SongOfTheDayEngine.selectSong(from: songs, for: Date())?.themeName
     }
 
     // MARK: - Favourites Management
