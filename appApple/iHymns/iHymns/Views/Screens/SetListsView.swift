@@ -202,6 +202,12 @@ struct SetListDetailView: View {
                             Label("Export as Text", systemImage: "doc.text")
                         }
                     }
+
+                    #if os(macOS)
+                    Button(action: printSetList) {
+                        Label("Print Set List", systemImage: "printer")
+                    }
+                    #endif
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
@@ -288,6 +294,46 @@ struct SetListDetailView: View {
         lines.append("\nCreated with iHymns — ihymns.app")
         return lines.joined(separator: "\n")
     }
+
+    #if os(macOS)
+    /// Prints the set list with a cover page header.
+    private func printSetList() {
+        guard let text = exportSetListText() else { return }
+
+        let printInfo = NSPrintInfo.shared
+        printInfo.horizontalPagination = .fit
+        printInfo.verticalPagination = .automatic
+        printInfo.topMargin = 72
+        printInfo.bottomMargin = 72
+
+        let printView = NSTextView(frame: NSRect(x: 0, y: 0, width: 468, height: 0))
+
+        // Cover page header
+        let header = """
+        \(setList.name)
+        Worship Set List
+        \(setList.songIds.count) songs
+        ─────────────────────────────────────
+
+        """
+
+        printView.string = header + text
+        printView.font = NSFont.systemFont(ofSize: 12)
+
+        // Style the title
+        let titleRange = NSRange(location: 0, length: setList.name.count)
+        printView.textStorage?.addAttributes([
+            .font: NSFont.boldSystemFont(ofSize: 18)
+        ], range: titleRange)
+
+        printView.sizeToFit()
+
+        let printOp = NSPrintOperation(view: printView, printInfo: printInfo)
+        printOp.showsPrintPanel = true
+        printOp.showsProgressPanel = true
+        printOp.run()
+    }
+    #endif
 }
 
 // MARK: - AddSongToSetListView
