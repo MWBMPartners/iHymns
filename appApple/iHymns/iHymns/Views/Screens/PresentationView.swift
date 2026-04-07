@@ -73,6 +73,24 @@ struct PresentationView: View {
             return .handled
         }
         #endif
+        // Live Activity lifecycle
+        .onChange(of: selectedSongId) { _, newId in
+            #if canImport(ActivityKit) && os(iOS)
+            if let songId = newId, let song = songStore.song(byId: songId) {
+                LiveActivityManager.shared.startActivity(song: song)
+            } else {
+                LiveActivityManager.shared.endActivity()
+            }
+            #endif
+        }
+        .onChange(of: currentComponentIndex) { _, newIndex in
+            #if canImport(ActivityKit) && os(iOS)
+            guard let songId = selectedSongId, let song = songStore.song(byId: songId) else { return }
+            let label = newIndex < song.components.count ? song.components[newIndex].type.capitalized : ""
+            let progress = Double(newIndex + 1) / Double(max(song.components.count, 1))
+            LiveActivityManager.shared.updateActivity(componentLabel: label, progress: progress)
+            #endif
+        }
     }
 
     // MARK: - Song Picker

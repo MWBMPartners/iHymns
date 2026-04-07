@@ -25,7 +25,9 @@ struct SearchSongsIntent: AppIntent {
     var query: String
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        .result(dialog: "Searching for \"\(query)\" in iHymns...")
+        // Store intent for app to process on launch
+        UserDefaults.standard.set(query, forKey: "ihymns_intent_search_query")
+        return .result(dialog: "Searching for \"\(query)\" in iHymns...")
     }
 }
 
@@ -41,7 +43,8 @@ struct ViewSongIntent: AppIntent {
     var songId: String
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        .result(dialog: "Opening song \(songId)...")
+        UserDefaults.standard.set(songId, forKey: "ihymns_intent_song_id")
+        return .result(dialog: "Opening song \(songId)...")
     }
 }
 
@@ -57,8 +60,9 @@ struct RandomSongIntent: AppIntent {
     var songbook: String?
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let bookName = songbook ?? "all songbooks"
-        return .result(dialog: "Finding a random song from \(bookName)...")
+        UserDefaults.standard.set("random", forKey: "ihymns_intent_action")
+        if let book = songbook { UserDefaults.standard.set(book, forKey: "ihymns_intent_songbook") }
+        return .result(dialog: "Finding a random song...")
     }
 }
 
@@ -71,7 +75,8 @@ struct ViewFavoritesIntent: AppIntent {
     static var openAppWhenRun: Bool = true
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        .result(dialog: "Opening your favourites...")
+        UserDefaults.standard.set("favourites", forKey: "ihymns_intent_action")
+        return .result(dialog: "Opening your favourites...")
     }
 }
 
@@ -84,7 +89,8 @@ struct SongOfTheDayIntent: AppIntent {
     static var openAppWhenRun: Bool = true
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        .result(dialog: "Opening the Song of the Day...")
+        UserDefaults.standard.set("songOfTheDay", forKey: "ihymns_intent_action")
+        return .result(dialog: "Opening the Song of the Day...")
     }
 }
 

@@ -115,6 +115,12 @@ final class AudioPlayerService {
             if let soundBank = soundBankURL {
                 midiPlayer = try AVMIDIPlayer(contentsOf: url, soundBankURL: soundBank)
             } else {
+                // No bundled SoundFont found — using system default synthesizer.
+                // For best audio quality, add gs_instruments.dls or GeneralUser.sf2
+                // to the Xcode project as a bundle resource.
+                #if DEBUG
+                print("[iHymns Audio] No bundled SoundFont found. Using system default MIDI synthesizer.")
+                #endif
                 midiPlayer = try AVMIDIPlayer(contentsOf: url, soundBankURL: nil)
             }
 
