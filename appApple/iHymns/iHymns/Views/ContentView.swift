@@ -97,7 +97,7 @@ struct ContentView: View {
             }
         }
         #if !os(watchOS) && !os(tvOS)
-        .onKeyPress("?") {
+        .onKeyPress(characters: CharacterSet(charactersIn: "?")) { _ in
             showingKeyboardShortcuts = true
             return .handled
         }
