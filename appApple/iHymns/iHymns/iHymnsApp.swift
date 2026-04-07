@@ -62,6 +62,7 @@ struct iHymnsApp: App {
                 .onOpenURL { url in
                     handleDeepLink(url)
                 }
+                .checkForSongUpdates()
                 .task {
                     await setupPlatformFeatures()
                 }
@@ -129,6 +130,10 @@ struct iHymnsApp: App {
     private func setupPlatformFeatures() async {
         // Start network monitoring
         networkMonitor.start()
+
+        // Register and schedule background refresh
+        BackgroundRefreshManager.shared.registerBackgroundTask()
+        BackgroundRefreshManager.shared.scheduleBackgroundRefresh()
 
         let platformManager = PlatformFeatureManager.shared
 
