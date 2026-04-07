@@ -54,17 +54,22 @@ enum AmberTheme {
 
     // MARK: Songbook Colours
 
-    /// Returns the brand colour associated with a specific songbook.
-    /// These match the colours used in the web app's songbook cards.
-    /// Returns the songbook colour, respecting the colourblind preference.
-    static func songbookColor(_ id: String, colourblind: Bool = false) -> Color {
-        if colourblind { return ColourblindPalette.songbookColor(id) }
-        return _songbookColor(id)
+    /// Returns the songbook colour, automatically respecting the
+    /// colourblind-safe palette preference from UserDefaults.
+    /// All call sites use this single function — no parameter needed.
+    static func songbookColor(_ id: String) -> Color {
+        // Read the colourblind preference directly for zero-parameter convenience
+        if let data = UserDefaults.standard.data(forKey: "ihymns_preferences"),
+           let prefs = try? JSONDecoder().decode(UserPreferences.self, from: data),
+           prefs.useColourblindPalette {
+            return ColourblindPalette.songbookColor(id)
+        }
+        return _standardSongbookColor(id)
     }
 
     /// Standard brand colour for a songbook.
     /// Colours match the PWA songbook colour map specification.
-    private static func _songbookColor(_ id: String) -> Color {
+    private static func _standardSongbookColor(_ id: String) -> Color {
         switch id.uppercased() {
         case "CP":   return Color(hex: "4f46e5")  // Indigo — Carol Praise
         case "JP":   return Color(hex: "ec4899")  // Pink — Junior Praise
