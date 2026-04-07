@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- App Tracking Transparency -->
+	<key>NSUserTrackingUsageDescription</key>
+	<string>iHymns uses anonymous analytics to understand how the app is used and improve the worship experience. No personal data is collected.</string>
+
+	<!-- Background Modes -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+		<string>processing</string>
+	</array>
+
+	<!-- Background Task Identifiers -->
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>ltd.mwbmpartners.ihymns.refresh</string>
+	</array>
+
+	<!-- Local Network Usage (SharePlay, AirPlay discovery) -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>iHymns uses the local network for SharePlay group worship sessions and AirPlay lyrics projection.</string>
+
+	<!-- Bonjour Services (for Phase 2 Apple TV remote) -->
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_ihymns._tcp</string>
+	</array>
+
+	<!-- URL Schemes -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>ihymns</string>
+				<string>web+ihymns</string>
+			</array>
+			<key>CFBundleURLName</key>
+			<string>ltd.mwbmpartners.ihymns</string>
+		</dict>
+	</array>
+
+	<!-- Supabase Analytics Configuration (build-time override) -->
+	<key>IHYMNS_SUPABASE_URL</key>
+	<string></string>
+	<key>IHYMNS_SUPABASE_ANON_KEY</key>
+	<string></string>
+
+	<!-- App Transport Security (allow ihymns.app API) -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<false/>
+	</dict>
+</dict>
+</plist>

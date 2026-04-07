@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- App Groups: Widget data sharing -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.mwbm.ihymns</string>
+	</array>
+
+	<!-- Associated Domains: Universal Links + Web Credentials -->
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>applinks:ihymns.app</string>
+		<string>applinks:www.ihymns.app</string>
+		<string>webcredentials:ihymns.app</string>
+		<string>appclips:ihymns.app</string>
+	</array>
+
+	<!-- iCloud: CloudKit for cross-device sync -->
+	<key>com.apple.developer.icloud-container-identifiers</key>
+	<array>
+		<string>iCloud.ltd.mwbmpartners.ihymns</string>
+	</array>
+	<key>com.apple.developer.icloud-services</key>
+	<array>
+		<string>CloudKit</string>
+		<string>CloudDocuments</string>
+	</array>
+	<key>com.apple.developer.ubiquity-kvstore-identifier</key>
+	<string>$(TeamIdentifierPrefix)ltd.mwbmpartners.ihymns</string>
+
+	<!-- Push Notifications -->
+	<key>aps-environment</key>
+	<string>development</string>
+
+	<!-- Background Modes -->
+	<key>com.apple.developer.background-modes</key>
+	<array>
+		<string>fetch</string>
+		<string>processing</string>
+	</array>
+
+	<!-- Group Activities (SharePlay) -->
+	<key>com.apple.developer.group-session</key>
+	<true/>
+</dict>
+</plist>

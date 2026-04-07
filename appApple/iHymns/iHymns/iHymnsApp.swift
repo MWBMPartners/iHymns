@@ -139,28 +139,95 @@ struct iHymnsApp: App {
 
     // MARK: - Deep Linking
 
-    /// Handles incoming URLs for deep linking and Handoff.
-    /// Supports both custom scheme (ihymns://) and universal links.
+    /// Handles incoming URLs for deep linking, Handoff, and Universal Links.
+    /// Supports custom scheme (ihymns://) and all ihymns.app URL patterns.
     /// Normalises short song IDs (e.g., "MP-1" → "MP-0001").
     private func handleDeepLink(_ url: URL) {
-        // Handle ihymns://song/{songId}
+        // Custom scheme: ihymns://song/{songId}
         if url.scheme == "ihymns" {
-            if url.host == "song", let songId = url.pathComponents.dropFirst().first {
-                deepLinkedSongId = normaliseSongId(songId)
+            let host = url.host ?? ""
+            let path = url.pathComponents.dropFirst()
+
+            switch host {
+            case "song":
+                if let songId = path.first { deepLinkedSongId = normaliseSongId(songId) }
+            case "search":
+                // ihymns://search?q=query
+                if let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                    .queryItems?.first(where: { $0.name == "q" })?.value {
+                    UserDefaults.standard.set(query, forKey: "ihymns_intent_search_query")
+                    quickAction = .search
+                }
+            case "favorites", "favourites":
+                quickAction = .favorites
+            case "setlist":
+                quickAction = .setlist
+            default:
+                break
             }
+            return
         }
 
-        // Handle https://ihymns.app/song/{songId}
-        if url.host == "ihymns.app" {
-            let components = url.pathComponents
-            if components.count >= 3 && components[1] == "song" {
-                deepLinkedSongId = normaliseSongId(components[2])
-            }
-            // Handle shared set lists: /setlist/shared/{id}
-            if components.count >= 4 && components[1] == "setlist" && components[2] == "shared" {
+        // Universal Links: https://ihymns.app/*
+        guard url.host == "ihymns.app" || url.host == "www.ihymns.app" else { return }
+        let components = url.pathComponents  // ["/" , "song", "CP-0001"]
+
+        guard components.count >= 2 else {
+            // Root URL: ihymns.app/ — open home
+            return
+        }
+
+        switch components[1] {
+        case "song" where components.count >= 3:
+            deepLinkedSongId = normaliseSongId(components[2])
+
+        case "songbook" where components.count >= 3:
+            // /songbook/{id} — open songbook songs list
+            UserDefaults.standard.set(components[2], forKey: "ihymns_deeplink_songbook")
+            quickAction = .search  // Navigate to songbooks area
+
+        case "songbooks":
+            // /songbooks — home/songbooks tab (default)
+            break
+
+        case "search":
+            quickAction = .search
+
+        case "favorites", "favourites":
+            quickAction = .favorites
+
+        case "setlist":
+            if components.count >= 4 && components[2] == "shared" {
                 deepLinkedSetListId = components[3]
                 showingSharedSetList = true
+            } else {
+                quickAction = .setlist
             }
+
+        case "settings":
+            // Navigate to settings (store flag for ContentView to read)
+            UserDefaults.standard.set(true, forKey: "ihymns_deeplink_settings")
+
+        case "help":
+            UserDefaults.standard.set(true, forKey: "ihymns_deeplink_help")
+
+        case "clip":
+            // App Clip URLs: /clip/song/{id}, /clip/setlist/{id}, /clip/sotd
+            if components.count >= 3 {
+                switch components[2] {
+                case "song" where components.count >= 4:
+                    deepLinkedSongId = normaliseSongId(components[3])
+                case "setlist" where components.count >= 4:
+                    deepLinkedSetListId = components[3]
+                    showingSharedSetList = true
+                case "sotd":
+                    UserDefaults.standard.set("songOfTheDay", forKey: "ihymns_intent_action")
+                default: break
+                }
+            }
+
+        default:
+            break
         }
     }
 
