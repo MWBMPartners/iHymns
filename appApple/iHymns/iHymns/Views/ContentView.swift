@@ -34,6 +34,7 @@ struct ContentView: View {
     @State private var globalSearchText: String = ""
     @State private var selectedSongbookId: String?
     @State private var showingDeepLinkedSong: Bool = false
+    @State private var showingKeyboardShortcuts: Bool = false
 
     enum AppTab: Hashable {
         case songbooks, favourites, search, setLists, settings, help
@@ -92,6 +93,24 @@ struct ContentView: View {
                 }
             }
         }
+        #if !os(watchOS) && !os(tvOS)
+        .onKeyPress("?") {
+            showingKeyboardShortcuts = true
+            return .handled
+        }
+        .overlay {
+            if showingKeyboardShortcuts {
+                Color.black.opacity(0.4)
+                    .ignoresSafeArea()
+                    .onTapGesture { showingKeyboardShortcuts = false }
+                    .overlay {
+                        KeyboardShortcutsOverlay(isPresented: $showingKeyboardShortcuts)
+                    }
+                    .transition(.opacity)
+            }
+        }
+        .animation(.liquidGlassQuick, value: showingKeyboardShortcuts)
+        #endif
     }
 
     // MARK: - watchOS Layout
@@ -271,6 +290,11 @@ private struct AdaptiveNavigationView: View {
                     ToolbarItem(placement: .automatic) {
                         NavigationLink(destination: SetListsView()) {
                             Label("Set Lists", systemImage: "list.bullet.rectangle")
+                        }
+                    }
+                    ToolbarItem(placement: .automatic) {
+                        NavigationLink(destination: StatisticsView()) {
+                            Label("Statistics", systemImage: "chart.bar")
                         }
                     }
                     ToolbarItem(placement: .automatic) {

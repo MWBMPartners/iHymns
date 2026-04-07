@@ -170,6 +170,13 @@ struct SongbookListView: View {
                     }
                 }
             }
+
+            // Quick links
+            Section {
+                NavigationLink(destination: StatisticsView()) {
+                    Label("Statistics", systemImage: "chart.bar")
+                }
+            }
         }
         .listStyle(.insetGrouped)
     }
