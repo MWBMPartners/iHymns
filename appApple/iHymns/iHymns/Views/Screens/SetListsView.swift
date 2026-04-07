@@ -220,7 +220,7 @@ struct SetListDetailView: View {
         List {
             ForEach(Array(setList.songIds.enumerated()), id: \.offset) { index, songId in
                 if let song = songStore.song(byId: songId) {
-                    NavigationLink(destination: SongDetailView(song: song)) {
+                    NavigationLink(destination: SetListSongView(setList: setList, currentIndex: index)) {
                         HStack(spacing: Spacing.md) {
                             Text("\(index + 1)")
                                 .font(.caption.weight(.bold))
@@ -356,5 +356,63 @@ struct AddSongToSetListView: View {
                     .foregroundStyle(AmberTheme.accent)
             }
         }
+    }
+}
+
+// MARK: - SetListSongView
+
+/// Wraps SongDetailView with sequential next/previous navigation
+/// for stepping through songs in a set list order.
+struct SetListSongView: View {
+
+    let setList: SetList
+    @State var currentIndex: Int
+    @EnvironmentObject var songStore: SongStore
+
+    private var currentSong: Song? {
+        guard currentIndex >= 0 && currentIndex < setList.songIds.count else { return nil }
+        return songStore.song(byId: setList.songIds[currentIndex])
+    }
+
+    private var hasPrevious: Bool { currentIndex > 0 }
+    private var hasNext: Bool { currentIndex < setList.songIds.count - 1 }
+
+    var body: some View {
+        Group {
+            if let song = currentSong {
+                SongDetailView(song: song)
+            } else {
+                ContentUnavailableView("Song Not Found", systemImage: "music.note")
+            }
+        }
+        #if !os(watchOS) && !os(tvOS)
+        .toolbar {
+            ToolbarItemGroup(placement: .bottomBar) {
+                Button {
+                    if hasPrevious { currentIndex -= 1 }
+                    HapticManager.selectionChanged()
+                } label: {
+                    Label("Previous", systemImage: "chevron.left")
+                }
+                .disabled(!hasPrevious)
+
+                Spacer()
+
+                Text("\(currentIndex + 1) of \(setList.songIds.count)")
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Button {
+                    if hasNext { currentIndex += 1 }
+                    HapticManager.selectionChanged()
+                } label: {
+                    Label("Next", systemImage: "chevron.right")
+                }
+                .disabled(!hasNext)
+            }
+        }
+        #endif
     }
 }

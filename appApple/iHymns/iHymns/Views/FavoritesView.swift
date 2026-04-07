@@ -17,6 +17,7 @@ struct FavoritesView: View {
     @State private var isSelectionMode: Bool = false
     @State private var selectedSongIds: Set<String> = []
     @State private var showingTagPicker: Bool = false
+    @State private var tagPickerSongId: String?
     @State private var showingNewTag: Bool = false
     @State private var newTagName: String = ""
     @State private var showingExportSheet: Bool = false
@@ -78,6 +79,54 @@ struct FavoritesView: View {
             }
             Button("Cancel", role: .cancel) { newTagName = "" }
         }
+        .sheet(isPresented: $showingTagPicker) {
+            if let songId = tagPickerSongId {
+                TagPickerSheet(songId: songId)
+                    .environmentObject(songStore)
+            }
+        }
+    }
+
+    // MARK: - Tag Picker Sheet
+
+    /// Allows assigning/removing tags from a single song.
+    private struct TagPickerSheet: View {
+        let songId: String
+        @EnvironmentObject var songStore: SongStore
+        @Environment(\.dismiss) private var dismiss
+
+        var body: some View {
+            NavigationStack {
+                List {
+                    ForEach(songStore.allTags, id: \.name) { tag in
+                        let isAssigned = songStore.tagsForSong(songId).contains(tag.name)
+                        Button {
+                            if isAssigned {
+                                songStore.removeTag(tag.name, from: songId)
+                            } else {
+                                songStore.addTag(tag.name, to: songId)
+                            }
+                            HapticManager.selectionChanged()
+                        } label: {
+                            HStack {
+                                Text(tag.name)
+                                Spacer()
+                                if isAssigned {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(AmberTheme.accent)
+                                }
+                            }
+                        }
+                    }
+                }
+                .navigationTitle("Tag Song")
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { dismiss() }
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Empty State
@@ -128,6 +177,7 @@ struct FavoritesView: View {
                             }
 
                             Button {
+                                tagPickerSongId = song.id
                                 showingTagPicker = true
                             } label: {
                                 Label("Tag", systemImage: "tag")
