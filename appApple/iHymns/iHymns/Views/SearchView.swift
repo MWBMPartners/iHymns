@@ -20,6 +20,8 @@ struct SearchView: View {
     @State private var numberInput: String = ""
     @State private var showingRandomSong: Bool = false
     @State private var randomSong: Song?
+    @State private var numpadNavigationTarget: Song?
+    @State private var showingMissingSongRequest: Bool = false
 
     /// Debounce timer for search-as-you-type.
     @State private var debounceTask: Task<Void, Never>?
@@ -112,6 +114,14 @@ struct SearchView: View {
                 ProgressView("Finding a song...")
             }
         }
+        .sheet(isPresented: $showingMissingSongRequest) {
+            MissingSongRequestView(prefillQuery: searchText)
+                .environmentObject(songStore)
+        }
+        .navigationDestination(item: $numpadNavigationTarget) { song in
+            SongDetailView(song: song)
+                .environmentObject(songStore)
+        }
     }
 
     // MARK: - Debounce
@@ -134,7 +144,17 @@ struct SearchView: View {
             if searchText.isEmpty {
                 searchIdleState
             } else if searchResults.isEmpty && !debouncedQuery.isEmpty {
-                ContentUnavailableView.search(text: searchText)
+                VStack(spacing: Spacing.lg) {
+                    ContentUnavailableView.search(text: searchText)
+                    Button {
+                        showingMissingSongRequest = true
+                    } label: {
+                        Label("Request this song", systemImage: "plus.bubble")
+                            .font(.subheadline)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(AmberTheme.accent)
+                }
             } else if !debouncedQuery.isEmpty {
                 resultsList
             } else {
@@ -241,9 +261,8 @@ struct SearchView: View {
             numberInput.removeLast()
         case "Go":
             if let first = numberResults.first {
-                // Navigate to first result — handled by the list
+                numpadNavigationTarget = first
                 HapticManager.mediumImpact()
-                _ = first
             }
         default:
             if numberInput.count < 5 {

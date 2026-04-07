@@ -67,12 +67,27 @@ struct SongListView: View {
                         .listRowBackground(Color.clear)
                     }
 
-                    // Song rows
-                    ForEach(filteredSongs, id: \.id) { song in
-                        NavigationLink(destination: SongDetailView(song: song)) {
-                            SongRow(song: song, songStore: songStore)
+                    // Song rows — when sorted A-Z, group by first letter for scroll targets
+                    if sortMode == .title {
+                        ForEach(availableLetters, id: \.self) { letter in
+                            Section {
+                                ForEach(filteredSongs.filter { $0.title.prefix(1).uppercased() == letter }) { song in
+                                    NavigationLink(destination: SongDetailView(song: song)) {
+                                        SongRow(song: song, songStore: songStore)
+                                    }
+                                }
+                            } header: {
+                                Text(letter)
+                                    .font(.headline)
+                                    .id("letter-\(letter)")
+                            }
                         }
-                        .id(song.title.prefix(1).uppercased())
+                    } else {
+                        ForEach(filteredSongs, id: \.id) { song in
+                            NavigationLink(destination: SongDetailView(song: song)) {
+                                SongRow(song: song, songStore: songStore)
+                            }
+                        }
                     }
                 }
                 .listStyle(.plain)
@@ -112,7 +127,7 @@ struct SongListView: View {
                 Button {
                     HapticManager.selectionChanged()
                     withAnimation(.liquidGlassQuick) {
-                        proxy.scrollTo(letter, anchor: .top)
+                        proxy.scrollTo("letter-\(letter)", anchor: .top)
                     }
                 } label: {
                     Text(letter)
