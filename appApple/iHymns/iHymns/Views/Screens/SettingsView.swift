@@ -177,6 +177,26 @@ struct SettingsView: View {
 
                 aboutRow("Developer", value: AppInfo.Application.Vendor.name)
 
+                NavigationLink(destination: PrivacyPolicyView()) {
+                    HStack {
+                        Text("Privacy Policy")
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                NavigationLink(destination: TermsOfUseView()) {
+                    HStack {
+                        Text("Terms of Use")
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Link(destination: URL(string: AppInfo.Application.websiteURL)!) {
                     HStack {
                         Text("Website")

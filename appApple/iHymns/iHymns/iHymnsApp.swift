@@ -29,6 +29,9 @@ struct iHymnsApp: App {
     /// The deep-linked song ID to navigate to, if any.
     @State private var deepLinkedSongId: String?
 
+    /// Whether the first-launch disclaimer has been accepted.
+    @State private var disclaimerAccepted = DisclaimerManager.isAccepted
+
     /// Quick action from Home Screen shortcut.
     @State private var quickAction: QuickAction?
 
@@ -54,18 +57,28 @@ struct iHymnsApp: App {
             }
             #else
             // All other platforms
-            ContentView(deepLinkedSongId: $deepLinkedSongId, quickAction: $quickAction)
+            if disclaimerAccepted {
+                ContentView(deepLinkedSongId: $deepLinkedSongId, quickAction: $quickAction)
+                    .environmentObject(songStore)
+                    .environment(networkMonitor)
+                    .preferredColorScheme(songStore.preferences.theme.colorScheme)
+                    .environment(\.dynamicTypeSize, .large)
+                    .onOpenURL { url in
+                        handleDeepLink(url)
+                    }
+                    .checkForSongUpdates()
+                    .task {
+                        await setupPlatformFeatures()
+                    }
+            } else {
+                NavigationStack {
+                    FirstLaunchDisclaimerView {
+                        DisclaimerManager.markAccepted()
+                        disclaimerAccepted = true
+                    }
+                }
                 .environmentObject(songStore)
-                .environment(networkMonitor)
-                .preferredColorScheme(songStore.preferences.theme.colorScheme)
-                .environment(\.dynamicTypeSize, .large)
-                .onOpenURL { url in
-                    handleDeepLink(url)
-                }
-                .checkForSongUpdates()
-                .task {
-                    await setupPlatformFeatures()
-                }
+            }
             #endif
         }
         .tint(AmberTheme.accent)
