@@ -156,6 +156,9 @@ struct SongbookListView: View {
                             }
                         }
                         .padding(.vertical, Spacing.xs)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("Song of the Day: \(sotd.title), \(sotd.songbookName) number \(sotd.number)")
+                        .accessibilityHint("Double tap to view lyrics")
                     }
                 } header: {
                     Label("Song of the Day", systemImage: "sparkles")

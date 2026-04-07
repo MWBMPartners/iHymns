@@ -450,6 +450,10 @@ struct SongDetailView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 2))
             }
         }
+        .componentAccessibility(
+            label: componentLabel(for: component),
+            lyrics: component.lines.joined(separator: " ")
+        )
     }
 
     // MARK: - Component Label

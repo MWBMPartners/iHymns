@@ -510,6 +510,7 @@ struct SearchView: View {
             }
         }
         .padding(.vertical, 4)
+        .songAccessibility(song, isFavorite: songStore.isFavorite(song.id))
     }
 }
 
