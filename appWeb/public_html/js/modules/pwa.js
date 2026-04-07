@@ -11,8 +11,8 @@
  *   - Chrome/Edge/Samsung (Android & desktop): uses beforeinstallprompt API
  *   - Safari iOS:  "Tap Share below → Add to Home Screen" (iOS 15+ bottom bar)
  *   - Safari macOS: "File → Add to Dock" instructions
- *   - iOS non-Safari (Chrome, Edge, Firefox, Opera): guides user to open
- *     in Safari, since only Safari can install PWAs on iOS
+ *   - iOS non-Safari (Chrome, Edge, Firefox, Opera): banner hidden,
+ *     since only Safari can install PWAs on iOS
  *   - Native app stores: redirects to app store if configured
  *
  * The banner HTML starts empty (no default content) — all text, icons, and
@@ -92,15 +92,7 @@ export class PWA {
                 showButton: false,
             });
         } else if (platform.startsWith('ios-')) {
-            /* iOS non-Safari: Chrome, Edge, Firefox, Opera — guide to Safari */
-            this.showPlatformBanner({
-                icon: 'fa-brands fa-safari',
-                text: 'To install, open in <strong>Safari</strong> then tap <strong>Share</strong> → <strong>Add to Home Screen</strong>',
-                showButton: true,
-                buttonIcon: 'fa-solid fa-copy',
-                buttonText: 'Copy Link',
-                buttonAction: () => this.copyCurrentUrl(),
-            });
+            /* iOS non-Safari: cannot install PWAs — don't show banner */
         } else if (platform === 'macos-safari') {
             this.showPlatformBanner({
                 icon: 'fa-solid fa-display',
@@ -279,28 +271,6 @@ export class PWA {
             if (outcome === 'accepted') {
                 this.hideInstallBanner();
             }
-        }
-    }
-
-    /**
-     * Copy the current page URL to clipboard for pasting into Safari.
-     * Shows a toast confirmation.
-     */
-    async copyCurrentUrl() {
-        try {
-            await navigator.clipboard.writeText(window.location.href);
-            this.app.showToast('Link copied — open Safari and paste to install', 'success');
-        } catch {
-            /* Fallback for older browsers */
-            const textArea = document.createElement('textarea');
-            textArea.value = window.location.href;
-            textArea.style.position = 'fixed';
-            textArea.style.opacity = '0';
-            document.body.appendChild(textArea);
-            textArea.select();
-            document.execCommand('copy');
-            document.body.removeChild(textArea);
-            this.app.showToast('Link copied — open Safari and paste to install', 'success');
         }
     }
 
