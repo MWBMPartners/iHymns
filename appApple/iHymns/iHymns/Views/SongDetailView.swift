@@ -29,12 +29,20 @@ struct SongDetailView: View {
     @State private var scrollProgress: CGFloat = 0
     @State private var swipeTargetSong: Song?
     @State private var showSwipeTarget = false
+    @State private var perSongFontScale: Double?
 
-    /// Scaled font size based on user preferences.
+    /// Per-song font override key.
+    private var perSongFontKey: String { "ihymns_font_\(song.id)" }
+
+    /// Effective font scale: per-song override or global preference.
+    private var effectiveFontScale: Double {
+        perSongFontScale ?? songStore.preferences.lyricsFontScale
+    }
+
+    /// Scaled font size based on effective preference.
     private var scaledLyricsFont: Font {
         let baseSize: CGFloat = 18
-        let scaled = baseSize * songStore.preferences.lyricsFontScale
-        return .system(size: scaled)
+        return .system(size: baseSize * effectiveFontScale)
     }
 
     /// Related songs based on shared writers/composers/songbook.
@@ -110,6 +118,9 @@ struct SongDetailView: View {
         .navigationTitle(song.title)
         .onAppear {
             songStore.recordSongView(song)
+            // Load per-song font scale override
+            let saved = UserDefaults.standard.double(forKey: perSongFontKey)
+            if saved > 0 { perSongFontScale = saved }
         }
         .sheet(isPresented: $showingAddToSetList) {
             AddSongToSetListPicker(songId: song.id)
@@ -151,8 +162,64 @@ struct SongDetailView: View {
     #if !os(watchOS) && !os(tvOS)
     @ViewBuilder
     private var standardContent: some View {
+        // Breadcrumb navigation
+        HStack(spacing: 4) {
+            NavigationLink(destination: SongListView(songbookId: song.songbook)) {
+                Text(song.songbookName)
+                    .font(.caption)
+                    .foregroundStyle(AmberTheme.accent)
+            }
+            .buttonStyle(.plain)
+            Image(systemName: "chevron.right")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text("#\(song.number)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 8)
+
         // Liquid Glass song header
         songHeader
+
+        // Per-song font size control
+        HStack(spacing: Spacing.sm) {
+            Image(systemName: "textformat.size")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Slider(
+                value: Binding(
+                    get: { effectiveFontScale },
+                    set: { newVal in
+                        perSongFontScale = newVal
+                        UserDefaults.standard.set(newVal, forKey: perSongFontKey)
+                    }
+                ),
+                in: 0.5...3.0,
+                step: 0.1
+            )
+            .tint(AmberTheme.accent)
+
+            Text("\(String(format: "%.1f", effectiveFontScale))x")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 32)
+
+            if perSongFontScale != nil {
+                Button {
+                    perSongFontScale = nil
+                    UserDefaults.standard.removeObject(forKey: perSongFontKey)
+                } label: {
+                    Image(systemName: "arrow.counterclockwise")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 8)
 
         // Audio player (if available)
         if song.hasAudio {
@@ -364,10 +431,11 @@ struct SongDetailView: View {
                     .foregroundStyle(AmberTheme.accent)
             }
 
-            // Lyrics with user-scaled font size
+            // Lyrics with user-scaled font size (copy-protected)
             Text(component.lines.joined(separator: "\n"))
                 .font(scaledLyricsFont)
                 .lineSpacing(songStore.preferences.lineSpacing.value)
+                .textSelection(.disabled)
         }
         .padding(.leading, isChorusType(component) ? 20 : 0)
         .overlay(alignment: .leading) {
