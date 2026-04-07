@@ -208,6 +208,12 @@ export class Search {
 
             console.log(`[Search] Fuse.js index built: ${this.songsData.length} songs`);
 
+            /* Re-render Song of the Day if home page is active (#108) —
+               the home page may have rendered before song data finished loading */
+            if (document.getElementById('song-of-the-day') && this.app.songOfTheDay) {
+                this.app.songOfTheDay.renderHomeSection();
+            }
+
         } catch (error) {
             console.warn('[Search] Fuse.js loading failed, using API fallback:', error);
             this.fuseFailed = true;
