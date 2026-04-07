@@ -6,72 +6,130 @@
 //  iHymns
 //
 //  The main entry point for the iHymns universal Apple app.
-//  This file bootstraps the SwiftUI application, initialises the
-//  central data store, configures platform-specific appearance, and
-//  injects shared state into the view hierarchy via environment objects.
+//  Bootstraps the SwiftUI application across all Apple platforms
+//  (iOS, iPadOS, macOS, tvOS, watchOS, visionOS), initialises the
+//  central data store, configures platform-specific features, and
+//  handles deep linking / URL routing.
 //
 
 import SwiftUI
 
-/// The root application struct, marked with `@main` so the system
-/// knows this is the single entry point for every supported platform.
+/// The root application struct — single entry point for all platforms.
 @main
 struct iHymnsApp: App {
 
     // MARK: - State
 
-    /// The shared data store that holds all songs, songbooks, metadata,
-    /// and user favourites. Created once here and injected into the
-    /// entire view tree via `.environmentObject`.
+    /// Shared data store injected into the entire view hierarchy.
     @StateObject private var songStore = SongStore()
+
+    /// Network connectivity monitor.
+    @State private var networkMonitor = NetworkMonitor()
+
+    /// The deep-linked song ID to navigate to, if any.
+    @State private var deepLinkedSongId: String?
+
+    /// Quick action from Home Screen shortcut.
+    @State private var quickAction: QuickAction?
+
+    // MARK: - Quick Action Types
+
+    enum QuickAction: String {
+        case search = "ltd.mwbmpartners.ihymns.search"
+        case favorites = "ltd.mwbmpartners.ihymns.favorites"
+        case random = "ltd.mwbmpartners.ihymns.random"
+        case setlist = "ltd.mwbmpartners.ihymns.setlist"
+    }
 
     // MARK: - Body
 
-    /// The scene declaration that defines the app's window hierarchy.
-    /// A single `WindowGroup` is used across all platforms; platform-
-    /// specific modifiers are applied where appropriate.
     var body: some Scene {
-
-        // A `WindowGroup` provides the main window on every platform.
-        // On iPadOS it also enables multi-window support automatically.
         WindowGroup {
-
             #if os(watchOS)
-            // watchOS uses a slimmer navigation stack because the screen
-            // is very small. We skip the full sidebar / split-view layout
-            // and jump straight into a minimal list-based navigation.
+            // watchOS: Minimal NavigationStack
             NavigationStack {
-                // Pass the shared store into the view hierarchy so every
-                // child view can read songs, favourites, etc.
-                ContentView()
+                ContentView(deepLinkedSongId: $deepLinkedSongId)
                     .environmentObject(songStore)
+                    .environment(networkMonitor)
             }
             #else
-            // All other platforms (iOS, iPadOS, macOS, tvOS, visionOS)
-            // use the full ContentView which internally decides its own
-            // navigation strategy (e.g. NavigationSplitView on iPad).
-            ContentView()
+            // All other platforms
+            ContentView(deepLinkedSongId: $deepLinkedSongId, quickAction: $quickAction)
                 .environmentObject(songStore)
+                .environment(networkMonitor)
+                .onOpenURL { url in
+                    handleDeepLink(url)
+                }
+                .task {
+                    await setupPlatformFeatures()
+                }
             #endif
         }
-        // Apply the brand tint colour (amber #b45309) globally so that
-        // interactive controls such as buttons, toggles, and navigation
-        // links pick it up automatically across every platform.
-        .tint(Color(red: 180.0 / 255.0, green: 83.0 / 255.0, blue: 9.0 / 255.0))
-
+        .tint(AmberTheme.accent)
         #if os(tvOS)
-        // On tvOS the default window can be quite large; we request a
-        // sensible starting size so the UI does not stretch excessively
-        // on very large displays. `.defaultSize` is available from
-        // tvOS 17+ and visionOS 1+.
         .defaultSize(width: 1920, height: 1080)
         #endif
-
         #if os(visionOS)
-        // On visionOS we also set a reasonable default window size so
-        // the app opens at a comfortable reading width in the user's
-        // spatial environment.
         .defaultSize(width: 1280, height: 720)
         #endif
+
+        #if os(macOS)
+        // macOS: Settings window
+        Settings {
+            SettingsView()
+                .environmentObject(songStore)
+        }
+
+        // macOS: Additional window for presentation mode
+        WindowGroup("Presentation", id: "presentation") {
+            PresentationView()
+                .environmentObject(songStore)
+        }
+        #endif
+    }
+
+    // MARK: - Deep Linking
+
+    /// Handles incoming URLs for deep linking and Handoff.
+    /// Supports both custom scheme (ihymns://) and universal links.
+    private func handleDeepLink(_ url: URL) {
+        // Handle ihymns://song/{songId}
+        if url.scheme == "ihymns" {
+            if url.host == "song", let songId = url.pathComponents.dropFirst().first {
+                deepLinkedSongId = songId
+            }
+        }
+
+        // Handle https://ihymns.app/song/{songId}
+        if url.host == "ihymns.app" {
+            let components = url.pathComponents
+            if components.count >= 3 && components[1] == "song" {
+                deepLinkedSongId = components[2]
+            }
+        }
+    }
+
+    // MARK: - Platform Setup
+
+    /// Initialises platform-specific features after launch.
+    private func setupPlatformFeatures() async {
+        // Start network monitoring
+        networkMonitor.start()
+
+        let platformManager = PlatformFeatureManager.shared
+
+        // Setup notifications (Song of the Day)
+        await platformManager.setupNotifications()
+
+        // Setup Home Screen quick actions
+        platformManager.setupQuickActions()
+
+        // Index songs in Spotlight
+        if let songs = songStore.songData?.songs {
+            await platformManager.indexSongsInSpotlight(songs: songs)
+        }
+
+        // Sync song data from API
+        await songStore.syncFromAPI()
     }
 }

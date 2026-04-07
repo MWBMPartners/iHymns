@@ -7,94 +7,34 @@
 import SwiftUI
 
 // MARK: - SearchView
-/// A full-text search view that filters all songs across every songbook.
-///
-/// The user can search by:
-/// - Song title
-/// - Lyrics content (all component lines)
-/// - Songbook name or abbreviation
-/// - Writer / composer names
-/// - Song number
-///
-/// Results are displayed in a list with each row showing the song number, title,
-/// a songbook badge and a brief lyrics preview. Tapping a result navigates to
-/// `SongDetailView`.
-///
-/// An empty state is shown when the search yields no matches.
+/// Full-text search across all songs with search history, API fallback,
+/// and Liquid Glass result cards.
 struct SearchView: View {
 
-    // MARK: Environment
-    /// The shared song store providing the complete list of songs to search through.
     @EnvironmentObject var songStore: SongStore
-
-    // MARK: State
-    /// The current search query entered by the user. Bound to the search field.
     @State var searchText: String
+    @State private var isSearchingAPI: Bool = false
 
-    // MARK: Initialisers
-    /// Default initialiser with an empty search string (used in the iPhone tab).
     init() {
         _searchText = State(initialValue: "")
     }
 
-    /// Initialiser that accepts an initial search string, used when the iPad/Mac
-    /// split-view global search bar passes a query to the detail column.
     init(initialSearchText: String) {
         _searchText = State(initialValue: initialSearchText)
     }
 
-    // MARK: Computed Properties
-    /// The filtered list of songs matching the current search query.
-    /// Returns an empty array when the search text is blank to avoid showing
-    /// all 3,600+ songs at once.
+    /// Local search results from the indexed song store.
     private var searchResults: [Song] {
-        // Do not display results until the user has typed at least one character
-        guard !searchText.isEmpty else { return [] }
-
-        let query = searchText.lowercased()
-
-        return songStore.songData.songs.filter { song in
-            // Match against the song title
-            if song.title.lowercased().contains(query) { return true }
-
-            // Match against the song number (as a string)
-            if String(song.number).contains(query) { return true }
-
-            // Match against the songbook name or abbreviation
-            if song.songbookName.lowercased().contains(query) { return true }
-            if song.songbook.lowercased().contains(query) { return true }
-
-            // Match against writer names
-            if song.writers.contains(where: { $0.lowercased().contains(query) }) { return true }
-
-            // Match against composer names
-            if song.composers.contains(where: { $0.lowercased().contains(query) }) { return true }
-
-            // Match against lyrics content (all lines in all components)
-            for component in song.components {
-                if component.lines.contains(where: { $0.lowercased().contains(query) }) {
-                    return true
-                }
-            }
-
-            return false
-        }
+        songStore.searchSongsLocally(query: searchText)
     }
 
-    // MARK: Body
     var body: some View {
         Group {
             if searchText.isEmpty {
-                // ── Initial State ────────────────────────────────────────
-                // Shown before the user has typed anything. Provides a
-                // friendly prompt encouraging search input.
-                searchPrompt
-            } else if searchResults.isEmpty {
-                // ── No Results State ─────────────────────────────────────
-                // Shown when the query does not match any songs.
+                searchIdleState
+            } else if searchResults.isEmpty && !isSearchingAPI {
                 ContentUnavailableView.search(text: searchText)
             } else {
-                // ── Results List ─────────────────────────────────────────
                 resultsList
             }
         }
@@ -102,26 +42,113 @@ struct SearchView: View {
         #if !os(tvOS) && !os(watchOS)
         .navigationBarTitleDisplayMode(.large)
         #endif
-        // Attach the searchable modifier so the system provides a search bar
-        .searchable(text: $searchText, prompt: "Title, lyrics, number, writer…")
+        .searchable(text: $searchText, prompt: "Title, lyrics, number, writer...")
+        .onSubmit(of: .search) {
+            songStore.recordSearch(searchText)
+        }
     }
 
-    // MARK: - Search Prompt (Initial State)
-    /// A centred placeholder shown before the user begins typing.
-    private var searchPrompt: some View {
-        ContentUnavailableView {
-            Label("Search Hymns", systemImage: "magnifyingglass")
-        } description: {
-            Text("Search across all songbooks by title, lyrics, song number, writer or composer.")
+    // MARK: - Idle State (Search History + Prompt)
+
+    private var searchIdleState: some View {
+        ScrollView {
+            VStack(spacing: Spacing.xl) {
+                // Search prompt
+                VStack(spacing: Spacing.sm) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 48, weight: .light))
+                        .foregroundStyle(AmberTheme.light.opacity(0.6))
+
+                    Text("Search Hymns")
+                        .font(Typography.sectionHeader)
+
+                    Text("Search across all songbooks by title, lyrics, song number, writer or composer.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.top, Spacing.xxl)
+
+                // Search history
+                if !songStore.searchHistory.isEmpty {
+                    VStack(alignment: .leading, spacing: Spacing.md) {
+                        HStack {
+                            Text("Recent Searches")
+                                .font(.headline)
+                            Spacer()
+                            Button("Clear") {
+                                songStore.clearSearchHistory()
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+
+                        // History chips
+                        FlowLayout(spacing: 8) {
+                            ForEach(songStore.searchHistory) { entry in
+                                Button {
+                                    searchText = entry.query
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "clock")
+                                            .font(.caption2)
+                                        Text(entry.query)
+                                            .font(.subheadline)
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .liquidGlass(.thin, tint: AmberTheme.accent)
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.primary)
+                            }
+                        }
+                    }
+                    .padding(.horizontal)
+                }
+
+                // Song of the Day suggestion
+                if let sotd = songStore.songOfTheDay {
+                    VStack(alignment: .leading, spacing: Spacing.sm) {
+                        Text("Song of the Day")
+                            .font(.headline)
+                            .padding(.horizontal)
+
+                        NavigationLink(destination: SongDetailView(song: sotd)) {
+                            HStack(spacing: Spacing.md) {
+                                Image(systemName: "sparkles")
+                                    .font(.title2)
+                                    .foregroundStyle(AmberTheme.light)
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(sotd.title)
+                                        .font(.body.bold())
+                                    Text("\(sotd.songbook) #\(sotd.number)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+
+                                Spacer()
+
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding()
+                            .liquidGlass(.regular, tint: AmberTheme.accent)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal)
+                    }
+                }
+            }
         }
     }
 
     // MARK: - Results List
-    /// The list of search results, each row showing song metadata and a songbook badge.
+
     private var resultsList: some View {
         List {
-            // ── Result Count Header ──────────────────────────────────────
-            // A small header indicating how many songs matched the query.
             Section {
                 Text("\(searchResults.count) result\(searchResults.count == 1 ? "" : "s") for \"\(searchText)\"")
                     .font(.caption)
@@ -129,10 +156,8 @@ struct SearchView: View {
                     .listRowBackground(Color.clear)
             }
 
-            // ── Search Result Rows ───────────────────────────────────────
-            // Each result links to the full song detail view.
             Section {
-                ForEach(searchResults, id: \.id) { song in
+                ForEach(searchResults.prefix(100), id: \.id) { song in
                     NavigationLink(destination: SongDetailView(song: song)) {
                         searchResultRow(for: song)
                     }
@@ -143,36 +168,40 @@ struct SearchView: View {
     }
 
     // MARK: - Search Result Row
-    /// A single row in the search results list showing the song number, title,
-    /// a coloured songbook badge, and a brief lyrics preview.
+
     private func searchResultRow(for song: Song) -> some View {
         HStack(spacing: 14) {
-            // ── Song Number Badge ────────────────────────────────────────
-            // The number displayed in an amber rounded rectangle.
             Text("\(song.number)")
                 .font(.subheadline.bold().monospacedDigit())
                 .foregroundStyle(.white)
                 .frame(width: 44, height: 44)
-                .background(AmberTheme.accent, in: RoundedRectangle(cornerRadius: 8))
+                .background(
+                    AmberTheme.songbookColor(song.songbook),
+                    in: RoundedRectangle(cornerRadius: 8)
+                )
 
-            // ── Title, Songbook Badge and Preview ────────────────────────
             VStack(alignment: .leading, spacing: 4) {
-                // Song title
                 Text(song.title)
                     .font(.body.bold())
                     .lineLimit(1)
 
                 HStack(spacing: 8) {
-                    // Songbook abbreviation badge (e.g. "MP", "CH")
                     Text(song.songbook)
                         .font(.caption2.bold())
                         .foregroundStyle(.white)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(AmberTheme.accent.opacity(0.7), in: Capsule())
+                        .background(
+                            AmberTheme.songbookColor(song.songbook).opacity(0.7),
+                            in: Capsule()
+                        )
 
-                    // Lyrics preview from first component
-                    if let firstComponent = song.components.first {
+                    if !song.writers.isEmpty {
+                        Text(song.writersDisplay)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    } else if let firstComponent = song.components.first {
                         Text(firstComponent.lines.prefix(2).joined(separator: " "))
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -184,6 +213,56 @@ struct SearchView: View {
             Spacer()
         }
         .padding(.vertical, 4)
+    }
+}
+
+// MARK: - FlowLayout
+/// A simple flow layout that wraps items to the next line when they exceed
+/// the available width. Used for search history chips.
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let result = layout(proposal: proposal, subviews: subviews)
+        return result.size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let result = layout(proposal: proposal, subviews: subviews)
+        for (index, subview) in subviews.enumerated() {
+            guard index < result.positions.count else { break }
+            subview.place(
+                at: CGPoint(
+                    x: bounds.minX + result.positions[index].x,
+                    y: bounds.minY + result.positions[index].y
+                ),
+                proposal: .unspecified
+            )
+        }
+    }
+
+    private func layout(proposal: ProposedViewSize, subviews: Subviews) -> (size: CGSize, positions: [CGPoint]) {
+        let maxWidth = proposal.width ?? .infinity
+        var positions: [CGPoint] = []
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        var maxX: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x + size.width > maxWidth && x > 0 {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            positions.append(CGPoint(x: x, y: y))
+            rowHeight = max(rowHeight, size.height)
+            x += size.width + spacing
+            maxX = max(maxX, x)
+        }
+
+        return (CGSize(width: maxX, height: y + rowHeight), positions)
     }
 }
 

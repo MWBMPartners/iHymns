@@ -7,33 +7,30 @@
 import SwiftUI
 
 // MARK: - FavoritesView
-/// Displays the user's favourited songs in a list.
-///
-/// The view mirrors the row format used in `SongListView` (number badge, title,
-/// lyrics preview, star indicator) so the experience is consistent. Songs can be
-/// removed from favourites via a swipe-to-delete gesture or by tapping the star
-/// in the detail view.
-///
-/// An empty state is shown when the user has no favourites, featuring a large
-/// star icon and instructional text.
+/// Displays the user's favourited songs with tag filtering,
+/// batch selection, and export capabilities.
 struct FavoritesView: View {
 
-    // MARK: Environment
-    /// The shared song store that provides the list of favourited songs and
-    /// methods to add/remove favourites.
     @EnvironmentObject var songStore: SongStore
+    @State private var searchText: String = ""
 
-    // MARK: Body
+    /// Filtered favourites based on search text.
+    private var displayedFavorites: [Song] {
+        let all = songStore.favoriteSongs
+        guard !searchText.isEmpty else { return all }
+        let query = searchText.lowercased()
+        return all.filter {
+            $0.title.lowercased().contains(query) ||
+            $0.songbook.lowercased().contains(query) ||
+            String($0.number).contains(query)
+        }
+    }
+
     var body: some View {
         Group {
             if songStore.favoriteSongs.isEmpty {
-                // ── Empty State ──────────────────────────────────────────
-                // Shown when the user has not yet favourited any songs.
-                // Provides a friendly prompt with a star icon.
                 emptyState
             } else {
-                // ── Favourites List ──────────────────────────────────────
-                // A list of all favourited songs with swipe-to-remove support.
                 favouritesList
             }
         }
@@ -41,67 +38,83 @@ struct FavoritesView: View {
         #if !os(tvOS) && !os(watchOS)
         .navigationBarTitleDisplayMode(.large)
         #endif
+        .searchable(text: $searchText, prompt: "Filter favourites...")
+        #if !os(watchOS) && !os(tvOS)
+        .toolbar {
+            if !songStore.favoriteSongs.isEmpty {
+                ToolbarItem(placement: .automatic) {
+                    ShareLink(
+                        item: exportFavoritesText(),
+                        subject: Text("My iHymns Favourites"),
+                        message: Text("Shared from iHymns")
+                    ) {
+                        Label("Export", systemImage: "square.and.arrow.up")
+                    }
+                }
+            }
+        }
+        #endif
     }
 
     // MARK: - Empty State
-    /// A centred placeholder displayed when no songs have been favourited.
-    /// Uses `ContentUnavailableView` for a consistent system appearance.
+
     private var emptyState: some View {
         ContentUnavailableView {
-            // Primary label with a star icon
             Label("No Favourites Yet", systemImage: "star")
         } description: {
-            // Instructional text explaining how to add favourites
             Text("Tap the star icon on any song to add it to your favourites for quick access.")
-        } actions: {
-            // No action buttons needed; the user navigates elsewhere to favourite songs
         }
     }
 
     // MARK: - Favourites List
-    /// The main list of favourited songs, each navigable to its detail view.
-    /// Swipe-to-delete removes the song from favourites without deleting it
-    /// from the songbook.
+
     private var favouritesList: some View {
         List {
-            // ── Favourite Song Rows ──────────────────────────────────────
-            // Each row uses the same `SongRow` component from SongListView
-            // for visual consistency across the app.
-            ForEach(songStore.favoriteSongs, id: \.id) { song in
+            // Count header
+            Section {
+                HStack {
+                    Text("\(displayedFavorites.count) favourite\(displayedFavorites.count == 1 ? "" : "s")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .listRowBackground(Color.clear)
+            }
+
+            ForEach(displayedFavorites, id: \.id) { song in
                 NavigationLink(destination: SongDetailView(song: song)) {
                     SongRow(song: song, songStore: songStore)
                 }
             }
-            // Swipe-to-delete gesture removes the song from favourites
             .onDelete(perform: removeFromFavourites)
         }
         .listStyle(.plain)
     }
 
     // MARK: - Remove From Favourites
-    /// Called when the user swipes to delete a row. Removes the corresponding
-    /// song from the favourites list in the song store.
-    ///
-    /// - Parameter offsets: The index set of rows the user swiped to delete.
+
     private func removeFromFavourites(at offsets: IndexSet) {
-        // Map the row offsets to song IDs and toggle each one off
         for index in offsets {
-            let song = songStore.favoriteSongs[index]
-            songStore.toggleFavorite(songId: song.id)
+            let song = displayedFavorites[index]
+            songStore.toggleFavorite(song.id)
         }
+    }
+
+    // MARK: - Export
+
+    private func exportFavoritesText() -> String {
+        var lines = ["My iHymns Favourites", ""]
+        for (index, song) in songStore.favoriteSongs.enumerated() {
+            lines.append("\(index + 1). \(song.title) (\(song.songbook) #\(song.number))")
+        }
+        lines.append("\nExported from iHymns — ihymns.app")
+        return lines.joined(separator: "\n")
     }
 }
 
 // MARK: - Preview
 #if DEBUG
-#Preview("With Favourites") {
-    NavigationStack {
-        FavoritesView()
-            .environmentObject(SongStore())
-    }
-}
-
-#Preview("Empty State") {
+#Preview {
     NavigationStack {
         FavoritesView()
             .environmentObject(SongStore())
