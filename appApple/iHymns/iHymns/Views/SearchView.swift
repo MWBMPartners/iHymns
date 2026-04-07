@@ -16,7 +16,7 @@ struct SearchView: View {
     @State var searchText: String
     @State private var debouncedQuery: String = ""
     @State private var searchMode: SearchMode = .text
-    @State private var selectedSongbook: String?
+    @State private var selectedSongbook: String? = UserDefaults.standard.string(forKey: "ihymns_search_songbook_filter")
     @State private var numberInput: String = ""
     @State private var showingRandomSong: Bool = false
     @State private var randomSong: Song?
@@ -309,6 +309,7 @@ struct SearchView: View {
         let isSelected = selectedSongbook == id
         return Button {
             selectedSongbook = id
+            UserDefaults.standard.set(id, forKey: "ihymns_search_songbook_filter")
             HapticManager.selectionChanged()
         } label: {
             Text(label)
