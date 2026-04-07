@@ -365,7 +365,7 @@ body {
 
 /* Account for install banner pushing header down */
 .pwa-install-banner:not(.d-none) ~ .app-header {
-    top: var(--install-banner-height);
+    top: calc(var(--install-banner-height) + env(safe-area-inset-top, 0px));
 }
 
 .app-header .navbar {
@@ -435,7 +435,7 @@ body {
 
 /* Adjust when install banner is visible */
 body.banner-visible .main-content {
-    padding-top: calc(var(--header-height) + var(--install-banner-height) + 8px);
+    padding-top: calc(var(--header-height) + var(--install-banner-height) + env(safe-area-inset-top, 0px) + 8px);
 }
 
 /* Adjust when search bar is open */
@@ -444,7 +444,7 @@ body.search-open .main-content {
 }
 
 body.banner-visible.search-open .main-content {
-    padding-top: calc(var(--header-height) + var(--install-banner-height) + var(--search-bar-height) + 8px);
+    padding-top: calc(var(--header-height) + var(--install-banner-height) + var(--search-bar-height) + env(safe-area-inset-top, 0px) + 8px);
 }
 
 /* Page loader spinner */
@@ -648,6 +648,18 @@ body.banner-visible.search-open .main-content {
     color: var(--banner-text);
     font-size: 0.85rem;
     min-height: var(--install-banner-height);
+    /* iOS safe area — respect notch/Dynamic Island */
+    padding-top: env(safe-area-inset-top, 0px);
+}
+
+/* Ensure hidden banner has no visual footprint (#174) */
+.pwa-install-banner.d-none {
+    display: none !important;
+    visibility: hidden;
+    height: 0;
+    min-height: 0;
+    overflow: hidden;
+    pointer-events: none;
 }
 
 .btn-install-app {
