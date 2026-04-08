@@ -660,11 +660,20 @@ $currentUser = getCurrentUser();
                 </div>
             </div>
 
-            <!-- Sidebar Footer — Song count display -->
-            <div class="sidebar-footer">
-                <span id="song-count">0 songs</span>
-                <!-- Filtered count shown when a filter is active -->
-                <span id="songCountFiltered" style="display: none;"> (showing <span id="filteredCount">0</span>)</span>
+            <!-- Sidebar Footer — Song count + Add/Delete buttons -->
+            <div class="sidebar-footer d-flex align-items-center justify-content-between">
+                <span>
+                    <span id="song-count">0 songs</span>
+                    <span id="songCountFiltered" style="display: none;"> (showing <span id="filteredCount">0</span>)</span>
+                </span>
+                <span>
+                    <button type="button" class="btn btn-sm btn-amber py-0 px-1" id="btn-add-song" title="Add new song">
+                        <i class="bi bi-plus-lg"></i>
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-danger py-0 px-1" id="btn-delete-song" title="Delete selected song">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </span>
             </div>
         </aside>
 
@@ -827,6 +836,35 @@ $currentUser = getCurrentUser();
                             >
                             <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
                                 The CCLI song number for licensing and reporting purposes.
+                            </div>
+                        </div>
+
+                        <!-- Language — IETF BCP 47 language tag for the song lyrics -->
+                        <div class="mb-3">
+                            <label for="edit-language" class="form-label">Language</label>
+                            <input
+                                type="text"
+                                class="form-control"
+                                id="edit-language"
+                                placeholder="e.g. en, en-GB, fr-FR, de-DE"
+                                list="language-suggestions"
+                            >
+                            <datalist id="language-suggestions">
+                                <option value="en">English</option>
+                                <option value="en-GB">English (United Kingdom)</option>
+                                <option value="en-US">English (United States)</option>
+                                <option value="fr-FR">French (France)</option>
+                                <option value="de-DE">German (Germany)</option>
+                                <option value="es-ES">Spanish (Spain)</option>
+                                <option value="it-IT">Italian (Italy)</option>
+                                <option value="pt-BR">Portuguese (Brazil)</option>
+                                <option value="la">Latin</option>
+                                <option value="cy-GB">Welsh (United Kingdom)</option>
+                                <option value="gd-GB">Scottish Gaelic (United Kingdom)</option>
+                                <option value="ga-IE">Irish (Ireland)</option>
+                            </datalist>
+                            <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                                IETF BCP 47 language tag (language, region, script). Defaults to "en".
                             </div>
                         </div>
 
