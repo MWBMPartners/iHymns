@@ -652,6 +652,7 @@ function parseSongFile(filePath, filename, songbookConfig) {
     title: title,
     songbook: songbookConfig.id,
     songbookName: songbookConfig.name,
+    language: 'en',
     writers: writers,
     composers: composers,
     copyright: copyright,

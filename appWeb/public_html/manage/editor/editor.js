@@ -447,6 +447,7 @@ function selectSong(songId) {
     setVal('edit-number', song.number || '');
     setVal('edit-songbook', song.songbook || '');
     setVal('edit-ccli', song.ccli || '');
+    setVal('edit-language', song.language || 'en');
 
     /* Populate the boolean checkboxes (#222, #225). */
     setChecked('edit-verified', !!song.verified);
@@ -495,6 +496,7 @@ function bindMetadataListeners() {
         { elId: 'edit-number',   key: 'number' },
         { elId: 'edit-songbook', key: 'songbook' },
         { elId: 'edit-ccli',     key: 'ccli' },
+        { elId: 'edit-language', key: 'language' },
         { elId: 'edit-copyright', key: 'copyright' }
     ];
 
@@ -1745,6 +1747,7 @@ function clearEditForm() {
     setVal('edit-number', '');
     setVal('edit-songbook', '');
     setVal('edit-ccli', '');
+    setVal('edit-language', 'en');
     setVal('edit-copyright', '');
 
     /* Clear boolean checkboxes (#222, #225). */
@@ -1880,6 +1883,7 @@ function addNewSong() {
         title: 'New Song',
         number: songData.songs.length + 1,
         songbook: '',
+        language: 'en',
         ccli: '',
         copyright: '',
         writers: [],

@@ -29,6 +29,9 @@ RewriteRule ^logout$ logout.php [L]
 # /manage/setup → setup.php
 RewriteRule ^setup$ setup.php [L]
 
+# /manage/users → users.php (admin-only user management)
+RewriteRule ^users$ users.php [L]
+
 # /manage/ root → redirect to editor
 RewriteRule ^$ editor/ [R=302,L]
 

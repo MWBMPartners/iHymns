@@ -79,7 +79,7 @@
       "type": "object",
       "required": [
         "id", "number", "title", "songbook", "songbookName",
-        "writers", "composers", "copyright", "ccli",
+        "language", "writers", "composers", "copyright", "ccli",
         "verified", "lyricsPublicDomain", "musicPublicDomain",
         "hasAudio", "hasSheetMusic", "components"
       ],
@@ -109,6 +109,12 @@
           "description": "Full display name of the songbook (denormalised for convenience).",
           "type": "string",
           "minLength": 1
+        },
+        "language": {
+          "description": "IETF BCP 47 language tag for the song lyrics (e.g. 'en', 'en-GB', 'fr-FR'). Identifies language, regional locale, and optionally script.",
+          "type": "string",
+          "pattern": "^[a-z]{2,3}(-[A-Z][a-z]{3})?(-[A-Z]{2})?(-[a-zA-Z0-9]+)*$",
+          "default": "en"
         },
         "writers": {
           "description": "Lyricists / authors. Empty array if unknown.",
