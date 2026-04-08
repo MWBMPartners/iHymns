@@ -55,6 +55,9 @@ var modifiedSongIds = new Set();
 /** Timestamp (Date object) of the most recent save/download action, or null. */
 var lastSaveTime = null;
 
+/** Current sort mode for the song list: 'title', 'number', or 'songbook' (#251). */
+var currentSortMode = 'title';
+
 /* ========================================================================
  *  SECTION 2 — Data Management (#53, #58)
  * ======================================================================== */
@@ -313,8 +316,22 @@ function renderSongList(filter) {
     /* Count how many songs pass the filters (for the badge). */
     var visibleCount = 0;
 
-    /* Iterate over every song in the data set. */
-    songData.songs.forEach(function (song) {
+    /* Sort songs according to the current sort mode (#251). */
+    var sortedSongs = songData.songs.slice().sort(function (a, b) {
+        if (currentSortMode === 'title') {
+            return (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' });
+        } else if (currentSortMode === 'number') {
+            return (Number(a.number) || 0) - (Number(b.number) || 0);
+        } else if (currentSortMode === 'songbook') {
+            var sbCmp = (a.songbook || '').localeCompare(b.songbook || '', undefined, { sensitivity: 'base' });
+            if (sbCmp !== 0) return sbCmp;
+            return (Number(a.number) || 0) - (Number(b.number) || 0);
+        }
+        return 0;
+    });
+
+    /* Iterate over sorted songs. */
+    sortedSongs.forEach(function (song) {
         /* ---- Songbook filter ---- */
         if (songbookFilter && song.songbook !== songbookFilter) {
             return; // skip songs not in the selected songbook
@@ -343,17 +360,26 @@ function renderSongList(filter) {
             li.classList.add('active');
         }
 
-        /* Build the display text: "number — title". */
+        /* Build the display text: "number - Title Case Title" (#249). */
         var label = document.createElement('span');
-        label.textContent = (song.number || '?') + ' \u2014 ' + (song.title || 'Untitled');
+        label.textContent = (song.number || '?') + ' - ' + toTitleCase(song.title || 'Untitled');
 
-        /* Append a small badge if the song has been modified. */
+        /* Right-side badges: songbook abbreviation + modified indicator (#249). */
         var badges = document.createElement('span');
+        badges.className = 'd-flex align-items-center gap-1 flex-shrink-0';
         if (modifiedSongIds.has(song.id)) {
-            var badge = document.createElement('span');
-            badge.className = 'badge bg-warning text-dark ms-2';
-            badge.textContent = 'modified';
-            badges.appendChild(badge);
+            var modBadge = document.createElement('span');
+            modBadge.className = 'badge bg-warning text-dark';
+            modBadge.style.fontSize = '0.65rem';
+            modBadge.textContent = 'modified';
+            badges.appendChild(modBadge);
+        }
+        if (song.songbook) {
+            var sbBadge = document.createElement('span');
+            sbBadge.className = 'badge rounded-pill';
+            sbBadge.style.cssText = 'background-color: rgba(245,158,11,0.15); color: #f59e0b; font-size: 0.65rem; font-weight: 600;';
+            sbBadge.textContent = song.songbook;
+            badges.appendChild(sbBadge);
         }
 
         li.appendChild(label);
@@ -1848,6 +1874,29 @@ function getVal(elementId) {
 }
 
 /**
+ * toTitleCase(str)
+ * ----------------
+ * Converts a string to Title Case. Common small words (a, an, the, and,
+ * but, or, for, nor, in, on, at, to, by, of, with) stay lowercase unless
+ * they are the first or last word.
+ *
+ * @param {string} str - The input string.
+ * @returns {string} The title-cased string.
+ */
+function toTitleCase(str) {
+    var smallWords = /^(a|an|the|and|but|or|for|nor|in|on|at|to|by|of|with)$/i;
+    var words = str.replace(/\s+/g, ' ').trim().split(' ');
+
+    return words.map(function (word, i, arr) {
+        /* Always capitalise first and last word */
+        if (i === 0 || i === arr.length - 1 || !smallWords.test(word)) {
+            return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+        }
+        return word.toLowerCase();
+    }).join(' ');
+}
+
+/**
  * clearEditForm()
  * ---------------
  * Resets all edit form fields to empty / default values.
@@ -2098,6 +2147,15 @@ function bindGlobalEventListeners() {
     if (searchEl) {
         /* Re-render the song list on every keystroke for instant filtering. */
         searchEl.addEventListener('input', function () {
+            renderSongList();
+        });
+    }
+
+    /* ---- Sort order dropdown (#251) ---- */
+    var sortEl = document.getElementById('song-sort');
+    if (sortEl) {
+        sortEl.addEventListener('change', function () {
+            currentSortMode = sortEl.value;
             renderSongList();
         });
     }
