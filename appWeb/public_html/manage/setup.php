@@ -16,7 +16,7 @@ require_once __DIR__ . '/includes/auth.php';
 
 /* If users already exist, setup is disabled — redirect to login */
 if (!needsSetup()) {
-    header('Location: /manage/login.php');
+    header('Location: /manage/login');
     exit;
 }
 
@@ -122,7 +122,7 @@ $csrf = csrfToken();
             <div class="alert alert-success" role="alert">
                 <i class="bi bi-check-circle me-1"></i>Admin account created successfully.
             </div>
-            <a href="/manage/login.php" class="btn btn-amber w-100">
+            <a href="/manage/login" class="btn btn-amber w-100">
                 <i class="bi bi-box-arrow-in-right me-1"></i>Go to Login
             </a>
         <?php else: ?>

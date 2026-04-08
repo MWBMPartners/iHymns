@@ -12,7 +12,7 @@ require_once __DIR__ . '/includes/auth.php';
 
 /* Redirect to setup if no users exist */
 if (needsSetup()) {
-    header('Location: /manage/setup.php');
+    header('Location: /manage/setup');
     exit;
 }
 
