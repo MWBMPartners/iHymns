@@ -38,10 +38,17 @@ export class PWA {
     /**
      * Initialise PWA module — listen for install prompt and set up banner.
      */
-    init() {
-        /* If running as installed PWA, don't show banner */
+    async init() {
+        /* If running as installed PWA, set the cross-subdomain cookie and exit */
         if (window.matchMedia('(display-mode: standalone)').matches ||
             window.navigator.standalone === true) {
+            this._setPwaInstalledCookie();
+            return;
+        }
+
+        /* Check if PWA is already installed (cross-subdomain) before proceeding (#248) */
+        const alreadyInstalled = await this._isAlreadyInstalled();
+        if (alreadyInstalled) {
             return;
         }
 
@@ -56,6 +63,7 @@ export class PWA {
         window.addEventListener('appinstalled', () => {
             this.deferredPrompt = null;
             this.hideInstallBanner();
+            this._setPwaInstalledCookie();
             this.app.showToast('App installed successfully!', 'success');
         });
 
@@ -243,6 +251,91 @@ export class PWA {
     }
 
     /* =====================================================================
+     * INSTALLED DETECTION (#248)
+     *
+     * Two strategies for cross-subdomain detection:
+     * 1. navigator.getInstalledRelatedApps() — Chromium API, matches by
+     *    manifest id. Requires "platform": "webapp" in related_applications.
+     * 2. Shared parent-domain cookie — set when running in standalone mode,
+     *    readable from any subdomain (e.g. dev., alpha., www.).
+     * ===================================================================== */
+
+    /**
+     * Check if the PWA is already installed, using all available methods.
+     *
+     * @returns {Promise<boolean>} True if the PWA appears to be installed.
+     */
+    async _isAlreadyInstalled() {
+        /* Strategy 1: getInstalledRelatedApps() — Chromium browsers */
+        if ('getInstalledRelatedApps' in navigator) {
+            try {
+                const apps = await navigator.getInstalledRelatedApps();
+                if (apps.length > 0) {
+                    return true;
+                }
+            } catch (e) {
+                /* API not available or failed — fall through to cookie check */
+            }
+        }
+
+        /* Strategy 2: shared parent-domain cookie */
+        if (this._getPwaInstalledCookie()) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Set a cookie on the parent domain indicating the PWA is installed.
+     * Called when running in standalone mode or after a successful install.
+     * The cookie is set on the highest-level domain that isn't a public
+     * suffix (e.g. .ihymns.app), so all subdomains can read it.
+     */
+    _setPwaInstalledCookie() {
+        const domain = this._getParentDomain();
+        const maxAge = 365 * 24 * 60 * 60; /* 1 year */
+        let cookie = 'ihymns_pwa_installed=1; path=/; max-age=' + maxAge + '; SameSite=Lax';
+        if (domain) {
+            cookie += '; domain=' + domain;
+        }
+        document.cookie = cookie;
+    }
+
+    /**
+     * Read the shared PWA-installed cookie.
+     *
+     * @returns {boolean} True if the cookie exists.
+     */
+    _getPwaInstalledCookie() {
+        return document.cookie.split(';').some(c => c.trim().startsWith('ihymns_pwa_installed='));
+    }
+
+    /**
+     * Determine the parent domain for cross-subdomain cookies.
+     * e.g. "dev.ihymns.app" → ".ihymns.app"
+     *       "ihymns.app"     → ".ihymns.app"
+     *       "localhost"      → null (no parent domain)
+     *
+     * @returns {string|null} Parent domain with leading dot, or null.
+     */
+    _getParentDomain() {
+        const host = window.location.hostname;
+
+        /* Skip for localhost / IP addresses */
+        if (host === 'localhost' || /^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+            return null;
+        }
+
+        const parts = host.split('.');
+        /* Need at least 2 parts (e.g. ihymns.app) */
+        if (parts.length < 2) return null;
+
+        /* Use the last two parts as the parent domain */
+        return '.' + parts.slice(-2).join('.');
+    }
+
+    /* =====================================================================
      * INSTALL ACTIONS
      * ===================================================================== */
 
@@ -270,6 +363,7 @@ export class PWA {
 
             if (outcome === 'accepted') {
                 this.hideInstallBanner();
+                this._setPwaInstalledCookie();
             }
         }
     }
