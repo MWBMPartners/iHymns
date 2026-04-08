@@ -518,7 +518,7 @@ $currentUser = getCurrentUser();
             <button
                 type="button"
                 class="btn btn-sm btn-amber"
-                id="btnLoadJson"
+                id="btn-load-file"
                 title="Load a songs.json file from disk"
             >
                 <i class="bi bi-folder2-open me-1"></i>Load JSON
@@ -528,7 +528,7 @@ $currentUser = getCurrentUser();
             <button
                 type="button"
                 class="btn btn-sm btn-amber-solid"
-                id="btnSaveJson"
+                id="btn-save"
                 title="Download the current songs as a JSON file"
             >
                 <i class="bi bi-download me-1"></i>Save JSON
@@ -549,13 +549,13 @@ $currentUser = getCurrentUser();
                 <ul class="dropdown-menu dropdown-menu-dark" aria-labelledby="dropdownExport">
                     <!-- Export as JSON — full data export -->
                     <li>
-                        <a class="dropdown-item" href="#" id="exportJson">
+                        <a class="dropdown-item" href="#" id="btn-export-json">
                             <i class="bi bi-filetype-json me-2"></i>Export as JSON
                         </a>
                     </li>
                     <!-- Export as CSV — tabular export for spreadsheets -->
                     <li>
-                        <a class="dropdown-item" href="#" id="exportCsv">
+                        <a class="dropdown-item" href="#" id="btn-export-csv">
                             <i class="bi bi-filetype-csv me-2"></i>Export as CSV
                         </a>
                     </li>
@@ -566,15 +566,22 @@ $currentUser = getCurrentUser();
             <button
                 type="button"
                 class="btn btn-sm btn-amber"
-                id="btnImport"
+                id="btn-import"
                 title="Import songs from an external JSON or CSV file"
             >
                 <i class="bi bi-box-arrow-in-down me-1"></i>Import
             </button>
 
-            <!-- Separator + User / Logout -->
+            <!-- Separator + Admin links / Logout -->
             <span class="text-muted mx-1">|</span>
-            <span class="text-muted small d-none d-md-inline"><?= htmlspecialchars($currentUser['display_name'] ?? $currentUser['username'] ?? '') ?></span>
+            <?php if (($currentUser['role'] ?? '') === 'admin'): ?>
+            <a href="/manage/users"
+               class="btn btn-sm btn-outline-secondary me-1"
+               title="User management">
+                <i class="bi bi-people me-1"></i>Users
+            </a>
+            <?php endif; ?>
+            <span class="text-muted small d-none d-md-inline me-1"><?= htmlspecialchars($currentUser['display_name'] ?? $currentUser['username'] ?? '') ?></span>
             <a href="/manage/logout"
                class="btn btn-sm btn-outline-secondary"
                title="Sign out">
@@ -608,7 +615,7 @@ $currentUser = getCurrentUser();
                 <div class="mb-2">
                     <select
                         class="form-select form-select-sm"
-                        id="filterSongbook"
+                        id="songbook-filter"
                         aria-label="Filter by songbook"
                         title="Filter songs by songbook"
                     >
@@ -626,7 +633,7 @@ $currentUser = getCurrentUser();
                     <input
                         type="text"
                         class="form-control"
-                        id="searchSongs"
+                        id="song-search"
                         placeholder="Search songs..."
                         aria-label="Search songs by title"
                     >
@@ -634,7 +641,7 @@ $currentUser = getCurrentUser();
             </div>
 
             <!-- Song list — scrollable container; each song is a clickable row -->
-            <div class="song-list-container" id="songList">
+            <div class="song-list-container" id="song-list">
                 <!--
                      Song list items are rendered dynamically by editor.js.
                      Each item follows this structure:
@@ -655,7 +662,7 @@ $currentUser = getCurrentUser();
 
             <!-- Sidebar Footer — Song count display -->
             <div class="sidebar-footer">
-                <span id="songCount">0 songs</span>
+                <span id="song-count">0 songs</span>
                 <!-- Filtered count shown when a filter is active -->
                 <span id="songCountFiltered" style="display: none;"> (showing <span id="filteredCount">0</span>)</span>
             </div>
@@ -930,7 +937,7 @@ $currentUser = getCurrentUser();
                             <button
                                 type="button"
                                 class="btn btn-sm btn-amber"
-                                id="btnAddComponent"
+                                id="btn-add-component"
                                 title="Add a new song component (verse, chorus, etc.)"
                             >
                                 <i class="bi bi-plus-circle me-1"></i>Add Component
@@ -1034,7 +1041,7 @@ $currentUser = getCurrentUser();
                             </label>
 
                             <!-- Dynamic list of writer input rows -->
-                            <div id="writersList">
+                            <div id="writers-container">
                                 <!--
                                      Each writer row is rendered by editor.js:
                                      <div class="dynamic-list-row">
@@ -1045,16 +1052,7 @@ $currentUser = getCurrentUser();
                                      </div>
                                 -->
                             </div>
-
-                            <!-- Add Writer button -->
-                            <button
-                                type="button"
-                                class="btn btn-sm btn-amber mt-1"
-                                id="btnAddWriter"
-                                title="Add another writer"
-                            >
-                                <i class="bi bi-plus me-1"></i>Add Writer
-                            </button>
+                            <!-- Add Writer button is dynamically rendered by editor.js inside writers-container -->
                         </div>
 
                         <!-- Composers Section — list of music composer names -->
@@ -1064,7 +1062,7 @@ $currentUser = getCurrentUser();
                             </label>
 
                             <!-- Dynamic list of composer input rows -->
-                            <div id="composersList">
+                            <div id="composers-container">
                                 <!--
                                      Each composer row is rendered by editor.js:
                                      <div class="dynamic-list-row">
@@ -1075,16 +1073,7 @@ $currentUser = getCurrentUser();
                                      </div>
                                 -->
                             </div>
-
-                            <!-- Add Composer button -->
-                            <button
-                                type="button"
-                                class="btn btn-sm btn-amber mt-1"
-                                id="btnAddComposer"
-                                title="Add another composer"
-                            >
-                                <i class="bi bi-plus me-1"></i>Add Composer
-                            </button>
+                            <!-- Add Composer button is dynamically rendered by editor.js inside composers-container -->
                         </div>
 
                         <!-- Copyright Text — free-text copyright notice -->
@@ -1119,7 +1108,7 @@ $currentUser = getCurrentUser();
                         role="tabpanel"
                         aria-labelledby="tab-preview"
                     >
-                        <div class="preview-container" id="previewContainer">
+                        <div class="preview-container" id="preview-container">
                             <!-- Preview content is rendered by editor.js.
                                  The structure will look like:
 
@@ -1172,21 +1161,25 @@ $currentUser = getCurrentUser();
         <!-- Left section — save status -->
         <div class="me-auto d-flex align-items-center">
             <!-- Coloured dot indicator — class toggled by editor.js -->
-            <span class="status-indicator saved" id="statusIndicator"></span>
+            <span class="status-indicator saved" id="status-indicator"></span>
             <!-- Status text (e.g., "All changes saved" or "Unsaved changes") -->
-            <span id="statusText">Ready</span>
+            <span id="status-text">Ready</span>
+            <!-- Unsaved changes warning badge -->
+            <span id="status-unsaved-warning" class="badge bg-warning text-dark ms-2" style="display: none;">
+                <span id="status-modified">0</span> unsaved
+            </span>
         </div>
 
         <!-- Centre section — total songs loaded -->
         <div class="mx-3">
             <i class="bi bi-collection me-1"></i>
-            <span id="statusTotalSongs">0</span> songs loaded
+            <span id="status-total">0</span> songs loaded
         </div>
 
         <!-- Right section — last saved timestamp -->
         <div>
             <i class="bi bi-clock me-1"></i>
-            Last saved: <span id="statusLastSaved">Never</span>
+            Last saved: <span id="status-save-time">Never</span>
         </div>
     </footer>
 
@@ -1326,6 +1319,9 @@ $currentUser = getCurrentUser();
          Bootstrap 5.3 JS bundle (includes Popper for dropdowns) loaded
          from CDN, followed by the editor's own JavaScript module.
          ================================================================= -->
+
+    <!-- Toast notification container — dynamically populated by editor.js -->
+    <div id="toast-container" class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index: 1090;"></div>
 
     <!-- Bootstrap 5.3 JavaScript bundle — required for tabs, dropdowns, and other interactive components -->
     <script
