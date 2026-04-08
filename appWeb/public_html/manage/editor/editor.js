@@ -343,17 +343,26 @@ function renderSongList(filter) {
             li.classList.add('active');
         }
 
-        /* Build the display text: "number — title". */
+        /* Build the display text: "number - Title Case Title" (#249). */
         var label = document.createElement('span');
-        label.textContent = (song.number || '?') + ' \u2014 ' + (song.title || 'Untitled');
+        label.textContent = (song.number || '?') + ' - ' + toTitleCase(song.title || 'Untitled');
 
-        /* Append a small badge if the song has been modified. */
+        /* Right-side badges: songbook abbreviation + modified indicator (#249). */
         var badges = document.createElement('span');
+        badges.className = 'd-flex align-items-center gap-1 flex-shrink-0';
         if (modifiedSongIds.has(song.id)) {
-            var badge = document.createElement('span');
-            badge.className = 'badge bg-warning text-dark ms-2';
-            badge.textContent = 'modified';
-            badges.appendChild(badge);
+            var modBadge = document.createElement('span');
+            modBadge.className = 'badge bg-warning text-dark';
+            modBadge.style.fontSize = '0.65rem';
+            modBadge.textContent = 'modified';
+            badges.appendChild(modBadge);
+        }
+        if (song.songbook) {
+            var sbBadge = document.createElement('span');
+            sbBadge.className = 'badge rounded-pill';
+            sbBadge.style.cssText = 'background-color: rgba(245,158,11,0.15); color: #f59e0b; font-size: 0.65rem; font-weight: 600;';
+            sbBadge.textContent = song.songbook;
+            badges.appendChild(sbBadge);
         }
 
         li.appendChild(label);
@@ -1845,6 +1854,29 @@ function composeIetfTag() {
 function getVal(elementId) {
     var el = document.getElementById(elementId);
     return el ? el.value : '';
+}
+
+/**
+ * toTitleCase(str)
+ * ----------------
+ * Converts a string to Title Case. Common small words (a, an, the, and,
+ * but, or, for, nor, in, on, at, to, by, of, with) stay lowercase unless
+ * they are the first or last word.
+ *
+ * @param {string} str - The input string.
+ * @returns {string} The title-cased string.
+ */
+function toTitleCase(str) {
+    var smallWords = /^(a|an|the|and|but|or|for|nor|in|on|at|to|by|of|with)$/i;
+    var words = str.replace(/\s+/g, ' ').trim().split(' ');
+
+    return words.map(function (word, i, arr) {
+        /* Always capitalise first and last word */
+        if (i === 0 || i === arr.length - 1 || !smallWords.test(word)) {
+            return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+        }
+        return word.toLowerCase();
+    }).join(' ');
 }
 
 /**
