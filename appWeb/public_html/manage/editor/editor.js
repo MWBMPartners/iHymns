@@ -447,7 +447,12 @@ function selectSong(songId) {
     setVal('edit-number', song.number || '');
     setVal('edit-songbook', song.songbook || '');
     setVal('edit-ccli', song.ccli || '');
-    setVal('edit-language', song.language || 'en');
+    /* Parse IETF BCP 47 tag into sub-fields (#240). */
+    var ietf = parseIetfTag(song.language || 'en');
+    setVal('edit-lang-language', ietf.language);
+    setVal('edit-lang-script', ietf.script);
+    setVal('edit-lang-region', ietf.region);
+    composeIetfTag();
 
     /* Populate the boolean checkboxes (#222, #225). */
     setChecked('edit-verified', !!song.verified);
@@ -496,7 +501,6 @@ function bindMetadataListeners() {
         { elId: 'edit-number',   key: 'number' },
         { elId: 'edit-songbook', key: 'songbook' },
         { elId: 'edit-ccli',     key: 'ccli' },
-        { elId: 'edit-language', key: 'language' },
         { elId: 'edit-copyright', key: 'copyright' }
     ];
 
@@ -543,6 +547,24 @@ function bindMetadataListeners() {
             /* Write the boolean value back to the song object. */
             song[field.key] = el.checked;
             markModified(song.id);
+        });
+    });
+
+    /* Language sub-fields — compose IETF BCP 47 tag on change (#240). */
+    ['edit-lang-language', 'edit-lang-script', 'edit-lang-region'].forEach(function (elId) {
+        var el = document.getElementById(elId);
+        if (!el) return;
+
+        ['input', 'change'].forEach(function (eventType) {
+            el.addEventListener(eventType, function () {
+                if (!currentSongId) return;
+                var song = findSongById(currentSongId);
+                if (!song) return;
+
+                /* Compose the three fields into a single IETF tag and store it. */
+                song.language = composeIetfTag();
+                markModified(song.id);
+            });
         });
     });
 }
@@ -1736,6 +1758,76 @@ function setChecked(elementId, checked) {
 }
 
 /**
+ * parseIetfTag(tag)
+ * -----------------
+ * Splits an IETF BCP 47 language tag into its constituent parts.
+ * Format: language[-Script][-REGION]
+ *   - language: 2-3 lowercase letters (ISO 639)
+ *   - Script:   4 letters, title-case (ISO 15924) — optional
+ *   - REGION:   2 uppercase letters (ISO 3166-1) — optional
+ *
+ * @param {string} tag - e.g. "en", "en-GB", "zh-Hant-TW"
+ * @returns {{ language: string, script: string, region: string }}
+ */
+function parseIetfTag(tag) {
+    var parts = (tag || 'en').split('-');
+    var result = { language: parts[0] || 'en', script: '', region: '' };
+
+    for (var i = 1; i < parts.length; i++) {
+        var p = parts[i];
+        /* Script: exactly 4 chars, first uppercase (e.g. Latn, Cyrl) */
+        if (p.length === 4 && /^[A-Z][a-z]{3}$/.test(p)) {
+            result.script = p;
+        /* Region: exactly 2 uppercase chars (e.g. GB, US) */
+        } else if (p.length === 2 && /^[A-Z]{2}$/.test(p)) {
+            result.region = p;
+        }
+    }
+    return result;
+}
+
+/**
+ * composeIetfTag()
+ * ----------------
+ * Reads the three language sub-fields from the DOM and composes
+ * the IETF BCP 47 tag. Updates the hidden edit-language field
+ * and the preview element.
+ *
+ * @returns {string} The composed IETF tag (e.g. "en-Latn-GB")
+ */
+function composeIetfTag() {
+    var lang   = (getVal('edit-lang-language') || 'en').trim().toLowerCase();
+    var script = (getVal('edit-lang-script') || '').trim();
+    var region = (getVal('edit-lang-region') || '').trim().toUpperCase();
+
+    /* Normalise script to title case (e.g. "latn" → "Latn") */
+    if (script.length > 0) {
+        script = script.charAt(0).toUpperCase() + script.slice(1).toLowerCase();
+    }
+
+    var tag = lang;
+    if (script) tag += '-' + script;
+    if (region) tag += '-' + region;
+
+    /* Update the hidden field and preview. */
+    setVal('edit-language', tag);
+    var preview = document.getElementById('edit-lang-preview');
+    if (preview) preview.textContent = tag;
+
+    return tag;
+}
+
+/**
+ * getVal(elementId)
+ * -----------------
+ * Returns the value of a form element by ID, or empty string if not found.
+ */
+function getVal(elementId) {
+    var el = document.getElementById(elementId);
+    return el ? el.value : '';
+}
+
+/**
  * clearEditForm()
  * ---------------
  * Resets all edit form fields to empty / default values.
@@ -1747,7 +1839,10 @@ function clearEditForm() {
     setVal('edit-number', '');
     setVal('edit-songbook', '');
     setVal('edit-ccli', '');
-    setVal('edit-language', 'en');
+    setVal('edit-lang-language', 'en');
+    setVal('edit-lang-script', '');
+    setVal('edit-lang-region', '');
+    composeIetfTag();
     setVal('edit-copyright', '');
 
     /* Clear boolean checkboxes (#222, #225). */

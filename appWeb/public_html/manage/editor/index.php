@@ -839,32 +839,120 @@ $currentUser = getCurrentUser();
                             </div>
                         </div>
 
-                        <!-- Language — IETF BCP 47 language tag for the song lyrics -->
+                        <!-- Language — IETF BCP 47 composed from Language + Script + Region (#240) -->
                         <div class="mb-3">
-                            <label for="edit-language" class="form-label">Language</label>
-                            <input
-                                type="text"
-                                class="form-control"
-                                id="edit-language"
-                                placeholder="e.g. en, en-GB, fr-FR, de-DE"
-                                list="language-suggestions"
-                            >
-                            <datalist id="language-suggestions">
-                                <option value="en">English</option>
-                                <option value="en-GB">English (United Kingdom)</option>
-                                <option value="en-US">English (United States)</option>
-                                <option value="fr-FR">French (France)</option>
-                                <option value="de-DE">German (Germany)</option>
-                                <option value="es-ES">Spanish (Spain)</option>
-                                <option value="it-IT">Italian (Italy)</option>
-                                <option value="pt-BR">Portuguese (Brazil)</option>
-                                <option value="la">Latin</option>
-                                <option value="cy-GB">Welsh (United Kingdom)</option>
-                                <option value="gd-GB">Scottish Gaelic (United Kingdom)</option>
-                                <option value="ga-IE">Irish (Ireland)</option>
-                            </datalist>
-                            <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
-                                IETF BCP 47 language tag (language, region, script). Defaults to "en".
+                            <label class="form-label"><i class="bi bi-translate me-1"></i>Language (IETF BCP 47)</label>
+                            <div class="row g-2">
+                                <!-- Language (required) — ISO 639 -->
+                                <div class="col-4">
+                                    <label for="edit-lang-language" class="form-label" style="font-size:0.75rem;">Language</label>
+                                    <input type="text" class="form-control form-control-sm" id="edit-lang-language"
+                                        placeholder="e.g. en" list="lang-language-list" required>
+                                    <datalist id="lang-language-list">
+                                        <option value="en">English</option>
+                                        <option value="fr">French</option>
+                                        <option value="de">German</option>
+                                        <option value="es">Spanish</option>
+                                        <option value="it">Italian</option>
+                                        <option value="pt">Portuguese</option>
+                                        <option value="la">Latin</option>
+                                        <option value="cy">Welsh</option>
+                                        <option value="gd">Scottish Gaelic</option>
+                                        <option value="ga">Irish</option>
+                                        <option value="nl">Dutch</option>
+                                        <option value="sv">Swedish</option>
+                                        <option value="no">Norwegian</option>
+                                        <option value="da">Danish</option>
+                                        <option value="fi">Finnish</option>
+                                        <option value="pl">Polish</option>
+                                        <option value="cs">Czech</option>
+                                        <option value="hu">Hungarian</option>
+                                        <option value="ro">Romanian</option>
+                                        <option value="ko">Korean</option>
+                                        <option value="ja">Japanese</option>
+                                        <option value="zh">Chinese</option>
+                                        <option value="ar">Arabic</option>
+                                        <option value="he">Hebrew</option>
+                                        <option value="hi">Hindi</option>
+                                        <option value="sw">Swahili</option>
+                                        <option value="zu">Zulu</option>
+                                        <option value="xh">Xhosa</option>
+                                        <option value="af">Afrikaans</option>
+                                        <option value="tl">Tagalog</option>
+                                    </datalist>
+                                </div>
+                                <!-- Script (optional) — ISO 15924 -->
+                                <div class="col-4">
+                                    <label for="edit-lang-script" class="form-label" style="font-size:0.75rem;">Script</label>
+                                    <input type="text" class="form-control form-control-sm" id="edit-lang-script"
+                                        placeholder="e.g. Latn" list="lang-script-list">
+                                    <datalist id="lang-script-list">
+                                        <option value="Latn">Latin</option>
+                                        <option value="Cyrl">Cyrillic</option>
+                                        <option value="Arab">Arabic</option>
+                                        <option value="Hebr">Hebrew</option>
+                                        <option value="Deva">Devanagari</option>
+                                        <option value="Hans">Simplified Chinese</option>
+                                        <option value="Hant">Traditional Chinese</option>
+                                        <option value="Hang">Hangul</option>
+                                        <option value="Kana">Katakana</option>
+                                        <option value="Grek">Greek</option>
+                                        <option value="Geor">Georgian</option>
+                                        <option value="Armn">Armenian</option>
+                                        <option value="Thai">Thai</option>
+                                        <option value="Ethi">Ethiopic</option>
+                                    </datalist>
+                                </div>
+                                <!-- Region (optional) — ISO 3166-1 alpha-2 -->
+                                <div class="col-4">
+                                    <label for="edit-lang-region" class="form-label" style="font-size:0.75rem;">Region</label>
+                                    <input type="text" class="form-control form-control-sm" id="edit-lang-region"
+                                        placeholder="e.g. GB" list="lang-region-list">
+                                    <datalist id="lang-region-list">
+                                        <option value="GB">United Kingdom</option>
+                                        <option value="US">United States</option>
+                                        <option value="AU">Australia</option>
+                                        <option value="NZ">New Zealand</option>
+                                        <option value="CA">Canada</option>
+                                        <option value="IE">Ireland</option>
+                                        <option value="ZA">South Africa</option>
+                                        <option value="FR">France</option>
+                                        <option value="DE">Germany</option>
+                                        <option value="AT">Austria</option>
+                                        <option value="CH">Switzerland</option>
+                                        <option value="ES">Spain</option>
+                                        <option value="MX">Mexico</option>
+                                        <option value="IT">Italy</option>
+                                        <option value="PT">Portugal</option>
+                                        <option value="BR">Brazil</option>
+                                        <option value="NL">Netherlands</option>
+                                        <option value="SE">Sweden</option>
+                                        <option value="NO">Norway</option>
+                                        <option value="DK">Denmark</option>
+                                        <option value="FI">Finland</option>
+                                        <option value="PL">Poland</option>
+                                        <option value="CZ">Czechia</option>
+                                        <option value="HU">Hungary</option>
+                                        <option value="RO">Romania</option>
+                                        <option value="KR">South Korea</option>
+                                        <option value="JP">Japan</option>
+                                        <option value="CN">China</option>
+                                        <option value="TW">Taiwan</option>
+                                        <option value="IN">India</option>
+                                        <option value="PH">Philippines</option>
+                                        <option value="KE">Kenya</option>
+                                        <option value="NG">Nigeria</option>
+                                        <option value="GH">Ghana</option>
+                                    </datalist>
+                                </div>
+                            </div>
+                            <!-- Composed IETF tag preview -->
+                            <div class="mt-1 d-flex align-items-center gap-2">
+                                <span class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                                    IETF tag:
+                                </span>
+                                <code id="edit-lang-preview" style="font-size: 0.8rem;">en</code>
+                                <input type="hidden" id="edit-language">
                             </div>
                         </div>
 
