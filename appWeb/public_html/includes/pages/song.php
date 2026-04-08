@@ -85,7 +85,7 @@ $components  = $song['components'] ?? [];
                     <?= $songNumber ?>
                 </span>
                 <div class="flex-grow-1">
-                    <h1 class="h4 mb-1"><?= htmlspecialchars($songTitle) ?></h1>
+                    <h1 class="h4 mb-1"><?= htmlspecialchars($songTitle) ?><?php if (!empty($song['verified'])): ?><span class="verified-badge" title="Verified lyrics" aria-label="Verified lyrics"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.15"/><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M7.5 12.5L10.5 15.5L16.5 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><?php endif; ?></h1>
                     <p class="text-muted mb-0">
                         <span class="badge bg-body-secondary"><?= htmlspecialchars($songbook) ?></span>
                         <?= htmlspecialchars($bookName) ?>

@@ -13,7 +13,7 @@
  *   [{ id: "CP-0001", title: "...", songbook: "CP", number: 1, viewedAt: "ISO" }, ...]
  *   Ordered by most recent first.
  */
-import { escapeHtml } from '../utils/html.js';
+import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { STORAGE_HISTORY } from '../constants.js';
 
 export class History {
@@ -133,7 +133,7 @@ export class History {
                        data-song-id="${escapeHtml(h.id)}">
                         <span class="song-number-badge" data-songbook="${escapeHtml(h.songbook)}">${h.number || '?'}</span>
                         <div class="song-info flex-grow-1">
-                            <span class="song-title">${escapeHtml(h.title)}</span>
+                            <span class="song-title">${escapeHtml(h.title)}${verifiedBadge(h)}</span>
                             <small class="text-muted d-block">${escapeHtml(h.songbook)}</small>
                         </div>
                         <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>

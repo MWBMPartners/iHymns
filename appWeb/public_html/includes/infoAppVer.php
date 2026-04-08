@@ -172,12 +172,13 @@ if ($currentYear > $app["Application"]["Copyright"]["Year"]["Start"]) {
 /* Rights statement */
 $app["Application"]["Copyright"]["RightsStatement"] = "All Rights Reserved";
 
-/* Full copyright string for display: "© 2026 iHymns. All Rights Reserved" */
+/* Full copyright string for display: "Application © 2026 iHymns. All Rights Reserved" (#230)
+ * The "Application" prefix distinguishes the software copyright from song copyrights. */
 if (isset($app["Application"]["Copyright"]["UseVendor"]) && $app["Application"]["Copyright"]["UseVendor"]) {
-    $app["Application"]["Copyright"]["Full"] = "&copy; " . $app["Application"]["Copyright"]["Year"]["Display"] . " " . $app["Application"]["Vendor"]["Name"] . ". " . $app["Application"]["Copyright"]["RightsStatement"];
+    $app["Application"]["Copyright"]["Full"] = "Application &copy; " . $app["Application"]["Copyright"]["Year"]["Display"] . " " . $app["Application"]["Vendor"]["Name"] . ". " . $app["Application"]["Copyright"]["RightsStatement"];
 }
 else {
-    $app["Application"]["Copyright"]["Full"] = "&copy; " . $app["Application"]["Copyright"]["Year"]["Display"] . " " . $app["Application"]["Name"] . ". " . $app["Application"]["Copyright"]["RightsStatement"];
+    $app["Application"]["Copyright"]["Full"] = "Application &copy; " . $app["Application"]["Copyright"]["Year"]["Display"] . " " . $app["Application"]["Name"] . ". " . $app["Application"]["Copyright"]["RightsStatement"];
 }
 
 /* =========================================================================
