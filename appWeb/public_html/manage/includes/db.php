@@ -43,7 +43,7 @@ define('DB_CONFIG', [
 
     /* SQLite — file-based, zero-configuration */
     'sqlite' => [
-        'path' => dirname(__DIR__, 2) . '/data_share/SQLite/ihymns.db',
+        'path' => dirname(__DIR__, 3) . '/data_share/SQLite/ihymns.db',
     ],
 
     /* MySQL / MariaDB — uncomment and configure when ready to migrate */
