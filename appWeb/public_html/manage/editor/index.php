@@ -626,7 +626,7 @@ $currentUser = getCurrentUser();
                 </div>
 
                 <!-- Search input — live text search across song titles -->
-                <div class="input-group input-group-sm">
+                <div class="input-group input-group-sm mb-2">
                     <span class="input-group-text" style="background-color: var(--ih-bg-input); border-color: var(--ih-border); color: var(--ih-text-muted);">
                         <i class="bi bi-search"></i>
                     </span>
@@ -638,6 +638,19 @@ $currentUser = getCurrentUser();
                         aria-label="Search songs by title"
                     >
                 </div>
+
+                <!-- Sort order toggle (#251) -->
+                <select
+                    class="form-select form-select-sm"
+                    id="song-sort"
+                    aria-label="Sort songs by"
+                    title="Sort order"
+                    style="font-size: 0.75rem;"
+                >
+                    <option value="title" selected>Sort by Title (A–Z)</option>
+                    <option value="number">Sort by Number</option>
+                    <option value="songbook">Sort by Songbook, then Number</option>
+                </select>
             </div>
 
             <!-- Song list — scrollable container; each song is a clickable row -->

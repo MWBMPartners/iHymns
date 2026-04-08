@@ -55,6 +55,9 @@ var modifiedSongIds = new Set();
 /** Timestamp (Date object) of the most recent save/download action, or null. */
 var lastSaveTime = null;
 
+/** Current sort mode for the song list: 'title', 'number', or 'songbook' (#251). */
+var currentSortMode = 'title';
+
 /* ========================================================================
  *  SECTION 2 — Data Management (#53, #58)
  * ======================================================================== */
@@ -313,8 +316,22 @@ function renderSongList(filter) {
     /* Count how many songs pass the filters (for the badge). */
     var visibleCount = 0;
 
-    /* Iterate over every song in the data set. */
-    songData.songs.forEach(function (song) {
+    /* Sort songs according to the current sort mode (#251). */
+    var sortedSongs = songData.songs.slice().sort(function (a, b) {
+        if (currentSortMode === 'title') {
+            return (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' });
+        } else if (currentSortMode === 'number') {
+            return (Number(a.number) || 0) - (Number(b.number) || 0);
+        } else if (currentSortMode === 'songbook') {
+            var sbCmp = (a.songbook || '').localeCompare(b.songbook || '', undefined, { sensitivity: 'base' });
+            if (sbCmp !== 0) return sbCmp;
+            return (Number(a.number) || 0) - (Number(b.number) || 0);
+        }
+        return 0;
+    });
+
+    /* Iterate over sorted songs. */
+    sortedSongs.forEach(function (song) {
         /* ---- Songbook filter ---- */
         if (songbookFilter && song.songbook !== songbookFilter) {
             return; // skip songs not in the selected songbook
@@ -2130,6 +2147,15 @@ function bindGlobalEventListeners() {
     if (searchEl) {
         /* Re-render the song list on every keystroke for instant filtering. */
         searchEl.addEventListener('input', function () {
+            renderSongList();
+        });
+    }
+
+    /* ---- Sort order dropdown (#251) ---- */
+    var sortEl = document.getElementById('song-sort');
+    if (sortEl) {
+        sortEl.addEventListener('change', function () {
+            currentSortMode = sortEl.value;
             renderSongList();
         });
     }
