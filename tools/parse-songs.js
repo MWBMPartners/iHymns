@@ -626,7 +626,21 @@ function parseSongFile(filePath, filename, songbookConfig) {
   }
 
   /* -----------------------------------------------------------------------
-   * STEP 6: Construct and return the structured song object
+   * STEP 6: Determine copyright / public domain status (#225)
+   *
+   * A song is only considered public domain when the copyright field
+   * explicitly states "Public Domain" (case-insensitive) or "PD".
+   * An empty copyright field does NOT imply public domain — it simply
+   * means the copyright holder is unknown or unrecorded.
+   * Both lyrics and music share the same heuristic for now — Phase 2
+   * may split them with per-field metadata in the source files.
+   * ----------------------------------------------------------------------- */
+  const copyrightLower = (copyright || '').trim().toLowerCase();
+  const isPublicDomain = copyrightLower.includes('public domain')
+    || copyrightLower === 'pd';
+
+  /* -----------------------------------------------------------------------
+   * STEP 7: Construct and return the structured song object
    * ----------------------------------------------------------------------- */
   const song = {
     id: songId,
@@ -638,6 +652,9 @@ function parseSongFile(filePath, filename, songbookConfig) {
     composers: composers,
     copyright: copyright,
     ccli: '',
+    verified: false,
+    lyricsPublicDomain: isPublicDomain,
+    musicPublicDomain: isPublicDomain,
     hasAudio: hasAudio,
     hasSheetMusic: hasSheetMusic,
     components: components

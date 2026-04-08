@@ -124,6 +124,7 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 5. Update .gitignore
 6. COMMIT changes (push only when asked)
 7. Clean up temp files
+8. Keep `data/songs.schema.json` in sync with any `songs.json` structure changes (#226)
 
 ---
 
@@ -132,6 +133,7 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 | File | Purpose |
 | --- | --- |
 | `data/songs.json` | Canonical song database (single source of truth) |
+| `data/songs.schema.json` | JSON Schema (draft 2020-12) for songs.json validation (#226) |
 | `tools/parse-songs.js` | Parses .SourceSongData/ → songs.json |
 | `tools/build-web.js` | Web build/packaging script |
 | `appWeb/public_html/includes/infoAppVer.php` | App version metadata |

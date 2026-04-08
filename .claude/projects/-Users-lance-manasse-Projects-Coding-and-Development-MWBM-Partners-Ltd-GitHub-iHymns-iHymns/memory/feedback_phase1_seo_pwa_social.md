@@ -52,4 +52,17 @@ Phase 1 PWA received another major batch of enhancements (session April 2026):
 - Alpha gets build timestamp (yyyymmddhhmmss) after version in footer
 - Timestamp injected at deploy time via commit date from CI
 
-**How to apply:** These features extend existing architecture. OG images use PHP/GD (no external dependencies). PWA install uses `pwa.js` module with platform detection. lftp excludes MUST use regex syntax.
+**Songs.json Enhancements (#222-#226):**
+- `verified` boolean: manual editorial flag for confirmed-accurate lyrics (all default `false`)
+- `lyricsPublicDomain` / `musicPublicDomain` booleans: only `true` when copyright explicitly says "Public Domain" or "PD" (empty copyright does NOT imply PD)
+- Verified badge: inline SVG (circle + checkmark) displayed in 11 PWA locations via `verifiedBadge()` helper in `js/utils/html.js` and PHP inline conditionals
+- Badge CSS: `.verified-badge` class using muted teal accent, 1em proportional sizing
+- `data/songs.schema.json`: JSON Schema (draft 2020-12) covering all 3 top-level objects, 17 song fields, 10 component types
+- Standing task: keep JSON schema in sync with any songs.json structure changes
+
+**PWA Install Banner Fix (#177):**
+- iOS 15+ moved Share button from top to bottom toolbar — banner text updated to "Tap Share **below**"
+- Non-Safari iOS browsers: banner hidden entirely (only Safari can install PWAs on iOS)
+- Banner HTML emptied — all content populated by JS based on platform detection (prevents old generic content flash)
+
+**How to apply:** These features extend existing architecture. OG images use PHP/GD (no external dependencies). PWA install uses `pwa.js` module with platform detection. lftp excludes MUST use regex syntax. Public domain detection requires explicit copyright designation — never assume empty = PD.

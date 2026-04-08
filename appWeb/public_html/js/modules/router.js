@@ -14,7 +14,7 @@
  */
 
 import { toTitleCase } from '../utils/text.js';
-import { escapeHtml } from '../utils/html.js';
+import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import {
     STORAGE_FAVORITES,
     STORAGE_SETLISTS,
@@ -685,7 +685,7 @@ export class Router {
                    role="listitem">
                     <span class="song-number-badge" data-songbook="${escapeHtml(song.songbook)}">${song.number || '?'}</span>
                     <div class="song-info flex-grow-1">
-                        <span class="song-title">${escapeHtml(toTitleCase(song.title))}</span>
+                        <span class="song-title">${escapeHtml(toTitleCase(song.title))}${verifiedBadge(song)}</span>
                         <small class="text-muted d-block">${escapeHtml(song.songbookName || song.songbook)}</small>
                     </div>
                     <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>

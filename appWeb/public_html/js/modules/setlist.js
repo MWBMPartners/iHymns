@@ -18,7 +18,7 @@
  */
 
 import { toTitleCase } from '../utils/text.js';
-import { escapeHtml } from '../utils/html.js';
+import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { STORAGE_SETLISTS, STORAGE_OWNER_ID } from '../constants.js';
 
 export class SetList {
@@ -291,7 +291,7 @@ export class SetList {
                             <span class="song-number-badge" data-songbook="${escapeHtml(song.songbook)}">${song.number || '?'}</span>
                             <div class="flex-grow-1">
                                 <a href="/song/${escapeHtml(song.id)}" data-navigate="song"
-                                   class="text-decoration-none">${escapeHtml(toTitleCase(song.title))}</a>
+                                   class="text-decoration-none">${escapeHtml(toTitleCase(song.title))}${verifiedBadge(song)}</a>
                                 <small class="text-muted d-block">${escapeHtml(song.songbook)}</small>
                             </div>
                             <button type="button" class="btn btn-sm btn-outline-secondary btn-move-up"

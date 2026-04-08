@@ -191,14 +191,21 @@ class SongData
             }));
         }
 
-        /* HIDDEN FEATURE: Filter to public domain (copyright-free) songs only */
+        /* HIDDEN FEATURE: Filter to public domain songs only.
+         * Uses the lyricsPublicDomain boolean added by the parser (#225),
+         * with a fallback to the copyright-string heuristic for any
+         * songs.json files that haven't been regenerated yet.
+         * Note: an empty copyright does NOT imply public domain — only
+         * an explicit "Public Domain" or "PD" designation counts. */
         if (APP_CONFIG['features']['public_domain_only'] ?? false) {
             $songs = array_values(array_filter($songs, function (array $song): bool {
+                /* Prefer the explicit boolean field if present */
+                if (isset($song['lyricsPublicDomain'])) {
+                    return (bool) $song['lyricsPublicDomain'];
+                }
+                /* Legacy fallback: check copyright string for explicit PD designation */
                 $copyright = trim($song['copyright'] ?? '');
-                /* A song is considered public domain if its copyright field is empty,
-                   or explicitly marked as "Public Domain" or "PD" */
-                return $copyright === ''
-                    || mb_stripos($copyright, 'public domain') !== false
+                return mb_stripos($copyright, 'public domain') !== false
                     || strtoupper($copyright) === 'PD';
             }));
         }

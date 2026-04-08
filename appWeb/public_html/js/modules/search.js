@@ -17,7 +17,7 @@
  *   4. If either step fails, falls back to API-based substring search.
  *   5. Offline search works when songs.json is cached by service worker.
  */
-import { escapeHtml } from '../utils/html.js';
+import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { STORAGE_SEARCH_LYRICS } from '../constants.js';
 
 export class Search {
@@ -511,7 +511,7 @@ export class Search {
                    data-song-id="${escapeHtml(song.id)}">
                     <span class="song-number-badge" data-songbook="${escapeHtml(song.songbook || '')}">${song.number}</span>
                     <div class="song-info flex-grow-1">
-                        <span class="song-title">${escapeHtml(song.title)}</span>
+                        <span class="song-title">${escapeHtml(song.title)}${verifiedBadge(song)}</span>
                         <small class="text-muted d-block">
                             ${escapeHtml(song.songbookName || '')}
                             ${writers ? ' &middot; ' + escapeHtml(writers) : ''}

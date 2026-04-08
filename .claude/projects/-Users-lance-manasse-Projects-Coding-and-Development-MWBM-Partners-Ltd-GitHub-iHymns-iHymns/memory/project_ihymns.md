@@ -28,6 +28,9 @@ type: project
 - Working branch: `beta` (merge to `main` for production release)
 - Version bumps: only on `beta` branch (single source of truth); alpha uses build timestamps
 - Song editor (dev tool) in `appWeb/private_html/editor/` (HTTP Basic Auth protected)
+- songs.json: 17 fields per song including `verified`, `lyricsPublicDomain`, `musicPublicDomain` booleans (#222, #225)
+- JSON schema at `data/songs.schema.json` — must be kept in sync with any songs.json structure changes (#226)
+- Verified badge: inline SVG displayed next to song titles when `verified: true` (#223, #224)
 - Colour scheme: clean neutral slate/grey, NOT bright colours
 - WCAG contrast: Automated relative luminance calculation for songbook badges
 - Application IDs: Ltd.MWBMPartners.iHymns.PWA / .Apple / .Android
@@ -47,7 +50,7 @@ type: project
 **Key PHP Files:**
 - `index.php` — Main SPA shell, CSP headers, conditional analytics scripts
 - `api.php` — AJAX router (pages: home, song, songbook, writer, settings, etc.)
-- `includes/SongData.php` — Song data loading, flexible ID matching, alphabetical sort
+- `includes/SongData.php` — Song data loading, flexible ID matching, alphabetical sort, public domain filter using `lyricsPublicDomain`
 - `includes/config.php` — App configuration including analytics platform IDs
 - `includes/pages/*.php` — Page templates (song, writer, privacy, terms, settings, etc.)
 - `og-image.php` — Dynamic OG image generator (1200×630 PNG, centre-safe layout, contextual song images via ?song=ID)
