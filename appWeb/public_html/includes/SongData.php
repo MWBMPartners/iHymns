@@ -196,7 +196,8 @@ class SongData
          * with a fallback to the copyright-string heuristic for any
          * songs.json files that haven't been regenerated yet.
          * Note: an empty copyright does NOT imply public domain — only
-         * an explicit "Public Domain" or "PD" designation counts. */
+         * an explicit designation counts (case-insensitive):
+         * "Public Domain", "PD", "PublicDomain", "PubDomain", "Pub Domain" */
         if (APP_CONFIG['features']['public_domain_only'] ?? false) {
             $songs = array_values(array_filter($songs, function (array $song): bool {
                 /* Prefer the explicit boolean field if present */
@@ -206,6 +207,9 @@ class SongData
                 /* Legacy fallback: check copyright string for explicit PD designation */
                 $copyright = trim($song['copyright'] ?? '');
                 return mb_stripos($copyright, 'public domain') !== false
+                    || mb_stripos($copyright, 'publicdomain') !== false
+                    || mb_stripos($copyright, 'pubdomain') !== false
+                    || mb_stripos($copyright, 'pub domain') !== false
                     || strtoupper($copyright) === 'PD';
             }));
         }
