@@ -442,6 +442,12 @@ function selectSong(songId) {
     /* Store the selection globally. */
     currentSongId = songId;
 
+    /* Show the editor form, hide the empty state (#246). */
+    var editorEmpty = document.getElementById('editorEmpty');
+    var editorForm = document.getElementById('editorForm');
+    if (editorEmpty) editorEmpty.style.display = 'none';
+    if (editorForm) editorForm.style.display = '';
+
     /* Populate the metadata fields. */
     setVal('edit-title', song.title || '');
     setVal('edit-number', song.number || '');
@@ -521,6 +527,12 @@ function bindMetadataListeners() {
 
                 /* Write the new value back to the song object. */
                 song[field.key] = el.value;
+
+                /* Sync songbookName when songbook changes (#245). */
+                if (field.key === 'songbook') {
+                    var sb = songData.songbooks.find(function (s) { return s.id === el.value; });
+                    song.songbookName = sb ? sb.name : el.value;
+                }
 
                 /* Mark this song as modified. */
                 markModified(song.id);
@@ -609,6 +621,12 @@ function renderComponents(song) {
     /* Ensure the song has a components array. */
     if (!song.components) {
         song.components = [];
+    }
+
+    /* Toggle the "no components" empty state. */
+    var compEmpty = document.getElementById('componentListEmpty');
+    if (compEmpty) {
+        compEmpty.style.display = song.components.length > 0 ? 'none' : '';
     }
 
     /* Build one card per component. */
@@ -716,12 +734,13 @@ function renderComponents(song) {
         textarea.className = 'form-control component-lyrics';
         textarea.rows = 4;
         textarea.placeholder = 'Enter lyrics here...';
-        textarea.value = comp.lyrics || '';
+        /* Convert lines array to newline-separated string for editing (#244). */
+        textarea.value = Array.isArray(comp.lines) ? comp.lines.join('\n') : '';
         /* Auto-resize: adjust height to content. */
         autoResizeTextarea(textarea);
-        /* Live-bind lyrics changes. */
+        /* Live-bind lyrics changes — split back into lines array on every edit. */
         textarea.addEventListener('input', function () {
-            comp.lyrics = textarea.value;
+            comp.lines = textarea.value.split('\n');
             markModified(song.id);
             autoResizeTextarea(textarea); // re-fit height
             renderPreview(song);
@@ -761,7 +780,7 @@ function addComponent() {
     song.components.push({
         type: 'verse',   // default type
         number: song.components.length + 1, // auto-increment number
-        lyrics: ''       // empty lyrics
+        lines: ['']      // empty lines array (#244)
     });
 
     /* Mark as modified. */
@@ -1619,7 +1638,8 @@ function renderPreview(song) {
         lyricsEl.className = 'mb-2';
         lyricsEl.style.whiteSpace = 'pre-wrap';
         lyricsEl.style.fontFamily = 'inherit';
-        lyricsEl.textContent = comp.lyrics || '';
+        /* Join lines array for display (#244). */
+        lyricsEl.textContent = Array.isArray(comp.lines) ? comp.lines.join('\n') : '';
 
         /* Indent choruses and refrains to visually distinguish them. */
         var isIndented = ['chorus', 'refrain'].indexOf(comp.type) !== -1;
@@ -1834,6 +1854,12 @@ function getVal(elementId) {
  * Called when no song is selected or data is freshly loaded.
  */
 function clearEditForm() {
+    /* Hide the editor form, show the empty state (#246). */
+    var editorEmpty = document.getElementById('editorEmpty');
+    var editorForm = document.getElementById('editorForm');
+    if (editorEmpty) editorEmpty.style.display = '';
+    if (editorForm) editorForm.style.display = 'none';
+
     /* Clear metadata fields. */
     setVal('edit-title', '');
     setVal('edit-number', '');
@@ -1978,16 +2004,22 @@ function addNewSong() {
         title: 'New Song',
         number: songData.songs.length + 1,
         songbook: '',
+        songbookName: '',
         language: 'en',
         ccli: '',
         copyright: '',
+        verified: false,
+        lyricsPublicDomain: false,
+        musicPublicDomain: false,
+        hasAudio: false,
+        hasSheetMusic: false,
         writers: [],
         composers: [],
         components: [
             {
                 type: 'verse',
                 number: 1,
-                lyrics: ''
+                lines: ['']
             }
         ]
     };
