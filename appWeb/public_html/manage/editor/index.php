@@ -575,7 +575,7 @@ $currentUser = getCurrentUser();
             <!-- Separator + User / Logout -->
             <span class="text-muted mx-1">|</span>
             <span class="text-muted small d-none d-md-inline"><?= htmlspecialchars($currentUser['display_name'] ?? $currentUser['username'] ?? '') ?></span>
-            <a href="/manage/logout.php"
+            <a href="/manage/logout"
                class="btn btn-sm btn-outline-secondary"
                title="Sign out">
                 <i class="bi bi-box-arrow-right me-1"></i>Logout

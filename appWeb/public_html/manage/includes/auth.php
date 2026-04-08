@@ -96,7 +96,7 @@ function requireAuth(): void
 {
     /* If no users exist yet, redirect to setup */
     if (needsSetup()) {
-        header('Location: /manage/setup.php');
+        header('Location: /manage/setup');
         exit;
     }
 
@@ -104,7 +104,7 @@ function requireAuth(): void
         /* Store the requested URL so we can redirect back after login */
         initSession();
         $_SESSION['redirect_after_login'] = $_SERVER['REQUEST_URI'] ?? '/manage/';
-        header('Location: /manage/login.php');
+        header('Location: /manage/login');
         exit;
     }
 
@@ -112,7 +112,7 @@ function requireAuth(): void
     $user = getCurrentUser();
     if ($user === null) {
         logout();
-        header('Location: /manage/login.php');
+        header('Location: /manage/login');
         exit;
     }
 }
