@@ -1,0 +1,11 @@
+# ==========================================================================
+# iHymns — SQLite Database Storage
+#
+# This directory stores the SQLite database file (ihymns.db) used by the
+# /manage/ admin area for authentication and session management.
+#
+# SECURITY: Defence-in-depth to prevent direct access to database files.
+# ==========================================================================
+
+# Deny all direct access
+Deny from all

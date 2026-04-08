@@ -761,13 +761,13 @@ declare(strict_types=1);
                     >
                         <!-- Song Title — the primary display name of the song -->
                         <div class="mb-3">
-                            <label for="fieldTitle" class="form-label">
+                            <label for="edit-title" class="form-label">
                                 Song Title <span class="text-danger">*</span>
                             </label>
                             <input
                                 type="text"
                                 class="form-control"
-                                id="fieldTitle"
+                                id="edit-title"
                                 placeholder="Enter song title"
                                 required
                             >
@@ -777,11 +777,11 @@ declare(strict_types=1);
                         <div class="row mb-3">
                             <!-- Song Number — the numeric identifier within a songbook -->
                             <div class="col-md-4">
-                                <label for="fieldNumber" class="form-label">Song Number</label>
+                                <label for="edit-number" class="form-label">Song Number</label>
                                 <input
                                     type="number"
                                     class="form-control"
-                                    id="fieldNumber"
+                                    id="edit-number"
                                     placeholder="e.g. 42"
                                     min="1"
                                 >
@@ -789,8 +789,8 @@ declare(strict_types=1);
 
                             <!-- Songbook — the collection this song belongs to -->
                             <div class="col-md-8">
-                                <label for="fieldSongbook" class="form-label">Songbook</label>
-                                <select class="form-select" id="fieldSongbook">
+                                <label for="edit-songbook" class="form-label">Songbook</label>
+                                <select class="form-select" id="edit-songbook">
                                     <option value="">Select songbook...</option>
                                     <!--
                                          Songbook options are populated dynamically
@@ -803,15 +803,67 @@ declare(strict_types=1);
 
                         <!-- CCLI Number — Christian Copyright Licensing International identifier -->
                         <div class="mb-3">
-                            <label for="fieldCCLI" class="form-label">CCLI Number</label>
+                            <label for="edit-ccli" class="form-label">CCLI Number</label>
                             <input
                                 type="text"
                                 class="form-control"
-                                id="fieldCCLI"
+                                id="edit-ccli"
                                 placeholder="e.g. 1234567"
                             >
                             <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
                                 The CCLI song number for licensing and reporting purposes.
+                            </div>
+                        </div>
+
+                        <!-- Status & Copyright Flags (#222, #225) -->
+                        <hr style="border-color: var(--ih-border);">
+                        <div class="mb-3">
+                            <label class="form-label d-block">
+                                <i class="bi bi-flag me-1"></i>Status &amp; Copyright
+                            </label>
+
+                            <!-- Verified — lyrics confirmed as complete and accurate -->
+                            <div class="form-check mb-2">
+                                <input
+                                    type="checkbox"
+                                    class="form-check-input"
+                                    id="edit-verified"
+                                >
+                                <label class="form-check-label" for="edit-verified">
+                                    <i class="bi bi-patch-check me-1" style="color: var(--ih-amber);"></i>
+                                    Verified — lyrics confirmed complete and accurate
+                                </label>
+                            </div>
+
+                            <!-- Lyrics Public Domain — lyric text is copyright-free -->
+                            <div class="form-check mb-2">
+                                <input
+                                    type="checkbox"
+                                    class="form-check-input"
+                                    id="edit-lyricsPublicDomain"
+                                >
+                                <label class="form-check-label" for="edit-lyricsPublicDomain">
+                                    <i class="bi bi-unlock me-1" style="color: var(--ih-amber);"></i>
+                                    Lyrics — Public Domain
+                                </label>
+                            </div>
+
+                            <!-- Music Public Domain — musical composition is copyright-free -->
+                            <div class="form-check mb-2">
+                                <input
+                                    type="checkbox"
+                                    class="form-check-input"
+                                    id="edit-musicPublicDomain"
+                                >
+                                <label class="form-check-label" for="edit-musicPublicDomain">
+                                    <i class="bi bi-unlock me-1" style="color: var(--ih-amber);"></i>
+                                    Music — Public Domain
+                                </label>
+                            </div>
+
+                            <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                                Only tick Public Domain if the work is explicitly in the public domain.
+                                An unknown or missing copyright does not imply public domain.
                             </div>
                         </div>
                     </div>
@@ -1029,12 +1081,12 @@ declare(strict_types=1);
 
                         <!-- Copyright Text — free-text copyright notice -->
                         <div class="mb-3">
-                            <label for="fieldCopyright" class="form-label">
+                            <label for="edit-copyright" class="form-label">
                                 <i class="bi bi-c-circle me-1"></i>Copyright
                             </label>
                             <textarea
                                 class="form-control"
-                                id="fieldCopyright"
+                                id="edit-copyright"
                                 rows="2"
                                 placeholder="e.g. Copyright 2024 Hillsong Music Publishing"
                             ></textarea>

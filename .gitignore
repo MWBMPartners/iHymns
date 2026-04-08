@@ -202,6 +202,7 @@ sftp-config.json
 # The runtime copy in data_share/ and deploy copies are excluded.
 appWeb/data_share/song_data/songs.json
 appWeb/data_share/setlist_json/*.json
+appWeb/data_share/SQLite/*.db
 appWeb/data/songs.json
 appWeb/public_html/data/songs.json
 appWeb/private_html/data/songs.json

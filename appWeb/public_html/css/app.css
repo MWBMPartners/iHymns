@@ -855,6 +855,23 @@ body.banner-visible.search-open .main-content {
     color: var(--text-primary);
 }
 
+/* Verified badge — inline icon next to song titles (#222) */
+.verified-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1em;
+    height: 1em;
+    margin-left: 0.25em;
+    color: var(--accent-solid, #0d9488);
+    vertical-align: middle;
+    flex-shrink: 0;
+}
+.verified-badge svg {
+    width: 100%;
+    height: 100%;
+}
+
 .song-indicators {
     display: flex;
     align-items: center;

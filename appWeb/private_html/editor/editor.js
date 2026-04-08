@@ -448,6 +448,11 @@ function selectSong(songId) {
     setVal('edit-songbook', song.songbook || '');
     setVal('edit-ccli', song.ccli || '');
 
+    /* Populate the boolean checkboxes (#222, #225). */
+    setChecked('edit-verified', !!song.verified);
+    setChecked('edit-lyricsPublicDomain', !!song.lyricsPublicDomain);
+    setChecked('edit-musicPublicDomain', !!song.musicPublicDomain);
+
     /* Render the structure / arrangement components. */
     renderComponents(song);
 
@@ -484,7 +489,7 @@ function selectSong(songId) {
  * every keystroke is immediately saved back into the song object (live binding).
  */
 function bindMetadataListeners() {
-    /* List of field IDs mapped to their corresponding song-object keys. */
+    /* List of text/select field IDs mapped to their corresponding song-object keys. */
     var fields = [
         { elId: 'edit-title',    key: 'title' },
         { elId: 'edit-number',   key: 'number' },
@@ -493,7 +498,7 @@ function bindMetadataListeners() {
         { elId: 'edit-copyright', key: 'copyright' }
     ];
 
-    /* Attach a listener to each field. */
+    /* Attach a listener to each text/select field. */
     fields.forEach(function (field) {
         var el = document.getElementById(field.elId);
         if (!el) return; // guard
@@ -514,6 +519,28 @@ function bindMetadataListeners() {
                 /* Mark this song as modified. */
                 markModified(song.id);
             });
+        });
+    });
+
+    /* Boolean checkbox fields (#222, #225). */
+    var checkboxFields = [
+        { elId: 'edit-verified',           key: 'verified' },
+        { elId: 'edit-lyricsPublicDomain', key: 'lyricsPublicDomain' },
+        { elId: 'edit-musicPublicDomain',  key: 'musicPublicDomain' }
+    ];
+
+    checkboxFields.forEach(function (field) {
+        var el = document.getElementById(field.elId);
+        if (!el) return;
+
+        el.addEventListener('change', function () {
+            if (!currentSongId) return;
+            var song = findSongById(currentSongId);
+            if (!song) return;
+
+            /* Write the boolean value back to the song object. */
+            song[field.key] = el.checked;
+            markModified(song.id);
         });
     });
 }
@@ -1692,6 +1719,21 @@ function setVal(elementId, value) {
 }
 
 /**
+ * setChecked()
+ * ------------
+ * Sets the checked state of a checkbox element by its DOM ID.
+ *
+ * @param {string}  elementId - The ID of the checkbox element.
+ * @param {boolean} checked   - Whether the box should be checked.
+ */
+function setChecked(elementId, checked) {
+    var el = document.getElementById(elementId);
+    if (el) {
+        el.checked = !!checked;
+    }
+}
+
+/**
  * clearEditForm()
  * ---------------
  * Resets all edit form fields to empty / default values.
@@ -1704,6 +1746,11 @@ function clearEditForm() {
     setVal('edit-songbook', '');
     setVal('edit-ccli', '');
     setVal('edit-copyright', '');
+
+    /* Clear boolean checkboxes (#222, #225). */
+    setChecked('edit-verified', false);
+    setChecked('edit-lyricsPublicDomain', false);
+    setChecked('edit-musicPublicDomain', false);
 
     /* Clear components container. */
     var compContainer = document.getElementById('componentList');

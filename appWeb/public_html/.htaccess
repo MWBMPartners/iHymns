@@ -21,11 +21,21 @@
 RewriteEngine On
 
 # ==========================================================================
+# ADMIN AREA PASSTHROUGH (/manage/)
+#
+# The /manage/ directory has its own PHP authentication system and does
+# not use the SPA router. All requests to /manage/ are served directly
+# by PHP — they must bypass the .php blocking rule and the SPA catch-all.
+# ==========================================================================
+
+RewriteRule ^manage/ - [L]
+
+# ==========================================================================
 # BLOCK DIRECT ACCESS TO PHP FILES
 #
 # Security measure: prevents revealing that the server uses PHP.
 # All PHP files must be accessed through clean URL rewrites.
-# Exceptions: none — all PHP access goes through rewritten paths.
+# Exceptions: /manage/ (handled above, has its own auth).
 # ==========================================================================
 
 # Block direct access to any .php file (except internal rewrites)
