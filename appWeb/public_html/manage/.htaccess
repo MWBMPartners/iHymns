@@ -8,10 +8,11 @@
 # excluded from the main SPA rewrite rules and has its own auth system.
 #
 # ROUTING:
-#   /manage/              → /manage/editor/ (default redirect)
+#   /manage/              → /manage/index.php (admin dashboard)
 #   /manage/login         → /manage/login.php
 #   /manage/logout        → /manage/logout.php
 #   /manage/setup         → /manage/setup.php
+#   /manage/users         → /manage/users.php
 #   /manage/editor/       → /manage/editor/index.php (DirectoryIndex)
 # ==========================================================================
 
@@ -32,8 +33,8 @@ RewriteRule ^setup$ setup.php [L]
 # /manage/users → users.php (admin-only user management)
 RewriteRule ^users$ users.php [L]
 
-# /manage/ root → redirect to editor
-RewriteRule ^$ editor/ [R=302,L]
+# /manage/ root → serve dashboard (index.php via DirectoryIndex)
+# No rewrite needed — DirectoryIndex handles it
 
 # ---- Ensure DirectoryIndex works for /manage/editor/ ----
 DirectoryIndex index.php

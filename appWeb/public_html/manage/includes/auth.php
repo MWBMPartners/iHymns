@@ -493,3 +493,96 @@ function validateCsrf(string $token): bool
     initSession();
     return isset($_SESSION['csrf_token']) && hash_equals($_SESSION['csrf_token'], $token);
 }
+
+/* =========================================================================
+ * USER PROFILE MANAGEMENT
+ * ========================================================================= */
+
+/**
+ * Change a user's password (by user ID).
+ * Invalidates all existing API tokens for the user.
+ *
+ * @param int    $userId      Target user ID
+ * @param string $newPassword New plaintext password
+ * @return bool
+ */
+function changeUserPassword(int $userId, string $newPassword): bool
+{
+    $db = getDb();
+    $hash = password_hash($newPassword, PASSWORD_BCRYPT, ['cost' => 12]);
+    $stmt = $db->prepare('UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
+    $stmt->execute([$hash, $userId]);
+
+    /* Invalidate all API tokens (force re-login) */
+    $stmt = $db->prepare('DELETE FROM api_tokens WHERE user_id = ?');
+    $stmt->execute([$userId]);
+
+    return true;
+}
+
+/**
+ * Update a user's profile fields (display name, email).
+ *
+ * @param int    $userId      Target user ID
+ * @param string $displayName New display name
+ * @param string $email       New email address
+ * @return bool
+ */
+function updateUserProfile(int $userId, string $displayName, string $email): bool
+{
+    $db = getDb();
+    $stmt = $db->prepare('UPDATE users SET display_name = ?, email = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
+    $stmt->execute([trim($displayName), trim($email), $userId]);
+    return true;
+}
+
+/**
+ * Activate or deactivate a user account.
+ *
+ * @param int  $userId   Target user ID
+ * @param bool $isActive True to activate, false to deactivate
+ * @return bool
+ */
+function setUserActive(int $userId, bool $isActive): bool
+{
+    $db = getDb();
+    $stmt = $db->prepare('UPDATE users SET is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
+    $stmt->execute([$isActive ? 1 : 0, $userId]);
+
+    /* If deactivating, invalidate all their tokens */
+    if (!$isActive) {
+        $stmt = $db->prepare('DELETE FROM api_tokens WHERE user_id = ?');
+        $stmt->execute([$userId]);
+    }
+
+    return true;
+}
+
+/**
+ * Delete a user account permanently.
+ * Foreign key cascades will remove tokens, setlists, etc.
+ *
+ * @param int $userId Target user ID
+ * @return bool
+ */
+function deleteUser(int $userId): bool
+{
+    $db = getDb();
+    $stmt = $db->prepare('DELETE FROM users WHERE id = ?');
+    $stmt->execute([$userId]);
+    return (int)$stmt->rowCount() > 0;
+}
+
+/**
+ * Get a user by ID.
+ *
+ * @param int $userId User ID
+ * @return array|null User row or null
+ */
+function getUserById(int $userId): ?array
+{
+    $db = getDb();
+    $stmt = $db->prepare('SELECT * FROM users WHERE id = ?');
+    $stmt->execute([$userId]);
+    return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+}
