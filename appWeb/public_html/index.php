@@ -664,6 +664,18 @@ if (!empty($breadcrumbItems)) {
                                     <i class="fa-solid fa-gear me-2" aria-hidden="true"></i> Account Settings
                                 </a>
                             </li>
+                            <!-- Admin/Editor links (shown by JS based on role) -->
+                            <li id="header-user-admin-divider" class="d-none"><hr class="dropdown-divider"></li>
+                            <li id="header-user-editor-li" class="d-none">
+                                <a class="dropdown-item" href="/manage/editor/">
+                                    <i class="fa-solid fa-pen-to-square me-2" aria-hidden="true"></i> Song Editor
+                                </a>
+                            </li>
+                            <li id="header-user-dashboard-li" class="d-none">
+                                <a class="dropdown-item" href="/manage/">
+                                    <i class="fa-solid fa-gauge-high me-2" aria-hidden="true"></i> Dashboard
+                                </a>
+                            </li>
                             <li id="header-user-divider2" class="d-none"><hr class="dropdown-divider"></li>
                             <li id="header-user-signout-li" class="d-none">
                                 <button class="dropdown-item" type="button" id="header-signout-btn">

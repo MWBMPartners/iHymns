@@ -126,6 +126,13 @@
     --songbook-SDAH-shadow: 245, 158, 11;
     --songbook-CH-shadow: 239, 68, 68;
     --songbook-Misc-shadow: 139, 92, 246;
+    /* Badge text colours — WCAG contrast-safe per songbook (#152) */
+    --songbook-CP-text: #ffffff;
+    --songbook-JP-text: #ffffff;
+    --songbook-MP-text: #ffffff;
+    --songbook-SDAH-text: #1a1a1a;
+    --songbook-CH-text: #ffffff;
+    --songbook-Misc-text: #ffffff;
 }
 
 /* ---------------------------------------------------------------------------
@@ -189,6 +196,13 @@
     --songbook-SDAH-solid: #fbbf24;
     --songbook-CH-solid: #f87171;
     --songbook-Misc-solid: #a78bfa;
+    /* Badge text colours — brighter dark-mode backgrounds need dark text */
+    --songbook-CP-text: #ffffff;
+    --songbook-JP-text: #ffffff;
+    --songbook-MP-text: #1a1a1a;
+    --songbook-SDAH-text: #1a1a1a;
+    --songbook-CH-text: #ffffff;
+    --songbook-Misc-text: #ffffff;
 }
 
 /* ---------------------------------------------------------------------------
@@ -245,6 +259,13 @@
     --songbook-SDAH-solid: #cc6600;
     --songbook-CH-solid: #660066;
     --songbook-Misc-solid: #006666;
+    /* Badge text colours — all high-contrast backgrounds are dark */
+    --songbook-CP-text: #ffffff;
+    --songbook-JP-text: #ffffff;
+    --songbook-MP-text: #ffffff;
+    --songbook-SDAH-text: #ffffff;
+    --songbook-CH-text: #ffffff;
+    --songbook-Misc-text: #ffffff;
 }
 
 /* High contrast overrides: thick borders and underlined links */
@@ -729,13 +750,13 @@ body.banner-visible.search-open .main-content {
     box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
 }
 
-/* Songbook ID-based colour classes (#98) */
-.songbook-icon-CP   { background: var(--songbook-CP);   box-shadow: 0 2px 8px rgba(var(--songbook-CP-shadow), 0.3); }
-.songbook-icon-JP   { background: var(--songbook-JP);   box-shadow: 0 2px 8px rgba(var(--songbook-JP-shadow), 0.3); }
-.songbook-icon-MP   { background: var(--songbook-MP);   box-shadow: 0 2px 8px rgba(var(--songbook-MP-shadow), 0.3); }
-.songbook-icon-SDAH { background: var(--songbook-SDAH); box-shadow: 0 2px 8px rgba(var(--songbook-SDAH-shadow), 0.3); }
-.songbook-icon-CH   { background: var(--songbook-CH);   box-shadow: 0 2px 8px rgba(var(--songbook-CH-shadow), 0.3); }
-.songbook-icon-Misc { background: var(--songbook-Misc); box-shadow: 0 2px 8px rgba(var(--songbook-Misc-shadow), 0.3); }
+/* Songbook ID-based colour classes + contrast-safe text (#98, #152) */
+.songbook-icon-CP   { background: var(--songbook-CP);   color: var(--songbook-CP-text);   box-shadow: 0 2px 8px rgba(var(--songbook-CP-shadow), 0.3); }
+.songbook-icon-JP   { background: var(--songbook-JP);   color: var(--songbook-JP-text);   box-shadow: 0 2px 8px rgba(var(--songbook-JP-shadow), 0.3); }
+.songbook-icon-MP   { background: var(--songbook-MP);   color: var(--songbook-MP-text);   box-shadow: 0 2px 8px rgba(var(--songbook-MP-shadow), 0.3); }
+.songbook-icon-SDAH { background: var(--songbook-SDAH); color: var(--songbook-SDAH-text); box-shadow: 0 2px 8px rgba(var(--songbook-SDAH-shadow), 0.3); }
+.songbook-icon-CH   { background: var(--songbook-CH);   color: var(--songbook-CH-text);   box-shadow: 0 2px 8px rgba(var(--songbook-CH-shadow), 0.3); }
+.songbook-icon-Misc { background: var(--songbook-Misc); color: var(--songbook-Misc-text); box-shadow: 0 2px 8px rgba(var(--songbook-Misc-shadow), 0.3); }
 
 /* ---------------------------------------------------------------------------
    Action card buttons (home page)
@@ -807,13 +828,13 @@ body.banner-visible.search-open .main-content {
     flex-shrink: 0;
 }
 
-/* Songbook-specific badge colours (#98) */
-.song-number-badge[data-songbook="CP"]   { background: var(--songbook-CP); }
-.song-number-badge[data-songbook="JP"]   { background: var(--songbook-JP); }
-.song-number-badge[data-songbook="MP"]   { background: var(--songbook-MP); }
-.song-number-badge[data-songbook="SDAH"] { background: var(--songbook-SDAH); }
-.song-number-badge[data-songbook="CH"]   { background: var(--songbook-CH); }
-.song-number-badge[data-songbook="Misc"] { background: var(--songbook-Misc); }
+/* Songbook-specific badge colours + contrast-safe text (#98, #152) */
+.song-number-badge[data-songbook="CP"]   { background: var(--songbook-CP);   color: var(--songbook-CP-text); }
+.song-number-badge[data-songbook="JP"]   { background: var(--songbook-JP);   color: var(--songbook-JP-text); }
+.song-number-badge[data-songbook="MP"]   { background: var(--songbook-MP);   color: var(--songbook-MP-text); }
+.song-number-badge[data-songbook="SDAH"] { background: var(--songbook-SDAH); color: var(--songbook-SDAH-text); }
+.song-number-badge[data-songbook="CH"]   { background: var(--songbook-CH);   color: var(--songbook-CH-text); }
+.song-number-badge[data-songbook="Misc"] { background: var(--songbook-Misc); color: var(--songbook-Misc-text); }
 
 .song-number-badge-lg {
     display: flex;
@@ -831,13 +852,13 @@ body.banner-visible.search-open .main-content {
     box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
 }
 
-/* Songbook-specific large badge colours (#98) */
-.song-number-badge-lg[data-songbook="CP"]   { background: var(--songbook-CP);   box-shadow: 0 2px 8px rgba(var(--songbook-CP-shadow), 0.3); }
-.song-number-badge-lg[data-songbook="JP"]   { background: var(--songbook-JP);   box-shadow: 0 2px 8px rgba(var(--songbook-JP-shadow), 0.3); }
-.song-number-badge-lg[data-songbook="MP"]   { background: var(--songbook-MP);   box-shadow: 0 2px 8px rgba(var(--songbook-MP-shadow), 0.3); }
-.song-number-badge-lg[data-songbook="SDAH"] { background: var(--songbook-SDAH); box-shadow: 0 2px 8px rgba(var(--songbook-SDAH-shadow), 0.3); }
-.song-number-badge-lg[data-songbook="CH"]   { background: var(--songbook-CH);   box-shadow: 0 2px 8px rgba(var(--songbook-CH-shadow), 0.3); }
-.song-number-badge-lg[data-songbook="Misc"] { background: var(--songbook-Misc); box-shadow: 0 2px 8px rgba(var(--songbook-Misc-shadow), 0.3); }
+/* Songbook-specific large badge colours + contrast-safe text (#98, #152) */
+.song-number-badge-lg[data-songbook="CP"]   { background: var(--songbook-CP);   color: var(--songbook-CP-text);   box-shadow: 0 2px 8px rgba(var(--songbook-CP-shadow), 0.3); }
+.song-number-badge-lg[data-songbook="JP"]   { background: var(--songbook-JP);   color: var(--songbook-JP-text);   box-shadow: 0 2px 8px rgba(var(--songbook-JP-shadow), 0.3); }
+.song-number-badge-lg[data-songbook="MP"]   { background: var(--songbook-MP);   color: var(--songbook-MP-text);   box-shadow: 0 2px 8px rgba(var(--songbook-MP-shadow), 0.3); }
+.song-number-badge-lg[data-songbook="SDAH"] { background: var(--songbook-SDAH); color: var(--songbook-SDAH-text); box-shadow: 0 2px 8px rgba(var(--songbook-SDAH-shadow), 0.3); }
+.song-number-badge-lg[data-songbook="CH"]   { background: var(--songbook-CH);   color: var(--songbook-CH-text);   box-shadow: 0 2px 8px rgba(var(--songbook-CH-shadow), 0.3); }
+.song-number-badge-lg[data-songbook="Misc"] { background: var(--songbook-Misc); color: var(--songbook-Misc-text); box-shadow: 0 2px 8px rgba(var(--songbook-Misc-shadow), 0.3); }
 
 /* Songbook colour-coded left border on song pages (#98) */
 .page-song .card-song-header {

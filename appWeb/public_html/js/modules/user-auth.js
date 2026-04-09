@@ -292,6 +292,8 @@ export class UserAuth {
         document.getElementById('header-signout-btn')?.addEventListener('click', async () => {
             await this.logout();
             this._updateHeaderState();
+            /* Re-render setlist sync bar if on that page */
+            this.app.setList?.renderSyncBar();
             this.app.showToast('Signed out', 'info', 2000);
         });
     }
@@ -330,6 +332,19 @@ export class UserAuth {
             if (nameEl) nameEl.textContent = user.display_name || user.username || '';
             if (roleEl) roleEl.textContent = this._roleLabel(user.role || 'user');
         }
+
+        /* Admin/Editor links — show based on role privilege */
+        const role = user?.role || 'user';
+        const roleLevel = { 'user': 1, 'editor': 2, 'admin': 3, 'global_admin': 4 }[role] || 0;
+        const isEditor = loggedIn && roleLevel >= 2;
+        const isAdmin  = loggedIn && roleLevel >= 3;
+
+        const editorEl = document.getElementById('header-user-editor-li');
+        const dashEl   = document.getElementById('header-user-dashboard-li');
+        const divEl    = document.getElementById('header-user-admin-divider');
+        if (editorEl) editorEl.classList.toggle('d-none', !isEditor);
+        if (dashEl)   dashEl.classList.toggle('d-none', !isAdmin);
+        if (divEl)    divEl.classList.toggle('d-none', !isEditor);
 
         /* Update icon style */
         const icon = document.getElementById('header-user-icon');
@@ -664,6 +679,8 @@ export class UserAuth {
                 bsModal.hide();
                 /* Update header menu to reflect logged-in state */
                 this._updateHeaderState();
+                /* Re-render setlist sync bar if on that page */
+                this.app.setList?.renderSyncBar();
                 this.app.showToast(
                     currentMode === 'register' ? 'Account created! Syncing setlists...' : 'Signed in! Syncing setlists...',
                     'success', 3000
