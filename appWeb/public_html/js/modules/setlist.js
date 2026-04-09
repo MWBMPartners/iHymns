@@ -802,7 +802,7 @@ export class SetList {
         modal.querySelector('#arr-auto-btn')?.addEventListener('click', () => {
             const refrainIdx = components.findIndex(c => c.type === 'chorus' || c.type === 'refrain');
             if (refrainIdx === -1) {
-                this.app.showToast('No chorus or refrain found.', 'warning', 2000);
+                this.app.showToast('No chorus found.', 'warning', 2000);
                 return;
             }
             const auto = [];

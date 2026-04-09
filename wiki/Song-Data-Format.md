@@ -106,13 +106,12 @@ The structure is validated against `data/songs.schema.json` (JSON Schema draft 2
 
 ## Component Types
 
-Songs are divided into components, each with a `type` field. The 12 supported types:
+Songs are divided into components, each with a `type` field. The 11 primary types:
 
 | Type | Short Tag | Colour | Label |
 |---|---|---|---|
 | `verse` | V | `#3b82f6` (blue) | Verse |
 | `chorus` | C | `#f59e0b` (amber) | Chorus |
-| `refrain` | R | `#f59e0b` (amber) | Refrain |
 | `pre-chorus` | PC | `#ec4899` (pink) | Pre-Chorus |
 | `bridge` | B | `#8b5cf6` (purple) | Bridge |
 | `tag` | T | `#6b7280` (grey) | Tag |
@@ -122,6 +121,9 @@ Songs are divided into components, each with a `type` field. The 12 supported ty
 | `interlude` | IL | `#06b6d4` (cyan) | Interlude |
 | `vamp` | VP | `#f97316` (orange) | Vamp |
 | `ad-lib` | AL | `#84cc16` (lime) | Ad-lib |
+
+> **Alias:** `refrain` is accepted as an alias for `chorus` (for import compatibility).
+> Data using `"type": "refrain"` is valid and displays as "Chorus" in the UI.
 
 ### Short Tags
 

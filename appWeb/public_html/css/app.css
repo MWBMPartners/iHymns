@@ -1463,20 +1463,23 @@ body.reduce-motion .scroll-to-top-btn {
     line-height: 2.0;
 }
 
-/* Chorus highlighting — enhanced distinction */
-.song-lyrics.chorus-highlight .lyric-chorus {
+/* Chorus highlighting — enhanced distinction (refrain = chorus alias) */
+.song-lyrics.chorus-highlight .lyric-chorus,
+.song-lyrics.chorus-highlight .lyric-refrain {
     border-left: 4px solid var(--bs-primary, #6366f1);
     padding-left: 1rem;
     background: rgba(99, 102, 241, 0.05);
     border-radius: 0 0.25rem 0.25rem 0;
 }
 
-[data-bs-theme="dark"] .song-lyrics.chorus-highlight .lyric-chorus {
+[data-bs-theme="dark"] .song-lyrics.chorus-highlight .lyric-chorus,
+[data-bs-theme="dark"] .song-lyrics.chorus-highlight .lyric-refrain {
     background: rgba(99, 102, 241, 0.1);
 }
 
 /* Chorus plain — no distinction */
-.song-lyrics.chorus-plain .lyric-chorus {
+.song-lyrics.chorus-plain .lyric-chorus,
+.song-lyrics.chorus-plain .lyric-refrain {
     border-left: none;
     padding-left: 0;
     background: none;

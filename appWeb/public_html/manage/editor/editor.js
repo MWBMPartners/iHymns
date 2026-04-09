@@ -618,7 +618,6 @@ function bindMetadataListeners() {
 var COMPONENT_TYPES = [
     'verse',
     'chorus',
-    'refrain',
     'bridge',
     'pre-chorus',
     'tag',
@@ -1223,7 +1222,7 @@ function bindArrangementListeners() {
 
             var arrangement = autoGenerateArrangement(song);
             if (arrangement === null) {
-                showToast('No chorus or refrain found to auto-arrange.', 'warning');
+                showToast('No chorus found to auto-arrange.', 'warning');
                 return;
             }
 
@@ -1652,10 +1651,11 @@ function renderPreview(song) {
 
     /* Render each component in the determined order. */
     renderOrder.forEach(function (comp) {
-        /* Component label, e.g. "Verse 1" or "Chorus". */
+        /* Component label, e.g. "Verse 1" or "Chorus". Refrain → Chorus alias. */
         var heading = document.createElement('h6');
         heading.className = 'mt-3 mb-1 fw-bold text-uppercase small';
-        var headingText = comp.type || 'Section';
+        var displayType = comp.type === 'refrain' ? 'chorus' : (comp.type || 'Section');
+        var headingText = displayType;
         if (comp.number != null) {
             headingText += ' ' + comp.number;
         }

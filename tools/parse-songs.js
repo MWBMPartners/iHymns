@@ -93,7 +93,8 @@ const SONGBOOK_CONFIG = {
 /**
  * COMPONENT_LABELS defines the keywords that indicate a song component type.
  * When a line matches one of these (case-insensitive), it signals the start
- * of that component type (e.g., "Refrain" starts a refrain section).
+ * of that component type. "Refrain" is kept for import compatibility but
+ * displays as "Chorus" in the UI (alias).
  */
 const COMPONENT_LABELS = [
   'refrain',

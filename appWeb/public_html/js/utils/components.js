@@ -11,8 +11,12 @@
  * SHORT TAGS follow industry-standard abbreviations (ProPresenter, OpenLP, etc.):
  *   V  = Verse          PC = Pre-Chorus      I  = Intro
  *   C  = Chorus         B  = Bridge          O  = Outro
- *   R  = Refrain        T  = Tag             IL = Interlude
- *   VP = Vamp           CD = Coda            AL = Ad-lib
+ *   T  = Tag            CD = Coda            IL = Interlude
+ *   VP = Vamp           AL = Ad-lib
+ *
+ * "Refrain" is recognised as an alias for "Chorus" (imported data may use
+ * either term). The short tag "R" is accepted on import but resolves to
+ * Chorus in the UI.
  *
  * Numbered variants append the number: V1, V2, C1, PC2, etc.
  */
@@ -26,7 +30,7 @@
 export const COMPONENT_TYPES = {
     'verse':       { short: 'V',  color: '#3b82f6', label: 'Verse' },
     'chorus':      { short: 'C',  color: '#f59e0b', label: 'Chorus' },
-    'refrain':     { short: 'R',  color: '#f59e0b', label: 'Refrain' },
+    'refrain':     { short: 'R',  color: '#f59e0b', label: 'Chorus', aliasOf: 'chorus' },
     'pre-chorus':  { short: 'PC', color: '#ec4899', label: 'Pre-Chorus' },
     'bridge':      { short: 'B',  color: '#8b5cf6', label: 'Bridge' },
     'tag':         { short: 'T',  color: '#6b7280', label: 'Tag' },
@@ -50,25 +54,37 @@ export const SHORT_TO_TYPE = Object.fromEntries(
 /* ── Label helpers ────────────────────────────────────────────────────── */
 
 /**
+ * Resolve a component type entry, following aliasOf if present.
+ * @param {string} type  Component type string
+ * @returns {{ short: string, color: string, label: string }|null}
+ */
+function resolveType(type) {
+    const meta = COMPONENT_TYPES[type];
+    if (!meta) return null;
+    return meta.aliasOf ? COMPONENT_TYPES[meta.aliasOf] || meta : meta;
+}
+
+/**
  * Build a short tag for a component, e.g. "V1", "C", "B2", "PC1".
- * If the component has a number, it is appended; otherwise just the abbreviation.
+ * Aliases resolve to their canonical type (e.g. refrain → "C").
  *
  * @param {Object} comp  Component object with `type` and optional `number`
  * @returns {string}     Short tag string
  */
 export function shortTag(comp) {
-    const meta = COMPONENT_TYPES[comp.type] || { short: comp.type.charAt(0).toUpperCase() };
+    const meta = resolveType(comp.type) || { short: comp.type.charAt(0).toUpperCase() };
     return meta.short + (comp.number != null ? comp.number : '');
 }
 
 /**
  * Build a full human-readable label for a component, e.g. "Verse 1", "Chorus".
+ * Aliases resolve to their canonical label (e.g. refrain → "Chorus").
  *
  * @param {Object} comp  Component object with `type` and optional `number`
  * @returns {string}     Full label
  */
 export function fullLabel(comp) {
-    const meta = COMPONENT_TYPES[comp.type];
+    const meta = resolveType(comp.type);
     const label = meta ? meta.label : comp.type.charAt(0).toUpperCase() + comp.type.slice(1);
     return comp.number != null ? `${label} ${comp.number}` : label;
 }
@@ -110,7 +126,9 @@ export function parseShortTag(tag) {
 }
 
 /**
- * All valid component type strings, in display order.
+ * All valid component type strings, in display order (excludes aliases).
  * @type {string[]}
  */
-export const ALL_TYPES = Object.keys(COMPONENT_TYPES);
+export const ALL_TYPES = Object.keys(COMPONENT_TYPES).filter(
+    t => !COMPONENT_TYPES[t].aliasOf
+);

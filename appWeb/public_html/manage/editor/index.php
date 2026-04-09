@@ -1134,7 +1134,7 @@ $currentUser = getCurrentUser();
                                 type="button"
                                 class="btn btn-sm btn-outline-secondary"
                                 id="btnArrangementAuto"
-                                title="Insert chorus/refrain after each verse"
+                                title="Insert chorus after each verse"
                             >
                                 <i class="bi bi-magic me-1"></i>Auto: Chorus after each verse
                             </button>
@@ -1350,7 +1350,6 @@ $currentUser = getCurrentUser();
                             <select class="form-select form-select-sm component-type" aria-label="Component type">
                                 <option value="verse">Verse</option>
                                 <option value="chorus">Chorus</option>
-                                <option value="refrain">Refrain</option>
                                 <option value="bridge">Bridge</option>
                                 <option value="pre-chorus">Pre-Chorus</option>
                                 <option value="tag">Tag</option>
