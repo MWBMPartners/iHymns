@@ -37,6 +37,11 @@ declare(strict_types=1);
         Add songs from any song page using the "Set List" button.
     </p>
 
+    <!-- Account sync indicator (populated by JS) -->
+    <div id="setlist-sync-bar" class="d-none mb-3">
+        <!-- Shown by JS when user is logged in or as a prompt to sign in -->
+    </div>
+
     <!-- Set list container (populated by JS) -->
     <div id="setlist-container" aria-live="polite">
         <!-- JS module renders content here -->

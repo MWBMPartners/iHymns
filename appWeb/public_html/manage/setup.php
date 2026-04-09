@@ -40,7 +40,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error = 'Passwords do not match.';
     } else {
         try {
-            createUser($username, $password, $displayName ?: $username, 'admin');
+            createUser($username, $password, $displayName ?: $username, 'global_admin');
             $success = true;
         } catch (\RuntimeException $e) {
             $error = $e->getMessage();
@@ -115,12 +115,12 @@ $csrf = csrfToken();
     <div class="setup-card">
         <div class="text-center mb-4">
             <h1><i class="bi bi-music-note-beamed me-2"></i>iHymns</h1>
-            <p class="text-muted mb-0">Create your admin account</p>
+            <p class="text-muted mb-0">Create your Global Admin account</p>
         </div>
 
         <?php if ($success): ?>
             <div class="alert alert-success" role="alert">
-                <i class="bi bi-check-circle me-1"></i>Admin account created successfully.
+                <i class="bi bi-check-circle me-1"></i>Global Admin account created successfully.
             </div>
             <a href="/manage/login" class="btn btn-amber w-100">
                 <i class="bi bi-box-arrow-in-right me-1"></i>Go to Login
@@ -185,7 +185,7 @@ $csrf = csrfToken();
                 </div>
 
                 <button type="submit" class="btn btn-amber w-100">
-                    <i class="bi bi-shield-lock me-1"></i>Create Admin Account
+                    <i class="bi bi-shield-lock me-1"></i>Create Global Admin Account
                 </button>
             </form>
         <?php endif; ?>

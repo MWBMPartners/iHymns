@@ -617,6 +617,61 @@ if (!empty($breadcrumbItems)) {
                             </li>
                         </ul>
                     </div>
+
+                    <!-- User account button — shows sign-in or user menu -->
+                    <div class="dropdown" id="header-user-dropdown">
+                        <button type="button"
+                                class="btn btn-header-icon dropdown-toggle"
+                                data-bs-toggle="dropdown"
+                                aria-expanded="false"
+                                aria-label="Account"
+                                id="header-user-btn"
+                                title="Account">
+                            <i class="fa-solid fa-user" aria-hidden="true" id="header-user-icon"></i>
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="header-user-btn">
+                            <!-- Logged-out state (default) -->
+                            <li id="header-user-guest">
+                                <button class="dropdown-item" type="button" id="header-signin-btn">
+                                    <i class="fa-solid fa-right-to-bracket me-2" aria-hidden="true"></i> Sign In
+                                </button>
+                            </li>
+                            <li id="header-user-register-li">
+                                <button class="dropdown-item" type="button" id="header-register-btn">
+                                    <i class="fa-solid fa-user-plus me-2" aria-hidden="true"></i> Create Account
+                                </button>
+                            </li>
+                            <!-- Logged-in state (hidden by default, shown by JS) -->
+                            <li id="header-user-name" class="d-none">
+                                <span class="dropdown-item-text fw-semibold" id="header-user-display-name"></span>
+                            </li>
+                            <li id="header-user-role-li" class="d-none">
+                                <span class="dropdown-item-text small text-muted" id="header-user-role-text"></span>
+                            </li>
+                            <li id="header-user-divider" class="d-none"><hr class="dropdown-divider"></li>
+                            <li id="header-user-setlists-li" class="d-none">
+                                <a class="dropdown-item" href="/setlist" data-navigate="setlist">
+                                    <i class="fa-solid fa-list-ol me-2" aria-hidden="true"></i> My Set Lists
+                                </a>
+                            </li>
+                            <li id="header-user-sync-li" class="d-none">
+                                <button class="dropdown-item" type="button" id="header-sync-btn">
+                                    <i class="fa-solid fa-arrows-rotate me-2" aria-hidden="true"></i> Sync Set Lists
+                                </button>
+                            </li>
+                            <li id="header-user-settings-li" class="d-none">
+                                <a class="dropdown-item" href="/settings" data-navigate="settings">
+                                    <i class="fa-solid fa-gear me-2" aria-hidden="true"></i> Account Settings
+                                </a>
+                            </li>
+                            <li id="header-user-divider2" class="d-none"><hr class="dropdown-divider"></li>
+                            <li id="header-user-signout-li" class="d-none">
+                                <button class="dropdown-item" type="button" id="header-signout-btn">
+                                    <i class="fa-solid fa-right-from-bracket me-2" aria-hidden="true"></i> Sign Out
+                                </button>
+                            </li>
+                        </ul>
+                    </div>
                 </div>
             </div>
         </nav>

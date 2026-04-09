@@ -295,6 +295,9 @@ export class Settings {
      * Initialise the settings page controls (called after page loads).
      */
     initSettingsPage() {
+        /* Account section — user auth buttons */
+        this._initAccountSection();
+
         /* Theme buttons */
         document.querySelectorAll('[data-setting-theme]').forEach(btn => {
             const theme = btn.dataset.settingTheme;
@@ -901,5 +904,60 @@ export class Settings {
             statusEl.textContent = 'Not supported';
             statusEl.className = 'badge bg-warning';
         }
+    }
+
+    /* =====================================================================
+     * ACCOUNT SECTION — User auth integration
+     * ===================================================================== */
+
+    /**
+     * Initialise the account section in settings.
+     * Shows logged-in or logged-out state and binds button handlers.
+     */
+    _initAccountSection() {
+        const auth = this.app.userAuth;
+        if (!auth) return;
+
+        const loggedOutEl = document.getElementById('auth-logged-out');
+        const loggedInEl  = document.getElementById('auth-logged-in');
+
+        if (auth.isLoggedIn()) {
+            const user = auth.getUser();
+            loggedOutEl?.classList.add('d-none');
+            loggedInEl?.classList.remove('d-none');
+            const nameEl = document.getElementById('auth-display-name-text');
+            const userEl = document.getElementById('auth-username-text');
+            if (nameEl) nameEl.textContent = user?.display_name || user?.username || '';
+            if (userEl) userEl.textContent = '@' + (user?.username || '');
+        } else {
+            loggedOutEl?.classList.remove('d-none');
+            loggedInEl?.classList.add('d-none');
+        }
+
+        /* Sign In button */
+        document.getElementById('btn-auth-login')?.addEventListener('click', () => {
+            auth.showAuthModal('login');
+        });
+
+        /* Create Account button */
+        document.getElementById('btn-auth-register')?.addEventListener('click', () => {
+            auth.showAuthModal('register');
+        });
+
+        /* Sync button */
+        document.getElementById('btn-auth-sync')?.addEventListener('click', async () => {
+            this.app.showToast('Syncing set lists...', 'info', 2000);
+            await auth.triggerSetlistSync();
+            /* Refresh account section display */
+            this._initAccountSection();
+        });
+
+        /* Sign Out button */
+        document.getElementById('btn-auth-logout')?.addEventListener('click', async () => {
+            await auth.logout();
+            this.app.showToast('Signed out', 'info', 2000);
+            /* Refresh account section display */
+            this._initAccountSection();
+        });
     }
 }

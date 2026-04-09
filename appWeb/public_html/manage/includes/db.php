@@ -185,6 +185,50 @@ function runMigrations(PDO $db): void
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
         ',
+
+        /* API bearer tokens for public-facing user authentication */
+        '003_create_api_tokens' => '
+            CREATE TABLE IF NOT EXISTS api_tokens (
+                token TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        ',
+
+        /* Server-side setlist storage linked to user accounts */
+        '004_create_user_setlists' => '
+            CREATE TABLE IF NOT EXISTS user_setlists (
+                id ' . ($driver === 'sqlite' ? 'INTEGER PRIMARY KEY AUTOINCREMENT' : 'INTEGER PRIMARY KEY AUTO_INCREMENT') . ',
+                user_id INTEGER NOT NULL,
+                setlist_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                songs_json TEXT NOT NULL DEFAULT \'[]\',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                UNIQUE(user_id, setlist_id)
+            )
+        ',
+
+        /* Password reset tokens for "forgot password" functionality */
+        '005_create_password_reset_tokens' => '
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                token TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                expires_at TEXT NOT NULL,
+                used INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        ',
+
+        /* Add email column to users for password reset delivery.
+         * Also normalises the role column: global_admin, admin, editor, user. */
+        '006_add_user_email' => '
+            ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT \'\'
+        ',
     ];
 
     /* Apply each migration that hasn't run yet */

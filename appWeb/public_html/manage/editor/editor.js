@@ -625,7 +625,9 @@ var COMPONENT_TYPES = [
     'coda',
     'intro',
     'outro',
-    'interlude'
+    'interlude',
+    'vamp',
+    'ad-lib'
 ];
 
 /**

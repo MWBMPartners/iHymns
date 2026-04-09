@@ -969,6 +969,55 @@ body.banner-visible.search-open .main-content {
     font-style: italic;
 }
 
+/* Intro / Outro styling */
+.lyric-intro {
+    border-left-color: #10b981;
+    opacity: 0.85;
+}
+
+.lyric-outro {
+    border-left-color: #ef4444;
+    opacity: 0.85;
+}
+
+/* Interlude / Vamp styling */
+.lyric-interlude,
+.lyric-vamp {
+    border-left-color: #06b6d4;
+    font-style: italic;
+    opacity: 0.85;
+}
+
+/* Tag / Coda styling */
+.lyric-tag,
+.lyric-coda {
+    border-left-color: #6b7280;
+}
+
+/* Ad-lib styling */
+.lyric-ad-lib {
+    border-left-color: #84cc16;
+    font-style: italic;
+}
+
+/* Arrangement strip — drag-and-drop area */
+.arrangement-strip {
+    transition: background-color var(--transition-fast);
+}
+
+.arrangement-strip-chip {
+    transition: transform var(--transition-fast), opacity var(--transition-fast);
+}
+
+.arrangement-strip-chip:hover {
+    transform: scale(1.08);
+}
+
+.arrangement-pool-chip:hover {
+    transform: scale(1.1);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
 /* Lyrics content protection — prevent copying */
 .song-lyrics,
 .presentation-lyrics {

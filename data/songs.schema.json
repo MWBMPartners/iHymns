@@ -184,7 +184,7 @@
           "enum": [
             "verse", "chorus", "refrain", "bridge",
             "pre-chorus", "tag", "coda", "intro",
-            "outro", "interlude"
+            "outro", "interlude", "vamp", "ad-lib"
           ]
         },
         "number": {
