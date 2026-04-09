@@ -38,8 +38,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error = 'Password must be at least 8 characters.';
     } elseif ($password !== $confirm) {
         $error = 'Passwords do not match.';
-    } elseif (!in_array($role, ['admin', 'editor'], true)) {
+    } elseif (!in_array($role, allRoles(), true)) {
         $error = 'Invalid role.';
+    } elseif ($role === 'global_admin' && $currentUser['role'] !== 'global_admin') {
+        $error = 'Only Global Admin can assign the Global Admin role.';
+    } elseif (roleLevel($role) > roleLevel($currentUser['role'])) {
+        $error = 'Cannot assign a role higher than your own.';
     } else {
         try {
             createUser($username, $password, $displayName ?: $username, $role);
@@ -89,8 +93,10 @@ $csrf = csrfToken();
         .navbar-admin .nav-link { color: var(--ih-text-muted); }
         .navbar-admin .nav-link:hover { color: var(--ih-amber); }
         .table { color: var(--ih-text); }
+        .badge-global-admin { background: #dc2626; }
         .badge-admin { background: var(--ih-amber); color: #1a1a2e; }
         .badge-editor { background: #3b82f6; }
+        .badge-user { background: #6b7280; }
     </style>
 </head>
 <body>
@@ -131,8 +137,13 @@ $csrf = csrfToken();
                         <td><code><?= htmlspecialchars($u['username']) ?></code></td>
                         <td><?= htmlspecialchars($u['display_name']) ?></td>
                         <td>
-                            <span class="badge <?= $u['role'] === 'admin' ? 'badge-admin' : 'badge-editor' ?>">
-                                <?= htmlspecialchars($u['role']) ?>
+                            <span class="badge <?= match($u['role']) {
+                                'global_admin' => 'badge-global-admin',
+                                'admin'        => 'badge-admin',
+                                'editor'       => 'badge-editor',
+                                default        => 'badge-user',
+                            } ?>">
+                                <?= htmlspecialchars(roleLabel($u['role'])) ?>
                             </span>
                         </td>
                         <td><?= $u['is_active'] ? '<span class="text-success">Active</span>' : '<span class="text-danger">Disabled</span>' ?></td>
@@ -184,8 +195,12 @@ $csrf = csrfToken();
                 <div class="mb-3">
                     <label for="role" class="form-label">Role</label>
                     <select class="form-select" id="role" name="role">
-                        <option value="editor">Editor — can edit songs</option>
+                        <option value="user">User — can save setlists centrally</option>
+                        <option value="editor" selected>Curator / Editor — can edit songs</option>
                         <option value="admin">Admin — full access including user management</option>
+                        <?php if ($currentUser['role'] === 'global_admin'): ?>
+                        <option value="global_admin">Global Admin — unrestricted access</option>
+                        <?php endif; ?>
                     </select>
                 </div>
 

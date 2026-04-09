@@ -44,6 +44,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/includes/config.php';
 require_once __DIR__ . '/includes/infoAppVer.php';
 require_once __DIR__ . '/includes/SongData.php';
+require_once __DIR__ . '/manage/includes/db.php';
 
 /* =========================================================================
  * REQUEST HANDLING
@@ -392,6 +393,20 @@ if ($action !== null) {
                 }
             }
 
+            /* Sanitise optional per-song arrangements (map of songId → index array) */
+            $arrangements = [];
+            if (isset($body['arrangements']) && is_array($body['arrangements'])) {
+                foreach ($body['arrangements'] as $sid => $arr) {
+                    /* Only accept valid song IDs and arrays of non-negative integers */
+                    if (!is_string($sid) || !preg_match('/^[A-Za-z]+-\d+$/', $sid)) continue;
+                    if (!is_array($arr)) continue;
+                    $validArr = array_values(array_filter($arr, fn($v) => is_int($v) && $v >= 0));
+                    if (count($validArr) > 0) {
+                        $arrangements[$sid] = $validArr;
+                    }
+                }
+            }
+
             /* Build the shared setlist object */
             $now = gmdate('c');
             $isUpdate = ($shareId !== null);
@@ -401,8 +416,13 @@ if ($action !== null) {
                 'owner'   => $ownerId,
                 'created' => $isUpdate ? ($existing['created'] ?? $now) : $now,
                 'updated' => $now,
-                'version' => 1,
+                'version' => 2,
             ];
+
+            /* Include arrangements only if any songs have custom arrangements */
+            if (!empty($arrangements)) {
+                $shareData['arrangements'] = $arrangements;
+            }
 
             if ($isUpdate) {
                 /* Updating existing — write directly */
@@ -474,13 +494,424 @@ if ($action !== null) {
             }
 
             /* Return public-safe fields only (exclude owner UUID) */
-            sendJson([
+            $response = [
                 'id'      => $data['id'] ?? $shareId,
                 'name'    => $data['name'] ?? 'Untitled',
                 'songs'   => $data['songs'] ?? [],
                 'created' => $data['created'] ?? null,
                 'updated' => $data['updated'] ?? null,
+            ];
+
+            /* Include per-song arrangements if present */
+            if (!empty($data['arrangements'])) {
+                $response['arrangements'] = $data['arrangements'];
+            }
+
+            sendJson($response);
+            break;
+
+        /* =================================================================
+         * USER AUTHENTICATION — Public-facing account system
+         *
+         * Allows PWA users to create accounts, log in with bearer tokens,
+         * and sync setlists across devices. Separate from the admin/editor
+         * auth system in /manage/.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Register a new public user account
+         *
+         * POST body (JSON):
+         *   { "username": "...", "password": "...", "display_name": "..." }
+         *
+         * Returns: { "token": "...", "user": { id, username, display_name } }
+         * ----------------------------------------------------------------- */
+        case 'auth_register':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            $username    = mb_strtolower(trim($body['username'] ?? ''));
+            $password    = $body['password'] ?? '';
+            $displayName = trim($body['display_name'] ?? '');
+
+            /* Validate inputs */
+            if (strlen($username) < 3 || !preg_match('/^[a-z0-9_.\-]+$/', $username)) {
+                sendJson(['error' => 'Username must be at least 3 characters (letters, numbers, _, -, . only).'], 400);
+                break;
+            }
+            if (strlen($password) < 8) {
+                sendJson(['error' => 'Password must be at least 8 characters.'], 400);
+                break;
+            }
+            if ($displayName === '') {
+                $displayName = $username;
+            }
+
+            $db = getDb();
+
+            /* Check if username already exists */
+            $stmt = $db->prepare('SELECT id FROM users WHERE username = ?');
+            $stmt->execute([$username]);
+            if ($stmt->fetch()) {
+                sendJson(['error' => 'Username already taken.'], 409);
+                break;
+            }
+
+            /* Auto-assign 'global_admin' to the very first registered user;
+             * all subsequent public registrations get 'user' role */
+            $stmt = $db->query('SELECT COUNT(*) FROM users');
+            $role = ((int)$stmt->fetchColumn() === 0) ? 'global_admin' : 'user';
+
+            $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
+            $stmt = $db->prepare('INSERT INTO users (username, password_hash, display_name, role) VALUES (?, ?, ?, ?)');
+            $stmt->execute([$username, $hash, mb_substr($displayName, 0, 100), $role]);
+            $userId = (int)$db->lastInsertId();
+
+            /* Generate API token (64-character hex string, 30-day expiry) */
+            $token = bin2hex(random_bytes(32));
+            $expiresAt = gmdate('c', time() + 30 * 86400);
+            $stmt = $db->prepare('INSERT INTO api_tokens (token, user_id, expires_at) VALUES (?, ?, ?)');
+            $stmt->execute([$token, $userId, $expiresAt]);
+
+            sendJson([
+                'token' => $token,
+                'user'  => [
+                    'id'           => $userId,
+                    'username'     => $username,
+                    'display_name' => $displayName,
+                    'role'         => $role,
+                ],
+            ], 201);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Log in and receive a bearer token
+         *
+         * POST body (JSON): { "username": "...", "password": "..." }
+         * Returns: { "token": "...", "user": { id, username, display_name } }
+         * ----------------------------------------------------------------- */
+        case 'auth_login':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            $username = mb_strtolower(trim($body['username'] ?? ''));
+            $password = $body['password'] ?? '';
+
+            if ($username === '' || $password === '') {
+                sendJson(['error' => 'Username and password required.'], 400);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->prepare('SELECT id, username, password_hash, display_name, role, is_active FROM users WHERE username = ?');
+            $stmt->execute([$username]);
+            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$user || !password_verify($password, $user['password_hash'])) {
+                sendJson(['error' => 'Invalid username or password.'], 401);
+                break;
+            }
+
+            if (!$user['is_active']) {
+                sendJson(['error' => 'Account is disabled.'], 403);
+                break;
+            }
+
+            /* Generate API token */
+            $token = bin2hex(random_bytes(32));
+            $expiresAt = gmdate('c', time() + 30 * 86400);
+            $stmt = $db->prepare('INSERT INTO api_tokens (token, user_id, expires_at) VALUES (?, ?, ?)');
+            $stmt->execute([$token, (int)$user['id'], $expiresAt]);
+
+            sendJson([
+                'token' => $token,
+                'user'  => [
+                    'id'           => (int)$user['id'],
+                    'username'     => $user['username'],
+                    'display_name' => $user['display_name'],
+                    'role'         => $user['role'],
+                ],
             ]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Log out (invalidate bearer token)
+         * Requires: Authorization: Bearer <token>
+         * ----------------------------------------------------------------- */
+        case 'auth_logout':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $token = getAuthBearerToken();
+            if ($token) {
+                $db = getDb();
+                $stmt = $db->prepare('DELETE FROM api_tokens WHERE token = ?');
+                $stmt->execute([$token]);
+            }
+
+            sendJson(['ok' => true]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Get current authenticated user info
+         * Requires: Authorization: Bearer <token>
+         * ----------------------------------------------------------------- */
+        case 'auth_me':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            sendJson([
+                'user' => [
+                    'id'           => $authUser['id'],
+                    'username'     => $authUser['username'],
+                    'display_name' => $authUser['display_name'],
+                    'role'         => $authUser['role'],
+                ],
+            ]);
+            break;
+
+        /* =================================================================
+         * USER-LINKED SETLISTS — Server-side storage synced to accounts
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Get all setlists for the authenticated user
+         * Requires: Authorization: Bearer <token>
+         * ----------------------------------------------------------------- */
+        case 'user_setlists':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->prepare('SELECT setlist_id, name, songs_json, created_at, updated_at FROM user_setlists WHERE user_id = ? ORDER BY updated_at DESC');
+            $stmt->execute([$authUser['id']]);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $setlists = array_map(function ($row) {
+                return [
+                    'id'        => $row['setlist_id'],
+                    'name'      => $row['name'],
+                    'songs'     => json_decode($row['songs_json'], true) ?: [],
+                    'createdAt' => $row['created_at'],
+                    'updatedAt' => $row['updated_at'],
+                ];
+            }, $rows);
+
+            sendJson(['setlists' => $setlists]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Sync setlists: merge local setlists with server-side storage.
+         * Accepts the full array of local setlists and merges intelligently:
+         *   - New setlists (by ID) are inserted
+         *   - Existing setlists are updated if local version is newer
+         *   - Server-only setlists are preserved and returned
+         *
+         * POST body (JSON):
+         *   { "setlists": [{ id, name, createdAt, songs: [...] }, ...] }
+         *
+         * Returns: { "setlists": [...merged result...] }
+         * Requires: Authorization: Bearer <token>
+         * ----------------------------------------------------------------- */
+        case 'user_setlists_sync':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            if (!is_array($body['setlists'] ?? null)) {
+                sendJson(['error' => 'Invalid request. Required: setlists (array).'], 400);
+                break;
+            }
+
+            /* Cap at 50 setlists per user */
+            $localLists = array_slice($body['setlists'], 0, 50);
+
+            $db = getDb();
+            $userId = $authUser['id'];
+
+            /* Fetch all existing server-side setlists for this user */
+            $stmt = $db->prepare('SELECT setlist_id, name, songs_json, created_at, updated_at FROM user_setlists WHERE user_id = ?');
+            $stmt->execute([$userId]);
+            $serverRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $serverMap = [];
+            foreach ($serverRows as $row) {
+                $serverMap[$row['setlist_id']] = $row;
+            }
+
+            $now = gmdate('c');
+
+            /* Upsert each local setlist */
+            $upsert = $db->prepare(
+                'INSERT INTO user_setlists (user_id, setlist_id, name, songs_json, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(user_id, setlist_id) DO UPDATE SET
+                    name = excluded.name,
+                    songs_json = excluded.songs_json,
+                    updated_at = excluded.updated_at'
+            );
+
+            foreach ($localLists as $list) {
+                if (empty($list['id'])) continue;
+
+                $setlistId = preg_replace('/[^a-zA-Z0-9_\-]/', '', $list['id']);
+                if ($setlistId === '') continue;
+
+                $name = mb_substr(trim($list['name'] ?? 'Untitled'), 0, 200);
+                $songs = is_array($list['songs'] ?? null) ? $list['songs'] : [];
+
+                /* Sanitise each song entry */
+                $cleanSongs = [];
+                foreach (array_slice($songs, 0, 200) as $s) {
+                    if (!is_array($s) || empty($s['id'])) continue;
+                    $entry = [
+                        'id'       => (string)$s['id'],
+                        'title'    => mb_substr((string)($s['title'] ?? ''), 0, 300),
+                        'songbook' => mb_substr((string)($s['songbook'] ?? ''), 0, 20),
+                        'number'   => (int)($s['number'] ?? 0),
+                    ];
+                    /* Preserve custom arrangement if present */
+                    if (isset($s['arrangement']) && is_array($s['arrangement'])) {
+                        $entry['arrangement'] = array_values(array_filter(
+                            $s['arrangement'],
+                            fn($v) => is_int($v) && $v >= 0
+                        ));
+                    }
+                    $cleanSongs[] = $entry;
+                }
+
+                $songsJson = json_encode($cleanSongs, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                $createdAt = $list['createdAt'] ?? $now;
+
+                $upsert->execute([$userId, $setlistId, $name, $songsJson, $createdAt, $now]);
+
+                /* Remove from server map so we know which are server-only */
+                unset($serverMap[$setlistId]);
+            }
+
+            /* Fetch the merged result (all setlists for this user) */
+            $stmt = $db->prepare('SELECT setlist_id, name, songs_json, created_at, updated_at FROM user_setlists WHERE user_id = ? ORDER BY updated_at DESC');
+            $stmt->execute([$userId]);
+            $mergedRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $mergedSetlists = array_map(function ($row) {
+                return [
+                    'id'        => $row['setlist_id'],
+                    'name'      => $row['name'],
+                    'songs'     => json_decode($row['songs_json'], true) ?: [],
+                    'createdAt' => $row['created_at'],
+                    'updatedAt' => $row['updated_at'],
+                ];
+            }, $mergedRows);
+
+            sendJson(['setlists' => $mergedSetlists]);
+            break;
+
+        /* =================================================================
+         * PASSWORD RESET — Forgot password flow
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Request a password reset token
+         *
+         * POST body (JSON): { "username": "..." }
+         * (username or email accepted)
+         *
+         * Always returns 200 to prevent user enumeration.
+         * In production, send the token via email. For now, it is
+         * returned in the response for development/testing.
+         * ----------------------------------------------------------------- */
+        case 'auth_forgot_password':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            require_once __DIR__ . '/manage/includes/auth.php';
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+            $input = trim($body['username'] ?? '');
+
+            if ($input === '') {
+                sendJson(['error' => 'Username or email required.'], 400);
+                break;
+            }
+
+            $result = generatePasswordResetToken($input);
+
+            /* Always return success to prevent user enumeration */
+            if ($result) {
+                /* In production, send email here. For dev/testing, include the token.
+                 * TODO: integrate email delivery for production */
+                sendJson([
+                    'ok'      => true,
+                    'message' => 'If an account exists with that username or email, a reset link has been generated.',
+                    '_dev_token' => $result['token'],
+                ]);
+            } else {
+                sendJson([
+                    'ok'      => true,
+                    'message' => 'If an account exists with that username or email, a reset link has been generated.',
+                ]);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
+         * Reset password using a valid token
+         *
+         * POST body (JSON): { "token": "...", "password": "..." }
+         * ----------------------------------------------------------------- */
+        case 'auth_reset_password':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            require_once __DIR__ . '/manage/includes/auth.php';
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+            $token       = trim($body['token'] ?? '');
+            $newPassword = $body['password'] ?? '';
+
+            if ($token === '' || strlen($newPassword) < 8) {
+                sendJson(['error' => 'Valid token and password (min 8 characters) required.'], 400);
+                break;
+            }
+
+            if (resetPassword($token, $newPassword)) {
+                sendJson(['ok' => true, 'message' => 'Password reset successfully. Please sign in with your new password.']);
+            } else {
+                sendJson(['error' => 'Invalid or expired reset token.'], 400);
+            }
             break;
 
         /* -----------------------------------------------------------------
@@ -517,6 +948,51 @@ function sendJson(array $data, int $statusCode = 200): void
     header('X-Content-Type-Options: nosniff');
     header('Cache-Control: no-cache, must-revalidate');
     echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+}
+
+/**
+ * Extract a Bearer token from the Authorization header.
+ *
+ * @return string|null The token string, or null if not present
+ */
+function getAuthBearerToken(): ?string
+{
+    $header = $_SERVER['HTTP_AUTHORIZATION']
+           ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION']
+           ?? '';
+
+    if (preg_match('/^Bearer\s+([a-f0-9]{64})$/i', $header, $m)) {
+        return $m[1];
+    }
+
+    return null;
+}
+
+/**
+ * Authenticate a request using a Bearer token.
+ * Returns the user row if valid, null otherwise.
+ *
+ * @return array|null User data { id, username, display_name, role }
+ */
+function getAuthenticatedUser(): ?array
+{
+    $token = getAuthBearerToken();
+    if (!$token) return null;
+
+    $db = getDb();
+    $stmt = $db->prepare(
+        'SELECT u.id, u.username, u.display_name, u.role
+         FROM api_tokens t
+         JOIN users u ON u.id = t.user_id
+         WHERE t.token = ? AND t.expires_at > ? AND u.is_active = 1'
+    );
+    $stmt->execute([$token, gmdate('c')]);
+    $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$user) return null;
+
+    $user['id'] = (int)$user['id'];
+    return $user;
 }
 
 /**

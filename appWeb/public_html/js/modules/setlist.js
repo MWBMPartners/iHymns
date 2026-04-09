@@ -19,6 +19,7 @@
 
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
+import { shortTag, fullLabel, typeColor, COMPONENT_TYPES } from '../utils/components.js';
 import { STORAGE_SETLISTS, STORAGE_OWNER_ID } from '../constants.js';
 
 export class SetList {
@@ -130,12 +131,19 @@ export class SetList {
         /* Prevent duplicates within the same set list */
         if (list.songs.some(s => s.id === song.id)) return false;
 
-        list.songs.push({
+        const entry = {
             id: song.id,
             title: song.title || '',
             songbook: song.songbook || '',
             number: song.number || 0,
-        });
+        };
+
+        /* Preserve custom arrangement if provided */
+        if (song.arrangement && Array.isArray(song.arrangement)) {
+            entry.arrangement = song.arrangement;
+        }
+
+        list.songs.push(entry);
         this.saveAll(lists);
         return true;
     }
@@ -178,7 +186,54 @@ export class SetList {
      * Initialise the set list page (called by router after page loads).
      */
     initSetListPage() {
+        this.renderSyncBar();
         this.renderSetListOverview();
+    }
+
+    /**
+     * Render the sync bar at the top of the setlist page.
+     * Shows sign-in prompt (if not logged in) or sync status (if logged in).
+     */
+    renderSyncBar() {
+        const bar = document.getElementById('setlist-sync-bar');
+        if (!bar) return;
+
+        const auth = this.app.userAuth;
+        if (!auth) return;
+
+        if (auth.isLoggedIn()) {
+            const user = auth.getUser();
+            bar.className = 'alert alert-success py-2 px-3 d-flex align-items-center justify-content-between mb-3';
+            bar.innerHTML = `
+                <small>
+                    <i class="fa-solid fa-cloud-arrow-up me-1" aria-hidden="true"></i>
+                    Signed in as <strong>${escapeHtml(user?.display_name || user?.username || '')}</strong>
+                    — set lists sync across devices
+                </small>
+                <button type="button" class="btn btn-sm btn-outline-success" id="setlist-sync-now-btn">
+                    <i class="fa-solid fa-arrows-rotate me-1" aria-hidden="true"></i> Sync Now
+                </button>`;
+
+            bar.querySelector('#setlist-sync-now-btn')?.addEventListener('click', async () => {
+                this.app.showToast('Syncing...', 'info', 1500);
+                await auth.triggerSetlistSync();
+                this.renderSetListOverview();
+            });
+        } else {
+            bar.className = 'alert alert-info py-2 px-3 d-flex align-items-center justify-content-between mb-3';
+            bar.innerHTML = `
+                <small>
+                    <i class="fa-solid fa-user me-1" aria-hidden="true"></i>
+                    Sign in to sync set lists across devices
+                </small>
+                <button type="button" class="btn btn-sm btn-outline-primary" id="setlist-login-btn">
+                    Sign In
+                </button>`;
+
+            bar.querySelector('#setlist-login-btn')?.addEventListener('click', () => {
+                auth.showAuthModal('login');
+            });
+        }
     }
 
     /**
@@ -292,8 +347,15 @@ export class SetList {
                             <div class="flex-grow-1">
                                 <a href="/song/${escapeHtml(song.id)}" data-navigate="song"
                                    class="text-decoration-none">${escapeHtml(toTitleCase(song.title))}${verifiedBadge(song)}</a>
-                                <small class="text-muted d-block">${escapeHtml(song.songbook)}</small>
+                                <small class="text-muted d-block">
+                                    ${escapeHtml(song.songbook)}${song.arrangement ? ' <span class="badge bg-warning bg-opacity-25 text-warning-emphasis" style="font-size:0.6rem">Custom Arr.</span>' : ''}
+                                </small>
                             </div>
+                            <button type="button" class="btn btn-sm btn-outline-warning btn-arrange-song"
+                                    data-song-id="${escapeHtml(song.id)}" data-index="${index}"
+                                    aria-label="Customise arrangement" title="Arrange">
+                                <i class="fa-solid fa-sliders" aria-hidden="true"></i>
+                            </button>
                             <button type="button" class="btn btn-sm btn-outline-secondary btn-move-up"
                                     data-index="${index}" ${index === 0 ? 'disabled' : ''}
                                     aria-label="Move up">
@@ -424,6 +486,14 @@ export class SetList {
             });
         });
 
+        /* Arrange buttons — open per-song arrangement editor */
+        container.querySelectorAll('.btn-arrange-song').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.openArrangementEditor(listId, btn.dataset.songId);
+            });
+        });
+
         /* Drag-to-reorder */
         this.initDragReorder(listId);
     }
@@ -468,6 +538,400 @@ export class SetList {
                 dragSrcIndex = null;
             });
         });
+    }
+
+    /* =====================================================================
+     * PER-SONG ARRANGEMENT EDITOR — Draggable tags + live preview
+     *
+     * Allows customising the component order for a song within this
+     * setlist, without modifying the global song data. Inspired by
+     * ProPresenter 7's arrangement feature.
+     * ===================================================================== */
+
+    /**
+     * Fetch full song data (with components) from the API.
+     * @param {string} songId Song ID (e.g. "MP-1342")
+     * @returns {Promise<Object|null>} Full song object or null
+     */
+    async fetchSongData(songId) {
+        try {
+            const url = `${this.app.config.apiUrl}?action=song_data&id=${encodeURIComponent(songId)}`;
+            const res = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+            if (!res.ok) return null;
+            const json = await res.json();
+            return json.song || null;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * Open the arrangement editor modal for a song in a setlist.
+     * Fetches the song's component data, then shows a modal with
+     * draggable tag chips and a live lyrics preview.
+     *
+     * @param {string} listId  Setlist ID
+     * @param {string} songId  Song ID
+     */
+    async openArrangementEditor(listId, songId) {
+        this.app.showToast('Loading song data...', 'info', 1500);
+
+        const songData = await this.fetchSongData(songId);
+        if (!songData || !songData.components || songData.components.length === 0) {
+            this.app.showToast('Could not load song components.', 'danger', 3000);
+            return;
+        }
+
+        /* Get the current custom arrangement for this song in this setlist (if any) */
+        const list = this.getById(listId);
+        if (!list) return;
+        const songEntry = list.songs.find(s => s.id === songId);
+        if (!songEntry) return;
+
+        /* Current arrangement: custom (from setlist) > song default > sequential */
+        const currentArr = songEntry.arrangement
+            || songData.arrangement
+            || songData.components.map((_, i) => i);
+
+        this._showArrangementModal(listId, songId, songData, currentArr);
+    }
+
+    /**
+     * Build and display the arrangement editor modal.
+     *
+     * @param {string}   listId     Setlist ID
+     * @param {string}   songId     Song ID
+     * @param {Object}   songData   Full song object with components
+     * @param {number[]} arrangement Current arrangement (array of component indices)
+     */
+    _showArrangementModal(listId, songId, songData, arrangement) {
+        /* Remove any previous modal */
+        document.getElementById('arrangement-editor-modal')?.remove();
+
+        /* Working copy of the arrangement (mutated by drag/drop) */
+        let workingArr = [...arrangement];
+        const components = songData.components;
+
+        /* Build pool chips (one per unique component) */
+        const poolChipsHtml = components.map((comp, idx) => {
+            const tag = shortTag(comp);
+            const label = fullLabel(comp);
+            const color = typeColor(comp.type);
+            return `<span class="badge rounded-pill arrangement-pool-chip"
+                          data-comp-idx="${idx}"
+                          title="${escapeHtml(label)} — click to add"
+                          style="background-color:${color};color:#fff;cursor:pointer;user-select:none;font-size:0.8rem;padding:0.4em 0.7em"
+                          role="button" tabindex="0"
+                          aria-label="Add ${escapeHtml(label)} to arrangement">${escapeHtml(tag)}</span>`;
+        }).join(' ');
+
+        const modal = document.createElement('div');
+        modal.id = 'arrangement-editor-modal';
+        modal.className = 'modal fade';
+        modal.tabIndex = -1;
+        modal.setAttribute('aria-labelledby', 'arrangement-editor-label');
+        modal.setAttribute('aria-hidden', 'true');
+
+        modal.innerHTML = `
+            <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="arrangement-editor-label">
+                            <i class="fa-solid fa-sliders me-2" aria-hidden="true"></i>
+                            Arrangement — ${escapeHtml(toTitleCase(songData.title))}
+                        </h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <!-- Component pool -->
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold small text-uppercase">
+                                <i class="fa-solid fa-puzzle-piece me-1" aria-hidden="true"></i>
+                                Components — click to add
+                            </label>
+                            <div class="d-flex flex-wrap gap-2" id="arr-pool">${poolChipsHtml}</div>
+                        </div>
+
+                        <hr>
+
+                        <!-- Arrangement strip (draggable) -->
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold small text-uppercase">
+                                <i class="fa-solid fa-arrows-left-right me-1" aria-hidden="true"></i>
+                                Arrangement — drag to reorder, click × to remove
+                            </label>
+                            <div class="d-flex flex-wrap gap-2 p-2 rounded border arrangement-strip"
+                                 id="arr-strip"
+                                 style="min-height:48px;background:var(--bs-body-bg)"
+                                 aria-label="Current arrangement order">
+                                <!-- Populated by JS -->
+                            </div>
+                        </div>
+
+                        <!-- Quick actions -->
+                        <div class="d-flex flex-wrap gap-2 mb-3">
+                            <button type="button" class="btn btn-sm btn-outline-primary" id="arr-auto-btn"
+                                    title="Insert chorus/refrain after each verse">
+                                <i class="fa-solid fa-wand-magic-sparkles me-1" aria-hidden="true"></i>
+                                Auto (Chorus after Verse)
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="arr-sequential-btn"
+                                    title="Reset to sequential component order">
+                                <i class="fa-solid fa-arrow-down-1-9 me-1" aria-hidden="true"></i>
+                                Sequential
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="arr-default-btn"
+                                    title="Use the song's default arrangement">
+                                <i class="fa-solid fa-rotate-left me-1" aria-hidden="true"></i>
+                                Song Default
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-danger" id="arr-clear-btn"
+                                    title="Clear custom arrangement">
+                                <i class="fa-solid fa-eraser me-1" aria-hidden="true"></i>
+                                Clear Custom
+                            </button>
+                        </div>
+
+                        <hr>
+
+                        <!-- Live lyrics preview -->
+                        <div>
+                            <label class="form-label fw-semibold small text-uppercase">
+                                <i class="fa-solid fa-eye me-1" aria-hidden="true"></i>
+                                Preview
+                            </label>
+                            <div class="song-lyrics border rounded p-3" id="arr-preview"
+                                 style="max-height:300px;overflow-y:auto;font-size:0.85rem">
+                                <!-- Populated by JS -->
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="button" class="btn btn-primary" id="arr-save-btn">
+                            <i class="fa-solid fa-check me-1" aria-hidden="true"></i>
+                            Save Arrangement
+                        </button>
+                    </div>
+                </div>
+            </div>`;
+
+        document.body.appendChild(modal);
+        const bsModal = new bootstrap.Modal(modal);
+
+        /* === Render helpers === */
+
+        const renderStrip = () => {
+            const strip = modal.querySelector('#arr-strip');
+            if (!strip) return;
+
+            if (workingArr.length === 0) {
+                strip.innerHTML = '<span class="text-muted small fst-italic">Drag components here or click from the pool above</span>';
+                return;
+            }
+
+            strip.innerHTML = workingArr.map((idx, pos) => {
+                const comp = components[idx];
+                if (!comp) return '';
+                const tag = shortTag(comp);
+                const label = fullLabel(comp);
+                const color = typeColor(comp.type);
+                return `<span class="badge rounded-pill arrangement-strip-chip d-inline-flex align-items-center gap-1"
+                              data-pos="${pos}" data-comp-idx="${idx}"
+                              draggable="true"
+                              title="${escapeHtml(label)} (position ${pos + 1})"
+                              style="background-color:${color};color:#fff;cursor:grab;user-select:none;font-size:0.8rem;padding:0.4em 0.7em"
+                              role="button" tabindex="0"
+                              aria-label="${escapeHtml(label)}, position ${pos + 1}">${escapeHtml(tag)}<span class="arrangement-chip-remove" data-pos="${pos}" style="cursor:pointer;margin-left:2px;opacity:0.7" aria-label="Remove">×</span></span>`;
+            }).join('');
+
+            /* Bind drag-and-drop on strip chips */
+            this._initStripDragDrop(strip, workingArr, components, renderStrip, renderPreview);
+
+            /* Bind remove buttons */
+            strip.querySelectorAll('.arrangement-chip-remove').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const pos = parseInt(btn.dataset.pos, 10);
+                    workingArr.splice(pos, 1);
+                    renderStrip();
+                    renderPreview();
+                });
+            });
+        };
+
+        const renderPreview = () => {
+            const preview = modal.querySelector('#arr-preview');
+            if (!preview) return;
+
+            if (workingArr.length === 0) {
+                preview.innerHTML = '<p class="text-muted fst-italic mb-0">No components in arrangement</p>';
+                return;
+            }
+
+            preview.innerHTML = workingArr.map(idx => {
+                const comp = components[idx];
+                if (!comp) return '';
+                const label = fullLabel(comp);
+                const lines = Array.isArray(comp.lines) ? comp.lines : [];
+                const typeClass = 'lyric-' + (comp.type || 'verse');
+                return `<div class="lyric-component ${escapeHtml(typeClass)}" role="group" aria-label="${escapeHtml(label)}">
+                    <div class="lyric-label" aria-hidden="true">${escapeHtml(label)}</div>
+                    <div class="lyric-lines">${lines.map(l => `<p class="lyric-line mb-1">${escapeHtml(l)}</p>`).join('')}</div>
+                </div>`;
+            }).join('');
+        };
+
+        /* Initial render */
+        renderStrip();
+        renderPreview();
+
+        /* === Pool chip clicks — add to arrangement === */
+        modal.querySelectorAll('.arrangement-pool-chip').forEach(chip => {
+            chip.addEventListener('click', () => {
+                const idx = parseInt(chip.dataset.compIdx, 10);
+                workingArr.push(idx);
+                renderStrip();
+                renderPreview();
+            });
+        });
+
+        /* === Quick action buttons === */
+
+        /* Auto-generate: chorus/refrain after each verse */
+        modal.querySelector('#arr-auto-btn')?.addEventListener('click', () => {
+            const refrainIdx = components.findIndex(c => c.type === 'chorus' || c.type === 'refrain');
+            if (refrainIdx === -1) {
+                this.app.showToast('No chorus or refrain found.', 'warning', 2000);
+                return;
+            }
+            const auto = [];
+            components.forEach((comp, i) => {
+                if (comp.type === 'verse') {
+                    auto.push(i);
+                    auto.push(refrainIdx);
+                } else if (i !== refrainIdx) {
+                    auto.push(i);
+                }
+            });
+            workingArr = auto;
+            renderStrip();
+            renderPreview();
+        });
+
+        /* Sequential order */
+        modal.querySelector('#arr-sequential-btn')?.addEventListener('click', () => {
+            workingArr = components.map((_, i) => i);
+            renderStrip();
+            renderPreview();
+        });
+
+        /* Song default */
+        modal.querySelector('#arr-default-btn')?.addEventListener('click', () => {
+            workingArr = songData.arrangement
+                ? [...songData.arrangement]
+                : components.map((_, i) => i);
+            renderStrip();
+            renderPreview();
+        });
+
+        /* Clear custom */
+        modal.querySelector('#arr-clear-btn')?.addEventListener('click', () => {
+            workingArr = [];
+            renderStrip();
+            renderPreview();
+        });
+
+        /* === Save === */
+        modal.querySelector('#arr-save-btn')?.addEventListener('click', () => {
+            this.setSongArrangement(listId, songId, workingArr.length > 0 ? workingArr : null);
+            bsModal.hide();
+            this.app.showToast('Arrangement saved', 'success', 2000);
+            this.renderSetListDetail(listId);
+        });
+
+        /* Cleanup on close */
+        modal.addEventListener('hidden.bs.modal', () => modal.remove());
+
+        bsModal.show();
+    }
+
+    /**
+     * Initialise drag-and-drop reordering on arrangement strip chips.
+     * Uses the HTML5 Drag and Drop API for natural drag behaviour.
+     *
+     * @param {HTMLElement} strip       The strip container
+     * @param {number[]}    workingArr  Mutable arrangement array
+     * @param {Array}       components  Song components (read-only)
+     * @param {Function}    renderStrip Re-render callback
+     * @param {Function}    renderPreview Re-render callback
+     */
+    _initStripDragDrop(strip, workingArr, components, renderStrip, renderPreview) {
+        let dragSrcPos = null;
+
+        strip.querySelectorAll('.arrangement-strip-chip').forEach(chip => {
+            chip.addEventListener('dragstart', (e) => {
+                dragSrcPos = parseInt(chip.dataset.pos, 10);
+                chip.style.opacity = '0.4';
+                e.dataTransfer.effectAllowed = 'move';
+                /* Store data for cross-element identification */
+                e.dataTransfer.setData('text/plain', String(dragSrcPos));
+            });
+
+            chip.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                chip.style.outline = '2px solid var(--bs-primary, #6366f1)';
+                chip.style.outlineOffset = '2px';
+            });
+
+            chip.addEventListener('dragleave', () => {
+                chip.style.outline = '';
+                chip.style.outlineOffset = '';
+            });
+
+            chip.addEventListener('drop', (e) => {
+                e.preventDefault();
+                chip.style.outline = '';
+                chip.style.outlineOffset = '';
+                const dropPos = parseInt(chip.dataset.pos, 10);
+                if (dragSrcPos !== null && dragSrcPos !== dropPos) {
+                    /* Reorder: remove from old position, insert at new */
+                    const [moved] = workingArr.splice(dragSrcPos, 1);
+                    workingArr.splice(dropPos, 0, moved);
+                    renderStrip();
+                    renderPreview();
+                }
+            });
+
+            chip.addEventListener('dragend', () => {
+                chip.style.opacity = '';
+                dragSrcPos = null;
+            });
+        });
+    }
+
+    /**
+     * Save a custom arrangement for a song within a setlist.
+     * @param {string}       listId      Setlist ID
+     * @param {string}       songId      Song ID
+     * @param {number[]|null} arrangement Custom arrangement array, or null to clear
+     */
+    setSongArrangement(listId, songId, arrangement) {
+        const lists = this.getAll();
+        const list = lists.find(l => l.id === listId);
+        if (!list) return;
+
+        const song = list.songs.find(s => s.id === songId);
+        if (!song) return;
+
+        if (arrangement && arrangement.length > 0) {
+            song.arrangement = arrangement;
+        } else {
+            delete song.arrangement;
+        }
+
+        this.saveAll(lists);
     }
 
     /* =====================================================================
@@ -681,6 +1145,53 @@ export class SetList {
         } else {
             songPage.prepend(navEl);
         }
+
+        /* Apply custom arrangement if this song has one in the active setlist */
+        this.applyCustomArrangement(songId);
+    }
+
+    /**
+     * Re-render the song lyrics on the page using a custom arrangement
+     * from the active setlist, if one exists. The server renders the song
+     * with its default/global arrangement; this method re-orders the
+     * already-rendered lyric components client-side.
+     *
+     * @param {string} songId Song ID
+     */
+    async applyCustomArrangement(songId) {
+        if (!this.activeSetListId) return;
+
+        const list = this.getById(this.activeSetListId);
+        if (!list) return;
+
+        const songEntry = list.songs.find(s => s.id === songId);
+        if (!songEntry?.arrangement || songEntry.arrangement.length === 0) return;
+
+        /* Fetch the full song data to get component content by index */
+        const songData = await this.fetchSongData(songId);
+        if (!songData?.components) return;
+
+        const lyricsEl = document.querySelector('.song-lyrics');
+        if (!lyricsEl) return;
+
+        /* Show an indicator that a custom arrangement is active */
+        const indicator = document.createElement('div');
+        indicator.className = 'alert alert-warning py-1 px-2 small mb-2';
+        indicator.innerHTML = '<i class="fa-solid fa-sliders me-1" aria-hidden="true"></i> Custom arrangement active';
+        lyricsEl.parentNode.insertBefore(indicator, lyricsEl);
+
+        /* Re-render the lyrics in the custom arrangement order */
+        lyricsEl.innerHTML = songEntry.arrangement.map(idx => {
+            const comp = songData.components[idx];
+            if (!comp) return '';
+            const label = fullLabel(comp);
+            const lines = Array.isArray(comp.lines) ? comp.lines : [];
+            const typeClass = 'lyric-' + (comp.type || 'verse');
+            return `<div class="lyric-component ${escapeHtml(typeClass)}" role="group" aria-label="${escapeHtml(label)}">
+                <div class="lyric-label" aria-hidden="true">${escapeHtml(label)}</div>
+                <div class="lyric-lines">${lines.map(l => `<p class="lyric-line mb-1">${escapeHtml(l)}</p>`).join('')}</div>
+            </div>`;
+        }).join('');
     }
 
     /* =====================================================================
@@ -727,11 +1238,24 @@ export class SetList {
         const list = this.getById(listId);
         if (!list) return null;
 
+        /* Collect per-song custom arrangements (only those that have one) */
+        const arrangements = {};
+        list.songs.forEach(s => {
+            if (s.arrangement && Array.isArray(s.arrangement) && s.arrangement.length > 0) {
+                arrangements[s.id] = s.arrangement;
+            }
+        });
+
         const payload = {
             name: list.name,
             songs: list.songs.map(s => s.id),
             owner: this.getOwnerId(),
         };
+
+        /* Include arrangements map only if any songs have custom arrangements */
+        if (Object.keys(arrangements).length > 0) {
+            payload.arrangements = arrangements;
+        }
 
         /* If this list was shared before, include the server-side ID for update */
         if (list.shareId) {
@@ -874,6 +1398,7 @@ export class SetList {
             return {
                 name: data.name,
                 songIds: data.songs,
+                arrangements: data.arrangements || {},
             };
         } catch {
             return null;
@@ -883,8 +1408,9 @@ export class SetList {
     /**
      * Import a shared set list into the user's local set lists.
      * Fetches song metadata from the API, then creates a new local set list.
+     * Preserves per-song custom arrangements if present.
      *
-     * @param {{ name: string, songIds: string[] }} sharedData Parsed shared data
+     * @param {{ name: string, songIds: string[], arrangements?: Object }} sharedData Parsed shared data
      * @returns {object} The newly created set list
      */
     async importSharedSetlist(sharedData) {
@@ -916,9 +1442,13 @@ export class SetList {
             })
         );
 
-        /* Add songs to the new list in order */
+        /* Add songs to the new list in order, preserving custom arrangements */
         for (const song of songResults) {
             if (song) {
+                /* Attach custom arrangement if one exists for this song */
+                if (sharedData.arrangements && sharedData.arrangements[song.id]) {
+                    song.arrangement = sharedData.arrangements[song.id];
+                }
                 this.addSong(newList.id, song);
             }
         }

@@ -8,3 +8,4 @@
 - [Web app directory structure](feedback_appweb_dir.md) — appWeb/ with public_html (single source), data_share, private_html
 - [Phase 1 PWA enhancements](feedback_phase1_pwa_enhancements.md) — Analytics, gestures, writer pages, TF-IDF related songs, WCAG contrast, PWA icons
 - [Phase 1 SEO/PWA/Social](feedback_phase1_seo_pwa_social.md) — OG images, PWA install banners, editor arrangement, Song of the Day expansion, CI/CD lftp regex fix, sitemap
+- [User Account System](feedback_user_accounts.md) — Role hierarchy (global_admin/admin/editor/user), bearer token auth, password reset, cross-device setlist sync, custom arrangements

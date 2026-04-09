@@ -31,6 +31,57 @@ declare(strict_types=1);
     </h1>
 
     <!-- ============================================================
+         ACCOUNT SECTION — User authentication for cross-device sync
+         ============================================================ -->
+    <div class="card card-settings mb-3">
+        <div class="card-body">
+            <h2 class="h6 mb-3">
+                <i class="fa-solid fa-user me-2" aria-hidden="true"></i>
+                Account
+            </h2>
+
+            <!-- Logged-out state -->
+            <div id="auth-logged-out">
+                <p class="text-muted small mb-3">
+                    Sign in to sync your set lists across devices. Your favourites
+                    and settings stay on this device.
+                </p>
+                <div class="d-flex gap-2">
+                    <button type="button" class="btn btn-primary btn-sm" id="btn-auth-login">
+                        <i class="fa-solid fa-right-to-bracket me-1" aria-hidden="true"></i>
+                        Sign In
+                    </button>
+                    <button type="button" class="btn btn-outline-primary btn-sm" id="btn-auth-register">
+                        <i class="fa-solid fa-user-plus me-1" aria-hidden="true"></i>
+                        Create Account
+                    </button>
+                </div>
+            </div>
+
+            <!-- Logged-in state -->
+            <div id="auth-logged-in" class="d-none">
+                <div class="d-flex align-items-center justify-content-between mb-2">
+                    <div>
+                        <strong id="auth-display-name-text"></strong>
+                        <small class="text-muted d-block" id="auth-username-text"></small>
+                    </div>
+                    <span class="badge bg-success"><i class="fa-solid fa-check me-1" aria-hidden="true"></i>Signed In</span>
+                </div>
+                <div class="d-flex gap-2">
+                    <button type="button" class="btn btn-outline-primary btn-sm" id="btn-auth-sync">
+                        <i class="fa-solid fa-arrows-rotate me-1" aria-hidden="true"></i>
+                        Sync Set Lists
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="btn-auth-logout">
+                        <i class="fa-solid fa-right-from-bracket me-1" aria-hidden="true"></i>
+                        Sign Out
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================================================
          APPEARANCE SECTION
          ============================================================ -->
     <div class="card card-settings mb-3">

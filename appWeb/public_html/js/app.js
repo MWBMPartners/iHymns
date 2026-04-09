@@ -29,6 +29,7 @@ import { Audio } from './modules/audio.js';
 import { SheetMusic } from './modules/sheet-music.js';
 import { History } from './modules/history.js';
 import { SetList } from './modules/setlist.js';
+import { UserAuth } from './modules/user-auth.js';
 import { Display } from './modules/display.js';
 import { Compare } from './modules/compare.js';
 import { Shortcuts } from './modules/shortcuts.js';
@@ -98,6 +99,9 @@ class iHymnsApp {
 
         /** @type {SetList} Worship set list / playlist (#94) */
         this.setList = null;
+
+        /** @type {UserAuth} Public user authentication for cross-device sync */
+        this.userAuth = null;
 
         /** @type {Display} Display preferences & presentation mode (#95) */
         this.display = null;
@@ -233,6 +237,10 @@ class iHymnsApp {
             /* Worship set list / playlist (#94) */
             this.setList = new SetList(this);
             this.setList.init();
+
+            /* User authentication for cross-device sync */
+            this.userAuth = new UserAuth(this);
+            this.userAuth.initUserMenu();
 
             /* Display preferences & presentation mode (#95) */
             this.display = new Display(this);
