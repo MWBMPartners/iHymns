@@ -468,6 +468,57 @@ body.banner-visible.search-open .main-content {
     padding-top: calc(var(--header-height) + var(--install-banner-height) + var(--search-bar-height) + env(safe-area-inset-top, 0px) + 8px);
 }
 
+/* ---------------------------------------------------------------------------
+   PWA Standalone Mode — Safe Area Insets
+   When installed as a PWA, the app extends behind the OS status bar area
+   (Dynamic Island / notch on iOS, camera punch-hole on Android, home
+   indicator on iPhone X+). We add padding so app content doesn't clash
+   with the OS chrome. Uses env(safe-area-inset-*) which the OS sets to
+   the correct values per device — works on iOS, iPadOS, and Android.
+   On desktops and devices without safe areas the insets default to 0.
+   --------------------------------------------------------------------------- */
+@media (display-mode: standalone) {
+    /* Header — extend background into the top safe area */
+    .app-header {
+        padding-top: env(safe-area-inset-top, 0px);
+    }
+
+    /* Main content — account for the extra header height from safe area */
+    .main-content {
+        padding-top: calc(var(--header-height) + env(safe-area-inset-top, 0px) + 8px);
+        padding-bottom: calc(var(--footer-total-height) + env(safe-area-inset-bottom, 0px) + 8px);
+    }
+
+    body.search-open .main-content {
+        padding-top: calc(var(--header-height) + var(--search-bar-height) + env(safe-area-inset-top, 0px) + 8px);
+    }
+
+    /* Footer — extend background into the bottom safe area (home indicator) */
+    .app-footer {
+        padding-bottom: env(safe-area-inset-bottom, 0px);
+    }
+
+    /* Full-screen overlays — respect safe areas when they take over the screen */
+    .presentation-overlay {
+        padding-top: max(2rem, env(safe-area-inset-top, 0px));
+        padding-bottom: env(safe-area-inset-bottom, 0px);
+    }
+
+    .compare-header {
+        padding-top: max(0.75rem, env(safe-area-inset-top, 0px));
+    }
+
+    /* Landscape — respect left/right safe areas on notched/punch-hole devices */
+    .app-header,
+    .main-content,
+    .app-footer,
+    .presentation-overlay,
+    .compare-overlay {
+        padding-left: env(safe-area-inset-left, 0px);
+        padding-right: env(safe-area-inset-right, 0px);
+    }
+}
+
 /* Page loader spinner */
 .page-loader {
     display: flex;
