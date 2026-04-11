@@ -55,6 +55,11 @@ $appKeywords  = $app["Application"]["Description"]["Keywords"];
 $appUrl       = $app["Application"]["Website"]["URL"];
 $vendorName   = $app["Application"]["Vendor"]["Name"];
 
+/* Verify native app availability (cached, 24h TTL) */
+$nativeApps = APP_CONFIG['native_apps'];
+$iosApp     = verifyAppStoreApp('ios', $nativeApps['ios'] ?? null);
+$androidApp = verifyAppStoreApp('android', $nativeApps['android'] ?? null);
+
 /** Build a display version string (e.g., "0.1.5 Beta") */
 $versionDisplay = $appVersion;
 if ($appDevStatus !== null) {
@@ -326,8 +331,10 @@ if (!empty($breadcrumbItems)) {
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="<?= htmlspecialchars($appName) ?>">
-    <!-- Smart App Banner — prompts iOS Safari to install native app (#99) -->
-    <meta name="apple-itunes-app" content="app-id=0000000000, app-argument=<?= htmlspecialchars($requestPath) ?>">
+    <!-- Smart App Banner — only shown when a verified iOS app exists (#99) -->
+    <?php if ($iosApp['verified']): ?>
+        <meta name="apple-itunes-app" content="app-id=<?= htmlspecialchars($iosApp['appId']) ?>, app-argument=<?= htmlspecialchars($requestPath) ?>">
+    <?php endif; ?>
     <meta name="msapplication-TileColor" content="#4f46e5">
     <meta name="msapplication-config" content="none">
     <meta name="format-detection" content="telephone=no">
@@ -1111,7 +1118,12 @@ if (!empty($breadcrumbItems)) {
             appUrl:         <?= json_encode($appUrl) ?>,
             apiUrl:         '/api',
             dataUrl:        '/api?action=songs_json',
-            nativeApps:     <?= json_encode(APP_CONFIG['native_apps']) ?>,
+            nativeApps:     <?= json_encode([
+                'ios'             => $iosApp['verified'] ? ($iosApp['storeUrl'] ?? $nativeApps['ios']) : null,
+                'iosVerified'     => $iosApp['verified'],
+                'android'         => $androidApp['verified'] ? ($androidApp['storeUrl'] ?? $nativeApps['android']) : null,
+                'androidVerified' => $androidApp['verified'],
+            ]) ?>,
             features:       <?= json_encode(APP_CONFIG['features']) ?>,
             fuseJsCdn:      <?= json_encode($libs['fusejs']['js_cdn']) ?>,
             fuseJsLocal:    <?= json_encode($libs['fusejs']['js_local']) ?>,

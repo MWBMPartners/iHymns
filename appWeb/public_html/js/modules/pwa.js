@@ -380,17 +380,22 @@ export class PWA {
         const nativeUrl = this.getNativeAppUrl();
         if (!nativeUrl) return;
 
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+            (navigator.maxTouchPoints > 1 && 'ontouchend' in document);
+
         this.showPlatformBanner({
-            icon: 'fa-solid fa-mobile-screen-button',
+            icon: isIOS ? 'fa-brands fa-apple' : 'fa-brands fa-google-play',
             text: 'Get the full <strong>iHymns</strong> experience!',
             showButton: true,
             buttonIcon: 'fa-solid fa-arrow-up-right-from-square',
-            buttonText: 'Open App',
+            buttonText: 'Get the App',
         });
     }
 
     /**
      * Detect the user's platform and return the native app URL if available.
+     * Only returns a URL when the server has verified the app is published
+     * in the app store (iosVerified / androidVerified flags in config).
      *
      * @returns {string|null} Native app store URL or null
      */
