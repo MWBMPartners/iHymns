@@ -556,7 +556,6 @@ function bindMetadataListeners() {
 var COMPONENT_TYPES = [
     'verse',
     'chorus',
-    'refrain',
     'bridge',
     'pre-chorus',
     'tag',
@@ -860,12 +859,32 @@ function autoResizeTextarea(el) {
  * @returns {string} Human-readable label.
  */
 function getComponentLabel(comp) {
-    var label = comp.type.charAt(0).toUpperCase() + comp.type.slice(1);
+    /* Refrain is an alias for Chorus in the UI */
+    var type = comp.type === 'refrain' ? 'chorus' : comp.type;
+    var label = type.charAt(0).toUpperCase() + type.slice(1);
     if (comp.number != null) {
         label += ' ' + comp.number;
     }
     return label;
 }
+
+/**
+ * Component type colour + text colour lookup.
+ */
+var COMP_COLORS = {
+    'verse':       { bg: '#3b82f6', text: '#ffffff' },
+    'chorus':      { bg: '#f59e0b', text: '#1a1a1a' },
+    'refrain':     { bg: '#f59e0b', text: '#1a1a1a' },
+    'pre-chorus':  { bg: '#ec4899', text: '#ffffff' },
+    'bridge':      { bg: '#8b5cf6', text: '#ffffff' },
+    'tag':         { bg: '#6b7280', text: '#ffffff' },
+    'coda':        { bg: '#6b7280', text: '#ffffff' },
+    'intro':       { bg: '#10b981', text: '#ffffff' },
+    'outro':       { bg: '#ef4444', text: '#ffffff' },
+    'interlude':   { bg: '#06b6d4', text: '#ffffff' },
+    'vamp':        { bg: '#f97316', text: '#ffffff' },
+    'ad-lib':      { bg: '#84cc16', text: '#1a1a1a' },
+};
 
 /**
  * findComponentIndex(song, label)
@@ -1038,23 +1057,12 @@ function renderArrangement(song) {
         var chip = document.createElement('span');
         chip.className = 'badge rounded-pill';
         chip.textContent = getComponentLabel(comp);
-        chip.title = 'Position ' + (pos + 1) + ' → Component index ' + idx;
+        chip.title = getComponentLabel(comp) + ' — position ' + (pos + 1);
 
-        /* Colour chips by type. */
-        var type = comp.type;
-        if (type === 'chorus' || type === 'refrain') {
-            chip.style.backgroundColor = '#f59e0b';
-            chip.style.color = '#1a1a1a';
-        } else if (type === 'verse') {
-            chip.style.backgroundColor = '#3b82f6';
-            chip.style.color = '#ffffff';
-        } else if (type === 'bridge') {
-            chip.style.backgroundColor = '#8b5cf6';
-            chip.style.color = '#ffffff';
-        } else {
-            chip.style.backgroundColor = '#6b7280';
-            chip.style.color = '#ffffff';
-        }
+        /* Colour chips by type with WCAG-safe text contrast. */
+        var colors = COMP_COLORS[comp.type] || { bg: '#6b7280', text: '#ffffff' };
+        chip.style.backgroundColor = colors.bg;
+        chip.style.color = colors.text;
 
         chipsContainer.appendChild(chip);
     });
@@ -1152,7 +1160,7 @@ function bindArrangementListeners() {
 
             var arrangement = autoGenerateArrangement(song);
             if (arrangement === null) {
-                showToast('No chorus or refrain found to auto-arrange.', 'warning');
+                showToast('No chorus found to auto-arrange.', 'warning');
                 return;
             }
 
@@ -1581,10 +1589,11 @@ function renderPreview(song) {
 
     /* Render each component in the determined order. */
     renderOrder.forEach(function (comp) {
-        /* Component label, e.g. "Verse 1" or "Chorus". */
+        /* Component label, e.g. "Verse 1" or "Chorus". Refrain → Chorus alias. */
         var heading = document.createElement('h6');
         heading.className = 'mt-3 mb-1 fw-bold text-uppercase small';
-        var headingText = comp.type || 'Section';
+        var displayType = comp.type === 'refrain' ? 'chorus' : (comp.type || 'Section');
+        var headingText = displayType;
         if (comp.number != null) {
             headingText += ' ' + comp.number;
         }

@@ -50,7 +50,6 @@ Used in the arrangement editor and song display:
 |---|---|---|
 | Verse | Blue | `#3b82f6` |
 | Chorus | Amber | `#f59e0b` |
-| Refrain | Amber | `#f59e0b` |
 | Pre-Chorus | Pink | `#ec4899` |
 | Bridge | Purple | `#8b5cf6` |
 | Tag | Grey | `#6b7280` |

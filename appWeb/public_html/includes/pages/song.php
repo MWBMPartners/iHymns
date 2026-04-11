@@ -215,8 +215,10 @@ $components  = $song['components'] ?? [];
                 $number = $component['number'] ?? null;
                 $lines  = $component['lines'] ?? [];
 
-                /* Build a human-readable label for the component */
-                $label = ucfirst($type);
+                /* Build a human-readable label for the component.
+                   "refrain" is an alias for "chorus" — display as Chorus. */
+                $displayType = ($type === 'refrain') ? 'chorus' : $type;
+                $label = ucfirst($displayType);
                 if ($number !== null) {
                     $label .= ' ' . $number;
                 }

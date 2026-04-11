@@ -39,15 +39,6 @@
         {
             "platform": "webapp",
             "url": "https://ihymns.app/manifest.json"
-        },
-        {
-            "platform": "play",
-            "id": "ltd.mwbmpartners.ihymns",
-            "url": "https://play.google.com/store/apps/details?id=ltd.mwbmpartners.ihymns"
-        },
-        {
-            "platform": "itunes",
-            "url": "https://apps.apple.com/app/ihymns/id0000000000"
         }
     ],
 

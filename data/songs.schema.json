@@ -179,7 +179,7 @@
       "additionalProperties": false,
       "properties": {
         "type": {
-          "description": "Component type identifier.",
+          "description": "Component type identifier. 'refrain' is an alias for 'chorus' (accepted for import compatibility, displayed as Chorus).",
           "type": "string",
           "enum": [
             "verse", "chorus", "refrain", "bridge",
@@ -188,7 +188,7 @@
           ]
         },
         "number": {
-          "description": "Component number within its type (e.g. verse 1, verse 2). 1-based. Null for unnumbered components like a single chorus or refrain.",
+          "description": "Component number within its type (e.g. verse 1, verse 2). 1-based. Null for unnumbered components like a single chorus.",
           "type": ["integer", "null"],
           "minimum": 1
         },

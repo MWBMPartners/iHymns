@@ -19,7 +19,7 @@
 
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
-import { shortTag, fullLabel, typeColor, COMPONENT_TYPES } from '../utils/components.js';
+import { shortTag, fullLabel, typeColor, typeTextColor, COMPONENT_TYPES } from '../utils/components.js';
 import { STORAGE_SETLISTS, STORAGE_OWNER_ID } from '../constants.js';
 
 export class SetList {
@@ -617,10 +617,11 @@ export class SetList {
             const tag = shortTag(comp);
             const label = fullLabel(comp);
             const color = typeColor(comp.type);
+            const textColor = typeTextColor(comp.type);
             return `<span class="badge rounded-pill arrangement-pool-chip"
                           data-comp-idx="${idx}"
                           title="${escapeHtml(label)} — click to add"
-                          style="background-color:${color};color:#fff;cursor:pointer;user-select:none;font-size:0.8rem;padding:0.4em 0.7em"
+                          style="background-color:${color};color:${textColor};cursor:pointer;user-select:none;font-size:0.8rem;padding:0.4em 0.7em"
                           role="button" tabindex="0"
                           aria-label="Add ${escapeHtml(label)} to arrangement">${escapeHtml(tag)}</span>`;
         }).join(' ');
@@ -642,36 +643,34 @@ export class SetList {
                         </h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                     </div>
-                    <div class="modal-body">
+                    <div class="modal-body py-2">
                         <!-- Component pool -->
-                        <div class="mb-3">
-                            <label class="form-label fw-semibold small text-uppercase">
+                        <div class="mb-2">
+                            <label class="form-label fw-semibold small text-uppercase mb-1">
                                 <i class="fa-solid fa-puzzle-piece me-1" aria-hidden="true"></i>
                                 Components — click to add
                             </label>
-                            <div class="d-flex flex-wrap gap-2" id="arr-pool">${poolChipsHtml}</div>
+                            <div class="d-flex flex-wrap gap-1" id="arr-pool">${poolChipsHtml}</div>
                         </div>
 
-                        <hr>
-
                         <!-- Arrangement strip (draggable) -->
-                        <div class="mb-3">
-                            <label class="form-label fw-semibold small text-uppercase">
+                        <div class="mb-2">
+                            <label class="form-label fw-semibold small text-uppercase mb-1">
                                 <i class="fa-solid fa-arrows-left-right me-1" aria-hidden="true"></i>
                                 Arrangement — drag to reorder, click × to remove
                             </label>
-                            <div class="d-flex flex-wrap gap-2 p-2 rounded border arrangement-strip"
+                            <div class="d-flex flex-wrap gap-1 p-2 rounded border arrangement-strip"
                                  id="arr-strip"
-                                 style="min-height:48px;background:var(--bs-body-bg)"
+                                 style="min-height:40px;background:var(--bs-body-bg)"
                                  aria-label="Current arrangement order">
                                 <!-- Populated by JS -->
                             </div>
                         </div>
 
                         <!-- Quick actions -->
-                        <div class="d-flex flex-wrap gap-2 mb-3">
+                        <div class="d-flex flex-wrap gap-1 mb-2">
                             <button type="button" class="btn btn-sm btn-outline-primary" id="arr-auto-btn"
-                                    title="Insert chorus/refrain after each verse">
+                                    title="Insert chorus after each verse">
                                 <i class="fa-solid fa-wand-magic-sparkles me-1" aria-hidden="true"></i>
                                 Auto (Chorus after Verse)
                             </button>
@@ -692,16 +691,14 @@ export class SetList {
                             </button>
                         </div>
 
-                        <hr>
-
                         <!-- Live lyrics preview -->
                         <div>
-                            <label class="form-label fw-semibold small text-uppercase">
+                            <label class="form-label fw-semibold small text-uppercase mb-1">
                                 <i class="fa-solid fa-eye me-1" aria-hidden="true"></i>
                                 Preview
                             </label>
-                            <div class="song-lyrics border rounded p-3" id="arr-preview"
-                                 style="max-height:300px;overflow-y:auto;font-size:0.85rem">
+                            <div class="song-lyrics border rounded p-2" id="arr-preview"
+                                 style="max-height:40vh;overflow-y:auto;font-size:0.85rem">
                                 <!-- Populated by JS -->
                             </div>
                         </div>
@@ -736,13 +733,14 @@ export class SetList {
                 const tag = shortTag(comp);
                 const label = fullLabel(comp);
                 const color = typeColor(comp.type);
+                const textColor = typeTextColor(comp.type);
                 return `<span class="badge rounded-pill arrangement-strip-chip d-inline-flex align-items-center gap-1"
                               data-pos="${pos}" data-comp-idx="${idx}"
                               draggable="true"
-                              title="${escapeHtml(label)} (position ${pos + 1})"
-                              style="background-color:${color};color:#fff;cursor:grab;user-select:none;font-size:0.8rem;padding:0.4em 0.7em"
+                              title="${escapeHtml(label)} — position ${pos + 1}. Drag to reorder, click × to remove"
+                              style="background-color:${color};color:${textColor};cursor:grab;user-select:none;font-size:0.8rem;padding:0.4em 0.7em"
                               role="button" tabindex="0"
-                              aria-label="${escapeHtml(label)}, position ${pos + 1}">${escapeHtml(tag)}<span class="arrangement-chip-remove" data-pos="${pos}" style="cursor:pointer;margin-left:2px;opacity:0.7" aria-label="Remove">×</span></span>`;
+                              aria-label="${escapeHtml(label)}, position ${pos + 1}">${escapeHtml(tag)}<span class="arrangement-chip-remove" data-pos="${pos}" style="cursor:pointer;margin-left:2px;opacity:0.8" aria-label="Remove">×</span></span>`;
             }).join('');
 
             /* Bind drag-and-drop on strip chips */
@@ -802,7 +800,7 @@ export class SetList {
         modal.querySelector('#arr-auto-btn')?.addEventListener('click', () => {
             const refrainIdx = components.findIndex(c => c.type === 'chorus' || c.type === 'refrain');
             if (refrainIdx === -1) {
-                this.app.showToast('No chorus or refrain found.', 'warning', 2000);
+                this.app.showToast('No chorus found.', 'warning', 2000);
                 return;
             }
             const auto = [];

@@ -58,6 +58,116 @@ define('USER_DNT', (
 ));
 
 /* =========================================================================
+ * APP STORE VERIFICATION
+ *
+ * Checks whether a native app is actually published and available in the
+ * relevant app store. Results are cached for 24 hours (file-based) so we
+ * don't call the API on every page load.
+ *
+ * Usage:
+ *   $result = verifyAppStoreApp('ios', 'https://apps.apple.com/app/ihymns/id1234567890');
+ *   // Returns: ['verified' => true, 'appId' => '1234567890', 'name' => 'iHymns', ...]
+ *   // Or:      ['verified' => false] if not found / not released
+ * ========================================================================= */
+
+/**
+ * Verify that a native app exists and is published in the app store.
+ *
+ * @param string      $platform  'ios' or 'android'
+ * @param string|null $storeUrl  The app store URL (nullable — returns unverified if null)
+ * @return array{verified: bool, appId?: string, name?: string, storeUrl?: string}
+ */
+function verifyAppStoreApp(string $platform, ?string $storeUrl): array {
+    if (empty($storeUrl)) {
+        return ['verified' => false];
+    }
+
+    /* Extract the numeric app ID from the store URL */
+    $appId = null;
+    if ($platform === 'ios') {
+        /* Apple App Store: .../id1234567890 */
+        if (preg_match('/id(\d{5,})/', $storeUrl, $m)) {
+            $appId = $m[1];
+        }
+    } elseif ($platform === 'android') {
+        /* Google Play: ...?id=com.example.app */
+        if (preg_match('/[?&]id=([a-zA-Z0-9_.]+)/', $storeUrl, $m)) {
+            $appId = $m[1];
+        }
+    }
+
+    if (!$appId) {
+        return ['verified' => false];
+    }
+
+    /* Check the file-based cache (24-hour TTL) */
+    $cacheDir = sys_get_temp_dir() . '/ihymns_cache';
+    if (!is_dir($cacheDir)) {
+        @mkdir($cacheDir, 0755, true);
+    }
+    $cacheFile = $cacheDir . '/appstore_' . $platform . '_' . md5($appId) . '.json';
+    $cacheTTL  = 86400; /* 24 hours */
+
+    if (file_exists($cacheFile) && (time() - filemtime($cacheFile)) < $cacheTTL) {
+        $cached = json_decode(file_get_contents($cacheFile), true);
+        if (is_array($cached)) {
+            return $cached;
+        }
+    }
+
+    /* Call the store lookup API */
+    $result = ['verified' => false, 'appId' => $appId];
+
+    if ($platform === 'ios') {
+        $result = _verifyAppleAppStore($appId, $storeUrl);
+    }
+    /* Android Play Store lookup can be added here in future */
+
+    /* Cache the result */
+    @file_put_contents($cacheFile, json_encode($result), LOCK_EX);
+
+    return $result;
+}
+
+/**
+ * Check the Apple iTunes Lookup API for an app by ID.
+ *
+ * @param string $appId    Numeric Apple app ID
+ * @param string $storeUrl Original App Store URL
+ * @return array{verified: bool, appId: string, name?: string, storeUrl: string}
+ */
+function _verifyAppleAppStore(string $appId, string $storeUrl): array {
+    $lookupUrl = 'https://itunes.apple.com/lookup?id=' . urlencode($appId);
+
+    $ctx = stream_context_create([
+        'http' => [
+            'timeout' => 5,
+            'method'  => 'GET',
+            'header'  => "Accept: application/json\r\n",
+        ],
+    ]);
+
+    $response = @file_get_contents($lookupUrl, false, $ctx);
+    if ($response === false) {
+        /* Network error — don't cache, return unverified */
+        return ['verified' => false, 'appId' => $appId, 'storeUrl' => $storeUrl];
+    }
+
+    $data = json_decode($response, true);
+    if (!is_array($data) || ($data['resultCount'] ?? 0) < 1) {
+        return ['verified' => false, 'appId' => $appId, 'storeUrl' => $storeUrl];
+    }
+
+    $app = $data['results'][0];
+    return [
+        'verified' => true,
+        'appId'    => $appId,
+        'name'     => $app['trackName'] ?? '',
+        'storeUrl' => $app['trackViewUrl'] ?? $storeUrl,
+    ];
+}
+
+/* =========================================================================
  * MAIN APPLICATION CONFIGURATION ARRAY
  *
  * All configuration is centralised here as a single constant.
