@@ -683,13 +683,14 @@ body.banner-visible.search-open .main-content {
 
 /* Footer info bar — copyright and version */
 .footer-info {
-    height: var(--footer-info-height);
+    min-height: var(--footer-info-height);
     display: flex;
     align-items: center;
     justify-content: center;
     color: var(--text-muted);
     font-size: 0.7rem;
-    padding: 0 12px;
+    padding: 4px 12px;
+    text-align: center;
 }
 
 .footer-link {
@@ -1332,6 +1333,11 @@ body.reduce-transparency .pwa-install-banner {
 
 /* Small screens (phones) */
 @media (max-width: 575.98px) {
+    :root {
+        /* Footer text wraps to 2 lines on small screens */
+        --footer-info-height: 40px;
+    }
+
     .hero-title {
         font-size: 1.4rem;
     }
