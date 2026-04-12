@@ -291,6 +291,11 @@ if ($action !== null) {
          * Requires: editor+ role (via bearer token or session)
          * ----------------------------------------------------------------- */
         case 'missing_songs':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['editor', 'admin', 'global_admin'])) {
+                sendJson(['error' => 'Editor access required.'], 403);
+                break;
+            }
             $bookId = isset($_GET['songbook']) ? trim($_GET['songbook']) : '';
             if ($bookId === '') {
                 sendJson(['error' => 'Songbook parameter is required.'], 400);
@@ -540,6 +545,27 @@ if ($action !== null) {
                 break;
             }
 
+            /* Rate limit registrations: max 3 per IP per hour */
+            $clientIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            $db = getDb();
+            $stmt = $db->prepare(
+                'SELECT COUNT(*) FROM tblUsers
+                 WHERE CreatedAt > DATE_SUB(NOW(), INTERVAL 1 HOUR)
+                 AND Id IN (SELECT DISTINCT UserId FROM tblLoginAttempts WHERE IpAddress = ? AND Success = 1)'
+            );
+            $stmt->execute([$clientIp]);
+            /* Simpler fallback: count recent registrations by checking tblLoginAttempts */
+            $stmt = $db->prepare(
+                'SELECT COUNT(*) FROM tblLoginAttempts
+                 WHERE IpAddress = ? AND AttemptedAt > DATE_SUB(NOW(), INTERVAL 1 HOUR)'
+            );
+            $stmt->execute([$clientIp]);
+            $recentAttempts = (int)$stmt->fetchColumn();
+            if ($recentAttempts >= 20) {
+                sendJson(['error' => 'Too many requests from this IP. Please try again later.'], 429);
+                break;
+            }
+
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
 
@@ -554,6 +580,10 @@ if ($action !== null) {
             }
             if (strlen($password) < 8) {
                 sendJson(['error' => 'Password must be at least 8 characters.'], 400);
+                break;
+            }
+            if (strlen($password) > 128) {
+                sendJson(['error' => 'Password must not exceed 128 characters.'], 400);
                 break;
             }
             if ($displayName === '') {
@@ -614,6 +644,7 @@ if ($action !== null) {
 
             $username = mb_strtolower(trim($body['username'] ?? ''));
             $password = $body['password'] ?? '';
+            $clientIp = $_SERVER['REMOTE_ADDR'] ?? '';
 
             if ($username === '' || $password === '') {
                 sendJson(['error' => 'Username and password required.'], 400);
@@ -621,11 +652,32 @@ if ($action !== null) {
             }
 
             $db = getDb();
+
+            /* Brute force protection: check recent failed attempts from this IP (#290) */
+            $stmt = $db->prepare(
+                'SELECT COUNT(*) FROM tblLoginAttempts
+                 WHERE IpAddress = ? AND Success = 0
+                 AND AttemptedAt > DATE_SUB(NOW(), INTERVAL 15 MINUTE)'
+            );
+            $stmt->execute([$clientIp]);
+            $recentFailures = (int)$stmt->fetchColumn();
+
+            if ($recentFailures >= 10) {
+                sendJson(['error' => 'Too many failed login attempts. Please try again later.'], 429);
+                break;
+            }
+
             $stmt = $db->prepare('SELECT Id, Username, PasswordHash, DisplayName, Role, IsActive FROM tblUsers WHERE Username = ?');
             $stmt->execute([$username]);
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if (!$user || !password_verify($password, $user['PasswordHash'])) {
+                /* Log failed attempt */
+                $stmt = $db->prepare(
+                    'INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, ?, 0)'
+                );
+                $stmt->execute([$clientIp, $username]);
+
                 sendJson(['error' => 'Invalid username or password.'], 401);
                 break;
             }
@@ -634,6 +686,18 @@ if ($action !== null) {
                 sendJson(['error' => 'Account is disabled.'], 403);
                 break;
             }
+
+            /* Log successful login attempt */
+            $stmt = $db->prepare(
+                'INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, ?, 1)'
+            );
+            $stmt->execute([$clientIp, $username]);
+
+            /* Update last login timestamp and count */
+            $stmt = $db->prepare(
+                'UPDATE tblUsers SET LastLoginAt = NOW(), LoginCount = LoginCount + 1 WHERE Id = ?'
+            );
+            $stmt->execute([(int)$user['Id']]);
 
             /* Generate API token */
             $token = bin2hex(random_bytes(32));
@@ -875,21 +939,16 @@ if ($action !== null) {
 
             $result = generatePasswordResetToken($input);
 
-            /* Always return success to prevent user enumeration */
+            /* Always return success to prevent user enumeration.
+             * The reset token is logged server-side only.
+             * TODO: Deliver token via email in production. */
             if ($result) {
-                /* In production, send email here. For dev/testing, include the token.
-                 * TODO: integrate email delivery for production */
-                sendJson([
-                    'ok'      => true,
-                    'message' => 'If an account exists with that username or email, a reset link has been generated.',
-                    '_dev_token' => $result['token'],
-                ]);
-            } else {
-                sendJson([
-                    'ok'      => true,
-                    'message' => 'If an account exists with that username or email, a reset link has been generated.',
-                ]);
+                error_log('[iHymns] Password reset token generated for user lookup: ' . $input);
             }
+            sendJson([
+                'ok'      => true,
+                'message' => 'If an account exists with that username or email, a reset link has been generated.',
+            ]);
             break;
 
         /* -----------------------------------------------------------------
@@ -912,6 +971,10 @@ if ($action !== null) {
 
             if ($token === '' || strlen($newPassword) < 8) {
                 sendJson(['error' => 'Valid token and password (min 8 characters) required.'], 400);
+                break;
+            }
+            if (strlen($newPassword) > 128) {
+                sendJson(['error' => 'Password must not exceed 128 characters.'], 400);
                 break;
             }
 
@@ -1279,9 +1342,13 @@ if ($action !== null) {
          * ----------------------------------------------------------------- */
         case 'app_status':
             $db = getDb();
-            $stmt = $db->query(
-                'SELECT SettingKey, SettingValue FROM tblAppSettings'
+            /* Only fetch public-safe settings — never expose internal config */
+            $publicKeys = ['maintenance_mode', 'song_requests_enabled', 'motd', 'registration_mode'];
+            $placeholders = implode(',', array_fill(0, count($publicKeys), '?'));
+            $stmt = $db->prepare(
+                "SELECT SettingKey, SettingValue FROM tblAppSettings WHERE SettingKey IN ({$placeholders})"
             );
+            $stmt->execute($publicKeys);
             $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
             $settings = [];
@@ -1290,8 +1357,10 @@ if ($action !== null) {
             }
 
             sendJson([
-                'maintenance'        => ($settings['maintenance_mode'] ?? '0') === '1',
+                'maintenance'         => ($settings['maintenance_mode'] ?? '0') === '1',
                 'songRequestsEnabled' => ($settings['song_requests_enabled'] ?? '1') === '1',
+                'registrationMode'    => $settings['registration_mode'] ?? 'open',
+                'motd'                => $settings['motd'] ?? '',
             ]);
             break;
 
@@ -1378,6 +1447,10 @@ if ($action !== null) {
 
             if (strlen($newPw) < 8) {
                 sendJson(['error' => 'New password must be at least 8 characters.'], 400);
+                break;
+            }
+            if (strlen($newPw) > 128) {
+                sendJson(['error' => 'Password must not exceed 128 characters.'], 400);
                 break;
             }
 

@@ -32,11 +32,19 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../includes/auth.php';
 
-/* Verify authentication — return 401 JSON for AJAX requests */
+/* Verify authentication and editor+ role — return 401/403 JSON for AJAX */
 if (!isAuthenticated()) {
     header('Content-Type: application/json; charset=UTF-8');
     http_response_code(401);
     echo json_encode(['error' => 'Authentication required.']);
+    exit;
+}
+
+$currentUser = getCurrentUser();
+if (!$currentUser || !hasRole($currentUser['Role'], 'editor')) {
+    header('Content-Type: application/json; charset=UTF-8');
+    http_response_code(403);
+    echo json_encode(['error' => 'Editor access required.']);
     exit;
 }
 
@@ -231,7 +239,7 @@ switch ($action) {
             $db->query("SET FOREIGN_KEY_CHECKS = 1");
             http_response_code(500);
             error_log('[iHymns Editor] Save failed: ' . $e->getMessage());
-            echo json_encode(['error' => 'Failed to save song data: ' . $e->getMessage()]);
+            echo json_encode(['error' => 'Failed to save song data. Check server logs for details.']);
         }
         break;
 

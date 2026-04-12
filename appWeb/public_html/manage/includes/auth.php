@@ -582,7 +582,10 @@ function deleteUser(int $userId): bool
 function getUserById(int $userId): ?array
 {
     $db = getDb();
-    $stmt = $db->prepare('SELECT * FROM tblUsers WHERE Id = ?');
+    $stmt = $db->prepare(
+        'SELECT Id, Username, DisplayName, Email, Role, GroupId, IsActive, CreatedAt, UpdatedAt
+         FROM tblUsers WHERE Id = ?'
+    );
     $stmt->execute([$userId]);
     return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
 }

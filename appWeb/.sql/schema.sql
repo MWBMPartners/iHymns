@@ -177,6 +177,8 @@ CREATE TABLE IF NOT EXISTS tblUsers (
     Role            VARCHAR(20)     NOT NULL DEFAULT 'user' COMMENT 'global_admin, admin, editor, user',
     GroupId         INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK to tblUserGroups for version access',
     IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
+    LastLoginAt     TIMESTAMP       NULL DEFAULT NULL COMMENT 'Last successful login timestamp',
+    LoginCount      INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'Total successful login count',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
@@ -500,4 +502,117 @@ INSERT IGNORE INTO tblLanguages (Code, Name, NativeName, TextDirection) VALUES
 INSERT IGNORE INTO tblAppSettings (SettingKey, SettingValue, Description) VALUES
     ('maintenance_mode',    '0',    'Enable maintenance mode (0=off, 1=on)'),
     ('song_requests_enabled', '1',  'Allow users to submit song requests (0=off, 1=on)'),
-    ('max_song_requests_per_day', '5', 'Maximum song requests per IP per day');
+    ('max_song_requests_per_day', '5', 'Maximum song requests per IP per day'),
+    ('registration_mode', 'open', 'User registration mode: open, invite, admin_only'),
+    ('motd', '', 'Message of the day shown on home page (empty = disabled)');
+
+
+-- ============================================================================
+-- ENGAGEMENT & ANALYTICS TABLES
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- tblSongHistory
+-- Tracks recently viewed songs per user for "Recently Viewed" and
+-- "Most Popular" features. Lightweight — only stores song ID + timestamp.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongHistory (
+    Id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    UserId          INT UNSIGNED    NULL COMMENT 'NULL for anonymous views',
+    SongId          VARCHAR(20)     NOT NULL,
+    ViewedAt        TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_User      (UserId),
+    INDEX idx_Song      (SongId),
+    INDEX idx_ViewedAt  (ViewedAt),
+
+    CONSTRAINT fk_History_User
+        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_History_Song
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongTags
+-- User-defined tags/categories for songs (e.g., "Easter", "Communion",
+-- "Wedding", "Funeral"). Tags are shared across all users. Songs can
+-- have multiple tags, and tags can apply to multiple songs.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongTags (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    Name            VARCHAR(50)     NOT NULL UNIQUE,
+    Slug            VARCHAR(50)     NOT NULL UNIQUE COMMENT 'URL-safe lowercase version',
+    Description     VARCHAR(255)    NOT NULL DEFAULT '',
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_Slug  (Slug)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongTagMap
+-- Many-to-many mapping between songs and tags.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongTagMap (
+    SongId          VARCHAR(20)     NOT NULL,
+    TagId           INT UNSIGNED    NOT NULL,
+    TaggedBy        INT UNSIGNED    NULL COMMENT 'User who added the tag',
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (SongId, TagId),
+
+    CONSTRAINT fk_TagMap_Song
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId)
+        ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_TagMap_Tag
+        FOREIGN KEY (TagId) REFERENCES tblSongTags(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_TagMap_User
+        FOREIGN KEY (TaggedBy) REFERENCES tblUsers(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblNotifications
+-- In-app notification system for users (new songs, request status changes,
+-- system announcements, etc.).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblNotifications (
+    Id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    UserId          INT UNSIGNED    NOT NULL,
+    Type            VARCHAR(50)     NOT NULL COMMENT 'e.g., song_added, request_update, announcement',
+    Title           VARCHAR(255)    NOT NULL,
+    Body            TEXT            NOT NULL DEFAULT '',
+    ActionUrl       VARCHAR(500)    NOT NULL DEFAULT '' COMMENT 'Deep link (e.g., /song/CP-0001)',
+    IsRead          TINYINT(1)      NOT NULL DEFAULT 0,
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_User          (UserId),
+    INDEX idx_UserUnread    (UserId, IsRead),
+    INDEX idx_Created       (CreatedAt),
+
+    CONSTRAINT fk_Notif_User
+        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblLoginAttempts
+-- Rate limiting for authentication attempts. Tracks failed logins per IP
+-- to prevent brute force attacks.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblLoginAttempts (
+    Id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    IpAddress       VARCHAR(45)     NOT NULL,
+    Username        VARCHAR(100)    NOT NULL DEFAULT '',
+    Success         TINYINT(1)      NOT NULL DEFAULT 0,
+    AttemptedAt     TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_Ip        (IpAddress),
+    INDEX idx_IpTime    (IpAddress, AttemptedAt)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
