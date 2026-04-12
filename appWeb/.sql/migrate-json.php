@@ -156,18 +156,18 @@ try {
 
     /* --- Clear existing data --- */
     output("Clearing existing data...");
-    $mysqli->query("TRUNCATE TABLE song_components");
-    $mysqli->query("TRUNCATE TABLE song_composers");
-    $mysqli->query("TRUNCATE TABLE song_writers");
-    $mysqli->query("TRUNCATE TABLE songs");
-    $mysqli->query("TRUNCATE TABLE songbooks");
+    $mysqli->query("TRUNCATE TABLE tblSongComponents");
+    $mysqli->query("TRUNCATE TABLE tblSongComposers");
+    $mysqli->query("TRUNCATE TABLE tblSongWriters");
+    $mysqli->query("TRUNCATE TABLE tblSongs");
+    $mysqli->query("TRUNCATE TABLE tblSongbooks");
 
     $mysqli->query("SET FOREIGN_KEY_CHECKS = 1");
 
     /* --- Insert songbooks --- */
     output("Inserting songbooks...");
     $stmtSongbook = $mysqli->prepare(
-        "INSERT INTO songbooks (abbreviation, name, song_count) VALUES (?, ?, ?)"
+        "INSERT INTO tblSongbooks (Abbreviation, Name, SongCount) VALUES (?, ?, ?)"
     );
 
     foreach ($data['songbooks'] as $book) {
@@ -182,22 +182,22 @@ try {
 
     /* --- Prepare song-related statements --- */
     $stmtSong = $mysqli->prepare(
-        "INSERT INTO songs (song_id, number, title, songbook_abbr, songbook_name,
-         language, copyright, ccli, verified, lyrics_public_domain,
-         music_public_domain, has_audio, has_sheet_music, lyrics_text)
+        "INSERT INTO tblSongs (SongId, Number, Title, SongbookAbbr, SongbookName,
+         Language, Copyright, Ccli, Verified, LyricsPublicDomain,
+         MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     );
 
     $stmtWriter = $mysqli->prepare(
-        "INSERT INTO song_writers (song_id, name) VALUES (?, ?)"
+        "INSERT INTO tblSongWriters (SongId, Name) VALUES (?, ?)"
     );
 
     $stmtComposer = $mysqli->prepare(
-        "INSERT INTO song_composers (song_id, name) VALUES (?, ?)"
+        "INSERT INTO tblSongComposers (SongId, Name) VALUES (?, ?)"
     );
 
     $stmtComponent = $mysqli->prepare(
-        "INSERT INTO song_components (song_id, type, number, sort_order, lines_json)
+        "INSERT INTO tblSongComponents (SongId, Type, Number, SortOrder, LinesJson)
          VALUES (?, ?, ?, ?, ?)"
     );
 

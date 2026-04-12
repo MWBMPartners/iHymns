@@ -286,6 +286,20 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
+         * Get missing song numbers within a songbook (#285)
+         * Parameters: songbook (required)
+         * Requires: editor+ role (via bearer token or session)
+         * ----------------------------------------------------------------- */
+        case 'missing_songs':
+            $bookId = isset($_GET['songbook']) ? trim($_GET['songbook']) : '';
+            if ($bookId === '') {
+                sendJson(['error' => 'Songbook parameter is required.'], 400);
+                break;
+            }
+            sendJson($songData->getMissingSongNumbers($bookId));
+            break;
+
+        /* -----------------------------------------------------------------
          * Serve the full song data as JSON (#154, #270)
          *
          * Exports the complete song database from MySQL as JSON for
@@ -549,7 +563,7 @@ if ($action !== null) {
             $db = getDb();
 
             /* Check if username already exists */
-            $stmt = $db->prepare('SELECT id FROM users WHERE username = ?');
+            $stmt = $db->prepare('SELECT Id FROM tblUsers WHERE Username = ?');
             $stmt->execute([$username]);
             if ($stmt->fetch()) {
                 sendJson(['error' => 'Username already taken.'], 409);
@@ -558,18 +572,18 @@ if ($action !== null) {
 
             /* Auto-assign 'global_admin' to the very first registered user;
              * all subsequent public registrations get 'user' role */
-            $stmt = $db->query('SELECT COUNT(*) FROM users');
+            $stmt = $db->query('SELECT COUNT(*) FROM tblUsers');
             $role = ((int)$stmt->fetchColumn() === 0) ? 'global_admin' : 'user';
 
             $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
-            $stmt = $db->prepare('INSERT INTO users (username, password_hash, display_name, role) VALUES (?, ?, ?, ?)');
+            $stmt = $db->prepare('INSERT INTO tblUsers (Username, PasswordHash, DisplayName, Role) VALUES (?, ?, ?, ?)');
             $stmt->execute([$username, $hash, mb_substr($displayName, 0, 100), $role]);
             $userId = (int)$db->lastInsertId();
 
             /* Generate API token (64-character hex string, 30-day expiry) */
             $token = bin2hex(random_bytes(32));
             $expiresAt = gmdate('c', time() + 30 * 86400);
-            $stmt = $db->prepare('INSERT INTO api_tokens (token, user_id, expires_at) VALUES (?, ?, ?)');
+            $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
             $stmt->execute([$token, $userId, $expiresAt]);
 
             sendJson([
@@ -607,16 +621,16 @@ if ($action !== null) {
             }
 
             $db = getDb();
-            $stmt = $db->prepare('SELECT id, username, password_hash, display_name, role, is_active FROM users WHERE username = ?');
+            $stmt = $db->prepare('SELECT Id, Username, PasswordHash, DisplayName, Role, IsActive FROM tblUsers WHERE Username = ?');
             $stmt->execute([$username]);
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-            if (!$user || !password_verify($password, $user['password_hash'])) {
+            if (!$user || !password_verify($password, $user['PasswordHash'])) {
                 sendJson(['error' => 'Invalid username or password.'], 401);
                 break;
             }
 
-            if (!$user['is_active']) {
+            if (!$user['IsActive']) {
                 sendJson(['error' => 'Account is disabled.'], 403);
                 break;
             }
@@ -624,16 +638,16 @@ if ($action !== null) {
             /* Generate API token */
             $token = bin2hex(random_bytes(32));
             $expiresAt = gmdate('c', time() + 30 * 86400);
-            $stmt = $db->prepare('INSERT INTO api_tokens (token, user_id, expires_at) VALUES (?, ?, ?)');
-            $stmt->execute([$token, (int)$user['id'], $expiresAt]);
+            $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
+            $stmt->execute([$token, (int)$user['Id'], $expiresAt]);
 
             sendJson([
                 'token' => $token,
                 'user'  => [
-                    'id'           => (int)$user['id'],
-                    'username'     => $user['username'],
-                    'display_name' => $user['display_name'],
-                    'role'         => $user['role'],
+                    'id'           => (int)$user['Id'],
+                    'username'     => $user['Username'],
+                    'display_name' => $user['DisplayName'],
+                    'role'         => $user['Role'],
                 ],
             ]);
             break;
@@ -651,7 +665,7 @@ if ($action !== null) {
             $token = getAuthBearerToken();
             if ($token) {
                 $db = getDb();
-                $stmt = $db->prepare('DELETE FROM api_tokens WHERE token = ?');
+                $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE Token = ?');
                 $stmt->execute([$token]);
             }
 
@@ -671,10 +685,10 @@ if ($action !== null) {
 
             sendJson([
                 'user' => [
-                    'id'           => $authUser['id'],
-                    'username'     => $authUser['username'],
-                    'display_name' => $authUser['display_name'],
-                    'role'         => $authUser['role'],
+                    'id'           => $authUser['Id'],
+                    'username'     => $authUser['Username'],
+                    'display_name' => $authUser['DisplayName'],
+                    'role'         => $authUser['Role'],
                 ],
             ]);
             break;
@@ -695,17 +709,17 @@ if ($action !== null) {
             }
 
             $db = getDb();
-            $stmt = $db->prepare('SELECT setlist_id, name, songs_json, created_at, updated_at FROM user_setlists WHERE user_id = ? ORDER BY updated_at DESC');
-            $stmt->execute([$authUser['id']]);
+            $stmt = $db->prepare('SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt FROM tblUserSetlists WHERE UserId = ? ORDER BY UpdatedAt DESC');
+            $stmt->execute([$authUser['Id']]);
             $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
             $setlists = array_map(function ($row) {
                 return [
-                    'id'        => $row['setlist_id'],
-                    'name'      => $row['name'],
-                    'songs'     => json_decode($row['songs_json'], true) ?: [],
-                    'createdAt' => $row['created_at'],
-                    'updatedAt' => $row['updated_at'],
+                    'id'        => $row['SetlistId'],
+                    'name'      => $row['Name'],
+                    'songs'     => json_decode($row['SongsJson'], true) ?: [],
+                    'createdAt' => $row['CreatedAt'],
+                    'updatedAt' => $row['UpdatedAt'],
                 ];
             }, $rows);
 
@@ -749,27 +763,27 @@ if ($action !== null) {
             $localLists = array_slice($body['setlists'], 0, 50);
 
             $db = getDb();
-            $userId = $authUser['id'];
+            $userId = $authUser['Id'];
 
             /* Fetch all existing server-side setlists for this user */
-            $stmt = $db->prepare('SELECT setlist_id, name, songs_json, created_at, updated_at FROM user_setlists WHERE user_id = ?');
+            $stmt = $db->prepare('SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt FROM tblUserSetlists WHERE UserId = ?');
             $stmt->execute([$userId]);
             $serverRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
             $serverMap = [];
             foreach ($serverRows as $row) {
-                $serverMap[$row['setlist_id']] = $row;
+                $serverMap[$row['SetlistId']] = $row;
             }
 
             $now = gmdate('c');
 
             /* Upsert each local setlist */
             $upsert = $db->prepare(
-                'INSERT INTO user_setlists (user_id, setlist_id, name, songs_json, created_at, updated_at)
+                'INSERT INTO tblUserSetlists (UserId, SetlistId, Name, SongsJson, CreatedAt, UpdatedAt)
                  VALUES (?, ?, ?, ?, ?, ?)
-                 ON CONFLICT(user_id, setlist_id) DO UPDATE SET
-                    name = excluded.name,
-                    songs_json = excluded.songs_json,
-                    updated_at = excluded.updated_at'
+                 ON CONFLICT(UserId, SetlistId) DO UPDATE SET
+                    Name = excluded.Name,
+                    SongsJson = excluded.SongsJson,
+                    UpdatedAt = excluded.UpdatedAt'
             );
 
             foreach ($localLists as $list) {
@@ -811,17 +825,17 @@ if ($action !== null) {
             }
 
             /* Fetch the merged result (all setlists for this user) */
-            $stmt = $db->prepare('SELECT setlist_id, name, songs_json, created_at, updated_at FROM user_setlists WHERE user_id = ? ORDER BY updated_at DESC');
+            $stmt = $db->prepare('SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt FROM tblUserSetlists WHERE UserId = ? ORDER BY UpdatedAt DESC');
             $stmt->execute([$userId]);
             $mergedRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
             $mergedSetlists = array_map(function ($row) {
                 return [
-                    'id'        => $row['setlist_id'],
-                    'name'      => $row['name'],
-                    'songs'     => json_decode($row['songs_json'], true) ?: [],
-                    'createdAt' => $row['created_at'],
-                    'updatedAt' => $row['updated_at'],
+                    'id'        => $row['SetlistId'],
+                    'name'      => $row['Name'],
+                    'songs'     => json_decode($row['SongsJson'], true) ?: [],
+                    'createdAt' => $row['CreatedAt'],
+                    'updatedAt' => $row['UpdatedAt'],
                 ];
             }, $mergedRows);
 
@@ -975,17 +989,17 @@ function getAuthenticatedUser(): ?array
 
     $db = getDb();
     $stmt = $db->prepare(
-        'SELECT u.id, u.username, u.display_name, u.role
-         FROM api_tokens t
-         JOIN users u ON u.id = t.user_id
-         WHERE t.token = ? AND t.expires_at > ? AND u.is_active = 1'
+        'SELECT u.Id, u.Username, u.DisplayName, u.Role
+         FROM tblApiTokens t
+         JOIN tblUsers u ON u.Id = t.UserId
+         WHERE t.Token = ? AND t.ExpiresAt > ? AND u.IsActive = 1'
     );
     $stmt->execute([$token, gmdate('c')]);
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$user) return null;
 
-    $user['id'] = (int)$user['id'];
+    $user['Id'] = (int)$user['Id'];
     return $user;
 }
 

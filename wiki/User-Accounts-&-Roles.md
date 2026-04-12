@@ -1,6 +1,6 @@
 # User Accounts & Roles
 
-> Role-based access control, authentication flows, and password reset
+> Role-based access control, user groups, version gating, and authentication flows
 
 ---
 
@@ -13,8 +13,8 @@ iHymns uses a four-tier role hierarchy. Each role inherits the capabilities of a
 | `global_admin` | 4 | Global Admin | All powers. Auto-assigned to first registered user. Can assign any role to any user, including promoting others to Global Admin. |
 | `admin` | 3 | Admin | Manage users (create, assign roles up to `admin`). Cannot assign or demote `global_admin`. Full access to admin panel. |
 | `editor` | 2 | Curator / Editor | Edit songs via `/manage/editor/`. Can view admin panel but cannot manage users. |
-| `user` | 1 | User | Save setlists centrally. Cross-device setlist sync. No admin panel access. |
-| _(anonymous)_ | — | — | Local-only setlists (browser localStorage). No account required. |
+| `user` | 1 | User | Save setlists centrally. Cross-device setlist sync. Submit song requests. No admin panel access. |
+| _(anonymous)_ | — | — | Local-only setlists (browser localStorage). Can submit song requests. No account required. |
 
 ### Hierarchy Rules
 
@@ -22,6 +22,42 @@ iHymns uses a four-tier role hierarchy. Each role inherits the capabilities of a
 - **Cannot demote at or above your level** — an `admin` cannot demote another `admin` (unless you are `global_admin`)
 - **Only `global_admin` can assign `global_admin`**
 - **First registered user** automatically gets `global_admin` role (both via `/manage/setup` and via the public `auth_register` API)
+
+---
+
+## User Groups & Version Access
+
+Users are assigned to groups that control access to release channels. This enables gating non-production deployments:
+
+| Group | Alpha | Beta | RC | RTW | Use Case |
+|---|---|---|---|---|---|
+| Developers | Yes | Yes | Yes | Yes | Internal team, full access |
+| Beta Testers | No | Yes | Yes | Yes | External beta testers |
+| RC Testers | No | No | Yes | Yes | Pre-release validation |
+| Public | No | No | No | Yes | General public, production only |
+
+### How It Works
+
+- Each user has a **primary group** (`users.group_id`)
+- Users can belong to **additional groups** via `user_group_members` (many-to-many)
+- Access is the **union** of all group permissions — if any group grants a channel, the user has it
+- The application checks group access to gate entry to non-RTW deployments:
+  - `dev.ihymns.app` (Alpha) → requires `access_alpha = 1`
+  - `beta.ihymns.app` (Beta) → requires `access_beta = 1`
+
+### Per-User Permission Overrides
+
+The `user_permissions` table allows fine-grained overrides per user:
+
+| Permission | Default (from role) | Override |
+|---|---|---|
+| `can_edit_songs` | editor+ | Grant to `user`, or revoke from `editor` |
+| `can_manage_users` | admin+ | Grant to `editor`, or revoke from `admin` |
+| `can_view_admin` | editor+ | Grant or revoke individually |
+| `can_share_setlists` | all | Revoke for specific users |
+| `can_access_api` | all | Revoke for specific users |
+
+`NULL` means inherit from role. `1` = explicitly granted. `0` = explicitly denied.
 
 ---
 
@@ -41,17 +77,7 @@ Used by: `/manage/` area (editor, user management, setup)
 | Lifetime | 24 hours |
 | Cookie flags | `httponly`, `samesite=Strict`, `secure` (when HTTPS) |
 | CSRF | Per-session CSRF tokens |
-
-**Functions:**
-- `initSession()` — Start PHP session
-- `isAuthenticated()` — Check if logged in
-- `getCurrentUser()` — Get user row from DB
-- `requireAuth()` — Redirect to login if not authenticated
-- `requireEditor()` — Require editor+ role (403 otherwise)
-- `requireAdmin()` — Require admin+ role (403 otherwise)
-- `requireGlobalAdmin()` — Require global_admin only
-- `attemptLogin()` — Verify credentials, set session
-- `logout()` — Destroy session and cookie
+| Database | MySQL via PDO |
 
 ### 2. Public API (Bearer Token)
 
@@ -62,7 +88,7 @@ Used by: PWA frontend, native iOS/Android apps
 | Mechanism | Bearer tokens in `Authorization` header |
 | Token format | 64-character lowercase hex (32 random bytes) |
 | Token lifetime | 30 days |
-| Storage (server) | `api_tokens` table |
+| Storage (server) | `api_tokens` table in MySQL |
 | Storage (PWA) | `localStorage` (`ihymns_auth_token`) |
 | Storage (iOS) | Keychain (recommended) |
 | Storage (Android) | EncryptedSharedPreferences (recommended) |
@@ -75,21 +101,21 @@ Used by: PWA frontend, native iOS/Android apps
 
 ### Registration Flow
 
-```
+```text
 User fills form → POST auth_register
     ├── Validate username (3+ chars, alphanumeric)
     ├── Validate password (8+ chars)
     ├── Check username uniqueness
     ├── Check if first user → assign global_admin, else user
     ├── Hash password (BCRYPT, cost 12)
-    ├── Create user record
+    ├── Create user record (assigned to 'Public' group by default)
     ├── Generate bearer token (64 hex, 30-day expiry)
     └── Return { token, user: { id, username, display_name, role } }
 ```
 
 ### Login Flow
 
-```
+```text
 User enters credentials → POST auth_login
     ├── Look up user by username
     ├── Verify password hash
@@ -100,7 +126,7 @@ User enters credentials → POST auth_login
 
 ### Password Reset Flow
 
-```
+```text
 1. User clicks "Forgot password?" → POST auth_forgot_password
     ├── Look up user by username or email
     ├── Generate reset token (48 hex chars, 1-hour expiry)
@@ -128,34 +154,34 @@ User enters credentials → POST auth_login
 | Browse songs | Yes | Yes | Yes | Yes | Yes |
 | Search | Yes | Yes | Yes | Yes | Yes |
 | Favourites (local) | Yes | Yes | Yes | Yes | Yes |
+| Favourites (synced) | — | Yes | Yes | Yes | Yes |
 | Setlists (local) | Yes | Yes | Yes | Yes | Yes |
 | Setlists (synced) | — | Yes | Yes | Yes | Yes |
 | Share setlists | Yes | Yes | Yes | Yes | Yes |
+| Song requests | Yes | Yes | Yes | Yes | Yes |
 | Song editor | — | — | Yes | Yes | Yes |
 | User management | — | — | — | Yes | Yes |
+| Activity log | — | — | — | Yes | Yes |
+| App settings | — | — | — | — | Yes |
 | Assign global_admin | — | — | — | — | Yes |
 
 ---
 
-## Header User Menu
+## Database Tables
 
-The site header on all pages includes a user dropdown:
+| Table | Purpose |
+|---|---|
+| `users` | Account records (username, email, password hash, role, group) |
+| `user_groups` | Group definitions with version access flags |
+| `user_group_members` | Many-to-many group membership |
+| `user_permissions` | Per-user permission overrides |
+| `sessions` | Admin panel sessions |
+| `api_tokens` | Bearer tokens (64-char hex, 30-day expiry) |
+| `password_reset_tokens` | Reset tokens (48-char hex, 1-hour expiry, single-use) |
+| `user_setlists` | Server-side setlist sync |
+| `user_favorites` | Server-side favorites sync |
 
-**Logged Out (Anonymous):**
-- Sign In button → opens auth modal in login mode
-- Create Account button → opens auth modal in register mode
-
-**Logged In:**
-- Display name (bold)
-- Role label (e.g., "Curator / Editor")
-- Divider
-- My Set Lists → navigates to `/setlist`
-- Sync Set Lists → triggers setlist sync
-- Account Settings → navigates to `/settings`
-- Divider
-- Sign Out → calls logout API, clears credentials
-
-The icon changes: `fa-user` (anonymous) → `fa-circle-user` (logged in).
+See [[Database & Migrations]] for full schema details.
 
 ---
 

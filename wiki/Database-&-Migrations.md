@@ -1,163 +1,165 @@
 # Database & Migrations
 
-> SQLite database, schema migrations, and multi-driver support
+> MySQL database, schema design, interactive installer, and data migration
 
 ---
 
 ## Overview
 
-The iHymns admin backend uses a relational database for user accounts, API tokens, setlists, and password reset tokens. The default driver is **SQLite** (zero-configuration), with migration support for **MySQL/MariaDB** and **SQL Server**.
+iHymns uses **MySQL** (v5.7+ / MariaDB 10.3+) as the primary data store for all application data:
+
+- **Song data** — songbooks, songs, writers, composers, lyrics components
+- **User accounts** — authentication, sessions, API tokens, password resets
+- **User groups** — role-based access control with version channel gating
+- **User data** — setlists, favorites (server-side sync)
+- **Community** — song requests, activity log
+- **Multilingual** — languages, song translations
+- **Configuration** — runtime app settings
+
+All queries use **MySQLi with prepared statements** for song data, and **PDO** for the admin panel authentication system. Both share the same MySQL credentials.
 
 ---
 
-## Configuration
+## Setup
 
-Database configuration is in `appWeb/public_html/manage/includes/db.php`:
+### Interactive Installer
 
-```php
-define('DB_CONFIG', [
-    'driver' => 'sqlite',  // Change to 'mysql' or 'sqlsrv' to switch
+The recommended way to set up the database:
 
-    'sqlite' => [
-        'path' => dirname(__DIR__, 3) . '/data_share/SQLite/ihymns.db',
-    ],
-
-    'mysql' => [
-        'host' => '127.0.0.1', 'port' => 3306,
-        'database' => 'ihymns', 'username' => '', 'password' => '',
-        'charset' => 'utf8mb4',
-    ],
-
-    'sqlsrv' => [
-        'host' => '127.0.0.1', 'port' => 1433,
-        'database' => 'ihymns', 'username' => '', 'password' => '',
-    ],
-]);
+```bash
+php appWeb/.sql/install.php
 ```
 
-### SQLite File Location
+The installer will:
+1. Prompt for MySQL host, port, database name, username, password, and optional table prefix
+2. Test the connection
+3. Write credentials to `appWeb/.auth/db_credentials.php` (permissions `0600`)
+4. Create all tables from `appWeb/.sql/schema.sql`
+5. Seed default user groups and languages
 
-The SQLite database is stored at `appWeb/data_share/SQLite/ihymns.db` — **outside the public web root** for security. The directory is created automatically if it doesn't exist.
+### Manual Configuration
 
-**Important:** The `data_share/` directory is deployed **without** the `--delete` flag, so the database is preserved between deployments.
+If the interactive installer cannot be used (non-interactive shell, web server):
 
----
+1. Copy `appWeb/.auth/db_credentials.example.php` to `appWeb/.auth/db_credentials.php`
+2. Edit the credentials manually
+3. Run `php appWeb/.sql/install.php` to create tables
 
-## Connection Factory
+### Data Migration
 
-The `getDb()` function returns a shared PDO instance (singleton per request):
+After table creation, import song data from `songs.json`:
 
-- Creates the connection on first call, reuses for subsequent calls
-- Automatically creates the SQLite file and directory if needed
-- Runs all pending migrations on every connection (idempotent)
-- Enables WAL journal mode and foreign keys for SQLite
-
----
-
-## Schema Migrations
-
-Migrations are idempotent SQL statements tracked in a `migrations` table. New migrations are appended to the array and run in order.
-
-### Current Migrations
-
-| Migration | Table | Purpose |
-|---|---|---|
-| `001_create_users` | `users` | User accounts (username, password_hash, display_name, role, is_active) |
-| `002_create_sessions` | `sessions` | PHP sessions (for admin panel) |
-| `003_create_api_tokens` | `api_tokens` | Bearer tokens for public API auth |
-| `004_create_user_setlists` | `user_setlists` | Server-side setlist storage linked to user accounts |
-| `005_create_password_reset_tokens` | `password_reset_tokens` | Password reset tokens (48-char hex, 1hr expiry, single-use) |
-| `006_add_user_email` | `users` | Adds `email` column for password reset delivery |
-
-### Table Schemas
-
-#### `users`
-
-| Column | Type | Description |
-|---|---|---|
-| `id` | INTEGER PK | Auto-increment user ID |
-| `username` | TEXT UNIQUE | Lowercase login name |
-| `password_hash` | TEXT | BCRYPT hash (cost 12) |
-| `display_name` | TEXT | Human-readable name |
-| `role` | TEXT | `global_admin`, `admin`, `editor`, or `user` |
-| `email` | TEXT | Email for password resets |
-| `is_active` | INTEGER | 1=active, 0=disabled |
-| `created_at` | TEXT | ISO 8601 timestamp |
-| `updated_at` | TEXT | ISO 8601 timestamp |
-
-#### `api_tokens`
-
-| Column | Type | Description |
-|---|---|---|
-| `token` | TEXT PK | 64-char hex bearer token |
-| `user_id` | INTEGER FK | References `users(id)` CASCADE |
-| `created_at` | TEXT | ISO 8601 timestamp |
-| `expires_at` | TEXT | Token expiry (30 days from creation) |
-
-#### `user_setlists`
-
-| Column | Type | Description |
-|---|---|---|
-| `id` | INTEGER PK | Auto-increment |
-| `user_id` | INTEGER FK | References `users(id)` CASCADE |
-| `setlist_id` | TEXT | Client-generated setlist UUID |
-| `name` | TEXT | Setlist name |
-| `songs_json` | TEXT | JSON array of song entries |
-| `created_at` | TEXT | ISO 8601 timestamp |
-| `updated_at` | TEXT | ISO 8601 timestamp |
-| | UNIQUE | `(user_id, setlist_id)` — one per user per setlist |
-
-#### `password_reset_tokens`
-
-| Column | Type | Description |
-|---|---|---|
-| `token` | TEXT PK | 48-char hex reset token |
-| `user_id` | INTEGER FK | References `users(id)` CASCADE |
-| `created_at` | TEXT | ISO 8601 timestamp |
-| `expires_at` | TEXT | Token expiry (1 hour from creation) |
-| `used` | INTEGER | 0=unused, 1=used |
-
-#### `sessions`
-
-| Column | Type | Description |
-|---|---|---|
-| `id` | TEXT PK | Session ID |
-| `user_id` | INTEGER FK | References `users(id)` CASCADE |
-| `ip_address` | TEXT | Client IP |
-| `user_agent` | TEXT | Client user agent |
-| `created_at` | TEXT | ISO 8601 timestamp |
-| `expires_at` | TEXT | Session expiry |
-
----
-
-## Adding New Migrations
-
-To add a new migration, append to the `$migrations` array in `runMigrations()`:
-
-```php
-'007_your_migration_name' => '
-    CREATE TABLE IF NOT EXISTS your_table (
-        id INTEGER PRIMARY KEY ' . ($driver === 'sqlite' ? 'AUTOINCREMENT' : 'AUTO_INCREMENT') . ',
-        ...
-    )
-',
+```bash
+php appWeb/.sql/migrate-json.php
 ```
 
-**Rules:**
-- Use standard SQL compatible with both SQLite and MySQL
-- Use the `$driver` variable for driver-specific syntax (e.g., `AUTOINCREMENT` vs `AUTO_INCREMENT`)
-- Migrations are idempotent — use `IF NOT EXISTS` for CREATE, `IF EXISTS` for DROP
-- Migration names must be unique — prefix with a sequential number
-- Never modify existing migrations — always add new ones
+---
+
+## Database Schema
+
+The full schema is defined in `appWeb/.sql/schema.sql`.
+
+### Song Data Tables
+
+| Table | Purpose |
+|---|---|
+| `songbooks` | Songbook definitions (CP, JP, MP, SDAH, CH, Misc) |
+| `songs` | Core song metadata + `lyrics_text` for full-text search |
+| `song_writers` | Song lyricist credits (many-to-one) |
+| `song_composers` | Song composer credits (many-to-one) |
+| `song_components` | Verses, choruses with lyrics as JSON lines array |
+
+### User & Access Control Tables
+
+| Table | Purpose |
+|---|---|
+| `user_groups` | Groups with version channel access flags (Alpha/Beta/RC/RTW) |
+| `users` | Accounts with role (`global_admin`/`admin`/`editor`/`user`) and group link |
+| `sessions` | Server-side admin panel sessions |
+| `api_tokens` | Bearer tokens for PWA/native app authentication (64-char hex, 30-day expiry) |
+| `password_reset_tokens` | Single-use reset tokens (48-char hex, 1-hour expiry) |
+| `user_group_members` | Many-to-many user-to-group membership |
+| `user_permissions` | Fine-grained per-user permission overrides (NULL = inherit from role) |
+
+### User Data Tables
+
+| Table | Purpose |
+|---|---|
+| `user_setlists` | Server-side setlist storage for cross-device sync |
+| `user_favorites` | Server-side favorites sync (song IDs per user) |
+
+### Language & Translation Tables
+
+| Table | Purpose |
+|---|---|
+| `languages` | ISO 639-1 language reference (code, name, native name, text direction) |
+| `song_translations` | Links source songs to translations in other languages |
+
+### Community Tables
+
+| Table | Purpose |
+|---|---|
+| `song_requests` | User-submitted song suggestions with status tracking |
+
+### System Tables
+
+| Table | Purpose |
+|---|---|
+| `activity_log` | Audit trail for admin actions (edits, logins, imports) |
+| `app_settings` | Key-value runtime configuration store |
+| `migrations` | Schema migration version tracking |
 
 ---
 
-## Switching Database Drivers
+## Version Access Control
 
-To switch from SQLite to MySQL:
+User groups control access to release channels:
 
-1. Change `'driver' => 'mysql'` in `DB_CONFIG`
-2. Fill in the MySQL connection details
-3. The migrations will run automatically on first connection, creating all tables
+| Group | Alpha | Beta | RC | RTW |
+|---|---|---|---|---|
+| Developers | Yes | Yes | Yes | Yes |
+| Beta Testers | No | Yes | Yes | Yes |
+| RC Testers | No | No | Yes | Yes |
+| Public | No | No | No | Yes |
 
-The migrations use driver-conditional syntax for `AUTO_INCREMENT` vs `AUTOINCREMENT`.
+Access is the **union** of all group memberships — if any group grants access to a channel, the user has it. Users have a primary `group_id` on the `users` table, with additional memberships via `user_group_members`.
+
+---
+
+## Connection Architecture
+
+| Component | Driver | Used By |
+|---|---|---|
+| Song data queries | **MySQLi** (prepared statements) | `SongData.php`, `db_mysql.php` |
+| Admin panel auth | **PDO** (MySQL driver) | `auth.php`, `db.php` |
+
+Both share credentials from `appWeb/.auth/db_credentials.php`.
+
+---
+
+## Table Prefix Support
+
+The installer supports an optional table prefix for shared hosting environments. When configured, all table names are prefixed (e.g., `ih_songs`, `ih_users`). The prefix is stored in `DB_PREFIX` in the credentials file.
+
+---
+
+## File Structure
+
+```text
+appWeb/
+├── .auth/
+│   ├── .htaccess                      ← Blocks web access
+│   ├── db_credentials.example.php     ← Template (tracked)
+│   └── db_credentials.php             ← Credentials (NOT tracked)
+├── .sql/
+│   ├── schema.sql                     ← Full MySQL schema
+│   ├── install.php                    ← Interactive installer
+│   └── migrate-json.php              ← JSON-to-MySQL data migration
+└── public_html/
+    ├── includes/
+    │   ├── db_mysql.php               ← MySQLi connection factory
+    │   └── SongData.php               ← Song data handler (MySQL-backed)
+    └── manage/includes/
+        ├── db.php                     ← PDO connection factory (admin panel)
+        └── auth.php                   ← Authentication functions
+```

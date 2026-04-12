@@ -117,17 +117,17 @@ switch ($action) {
             $db->begin_transaction();
 
             /* Clear existing data */
-            $db->query("TRUNCATE TABLE song_components");
-            $db->query("TRUNCATE TABLE song_composers");
-            $db->query("TRUNCATE TABLE song_writers");
-            $db->query("TRUNCATE TABLE songs");
-            $db->query("TRUNCATE TABLE songbooks");
+            $db->query("TRUNCATE TABLE tblSongComponents");
+            $db->query("TRUNCATE TABLE tblSongComposers");
+            $db->query("TRUNCATE TABLE tblSongWriters");
+            $db->query("TRUNCATE TABLE tblSongs");
+            $db->query("TRUNCATE TABLE tblSongbooks");
 
             $db->query("SET FOREIGN_KEY_CHECKS = 1");
 
             /* Insert songbooks */
             $stmtSongbook = $db->prepare(
-                "INSERT INTO songbooks (abbreviation, name, song_count) VALUES (?, ?, ?)"
+                "INSERT INTO tblSongbooks (Abbreviation, Name, SongCount) VALUES (?, ?, ?)"
             );
             foreach ($data['songbooks'] as $book) {
                 $abbr  = $book['id'];
@@ -140,19 +140,19 @@ switch ($action) {
 
             /* Prepare song statements */
             $stmtSong = $db->prepare(
-                "INSERT INTO songs (song_id, number, title, songbook_abbr, songbook_name,
-                 language, copyright, ccli, verified, lyrics_public_domain,
-                 music_public_domain, has_audio, has_sheet_music, lyrics_text)
+                "INSERT INTO tblSongs (SongId, Number, Title, SongbookAbbr, SongbookName,
+                 Language, Copyright, Ccli, Verified, LyricsPublicDomain,
+                 MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             );
             $stmtWriter = $db->prepare(
-                "INSERT INTO song_writers (song_id, name) VALUES (?, ?)"
+                "INSERT INTO tblSongWriters (SongId, Name) VALUES (?, ?)"
             );
             $stmtComposer = $db->prepare(
-                "INSERT INTO song_composers (song_id, name) VALUES (?, ?)"
+                "INSERT INTO tblSongComposers (SongId, Name) VALUES (?, ?)"
             );
             $stmtComponent = $db->prepare(
-                "INSERT INTO song_components (song_id, type, number, sort_order, lines_json)
+                "INSERT INTO tblSongComponents (SongId, Type, Number, SortOrder, LinesJson)
                  VALUES (?, ?, ?, ?, ?)"
             );
 

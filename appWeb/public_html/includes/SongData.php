@@ -93,13 +93,13 @@ class SongData
      */
     public function getMeta(): array
     {
-        $stmt = $this->db->prepare("SELECT COUNT(*) AS total FROM songs");
+        $stmt = $this->db->prepare("SELECT COUNT(*) AS total FROM tblSongs");
         $stmt->execute();
         $result = $stmt->get_result();
         $totalSongs = (int)$result->fetch_assoc()['total'];
         $stmt->close();
 
-        $stmt = $this->db->prepare("SELECT COUNT(*) AS total FROM songbooks");
+        $stmt = $this->db->prepare("SELECT COUNT(*) AS total FROM tblSongbooks");
         $stmt->execute();
         $result = $stmt->get_result();
         $totalSongbooks = (int)$result->fetch_assoc()['total'];
@@ -125,9 +125,9 @@ class SongData
     public function getSongbooks(): array
     {
         $stmt = $this->db->prepare(
-            "SELECT abbreviation AS id, name, song_count AS songCount
-             FROM songbooks
-             ORDER BY name ASC"
+            "SELECT Abbreviation AS id, Name AS name, SongCount AS songCount
+             FROM tblSongbooks
+             ORDER BY Name ASC"
         );
         $stmt->execute();
         $result = $stmt->get_result();
@@ -150,9 +150,9 @@ class SongData
     {
         $id = strtoupper(trim($id));
         $stmt = $this->db->prepare(
-            "SELECT abbreviation AS id, name, song_count AS songCount
-             FROM songbooks
-             WHERE abbreviation = ?"
+            "SELECT Abbreviation AS id, Name AS name, SongCount AS songCount
+             FROM tblSongbooks
+             WHERE Abbreviation = ?"
         );
         $stmt->bind_param('s', $id);
         $stmt->execute();
@@ -188,25 +188,25 @@ class SongData
 
         if ($songbookId !== null) {
             $songbookId = strtoupper(trim($songbookId));
-            $where[] = "s.songbook_abbr = ?";
+            $where[] = "s.SongbookAbbr = ?";
             $params[] = $songbookId;
             $types .= 's';
         }
 
         if (APP_CONFIG['features']['public_domain_only'] ?? false) {
-            $where[] = "s.lyrics_public_domain = 1";
+            $where[] = "s.LyricsPublicDomain = 1";
         }
 
         $whereClause = !empty($where) ? 'WHERE ' . implode(' AND ', $where) : '';
 
-        $sql = "SELECT s.song_id AS id, s.number, s.title, s.songbook_abbr AS songbook,
-                       s.songbook_name AS songbookName, s.language, s.copyright, s.ccli,
-                       s.verified, s.lyrics_public_domain AS lyricsPublicDomain,
-                       s.music_public_domain AS musicPublicDomain,
-                       s.has_audio AS hasAudio, s.has_sheet_music AS hasSheetMusic
-                FROM songs s
+        $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title, s.SongbookAbbr AS songbook,
+                       s.SongbookName AS songbookName, s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
+                       s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
+                       s.MusicPublicDomain AS musicPublicDomain,
+                       s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
+                FROM tblSongs s
                 {$whereClause}
-                ORDER BY s.songbook_abbr, s.number";
+                ORDER BY s.SongbookAbbr, s.Number";
 
         $stmt = $this->db->prepare($sql);
         if (!empty($params)) {
@@ -276,7 +276,7 @@ class SongData
         $songbook = strtoupper(trim($songbook));
 
         $stmt = $this->db->prepare(
-            "SELECT song_id FROM songs WHERE songbook_abbr = ? AND number = ? LIMIT 1"
+            "SELECT SongId FROM tblSongs WHERE SongbookAbbr = ? AND Number = ? LIMIT 1"
         );
         $stmt->bind_param('si', $songbook, $number);
         $stmt->execute();
@@ -288,7 +288,7 @@ class SongData
             return null;
         }
 
-        return $this->_fetchSongRow($row['song_id']);
+        return $this->_fetchSongRow($row['SongId']);
     }
 
     /* =====================================================================
@@ -319,13 +319,13 @@ class SongData
         if (mb_strlen($query) < 3) {
             $likeQuery = '%' . $query . '%';
 
-            $where = ["(s.title LIKE ? OR s.lyrics_text LIKE ?)"];
+            $where = ["(s.Title LIKE ? OR s.LyricsText LIKE ?)"];
             $params = [$likeQuery, $likeQuery];
             $types = 'ss';
 
             if ($songbookId !== null) {
                 $songbookId = strtoupper(trim($songbookId));
-                $where[] = "s.songbook_abbr = ?";
+                $where[] = "s.SongbookAbbr = ?";
                 $params[] = $songbookId;
                 $types .= 's';
             }
@@ -338,27 +338,27 @@ class SongData
 
             $whereClause = implode(' AND ', $where);
 
-            $sql = "SELECT s.song_id AS id, s.number, s.title,
-                           s.songbook_abbr AS songbook, s.songbook_name AS songbookName,
-                           s.language, s.copyright, s.ccli,
-                           s.verified, s.lyrics_public_domain AS lyricsPublicDomain,
-                           s.music_public_domain AS musicPublicDomain,
-                           s.has_audio AS hasAudio, s.has_sheet_music AS hasSheetMusic
-                    FROM songs s
+            $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
+                           s.SongbookAbbr AS songbook, s.SongbookName AS songbookName,
+                           s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
+                           s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
+                           s.MusicPublicDomain AS musicPublicDomain,
+                           s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
+                    FROM tblSongs s
                     WHERE {$whereClause}
-                    ORDER BY s.songbook_abbr, s.number
+                    ORDER BY s.SongbookAbbr, s.Number
                     {$limitClause}";
         } else {
             /* FULLTEXT search for longer queries */
             $ftQuery = $query;
 
-            $where = ["MATCH(s.title, s.lyrics_text) AGAINST(? IN BOOLEAN MODE)"];
+            $where = ["MATCH(s.Title, s.LyricsText) AGAINST(? IN BOOLEAN MODE)"];
             $params = [$ftQuery];
             $types = 's';
 
             if ($songbookId !== null) {
                 $songbookId = strtoupper(trim($songbookId));
-                $where[] = "s.songbook_abbr = ?";
+                $where[] = "s.SongbookAbbr = ?";
                 $params[] = $songbookId;
                 $types .= 's';
             }
@@ -371,16 +371,16 @@ class SongData
 
             $whereClause = implode(' AND ', $where);
 
-            $sql = "SELECT s.song_id AS id, s.number, s.title,
-                           s.songbook_abbr AS songbook, s.songbook_name AS songbookName,
-                           s.language, s.copyright, s.ccli,
-                           s.verified, s.lyrics_public_domain AS lyricsPublicDomain,
-                           s.music_public_domain AS musicPublicDomain,
-                           s.has_audio AS hasAudio, s.has_sheet_music AS hasSheetMusic,
-                           MATCH(s.title, s.lyrics_text) AGAINST(? IN BOOLEAN MODE) AS relevance
-                    FROM songs s
+            $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
+                           s.SongbookAbbr AS songbook, s.SongbookName AS songbookName,
+                           s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
+                           s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
+                           s.MusicPublicDomain AS musicPublicDomain,
+                           s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic,
+                           MATCH(s.Title, s.LyricsText) AGAINST(? IN BOOLEAN MODE) AS relevance
+                    FROM tblSongs s
                     WHERE {$whereClause}
-                    ORDER BY relevance DESC, s.songbook_abbr, s.number
+                    ORDER BY relevance DESC, s.SongbookAbbr, s.Number
                     {$limitClause}";
 
             /* Add the MATCH param again for SELECT (relevance score) */
@@ -435,14 +435,14 @@ class SongData
         /* Use LIKE for prefix matching on the number cast to string */
         $likeNumber = $number . '%';
         $stmt = $this->db->prepare(
-            "SELECT song_id AS id, number, title, songbook_abbr AS songbook,
-                    songbook_name AS songbookName, language, copyright, ccli,
-                    verified, lyrics_public_domain AS lyricsPublicDomain,
-                    music_public_domain AS musicPublicDomain,
-                    has_audio AS hasAudio, has_sheet_music AS hasSheetMusic
-             FROM songs
-             WHERE songbook_abbr = ? AND CAST(number AS CHAR) LIKE ?
-             ORDER BY number"
+            "SELECT SongId AS id, Number AS number, Title AS title, SongbookAbbr AS songbook,
+                    SongbookName AS songbookName, Language AS language, Copyright AS copyright, Ccli AS ccli,
+                    Verified AS verified, LyricsPublicDomain AS lyricsPublicDomain,
+                    MusicPublicDomain AS musicPublicDomain,
+                    HasAudio AS hasAudio, HasSheetMusic AS hasSheetMusic
+             FROM tblSongs
+             WHERE SongbookAbbr = ? AND CAST(Number AS CHAR) LIKE ?
+             ORDER BY Number"
         );
         $stmt->bind_param('ss', $songbookId, $likeNumber);
         $stmt->execute();
@@ -481,12 +481,12 @@ class SongData
         if ($songbookId !== null) {
             $songbookId = strtoupper(trim($songbookId));
             $stmt = $this->db->prepare(
-                "SELECT song_id FROM songs WHERE songbook_abbr = ? ORDER BY RAND() LIMIT 1"
+                "SELECT SongId FROM tblSongs WHERE SongbookAbbr = ? ORDER BY RAND() LIMIT 1"
             );
             $stmt->bind_param('s', $songbookId);
         } else {
             $stmt = $this->db->prepare(
-                "SELECT song_id FROM songs ORDER BY RAND() LIMIT 1"
+                "SELECT SongId FROM tblSongs ORDER BY RAND() LIMIT 1"
             );
         }
 
@@ -499,7 +499,7 @@ class SongData
             return null;
         }
 
-        return $this->_fetchSongRow($row['song_id']);
+        return $this->_fetchSongRow($row['SongId']);
     }
 
     /* =====================================================================
@@ -531,6 +531,65 @@ class SongData
             'totalSongs'     => $totalSongs,
             'totalSongbooks' => count($songbooks),
             'songbooks'      => $bookStats,
+        ];
+    }
+
+    /* =====================================================================
+     * MISSING SONG DETECTION (#285)
+     * ===================================================================== */
+
+    /**
+     * Find missing song numbers within a songbook.
+     *
+     * Compares the sequential range (1 to max song number) against
+     * existing songs to identify gaps. Useful for editors to spot
+     * songs that haven't been added yet.
+     *
+     * @param string $songbookId Songbook abbreviation (e.g., 'CP')
+     * @return array{missing: int[], maxNumber: int, totalExisting: int, songbook: string}
+     */
+    public function getMissingSongNumbers(string $songbookId): array
+    {
+        $songbookId = strtoupper(trim($songbookId));
+
+        /* Get all existing song numbers for this songbook */
+        $stmt = $this->db->prepare(
+            "SELECT Number FROM tblSongs WHERE SongbookAbbr = ? ORDER BY Number"
+        );
+        $stmt->bind_param('s', $songbookId);
+        $stmt->execute();
+        $result = $stmt->get_result();
+
+        $existing = [];
+        while ($row = $result->fetch_assoc()) {
+            $existing[] = (int)$row['Number'];
+        }
+        $stmt->close();
+
+        if (empty($existing)) {
+            return [
+                'missing'       => [],
+                'maxNumber'     => 0,
+                'totalExisting' => 0,
+                'songbook'      => $songbookId,
+            ];
+        }
+
+        $maxNumber = max($existing);
+        $existingSet = array_flip($existing);
+        $missing = [];
+
+        for ($i = 1; $i <= $maxNumber; $i++) {
+            if (!isset($existingSet[$i])) {
+                $missing[] = $i;
+            }
+        }
+
+        return [
+            'missing'       => $missing,
+            'maxNumber'     => $maxNumber,
+            'totalExisting' => count($existing),
+            'songbook'      => $songbookId,
         ];
     }
 
@@ -568,13 +627,13 @@ class SongData
     private function _fetchSongRow(string $songId): ?array
     {
         $stmt = $this->db->prepare(
-            "SELECT song_id AS id, number, title, songbook_abbr AS songbook,
-                    songbook_name AS songbookName, language, copyright, ccli,
-                    verified, lyrics_public_domain AS lyricsPublicDomain,
-                    music_public_domain AS musicPublicDomain,
-                    has_audio AS hasAudio, has_sheet_music AS hasSheetMusic
-             FROM songs
-             WHERE song_id = ?
+            "SELECT SongId AS id, Number AS number, Title AS title, SongbookAbbr AS songbook,
+                    SongbookName AS songbookName, Language AS language, Copyright AS copyright, Ccli AS ccli,
+                    Verified AS verified, LyricsPublicDomain AS lyricsPublicDomain,
+                    MusicPublicDomain AS musicPublicDomain,
+                    HasAudio AS hasAudio, HasSheetMusic AS hasSheetMusic
+             FROM tblSongs
+             WHERE SongId = ?
              LIMIT 1"
         );
         $stmt->bind_param('s', $songId);
@@ -609,7 +668,7 @@ class SongData
     private function _getWriters(string $songId): array
     {
         $stmt = $this->db->prepare(
-            "SELECT name FROM song_writers WHERE song_id = ? ORDER BY id"
+            "SELECT Name AS name FROM tblSongWriters WHERE SongId = ? ORDER BY Id"
         );
         $stmt->bind_param('s', $songId);
         $stmt->execute();
@@ -631,7 +690,7 @@ class SongData
     private function _getComposers(string $songId): array
     {
         $stmt = $this->db->prepare(
-            "SELECT name FROM song_composers WHERE song_id = ? ORDER BY id"
+            "SELECT Name AS name FROM tblSongComposers WHERE SongId = ? ORDER BY Id"
         );
         $stmt->bind_param('s', $songId);
         $stmt->execute();
@@ -653,10 +712,10 @@ class SongData
     private function _getComponents(string $songId): array
     {
         $stmt = $this->db->prepare(
-            "SELECT type, number, lines_json
-             FROM song_components
-             WHERE song_id = ?
-             ORDER BY sort_order"
+            "SELECT Type AS type, Number AS number, LinesJson AS lines_json
+             FROM tblSongComponents
+             WHERE SongId = ?
+             ORDER BY SortOrder"
         );
         $stmt->bind_param('s', $songId);
         $stmt->execute();
@@ -686,14 +745,14 @@ class SongData
         $likeQuery = '%' . $query . '%';
 
         $where = [
-            "(s.song_id IN (SELECT song_id FROM song_writers WHERE name LIKE ?)
-              OR s.song_id IN (SELECT song_id FROM song_composers WHERE name LIKE ?))"
+            "(s.SongId IN (SELECT SongId FROM tblSongWriters WHERE Name LIKE ?)
+              OR s.SongId IN (SELECT SongId FROM tblSongComposers WHERE Name LIKE ?))"
         ];
         $params = [$likeQuery, $likeQuery];
         $types = 'ss';
 
         if ($songbookId !== null) {
-            $where[] = "s.songbook_abbr = ?";
+            $where[] = "s.SongbookAbbr = ?";
             $params[] = $songbookId;
             $types .= 's';
         }
@@ -706,15 +765,15 @@ class SongData
 
         $whereClause = implode(' AND ', $where);
 
-        $sql = "SELECT s.song_id AS id, s.number, s.title,
-                       s.songbook_abbr AS songbook, s.songbook_name AS songbookName,
-                       s.language, s.copyright, s.ccli,
-                       s.verified, s.lyrics_public_domain AS lyricsPublicDomain,
-                       s.music_public_domain AS musicPublicDomain,
-                       s.has_audio AS hasAudio, s.has_sheet_music AS hasSheetMusic
-                FROM songs s
+        $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
+                       s.SongbookAbbr AS songbook, s.SongbookName AS songbookName,
+                       s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
+                       s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
+                       s.MusicPublicDomain AS musicPublicDomain,
+                       s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
+                FROM tblSongs s
                 WHERE {$whereClause}
-                ORDER BY s.songbook_abbr, s.number
+                ORDER BY s.SongbookAbbr, s.Number
                 {$limitClause}";
 
         $stmt = $this->db->prepare($sql);

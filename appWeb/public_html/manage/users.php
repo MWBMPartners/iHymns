@@ -156,7 +156,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
  * ========================================================================= */
 
 $db = getDb();
-$users = $db->query('SELECT id, username, display_name, email, role, is_active, created_at FROM users ORDER BY created_at ASC')->fetchAll(PDO::FETCH_ASSOC);
+$users = $db->query('SELECT Id AS id, Username AS username, DisplayName AS display_name, Email AS email, Role AS role, IsActive AS is_active, CreatedAt AS created_at FROM tblUsers ORDER BY CreatedAt ASC')->fetchAll(PDO::FETCH_ASSOC);
 
 $csrf = csrfToken();
 

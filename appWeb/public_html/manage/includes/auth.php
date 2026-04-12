@@ -83,7 +83,7 @@ function getCurrentUser(): ?array
     }
 
     $db = getDb();
-    $stmt = $db->prepare('SELECT id, username, display_name, role FROM users WHERE id = ? AND is_active = 1');
+    $stmt = $db->prepare('SELECT Id, Username, DisplayName, Role FROM tblUsers WHERE Id = ? AND IsActive = 1');
     $stmt->execute([$_SESSION['user_id']]);
     return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
 }
@@ -193,7 +193,7 @@ function requireAdmin(): void
 {
     requireAuth();
     $user = getCurrentUser();
-    if ($user === null || !hasRole($user['role'], 'admin')) {
+    if ($user === null || !hasRole($user['Role'], 'admin')) {
         http_response_code(403);
         exit('Access denied. Admin role required.');
     }
@@ -206,7 +206,7 @@ function requireEditor(): void
 {
     requireAuth();
     $user = getCurrentUser();
-    if ($user === null || !hasRole($user['role'], 'editor')) {
+    if ($user === null || !hasRole($user['Role'], 'editor')) {
         http_response_code(403);
         exit('Access denied. Curator/Editor role required.');
     }
@@ -219,7 +219,7 @@ function requireGlobalAdmin(): void
 {
     requireAuth();
     $user = getCurrentUser();
-    if ($user === null || $user['role'] !== 'global_admin') {
+    if ($user === null || $user['Role'] !== 'global_admin') {
         http_response_code(403);
         exit('Access denied. Global Admin role required.');
     }
@@ -235,19 +235,19 @@ function requireGlobalAdmin(): void
 function attemptLogin(string $username, string $password): ?array
 {
     $db = getDb();
-    $stmt = $db->prepare('SELECT * FROM users WHERE username = ? AND is_active = 1');
+    $stmt = $db->prepare('SELECT * FROM tblUsers WHERE Username = ? AND IsActive = 1');
     $stmt->execute([strtolower(trim($username))]);
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    if (!$user || !password_verify($password, $user['password_hash'])) {
+    if (!$user || !password_verify($password, $user['PasswordHash'])) {
         return null;
     }
 
     /* Set session */
     initSession();
     session_regenerate_id(true);
-    $_SESSION['user_id']  = (int)$user['id'];
-    $_SESSION['username'] = $user['username'];
+    $_SESSION['user_id']  = (int)$user['Id'];
+    $_SESSION['username'] = $user['Username'];
 
     return $user;
 }
@@ -280,7 +280,7 @@ function needsSetup(): bool
 {
     try {
         $db = getDb();
-        $stmt = $db->query('SELECT COUNT(*) FROM users');
+        $stmt = $db->query('SELECT COUNT(*) FROM tblUsers');
         return (int)$stmt->fetchColumn() === 0;
     } catch (\Exception $e) {
         /* Table might not exist yet — needs setup */
@@ -310,13 +310,13 @@ function createUser(string $username, string $password, string $displayName, str
     }
 
     /* Check for duplicate */
-    $stmt = $db->prepare('SELECT COUNT(*) FROM users WHERE username = ?');
+    $stmt = $db->prepare('SELECT COUNT(*) FROM tblUsers WHERE Username = ?');
     $stmt->execute([$username]);
     if ((int)$stmt->fetchColumn() > 0) {
         throw new \RuntimeException('Username already exists.');
     }
 
-    $stmt = $db->prepare('INSERT INTO users (username, password_hash, display_name, role, email) VALUES (?, ?, ?, ?, ?)');
+    $stmt = $db->prepare('INSERT INTO tblUsers (Username, PasswordHash, DisplayName, Role, Email) VALUES (?, ?, ?, ?, ?)');
     $stmt->execute([
         $username,
         password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]),
@@ -347,13 +347,13 @@ function updateUserRole(int $userId, string $newRole, array $actingUser): bool
     }
 
     $db = getDb();
-    $stmt = $db->prepare('SELECT id, role FROM users WHERE id = ?');
+    $stmt = $db->prepare('SELECT Id, Role FROM tblUsers WHERE Id = ?');
     $stmt->execute([$userId]);
     $target = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$target) throw new \RuntimeException('User not found.');
 
-    $actingLevel = roleLevel($actingUser['role']);
-    $targetLevel = roleLevel($target['role']);
+    $actingLevel = roleLevel($actingUser['Role']);
+    $targetLevel = roleLevel($target['Role']);
     $newLevel    = roleLevel($newRole);
 
     /* Cannot promote above your own level */
@@ -362,16 +362,16 @@ function updateUserRole(int $userId, string $newRole, array $actingUser): bool
     }
 
     /* Cannot demote someone at or above your level (unless you are global_admin) */
-    if ($targetLevel >= $actingLevel && $actingUser['role'] !== 'global_admin') {
+    if ($targetLevel >= $actingLevel && $actingUser['Role'] !== 'global_admin') {
         throw new \RuntimeException('Cannot modify a user at or above your role level.');
     }
 
     /* Only global_admin can assign global_admin */
-    if ($newRole === 'global_admin' && $actingUser['role'] !== 'global_admin') {
+    if ($newRole === 'global_admin' && $actingUser['Role'] !== 'global_admin') {
         throw new \RuntimeException('Only Global Admin can assign Global Admin role.');
     }
 
-    $stmt = $db->prepare('UPDATE users SET role = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
+    $stmt = $db->prepare('UPDATE tblUsers SET Role = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
     $stmt->execute([$newRole, $userId]);
     return true;
 }
@@ -393,7 +393,7 @@ function generatePasswordResetToken(string $usernameOrEmail): ?array
     $input = strtolower(trim($usernameOrEmail));
 
     /* Look up by username or email */
-    $stmt = $db->prepare('SELECT id, username, email FROM users WHERE (username = ? OR email = ?) AND is_active = 1');
+    $stmt = $db->prepare('SELECT Id, Username, Email FROM tblUsers WHERE (Username = ? OR Email = ?) AND IsActive = 1');
     $stmt->execute([$input, $input]);
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -404,18 +404,18 @@ function generatePasswordResetToken(string $usernameOrEmail): ?array
     $expiresAt = gmdate('c', time() + 3600); /* 1 hour */
 
     /* Invalidate any existing tokens for this user */
-    $stmt = $db->prepare('DELETE FROM password_reset_tokens WHERE user_id = ?');
-    $stmt->execute([$user['id']]);
+    $stmt = $db->prepare('DELETE FROM tblPasswordResetTokens WHERE UserId = ?');
+    $stmt->execute([$user['Id']]);
 
     /* Insert new token */
-    $stmt = $db->prepare('INSERT INTO password_reset_tokens (token, user_id, expires_at) VALUES (?, ?, ?)');
-    $stmt->execute([$token, $user['id'], $expiresAt]);
+    $stmt = $db->prepare('INSERT INTO tblPasswordResetTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
+    $stmt->execute([$token, $user['Id'], $expiresAt]);
 
     return [
         'token'    => $token,
-        'user_id'  => (int)$user['id'],
-        'username' => $user['username'],
-        'email'    => $user['email'],
+        'user_id'  => (int)$user['Id'],
+        'username' => $user['Username'],
+        'email'    => $user['Email'],
     ];
 }
 
@@ -429,10 +429,10 @@ function validatePasswordResetToken(string $token): ?array
 {
     $db = getDb();
     $stmt = $db->prepare(
-        'SELECT t.user_id, u.username
-         FROM password_reset_tokens t
-         JOIN users u ON u.id = t.user_id
-         WHERE t.token = ? AND t.expires_at > ? AND t.used = 0 AND u.is_active = 1'
+        'SELECT t.UserId, u.Username
+         FROM tblPasswordResetTokens t
+         JOIN tblUsers u ON u.Id = t.UserId
+         WHERE t.Token = ? AND t.ExpiresAt > ? AND t.Used = 0 AND u.IsActive = 1'
     );
     $stmt->execute([$token, gmdate('c')]);
     return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
@@ -454,16 +454,16 @@ function resetPassword(string $token, string $newPassword): bool
 
     /* Update password */
     $hash = password_hash($newPassword, PASSWORD_BCRYPT, ['cost' => 12]);
-    $stmt = $db->prepare('UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
-    $stmt->execute([$hash, $tokenData['user_id']]);
+    $stmt = $db->prepare('UPDATE tblUsers SET PasswordHash = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
+    $stmt->execute([$hash, $tokenData['UserId']]);
 
     /* Mark token as used */
-    $stmt = $db->prepare('UPDATE password_reset_tokens SET used = 1 WHERE token = ?');
+    $stmt = $db->prepare('UPDATE tblPasswordResetTokens SET Used = 1 WHERE Token = ?');
     $stmt->execute([$token]);
 
     /* Invalidate all API tokens for this user (force re-login) */
-    $stmt = $db->prepare('DELETE FROM api_tokens WHERE user_id = ?');
-    $stmt->execute([$tokenData['user_id']]);
+    $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ?');
+    $stmt->execute([$tokenData['UserId']]);
 
     return true;
 }
@@ -510,11 +510,11 @@ function changeUserPassword(int $userId, string $newPassword): bool
 {
     $db = getDb();
     $hash = password_hash($newPassword, PASSWORD_BCRYPT, ['cost' => 12]);
-    $stmt = $db->prepare('UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
+    $stmt = $db->prepare('UPDATE tblUsers SET PasswordHash = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
     $stmt->execute([$hash, $userId]);
 
     /* Invalidate all API tokens (force re-login) */
-    $stmt = $db->prepare('DELETE FROM api_tokens WHERE user_id = ?');
+    $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ?');
     $stmt->execute([$userId]);
 
     return true;
@@ -531,7 +531,7 @@ function changeUserPassword(int $userId, string $newPassword): bool
 function updateUserProfile(int $userId, string $displayName, string $email): bool
 {
     $db = getDb();
-    $stmt = $db->prepare('UPDATE users SET display_name = ?, email = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
+    $stmt = $db->prepare('UPDATE tblUsers SET DisplayName = ?, Email = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
     $stmt->execute([trim($displayName), trim($email), $userId]);
     return true;
 }
@@ -546,12 +546,12 @@ function updateUserProfile(int $userId, string $displayName, string $email): boo
 function setUserActive(int $userId, bool $isActive): bool
 {
     $db = getDb();
-    $stmt = $db->prepare('UPDATE users SET is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
+    $stmt = $db->prepare('UPDATE tblUsers SET IsActive = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
     $stmt->execute([$isActive ? 1 : 0, $userId]);
 
     /* If deactivating, invalidate all their tokens */
     if (!$isActive) {
-        $stmt = $db->prepare('DELETE FROM api_tokens WHERE user_id = ?');
+        $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ?');
         $stmt->execute([$userId]);
     }
 
@@ -568,7 +568,7 @@ function setUserActive(int $userId, bool $isActive): bool
 function deleteUser(int $userId): bool
 {
     $db = getDb();
-    $stmt = $db->prepare('DELETE FROM users WHERE id = ?');
+    $stmt = $db->prepare('DELETE FROM tblUsers WHERE Id = ?');
     $stmt->execute([$userId]);
     return (int)$stmt->rowCount() > 0;
 }
@@ -582,7 +582,7 @@ function deleteUser(int $userId): bool
 function getUserById(int $userId): ?array
 {
     $db = getDb();
-    $stmt = $db->prepare('SELECT * FROM users WHERE id = ?');
+    $stmt = $db->prepare('SELECT * FROM tblUsers WHERE Id = ?');
     $stmt->execute([$userId]);
     return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
 }
