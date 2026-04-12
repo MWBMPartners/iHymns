@@ -172,7 +172,8 @@ CREATE TABLE IF NOT EXISTS tblUsers (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
     Username        VARCHAR(100)    NOT NULL UNIQUE,
     Email           VARCHAR(255)    NOT NULL DEFAULT '',
-    PasswordHash    VARCHAR(255)    NOT NULL,
+    EmailVerified   TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = email address confirmed',
+    PasswordHash    VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Empty string = passwordless (email-only login)',
     DisplayName     VARCHAR(100)    NOT NULL DEFAULT '',
     Role            VARCHAR(20)     NOT NULL DEFAULT 'user' COMMENT 'global_admin, admin, editor, user',
     GroupId         INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK to tblUserGroups for version access',
@@ -248,6 +249,36 @@ CREATE TABLE IF NOT EXISTS tblPasswordResetTokens (
     INDEX idx_User      (UserId),
 
     CONSTRAINT fk_ResetTokens_User
+        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblEmailLoginTokens
+-- Time-limited tokens for passwordless email login (magic link / code).
+-- Two modes:
+--   1. Magic link: user clicks a URL containing the Token (48-char hex)
+--   2. Code entry: user enters a 6-digit numeric Code on the login page
+-- Both expire after 10 minutes and are single-use.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblEmailLoginTokens (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    Email           VARCHAR(255)    NOT NULL COMMENT 'Email address the token was sent to',
+    UserId          INT UNSIGNED    NULL COMMENT 'FK to tblUsers if email matches existing account',
+    Token           VARCHAR(64)     NOT NULL UNIQUE COMMENT '48-char hex token for magic link',
+    Code            VARCHAR(6)      NOT NULL COMMENT '6-digit numeric code for manual entry',
+    Used            TINYINT(1)      NOT NULL DEFAULT 0,
+    ExpiresAt       TIMESTAMP       NOT NULL,
+    IpAddress       VARCHAR(45)     NOT NULL DEFAULT '' COMMENT 'IP that requested the token',
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_Email     (Email),
+    INDEX idx_Token     (Token),
+    INDEX idx_Code      (Email, Code),
+    INDEX idx_Expires   (ExpiresAt),
+
+    CONSTRAINT fk_EmailLogin_User
         FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
         ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

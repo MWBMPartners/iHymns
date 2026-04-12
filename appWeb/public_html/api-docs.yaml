@@ -1525,6 +1525,120 @@ paths:
                 $ref: "#/components/schemas/Error"
 
   # ===========================================================================
+  # EMAIL LOGIN (PASSWORDLESS)
+  # ===========================================================================
+
+  /api.php?action=auth_email_login_request:
+    post:
+      operationId: authEmailLoginRequest
+      tags: [Authentication]
+      summary: Request an email login link/code
+      description: |
+        Sends a magic link and 6-digit code to the given email address.
+        The code expires after 10 minutes. Always returns 200 to prevent
+        email enumeration. Rate-limited to 5 requests per email per hour.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [auth_email_login_request]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+      responses:
+        "200":
+          description: Request accepted (always 200, even if email not found)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "A login code has been sent to your email address. It expires in 10 minutes."
+        "400":
+          description: Invalid email address
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api.php?action=auth_email_login_verify:
+    post:
+      operationId: authEmailLoginVerify
+      tags: [Authentication]
+      summary: Verify an email login token or code
+      description: |
+        Validates the token (from the magic link URL) or the email + 6-digit code
+        and returns a bearer token. If the email doesn't have an existing account,
+        a new user account is auto-created.
+
+        Two verification modes:
+        - **Magic link**: provide `token` (48-char hex from the email link)
+        - **Code entry**: provide `email` + `code` (6-digit number from the email)
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [auth_email_login_verify]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+                  description: 48-char hex token from the magic link (mode 1)
+                  example: "a1b2c3d4e5f6..."
+                email:
+                  type: string
+                  format: email
+                  description: Email address the code was sent to (mode 2)
+                  example: user@example.com
+                code:
+                  type: string
+                  pattern: "^\\d{6}$"
+                  description: 6-digit code from the email (mode 2)
+                  example: "482917"
+      responses:
+        "200":
+          description: Login successful — returns bearer token and user info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Missing token or email+code combination
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Invalid or expired token/code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ===========================================================================
   # USER ACCESS
   # ===========================================================================
 

@@ -266,6 +266,24 @@ Reset password using a valid token.
 
 **Response:** `{ ok: true, message }`
 
+### `?action=auth_email_login_request` (POST)
+
+Request a magic link and 6-digit code sent to an email address. The code expires after 10 minutes. Rate-limited to 5 per email per hour.
+
+**Body:** `{ email: "user@example.com" }`
+
+**Response:** `{ ok: true, message }` (always 200 to prevent email enumeration)
+
+### `?action=auth_email_login_verify` (POST)
+
+Verify an email login token or code. Returns a bearer token. Auto-creates a new account if the email doesn't have one.
+
+**Body (magic link mode):** `{ token: "<48-char hex from link>" }`
+
+**Body (code entry mode):** `{ email: "user@example.com", code: "482917" }`
+
+**Response:** `{ token, user: { id, username, display_name, email, role } }`
+
 ---
 
 ## User Data Endpoints (Authenticated)

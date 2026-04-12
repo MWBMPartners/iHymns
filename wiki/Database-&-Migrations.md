@@ -63,51 +63,57 @@ The full schema is defined in `appWeb/.sql/schema.sql`.
 
 | Table | Purpose |
 |---|---|
-| `songbooks` | Songbook definitions (CP, JP, MP, SDAH, CH, Misc) |
-| `songs` | Core song metadata + `lyrics_text` for full-text search |
-| `song_writers` | Song lyricist credits (many-to-one) |
-| `song_composers` | Song composer credits (many-to-one) |
-| `song_components` | Verses, choruses with lyrics as JSON lines array |
+| `tblSongbooks` | Songbook definitions (CP, JP, MP, SDAH, CH, Misc) |
+| `tblSongs` | Core song metadata + `LyricsText` for full-text search |
+| `tblSongWriters` | Song lyricist credits (many-to-one) |
+| `tblSongComposers` | Song composer credits (many-to-one) |
+| `tblSongComponents` | Verses, choruses with lyrics as JSON lines array |
 
 ### User & Access Control Tables
 
 | Table | Purpose |
 |---|---|
-| `user_groups` | Groups with version channel access flags (Alpha/Beta/RC/RTW) |
-| `users` | Accounts with role (`global_admin`/`admin`/`editor`/`user`) and group link |
-| `sessions` | Server-side admin panel sessions |
-| `api_tokens` | Bearer tokens for PWA/native app authentication (64-char hex, 30-day expiry) |
-| `password_reset_tokens` | Single-use reset tokens (48-char hex, 1-hour expiry) |
-| `user_group_members` | Many-to-many user-to-group membership |
-| `user_permissions` | Fine-grained per-user permission overrides (NULL = inherit from role) |
+| `tblUserGroups` | Groups with version channel access flags (Alpha/Beta/RC/RTW) |
+| `tblUsers` | Accounts with role, group link, EmailVerified, LastLoginAt, LoginCount |
+| `tblSessions` | Server-side admin panel sessions |
+| `tblApiTokens` | Bearer tokens for PWA/native app auth (64-char hex, 30-day expiry) |
+| `tblPasswordResetTokens` | Single-use password reset tokens (48-char hex, 1-hour expiry) |
+| `tblEmailLoginTokens` | Magic link tokens + 6-digit codes for passwordless email login (10-min expiry) |
+| `tblUserGroupMembers` | Many-to-many user-to-group membership |
+| `tblUserPermissions` | Fine-grained per-user permission overrides (NULL = inherit from role) |
+| `tblLoginAttempts` | Brute force tracking (IP, username, success/failure, timestamp) |
 
 ### User Data Tables
 
 | Table | Purpose |
 |---|---|
-| `user_setlists` | Server-side setlist storage for cross-device sync |
-| `user_favorites` | Server-side favorites sync (song IDs per user) |
+| `tblUserSetlists` | Server-side setlist storage for cross-device sync |
+| `tblUserFavorites` | Server-side favorites sync (song IDs per user) |
 
 ### Language & Translation Tables
 
 | Table | Purpose |
 |---|---|
-| `languages` | ISO 639-1 language reference (code, name, native name, text direction) |
-| `song_translations` | Links source songs to translations in other languages |
+| `tblLanguages` | ISO 639-1 language reference (code, name, native name, text direction) |
+| `tblSongTranslations` | Links source songs to translations in other languages |
 
-### Community Tables
+### Community & Engagement Tables
 
 | Table | Purpose |
 |---|---|
-| `song_requests` | User-submitted song suggestions with status tracking |
+| `tblSongRequests` | User-submitted song suggestions with status tracking |
+| `tblSongHistory` | Recently viewed songs tracking per user |
+| `tblSongTags` | Song categories/themes (Easter, Communion, etc.) |
+| `tblSongTagMap` | Many-to-many song-to-tag mapping |
+| `tblNotifications` | In-app notification system for users |
 
 ### System Tables
 
 | Table | Purpose |
 |---|---|
-| `activity_log` | Audit trail for admin actions (edits, logins, imports) |
-| `app_settings` | Key-value runtime configuration store |
-| `migrations` | Schema migration version tracking |
+| `tblActivityLog` | Audit trail for admin actions (edits, logins, imports) |
+| `tblAppSettings` | Key-value runtime configuration store |
+| `tblMigrations` | Schema migration version tracking |
 
 ---
 

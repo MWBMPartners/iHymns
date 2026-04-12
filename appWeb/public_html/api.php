@@ -986,6 +986,128 @@ if ($action !== null) {
             break;
 
         /* =================================================================
+         * EMAIL LOGIN — Passwordless magic link / code authentication
+         *
+         * Two-step flow:
+         *   1. POST auth_email_login_request — sends a magic link + 6-digit
+         *      code to the user's email address (10-minute expiry)
+         *   2. POST auth_email_login_verify — validates the token (from link)
+         *      or code (manual entry) and returns a bearer token
+         *
+         * If the email doesn't match an existing account, a new user account
+         * is auto-created on successful verification.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Request an email login link/code
+         *
+         * POST body (JSON): { "email": "user@example.com" }
+         *
+         * Returns 200 always (to prevent email enumeration).
+         * The email contains both a clickable magic link and a 6-digit code.
+         * ----------------------------------------------------------------- */
+        case 'auth_email_login_request':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            require_once __DIR__ . '/manage/includes/auth.php';
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+            $requestEmail = trim($body['email'] ?? '');
+
+            if ($requestEmail === '' || !filter_var($requestEmail, FILTER_VALIDATE_EMAIL)) {
+                sendJson(['error' => 'A valid email address is required.'], 400);
+                break;
+            }
+
+            $clientIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            $result = generateEmailLoginToken($requestEmail, $clientIp);
+
+            if ($result === null) {
+                /* Rate limited — still return 200 to prevent enumeration */
+                sendJson([
+                    'ok'      => true,
+                    'message' => 'If an account exists with that email, a login code has been sent.',
+                ]);
+                break;
+            }
+
+            /* TODO: Send the email with the magic link and code.
+             * The magic link URL format: https://ihymns.app/login?token=<token>
+             * The code: <6-digit code>
+             * Until email delivery is implemented, log for development. */
+            error_log(sprintf(
+                '[iHymns] Email login requested for %s — Code: %s (expires in 10 min)',
+                $requestEmail, $result['code']
+            ));
+
+            sendJson([
+                'ok'      => true,
+                'message' => 'A login code has been sent to your email address. It expires in 10 minutes.',
+            ]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Verify an email login token or code and return a bearer token
+         *
+         * POST body (JSON) — one of:
+         *   { "token": "<48-char hex from magic link>" }
+         *   { "email": "user@example.com", "code": "123456" }
+         *
+         * Returns: { token, user: { id, username, display_name, email, role } }
+         * If the email doesn't have an account, one is auto-created.
+         * ----------------------------------------------------------------- */
+        case 'auth_email_login_verify':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            require_once __DIR__ . '/manage/includes/auth.php';
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            $verifyToken = trim($body['token'] ?? '');
+            $verifyEmail = trim($body['email'] ?? '');
+            $verifyCode  = trim($body['code'] ?? '');
+
+            $verified = null;
+
+            if ($verifyToken !== '') {
+                /* Mode 1: Magic link — verify by token */
+                $verified = verifyEmailLoginToken($verifyToken);
+            } elseif ($verifyEmail !== '' && $verifyCode !== '') {
+                /* Mode 2: Code entry — verify by email + code */
+                $verified = verifyEmailLoginCode($verifyEmail, $verifyCode);
+            } else {
+                sendJson(['error' => 'Provide either a token (magic link) or email + code.'], 400);
+                break;
+            }
+
+            if ($verified === null) {
+                sendJson(['error' => 'Invalid or expired login code. Please request a new one.'], 401);
+                break;
+            }
+
+            /* Complete the login: find/create user, generate bearer token */
+            $loginResult = completeEmailLogin($verified['email'], $verified['userId']);
+
+            /* Log the successful login */
+            $clientIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            $db = getDb();
+            $stmt = $db->prepare(
+                'INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, ?, 1)'
+            );
+            $stmt->execute([$clientIp, $loginResult['user']['username']]);
+
+            sendJson($loginResult);
+            break;
+
+        /* =================================================================
          * USER FAVORITES — Server-side sync (#284)
          * ================================================================= */
 

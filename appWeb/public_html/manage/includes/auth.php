@@ -589,3 +589,227 @@ function getUserById(int $userId): ?array
     $stmt->execute([$userId]);
     return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
 }
+
+/* =========================================================================
+ * EMAIL LOGIN (MAGIC LINK / CODE) — Passwordless Authentication
+ *
+ * Supports two verification modes:
+ *   1. Magic link: email contains a URL with ?token=<48-char hex>
+ *   2. Code entry: email contains a 6-digit code the user enters manually
+ * Both expire after 10 minutes and are single-use.
+ * ========================================================================= */
+
+/**
+ * Generate an email login token and 6-digit code for a given email address.
+ *
+ * If the email matches an existing user, the token is linked to that user.
+ * Rate-limited: max 5 requests per email per hour.
+ *
+ * @param string $email    The email address to send the login link/code to
+ * @param string $clientIp The requesting IP address (for rate limiting)
+ * @return array{token: string, code: string, userId: int|null, isNewUser: bool}|null
+ *               Null if rate-limited or email is invalid
+ */
+function generateEmailLoginToken(string $email, string $clientIp = ''): ?array
+{
+    $email = mb_strtolower(trim($email));
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        return null;
+    }
+
+    $db = getDb();
+
+    /* Rate limit: max 5 requests per email per hour */
+    $stmt = $db->prepare(
+        'SELECT COUNT(*) FROM tblEmailLoginTokens
+         WHERE Email = ? AND CreatedAt > DATE_SUB(NOW(), INTERVAL 1 HOUR)'
+    );
+    $stmt->execute([$email]);
+    if ((int)$stmt->fetchColumn() >= 5) {
+        return null; /* Rate limited */
+    }
+
+    /* Check if user already exists with this email */
+    $stmt = $db->prepare('SELECT Id FROM tblUsers WHERE Email = ? AND IsActive = 1');
+    $stmt->execute([$email]);
+    $existingUser = $stmt->fetch(PDO::FETCH_ASSOC);
+    $userId = $existingUser ? (int)$existingUser['Id'] : null;
+
+    /* Generate token (48-char hex) and code (6-digit numeric) */
+    $token = bin2hex(random_bytes(24));
+    $code  = str_pad((string)random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+    $expiresAt = gmdate('c', time() + 600); /* 10 minutes */
+
+    /* Invalidate any previous unused tokens for this email */
+    $stmt = $db->prepare(
+        'UPDATE tblEmailLoginTokens SET Used = 1 WHERE Email = ? AND Used = 0'
+    );
+    $stmt->execute([$email]);
+
+    /* Insert new token */
+    $stmt = $db->prepare(
+        'INSERT INTO tblEmailLoginTokens (Email, UserId, Token, Code, ExpiresAt, IpAddress)
+         VALUES (?, ?, ?, ?, ?, ?)'
+    );
+    $stmt->execute([$email, $userId, $token, $code, $expiresAt, $clientIp]);
+
+    return [
+        'token'     => $token,
+        'code'      => $code,
+        'userId'    => $userId,
+        'isNewUser' => ($userId === null),
+    ];
+}
+
+/**
+ * Verify an email login token (magic link mode).
+ *
+ * @param string $token The 48-char hex token from the magic link
+ * @return array{userId: int|null, email: string}|null Null if invalid/expired
+ */
+function verifyEmailLoginToken(string $token): ?array
+{
+    $token = trim($token);
+    if ($token === '' || strlen($token) > 64) {
+        return null;
+    }
+
+    $db = getDb();
+    $stmt = $db->prepare(
+        'SELECT Id, Email, UserId FROM tblEmailLoginTokens
+         WHERE Token = ? AND Used = 0 AND ExpiresAt > NOW()'
+    );
+    $stmt->execute([$token]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$row) {
+        return null;
+    }
+
+    /* Mark as used */
+    $stmt = $db->prepare('UPDATE tblEmailLoginTokens SET Used = 1 WHERE Id = ?');
+    $stmt->execute([$row['Id']]);
+
+    return [
+        'userId' => $row['UserId'] ? (int)$row['UserId'] : null,
+        'email'  => $row['Email'],
+    ];
+}
+
+/**
+ * Verify an email login code (manual code entry mode).
+ *
+ * @param string $email The email address the code was sent to
+ * @param string $code  The 6-digit code entered by the user
+ * @return array{userId: int|null, email: string}|null Null if invalid/expired
+ */
+function verifyEmailLoginCode(string $email, string $code): ?array
+{
+    $email = mb_strtolower(trim($email));
+    $code  = trim($code);
+
+    if ($email === '' || $code === '' || !preg_match('/^\d{6}$/', $code)) {
+        return null;
+    }
+
+    $db = getDb();
+    $stmt = $db->prepare(
+        'SELECT Id, Email, UserId FROM tblEmailLoginTokens
+         WHERE Email = ? AND Code = ? AND Used = 0 AND ExpiresAt > NOW()
+         ORDER BY CreatedAt DESC LIMIT 1'
+    );
+    $stmt->execute([$email, $code]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$row) {
+        return null;
+    }
+
+    /* Mark as used */
+    $stmt = $db->prepare('UPDATE tblEmailLoginTokens SET Used = 1 WHERE Id = ?');
+    $stmt->execute([$row['Id']]);
+
+    return [
+        'userId' => $row['UserId'] ? (int)$row['UserId'] : null,
+        'email'  => $row['Email'],
+    ];
+}
+
+/**
+ * Complete the email login flow: find or create the user, mark email as
+ * verified, update login stats, and generate a bearer token.
+ *
+ * @param string   $email  Verified email address
+ * @param int|null $userId Existing user ID (null if new user)
+ * @return array{token: string, user: array} Bearer token and user info
+ */
+function completeEmailLogin(string $email, ?int $userId): array
+{
+    $db = getDb();
+
+    if ($userId === null) {
+        /* Create a new user from the email address */
+        $username = strstr($email, '@', true); /* Part before @ */
+        $username = preg_replace('/[^a-z0-9_.\-]/', '', mb_strtolower($username));
+        if (strlen($username) < 3) {
+            $username = 'user_' . bin2hex(random_bytes(3));
+        }
+
+        /* Ensure username uniqueness */
+        $baseUsername = $username;
+        $counter = 1;
+        while (true) {
+            $stmt = $db->prepare('SELECT COUNT(*) FROM tblUsers WHERE Username = ?');
+            $stmt->execute([$username]);
+            if ((int)$stmt->fetchColumn() === 0) break;
+            $username = $baseUsername . $counter;
+            $counter++;
+        }
+
+        /* First user gets global_admin, others get user */
+        $stmt = $db->query('SELECT COUNT(*) FROM tblUsers');
+        $role = ((int)$stmt->fetchColumn() === 0) ? 'global_admin' : 'user';
+
+        $displayName = ucfirst($baseUsername);
+        $stmt = $db->prepare(
+            'INSERT INTO tblUsers (Username, Email, EmailVerified, PasswordHash, DisplayName, Role)
+             VALUES (?, ?, 1, ?, ?, ?)'
+        );
+        $stmt->execute([$username, $email, '', $displayName, $role]);
+        $userId = (int)$db->lastInsertId();
+    } else {
+        /* Existing user — mark email as verified */
+        $stmt = $db->prepare('UPDATE tblUsers SET EmailVerified = 1 WHERE Id = ?');
+        $stmt->execute([$userId]);
+    }
+
+    /* Update login stats */
+    $stmt = $db->prepare(
+        'UPDATE tblUsers SET LastLoginAt = NOW(), LoginCount = LoginCount + 1 WHERE Id = ?'
+    );
+    $stmt->execute([$userId]);
+
+    /* Fetch user record */
+    $stmt = $db->prepare(
+        'SELECT Id, Username, DisplayName, Email, Role FROM tblUsers WHERE Id = ?'
+    );
+    $stmt->execute([$userId]);
+    $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    /* Generate API bearer token (30-day expiry) */
+    $token = bin2hex(random_bytes(32));
+    $expiresAt = gmdate('c', time() + 30 * 86400);
+    $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
+    $stmt->execute([$token, $userId, $expiresAt]);
+
+    return [
+        'token' => $token,
+        'user'  => [
+            'id'           => (int)$user['Id'],
+            'username'     => $user['Username'],
+            'display_name' => $user['DisplayName'],
+            'email'        => $user['Email'],
+            'role'         => $user['Role'],
+        ],
+    ];
+}

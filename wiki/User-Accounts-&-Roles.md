@@ -61,7 +61,7 @@ The `user_permissions` table allows fine-grained overrides per user:
 
 ---
 
-## Two Authentication Systems
+## Three Authentication Methods
 
 iHymns has two separate authentication systems for different use cases:
 
@@ -95,6 +95,22 @@ Used by: PWA frontend, native iOS/Android apps
 
 **API Endpoints:** See [[API Reference]] for full details.
 
+### 3. Email Login (Passwordless Magic Link / Code)
+
+Used by: PWA and native apps as an alternative to password login
+
+| Property | Detail |
+| --- | --- |
+| Mechanism | Time-limited token (magic link) or 6-digit code sent via email |
+| Token format | 48-character hex (24 random bytes) for links |
+| Code format | 6-digit zero-padded numeric code for manual entry |
+| Expiry | 10 minutes |
+| Single-use | Yes (marked `Used` after verification) |
+| Rate limit | 5 requests per email per hour |
+| Auto-create | New account auto-created if email not found |
+
+**API Endpoints:** See [[API Reference]] for full details.
+
 ---
 
 ## Authentication Flows
@@ -122,6 +138,37 @@ User enters credentials → POST auth_login
     ├── Check is_active flag
     ├── Generate new bearer token
     └── Return { token, user: { id, username, display_name, role } }
+```
+
+### Email Login Flow (Passwordless)
+
+```text
+1. User enters email → POST auth_email_login_request
+    ├── Validate email format
+    ├── Rate limit check (5 per email per hour)
+    ├── Look up user by email (may not exist yet)
+    ├── Generate 48-char hex token + 6-digit code (10-min expiry)
+    ├── Invalidate any previous unused tokens for this email
+    ├── Send email with magic link + code (TODO: email delivery)
+    └── Return 200 (always, to prevent email enumeration)
+
+2a. User clicks magic link → POST auth_email_login_verify { token }
+    ├── Validate token (exists, not expired, not used)
+    ├── Mark token as used
+    └── → Complete login (step 3)
+
+2b. User enters code → POST auth_email_login_verify { email, code }
+    ├── Validate code (matches email, not expired, not used)
+    ├── Mark token as used
+    └── → Complete login (step 3)
+
+3. Complete login:
+    ├── If email has existing account → use that account
+    ├── If email is new → auto-create account (username from email prefix)
+    ├── Mark email as verified (EmailVerified = 1)
+    ├── Update LastLoginAt + LoginCount
+    ├── Generate bearer token (64 hex, 30-day expiry)
+    └── Return { token, user: { id, username, display_name, email, role } }
 ```
 
 ### Password Reset Flow
