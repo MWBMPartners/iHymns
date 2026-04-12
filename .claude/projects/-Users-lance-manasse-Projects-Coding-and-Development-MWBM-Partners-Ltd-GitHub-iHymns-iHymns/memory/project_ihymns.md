@@ -61,7 +61,7 @@ type: project
 
 **Key PHP Files:**
 - `index.php` — Main SPA shell, CSP headers, OG meta tags, conditional analytics, Android Smart App Banner
-- `api.php` — AJAX router (pages + JSON actions + user auth + setlist sync)
+- `api.php` — Comprehensive API (30+ endpoints: songs, auth, favorites, setlists, song requests, languages, translations, user access, admin management, activity log)
 - `includes/db_mysql.php` — MySQLi singleton connection factory
 - `includes/SongData.php` — MySQL-backed song data handler with prepared statements
 - `includes/config.php` — App configuration including analytics platform IDs

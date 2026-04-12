@@ -922,6 +922,692 @@ if ($action !== null) {
             }
             break;
 
+        /* =================================================================
+         * USER FAVORITES — Server-side sync (#284)
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Get all favorites for the authenticated user
+         * Requires: Authorization: Bearer <token>
+         * ----------------------------------------------------------------- */
+        case 'favorites':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->prepare(
+                'SELECT SongId FROM tblUserFavorites WHERE UserId = ? ORDER BY CreatedAt DESC'
+            );
+            $stmt->execute([$authUser['Id']]);
+            $rows = $stmt->fetchAll(PDO::FETCH_COLUMN);
+
+            sendJson(['favorites' => $rows]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Sync favorites: merge local favorites with server storage
+         *
+         * POST body (JSON): { "favorites": ["CP-0001", "MP-0042", ...] }
+         * Returns: { "favorites": [...merged...] }
+         * Requires: Authorization: Bearer <token>
+         * ----------------------------------------------------------------- */
+        case 'favorites_sync':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            if (!is_array($body['favorites'] ?? null)) {
+                sendJson(['error' => 'Invalid request. Required: favorites (array of song IDs).'], 400);
+                break;
+            }
+
+            $db = getDb();
+            $userId = $authUser['Id'];
+
+            /* Sanitise incoming song IDs */
+            $localFavs = array_values(array_filter(
+                array_map('trim', $body['favorites']),
+                fn($s) => preg_match('/^[A-Za-z]+-\d+$/', $s)
+            ));
+
+            /* Cap at 500 favorites */
+            $localFavs = array_slice($localFavs, 0, 500);
+
+            /* Get existing server favorites */
+            $stmt = $db->prepare('SELECT SongId FROM tblUserFavorites WHERE UserId = ?');
+            $stmt->execute([$userId]);
+            $serverFavs = $stmt->fetchAll(PDO::FETCH_COLUMN);
+
+            /* Merge: union of local and server */
+            $merged = array_unique(array_merge($serverFavs, $localFavs));
+
+            /* Insert any new favorites (ignore duplicates) */
+            $insert = $db->prepare(
+                'INSERT IGNORE INTO tblUserFavorites (UserId, SongId) VALUES (?, ?)'
+            );
+            foreach ($localFavs as $songId) {
+                $insert->execute([$userId, $songId]);
+            }
+
+            /* Return merged list */
+            $stmt = $db->prepare(
+                'SELECT SongId FROM tblUserFavorites WHERE UserId = ? ORDER BY CreatedAt DESC'
+            );
+            $stmt->execute([$userId]);
+            $finalFavs = $stmt->fetchAll(PDO::FETCH_COLUMN);
+
+            sendJson(['favorites' => $finalFavs]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Remove a song from favorites
+         *
+         * POST body (JSON): { "song_id": "CP-0001" }
+         * Requires: Authorization: Bearer <token>
+         * ----------------------------------------------------------------- */
+        case 'favorites_remove':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+            $removeSongId = trim($body['song_id'] ?? '');
+
+            if (!preg_match('/^[A-Za-z]+-\d+$/', $removeSongId)) {
+                sendJson(['error' => 'Invalid song ID.'], 400);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->prepare('DELETE FROM tblUserFavorites WHERE UserId = ? AND SongId = ?');
+            $stmt->execute([$authUser['Id'], $removeSongId]);
+
+            sendJson(['ok' => true]);
+            break;
+
+        /* =================================================================
+         * SONG REQUESTS — Community submissions (#280)
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Submit a song request (available to all users)
+         *
+         * POST body (JSON):
+         *   { "title": "...", "songbook": "...", "song_number": "...",
+         *     "language": "en", "details": "...", "contact_email": "..." }
+         * ----------------------------------------------------------------- */
+        case 'song_request':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $db = getDb();
+
+            /* Check if song requests are enabled */
+            $stmt = $db->prepare('SELECT SettingValue FROM tblAppSettings WHERE SettingKey = ?');
+            $stmt->execute(['song_requests_enabled']);
+            $enabled = $stmt->fetchColumn();
+            if ($enabled === '0') {
+                sendJson(['error' => 'Song requests are currently disabled.'], 403);
+                break;
+            }
+
+            /* Rate limiting by IP */
+            $clientIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            $stmt = $db->prepare('SELECT SettingValue FROM tblAppSettings WHERE SettingKey = ?');
+            $stmt->execute(['max_song_requests_per_day']);
+            $maxPerDay = (int)($stmt->fetchColumn() ?: 5);
+
+            $stmt = $db->prepare(
+                'SELECT COUNT(*) FROM tblSongRequests
+                 WHERE IpAddress = ? AND CreatedAt > DATE_SUB(NOW(), INTERVAL 1 DAY)'
+            );
+            $stmt->execute([$clientIp]);
+            if ((int)$stmt->fetchColumn() >= $maxPerDay) {
+                sendJson(['error' => 'Rate limit exceeded. Maximum ' . $maxPerDay . ' requests per day.'], 429);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            $reqTitle    = mb_substr(trim($body['title'] ?? ''), 0, 500);
+            $reqSongbook = mb_substr(trim($body['songbook'] ?? ''), 0, 100);
+            $reqNumber   = mb_substr(trim($body['song_number'] ?? ''), 0, 20);
+            $reqLanguage = mb_substr(trim($body['language'] ?? 'en'), 0, 10);
+            $reqDetails  = mb_substr(trim($body['details'] ?? ''), 0, 2000);
+            $reqEmail    = mb_substr(trim($body['contact_email'] ?? ''), 0, 255);
+
+            if ($reqTitle === '') {
+                sendJson(['error' => 'Song title is required.'], 400);
+                break;
+            }
+
+            /* Validate email format if provided */
+            if ($reqEmail !== '' && !filter_var($reqEmail, FILTER_VALIDATE_EMAIL)) {
+                sendJson(['error' => 'Invalid email address.'], 400);
+                break;
+            }
+
+            /* Get authenticated user ID if available */
+            $authUser = getAuthenticatedUser();
+            $reqUserId = $authUser ? $authUser['Id'] : null;
+
+            $stmt = $db->prepare(
+                'INSERT INTO tblSongRequests
+                 (Title, Songbook, SongNumber, Language, Details, ContactEmail, UserId, IpAddress, Status)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            );
+            $status = 'pending';
+            $stmt->execute([
+                $reqTitle, $reqSongbook, $reqNumber, $reqLanguage,
+                $reqDetails, $reqEmail, $reqUserId, $clientIp, $status
+            ]);
+            $requestId = (int)$db->lastInsertId();
+
+            sendJson(['ok' => true, 'id' => $requestId], 201);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Get the authenticated user's submitted song requests
+         * Requires: Authorization: Bearer <token>
+         * ----------------------------------------------------------------- */
+        case 'my_song_requests':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->prepare(
+                'SELECT Id AS id, Title AS title, Songbook AS songbook,
+                        SongNumber AS songNumber, Language AS language,
+                        Details AS details, Status AS status,
+                        ResolvedSongId AS resolvedSongId,
+                        CreatedAt AS createdAt, UpdatedAt AS updatedAt
+                 FROM tblSongRequests
+                 WHERE UserId = ?
+                 ORDER BY CreatedAt DESC'
+            );
+            $stmt->execute([$authUser['Id']]);
+            $requests = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            sendJson(['requests' => $requests]);
+            break;
+
+        /* =================================================================
+         * LANGUAGES & TRANSLATIONS (#281)
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Get all available languages
+         * ----------------------------------------------------------------- */
+        case 'languages':
+            $db = getDb();
+            $stmt = $db->query(
+                'SELECT Code AS code, Name AS name, NativeName AS nativeName,
+                        TextDirection AS textDirection
+                 FROM tblLanguages
+                 WHERE IsActive = 1
+                 ORDER BY Name ASC'
+            );
+            $languages = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            sendJson(['languages' => $languages]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Get translations for a specific song
+         * Parameters: id (required) — source song ID
+         * ----------------------------------------------------------------- */
+        case 'song_translations':
+            $translationSongId = isset($_GET['id']) ? trim($_GET['id']) : '';
+            if ($translationSongId === '') {
+                sendJson(['error' => 'Song ID is required.'], 400);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->prepare(
+                'SELECT t.TranslatedSongId AS songId, t.TargetLanguage AS language,
+                        t.Translator AS translator, t.Verified AS verified,
+                        l.Name AS languageName, l.NativeName AS languageNativeName,
+                        s.Title AS title, s.Number AS number
+                 FROM tblSongTranslations t
+                 JOIN tblLanguages l ON l.Code = t.TargetLanguage
+                 JOIN tblSongs s ON s.SongId = t.TranslatedSongId
+                 WHERE t.SourceSongId = ?
+                 ORDER BY l.Name ASC'
+            );
+            $stmt->execute([$translationSongId]);
+            $translations = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            foreach ($translations as &$tr) {
+                $tr['verified'] = (bool)$tr['verified'];
+                $tr['number'] = (int)$tr['number'];
+            }
+            unset($tr);
+
+            sendJson(['translations' => $translations, 'sourceId' => $translationSongId]);
+            break;
+
+        /* =================================================================
+         * USER GROUPS & VERSION ACCESS (#282)
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Get the authenticated user's group info and access level
+         * Requires: Authorization: Bearer <token>
+         * ----------------------------------------------------------------- */
+        case 'user_access':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $db = getDb();
+
+            /* Get all groups the user belongs to (primary + additional) */
+            $stmt = $db->prepare(
+                'SELECT g.Id AS id, g.Name AS name,
+                        g.AccessAlpha AS accessAlpha, g.AccessBeta AS accessBeta,
+                        g.AccessRc AS accessRc, g.AccessRtw AS accessRtw
+                 FROM tblUserGroups g
+                 WHERE g.Id = (SELECT GroupId FROM tblUsers WHERE Id = ?)
+                 UNION
+                 SELECT g.Id AS id, g.Name AS name,
+                        g.AccessAlpha AS accessAlpha, g.AccessBeta AS accessBeta,
+                        g.AccessRc AS accessRc, g.AccessRtw AS accessRtw
+                 FROM tblUserGroups g
+                 JOIN tblUserGroupMembers m ON m.GroupId = g.Id
+                 WHERE m.UserId = ?'
+            );
+            $stmt->execute([$authUser['Id'], $authUser['Id']]);
+            $groups = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            /* Compute effective access (union of all group permissions) */
+            $access = ['alpha' => false, 'beta' => false, 'rc' => false, 'rtw' => false];
+            foreach ($groups as &$g) {
+                $g['accessAlpha'] = (bool)$g['accessAlpha'];
+                $g['accessBeta']  = (bool)$g['accessBeta'];
+                $g['accessRc']    = (bool)$g['accessRc'];
+                $g['accessRtw']   = (bool)$g['accessRtw'];
+                if ($g['accessAlpha']) $access['alpha'] = true;
+                if ($g['accessBeta'])  $access['beta']  = true;
+                if ($g['accessRc'])    $access['rc']    = true;
+                if ($g['accessRtw'])   $access['rtw']   = true;
+            }
+            unset($g);
+
+            sendJson([
+                'groups'         => $groups,
+                'effectiveAccess' => $access,
+                'role'           => $authUser['Role'],
+            ]);
+            break;
+
+        /* =================================================================
+         * APP STATUS & SETTINGS
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Get public app status (maintenance mode, feature flags)
+         * No authentication required — used by PWA on startup
+         * ----------------------------------------------------------------- */
+        case 'app_status':
+            $db = getDb();
+            $stmt = $db->query(
+                'SELECT SettingKey, SettingValue FROM tblAppSettings'
+            );
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $settings = [];
+            foreach ($rows as $row) {
+                $settings[$row['SettingKey']] = $row['SettingValue'];
+            }
+
+            sendJson([
+                'maintenance'        => ($settings['maintenance_mode'] ?? '0') === '1',
+                'songRequestsEnabled' => ($settings['song_requests_enabled'] ?? '1') === '1',
+            ]);
+            break;
+
+        /* =================================================================
+         * USER PROFILE UPDATE
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Update authenticated user's profile
+         *
+         * POST body (JSON):
+         *   { "display_name": "...", "email": "..." }
+         * Requires: Authorization: Bearer <token>
+         * ----------------------------------------------------------------- */
+        case 'auth_update_profile':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            $newDisplayName = mb_substr(trim($body['display_name'] ?? ''), 0, 100);
+            $newEmail       = mb_substr(trim($body['email'] ?? ''), 0, 255);
+
+            if ($newDisplayName === '') {
+                sendJson(['error' => 'Display name cannot be empty.'], 400);
+                break;
+            }
+            if ($newEmail !== '' && !filter_var($newEmail, FILTER_VALIDATE_EMAIL)) {
+                sendJson(['error' => 'Invalid email address.'], 400);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->prepare(
+                'UPDATE tblUsers SET DisplayName = ?, Email = ?, UpdatedAt = NOW() WHERE Id = ?'
+            );
+            $stmt->execute([$newDisplayName, $newEmail, $authUser['Id']]);
+
+            sendJson([
+                'ok'   => true,
+                'user' => [
+                    'id'           => $authUser['Id'],
+                    'username'     => $authUser['Username'],
+                    'display_name' => $newDisplayName,
+                    'email'        => $newEmail,
+                    'role'         => $authUser['Role'],
+                ],
+            ]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Change authenticated user's password
+         *
+         * POST body (JSON):
+         *   { "current_password": "...", "new_password": "..." }
+         * Requires: Authorization: Bearer <token>
+         * ----------------------------------------------------------------- */
+        case 'auth_change_password':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            $currentPw = $body['current_password'] ?? '';
+            $newPw     = $body['new_password'] ?? '';
+
+            if (strlen($newPw) < 8) {
+                sendJson(['error' => 'New password must be at least 8 characters.'], 400);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->prepare('SELECT PasswordHash FROM tblUsers WHERE Id = ?');
+            $stmt->execute([$authUser['Id']]);
+            $hash = $stmt->fetchColumn();
+
+            if (!password_verify($currentPw, $hash)) {
+                sendJson(['error' => 'Current password is incorrect.'], 401);
+                break;
+            }
+
+            $newHash = password_hash($newPw, PASSWORD_BCRYPT, ['cost' => 12]);
+            $stmt = $db->prepare('UPDATE tblUsers SET PasswordHash = ?, UpdatedAt = NOW() WHERE Id = ?');
+            $stmt->execute([$newHash, $authUser['Id']]);
+
+            /* Invalidate all OTHER tokens (keep the current one) */
+            $currentToken = getAuthBearerToken();
+            $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ? AND Token != ?');
+            $stmt->execute([$authUser['Id'], $currentToken]);
+
+            sendJson(['ok' => true, 'message' => 'Password changed successfully.']);
+            break;
+
+        /* =================================================================
+         * ADMIN USER MANAGEMENT — API endpoints for /manage/ panel
+         * Requires: admin+ role via Bearer token
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * List all users (admin+ only)
+         * ----------------------------------------------------------------- */
+        case 'admin_users':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->query(
+                'SELECT u.Id AS id, u.Username AS username, u.Email AS email,
+                        u.DisplayName AS display_name, u.Role AS role,
+                        u.IsActive AS is_active, u.CreatedAt AS created_at,
+                        g.Name AS group_name
+                 FROM tblUsers u
+                 LEFT JOIN tblUserGroups g ON g.Id = u.GroupId
+                 ORDER BY u.CreatedAt ASC'
+            );
+            $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($users as &$u) {
+                $u['id'] = (int)$u['id'];
+                $u['is_active'] = (bool)$u['is_active'];
+            }
+            unset($u);
+
+            sendJson(['users' => $users]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * List all user groups (admin+ only)
+         * ----------------------------------------------------------------- */
+        case 'admin_groups':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->query(
+                'SELECT Id AS id, Name AS name, Description AS description,
+                        AccessAlpha AS accessAlpha, AccessBeta AS accessBeta,
+                        AccessRc AS accessRc, AccessRtw AS accessRtw
+                 FROM tblUserGroups
+                 ORDER BY Name ASC'
+            );
+            $groups = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($groups as &$g) {
+                $g['id'] = (int)$g['id'];
+                $g['accessAlpha'] = (bool)$g['accessAlpha'];
+                $g['accessBeta']  = (bool)$g['accessBeta'];
+                $g['accessRc']    = (bool)$g['accessRc'];
+                $g['accessRtw']   = (bool)$g['accessRtw'];
+            }
+            unset($g);
+
+            sendJson(['groups' => $groups]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Get activity log (admin+ only)
+         * Parameters: limit (default 50), offset (default 0),
+         *             action (optional filter), user_id (optional filter)
+         * ----------------------------------------------------------------- */
+        case 'admin_activity_log':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDb();
+            $logLimit  = min((int)($_GET['limit'] ?? 50), 200);
+            $logOffset = max((int)($_GET['offset'] ?? 0), 0);
+
+            $where = [];
+            $params = [];
+
+            if (!empty($_GET['action_filter'])) {
+                $where[] = 'a.Action = ?';
+                $params[] = trim($_GET['action_filter']);
+            }
+            if (!empty($_GET['user_id'])) {
+                $where[] = 'a.UserId = ?';
+                $params[] = (int)$_GET['user_id'];
+            }
+
+            $whereClause = !empty($where) ? 'WHERE ' . implode(' AND ', $where) : '';
+            $params[] = $logLimit;
+            $params[] = $logOffset;
+
+            $stmt = $db->prepare(
+                "SELECT a.Id AS id, a.Action AS action, a.EntityType AS entityType,
+                        a.EntityId AS entityId, a.Details AS details,
+                        a.IpAddress AS ipAddress, a.CreatedAt AS createdAt,
+                        u.Username AS username
+                 FROM tblActivityLog a
+                 LEFT JOIN tblUsers u ON u.Id = a.UserId
+                 {$whereClause}
+                 ORDER BY a.CreatedAt DESC
+                 LIMIT ? OFFSET ?"
+            );
+            $stmt->execute($params);
+            $entries = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            foreach ($entries as &$e) {
+                $e['id'] = (int)$e['id'];
+                if ($e['details'] !== null) {
+                    $e['details'] = json_decode($e['details'], true);
+                }
+            }
+            unset($e);
+
+            sendJson(['entries' => $entries, 'limit' => $logLimit, 'offset' => $logOffset]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Get all song requests (admin/editor+ only)
+         * Parameters: status (optional filter: pending/reviewed/added/declined)
+         * ----------------------------------------------------------------- */
+        case 'admin_song_requests':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['editor', 'admin', 'global_admin'])) {
+                sendJson(['error' => 'Editor access required.'], 403);
+                break;
+            }
+
+            $db = getDb();
+            $params = [];
+            $where = '';
+
+            if (!empty($_GET['status'])) {
+                $where = 'WHERE r.Status = ?';
+                $params[] = trim($_GET['status']);
+            }
+
+            $stmt = $db->prepare(
+                "SELECT r.Id AS id, r.Title AS title, r.Songbook AS songbook,
+                        r.SongNumber AS songNumber, r.Language AS language,
+                        r.Details AS details, r.ContactEmail AS contactEmail,
+                        r.Status AS status, r.AdminNotes AS adminNotes,
+                        r.ResolvedSongId AS resolvedSongId,
+                        r.CreatedAt AS createdAt, r.UpdatedAt AS updatedAt,
+                        u.Username AS submittedBy
+                 FROM tblSongRequests r
+                 LEFT JOIN tblUsers u ON u.Id = r.UserId
+                 {$where}
+                 ORDER BY r.CreatedAt DESC
+                 LIMIT 200"
+            );
+            $stmt->execute($params);
+            $requests = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            sendJson(['requests' => $requests]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Update a song request status (admin/editor+ only)
+         *
+         * POST body (JSON):
+         *   { "id": 123, "status": "reviewed", "admin_notes": "..." }
+         * ----------------------------------------------------------------- */
+        case 'admin_song_request_update':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['editor', 'admin', 'global_admin'])) {
+                sendJson(['error' => 'Editor access required.'], 403);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            $reqId     = (int)($body['id'] ?? 0);
+            $newStatus = trim($body['status'] ?? '');
+            $notes     = trim($body['admin_notes'] ?? '');
+            $resolved  = trim($body['resolved_song_id'] ?? '');
+
+            if ($reqId <= 0 || !in_array($newStatus, ['pending', 'reviewed', 'added', 'declined'])) {
+                sendJson(['error' => 'Valid id and status (pending/reviewed/added/declined) required.'], 400);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->prepare(
+                'UPDATE tblSongRequests
+                 SET Status = ?, AdminNotes = ?, ResolvedSongId = ?, UpdatedAt = NOW()
+                 WHERE Id = ?'
+            );
+            $stmt->execute([$newStatus, $notes, $resolved ?: null, $reqId]);
+
+            sendJson(['ok' => true]);
+            break;
+
         /* -----------------------------------------------------------------
          * Unknown action
          * ----------------------------------------------------------------- */

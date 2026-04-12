@@ -12,9 +12,14 @@ All API requests go through `api.php`. There are two request types:
 - **Action requests** (`?action=...`) — return JSON data
 
 All JSON responses include:
+
 - `Content-Type: application/json; charset=UTF-8`
 - `X-Content-Type-Options: nosniff`
 - `Cache-Control: no-cache, must-revalidate`
+
+### Authentication
+
+Authenticated endpoints require a `Authorization: Bearer <token>` header. Tokens are 64-character hex strings obtained via `auth_login` or `auth_register`.
 
 ---
 
@@ -23,7 +28,7 @@ All JSON responses include:
 These return HTML fragments loaded into the SPA content area.
 
 | Parameter | Description |
-|---|---|
+| --- | --- |
 | `?page=home` | Home page |
 | `?page=songbooks` | Songbook grid |
 | `?page=songbook&id=CP` | Song list for songbook |
@@ -43,342 +48,356 @@ These return HTML fragments loaded into the SPA content area.
 
 ## Song Data Endpoints
 
-### `GET ?action=search`
+### `?action=search`
 
-Full-text fuzzy search across all fields.
+Full-text search across titles, lyrics, writers, and composers.
 
-| Parameter | Required | Description |
-|---|---|---|
-| `q` | Yes | Search query string |
-| `songbook` | No | Filter by songbook abbreviation |
+| Param | Required | Description |
+| --- | --- | --- |
+| `q` | Yes | Search query |
+| `songbook` | No | Filter by songbook |
 | `limit` | No | Max results (default: 50) |
 
-**Response:**
-```json
-{
-  "results": [{ "id": "MP-0001", "number": 1, "title": "...", "songbook": "MP", ... }],
-  "total": 42,
-  "query": "amazing grace"
-}
-```
+**Response:** `{ results: [songSummary], total, query }`
 
-### `GET ?action=search_num`
+### `?action=search_num`
 
 Search by song number within a songbook.
 
-| Parameter | Required | Description |
-|---|---|---|
+| Param | Required | Description |
+| --- | --- | --- |
 | `songbook` | Yes | Songbook abbreviation |
-| `number` | Yes | Song number |
+| `number` | Yes | Partial or full number |
 
-### `GET ?action=random`
+**Response:** `{ results: [songSummary], total }`
+
+### `?action=song_data`
+
+Get full song data including lyrics components.
+
+| Param | Required | Description |
+| --- | --- | --- |
+| `id` | Yes | Song ID (e.g., CP-0001) |
+
+**Response:** `{ song: { id, number, title, songbook, songbookName, writers[], composers[], components[], ... } }`
+
+### `?action=random`
 
 Get a random song.
 
-| Parameter | Required | Description |
-|---|---|---|
+| Param | Required | Description |
+| --- | --- | --- |
+| `songbook` | No | Limit to songbook |
+
+**Response:** `{ song: {...} }`
+
+### `?action=songbooks`
+
+Get all songbooks.
+
+**Response:** `{ songbooks: [{ id, name, songCount }] }`
+
+### `?action=songs`
+
+Get all songs (summary format).
+
+| Param | Required | Description |
+| --- | --- | --- |
 | `songbook` | No | Filter by songbook |
 
-**Response:**
-```json
-{ "song": { "id": "...", "title": "...", "components": [...], ... } }
-```
+**Response:** `{ songs: [songSummary], total }`
 
-### `GET ?action=song_data&id=CP-0001`
+### `?action=stats`
 
-Get full song data including lyrics/components.
+Collection statistics.
 
-### `GET ?action=songbooks`
+**Response:** `{ totalSongs, totalSongbooks, songbooks: [{ id, name, songCount }] }`
 
-Get all songbooks with metadata.
+### `?action=songs_json`
 
-### `GET ?action=songs`
+Export full song database as JSON (for PWA offline cache / Fuse.js). Includes ETag caching.
 
-Get song list (summaries only, no lyrics).
+**Response:** Full `{ meta, songbooks, songs }` structure.
 
-| Parameter | Required | Description |
-|---|---|---|
-| `songbook` | No | Filter by songbook |
+### `?action=missing_songs`
 
-### `GET ?action=stats`
+Find missing song numbers in a songbook. (#285)
 
-Get collection statistics (song counts, songbook breakdown).
+| Param | Required | Description |
+| --- | --- | --- |
+| `songbook` | Yes | Songbook abbreviation |
 
-### `GET ?action=songs_json`
-
-Stream the full `songs.json` file. Supports `ETag` and `If-Modified-Since` for conditional caching.
+**Response:** `{ missing: [int], maxNumber, totalExisting, songbook }`
 
 ---
 
-## Shared Setlist Endpoints
+## Language & Translation Endpoints
 
-### `POST ?action=setlist_share`
+### `?action=languages`
 
-Create or update a shared setlist.
+Get all available languages.
 
-**Request body (JSON):**
+**Response:** `{ languages: [{ code, name, nativeName, textDirection }] }`
+
+### `?action=song_translations`
+
+Get translations available for a specific song. (#281)
+
+| Param | Required | Description |
+| --- | --- | --- |
+| `id` | Yes | Source song ID |
+
+**Response:** `{ translations: [{ songId, language, languageName, languageNativeName, title, number, translator, verified }], sourceId }`
+
+---
+
+## Setlist Sharing Endpoints
+
+### `?action=setlist_share` (POST)
+
+Create or update a shared setlist (anonymous, file-based).
+
+**Body:** `{ name, songs: [songId], owner: uuid, arrangements?: {}, id?: existingId }`
+
+**Response:** `{ id, url }`
+
+### `?action=setlist_get`
+
+Retrieve a shared setlist by short ID.
+
+| Param | Required | Description |
+| --- | --- | --- |
+| `id` | Yes | 8-char hex setlist ID |
+
+**Response:** `{ id, name, songs, created, updated, arrangements? }`
+
+---
+
+## Song Request Endpoints
+
+### `?action=song_request` (POST)
+
+Submit a song request (available to all users). (#280)
+
+**Body:**
+
 ```json
 {
-  "name": "Sunday Service",
-  "songs": ["MP-0001", "CP-0042"],
-  "owner": "uuid-string",
-  "id": "abc12345",
-  "arrangements": {
-    "MP-0001": [0, 2, 1, 2]
-  }
+  "title": "Amazing Grace",
+  "songbook": "MP",
+  "song_number": "123",
+  "language": "en",
+  "details": "First line: Amazing grace how sweet...",
+  "contact_email": "user@example.com"
 }
 ```
 
-| Field | Required | Description |
-|---|---|---|
-| `name` | Yes | Setlist name (max 200 chars) |
-| `songs` | Yes | Array of song IDs (max 200) |
-| `owner` | Yes | Owner UUID (for ownership verification) |
-| `id` | No | Existing share ID (for updates) |
-| `arrangements` | No | Map of song ID to component index arrays |
+Only `title` is required. Rate-limited per IP (configurable via `tblAppSettings`).
 
-**Response:**
-```json
-{ "id": "abc12345", "url": "/setlist/shared/abc12345" }
-```
+**Response:** `{ ok: true, id: 42 }` (201)
 
-### `GET ?action=setlist_get&id=abc12345`
+### `?action=my_song_requests`
 
-Retrieve a shared setlist by its 8-character hex ID.
+Get the authenticated user's submitted song requests. Requires: Bearer token.
 
-**Response:**
-```json
-{
-  "id": "abc12345",
-  "name": "Sunday Service",
-  "songs": ["MP-0001", "CP-0042"],
-  "arrangements": { "MP-0001": [0, 2, 1, 2] },
-  "created": "2026-04-09T10:00:00+00:00",
-  "updated": "2026-04-09T10:00:00+00:00"
-}
-```
+**Response:** `{ requests: [{ id, title, songbook, songNumber, language, details, status, resolvedSongId, createdAt, updatedAt }] }`
 
 ---
 
 ## Authentication Endpoints
 
-All auth endpoints use JSON request/response bodies. See [[User Accounts & Roles]] for the role hierarchy.
-
-### `POST ?action=auth_register`
+### `?action=auth_register` (POST)
 
 Register a new user account.
 
-**Request body:**
-```json
-{
-  "username": "john",
-  "password": "securepass123",
-  "display_name": "John Smith"
-}
-```
+**Body:** `{ username, password, display_name? }`
 
-**Validation:**
-- Username: min 3 chars, lowercase letters/numbers/`_`/`-`/`.` only
-- Password: min 8 characters
-- Display name: defaults to username if omitted
+**Response:** `{ token, user: { id, username, display_name, role } }` (201)
 
-**Response (201):**
-```json
-{
-  "token": "64-char-hex-bearer-token...",
-  "user": {
-    "id": 1,
-    "username": "john",
-    "display_name": "John Smith",
-    "role": "user"
-  }
-}
-```
+### `?action=auth_login` (POST)
 
-**Note:** The very first registered user is automatically assigned the `global_admin` role. All subsequent registrations get the `user` role.
+Log in and receive a bearer token.
 
-### `POST ?action=auth_login`
+**Body:** `{ username, password }`
 
-Log in with existing credentials.
+**Response:** `{ token, user: { id, username, display_name, role } }`
 
-**Request body:**
-```json
-{ "username": "john", "password": "securepass123" }
-```
+### `?action=auth_logout` (POST)
 
-**Response (200):**
-```json
-{
-  "token": "64-char-hex-bearer-token...",
-  "user": {
-    "id": 1,
-    "username": "john",
-    "display_name": "John Smith",
-    "role": "editor"
-  }
-}
-```
+Invalidate the current bearer token. Requires: Bearer token.
 
-**Error (401):**
-```json
-{ "error": "Invalid username or password." }
-```
+**Response:** `{ ok: true }`
 
-### `POST ?action=auth_logout`
+### `?action=auth_me`
 
-Invalidate the current bearer token.
+Get current authenticated user info. Requires: Bearer token.
 
-**Headers:** `Authorization: Bearer <token>`
+**Response:** `{ user: { id, username, display_name, role } }`
 
-**Response:**
-```json
-{ "ok": true }
-```
+### `?action=auth_update_profile` (POST)
 
-### `GET ?action=auth_me`
+Update user profile. Requires: Bearer token.
 
-Get the currently authenticated user's info.
+**Body:** `{ display_name, email? }`
 
-**Headers:** `Authorization: Bearer <token>`
+**Response:** `{ ok: true, user: { id, username, display_name, email, role } }`
 
-**Response:**
-```json
-{
-  "user": {
-    "id": 1,
-    "username": "john",
-    "display_name": "John Smith",
-    "role": "editor"
-  }
-}
-```
+### `?action=auth_change_password` (POST)
 
-### `POST ?action=auth_forgot_password`
+Change password. Requires: Bearer token. Invalidates all other tokens.
 
-Request a password reset token. Always returns 200 to prevent user enumeration.
+**Body:** `{ current_password, new_password }`
 
-**Request body:**
-```json
-{ "username": "john" }
-```
+**Response:** `{ ok: true, message }`
 
-Accepts username or email address.
+### `?action=auth_forgot_password` (POST)
 
-**Response (200):**
-```json
-{
-  "ok": true,
-  "message": "If an account exists with that username or email, a reset link has been generated.",
-  "_dev_token": "48-char-hex-token..."
-}
-```
+Request a password reset token.
 
-**Note:** `_dev_token` is included for development/testing only. In production, the token should be delivered via email.
+**Body:** `{ username }` (username or email)
 
-### `POST ?action=auth_reset_password`
+**Response:** `{ ok: true, message }` (always 200 to prevent user enumeration)
 
-Reset password using a valid reset token.
+### `?action=auth_reset_password` (POST)
 
-**Request body:**
-```json
-{
-  "token": "48-char-hex-token...",
-  "password": "newSecurePass123"
-}
-```
+Reset password using a valid token.
 
-**Response (200):**
-```json
-{ "ok": true, "message": "Password reset successfully. Please sign in with your new password." }
-```
+**Body:** `{ token, password }`
 
-**Side effects:** Invalidates all existing API tokens for the user (forces re-login on all devices).
+**Response:** `{ ok: true, message }`
 
 ---
 
-## User Setlist Endpoints
+## User Data Endpoints (Authenticated)
 
-Require `Authorization: Bearer <token>` header.
+### `?action=favorites`
 
-### `GET ?action=user_setlists`
+Get all favorited song IDs. Requires: Bearer token. (#284)
 
-Get all setlists for the authenticated user.
+**Response:** `{ favorites: ["CP-0001", "MP-0042", ...] }`
 
-**Response:**
-```json
-{
-  "setlists": [
-    {
-      "id": "setlist-uuid",
-      "name": "Sunday Morning",
-      "songs": [
-        { "id": "MP-0001", "title": "...", "songbook": "MP", "number": 1 }
-      ],
-      "createdAt": "2026-04-09T10:00:00+00:00",
-      "updatedAt": "2026-04-09T10:00:00+00:00"
-    }
-  ]
-}
-```
+### `?action=favorites_sync` (POST)
 
-### `POST ?action=user_setlists_sync`
+Sync favorites: merge local with server. Requires: Bearer token.
 
-Merge local setlists with server-side storage. New setlists are inserted; existing ones are updated. Server-only setlists are preserved.
+**Body:** `{ favorites: ["CP-0001", ...] }`
 
-**Request body:**
-```json
-{
-  "setlists": [
-    {
-      "id": "setlist-uuid",
-      "name": "Sunday Morning",
-      "createdAt": "2026-04-09T10:00:00+00:00",
-      "songs": [
-        {
-          "id": "MP-0001",
-          "title": "A New Commandment",
-          "songbook": "MP",
-          "number": 1,
-          "arrangement": [0, 2, 1, 2]
-        }
-      ]
-    }
-  ]
-}
-```
+**Response:** `{ favorites: [...merged...] }`
 
-**Limits:** Max 50 setlists per user, 200 songs per setlist.
+### `?action=favorites_remove` (POST)
 
-**Response:** Same format as `user_setlists` — returns the full merged result.
+Remove a song from favorites. Requires: Bearer token.
+
+**Body:** `{ song_id: "CP-0001" }`
+
+**Response:** `{ ok: true }`
+
+### `?action=user_setlists`
+
+Get all setlists for the authenticated user. Requires: Bearer token.
+
+**Response:** `{ setlists: [{ id, name, songs, createdAt, updatedAt }] }`
+
+### `?action=user_setlists_sync` (POST)
+
+Sync local setlists with server storage. Requires: Bearer token.
+
+**Body:** `{ setlists: [{ id, name, songs, createdAt }] }`
+
+**Response:** `{ setlists: [...merged...] }`
+
+### `?action=user_access`
+
+Get the user's group memberships and effective version access level. Requires: Bearer token. (#282)
+
+**Response:** `{ groups: [{ id, name, accessAlpha, accessBeta, accessRc, accessRtw }], effectiveAccess: { alpha, beta, rc, rtw }, role }`
 
 ---
 
-## Bearer Token Details
+## App Status Endpoint
 
-| Property | Value |
-|---|---|
-| Format | 64-character lowercase hexadecimal string |
-| Expiry | 30 days from creation |
-| Storage | `api_tokens` table in SQLite |
-| Header | `Authorization: Bearer <token>` |
-| Fallback header | `REDIRECT_HTTP_AUTHORIZATION` (for Apache CGI/FCGI) |
+### `?action=app_status`
+
+Get public app status (no auth required). Used by PWA on startup.
+
+**Response:** `{ maintenance: bool, songRequestsEnabled: bool }`
+
+---
+
+## Admin Endpoints (Requires admin+ role via Bearer token)
+
+### `?action=admin_users`
+
+List all users with group info.
+
+**Response:** `{ users: [{ id, username, email, display_name, role, is_active, created_at, group_name }] }`
+
+### `?action=admin_groups`
+
+List all user groups with access flags. (#282)
+
+**Response:** `{ groups: [{ id, name, description, accessAlpha, accessBeta, accessRc, accessRtw }] }`
+
+### `?action=admin_activity_log`
+
+Query the activity log. (#283)
+
+| Param | Required | Description |
+| --- | --- | --- |
+| `limit` | No | Max entries (default: 50, max: 200) |
+| `offset` | No | Pagination offset |
+| `action_filter` | No | Filter by action type |
+| `user_id` | No | Filter by user ID |
+
+**Response:** `{ entries: [{ id, action, entityType, entityId, details, ipAddress, createdAt, username }], limit, offset }`
+
+### `?action=admin_song_requests`
+
+List all song requests (editor+ role). (#280)
+
+| Param | Required | Description |
+| --- | --- | --- |
+| `status` | No | Filter: pending/reviewed/added/declined |
+
+**Response:** `{ requests: [{ id, title, songbook, songNumber, language, details, contactEmail, status, adminNotes, resolvedSongId, createdAt, updatedAt, submittedBy }] }`
+
+### `?action=admin_song_request_update` (POST)
+
+Update a song request status (editor+ role).
+
+**Body:** `{ id, status: "pending|reviewed|added|declined", admin_notes?, resolved_song_id? }`
+
+**Response:** `{ ok: true }`
+
+---
+
+## Song Editor API
+
+The song editor has its own API at `/manage/editor/api.php`:
+
+| Endpoint | Method | Description |
+| --- | --- | --- |
+| `?action=load` | GET | Load all song data from MySQL |
+| `?action=save` | POST | Save song data to MySQL (transaction-wrapped) |
+
+Requires authenticated session (admin panel login).
 
 ---
 
 ## Error Responses
 
-All errors follow this format:
+All errors follow the format:
 
 ```json
-{ "error": "Human-readable error message." }
+{ "error": "Error message description" }
 ```
 
-| HTTP Code | Meaning |
-|---|---|
-| 400 | Bad request / validation error |
-| 401 | Not authenticated / invalid token |
-| 403 | Forbidden / insufficient role |
-| 404 | Resource not found |
-| 405 | Method not allowed (e.g. GET on POST-only endpoint) |
-| 409 | Conflict (e.g. username already taken) |
+| Status | Meaning |
+| --- | --- |
+| 400 | Bad request (missing/invalid parameters) |
+| 401 | Not authenticated |
+| 403 | Forbidden (insufficient role/permissions) |
+| 404 | Not found |
+| 405 | Method not allowed |
+| 429 | Rate limit exceeded |
 | 500 | Server error |

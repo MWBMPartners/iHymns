@@ -12,7 +12,7 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 - **Copyright**: © 2026– MWBM Partners Ltd
 - **License**: Proprietary (third-party components retain their own licenses)
 - **GitHub Repo**: <https://github.com/MWBMPartners/iHymns>
-- **Current Version**: 0.1.7 (pre-release, Phase 1)
+- **Current Version**: 0.10.0 (pre-release, Phase 1)
 
 ---
 
@@ -21,11 +21,15 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 ### Phase ONE (Current) — v0.x.x (pre-release)
 
 - Songs sourced from local `.SourceSongData/` text files
-- Parsed into structured JSON (`data/songs.json`) — single canonical copy
+- Parsed into JSON (`data/songs.json`), then migrated into **MySQL database**
 - 6 songbooks, 3,612 songs: CP (243), JP (617), MP (1355), SDAH (695), CH (702), Misc (0)
-- Some songbooks include MIDI audio and PDF sheet music
-- Song Editor (developer tool) in `appWeb/private_html/editor/` (HTTP Basic Auth)
-- Phase 1 is a first iteration — don't over-engineer file-based data distribution
+- MySQL with MySQLi prepared statements (song data) and PDO (auth/admin)
+- Database naming: `tblCamelCase` tables, `CamelCase` columns
+- User accounts with role hierarchy (global_admin/admin/editor/user)
+- User groups with version access control (Alpha/Beta/RC/RTW channel gating)
+- Song requests, multi-language support, activity logging, favorites sync
+- Song Editor in `/manage/editor/` (session-based auth)
+- Comprehensive REST-like API for PWA and native app consumption
 
 ### Phase TWO (Future) — v2.x.x
 
