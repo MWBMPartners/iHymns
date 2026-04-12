@@ -43,6 +43,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/includes/config.php';
 require_once __DIR__ . '/includes/infoAppVer.php';
+require_once __DIR__ . '/includes/db_mysql.php';
 require_once __DIR__ . '/includes/SongData.php';
 require_once __DIR__ . '/manage/includes/db.php';
 
@@ -285,40 +286,33 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
-         * Serve the full songs.json file (#154)
+         * Serve the full song data as JSON (#154, #270)
          *
-         * Streams the canonical songs.json from the private data_share
-         * directory. Used by client-side Fuse.js search and service
-         * worker caching. Includes ETag / Last-Modified for efficient
-         * browser caching.
+         * Exports the complete song database from MySQL as JSON for
+         * client-side Fuse.js search and service worker caching.
+         * Includes ETag for efficient browser caching.
          * ----------------------------------------------------------------- */
         case 'songs_json':
-            $songsFile = APP_DATA_FILE;
-            if (!file_exists($songsFile)) {
-                sendJson(['error' => 'Song data file not found.'], 500);
-                break;
-            }
+            $jsonData = json_encode(
+                $songData->exportAsJson(),
+                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+            );
 
-            /* ETag and Last-Modified for conditional requests */
-            $lastModified = filemtime($songsFile);
-            $etag = '"' . md5_file($songsFile) . '"';
+            /* ETag for conditional requests */
+            $etag = '"' . md5($jsonData) . '"';
 
             header('Content-Type: application/json; charset=UTF-8');
             header('Cache-Control: public, max-age=3600, must-revalidate');
-            header('Last-Modified: ' . gmdate('D, d M Y H:i:s', $lastModified) . ' GMT');
             header('ETag: ' . $etag);
 
             /* Return 304 Not Modified if client cache is still valid */
-            $ifNoneMatch   = $_SERVER['HTTP_IF_NONE_MATCH'] ?? '';
-            $ifModifiedStr = $_SERVER['HTTP_IF_MODIFIED_SINCE'] ?? '';
-            if ($ifNoneMatch === $etag
-                || ($ifModifiedStr !== '' && strtotime($ifModifiedStr) >= $lastModified)) {
+            $ifNoneMatch = $_SERVER['HTTP_IF_NONE_MATCH'] ?? '';
+            if ($ifNoneMatch === $etag) {
                 http_response_code(304);
                 exit;
             }
 
-            /* Stream the file directly (no JSON decode/encode overhead) */
-            readfile($songsFile);
+            echo $jsonData;
             break;
 
         /* -----------------------------------------------------------------

@@ -180,6 +180,14 @@ tmp/
 temp/
 
 # ----------------------------------------------------------------------------
+# Database Credentials (appWeb/.auth/)
+# The real credentials file is never committed; only the example template.
+# ----------------------------------------------------------------------------
+appWeb/.auth/*
+!appWeb/.auth/.htaccess
+!appWeb/.auth/db_credentials.example.php
+
+# ----------------------------------------------------------------------------
 # Secrets / Credentials (NEVER commit these)
 # ----------------------------------------------------------------------------
 .env

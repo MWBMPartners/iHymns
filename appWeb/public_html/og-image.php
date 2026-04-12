@@ -25,6 +25,7 @@ declare(strict_types=1);
  * BOOTSTRAP (minimal — only what we need for song data)
  * ========================================================================= */
 require_once __DIR__ . '/includes/config.php';
+require_once __DIR__ . '/includes/db_mysql.php';
 require_once __DIR__ . '/includes/SongData.php';
 
 /* Cache for 24 hours — the image rarely changes */

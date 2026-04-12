@@ -436,4 +436,172 @@ test: add or update tests          → patch version bump
 
 ---
 
-Last updated: 2026-04-05
+## MySQL Database Setup (v0.10.0+)
+
+Starting with v0.10.0, iHymns uses MySQL as the primary data store for songs, replacing the flat-file `songs.json` approach. This provides better searchability (full-text indexing), concurrent write safety, and scalability.
+
+### Prerequisites
+
+- **MySQL 5.7+** or **MariaDB 10.3+** with InnoDB support
+- **PHP 8.1+** with the `mysqli` extension enabled
+- A MySQL database created for iHymns (e.g., `ihymns`)
+
+### Step 1: Configure Database Credentials
+
+```bash
+# Copy the example credentials file
+cp appWeb/.auth/db_credentials.example.php appWeb/.auth/db_credentials.php
+
+# Edit with your MySQL connection details
+nano appWeb/.auth/db_credentials.php
+```
+
+Fill in your MySQL host, port, database name, username, and password. The file defines PHP constants used by the application:
+
+```php
+define('DB_HOST',    '127.0.0.1');
+define('DB_PORT',    3306);
+define('DB_NAME',    'ihymns');
+define('DB_USER',    'ihymns_user');
+define('DB_PASS',    'your_password_here');
+define('DB_CHARSET', 'utf8mb4');
+```
+
+> The credentials file is excluded from version control via `.gitignore`. Only the example template is tracked.
+
+### Step 2: Run the Database Installer
+
+The installer creates all required tables (songbooks, songs, song_writers, song_composers, song_components):
+
+```bash
+# From the project root
+php appWeb/.sql/install.php
+```
+
+Expected output:
+
+```text
+=== iHymns Database Installer ===
+
+Connecting to MySQL at 127.0.0.1:3306...
+Connected successfully to database: ihymns
+
+Running schema (5 statements)...
+
+  [OK] Table: songbooks
+  [OK] Table: songs
+  [OK] Table: song_writers
+  [OK] Table: song_composers
+  [OK] Table: song_components
+
+--- Summary ---
+  Created: 5
+  Skipped: 0 (already exist)
+  Errors:  0
+
+Database installation complete.
+```
+
+> The installer is idempotent — safe to re-run. Existing tables are skipped.
+
+### Step 3: Migrate Song Data from JSON
+
+After the tables are created, import the song data from `songs.json`:
+
+```bash
+# Uses default path (data/songs.json or appWeb/data_share/song_data/songs.json)
+php appWeb/.sql/migrate-json.php
+
+# Or specify a custom path
+php appWeb/.sql/migrate-json.php --json=/path/to/songs.json
+```
+
+Expected output:
+
+```text
+=== iHymns JSON-to-MySQL Migration ===
+
+Loading: /path/to/data/songs.json
+Found: 6 songbooks, 3612 songs
+
+Connecting to MySQL...
+Connected.
+
+Clearing existing data...
+Inserting songbooks...
+  Inserted 6 songbooks.
+Inserting songs...
+  ... 10% (361/3612 songs)
+  ... 20% (722/3612 songs)
+  ...
+  ... 100% (3612/3612 songs)
+
+--- Migration Complete ---
+  Songs:      3612
+  Songbooks:  6
+  Writers:    2847
+  Composers:  2634
+  Components: 14891
+
+Migration successful.
+```
+
+> The migration clears all existing data and re-imports. It is transaction-wrapped — if any error occurs, all changes are rolled back.
+
+### Database Schema Overview
+
+| Table | Purpose |
+| --- | --- |
+| `songbooks` | Songbook definitions (CP, JP, MP, SDAH, CH, Misc) |
+| `songs` | Core song metadata + `lyrics_text` for full-text search |
+| `song_writers` | Song lyricist credits (many-to-one) |
+| `song_composers` | Song composer credits (many-to-one) |
+| `song_components` | Verses, choruses with lyrics as JSON lines array |
+
+The full schema is in `appWeb/.sql/schema.sql`.
+
+### File Structure
+
+```text
+appWeb/
+├── .auth/
+│   ├── .htaccess                      ← Blocks web access (defense-in-depth)
+│   ├── db_credentials.example.php     ← Template (tracked in git)
+│   └── db_credentials.php             ← Your credentials (NOT in git)
+│
+├── .sql/
+│   ├── schema.sql                     ← Full MySQL schema
+│   ├── install.php                    ← Database table installer
+│   └── migrate-json.php              ← JSON-to-MySQL data migration
+│
+└── public_html/
+    └── includes/
+        ├── db_mysql.php               ← MySQLi connection factory
+        └── SongData.php               ← Song data handler (MySQL-backed)
+```
+
+### Troubleshooting
+
+| Issue | Solution |
+| --- | --- |
+| "Database credentials file not found" | Copy `db_credentials.example.php` to `db_credentials.php` |
+| "Failed to connect to MySQL" | Check host, port, username, password in credentials file |
+| "Unknown database 'ihymns'" | Create the database: `CREATE DATABASE ihymns CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;` |
+| "Table already exists" | This is normal — the installer uses `CREATE TABLE IF NOT EXISTS` |
+| "Migration failed — all changes rolled back" | Check the error message; fix the issue and re-run |
+
+### Architecture Decision: Why MySQL?
+
+The move from JSON to MySQL is driven by:
+
+1. **Full-text search** — MySQL's FULLTEXT indexes replace the in-memory substring search
+2. **Concurrent writes** — Multiple editors can safely modify data simultaneously
+3. **Scalability** — Database handles growth better than loading a ~5MB JSON into memory
+4. **Structured queries** — Complex filtering (by songbook, by writer, etc.) is more efficient
+5. **Editor safety** — Transaction-wrapped saves with automatic rollback on failure
+
+The application still exports JSON for the PWA client-side cache (Fuse.js fuzzy search), maintaining full offline support.
+
+---
+
+Last updated: 2026-04-12
