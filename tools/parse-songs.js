@@ -382,10 +382,37 @@ function extractWritersFromCredits(creditLines) {
       continue;
     }
 
-    /* Check for "Words by <name>" — adds to writers only */
+    /* Check for "Words by <name>" — adds to writers only.
+     * Handle compound lines like "Words by X. Music by Y. © Copyright Z"
+     * by splitting at ". Music by" or ". ©" boundaries. */
     const wordsByMatch = trimmed.match(/^words\s+by\s+(.+)$/i);
     if (wordsByMatch) {
-      writers.push(wordsByMatch[1].trim());
+      let writerPart = wordsByMatch[1].trim();
+
+      /* Split off "Music by ..." if embedded in the same line */
+      const musicSplit = writerPart.match(/^(.+?)\.\s*Music\s+by\s+(.+)$/i);
+      if (musicSplit) {
+        writerPart = musicSplit[1].trim();
+        let composerPart = musicSplit[2].trim();
+        /* Split off copyright from composer part */
+        const copySplit2 = composerPart.match(/^(.+?)\.\s*[©(](.+)$/);
+        if (copySplit2) {
+          composerPart = copySplit2[1].trim();
+          if (!copyright) copyright = copySplit2[2].trim();
+        }
+        composers.push(composerPart);
+      }
+
+      /* Split off copyright if embedded after writer name */
+      const copySplit = writerPart.match(/^(.+?)\.\s*[©(](.+)$/);
+      if (copySplit) {
+        writerPart = copySplit[1].trim();
+        if (!copyright) copyright = copySplit[2].trim();
+      }
+
+      /* Remove trailing period from name */
+      writerPart = writerPart.replace(/\.$/, '').trim();
+      if (writerPart) writers.push(writerPart);
       continue;
     }
 
@@ -415,8 +442,19 @@ function extractWritersFromCredits(creditLines) {
     }
   }
 
+  /* Deduplicate writers and composers (case-insensitive, keep first occurrence) */
+  const dedup = (arr) => {
+    const seen = new Set();
+    return arr.filter(name => {
+      const key = name.toLowerCase().replace(/\.\s*/g, ' ').trim();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+
   /* Return the extracted data */
-  return { writers, composers, copyright };
+  return { writers: dedup(writers), composers: dedup(composers), copyright };
 }
 
 /**
