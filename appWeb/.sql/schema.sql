@@ -820,7 +820,15 @@ INSERT IGNORE INTO tblAppSettings (SettingKey, SettingValue, Description) VALUES
     ('song_requests_enabled', '1',  'Allow users to submit song requests (0=off, 1=on)'),
     ('max_song_requests_per_day', '5', 'Maximum song requests per IP per day'),
     ('registration_mode', 'open', 'User registration mode: open, invite, admin_only'),
-    ('motd', '', 'Message of the day shown on home page (empty = disabled)');
+    ('motd', '', 'Message of the day shown on home page (empty = disabled)'),
+    ('email_service', 'none', 'Email service: none, sendmail, ms365, google_workspace, signula'),
+    ('email_from', '', 'Sender email address for system emails'),
+    ('captcha_provider', 'none', 'Bot protection: none, recaptcha_v2, recaptcha_v3, turnstile, hcaptcha, friendly, altcha, mtcaptcha'),
+    ('captcha_site_key', '', 'CAPTCHA provider public site key'),
+    ('captcha_secret_key', '', 'CAPTCHA provider server-side secret key'),
+    ('ads_enabled', '0', 'Enable advertisement display (0=off, 1=on)'),
+    ('ads_provider', 'none', 'Ad provider: none, adsense, ezoic, mediavine, custom'),
+    ('ads_publisher_id', '', 'Ad provider publisher/client ID');
 
 
 -- ============================================================================

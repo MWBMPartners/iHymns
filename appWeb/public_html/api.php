@@ -1032,6 +1032,16 @@ if ($action !== null) {
                 break;
             }
 
+            /* Check if email service is configured (#339) */
+            $db = getDb();
+            $stmt = $db->prepare('SELECT SettingValue FROM tblAppSettings WHERE SettingKey = ?');
+            $stmt->execute(['email_service']);
+            $emailService = $stmt->fetchColumn() ?: 'none';
+            if ($emailService === 'none') {
+                sendJson(['error' => 'Email login is not available. No email service is configured.'], 503);
+                break;
+            }
+
             require_once __DIR__ . '/manage/includes/auth.php';
 
             $rawBody = file_get_contents('php://input');
@@ -1485,7 +1495,7 @@ if ($action !== null) {
         case 'app_status':
             $db = getDb();
             /* Only fetch public-safe settings — never expose internal config */
-            $publicKeys = ['maintenance_mode', 'song_requests_enabled', 'motd', 'registration_mode'];
+            $publicKeys = ['maintenance_mode', 'song_requests_enabled', 'motd', 'registration_mode', 'email_service', 'captcha_provider', 'ads_enabled'];
             $placeholders = implode(',', array_fill(0, count($publicKeys), '?'));
             $stmt = $db->prepare(
                 "SELECT SettingKey, SettingValue FROM tblAppSettings WHERE SettingKey IN ({$placeholders})"
@@ -1503,6 +1513,9 @@ if ($action !== null) {
                 'songRequestsEnabled' => ($settings['song_requests_enabled'] ?? '1') === '1',
                 'registrationMode'    => $settings['registration_mode'] ?? 'open',
                 'motd'                => $settings['motd'] ?? '',
+                'emailLoginEnabled'   => ($settings['email_service'] ?? 'none') !== 'none',
+                'captchaProvider'     => $settings['captcha_provider'] ?? 'none',
+                'adsEnabled'          => ($settings['ads_enabled'] ?? '0') === '1',
             ]);
             break;
 
