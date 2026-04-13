@@ -583,9 +583,12 @@ function parseSongFile(filePath, filename, songbookConfig) {
       /* Flush the previous component */
       flushComponent();
 
+      /* Normalise "refrain" → "chorus" so the canonical type is consistent (#265) */
+      const normalisedType = componentType === 'refrain' ? 'chorus' : componentType;
+
       /* Start a new component of the detected type (no number for these) */
       currentComponent = {
-        type: componentType,
+        type: normalisedType,
         number: null,
         lines: []
       };

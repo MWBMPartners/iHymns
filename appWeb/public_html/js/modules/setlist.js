@@ -199,10 +199,15 @@ export class SetList {
         if (!bar) return;
 
         const auth = this.app.userAuth;
-        if (!auth) return;
 
-        if (auth.isLoggedIn()) {
-            const user = auth.getUser();
+        /* Check auth state: use UserAuth instance if available, otherwise
+           fall back to checking localStorage directly (#262) */
+        const hasToken = auth
+            ? auth.isLoggedIn()
+            : !!localStorage.getItem('ihymns_auth_token');
+
+        if (hasToken) {
+            const user = auth ? auth.getUser() : null;
             bar.className = 'alert alert-success py-2 px-3 d-flex align-items-center justify-content-between mb-3';
             bar.innerHTML = `
                 <small>
@@ -215,6 +220,7 @@ export class SetList {
                 </button>`;
 
             bar.querySelector('#setlist-sync-now-btn')?.addEventListener('click', async () => {
+                if (!auth) return;
                 this.app.showToast('Syncing...', 'info', 1500);
                 await auth.triggerSetlistSync();
                 this.renderSetListOverview();
@@ -231,7 +237,7 @@ export class SetList {
                 </button>`;
 
             bar.querySelector('#setlist-login-btn')?.addEventListener('click', () => {
-                auth.showAuthModal('login');
+                if (auth) auth.showAuthModal('login');
             });
         }
     }

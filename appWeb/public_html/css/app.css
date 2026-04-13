@@ -878,6 +878,7 @@ body.banner-visible.search-open .main-content {
     font-weight: 700;
     font-size: 0.85rem;
     flex-shrink: 0;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.5); /* #263 — improve contrast in dark mode */
 }
 
 /* Songbook-specific badge colours + contrast-safe text (#98, #152) */
@@ -902,6 +903,7 @@ body.banner-visible.search-open .main-content {
     font-size: 1.1rem;
     flex-shrink: 0;
     box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+    text-shadow: 0 1px 2px rgba(0,0,0,0.5); /* #263 — improve contrast in dark mode */
 }
 
 /* Songbook-specific large badge colours + contrast-safe text (#98, #152) */

@@ -403,14 +403,8 @@ export class Display {
         this._hideFloatingStop();
     }
 
-    /**
-     * Show a floating "Stop" button so auto-scroll can be stopped
-     * even after the toolbar has scrolled off-screen.
-     * @private
-     */
     _showFloatingStop() {
         if (document.getElementById('autoscroll-fab')) return;
-
         const fab = document.createElement('button');
         fab.id = 'autoscroll-fab';
         fab.type = 'button';
@@ -422,10 +416,6 @@ export class Display {
         document.body.appendChild(fab);
     }
 
-    /**
-     * Remove the floating stop button.
-     * @private
-     */
     _hideFloatingStop() {
         document.getElementById('autoscroll-fab')?.remove();
     }
