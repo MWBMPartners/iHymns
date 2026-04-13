@@ -74,6 +74,7 @@ if ($action !== '') {
         'migrate' => 'migrate-json.php',
         'users'   => 'migrate-users.php',
         'cleanup' => 'cleanup.php',
+        'backup'  => 'backup.php',
     ];
 
     $scriptName = $scriptMap[$action] ?? null;
@@ -244,6 +245,20 @@ if ($hasCredentials && defined('DB_HOST')) {
                         </p>
                         <a href="?action=cleanup" class="btn btn-outline-secondary btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run Cleanup
+                        </a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">5. Backup Database</h5>
+                        <p class="card-text text-secondary small">
+                            Create a compressed SQL dump of all tables and data.
+                            Keeps the last 7 backups; older ones are auto-deleted.
+                        </p>
+                        <a href="?action=backup" class="btn btn-outline-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run Backup
                         </a>
                     </div>
                 </div>
