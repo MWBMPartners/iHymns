@@ -12,7 +12,7 @@ declare(strict_types=1);
  * and navigation. Accessible to editor role and above.
  */
 
-require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes/auth.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 requireEditor();
 
 $currentUser = getCurrentUser();
@@ -85,7 +85,7 @@ $csrf = csrfToken();
     </style>
 </head>
 <body>
-    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes/admin-nav.php'; ?>
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>
 
     <div class="container py-4" style="max-width: 960px;">
 

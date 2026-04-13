@@ -14,7 +14,7 @@ declare(strict_types=1);
  * USAGE:
  *   $currentUser = getCurrentUser();
  *   $activePage  = 'dashboard'; // 'dashboard', 'editor', 'users'
- *   require __DIR__ . DIRECTORY_SEPARATOR . 'includes/admin-nav.php';
+ *   require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php';
  */
 
 /* Prevent direct access */

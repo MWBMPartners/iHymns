@@ -39,10 +39,10 @@ define('APP_INCLUDES', __DIR__);
 define('APP_DATA_SHARE', dirname(APP_ROOT) . DIRECTORY_SEPARATOR . 'data_share');
 
 /** Path to the song data JSON file */
-define('APP_DATA_FILE', APP_DATA_SHARE . '/song_data/songs.json');
+define('APP_DATA_FILE', APP_DATA_SHARE . DIRECTORY_SEPARATOR . 'song_data' . DIRECTORY_SEPARATOR . 'songs.json');
 
 /** Path to the shared setlist JSON directory */
-define('APP_SETLIST_SHARE_DIR', APP_DATA_SHARE . '/setlist_json');
+define('APP_SETLIST_SHARE_DIR', APP_DATA_SHARE . DIRECTORY_SEPARATOR . 'setlist_json');
 
 /* =========================================================================
  * DO NOT TRACK (DNT) DETECTION

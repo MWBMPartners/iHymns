@@ -32,7 +32,7 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
  * LOAD CREDENTIALS
  * ========================================================================= */
 
-$_dbCredentialsFile = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . '.auth/db_credentials.php';
+$_dbCredentialsFile = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . '.auth' . DIRECTORY_SEPARATOR . 'db_credentials.php';
 if (file_exists($_dbCredentialsFile) && !defined('DB_HOST')) {
     require_once $_dbCredentialsFile;
 }

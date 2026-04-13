@@ -38,10 +38,10 @@ declare(strict_types=1);
  * BOOTSTRAP — Load configuration and application metadata
  * ========================================================================= */
 
-require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes/config.php';
-require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes/infoAppVer.php';
-require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes/db_mysql.php';
-require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes/SongData.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
 
 /* =========================================================================
  * APPLICATION METADATA — accessed directly via $app array
@@ -1183,6 +1183,6 @@ if (!empty($breadcrumbItems)) {
     <script src="/js/app.js?v=<?= urlencode($app["Application"]["Version"]["Number"]) ?>" type="module"></script>
 
     <!-- Colour Vision Deficiency (CVD) SVG correction filters (#319) -->
-    <?php readfile(__DIR__ . DIRECTORY_SEPARATOR . 'assets/cvd-filters.svg'); ?>
+    <?php readfile(__DIR__ . DIRECTORY_SEPARATOR . 'assets' . DIRECTORY_SEPARATOR . 'cvd-filters.svg'); ?>
 </body>
 </html>

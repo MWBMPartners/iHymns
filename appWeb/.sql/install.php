@@ -99,7 +99,7 @@ output("");
  * CHECK FOR EXISTING CREDENTIALS
  * ========================================================================= */
 
-$credentialsFile = __DIR__ . DIRECTORY_SEPARATOR . '../.auth/db_credentials.php';
+$credentialsFile = dirname(__DIR__) . DIRECTORY_SEPARATOR . '.auth' . DIRECTORY_SEPARATOR . 'db_credentials.php';
 $credentialsDir  = dirname($credentialsFile);
 $hasExistingCreds = file_exists($credentialsFile);
 

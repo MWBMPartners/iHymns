@@ -106,8 +106,8 @@ class SongData
     {
         $candidates = [
             defined('APP_DATA_FILE') ? APP_DATA_FILE : '',
-            dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'data_share/song_data/songs.json',
-            dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . 'data/songs.json',
+            dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'data_share' . DIRECTORY_SEPARATOR . 'song_data' . DIRECTORY_SEPARATOR . 'songs.json',
+            dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR . 'songs.json',
         ];
 
         foreach ($candidates as $path) {
