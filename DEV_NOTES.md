@@ -279,6 +279,7 @@ First line of refrain,
 
 Words and music by ...  ← Writer/composer credits (some files only)
 © Copyright holder      ← Copyright info (some files only)
+Language: fr-FR         ← Optional IETF BCP 47 language tag (defaults to songbook language)
 ```
 
 ### Key Observations
@@ -290,6 +291,7 @@ Words and music by ...  ← Writer/composer credits (some files only)
 5. **Encoding**: UTF-8, some files contain special characters (curly quotes, em dashes)
 6. **Song component order**: Components appear in the order they are sung
 7. **No consistent blank line rules**: Some files have extra blank lines, parser must be tolerant
+8. **Language tag**: Optional `Language: xx` line (IETF BCP 47 format, e.g., `en`, `fr-FR`, `zh-Hans-CN`). Falls back to songbook default if absent
 
 ---
 

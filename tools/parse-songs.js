@@ -63,30 +63,43 @@ const OUTPUT_FILE = path.join(PROJECT_ROOT, 'data', 'songs.json');
  *   - id:   Short abbreviation used as a unique identifier
  *   - name: Full human-readable songbook name
  */
+/**
+ * IETF BCP 47 language tag validation pattern.
+ * Supports: en, en-GB, fr-FR, zh-Hans-CN, etc.
+ * @see https://tools.ietf.org/html/bcp47
+ */
+const BCP47_PATTERN = /^[a-z]{2,3}(-[A-Z][a-z]{3})?(-[A-Z]{2})?(-[a-zA-Z0-9]+)*$/;
+
 const SONGBOOK_CONFIG = {
   'Carol Praise [CP]': {
     id: 'CP',
-    name: 'Carol Praise'
+    name: 'Carol Praise',
+    language: 'en'
   },
   'Junior Praise [JP]': {
     id: 'JP',
-    name: 'Junior Praise'
+    name: 'Junior Praise',
+    language: 'en'
   },
   'Mission Praise [MP]': {
     id: 'MP',
-    name: 'Mission Praise'
+    name: 'Mission Praise',
+    language: 'en'
   },
   'Seventh-day Adventist Hymnal [SDAH]': {
     id: 'SDAH',
-    name: 'Seventh-day Adventist Hymnal'
+    name: 'Seventh-day Adventist Hymnal',
+    language: 'en'
   },
   'The Church Hymnal [CH]': {
     id: 'CH',
-    name: 'The Church Hymnal'
+    name: 'The Church Hymnal',
+    language: 'en'
   },
   'Miscellaneous [Misc]': {
     id: 'Misc',
-    name: 'Miscellaneous'
+    name: 'Miscellaneous',
+    language: 'en'
   }
 };
 
@@ -161,6 +174,38 @@ function extractTitleFromFilename(filename) {
 
   /* Fallback: return the filename without extension */
   return filename.replace(/\.txt$/i, '').trim() || 'Unknown Title';
+}
+
+/**
+ * extractLanguage()
+ *
+ * Detects the IETF BCP 47 language tag for a song. Checks for an explicit
+ * "Language: xx" metadata line in the file content (case-insensitive).
+ * Falls back to the songbook's default language if none is found.
+ *
+ * Supported metadata formats:
+ *   Language: en
+ *   Language: fr-FR
+ *   Language: zh-Hans-CN
+ *
+ * @param {string[]} allLines       - All lines of the song file
+ * @param {object}   songbookConfig - The songbook config with default language
+ * @returns {string} IETF BCP 47 language tag (e.g., 'en', 'fr-FR')
+ */
+function extractLanguage(allLines, songbookConfig) {
+  /* Scan for a "Language: xxx" metadata line (usually in credits at bottom) */
+  for (const line of allLines) {
+    const match = line.match(/^Language:\s*(.+)$/i);
+    if (match) {
+      const tag = match[1].trim();
+      if (BCP47_PATTERN.test(tag)) {
+        return tag;
+      }
+    }
+  }
+
+  /* Fall back to the songbook's configured default language */
+  return songbookConfig.language || 'en';
 }
 
 /**
@@ -653,7 +698,7 @@ function parseSongFile(filePath, filename, songbookConfig) {
     title: title,
     songbook: songbookConfig.id,
     songbookName: songbookConfig.name,
-    language: 'en',
+    language: extractLanguage(allLines, songbookConfig),
     writers: writers,
     composers: composers,
     copyright: copyright,

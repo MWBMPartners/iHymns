@@ -56,6 +56,7 @@ First line of refrain,
 Writers: Name1, Name2   ← "Writers:" prefix (lyricists)
 Composers: Name3        ← "Composers:" prefix (music)
 CCLI: 12345             ← Optional CCLI number
+Language: fr-FR         ← Optional IETF BCP 47 language tag (defaults to songbook language)
 ```
 
 ---

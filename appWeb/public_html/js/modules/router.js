@@ -45,6 +45,9 @@ export class Router {
      * Initialise the router — listen for popstate (back/forward) events.
      */
     init() {
+        /* Handle magic link login before any routing (#magic-link) */
+        this._handleMagicLink();
+
         /* Handle browser back/forward navigation */
         window.addEventListener('popstate', () => {
             this.handleCurrentRoute();
@@ -94,6 +97,23 @@ export class Router {
                 window.history.replaceState({ path: canonicalPath }, '', canonicalPath);
                 this.currentPath = canonicalPath;
             }
+        }
+
+        /* Login route: show auth modal instead of loading a page from API */
+        if (page === 'login') {
+            const token = new URLSearchParams(window.location.search).get('token');
+            if (token) {
+                /* Magic link with token — handled by _handleMagicLink() on init.
+                 * If we reach here via navigate(), handle it now. */
+                this._verifyMagicLinkToken(token);
+            } else {
+                /* No token — show the auth modal and go home */
+                this.app.userAuth?.showAuthModal('login');
+                window.history.replaceState({ path: '/' }, '', '/');
+                this.currentPath = '/';
+                await this.handleCurrentRoute();
+            }
+            return;
         }
 
         /* Update the active footer nav item */
@@ -168,6 +188,8 @@ export class Router {
                 return { page: 'terms', params: {} };
             case 'privacy':
                 return { page: 'privacy', params: {} };
+            case 'login':
+                return { page: 'login', params: {} };
             default:
                 return { page: 'not-found', params: {} };
         }
@@ -419,6 +441,82 @@ export class Router {
 
         /* Auto-fix badge text contrast for all songbook badges (#152) */
         this.fixBadgeContrast();
+    }
+
+    /* =====================================================================
+     * MAGIC LINK LOGIN
+     * ===================================================================== */
+
+    /**
+     * Check for a magic link token in the URL on page load.
+     * If `?token=` is present (typically on /login?token=...), verify
+     * the token with the API, store credentials, and redirect home.
+     * Called once during init() before any routing occurs.
+     */
+    _handleMagicLink() {
+        const params = new URLSearchParams(window.location.search);
+        const token = params.get('token');
+        if (!token) return;
+
+        /* Clear the token from the URL immediately to prevent re-triggering
+         * on refresh or back/forward navigation */
+        const cleanPath = window.location.pathname || '/';
+        window.history.replaceState({ path: cleanPath }, '', cleanPath);
+
+        /* Verify the token asynchronously */
+        this._verifyMagicLinkToken(token);
+    }
+
+    /**
+     * Verify a magic link token with the API and handle the result.
+     *
+     * On success: stores bearer token + user info, shows success toast,
+     * updates header state, triggers setlist sync, and navigates home.
+     *
+     * On error: shows error toast and navigates home.
+     *
+     * @param {string} token The magic link token from the URL
+     */
+    async _verifyMagicLinkToken(token) {
+        try {
+            const res = await fetch(`${this.apiUrl}?action=auth_email_login_verify`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                },
+                body: JSON.stringify({ token }),
+            });
+
+            const data = await res.json();
+
+            if (res.ok && data.token && data.user) {
+                /* Store credentials */
+                this.app.userAuth?.saveCredentials(data.token, data.user);
+
+                /* Update header to reflect logged-in state */
+                this.app.userAuth?._updateHeaderState();
+
+                /* Show success toast */
+                this.app.showToast('Signed in successfully!', 'success', 3000);
+
+                /* Trigger setlist sync in background */
+                this.app.userAuth?.triggerSetlistSync();
+            } else {
+                /* Token invalid or expired */
+                const message = data.error || 'Login link expired. Please request a new one.';
+                this.app.showToast(message, 'danger', 5000);
+            }
+        } catch {
+            this.app.showToast('Login link expired. Please request a new one.', 'danger', 5000);
+        }
+
+        /* Navigate to home (clear /login from URL if still there) */
+        if (window.location.pathname !== '/') {
+            window.history.replaceState({ path: '/' }, '', '/');
+            this.currentPath = null; /* Reset so handleCurrentRoute proceeds */
+            this.handleCurrentRoute();
+        }
     }
 
     /**
