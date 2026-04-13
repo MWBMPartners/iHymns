@@ -61,6 +61,9 @@ RewriteRule (^|/)\.(?!well-known) - [F,L]
 
 RewriteRule ^api$ api.php [QSA,L]
 
+# /og-image → og-image.php (hides PHP extension from OG meta tags)
+RewriteRule ^og-image$ og-image.php [QSA,L]
+
 # ==========================================================================
 # SERVICE WORKER ROUTING (#81)
 #
