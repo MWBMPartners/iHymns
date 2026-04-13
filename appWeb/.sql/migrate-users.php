@@ -14,7 +14,11 @@ declare(strict_types=1);
  *   3. Shared setlists from JSON files (appWeb/data_share/setlist_json/)
  *
  * USAGE:
- *   php appWeb/.sql/migrate-users.php
+ *   CLI:  php appWeb/.sql/migrate-users.php
+ *   Web:  Navigate to this file in a browser (protected by .htaccess)
+ *
+ *   Works in both CLI and web environments (e.g., shared hosting
+ *   without shell access like DreamHost).
  *
  * PREREQUISITES:
  *   1. MySQL tables must already exist (run install.php first)
@@ -30,13 +34,18 @@ declare(strict_types=1);
  */
 
 $isCli = (php_sapi_name() === 'cli');
+
 if (!$isCli) {
     header('Content-Type: text/plain; charset=UTF-8');
-    echo "ERROR: This script must be run from the command line.\n";
-    exit(1);
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: no-store');
 }
 
-function output(string $msg): void { echo $msg . "\n"; }
+function output(string $msg): void {
+    global $isCli;
+    echo $msg . ($isCli ? "\n" : "<br>\n");
+    if (!$isCli) flush();
+}
 
 /* =========================================================================
  * LOAD MYSQL CREDENTIALS

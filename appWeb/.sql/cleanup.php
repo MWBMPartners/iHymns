@@ -31,9 +31,10 @@ declare(strict_types=1);
 $isCli = (php_sapi_name() === 'cli');
 
 if (!$isCli) {
-    http_response_code(403);
-    echo 'This script must be run from the command line.';
-    exit(1);
+    /* Web mode — works on shared hosting without CLI access */
+    header('Content-Type: text/plain; charset=UTF-8');
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: no-store');
 }
 
 /* =========================================================================

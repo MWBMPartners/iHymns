@@ -34,14 +34,16 @@ declare(strict_types=1);
 $isCli = (php_sapi_name() === 'cli');
 
 if (!$isCli) {
+    /* Web mode — works on shared hosting without CLI access (e.g., DreamHost) */
     header('Content-Type: text/plain; charset=UTF-8');
-    echo "ERROR: The installer must be run from the command line.\n";
-    echo "Usage: php appWeb/.sql/install.php\n";
-    exit(1);
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: no-store');
 }
 
 function output(string $message): void
 {
+    global $isCli;
+    if (!$isCli) { echo $message . "<br>\n"; flush(); return; }
     echo $message . "\n";
 }
 
