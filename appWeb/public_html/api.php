@@ -634,7 +634,7 @@ if ($action !== null) {
             $token = bin2hex(random_bytes(32));
             $expiresAt = gmdate('c', time() + 30 * 86400);
             $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
-            $stmt->execute([$token, $userId, $expiresAt]);
+            $stmt->execute([hash('sha256', $token), $userId, $expiresAt]);
 
             sendJson([
                 'token' => $token,
@@ -723,7 +723,7 @@ if ($action !== null) {
             $token = bin2hex(random_bytes(32));
             $expiresAt = gmdate('c', time() + 30 * 86400);
             $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
-            $stmt->execute([$token, (int)$user['Id'], $expiresAt]);
+            $stmt->execute([hash('sha256', $token), (int)$user['Id'], $expiresAt]);
 
             sendJson([
                 'token' => $token,
@@ -750,7 +750,7 @@ if ($action !== null) {
             if ($token) {
                 $db = getDb();
                 $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE Token = ?');
-                $stmt->execute([$token]);
+                $stmt->execute([hash('sha256', $token)]);
             }
 
             sendJson(['ok' => true]);
@@ -1613,7 +1613,7 @@ if ($action !== null) {
             /* Invalidate all OTHER tokens (keep the current one) */
             $currentToken = getAuthBearerToken();
             $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ? AND Token != ?');
-            $stmt->execute([$authUser['Id'], $currentToken]);
+            $stmt->execute([$authUser['Id'], hash('sha256', $currentToken)]);
 
             sendJson(['ok' => true, 'message' => 'Password changed successfully.']);
             break;
@@ -3634,13 +3634,14 @@ function getAuthenticatedUser(): ?array
     if (!$token) return null;
 
     $db = getDb();
+    $hashedToken = hash('sha256', $token);
     $stmt = $db->prepare(
         'SELECT u.Id, u.Username, u.DisplayName, u.Role
          FROM tblApiTokens t
          JOIN tblUsers u ON u.Id = t.UserId
          WHERE t.Token = ? AND t.ExpiresAt > ? AND u.IsActive = 1'
     );
-    $stmt->execute([$token, gmdate('c')]);
+    $stmt->execute([$hashedToken, gmdate('c')]);
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$user) return null;

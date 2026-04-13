@@ -407,9 +407,10 @@ function generatePasswordResetToken(string $usernameOrEmail): ?array
     $stmt = $db->prepare('DELETE FROM tblPasswordResetTokens WHERE UserId = ?');
     $stmt->execute([$user['Id']]);
 
-    /* Insert new token */
+    /* Insert new token (store SHA-256 hash; raw token is returned to the caller) */
+    $hashedToken = hash('sha256', $token);
     $stmt = $db->prepare('INSERT INTO tblPasswordResetTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
-    $stmt->execute([$token, $user['Id'], $expiresAt]);
+    $stmt->execute([$hashedToken, $user['Id'], $expiresAt]);
 
     return [
         'token'    => $token,
@@ -428,13 +429,14 @@ function generatePasswordResetToken(string $usernameOrEmail): ?array
 function validatePasswordResetToken(string $token): ?array
 {
     $db = getDb();
+    $hashedToken = hash('sha256', $token);
     $stmt = $db->prepare(
         'SELECT t.UserId, u.Username
          FROM tblPasswordResetTokens t
          JOIN tblUsers u ON u.Id = t.UserId
          WHERE t.Token = ? AND t.ExpiresAt > ? AND t.Used = 0 AND u.IsActive = 1'
     );
-    $stmt->execute([$token, gmdate('c')]);
+    $stmt->execute([$hashedToken, gmdate('c')]);
     return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
 }
 
@@ -458,8 +460,9 @@ function resetPassword(string $token, string $newPassword): bool
     $stmt->execute([$hash, $tokenData['UserId']]);
 
     /* Mark token as used */
+    $hashedToken = hash('sha256', $token);
     $stmt = $db->prepare('UPDATE tblPasswordResetTokens SET Used = 1 WHERE Token = ?');
-    $stmt->execute([$token]);
+    $stmt->execute([$hashedToken]);
 
     /* Invalidate all API tokens for this user (force re-login) */
     $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ?');
@@ -800,7 +803,7 @@ function completeEmailLogin(string $email, ?int $userId): array
     $token = bin2hex(random_bytes(32));
     $expiresAt = gmdate('c', time() + 30 * 86400);
     $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
-    $stmt->execute([$token, $userId, $expiresAt]);
+    $stmt->execute([hash('sha256', $token), $userId, $expiresAt]);
 
     return [
         'token' => $token,
