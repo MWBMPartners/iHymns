@@ -1,5 +1,5 @@
 - [User Profile](user_profile.md) — Lance at MWBM Partners Ltd, wants detailed annotations, modular architecture
-- [iHymns Project](project_ihymns.md) — Multiplatform Christian lyrics app, MySQL DB, 6 songbooks, 3,612 songs, v0.10.0
+- [iHymns Project](project_ihymns.md) — Multiplatform Christian lyrics app, MySQL DB (30+ tables), 50+ API endpoints, v0.10.0
 - [Never touch SourceSongData](feedback_source_data.md) — .SourceSongData/ must never be deleted or modified
 - [Use appX/ directories](feedback_app_dirs.md) — appWeb/, appApple/, appAndroid/ naming convention
 - [Web app can use PHP](feedback_php_web.md) — PHP 8.5+ on shared hosting (DreamHost)
@@ -8,5 +8,5 @@
 - [Web app directory structure](feedback_appweb_dir.md) — appWeb/ with public_html, data_share, .auth/, .sql/
 - [Phase 1 PWA enhancements](feedback_phase1_pwa_enhancements.md) — Analytics, gestures, writer pages, TF-IDF, WCAG, PWA icons
 - [Phase 1 SEO/PWA/Social](feedback_phase1_seo_pwa_social.md) — OG images (song/songbook/setlist), PWA banners, sitemap
-- [User Account System](feedback_user_accounts.md) — Role hierarchy, bearer tokens, password reset, setlist sync
-- [DB naming convention](feedback_db_naming.md) — tblCamelCase tables, CamelCase columns, AS aliases for API compat
+- [User Accounts](feedback_user_accounts.md) — 3 auth methods, roles, orgs, email login, groups, version access
+- [DB naming](feedback_db_naming.md) — tblCamelCase tables, CamelCase columns, AS aliases for API compat

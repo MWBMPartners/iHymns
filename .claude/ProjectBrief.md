@@ -13,6 +13,8 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 - **License**: Proprietary (third-party components retain their own licenses)
 - **GitHub Repo**: <https://github.com/MWBMPartners/iHymns>
 - **Current Version**: 0.10.0 (pre-release, Phase 1)
+- **Database**: MySQL 5.7+ (30+ tables, tblCamelCase naming)
+- **API**: 50+ JSON endpoints via `api.php`
 
 ---
 
