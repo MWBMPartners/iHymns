@@ -354,7 +354,7 @@ export class SetList {
                                 <a href="/song/${escapeHtml(song.id)}" data-navigate="song"
                                    class="text-decoration-none">${escapeHtml(toTitleCase(song.title))}${verifiedBadge(song)}</a>
                                 <small class="text-muted d-block">
-                                    ${escapeHtml(song.songbook)}${song.arrangement ? ' <span class="badge bg-warning bg-opacity-25 text-warning-emphasis" style="font-size:0.6rem">Custom Arr.</span>' : ''}
+                                    ${escapeHtml(song.songbook)}${song.arrangement ? ` <span class="badge bg-warning bg-opacity-25 text-warning-emphasis arrangement-badge" style="font-size:0.6rem" title="${song.arrangementLabel ? escapeHtml(song.arrangementLabel) : 'Custom arrangement: ' + song.arrangement.length + ' component' + (song.arrangement.length !== 1 ? 's' : '')}">Custom Arr.</span>` : ''}
                                 </small>
                             </div>
                             <button type="button" class="btn btn-sm btn-outline-warning btn-arrange-song"
@@ -848,7 +848,11 @@ export class SetList {
 
         /* === Save === */
         modal.querySelector('#arr-save-btn')?.addEventListener('click', () => {
-            this.setSongArrangement(listId, songId, workingArr.length > 0 ? workingArr : null);
+            /* Build arrangement label string for tooltip display (e.g. "V1, C, V2, C, V3") */
+            const arrLabels = workingArr.length > 0
+                ? workingArr.map(idx => components[idx] ? shortTag(components[idx]) : '?').join(', ')
+                : null;
+            this.setSongArrangement(listId, songId, workingArr.length > 0 ? workingArr : null, arrLabels);
             bsModal.hide();
             this.app.showToast('Arrangement saved', 'success', 2000);
             this.renderSetListDetail(listId);
@@ -920,8 +924,9 @@ export class SetList {
      * @param {string}       listId      Setlist ID
      * @param {string}       songId      Song ID
      * @param {number[]|null} arrangement Custom arrangement array, or null to clear
+     * @param {string|null}  arrLabel    Human-readable label (e.g. "V1, C, V2, C") for tooltip
      */
-    setSongArrangement(listId, songId, arrangement) {
+    setSongArrangement(listId, songId, arrangement, arrLabel = null) {
         const lists = this.getAll();
         const list = lists.find(l => l.id === listId);
         if (!list) return;
@@ -931,8 +936,10 @@ export class SetList {
 
         if (arrangement && arrangement.length > 0) {
             song.arrangement = arrangement;
+            song.arrangementLabel = arrLabel || null;
         } else {
             delete song.arrangement;
+            delete song.arrangementLabel;
         }
 
         this.saveAll(lists);

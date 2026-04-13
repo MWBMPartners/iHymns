@@ -442,6 +442,7 @@ body {
 .header-search-bar.open {
     max-height: var(--search-bar-height);
     opacity: 1;
+    overflow: visible;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1073,6 +1074,12 @@ body.banner-visible.search-open .main-content {
 .lyric-ad-lib {
     border-left-color: #84cc16;
     font-style: italic;
+}
+
+/* Arrangement badge — inline indicator on setlist items */
+.arrangement-badge {
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+    cursor: help;
 }
 
 /* Arrangement strip — drag-and-drop area */
@@ -2387,6 +2394,132 @@ body.reduce-motion .related-songs-chevron {
 
 .reduce-motion .analytics-consent-banner {
     transition: none;
+}
+
+/* ==========================================================================
+ * PRIVACY SETTINGS SECTION — Analytics consent toggle on Settings page
+ * ========================================================================= */
+
+/* ==========================================================================
+ * PRESENTATION MODE (#297) — Full-screen projector overlay for song lyrics
+ * ========================================================================= */
+
+.presentation-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: #000;
+    color: #fff;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+    text-align: center;
+}
+
+.presentation-overlay .present-lyrics {
+    font-size: 3rem;
+    line-height: 1.4;
+    max-width: 90vw;
+    white-space: pre-line;
+}
+
+.presentation-overlay .present-label {
+    font-size: 1rem;
+    color: #888;
+    margin-bottom: 1rem;
+}
+
+.presentation-overlay .present-nav {
+    position: fixed;
+    bottom: 2rem;
+    display: flex;
+    gap: 1rem;
+}
+
+.presentation-overlay .present-nav button {
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    color: #fff;
+    padding: 0.5rem 1.5rem;
+    border-radius: 0.5rem;
+    cursor: pointer;
+    font-size: 1rem;
+}
+
+.presentation-overlay .present-nav button:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.presentation-overlay .present-nav button:disabled {
+    opacity: 0.3;
+    cursor: default;
+}
+
+.presentation-overlay .present-close {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    background: none;
+    border: none;
+    color: #888;
+    font-size: 1.5rem;
+    cursor: pointer;
+}
+
+.presentation-overlay .present-close:hover {
+    color: #fff;
+}
+
+/* Responsive: smaller text on mobile */
+@media (max-width: 768px) {
+    .presentation-overlay .present-lyrics {
+        font-size: 1.75rem;
+    }
+}
+
+/* ==========================================================================
+ * SEARCH AUTOCOMPLETE (#307) — Dropdown suggestions below search input
+ * ========================================================================= */
+
+.search-autocomplete {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: var(--bs-body-bg);
+    border: 1px solid var(--bs-border-color);
+    border-top: none;
+    border-radius: 0 0 0.5rem 0.5rem;
+    max-height: 300px;
+    overflow-y: auto;
+    z-index: 1050;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.search-autocomplete-item {
+    padding: 0.5rem 1rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    text-decoration: none;
+    color: inherit;
+}
+
+.search-autocomplete-item:hover,
+.search-autocomplete-item.active {
+    background: var(--bs-tertiary-bg);
+}
+
+.search-autocomplete-item .song-num {
+    color: var(--bs-secondary-color);
+    font-size: 0.85em;
+    min-width: 3rem;
 }
 
 /* ==========================================================================
