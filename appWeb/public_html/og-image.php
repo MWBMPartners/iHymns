@@ -38,9 +38,9 @@ declare(strict_types=1);
 /* =========================================================================
  * BOOTSTRAP (minimal — only what we need for song/setlist data)
  * ========================================================================= */
-require_once __DIR__ . '/includes/config.php';
-require_once __DIR__ . '/includes/db_mysql.php';
-require_once __DIR__ . '/includes/SongData.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes/config.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes/db_mysql.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes/SongData.php';
 
 /* Cache for 24 hours — images rarely change */
 header('Cache-Control: public, max-age=86400');
@@ -238,7 +238,7 @@ function wordWrapText(string $text, float $size, string $font, int $maxWidth, in
  */
 function drawBranding(GdImage $img, int $W, int $H, int $grey, string $fontBold): void
 {
-    $iconPath = __DIR__ . '/assets/icon-512.png';
+    $iconPath = __DIR__ . DIRECTORY_SEPARATOR . 'assets/icon-512.png';
     if (file_exists($iconPath)) {
         $icon = imagecreatefrompng($iconPath);
         if ($icon) {
@@ -463,7 +463,7 @@ elseif ($mode === 'setlist') {
  * ========================================================================= */
 else {
     /* Load and composite the app icon — centred in safe zone */
-    $iconPath = __DIR__ . '/assets/icon-512.png';
+    $iconPath = __DIR__ . DIRECTORY_SEPARATOR . 'assets/icon-512.png';
     if (file_exists($iconPath)) {
         $icon = imagecreatefrompng($iconPath);
         if ($icon) {

@@ -11,7 +11,7 @@
  * The real credentials file is excluded from version control via .gitignore.
  *
  * USAGE:
- *   require_once __DIR__ . '/db_credentials.php';
+ *   require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_credentials.php';
  *   // Then use DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASS, DB_CHARSET, DB_PREFIX
  */
 

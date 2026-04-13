@@ -41,7 +41,7 @@ if (!$isCli) {
  * BOOTSTRAP — Load database credentials and connection
  * ========================================================================= */
 
-$credentialsFile = dirname(__DIR__) . '/.auth/db_credentials.php';
+$credentialsFile = dirname(__DIR__) . DIRECTORY_SEPARATOR . '.auth/db_credentials.php';
 if (!file_exists($credentialsFile)) {
     echo "ERROR: Database credentials not found at: $credentialsFile\n";
     echo "Run: php appWeb/.sql/install.php\n";

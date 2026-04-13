@@ -20,7 +20,7 @@ declare(strict_types=1);
  * ============================================================================
  */
 
-require_once __DIR__ . '/../includes/auth.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . '../includes/auth.php';
 requireEditor();
 
 $currentUser = getCurrentUser();

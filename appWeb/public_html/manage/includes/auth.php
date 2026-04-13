@@ -12,7 +12,7 @@ declare(strict_types=1);
  * Provides login, logout, session validation, and user management.
  *
  * USAGE:
- *   require_once __DIR__ . '/includes/auth.php';
+ *   require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes/auth.php';
  *   requireAuth();  // Redirects to login if not authenticated
  *
  * @requires PHP 8.5+
@@ -26,7 +26,7 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
-require_once __DIR__ . '/db.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'db.php';
 
 /* =========================================================================
  * SESSION CONFIGURATION

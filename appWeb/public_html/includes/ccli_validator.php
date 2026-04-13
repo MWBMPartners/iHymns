@@ -78,6 +78,74 @@ function validateCcliNumber(string $number): array
  * @param bool   $hasCcli    Whether the user has a verified CCLI number
  * @return array{allowed: bool, reason: string, upgradeTo: string}
  */
+/**
+ * Tier level hierarchy — higher number = more access.
+ */
+const TIER_LEVELS = [
+    'public'  => 0,
+    'free'    => 10,
+    'ccli'    => 20,
+    'premium' => 30,
+    'pro'     => 40,
+];
+
+/**
+ * Resolve the effective tier for a user by taking the highest of:
+ *   1. Their personal AccessTier
+ *   2. Any organisation-level tier they inherit via membership
+ *
+ * Whichever tier is higher (by TIER_LEVELS) wins.
+ *
+ * @param int $userId The user ID
+ * @return string The effective tier name
+ */
+function resolveEffectiveTier(int $userId): string
+{
+    $db = getDb();
+
+    /* Get personal tier */
+    $stmt = $db->prepare('SELECT AccessTier FROM tblUsers WHERE Id = ?');
+    $stmt->execute([$userId]);
+    $personalTier = $stmt->fetchColumn() ?: 'public';
+
+    /* Get highest org-level tier from all memberships.
+     * Org tier comes from tblContentLicences linked to the org,
+     * or from tblOrganisations.LicenceType mapped to a tier. */
+    $orgTier = 'public';
+
+    /* Check org licence types and map to tiers */
+    $stmt = $db->prepare(
+        'SELECT DISTINCT o.LicenceType
+         FROM tblOrganisations o
+         JOIN tblOrganisationMembers m ON m.OrgId = o.Id
+         WHERE m.UserId = ? AND o.IsActive = 1 AND o.LicenceType != \'none\''
+    );
+    $stmt->execute([$userId]);
+    $orgLicences = $stmt->fetchAll(PDO::FETCH_COLUMN);
+
+    /* Map org licence types to access tiers */
+    $licenceToTier = [
+        'none'         => 'public',
+        'ihymns_basic' => 'free',
+        'ihymns_pro'   => 'premium',
+        'ccli'         => 'ccli',
+        'premium'      => 'premium',
+        'pro'          => 'pro',
+    ];
+
+    foreach ($orgLicences as $licence) {
+        $mapped = $licenceToTier[$licence] ?? 'free';
+        if ((TIER_LEVELS[$mapped] ?? 0) > (TIER_LEVELS[$orgTier] ?? 0)) {
+            $orgTier = $mapped;
+        }
+    }
+
+    /* Return whichever tier is higher */
+    return (TIER_LEVELS[$personalTier] ?? 0) >= (TIER_LEVELS[$orgTier] ?? 0)
+        ? $personalTier
+        : $orgTier;
+}
+
 function checkTierAccess(string $userTier, string $action, bool $hasCcli = false): array
 {
     /* Tier capability matrix */

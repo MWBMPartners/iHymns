@@ -194,6 +194,42 @@ User enters credentials → POST auth_login
 
 ---
 
+## Content Tier System
+
+In addition to role-based access, iHymns uses a **content tier** system to gate premium features.
+
+### Tier Levels
+
+| Level | Tier | Gated Features |
+|---|---|---|
+| 0 | Free | Lyrics only |
+| 1 | Basic | Lyrics + song metadata extras |
+| 2 | Standard | Basic + MIDI audio playback |
+| 3 | Premium | Standard + PDF sheet music downloads |
+| 4 | Ultimate | All content |
+
+### Tier Resolution (Personal vs Organisation)
+
+Each user may have:
+
+- A **personal tier** stored on `tblUsers.AccessTier` (set by purchase, admin override, or default)
+- An **organisation tier** inherited from their user group membership
+
+The effective tier is always the **higher** of the two: `MAX(personal_tier, org_tier)`. This means a user in a Premium organisation automatically gets Premium access regardless of their personal tier setting.
+
+### CCLI Licence Validation
+
+Users can associate a **CCLI licence number** with their account. The system validates the CCLI number format before saving and records the verification status:
+
+- `tblUsers.CcliNumber` — the user's CCLI licence number
+- `tblUsers.CcliVerified` — whether the number has been verified (0 = unverified, 1 = verified)
+- Format validation: numeric string, typically 5-8 digits
+- Validated via the `ccli_validate` API endpoint
+
+A valid CCLI licence may unlock additional content usage rights depending on the deployment's licensing agreements.
+
+---
+
 ## Access Control Matrix
 
 | Resource | Anonymous | User | Editor | Admin | Global Admin |
@@ -206,6 +242,8 @@ User enters credentials → POST auth_login
 | Setlists (synced) | — | Yes | Yes | Yes | Yes |
 | Share setlists | Yes | Yes | Yes | Yes | Yes |
 | Song requests | Yes | Yes | Yes | Yes | Yes |
+| MIDI audio playback | — | Tier 2+ | Tier 2+ | Tier 2+ | Yes |
+| PDF sheet music | — | Tier 3+ | Tier 3+ | Tier 3+ | Yes |
 | Song editor | — | — | Yes | Yes | Yes |
 | User management | — | — | — | Yes | Yes |
 | Activity log | — | — | — | Yes | Yes |

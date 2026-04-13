@@ -29,7 +29,7 @@ declare(strict_types=1);
  * AUTHENTICATION
  * ========================================================================= */
 
-require_once __DIR__ . '/includes/auth.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes/auth.php';
 
 $isInitialSetup = needsSetup();
 
@@ -50,7 +50,7 @@ if (!$isInitialSetup) {
  * LOAD DATABASE CREDENTIALS
  * ========================================================================= */
 
-$credFile = dirname(__DIR__, 2) . '/.auth/db_credentials.php';
+$credFile = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . '.auth/db_credentials.php';
 $hasCredentials = file_exists($credFile);
 
 if ($hasCredentials && !defined('DB_HOST')) {
@@ -68,7 +68,7 @@ $actionSuccess = false;
 if ($action !== '') {
     ob_start();
 
-    $scriptDir = dirname(__DIR__, 2) . '/.sql/';
+    $scriptDir = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . '.sql/';
     $scriptMap = [
         'install' => 'install.php',
         'migrate' => 'migrate-json.php',

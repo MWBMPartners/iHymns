@@ -51,7 +51,7 @@ function output(string $msg): void {
  * LOAD MYSQL CREDENTIALS
  * ========================================================================= */
 
-$credFile = __DIR__ . '/../.auth/db_credentials.php';
+$credFile = __DIR__ . DIRECTORY_SEPARATOR . '../.auth/db_credentials.php';
 if (!file_exists($credFile)) {
     output("ERROR: MySQL credentials not found. Run install.php first.");
     return;
@@ -82,7 +82,7 @@ output("Connected to MySQL: " . DB_NAME);
  * STEP 1: MIGRATE USERS FROM SQLITE
  * ========================================================================= */
 
-$sqliteFile = __DIR__ . '/../data_share/SQLite/ihymns.db';
+$sqliteFile = __DIR__ . DIRECTORY_SEPARATOR . '../data_share/SQLite/ihymns.db';
 $migratedUsers = 0;
 $skippedUsers = 0;
 $migratedSetlists = 0;
@@ -226,7 +226,7 @@ if (file_exists($sqliteFile)) {
 output("");
 output("--- Step 3: Migrate Shared Setlists from JSON files ---");
 
-$setlistDir = __DIR__ . '/../data_share/setlist_json';
+$setlistDir = __DIR__ . DIRECTORY_SEPARATOR . '../data_share/setlist_json';
 $migratedShared = 0;
 
 if (is_dir($setlistDir)) {

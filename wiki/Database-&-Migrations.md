@@ -74,7 +74,7 @@ The full schema is defined in `appWeb/.sql/schema.sql`.
 | Table | Purpose |
 |---|---|
 | `tblUserGroups` | Groups with version channel access flags (Alpha/Beta/RC/RTW) |
-| `tblUsers` | Accounts with role, group link, EmailVerified, LastLoginAt, LoginCount |
+| `tblUsers` | Accounts with role, group link, EmailVerified, LastLoginAt, LoginCount, AccessTier, CcliNumber, CcliVerified |
 | `tblSessions` | Server-side admin panel sessions |
 | `tblApiTokens` | Bearer tokens for PWA/native app auth (64-char hex, 30-day expiry) |
 | `tblPasswordResetTokens` | Single-use password reset tokens (48-char hex, 1-hour expiry) |
@@ -82,6 +82,8 @@ The full schema is defined in `appWeb/.sql/schema.sql`.
 | `tblUserGroupMembers` | Many-to-many user-to-group membership |
 | `tblUserPermissions` | Fine-grained per-user permission overrides (NULL = inherit from role) |
 | `tblLoginAttempts` | Brute force tracking (IP, username, success/failure, timestamp) |
+| `tblAccessTiers` | Content access tier definitions (id, name, level, description) |
+| `tblUserPurchases` | Purchase and subscription tracking (user, tier, payment reference, expiry) |
 
 ### User Data Tables
 
@@ -114,6 +116,41 @@ The full schema is defined in `appWeb/.sql/schema.sql`.
 | `tblActivityLog` | Audit trail for admin actions (edits, logins, imports) |
 | `tblAppSettings` | Key-value runtime configuration store |
 | `tblMigrations` | Schema migration version tracking |
+
+---
+
+## Content Tiers
+
+iHymns uses a tiered content access system to gate premium features such as audio playback, MIDI files, and PDF sheet music.
+
+### The 5 Tiers
+
+| Level | Tier Name | Access |
+|---|---|---|
+| 0 | **Free** | Lyrics only (browse, search, setlists) |
+| 1 | **Basic** | Lyrics + song metadata extras |
+| 2 | **Standard** | Basic + MIDI audio playback |
+| 3 | **Premium** | Standard + PDF sheet music downloads |
+| 4 | **Ultimate** | All content, including future premium features |
+
+### Tier Resolution
+
+Users can have a **personal tier** (set on `tblUsers.AccessTier`) and an **organisation-level tier** (inherited from their user group via `tblAccessTiers`). When both exist, the **highest tier wins** — ensuring that a user belonging to a Premium organisation still gets Premium access even if their personal tier is Free.
+
+Resolution order:
+
+1. Read the user's personal `AccessTier` level from `tblUsers`
+2. Read the tier level associated with the user's group(s)
+3. Take `MAX(personal_tier, org_tier)` as the effective tier
+4. Gate feature access based on the effective tier level
+
+### Related Tables
+
+- `tblAccessTiers` — defines each tier (id, name, level, description)
+- `tblUserPurchases` — records purchases/subscriptions that grant a user a specific tier (includes payment reference, start date, expiry date)
+- `tblUsers.AccessTier` — the user's current personal tier (FK to `tblAccessTiers`)
+- `tblUsers.CcliNumber` — the user's CCLI licence number (validated format)
+- `tblUsers.CcliVerified` — whether the CCLI number has been verified (0/1)
 
 ---
 

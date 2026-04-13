@@ -12,7 +12,7 @@ header('Content-Type: application/javascript; charset=UTF-8');
 header('Cache-Control: no-cache, no-store, must-revalidate');
 header('Service-Worker-Allowed: /');
 
-require_once __DIR__ . '/includes/infoAppVer.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes/infoAppVer.php';
 $swVersion = $app['Application']['Version']['Number'] ?? '0.0.0';
 ?>
 /**

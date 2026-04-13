@@ -13,7 +13,7 @@ declare(strict_types=1);
  * admins can only manage users below their own privilege level.
  */
 
-require_once __DIR__ . '/includes/auth.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes/auth.php';
 requireAdmin();
 
 $currentUser = getCurrentUser();
@@ -205,7 +205,7 @@ function canManage(array $target, array $actor): bool {
     </style>
 </head>
 <body>
-    <?php require __DIR__ . '/includes/admin-nav.php'; ?>
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes/admin-nav.php'; ?>
 
     <div class="container py-4" style="max-width: 960px;">
 

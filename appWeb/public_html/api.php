@@ -41,12 +41,12 @@ declare(strict_types=1);
  * BOOTSTRAP — Load configuration and dependencies
  * ========================================================================= */
 
-require_once __DIR__ . '/includes/config.php';
-require_once __DIR__ . '/includes/infoAppVer.php';
-require_once __DIR__ . '/includes/db_mysql.php';
-require_once __DIR__ . '/includes/SongData.php';
-require_once __DIR__ . '/includes/content_access.php';
-require_once __DIR__ . '/manage/includes/db.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes/config.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes/infoAppVer.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes/db_mysql.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes/SongData.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes/content_access.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage/includes/db.php';
 
 /* =========================================================================
  * REQUEST HANDLING
@@ -84,11 +84,11 @@ if ($page !== null) {
     /* Route to the appropriate page template */
     switch ($page) {
         case 'home':
-            require __DIR__ . '/includes/pages/home.php';
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes/pages/home.php';
             break;
 
         case 'songbooks':
-            require __DIR__ . '/includes/pages/songbooks.php';
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes/pages/songbooks.php';
             break;
 
         case 'songbook':
@@ -99,7 +99,7 @@ if ($page !== null) {
                 echo '<div class="alert alert-warning" role="alert">Songbook ID is required.</div>';
                 break;
             }
-            require __DIR__ . '/includes/pages/songbook.php';
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes/pages/songbook.php';
             break;
 
         case 'song':
@@ -110,31 +110,31 @@ if ($page !== null) {
                 echo '<div class="alert alert-warning" role="alert">Song ID is required.</div>';
                 break;
             }
-            require __DIR__ . '/includes/pages/song.php';
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes/pages/song.php';
             break;
 
         case 'search':
-            require __DIR__ . '/includes/pages/search.php';
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes/pages/search.php';
             break;
 
         case 'favorites':
-            require __DIR__ . '/includes/pages/favorites.php';
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes/pages/favorites.php';
             break;
 
         case 'setlist':
-            require __DIR__ . '/includes/pages/setlist.php';
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes/pages/setlist.php';
             break;
 
         case 'setlist-shared':
-            require __DIR__ . '/includes/pages/setlist-shared.php';
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes/pages/setlist-shared.php';
             break;
 
         case 'settings':
-            require __DIR__ . '/includes/pages/settings.php';
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes/pages/settings.php';
             break;
 
         case 'stats':
-            require __DIR__ . '/includes/pages/stats.php';
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes/pages/stats.php';
             break;
 
         case 'writer':
@@ -145,24 +145,24 @@ if ($page !== null) {
                 echo '<div class="alert alert-warning" role="alert">Writer ID is required.</div>';
                 break;
             }
-            require __DIR__ . '/includes/pages/writer.php';
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes/pages/writer.php';
             break;
 
         case 'help':
-            require __DIR__ . '/includes/pages/help.php';
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes/pages/help.php';
             break;
 
         case 'terms':
-            require __DIR__ . '/includes/pages/terms.php';
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes/pages/terms.php';
             break;
 
         case 'privacy':
-            require __DIR__ . '/includes/pages/privacy.php';
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes/pages/privacy.php';
             break;
 
         default:
             http_response_code(404);
-            require __DIR__ . '/includes/pages/not-found.php';
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes/pages/not-found.php';
             break;
     }
 
@@ -946,7 +946,7 @@ if ($action !== null) {
                 break;
             }
 
-            require_once __DIR__ . '/manage/includes/auth.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage/includes/auth.php';
 
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
@@ -982,7 +982,7 @@ if ($action !== null) {
                 break;
             }
 
-            require_once __DIR__ . '/manage/includes/auth.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage/includes/auth.php';
 
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
@@ -1042,7 +1042,7 @@ if ($action !== null) {
                 break;
             }
 
-            require_once __DIR__ . '/manage/includes/auth.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage/includes/auth.php';
 
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
@@ -1096,7 +1096,7 @@ if ($action !== null) {
                 break;
             }
 
-            require_once __DIR__ . '/manage/includes/auth.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage/includes/auth.php';
 
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
@@ -3574,7 +3574,7 @@ if ($action !== null) {
                 break;
             }
 
-            require_once __DIR__ . '/includes/ccli_validator.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes/ccli_validator.php';
 
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
@@ -3623,18 +3623,19 @@ if ($action !== null) {
                 break;
             }
 
-            require_once __DIR__ . '/includes/ccli_validator.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes/ccli_validator.php';
 
             $authUser = getAuthenticatedUser();
             $userTier = 'public';
             $hasCcli = false;
 
             if ($authUser) {
+                /* Resolve effective tier: highest of personal + org tiers */
+                $userTier = resolveEffectiveTier($authUser['Id']);
                 $db = getDb();
-                $stmt = $db->prepare('SELECT AccessTier, CcliNumber, CcliVerified FROM tblUsers WHERE Id = ?');
+                $stmt = $db->prepare('SELECT CcliNumber, CcliVerified FROM tblUsers WHERE Id = ?');
                 $stmt->execute([$authUser['Id']]);
                 $userData = $stmt->fetch(PDO::FETCH_ASSOC);
-                $userTier = $userData['AccessTier'] ?? 'free';
                 $hasCcli = !empty($userData['CcliNumber']) && $userData['CcliVerified'];
             }
 
@@ -3719,7 +3720,7 @@ if ($action !== null) {
                 break;
             }
 
-            require_once __DIR__ . '/includes/ccli_validator.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes/ccli_validator.php';
 
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);

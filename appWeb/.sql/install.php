@@ -99,7 +99,7 @@ output("");
  * CHECK FOR EXISTING CREDENTIALS
  * ========================================================================= */
 
-$credentialsFile = __DIR__ . '/../.auth/db_credentials.php';
+$credentialsFile = __DIR__ . DIRECTORY_SEPARATOR . '../.auth/db_credentials.php';
 $credentialsDir  = dirname($credentialsFile);
 $hasExistingCreds = file_exists($credentialsFile);
 
@@ -278,7 +278,7 @@ output("");
  * RUN SCHEMA
  * ========================================================================= */
 
-$schemaFile = __DIR__ . '/schema.sql';
+$schemaFile = __DIR__ . DIRECTORY_SEPARATOR . 'schema.sql';
 
 if (!file_exists($schemaFile)) {
     output("ERROR: Schema file not found: " . $schemaFile);

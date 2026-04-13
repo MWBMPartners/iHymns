@@ -13,7 +13,7 @@ declare(strict_types=1);
  * analytics, feature flags, and internationalisation settings.
  *
  * USAGE:
- *   require_once __DIR__ . '/config.php';
+ *   require_once __DIR__ . DIRECTORY_SEPARATOR . 'config.php';
  *   echo APP_CONFIG['libraries']['bootstrap']['version'];
  */
 
@@ -36,7 +36,7 @@ define('APP_ROOT', dirname(__DIR__));
 define('APP_INCLUDES', __DIR__);
 
 /** Path to the shared data directory (outside the web root for security) */
-define('APP_DATA_SHARE', dirname(APP_ROOT) . '/data_share');
+define('APP_DATA_SHARE', dirname(APP_ROOT) . DIRECTORY_SEPARATOR . 'data_share');
 
 /** Path to the song data JSON file */
 define('APP_DATA_FILE', APP_DATA_SHARE . '/song_data/songs.json');

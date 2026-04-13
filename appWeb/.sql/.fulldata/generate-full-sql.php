@@ -26,9 +26,9 @@ if (!$isCli) {
 }
 
 $projectRoot = dirname(__DIR__, 3);
-$schemaFile  = dirname(__DIR__) . '/schema.sql';
+$schemaFile  = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'schema.sql';
 $jsonFile    = $projectRoot . '/data/songs.json';
-$outputFile  = __DIR__ . '/ihymns-full.sql';
+$outputFile  = __DIR__ . DIRECTORY_SEPARATOR . 'ihymns-full.sql';
 
 if (!file_exists($schemaFile)) {
     echo "ERROR: schema.sql not found at {$schemaFile}\n";

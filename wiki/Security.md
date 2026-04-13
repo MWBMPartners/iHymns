@@ -88,6 +88,36 @@ All admin panel / auth queries use PDO with prepared statements, providing the s
 
 ---
 
+## Content Tier Gating
+
+Content access is enforced server-side using the content tier system. This prevents unauthorised access to premium features (audio, MIDI, PDF) regardless of client-side state.
+
+### Tier Resolution Logic
+
+The server resolves a user's effective tier by comparing their personal tier with their organisation tier and taking the highest:
+
+```text
+effective_tier = MAX(user.AccessTier, org_tier_from_groups)
+```
+
+- **Personal tier** is read from `tblUsers.AccessTier`
+- **Organisation tier** is resolved from the user's group memberships via `tblAccessTiers`
+- The higher of the two is used for all access checks
+- Tier checks are performed server-side before serving gated content (MIDI files, PDF downloads)
+- The `tier_check` API endpoint allows clients to pre-check access before attempting to load gated resources
+
+### CCLI Number Validation
+
+CCLI licence numbers are validated before being stored:
+
+- **Format check**: must be a numeric string, typically 5-8 digits
+- **Sanitisation**: trimmed, non-numeric characters rejected
+- Input validated via the `ccli_validate` API endpoint (POST)
+- Stored in `tblUsers.CcliNumber` with verification status in `tblUsers.CcliVerified`
+- Invalid formats return a 400 error with a descriptive message
+
+---
+
 ## Input Sanitisation
 
 ### API Inputs

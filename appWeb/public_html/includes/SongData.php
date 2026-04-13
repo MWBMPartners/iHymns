@@ -14,7 +14,7 @@ declare(strict_types=1);
  * and songbook data for the iHymns web application.
  *
  * USAGE:
- *   require_once __DIR__ . '/db_mysql.php';
+ *   require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
  *   $songData = new SongData();
  *   $songbooks = $songData->getSongbooks();
  *   $song = $songData->getSongById('CP-0001');
@@ -106,8 +106,8 @@ class SongData
     {
         $candidates = [
             defined('APP_DATA_FILE') ? APP_DATA_FILE : '',
-            dirname(__DIR__, 2) . '/data_share/song_data/songs.json',
-            dirname(__DIR__, 3) . '/data/songs.json',
+            dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'data_share/song_data/songs.json',
+            dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . 'data/songs.json',
         ];
 
         foreach ($candidates as $path) {

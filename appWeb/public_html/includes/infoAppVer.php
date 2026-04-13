@@ -97,7 +97,7 @@ $app["Application"]["Version"]["Name"] = NULL;
  * Fallback: checks for a .env-channel file injected by CI/CD.
  */
 $serverPath = $_SERVER['DOCUMENT_ROOT'] ?? $_SERVER['SCRIPT_FILENAME'] ?? __DIR__;
-$envChannelFile = dirname(__DIR__) . '/.env-channel';
+$envChannelFile = dirname(__DIR__) . DIRECTORY_SEPARATOR . '.env-channel';
 $app["Application"]["Version"]["Development"]["Status"] = match (true) {
     /* Alpha/dev deployment — server path contains "public_html_dev" */
     str_contains($serverPath, 'public_html_dev') => "Alpha",

@@ -30,7 +30,7 @@ declare(strict_types=1);
  * AUTHENTICATION
  * ========================================================================= */
 
-require_once __DIR__ . '/../includes/auth.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . '../includes/auth.php';
 
 /* Verify authentication and editor+ role — return 401/403 JSON for AJAX */
 if (!isAuthenticated()) {
@@ -52,9 +52,9 @@ if (!$currentUser || !hasRole($currentUser['Role'], 'editor')) {
  * BOOTSTRAP — Load MySQL connection and SongData
  * ========================================================================= */
 
-require_once __DIR__ . '/../../includes/config.php';
-require_once __DIR__ . '/../../includes/db_mysql.php';
-require_once __DIR__ . '/../../includes/SongData.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . '../../includes/config.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . '../../includes/db_mysql.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . '../../includes/SongData.php';
 
 /* =========================================================================
  * REQUEST HANDLING

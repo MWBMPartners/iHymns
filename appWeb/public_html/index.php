@@ -38,23 +38,14 @@ declare(strict_types=1);
  * BOOTSTRAP — Load configuration and application metadata
  * ========================================================================= */
 
-require_once __DIR__ . '/includes/config.php';
-require_once __DIR__ . '/includes/infoAppVer.php';
-require_once __DIR__ . '/includes/db_mysql.php';
-require_once __DIR__ . '/includes/SongData.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes/config.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes/infoAppVer.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes/db_mysql.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes/SongData.php';
 
 /* =========================================================================
- * APPLICATION METADATA SHORTCUTS
+ * APPLICATION METADATA — accessed directly via $app array
  * ========================================================================= */
-
-$appName      = $app["Application"]["Name"];
-$appVersion   = $app["Application"]["Version"]["Number"];
-$appDevStatus = $app["Application"]["Version"]["Development"]["Status"];
-$appCopyright = $app["Application"]["Copyright"]["Full"];
-$appDesc      = $app["Application"]["Description"]["Synopsis"];
-$appKeywords  = $app["Application"]["Description"]["Keywords"];
-$appUrl       = $app["Application"]["Website"]["URL"];
-$vendorName   = $app["Application"]["Vendor"]["Name"];
 
 /* Verify native app availability (cached, 24h TTL) */
 $nativeApps = APP_CONFIG['native_apps'];
@@ -62,14 +53,14 @@ $iosApp     = verifyAppStoreApp('ios', $nativeApps['ios'] ?? null);
 $androidApp = verifyAppStoreApp('android', $nativeApps['android'] ?? null);
 
 /** Build a display version string (e.g., "0.1.5 Beta") */
-$versionDisplay = $appVersion;
-if ($appDevStatus !== null) {
-    $versionDisplay .= ' ' . $appDevStatus;
+$versionDisplay = $app["Application"]["Version"]["Number"];
+if ($app["Application"]["Version"]["Development"]["Status"] !== null) {
+    $versionDisplay .= ' ' . $app["Application"]["Version"]["Development"]["Status"];
 }
 
 /** On alpha: append build timestamp (yyyymmddhhmmss) for tracking deploys */
 $commitDate = $app["Application"]["Version"]["Repo"]["Commit"]["Date"] ?? null;
-if ($appDevStatus === 'Alpha' && $commitDate !== null) {
+if ($app["Application"]["Version"]["Development"]["Status"] === 'Alpha' && $commitDate !== null) {
     $buildStamp = preg_replace('/[^0-9]/', '', $commitDate);
     if (strlen($buildStamp) >= 12) {
         $versionDisplay .= ' · ' . substr($buildStamp, 0, 14);
@@ -135,11 +126,11 @@ $requestPath = getRequestPath();
 $canonicalUrl = getCanonicalUrl();
 
 /* Default OG values (used for generic pages) */
-$ogTitle       = $appName . ' — Christian Hymns & Worship Songs';
-$ogDescription = $appDesc;
+$ogTitle       = $app["Application"]["Name"] . ' — Christian Hymns & Worship Songs';
+$ogDescription = $app["Application"]["Description"]["Synopsis"];
 $ogType        = 'website';
 $ogImage       = getCanonicalUrl('/og-image');
-$ogImageAlt    = $appName . ' logo';
+$ogImageAlt    = $app["Application"]["Name"] . ' logo';
 
 /* JSON-LD structured data — built during OG detection, rendered in <head> */
 $jsonLdScripts   = [];
@@ -160,7 +151,7 @@ try {
                      . ' #' . (int)$ogSong['number'];
             $ogDescription = 'View lyrics for "' . $ogSong['title']
                            . '" from ' . $ogSong['songbookName']
-                           . ' on ' . $appName;
+                           . ' on ' . $app["Application"]["Name"];
             if (!empty($ogSong['writers'])) {
                 $ogDescription .= '. Written by ' . implode(', ', $ogSong['writers']);
             }
@@ -215,11 +206,11 @@ try {
         $ogBook = $songData->getSongbook($matches[1]);
         if ($ogBook !== null) {
             $pageType = 'songbook';
-            $ogTitle = htmlspecialchars($ogBook['name']) . ' — ' . $appName;
+            $ogTitle = htmlspecialchars($ogBook['name']) . ' — ' . $app["Application"]["Name"];
             $ogDescription = 'Browse ' . number_format($ogBook['songCount'])
-                           . ' songs from ' . $ogBook['name'] . ' on ' . $appName;
+                           . ' songs from ' . $ogBook['name'] . ' on ' . $app["Application"]["Name"];
             $ogImage = getCanonicalUrl('/og-image?songbook=' . urlencode($matches[1]));
-            $ogImageAlt = $ogBook['name'] . ' songbook on ' . $appName;
+            $ogImageAlt = $ogBook['name'] . ' songbook on ' . $app["Application"]["Name"];
 
             /* Breadcrumb: Home > Songbooks > Songbook Name */
             $breadcrumbItems = [
@@ -239,12 +230,12 @@ try {
             if (is_array($shareData)) {
                 $setlistName = $shareData['name'] ?? 'Shared Set List';
                 $setlistSongCount = count($shareData['songs'] ?? []);
-                $ogTitle = htmlspecialchars($setlistName) . ' — Shared Set List — ' . $appName;
+                $ogTitle = htmlspecialchars($setlistName) . ' — Shared Set List — ' . $app["Application"]["Name"];
                 $ogDescription = 'A curated set list with ' . $setlistSongCount
                                . ' ' . ($setlistSongCount === 1 ? 'song' : 'songs')
-                               . ' on ' . $appName;
+                               . ' on ' . $app["Application"]["Name"];
                 $ogImage = getCanonicalUrl('/og-image?setlist=' . urlencode($shareId));
-                $ogImageAlt = 'Set list "' . $setlistName . '" on ' . $appName;
+                $ogImageAlt = 'Set list "' . $setlistName . '" on ' . $app["Application"]["Name"];
             }
         }
 
@@ -280,7 +271,7 @@ if ($pageType === 'home') {
     $jsonLdScripts[] = [
         '@context'        => 'https://schema.org',
         '@type'           => 'WebSite',
-        'name'            => $appName,
+        'name'            => $app["Application"]["Name"],
         'url'             => $siteUrl,
         'potentialAction'  => [
             '@type'       => 'SearchAction',
@@ -324,10 +315,10 @@ if (!empty($breadcrumbItems)) {
          ================================================================ -->
     <title><?= $ogTitle ?></title>
     <meta name="description" content="<?= htmlspecialchars($ogDescription) ?>">
-    <meta name="keywords" content="<?= htmlspecialchars($appKeywords) ?>">
-    <meta name="author" content="<?= htmlspecialchars($vendorName) ?>">
-    <meta name="application-name" content="<?= htmlspecialchars($appName) ?>">
-    <meta name="generator" content="<?= htmlspecialchars($appName) ?> PWA">
+    <meta name="keywords" content="<?= htmlspecialchars($app["Application"]["Description"]["Keywords"]) ?>">
+    <meta name="author" content="<?= htmlspecialchars($app["Application"]["Vendor"]["Name"]) ?>">
+    <meta name="application-name" content="<?= htmlspecialchars($app["Application"]["Name"]) ?>">
+    <meta name="generator" content="<?= htmlspecialchars($app["Application"]["Name"]) ?> PWA">
 
     <!-- Canonical URL — prevents duplicate content for search engines -->
     <link rel="canonical" href="<?= htmlspecialchars($canonicalUrl) ?>">
@@ -336,7 +327,7 @@ if (!empty($breadcrumbItems)) {
     <meta property="og:type" content="<?= htmlspecialchars($ogType) ?>">
     <meta property="og:title" content="<?= htmlspecialchars($ogTitle) ?>">
     <meta property="og:description" content="<?= htmlspecialchars($ogDescription) ?>">
-    <meta property="og:site_name" content="<?= htmlspecialchars($appName) ?>">
+    <meta property="og:site_name" content="<?= htmlspecialchars($app["Application"]["Name"]) ?>">
     <meta property="og:url" content="<?= htmlspecialchars($canonicalUrl) ?>">
     <meta property="og:image" content="<?= htmlspecialchars($ogImage) ?>">
     <meta property="og:image:alt" content="<?= htmlspecialchars($ogImageAlt) ?>">
@@ -359,7 +350,7 @@ if (!empty($breadcrumbItems)) {
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="<?= htmlspecialchars($appName) ?>">
+    <meta name="apple-mobile-web-app-title" content="<?= htmlspecialchars($app["Application"]["Name"]) ?>">
     <!-- Smart App Banner — only shown when a verified native app exists (#99) -->
     <?php if ($iosApp['verified']): ?>
         <meta name="apple-itunes-app" content="app-id=<?= htmlspecialchars($iosApp['appId']) ?>, app-argument=<?= htmlspecialchars($requestPath) ?>">
@@ -408,13 +399,13 @@ if (!empty($breadcrumbItems)) {
           id="animatecss">
 
     <!-- iHymns Application Stylesheet -->
-    <link rel="stylesheet" href="/css/app.css?v=<?= urlencode($appVersion) ?>">
+    <link rel="stylesheet" href="/css/app.css?v=<?= urlencode($app["Application"]["Version"]["Number"]) ?>">
 
     <!-- Accessibility Stylesheet (high contrast, colour blind modes, RTL) -->
-    <link rel="stylesheet" href="/css/accessibility.css?v=<?= urlencode($appVersion) ?>">
+    <link rel="stylesheet" href="/css/accessibility.css?v=<?= urlencode($app["Application"]["Version"]["Number"]) ?>">
 
     <!-- Print Stylesheet -->
-    <link rel="stylesheet" href="/css/print.css?v=<?= urlencode($appVersion) ?>" media="print">
+    <link rel="stylesheet" href="/css/print.css?v=<?= urlencode($app["Application"]["Version"]["Number"]) ?>" media="print">
 
     <!-- ================================================================
          PRECONNECT — Speed up CDN resource loading
@@ -546,7 +537,7 @@ if (!empty($breadcrumbItems)) {
             <button type="button"
                     class="btn btn-sm btn-install-app me-2 d-none"
                     id="pwa-install-btn"
-                    aria-label="Install <?= htmlspecialchars($appName) ?> app">
+                    aria-label="Install <?= htmlspecialchars($app["Application"]["Name"]) ?> app">
                 <i class="me-1" aria-hidden="true"></i>
                 <span></span>
             </button>
@@ -570,12 +561,12 @@ if (!empty($breadcrumbItems)) {
                             class="navbar-brand d-flex align-items-center gap-2 dropdown-toggle"
                             data-bs-toggle="dropdown"
                             aria-expanded="false"
-                            aria-label="<?= htmlspecialchars($appName) ?> navigation menu"
+                            aria-label="<?= htmlspecialchars($app["Application"]["Name"]) ?> navigation menu"
                             id="logo-nav-btn">
                         <i class="fa-solid fa-music fa-lg" aria-hidden="true"></i>
-                        <span class="fw-bold"><?= htmlspecialchars($appName) ?></span>
-                        <?php if ($appDevStatus): ?>
-                            <span class="badge bg-warning text-dark ms-1 small"><?= htmlspecialchars($appDevStatus) ?></span>
+                        <span class="fw-bold"><?= htmlspecialchars($app["Application"]["Name"]) ?></span>
+                        <?php if ($app["Application"]["Version"]["Development"]["Status"]): ?>
+                            <span class="badge bg-warning text-dark ms-1 small"><?= htmlspecialchars($app["Application"]["Version"]["Development"]["Status"]) ?></span>
                         <?php endif; ?>
                     </button>
                     <ul class="dropdown-menu" aria-labelledby="logo-nav-btn">
@@ -778,7 +769,7 @@ if (!empty($breadcrumbItems)) {
                 <div class="spinner-border text-primary" role="presentation">
                     <span class="visually-hidden">Loading...</span>
                 </div>
-                <p class="mt-3 text-muted">Loading <?= htmlspecialchars($appName) ?>...</p>
+                <p class="mt-3 text-muted">Loading <?= htmlspecialchars($app["Application"]["Name"]) ?>...</p>
             </div>
         </div>
 
@@ -846,11 +837,11 @@ if (!empty($breadcrumbItems)) {
         <!-- Copyright & Version info -->
         <div class="footer-info" aria-label="Application information">
             <small>
-                <?= $appCopyright ?>
+                <?= $app["Application"]["Copyright"]["Full"] ?>
                 &nbsp;|&nbsp;
                 v<?= htmlspecialchars($versionDisplay) ?><?php
                     /* Subtle data source indicator — Alpha/Beta only */
-                    if ($appDevStatus !== null && isset($songData) && $songData->isJsonFallback()) {
+                    if ($app["Application"]["Version"]["Development"]["Status"] !== null && isset($songData) && $songData->isJsonFallback()) {
                         echo ' <span title="Using JSON fallback (MySQL not configured)" style="opacity:0.4;cursor:help">&#9679; json</span>';
                     }
                 ?>
@@ -962,12 +953,12 @@ if (!empty($breadcrumbItems)) {
                 <div class="modal-header">
                     <h5 class="modal-title" id="disclaimer-modal-label">
                         <i class="fa-solid fa-hand-holding-heart me-2" aria-hidden="true"></i>
-                        Welcome to <?= htmlspecialchars($appName) ?>
+                        Welcome to <?= htmlspecialchars($app["Application"]["Name"]) ?>
                     </h5>
                 </div>
                 <div class="modal-body">
                     <p class="lead">
-                        <?= htmlspecialchars($appName) ?> is designed to assist with worship wherever you are.
+                        <?= htmlspecialchars($app["Application"]["Name"]) ?> is designed to assist with worship wherever you are.
                     </p>
                     <p>
                         The lyrics provided in this application are intended for personal worship
@@ -977,7 +968,7 @@ if (!empty($breadcrumbItems)) {
                         covering the reproduction of song lyrics.
                     </p>
                     <p>
-                        By continuing to use <?= htmlspecialchars($appName) ?>, you confirm that:
+                        By continuing to use <?= htmlspecialchars($app["Application"]["Name"]) ?>, you confirm that:
                     </p>
                     <ul>
                         <li>You own one or more of the songbooks featured, <strong>or</strong></li>
@@ -1151,11 +1142,11 @@ if (!empty($breadcrumbItems)) {
          * Passes server-side PHP configuration to the client-side JavaScript.
          */
         window.iHymnsConfig = {
-            appName:        <?= json_encode($appName) ?>,
-            version:        <?= json_encode($appVersion) ?>,
+            appName:        <?= json_encode($app["Application"]["Name"]) ?>,
+            version:        <?= json_encode($app["Application"]["Version"]["Number"]) ?>,
             versionDisplay: <?= json_encode($versionDisplay) ?>,
-            devStatus:      <?= json_encode($appDevStatus) ?>,
-            appUrl:         <?= json_encode($appUrl) ?>,
+            devStatus:      <?= json_encode($app["Application"]["Version"]["Development"]["Status"]) ?>,
+            appUrl:         <?= json_encode($app["Application"]["Website"]["URL"]) ?>,
             apiUrl:         '/api',
             dataUrl:        '/api?action=songs_json',
             nativeApps:     <?= json_encode([
@@ -1189,9 +1180,9 @@ if (!empty($breadcrumbItems)) {
     </script>
 
     <!-- iHymns Application Scripts (ES Modules) -->
-    <script src="/js/app.js?v=<?= urlencode($appVersion) ?>" type="module"></script>
+    <script src="/js/app.js?v=<?= urlencode($app["Application"]["Version"]["Number"]) ?>" type="module"></script>
 
     <!-- Colour Vision Deficiency (CVD) SVG correction filters (#319) -->
-    <?php readfile(__DIR__ . '/assets/cvd-filters.svg'); ?>
+    <?php readfile(__DIR__ . DIRECTORY_SEPARATOR . 'assets/cvd-filters.svg'); ?>
 </body>
 </html>
