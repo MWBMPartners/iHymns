@@ -612,6 +612,184 @@ CREATE TABLE IF NOT EXISTS tblMigrations (
 
 
 -- ============================================================================
+-- FEATURE TABLES (Song Keys, Chords, Scheduling, Templates, Collaboration, etc.)
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- tblSongKeys (#298)
+-- Musical key and tempo per song.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongKeys (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    SongId          VARCHAR(20)     NOT NULL UNIQUE,
+    OriginalKey     VARCHAR(5)      NOT NULL DEFAULT '' COMMENT 'e.g., C, G, Bb, F#m',
+    Tempo           INT UNSIGNED    NULL COMMENT 'BPM',
+    TimeSignature   VARCHAR(10)     NOT NULL DEFAULT '4/4',
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    CONSTRAINT fk_SongKeys_Song
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongChords (#299)
+-- Chord notation per component.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongChords (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    ComponentId     INT UNSIGNED    NOT NULL COMMENT 'FK to tblSongComponents.Id',
+    ChordsJson      JSON            NOT NULL COMMENT 'Array of {position, chord} objects per line',
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT fk_Chords_Component
+        FOREIGN KEY (ComponentId) REFERENCES tblSongComponents(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSetlistSchedule (#300)
+-- Calendar scheduling for setlists.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSetlistSchedule (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    SetlistId       VARCHAR(100)    NOT NULL,
+    UserId          INT UNSIGNED    NOT NULL,
+    OrgId           INT UNSIGNED    NULL COMMENT 'Organisation this schedule belongs to',
+    ScheduledDate   DATE            NOT NULL,
+    Notes           TEXT            NOT NULL DEFAULT '',
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_Date      (ScheduledDate),
+    INDEX idx_User      (UserId),
+    INDEX idx_Org       (OrgId),
+
+    CONSTRAINT fk_Schedule_User
+        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_Schedule_Org
+        FOREIGN KEY (OrgId) REFERENCES tblOrganisations(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSetlistTemplates (#301)
+-- Service order templates.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSetlistTemplates (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    Name            VARCHAR(200)    NOT NULL,
+    Description     TEXT            NOT NULL DEFAULT '',
+    SlotsJson       JSON            NOT NULL COMMENT 'Array of {label, type} slot definitions',
+    CreatedBy       INT UNSIGNED    NULL,
+    OrgId           INT UNSIGNED    NULL,
+    IsPublic        TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Visible to all users',
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_Org       (OrgId),
+
+    CONSTRAINT fk_Template_User
+        FOREIGN KEY (CreatedBy) REFERENCES tblUsers(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_Template_Org
+        FOREIGN KEY (OrgId) REFERENCES tblOrganisations(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSetlistCollaborators (#312)
+-- Collaborative editing permissions for shared setlists.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSetlistCollaborators (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    SetlistOwnerId  INT UNSIGNED    NOT NULL COMMENT 'FK to tblUsers — the setlist owner',
+    SetlistId       VARCHAR(100)    NOT NULL COMMENT 'Matches tblUserSetlists.SetlistId',
+    CollaboratorId  INT UNSIGNED    NOT NULL COMMENT 'FK to tblUsers — the collaborator',
+    Permission      VARCHAR(10)     NOT NULL DEFAULT 'edit' COMMENT 'view, edit',
+    InvitedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_Collab (SetlistOwnerId, SetlistId, CollaboratorId),
+
+    CONSTRAINT fk_Collab_Owner
+        FOREIGN KEY (SetlistOwnerId) REFERENCES tblUsers(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_Collab_User
+        FOREIGN KEY (CollaboratorId) REFERENCES tblUsers(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongRevisions (#313)
+-- Edit history for songs.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongRevisions (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    SongId          VARCHAR(20)     NOT NULL,
+    UserId          INT UNSIGNED    NULL,
+    Action          VARCHAR(20)     NOT NULL COMMENT 'create, edit, delete',
+    PreviousData    JSON            NULL COMMENT 'Song state before change',
+    NewData         JSON            NULL COMMENT 'Song state after change',
+    Status          VARCHAR(20)     NOT NULL DEFAULT 'approved' COMMENT 'pending, approved, rejected',
+    ReviewedBy      INT UNSIGNED    NULL,
+    ReviewNote      TEXT            NOT NULL DEFAULT '',
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_Song      (SongId),
+    INDEX idx_User      (UserId),
+    INDEX idx_Status    (Status),
+
+    CONSTRAINT fk_Revision_User
+        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_Revision_Reviewer
+        FOREIGN KEY (ReviewedBy) REFERENCES tblUsers(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblUserPreferences (#310)
+-- Server-side preference sync.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblUserPreferences (
+    UserId          INT UNSIGNED    NOT NULL PRIMARY KEY,
+    PreferencesJson JSON            NOT NULL COMMENT 'Theme, font size, default songbook, etc.',
+    UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    CONSTRAINT fk_Prefs_User
+        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblPushSubscriptions (#311)
+-- Web Push API subscriptions.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblPushSubscriptions (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    UserId          INT UNSIGNED    NOT NULL,
+    Endpoint        TEXT            NOT NULL,
+    P256dhKey       TEXT            NOT NULL,
+    AuthKey         TEXT            NOT NULL,
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_User      (UserId),
+
+    CONSTRAINT fk_Push_User
+        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ============================================================================
 -- DEFAULT DATA — Seed user groups, languages, and app settings
 -- ============================================================================
 

@@ -2080,6 +2080,857 @@ if ($action !== null) {
             sendJson(['ok' => true]);
             break;
 
+        /* =================================================================
+         * SONG KEY & TRANSPOSITION (#298)
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Get the musical key info for a song
+         * Parameters: id (required) — Song ID e.g. CP-0001
+         * ----------------------------------------------------------------- */
+        case 'song_key':
+            $songKeyId = isset($_GET['id']) ? trim($_GET['id']) : '';
+            if ($songKeyId === '') {
+                sendJson(['error' => 'Song ID is required.'], 400);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->prepare(
+                'SELECT OriginalKey AS originalKey, Tempo AS tempo,
+                        TimeSignature AS timeSignature
+                 FROM tblSongKeys
+                 WHERE SongId = ?'
+            );
+            $stmt->execute([$songKeyId]);
+            $keyData = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$keyData) {
+                sendJson(['error' => 'No key data found for this song.'], 404);
+                break;
+            }
+
+            $keyData['tempo'] = $keyData['tempo'] !== null ? (int)$keyData['tempo'] : null;
+
+            sendJson(['key' => $keyData]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Save/update the musical key info for a song (editor+ only)
+         *
+         * POST body (JSON):
+         *   { "song_id": "CP-0001", "original_key": "G",
+         *     "tempo": 120, "time_signature": "4/4" }
+         * ----------------------------------------------------------------- */
+        case 'song_key_save':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['editor', 'admin', 'global_admin'])) {
+                sendJson(['error' => 'Editor access required.'], 403);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            $keySongId      = trim($body['song_id'] ?? '');
+            $originalKey    = mb_substr(trim($body['original_key'] ?? ''), 0, 10);
+            $tempo          = isset($body['tempo']) ? (int)$body['tempo'] : null;
+            $timeSignature  = mb_substr(trim($body['time_signature'] ?? ''), 0, 10);
+
+            if ($keySongId === '') {
+                sendJson(['error' => 'song_id is required.'], 400);
+                break;
+            }
+            if ($originalKey === '') {
+                sendJson(['error' => 'original_key is required.'], 400);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->prepare(
+                'INSERT INTO tblSongKeys (SongId, OriginalKey, Tempo, TimeSignature)
+                 VALUES (?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE
+                    OriginalKey = VALUES(OriginalKey),
+                    Tempo = VALUES(Tempo),
+                    TimeSignature = VALUES(TimeSignature)'
+            );
+            $stmt->execute([$keySongId, $originalKey, $tempo, $timeSignature ?: null]);
+
+            sendJson(['ok' => true]);
+            break;
+
+        /* =================================================================
+         * SETLIST SCHEDULING (#300)
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Get scheduled setlists within a date range
+         * Parameters: from (date), to (date)
+         * Requires: Bearer token
+         * ----------------------------------------------------------------- */
+        case 'setlist_schedule':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $schedFrom = trim($_GET['from'] ?? '');
+            $schedTo   = trim($_GET['to'] ?? '');
+
+            if ($schedFrom === '' || $schedTo === '') {
+                sendJson(['error' => 'Both from and to date parameters are required.'], 400);
+                break;
+            }
+
+            /* Validate date format (YYYY-MM-DD) */
+            if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $schedFrom) ||
+                !preg_match('/^\d{4}-\d{2}-\d{2}$/', $schedTo)) {
+                sendJson(['error' => 'Dates must be in YYYY-MM-DD format.'], 400);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->prepare(
+                'SELECT s.Id AS id, s.SetlistId AS setlistId,
+                        s.ScheduledDate AS scheduledDate, s.Notes AS notes,
+                        s.OrgId AS orgId, s.CreatedBy AS createdBy,
+                        s.CreatedAt AS createdAt
+                 FROM tblSetlistSchedule s
+                 LEFT JOIN tblOrganisationMembers m ON m.OrgId = s.OrgId AND m.UserId = ?
+                 WHERE s.ScheduledDate BETWEEN ? AND ?
+                   AND (s.CreatedBy = ? OR m.UserId IS NOT NULL)
+                 ORDER BY s.ScheduledDate ASC'
+            );
+            $stmt->execute([$authUser['Id'], $schedFrom, $schedTo, $authUser['Id']]);
+            $schedules = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            foreach ($schedules as &$sched) {
+                $sched['id'] = (int)$sched['id'];
+                $sched['orgId'] = $sched['orgId'] ? (int)$sched['orgId'] : null;
+                $sched['createdBy'] = (int)$sched['createdBy'];
+            }
+            unset($sched);
+
+            sendJson(['schedules' => $schedules]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Schedule a setlist for a specific date
+         *
+         * POST body (JSON):
+         *   { "setlist_id": "...", "scheduled_date": "2026-04-20",
+         *     "notes": "Sunday morning", "org_id": 1 }
+         * Requires: Bearer token
+         * ----------------------------------------------------------------- */
+        case 'setlist_schedule_save':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            $schedSetlistId = trim($body['setlist_id'] ?? '');
+            $schedDate      = trim($body['scheduled_date'] ?? '');
+            $schedNotes     = mb_substr(trim($body['notes'] ?? ''), 0, 1000);
+            $schedOrgId     = !empty($body['org_id']) ? (int)$body['org_id'] : null;
+
+            if ($schedSetlistId === '') {
+                sendJson(['error' => 'setlist_id is required.'], 400);
+                break;
+            }
+            if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $schedDate)) {
+                sendJson(['error' => 'scheduled_date must be in YYYY-MM-DD format.'], 400);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->prepare(
+                'INSERT INTO tblSetlistSchedule (SetlistId, ScheduledDate, Notes, OrgId, CreatedBy)
+                 VALUES (?, ?, ?, ?, ?)'
+            );
+            $stmt->execute([$schedSetlistId, $schedDate, $schedNotes, $schedOrgId, $authUser['Id']]);
+
+            sendJson(['ok' => true, 'id' => (int)$db->lastInsertId()], 201);
+            break;
+
+        /* =================================================================
+         * SETLIST TEMPLATES (#301)
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Get available setlist templates
+         * Returns public templates + user's own + user's org templates
+         * ----------------------------------------------------------------- */
+        case 'setlist_templates':
+            $db = getDb();
+            $authUser = getAuthenticatedUser();
+
+            if ($authUser) {
+                $stmt = $db->prepare(
+                    'SELECT t.Id AS id, t.Name AS name, t.Description AS description,
+                            t.SlotsJson AS slotsJson, t.IsPublic AS isPublic,
+                            t.OrgId AS orgId, t.CreatedBy AS createdBy,
+                            t.CreatedAt AS createdAt
+                     FROM tblSetlistTemplates t
+                     LEFT JOIN tblOrganisationMembers m ON m.OrgId = t.OrgId AND m.UserId = ?
+                     WHERE t.IsPublic = 1
+                        OR t.CreatedBy = ?
+                        OR m.UserId IS NOT NULL
+                     ORDER BY t.Name ASC'
+                );
+                $stmt->execute([$authUser['Id'], $authUser['Id']]);
+            } else {
+                $stmt = $db->query(
+                    'SELECT Id AS id, Name AS name, Description AS description,
+                            SlotsJson AS slotsJson, IsPublic AS isPublic,
+                            OrgId AS orgId, CreatedBy AS createdBy,
+                            CreatedAt AS createdAt
+                     FROM tblSetlistTemplates
+                     WHERE IsPublic = 1
+                     ORDER BY Name ASC'
+                );
+            }
+
+            $templates = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            foreach ($templates as &$tpl) {
+                $tpl['id'] = (int)$tpl['id'];
+                $tpl['isPublic'] = (bool)$tpl['isPublic'];
+                $tpl['orgId'] = $tpl['orgId'] ? (int)$tpl['orgId'] : null;
+                $tpl['createdBy'] = $tpl['createdBy'] ? (int)$tpl['createdBy'] : null;
+                $tpl['slotsJson'] = json_decode($tpl['slotsJson'], true) ?: [];
+            }
+            unset($tpl);
+
+            sendJson(['templates' => $templates]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Create a setlist template
+         *
+         * POST body (JSON):
+         *   { "name": "Sunday Service", "description": "...",
+         *     "slots": [{"label": "Opening", "type": "song"}, ...],
+         *     "org_id": 1, "is_public": false }
+         * Requires: Bearer token
+         * ----------------------------------------------------------------- */
+        case 'setlist_template_save':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            $tplName     = mb_substr(trim($body['name'] ?? ''), 0, 200);
+            $tplDesc     = mb_substr(trim($body['description'] ?? ''), 0, 2000);
+            $tplSlots    = is_array($body['slots'] ?? null) ? $body['slots'] : [];
+            $tplOrgId    = !empty($body['org_id']) ? (int)$body['org_id'] : null;
+            $tplIsPublic = !empty($body['is_public']) ? 1 : 0;
+
+            if ($tplName === '') {
+                sendJson(['error' => 'Template name is required.'], 400);
+                break;
+            }
+
+            /* Sanitise slots */
+            $cleanSlots = [];
+            foreach (array_slice($tplSlots, 0, 50) as $slot) {
+                if (!is_array($slot) || empty($slot['label'])) continue;
+                $cleanSlots[] = [
+                    'label' => mb_substr(trim($slot['label']), 0, 100),
+                    'type'  => mb_substr(trim($slot['type'] ?? 'song'), 0, 50),
+                ];
+            }
+
+            $slotsJson = json_encode($cleanSlots, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+            $db = getDb();
+            $stmt = $db->prepare(
+                'INSERT INTO tblSetlistTemplates (Name, Description, SlotsJson, OrgId, IsPublic, CreatedBy)
+                 VALUES (?, ?, ?, ?, ?, ?)'
+            );
+            $stmt->execute([$tplName, $tplDesc, $slotsJson, $tplOrgId, $tplIsPublic, $authUser['Id']]);
+
+            sendJson(['ok' => true, 'id' => (int)$db->lastInsertId()], 201);
+            break;
+
+        /* =================================================================
+         * POPULAR SONGS (#303)
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Get popular songs by view count
+         * Parameters: period (week|month|year|all), limit (default 20)
+         * ----------------------------------------------------------------- */
+        case 'popular_songs':
+            $period = trim($_GET['period'] ?? 'week');
+            $popLimit = min(max((int)($_GET['limit'] ?? 20), 1), 100);
+
+            $periodMap = [
+                'week'  => 7,
+                'month' => 30,
+                'year'  => 365,
+                'all'   => 99999,
+            ];
+            $days = $periodMap[$period] ?? 7;
+
+            $db = getDb();
+            $stmt = $db->prepare(
+                'SELECT SongId AS songId, COUNT(*) AS views
+                 FROM tblSongHistory
+                 WHERE ViewedAt > DATE_SUB(NOW(), INTERVAL ? DAY)
+                 GROUP BY SongId
+                 ORDER BY views DESC
+                 LIMIT ?'
+            );
+            $stmt->execute([$days, $popLimit]);
+            $songs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            foreach ($songs as &$ps) {
+                $ps['views'] = (int)$ps['views'];
+            }
+            unset($ps);
+
+            sendJson(['songs' => $songs, 'period' => $period]);
+            break;
+
+        /* =================================================================
+         * RECENTLY VIEWED (#304)
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Get the authenticated user's recently viewed songs
+         * Returns up to 50 most recent views
+         * Requires: Bearer token
+         * ----------------------------------------------------------------- */
+        case 'song_history':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->prepare(
+                'SELECT SongId AS songId, ViewedAt AS viewedAt
+                 FROM tblSongHistory
+                 WHERE UserId = ?
+                 ORDER BY ViewedAt DESC
+                 LIMIT 50'
+            );
+            $stmt->execute([$authUser['Id']]);
+            $history = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            sendJson(['history' => $history]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Record a song view
+         *
+         * POST body (JSON): { "song_id": "CP-0001" }
+         * Anonymous views are allowed (UserId will be NULL)
+         * ----------------------------------------------------------------- */
+        case 'song_view':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+            $viewSongId = trim($body['song_id'] ?? '');
+
+            if (!preg_match('/^[A-Za-z]+-\d+$/', $viewSongId)) {
+                sendJson(['error' => 'Invalid song ID.'], 400);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            $viewUserId = $authUser ? $authUser['Id'] : null;
+
+            $db = getDb();
+            $stmt = $db->prepare(
+                'INSERT INTO tblSongHistory (SongId, UserId) VALUES (?, ?)'
+            );
+            $stmt->execute([$viewSongId, $viewUserId]);
+
+            sendJson(['ok' => true]);
+            break;
+
+        /* =================================================================
+         * BROWSE BY TAG (#305)
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Get all song tags
+         * ----------------------------------------------------------------- */
+        case 'tags':
+            $db = getDb();
+            $stmt = $db->query(
+                'SELECT Id AS id, Name AS name, Slug AS slug,
+                        Description AS description
+                 FROM tblSongTags
+                 ORDER BY Name ASC'
+            );
+            $tags = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            foreach ($tags as &$tag) {
+                $tag['id'] = (int)$tag['id'];
+            }
+            unset($tag);
+
+            sendJson(['tags' => $tags]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Get songs by tag slug
+         * Parameters: tag (required) — tag slug e.g. "easter"
+         * ----------------------------------------------------------------- */
+        case 'songs_by_tag':
+            $tagSlug = trim($_GET['tag'] ?? '');
+            if ($tagSlug === '') {
+                sendJson(['error' => 'Tag slug is required.'], 400);
+                break;
+            }
+
+            $db = getDb();
+
+            /* Get the tag info */
+            $stmt = $db->prepare(
+                'SELECT Id AS id, Name AS name, Slug AS slug,
+                        Description AS description
+                 FROM tblSongTags
+                 WHERE Slug = ?'
+            );
+            $stmt->execute([$tagSlug]);
+            $tagInfo = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$tagInfo) {
+                sendJson(['error' => 'Tag not found.'], 404);
+                break;
+            }
+            $tagInfo['id'] = (int)$tagInfo['id'];
+
+            /* Get songs linked to this tag */
+            $stmt = $db->prepare(
+                'SELECT s.SongId AS id, s.Title AS title,
+                        s.SongbookAbbr AS songbook, s.Number AS number
+                 FROM tblSongTagMap tm
+                 JOIN tblSongs s ON s.SongId = tm.SongId
+                 WHERE tm.TagId = ?
+                 ORDER BY s.Title ASC'
+            );
+            $stmt->execute([$tagInfo['id']]);
+            $tagSongs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            foreach ($tagSongs as &$ts) {
+                $ts['number'] = (int)$ts['number'];
+            }
+            unset($ts);
+
+            sendJson(['songs' => $tagSongs, 'tag' => $tagInfo]);
+            break;
+
+        /* =================================================================
+         * SEARCH AUTOCOMPLETE (#307)
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Get search suggestions (autocomplete)
+         * Parameters: q (required, min 2 chars)
+         * ----------------------------------------------------------------- */
+        case 'suggest':
+            $suggestQ = trim($_GET['q'] ?? '');
+
+            if (mb_strlen($suggestQ) < 2) {
+                sendJson(['suggestions' => []]);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->prepare(
+                'SELECT SongId AS id, Title AS title,
+                        SongbookAbbr AS songbook, Number AS number
+                 FROM tblSongs
+                 WHERE Title LIKE ?
+                 LIMIT 8'
+            );
+            $stmt->execute(['%' . $suggestQ . '%']);
+            $suggestions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            foreach ($suggestions as &$sg) {
+                $sg['number'] = (int)$sg['number'];
+            }
+            unset($sg);
+
+            sendJson(['suggestions' => $suggestions]);
+            break;
+
+        /* =================================================================
+         * USER PREFERENCES (#310)
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Get user preferences
+         * Requires: Bearer token
+         * ----------------------------------------------------------------- */
+        case 'user_preferences':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->prepare(
+                'SELECT PreferencesJson FROM tblUserPreferences WHERE UserId = ?'
+            );
+            $stmt->execute([$authUser['Id']]);
+            $prefsJson = $stmt->fetchColumn();
+
+            $preferences = $prefsJson ? (json_decode($prefsJson, true) ?: []) : [];
+
+            sendJson(['preferences' => $preferences]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Save/sync user preferences
+         *
+         * POST body (JSON):
+         *   { "preferences": { "theme": "dark", "fontSize": 16, ... } }
+         * Requires: Bearer token
+         * ----------------------------------------------------------------- */
+        case 'user_preferences_sync':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            if (!is_array($body['preferences'] ?? null)) {
+                sendJson(['error' => 'Invalid request. Required: preferences (object).'], 400);
+                break;
+            }
+
+            $prefsJson = json_encode($body['preferences'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+            /* Cap JSON size at 64 KB */
+            if (strlen($prefsJson) > 65536) {
+                sendJson(['error' => 'Preferences data too large (max 64 KB).'], 400);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->prepare(
+                'INSERT INTO tblUserPreferences (UserId, PreferencesJson)
+                 VALUES (?, ?)
+                 ON DUPLICATE KEY UPDATE
+                    PreferencesJson = VALUES(PreferencesJson),
+                    UpdatedAt = NOW()'
+            );
+            $stmt->execute([$authUser['Id'], $prefsJson]);
+
+            sendJson(['ok' => true]);
+            break;
+
+        /* =================================================================
+         * COLLABORATIVE SETLISTS (#312)
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Get collaborators for a setlist
+         * Parameters: setlist_id (required)
+         * Requires: Bearer token — only the setlist owner can view
+         * ----------------------------------------------------------------- */
+        case 'setlist_collaborators':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $collabSetlistId = trim($_GET['setlist_id'] ?? '');
+            if ($collabSetlistId === '') {
+                sendJson(['error' => 'setlist_id is required.'], 400);
+                break;
+            }
+
+            $db = getDb();
+
+            /* Verify the authenticated user owns this setlist */
+            $stmt = $db->prepare(
+                'SELECT SetlistId FROM tblUserSetlists WHERE SetlistId = ? AND UserId = ?'
+            );
+            $stmt->execute([$collabSetlistId, $authUser['Id']]);
+            if (!$stmt->fetch()) {
+                sendJson(['error' => 'You do not own this setlist or it does not exist.'], 403);
+                break;
+            }
+
+            $stmt = $db->prepare(
+                'SELECT c.Id AS id, c.UserId AS userId,
+                        u.Username AS username, u.DisplayName AS displayName,
+                        c.Permission AS permission, c.CreatedAt AS createdAt
+                 FROM tblSetlistCollaborators c
+                 JOIN tblUsers u ON u.Id = c.UserId
+                 WHERE c.SetlistId = ?
+                 ORDER BY c.CreatedAt ASC'
+            );
+            $stmt->execute([$collabSetlistId]);
+            $collaborators = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            foreach ($collaborators as &$collab) {
+                $collab['id'] = (int)$collab['id'];
+                $collab['userId'] = (int)$collab['userId'];
+            }
+            unset($collab);
+
+            sendJson(['collaborators' => $collaborators]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Add a collaborator to a setlist
+         *
+         * POST body (JSON):
+         *   { "setlist_id": "...", "username": "...",
+         *     "permission": "edit"|"view" }
+         * Requires: Bearer token — owner only
+         * ----------------------------------------------------------------- */
+        case 'setlist_collaborator_add':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            $addSetlistId  = trim($body['setlist_id'] ?? '');
+            $addUsername    = mb_strtolower(trim($body['username'] ?? ''));
+            $addPermission = trim($body['permission'] ?? 'view');
+
+            if ($addSetlistId === '' || $addUsername === '') {
+                sendJson(['error' => 'setlist_id and username are required.'], 400);
+                break;
+            }
+            if (!in_array($addPermission, ['edit', 'view'])) {
+                sendJson(['error' => 'Permission must be "edit" or "view".'], 400);
+                break;
+            }
+
+            $db = getDb();
+
+            /* Verify ownership */
+            $stmt = $db->prepare(
+                'SELECT SetlistId FROM tblUserSetlists WHERE SetlistId = ? AND UserId = ?'
+            );
+            $stmt->execute([$addSetlistId, $authUser['Id']]);
+            if (!$stmt->fetch()) {
+                sendJson(['error' => 'You do not own this setlist or it does not exist.'], 403);
+                break;
+            }
+
+            /* Find the user to add */
+            $stmt = $db->prepare('SELECT Id FROM tblUsers WHERE Username = ? AND IsActive = 1');
+            $stmt->execute([$addUsername]);
+            $targetUser = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$targetUser) {
+                sendJson(['error' => 'User not found.'], 404);
+                break;
+            }
+
+            $targetUserId = (int)$targetUser['Id'];
+
+            /* Cannot add yourself */
+            if ($targetUserId === $authUser['Id']) {
+                sendJson(['error' => 'You cannot add yourself as a collaborator.'], 400);
+                break;
+            }
+
+            /* Upsert collaborator */
+            $stmt = $db->prepare(
+                'INSERT INTO tblSetlistCollaborators (SetlistId, UserId, Permission)
+                 VALUES (?, ?, ?)
+                 ON DUPLICATE KEY UPDATE Permission = VALUES(Permission)'
+            );
+            $stmt->execute([$addSetlistId, $targetUserId, $addPermission]);
+
+            sendJson(['ok' => true], 201);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Remove a collaborator from a setlist
+         *
+         * POST body (JSON):
+         *   { "setlist_id": "...", "collaborator_id": 123 }
+         * Requires: Bearer token — owner only
+         * ----------------------------------------------------------------- */
+        case 'setlist_collaborator_remove':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            $rmSetlistId    = trim($body['setlist_id'] ?? '');
+            $rmCollabId     = (int)($body['collaborator_id'] ?? 0);
+
+            if ($rmSetlistId === '' || $rmCollabId <= 0) {
+                sendJson(['error' => 'setlist_id and collaborator_id are required.'], 400);
+                break;
+            }
+
+            $db = getDb();
+
+            /* Verify ownership */
+            $stmt = $db->prepare(
+                'SELECT SetlistId FROM tblUserSetlists WHERE SetlistId = ? AND UserId = ?'
+            );
+            $stmt->execute([$rmSetlistId, $authUser['Id']]);
+            if (!$stmt->fetch()) {
+                sendJson(['error' => 'You do not own this setlist or it does not exist.'], 403);
+                break;
+            }
+
+            $stmt = $db->prepare(
+                'DELETE FROM tblSetlistCollaborators WHERE Id = ? AND SetlistId = ?'
+            );
+            $stmt->execute([$rmCollabId, $rmSetlistId]);
+
+            sendJson(['ok' => true]);
+            break;
+
+        /* =================================================================
+         * SONG REVISIONS (#313)
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Get revision history for a song (editor+ only)
+         * Parameters: song_id (required)
+         * ----------------------------------------------------------------- */
+        case 'song_revisions':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['editor', 'admin', 'global_admin'])) {
+                sendJson(['error' => 'Editor access required.'], 403);
+                break;
+            }
+
+            $revSongId = trim($_GET['song_id'] ?? '');
+            if ($revSongId === '') {
+                sendJson(['error' => 'song_id is required.'], 400);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->prepare(
+                'SELECT r.Id AS id, r.SongId AS songId, r.Action AS action,
+                        r.Status AS status, r.ChangesJson AS changesJson,
+                        r.Notes AS notes, r.CreatedAt AS createdAt,
+                        r.ReviewedAt AS reviewedAt,
+                        u.Username AS username,
+                        rv.Username AS reviewedBy
+                 FROM tblSongRevisions r
+                 JOIN tblUsers u ON u.Id = r.CreatedBy
+                 LEFT JOIN tblUsers rv ON rv.Id = r.ReviewedBy
+                 WHERE r.SongId = ?
+                 ORDER BY r.CreatedAt DESC
+                 LIMIT 100'
+            );
+            $stmt->execute([$revSongId]);
+            $revisions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            foreach ($revisions as &$rev) {
+                $rev['id'] = (int)$rev['id'];
+                if ($rev['changesJson'] !== null) {
+                    $rev['changesJson'] = json_decode($rev['changesJson'], true);
+                }
+            }
+            unset($rev);
+
+            sendJson(['revisions' => $revisions]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Get all pending song revisions (admin+ only)
+         * ----------------------------------------------------------------- */
+        case 'admin_pending_revisions':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->query(
+                'SELECT r.Id AS id, r.SongId AS songId, r.Action AS action,
+                        r.Status AS status, r.ChangesJson AS changesJson,
+                        r.Notes AS notes, r.CreatedAt AS createdAt,
+                        u.Username AS username
+                 FROM tblSongRevisions r
+                 JOIN tblUsers u ON u.Id = r.CreatedBy
+                 WHERE r.Status = \'pending\'
+                 ORDER BY r.CreatedAt ASC
+                 LIMIT 200'
+            );
+            $revisions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            foreach ($revisions as &$rev) {
+                $rev['id'] = (int)$rev['id'];
+                if ($rev['changesJson'] !== null) {
+                    $rev['changesJson'] = json_decode($rev['changesJson'], true);
+                }
+            }
+            unset($rev);
+
+            sendJson(['revisions' => $revisions]);
+            break;
+
         /* -----------------------------------------------------------------
          * Admin: list all organisations
          * Requires: admin+ role
