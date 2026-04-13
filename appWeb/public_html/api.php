@@ -3552,6 +3552,207 @@ if ($action !== null) {
          * Admin: list all organisations
          * Requires: admin+ role
          * ----------------------------------------------------------------- */
+
+        /* =================================================================
+         * CCLI & ACCESS TIERS (#346)
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Validate and save a CCLI licence number
+         * POST body: { "ccli_number": "1234567" }
+         * Requires: Bearer token
+         * ----------------------------------------------------------------- */
+        case 'ccli_validate':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            require_once __DIR__ . '/includes/ccli_validator.php';
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+            $ccliInput = trim($body['ccli_number'] ?? '');
+
+            $validation = validateCcliNumber($ccliInput);
+
+            if (!$validation['valid']) {
+                sendJson(['error' => $validation['error'], 'valid' => false], 400);
+                break;
+            }
+
+            /* Save to user profile */
+            $db = getDb();
+            $stmt = $db->prepare(
+                'UPDATE tblUsers SET CcliNumber = ?, CcliVerified = 1, UpdatedAt = NOW() WHERE Id = ?'
+            );
+            $stmt->execute([$validation['normalized'], $authUser['Id']]);
+
+            /* If user is on 'free' tier, auto-upgrade to 'ccli' */
+            $stmt = $db->prepare('SELECT AccessTier FROM tblUsers WHERE Id = ?');
+            $stmt->execute([$authUser['Id']]);
+            $currentTier = $stmt->fetchColumn();
+            if ($currentTier === 'free' || $currentTier === 'public') {
+                $stmt = $db->prepare('UPDATE tblUsers SET AccessTier = ? WHERE Id = ?');
+                $stmt->execute(['ccli', $authUser['Id']]);
+            }
+
+            sendJson([
+                'valid'      => true,
+                'normalized' => $validation['normalized'],
+                'type'       => $validation['type'],
+                'tier'       => ($currentTier === 'free' || $currentTier === 'public') ? 'ccli' : $currentTier,
+            ]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Check content tier access for an action
+         * GET ?action=tier_check&check=play_audio
+         * Requires: Bearer token (optional — anonymous = public tier)
+         * ----------------------------------------------------------------- */
+        case 'tier_check':
+            $checkAction = trim($_GET['check'] ?? '');
+            if ($checkAction === '') {
+                sendJson(['error' => 'check parameter required.'], 400);
+                break;
+            }
+
+            require_once __DIR__ . '/includes/ccli_validator.php';
+
+            $authUser = getAuthenticatedUser();
+            $userTier = 'public';
+            $hasCcli = false;
+
+            if ($authUser) {
+                $db = getDb();
+                $stmt = $db->prepare('SELECT AccessTier, CcliNumber, CcliVerified FROM tblUsers WHERE Id = ?');
+                $stmt->execute([$authUser['Id']]);
+                $userData = $stmt->fetch(PDO::FETCH_ASSOC);
+                $userTier = $userData['AccessTier'] ?? 'free';
+                $hasCcli = !empty($userData['CcliNumber']) && $userData['CcliVerified'];
+            }
+
+            $result = checkTierAccess($userTier, $checkAction, $hasCcli);
+            $result['tier'] = $userTier;
+            sendJson($result);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Get available access tiers (public)
+         * ----------------------------------------------------------------- */
+        case 'access_tiers':
+            $db = getDb();
+            $stmt = $db->query(
+                'SELECT Name AS name, DisplayName AS displayName, Level AS level,
+                        Description AS description, CanViewLyrics AS canViewLyrics,
+                        CanViewCopyrighted AS canViewCopyrighted, CanPlayAudio AS canPlayAudio,
+                        CanDownloadMidi AS canDownloadMidi, CanDownloadPdf AS canDownloadPdf,
+                        CanOfflineSave AS canOfflineSave, RequiresCcli AS requiresCcli
+                 FROM tblAccessTiers ORDER BY Level ASC'
+            );
+            $tiers = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($tiers as &$t) {
+                $t['level'] = (int)$t['level'];
+                foreach (['canViewLyrics','canViewCopyrighted','canPlayAudio','canDownloadMidi','canDownloadPdf','canOfflineSave','requiresCcli'] as $k) {
+                    $t[$k] = (bool)$t[$k];
+                }
+            }
+            unset($t);
+            sendJson(['tiers' => $tiers]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Admin: set a user's access tier
+         * POST body: { "user_id": 123, "tier": "premium" }
+         * Requires: admin/global_admin role
+         * ----------------------------------------------------------------- */
+        case 'admin_set_user_tier':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+            $targetUserId = (int)($body['user_id'] ?? 0);
+            $newTier = trim($body['tier'] ?? '');
+            $validTiers = ['public', 'free', 'ccli', 'premium', 'pro'];
+
+            if ($targetUserId <= 0 || !in_array($newTier, $validTiers)) {
+                sendJson(['error' => 'Valid user_id and tier (public/free/ccli/premium/pro) required.'], 400);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->prepare('UPDATE tblUsers SET AccessTier = ?, UpdatedAt = NOW() WHERE Id = ?');
+            $stmt->execute([$newTier, $targetUserId]);
+
+            sendJson(['ok' => true, 'tier' => $newTier]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Admin: validate/set a user's CCLI number
+         * POST body: { "user_id": 123, "ccli_number": "1234567" }
+         * Requires: admin/global_admin role
+         * ----------------------------------------------------------------- */
+        case 'admin_set_user_ccli':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            require_once __DIR__ . '/includes/ccli_validator.php';
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+            $targetUserId = (int)($body['user_id'] ?? 0);
+            $ccliInput = trim($body['ccli_number'] ?? '');
+
+            if ($targetUserId <= 0) {
+                sendJson(['error' => 'Valid user_id required.'], 400);
+                break;
+            }
+
+            if ($ccliInput === '') {
+                /* Clear CCLI number */
+                $db = getDb();
+                $stmt = $db->prepare('UPDATE tblUsers SET CcliNumber = ?, CcliVerified = 0, UpdatedAt = NOW() WHERE Id = ?');
+                $stmt->execute(['', $targetUserId]);
+                sendJson(['ok' => true, 'cleared' => true]);
+                break;
+            }
+
+            $validation = validateCcliNumber($ccliInput);
+            if (!$validation['valid']) {
+                sendJson(['error' => $validation['error'], 'valid' => false], 400);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->prepare('UPDATE tblUsers SET CcliNumber = ?, CcliVerified = 1, UpdatedAt = NOW() WHERE Id = ?');
+            $stmt->execute([$validation['normalized'], $targetUserId]);
+
+            sendJson(['ok' => true, 'normalized' => $validation['normalized']]);
+            break;
+
         case 'admin_organisations':
             $authUser = getAuthenticatedUser();
             if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {

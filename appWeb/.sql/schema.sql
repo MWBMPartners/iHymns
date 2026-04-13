@@ -178,6 +178,9 @@ CREATE TABLE IF NOT EXISTS tblUsers (
     Role            VARCHAR(20)     NOT NULL DEFAULT 'user' COMMENT 'global_admin, admin, editor, user',
     GroupId         INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK to tblUserGroups for version access',
     IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
+    AccessTier      VARCHAR(20)     NOT NULL DEFAULT 'free' COMMENT 'public, free, ccli, premium, pro',
+    CcliNumber      VARCHAR(20)     NOT NULL DEFAULT '' COMMENT 'CCLI licence number (6-7 digits)',
+    CcliVerified    TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = CCLI number validated',
     LastLoginAt     TIMESTAMP       NULL DEFAULT NULL COMMENT 'Last successful login timestamp',
     LoginCount      INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'Total successful login count',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -279,6 +282,60 @@ CREATE TABLE IF NOT EXISTS tblEmailLoginTokens (
     INDEX idx_Expires   (ExpiresAt),
 
     CONSTRAINT fk_EmailLogin_User
+        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ============================================================================
+-- ACCESS TIERS & PURCHASES
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- tblAccessTiers
+-- Defines available content access tiers. Each tier unlocks specific
+-- content types. Higher tiers include all lower tier access.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblAccessTiers (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    Name            VARCHAR(30)     NOT NULL UNIQUE COMMENT 'public, free, ccli, premium, pro',
+    DisplayName     VARCHAR(50)     NOT NULL,
+    Level           INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'Higher = more access',
+    Description     TEXT            NOT NULL DEFAULT '',
+    CanViewLyrics   TINYINT(1)      NOT NULL DEFAULT 1,
+    CanViewCopyrighted TINYINT(1)   NOT NULL DEFAULT 0 COMMENT 'Access copyrighted songs',
+    CanPlayAudio    TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'MIDI/audio playback',
+    CanDownloadMidi TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Download MIDI files',
+    CanDownloadPdf  TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Download sheet music PDFs',
+    CanOfflineSave  TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Save songs for offline use',
+    RequiresCcli    TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Requires valid CCLI licence',
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblUserPurchases
+-- Tracks one-off purchases or subscription activations per user.
+-- Used for premium content unlocks and subscription management.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblUserPurchases (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    UserId          INT UNSIGNED    NOT NULL,
+    ProductType     VARCHAR(30)     NOT NULL COMMENT 'tier_upgrade, songbook_unlock, feature_unlock, subscription',
+    ProductId       VARCHAR(50)     NOT NULL DEFAULT '' COMMENT 'Specific product (e.g., songbook abbreviation)',
+    TierGranted     VARCHAR(20)     NOT NULL DEFAULT '' COMMENT 'Access tier granted by this purchase',
+    TransactionId   VARCHAR(100)    NOT NULL DEFAULT '' COMMENT 'Payment processor transaction ID',
+    Amount          DECIMAL(10,2)   NULL COMMENT 'Payment amount',
+    Currency        VARCHAR(3)      NOT NULL DEFAULT 'GBP',
+    Status          VARCHAR(20)     NOT NULL DEFAULT 'active' COMMENT 'active, expired, refunded, cancelled',
+    ExpiresAt       TIMESTAMP       NULL DEFAULT NULL COMMENT 'NULL = never expires (one-off purchase)',
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_User      (UserId),
+    INDEX idx_Status    (Status),
+    INDEX idx_Expires   (ExpiresAt),
+
+    CONSTRAINT fk_Purchases_User
         FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
         ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -828,7 +885,18 @@ INSERT IGNORE INTO tblAppSettings (SettingKey, SettingValue, Description) VALUES
     ('captcha_secret_key', '', 'CAPTCHA provider server-side secret key'),
     ('ads_enabled', '0', 'Enable advertisement display (0=off, 1=on)'),
     ('ads_provider', 'none', 'Ad provider: none, adsense, ezoic, mediavine, custom'),
-    ('ads_publisher_id', '', 'Ad provider publisher/client ID');
+    ('ads_publisher_id', '', 'Ad provider publisher/client ID'),
+    ('content_gating_enabled', '0', 'Enable content tier gating (0=off, 1=on — all content open when off)'),
+    ('ccli_validation_enabled', '0', 'Require valid CCLI licence for copyrighted songs (0=off, 1=on)');
+
+
+-- Default access tiers (#346)
+INSERT IGNORE INTO tblAccessTiers (Name, DisplayName, Level, Description, CanViewLyrics, CanViewCopyrighted, CanPlayAudio, CanDownloadMidi, CanDownloadPdf, CanOfflineSave, RequiresCcli) VALUES
+    ('public',  'Public',         0, 'Public domain songs only. No login required.',                    1, 0, 0, 0, 0, 0, 0),
+    ('free',    'Free',          10, 'All song lyrics viewable. Login required.',                       1, 1, 0, 0, 0, 0, 0),
+    ('ccli',    'CCLI Licensed', 20, 'Full lyrics access with valid CCLI licence.',                     1, 1, 1, 0, 0, 0, 1),
+    ('premium', 'Premium',       30, 'Audio playback, MIDI and PDF downloads.',                         1, 1, 1, 1, 1, 1, 0),
+    ('pro',     'Professional',  40, 'All features including API access and bulk export.',              1, 1, 1, 1, 1, 1, 0);
 
 
 -- ============================================================================
