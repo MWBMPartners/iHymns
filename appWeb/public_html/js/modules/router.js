@@ -388,6 +388,13 @@ export class Router {
                 if (songId) {
                     this.app.history.recordView(songId, title, songbook, number);
                     if (songbook) this.trackRecentSongbook(songbook);
+
+                    /* Record song view on server for history/popular tracking (#287) */
+                    fetch(`${this.apiUrl}?action=song_view`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ song_id: songId })
+                    }).catch(() => {}); // fire-and-forget
                 }
 
                 /* Load related songs (#118) — async, non-blocking */
