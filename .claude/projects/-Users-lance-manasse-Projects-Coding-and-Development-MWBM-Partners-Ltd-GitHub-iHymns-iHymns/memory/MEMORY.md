@@ -2,11 +2,11 @@
 - [iHymns Project](project_ihymns.md) — Multiplatform Christian lyrics app, MySQL (30+ tables), 50+ API endpoints, v0.10.0
 - [Never touch SourceSongData](feedback_source_data.md) — .SourceSongData/ must never be deleted or modified
 - [Use appX/ directories](feedback_app_dirs.md) — appWeb/, appApple/, appAndroid/ naming convention
-- [Web app can use PHP](feedback_php_web.md) — PHP 8.5+ on shared hosting (DreamHost)
+- [Web app can use PHP](feedback_php_web.md) — PHP 8.5+ on shared hosting (DreamHost, no CLI access)
 - [Phase 1 is first iteration](feedback_phase1_simplicity.md) — Don't over-engineer, Phase 2 API fixes it
 - [Clean neutral colours](feedback_colours.md) — Slate/grey neutral scheme, no bright/vivid colours
 - [Web app directory structure](feedback_appweb_dir.md) — appWeb/ with public_html, data_share, .auth/, .sql/
 - [Phase 1 PWA enhancements](feedback_phase1_pwa_enhancements.md) — Analytics, gestures, writer pages, TF-IDF, WCAG, PWA icons
 - [Phase 1 SEO/PWA/Social](feedback_phase1_seo_pwa_social.md) — OG images (song/songbook/setlist), PWA banners, sitemap
-- [User Accounts](feedback_user_accounts.md) — 3 auth methods, roles, orgs, email login, groups, version access
+- [User Accounts](feedback_user_accounts.md) — 3 auth methods, roles, orgs, email login, groups, version access, hashed tokens
 - [DB naming](feedback_db_naming.md) — tblCamelCase tables, CamelCase columns, AS aliases for API compat
