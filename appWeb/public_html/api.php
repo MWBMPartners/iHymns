@@ -546,6 +546,25 @@ if ($action !== null) {
                 break;
             }
 
+            /* Check registration mode (#236) */
+            $db = getDb();
+            $stmt = $db->prepare('SELECT SettingValue FROM tblAppSettings WHERE SettingKey = ?');
+            $stmt->execute(['registration_mode']);
+            $regMode = $stmt->fetchColumn() ?: 'open';
+
+            /* Check if any users exist (first user always allowed for initial setup) */
+            $stmt = $db->query('SELECT COUNT(*) FROM tblUsers');
+            $userCount = (int)$stmt->fetchColumn();
+
+            if ($userCount > 0 && $regMode === 'admin_only') {
+                /* Only admins can create accounts — check if requester is admin */
+                $authUser = getAuthenticatedUser();
+                if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                    sendJson(['error' => 'Registration is restricted to administrators.'], 403);
+                    break;
+                }
+            }
+
             /* Rate limit registrations: max 3 per IP per hour */
             $clientIp = $_SERVER['REMOTE_ADDR'] ?? '';
             $db = getDb();
