@@ -700,11 +700,11 @@ $currentUser = getCurrentUser();
                     <span id="songCountFiltered" style="display: none;"> (showing <span id="filteredCount">0</span>)</span>
                 </span>
                 <span>
-                    <button type="button" class="btn btn-sm btn-amber py-0 px-1" id="btn-add-song" title="Add new song">
-                        <i class="bi bi-plus-lg"></i>
+                    <button type="button" class="btn btn-sm btn-amber" id="btn-add-song" title="Add new song">
+                        <i class="bi bi-plus-lg me-1"></i>Add
                     </button>
-                    <button type="button" class="btn btn-sm btn-outline-danger py-0 px-1" id="btn-delete-song" title="Delete selected song">
-                        <i class="bi bi-trash"></i>
+                    <button type="button" class="btn btn-sm btn-outline-danger" id="btn-delete-song" title="Delete selected song">
+                        <i class="bi bi-trash me-1"></i>Delete
                     </button>
                 </span>
             </div>
