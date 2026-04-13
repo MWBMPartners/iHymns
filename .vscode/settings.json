@@ -1,0 +1,13 @@
+{
+    "files.exclude": {
+        "**/_debug_*_raw.html": true,
+        "**/_debug_*_skipped.html": true,
+        "**/.DS_Store": true
+    },
+    "search.exclude": {
+        "**/_debug_*_raw.html": true,
+        "**/_debug_*_skipped.html": true,
+        "**/node_modules": true,
+        "appWeb/.sql/.fulldata/ihymns-full.sql": true
+    }
+}
