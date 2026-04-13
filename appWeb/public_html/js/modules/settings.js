@@ -238,6 +238,21 @@ export class Settings {
         html.setAttribute('data-bs-theme', bsTheme);
         html.setAttribute('data-ihymns-theme', ihymnsTheme);
 
+        /* Apply high contrast mode (#319) */
+        if (ihymnsTheme === 'high-contrast') {
+            html.setAttribute('data-ihymns-contrast', 'high');
+        } else {
+            html.removeAttribute('data-ihymns-contrast');
+        }
+
+        /* Apply CVD colour vision mode (#319) */
+        const cvdMode = localStorage.getItem('ihymns_cvd_mode');
+        if (cvdMode) {
+            html.setAttribute('data-ihymns-cvd', cvdMode);
+        } else {
+            html.removeAttribute('data-ihymns-cvd');
+        }
+
         /* Update theme-color meta tags */
         const themeColor = bsTheme === 'dark' ? '#1e1b4b' : '#4f46e5';
         document.querySelectorAll('meta[name="theme-color"]').forEach(meta => {
@@ -374,6 +389,22 @@ export class Settings {
                     localStorage.removeItem(STORAGE_DEFAULT_SONGBOOK);
                 }
                 this.app.syncStorage(STORAGE_DEFAULT_SONGBOOK);
+            });
+        }
+
+        /* Colour vision deficiency mode (#319) */
+        const cvdSelect = document.getElementById('setting-cvd-mode');
+        if (cvdSelect) {
+            cvdSelect.value = localStorage.getItem('ihymns_cvd_mode') || '';
+            cvdSelect.addEventListener('change', () => {
+                const mode = cvdSelect.value;
+                if (mode) {
+                    localStorage.setItem('ihymns_cvd_mode', mode);
+                    document.documentElement.setAttribute('data-ihymns-cvd', mode);
+                } else {
+                    localStorage.removeItem('ihymns_cvd_mode');
+                    document.documentElement.removeAttribute('data-ihymns-cvd');
+                }
             });
         }
 

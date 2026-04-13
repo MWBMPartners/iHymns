@@ -82,6 +82,32 @@ declare(strict_types=1);
     </div>
 
     <!-- ============================================================
+         SYNC SECTION — Cross-device sync preferences (#284)
+         ============================================================ -->
+    <div class="card card-settings mb-3" id="settings-sync-card">
+        <div class="card-body">
+            <h2 class="h6 mb-3">
+                <i class="fa-solid fa-arrows-rotate me-2" aria-hidden="true"></i>
+                Sync
+            </h2>
+            <div class="form-check form-switch mb-2">
+                <input class="form-check-input"
+                       type="checkbox"
+                       id="setting-sync-favorites"
+                       role="switch"
+                       checked
+                       aria-label="Sync favourites across devices">
+                <label class="form-check-label" for="setting-sync-favorites">
+                    <strong>Sync favourites across devices</strong>
+                    <small class="form-text text-muted d-block">
+                        When signed in, your favourites will be synced to the server.
+                    </small>
+                </label>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================================================
          APPEARANCE SECTION
          ============================================================ -->
     <div class="card card-settings mb-3">
@@ -110,6 +136,23 @@ declare(strict_types=1);
                 </div>
                 <small class="text-muted mt-1 d-block">
                     High Contrast mode provides enhanced visibility for colour vision deficiencies.
+                </small>
+            </div>
+
+            <!-- Colour vision mode (#319) -->
+            <div class="mb-3">
+                <label for="setting-cvd-mode" class="form-label fw-semibold">
+                    Colour Vision Mode
+                </label>
+                <select class="form-select" id="setting-cvd-mode" aria-label="Colour vision deficiency correction">
+                    <option value="">None (default colours)</option>
+                    <option value="protanopia">Protanopia (red-blind)</option>
+                    <option value="deuteranopia">Deuteranopia (green-blind)</option>
+                    <option value="tritanopia">Tritanopia (blue-blind)</option>
+                    <option value="achromatopsia">Achromatopsia (monochrome)</option>
+                </select>
+                <small class="text-muted mt-1 d-block">
+                    Adjusts the colour palette for users with colour vision deficiencies.
                 </small>
             </div>
 
