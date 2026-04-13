@@ -1,0 +1,2576 @@
+openapi: 3.0.3
+
+info:
+  title: iHymns API
+  version: "0.10.0"
+  description: |
+    The iHymns API provides programmatic access to the iHymns hymn and song
+    database. It powers the iHymns Progressive Web App (PWA), enabling song
+    search, songbook browsing, setlist management, user authentication,
+    favorites sync, and administrative operations.
+
+    All endpoints are served from a single PHP entry point (`api.php`) and are
+    routed via the `action` query parameter. Responses are JSON unless otherwise
+    noted.
+
+    ## Authentication
+
+    Endpoints that require authentication use Bearer tokens passed in the
+    `Authorization` header:
+
+    ```
+    Authorization: Bearer <64-character hex token>
+    ```
+
+    Tokens are obtained via `auth_register` or `auth_login` and expire after
+    30 days.
+
+    ## Rate Limiting
+
+    Song request submissions are rate-limited to a configurable maximum per IP
+    per day (default: 5).
+  contact:
+    name: iHymns Support
+    url: https://ihymns.app
+  license:
+    name: Proprietary
+    url: https://ihymns.app/terms
+
+servers:
+  - url: https://ihymns.app
+    description: Production
+  - url: https://beta.ihymns.net
+    description: Beta / Development
+
+tags:
+  - name: Songs
+    description: Search, retrieve, and browse songs and songbooks
+  - name: Languages
+    description: Language metadata and song translations
+  - name: Setlists
+    description: Create, retrieve, and sync shared setlists
+  - name: Song Requests
+    description: Submit and view community song requests
+  - name: Favorites
+    description: Server-synced user favorites
+  - name: Authentication
+    description: User registration, login, logout, and profile management
+  - name: User Access
+    description: Group-based access control and app status
+  - name: Admin
+    description: Administrative endpoints for user, group, and content management
+
+paths:
+  # ===========================================================================
+  # SONGS
+  # ===========================================================================
+
+  /api.php?action=search:
+    get:
+      operationId: searchSongs
+      tags: [Songs]
+      summary: Search songs
+      description: |
+        Full-text search across song titles, lyrics, writers, and composers.
+        Uses MySQL FULLTEXT for queries of 3+ characters with a LIKE fallback
+        for shorter queries. Results are returned as lightweight summaries.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [search]
+        - name: q
+          in: query
+          required: true
+          description: Search query string
+          schema:
+            type: string
+            minLength: 1
+            example: amazing grace
+        - name: songbook
+          in: query
+          required: false
+          description: Filter results to a specific songbook abbreviation
+          schema:
+            type: string
+            example: CP
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of results to return
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 200
+      responses:
+        "200":
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SongSummary"
+                  total:
+                    type: integer
+                    description: Number of results returned
+                    example: 3
+                  query:
+                    type: string
+                    description: The search query that was executed
+                    example: amazing grace
+              example:
+                results:
+                  - id: CP-0202
+                    number: 202
+                    title: Amazing Grace
+                    songbook: CP
+                    songbookName: Christian Praise
+                    writers: ["John Newton"]
+                    hasAudio: false
+                    hasSheetMusic: true
+                total: 1
+                query: amazing grace
+
+  /api.php?action=search_num:
+    get:
+      operationId: searchByNumber
+      tags: [Songs]
+      summary: Search songs by number
+      description: Search for songs by their number within a specific songbook.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [search_num]
+        - name: songbook
+          in: query
+          required: true
+          description: Songbook abbreviation
+          schema:
+            type: string
+            example: MP
+        - name: number
+          in: query
+          required: true
+          description: Song number to search for
+          schema:
+            type: string
+            example: "42"
+      responses:
+        "200":
+          description: Matching songs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SongSummary"
+                  total:
+                    type: integer
+
+  /api.php?action=song_data:
+    get:
+      operationId: getSongData
+      tags: [Songs]
+      summary: Get full song data
+      description: |
+        Retrieve the complete data for a single song by its ID. Includes
+        lyrics components (verses, choruses), writers, composers, and metadata.
+        Supports flexible ID formats: `MP-1`, `MP-01`, `MP-001`, and `MP-0001`
+        all resolve to the same song.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [song_data]
+        - name: id
+          in: query
+          required: true
+          description: "Song ID in BOOK-NUMBER format (e.g., CP-0001)"
+          schema:
+            type: string
+            example: CP-0001
+      responses:
+        "200":
+          description: Full song data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  song:
+                    $ref: "#/components/schemas/Song"
+        "400":
+          description: Missing song ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Song ID is required.
+        "404":
+          description: Song not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Song not found.
+
+  /api.php?action=songs:
+    get:
+      operationId: listSongs
+      tags: [Songs]
+      summary: List songs
+      description: |
+        Get all songs as lightweight summaries, optionally filtered by songbook.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [songs]
+        - name: songbook
+          in: query
+          required: false
+          description: Filter by songbook abbreviation
+          schema:
+            type: string
+            example: CP
+      responses:
+        "200":
+          description: Song list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  songs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SongSummary"
+                  total:
+                    type: integer
+
+  /api.php?action=songbooks:
+    get:
+      operationId: listSongbooks
+      tags: [Songs]
+      summary: List all songbooks
+      description: Retrieve the list of all available songbooks with their song counts.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [songbooks]
+      responses:
+        "200":
+          description: Songbook list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  songbooks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Songbook"
+              example:
+                songbooks:
+                  - id: CP
+                    name: Christian Praise
+                    songCount: 650
+                  - id: MP
+                    name: Mission Praise
+                    songCount: 1200
+
+  /api.php?action=random:
+    get:
+      operationId: getRandomSong
+      tags: [Songs]
+      summary: Get a random song
+      description: Returns a random song, optionally restricted to a specific songbook.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [random]
+        - name: songbook
+          in: query
+          required: false
+          description: Restrict random selection to a songbook
+          schema:
+            type: string
+            example: CP
+      responses:
+        "200":
+          description: Random song data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  song:
+                    $ref: "#/components/schemas/Song"
+        "404":
+          description: No songs available
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: No songs available.
+
+  /api.php?action=stats:
+    get:
+      operationId: getStats
+      tags: [Songs]
+      summary: Get collection statistics
+      description: Returns aggregate statistics about the song collection including totals per songbook.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [stats]
+      responses:
+        "200":
+          description: Collection statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Stats"
+              example:
+                totalSongs: 4500
+                totalSongbooks: 6
+                songbooks:
+                  - id: CP
+                    name: Christian Praise
+                    songCount: 650
+
+  /api.php?action=songs_json:
+    get:
+      operationId: exportSongsJson
+      tags: [Songs]
+      summary: Export full song database as JSON
+      description: |
+        Exports the complete song database as a single JSON payload for
+        client-side Fuse.js search and service worker caching. Supports
+        ETag-based conditional requests (returns 304 Not Modified when the
+        client cache is still valid).
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [songs_json]
+      responses:
+        "200":
+          description: Full song database
+          headers:
+            ETag:
+              description: Content hash for conditional caching
+              schema:
+                type: string
+            Cache-Control:
+              description: Caching directive
+              schema:
+                type: string
+                example: "public, max-age=3600, must-revalidate"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  meta:
+                    type: object
+                    description: Collection metadata
+                    properties:
+                      totalSongs:
+                        type: integer
+                      totalSongbooks:
+                        type: integer
+                  songbooks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Songbook"
+                  songs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Song"
+        "304":
+          description: Not Modified (client cache is still valid)
+
+  /api.php?action=missing_songs:
+    get:
+      operationId: getMissingSongs
+      tags: [Songs]
+      summary: Get missing song numbers in a songbook
+      description: |
+        Identifies gaps in the sequential numbering of songs within a songbook.
+        Compares the range 1 to max song number against existing entries.
+        Useful for editors to find songs that have not been added yet.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [missing_songs]
+        - name: songbook
+          in: query
+          required: true
+          description: Songbook abbreviation
+          schema:
+            type: string
+            example: CP
+      responses:
+        "200":
+          description: Missing song numbers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  missing:
+                    type: array
+                    items:
+                      type: integer
+                    description: List of missing song numbers
+                    example: [5, 12, 47]
+                  maxNumber:
+                    type: integer
+                    description: Highest existing song number in the songbook
+                    example: 650
+                  totalExisting:
+                    type: integer
+                    description: Count of songs that exist
+                    example: 640
+                  songbook:
+                    type: string
+                    description: Songbook abbreviation queried
+                    example: CP
+        "400":
+          description: Missing songbook parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Songbook parameter is required.
+
+  # ===========================================================================
+  # LANGUAGES
+  # ===========================================================================
+
+  /api.php?action=languages:
+    get:
+      operationId: listLanguages
+      tags: [Languages]
+      summary: List available languages
+      description: Returns all active languages supported by the song collection.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [languages]
+      responses:
+        "200":
+          description: Language list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  languages:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Language"
+              example:
+                languages:
+                  - code: en
+                    name: English
+                    nativeName: English
+                    textDirection: ltr
+                  - code: fr
+                    name: French
+                    nativeName: "Fran\u00E7ais"
+                    textDirection: ltr
+
+  /api.php?action=song_translations:
+    get:
+      operationId: getSongTranslations
+      tags: [Languages]
+      summary: Get translations for a song
+      description: |
+        Retrieve all available translations for a specific source song,
+        including the target language, translator, and verification status.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [song_translations]
+        - name: id
+          in: query
+          required: true
+          description: Source song ID
+          schema:
+            type: string
+            example: CP-0202
+      responses:
+        "200":
+          description: Song translations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  translations:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SongTranslation"
+                  sourceId:
+                    type: string
+                    description: The source song ID that was queried
+                    example: CP-0202
+        "400":
+          description: Missing song ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ===========================================================================
+  # SETLISTS
+  # ===========================================================================
+
+  /api.php?action=setlist_share:
+    post:
+      operationId: shareSetlist
+      tags: [Setlists]
+      summary: Create or update a shared setlist
+      description: |
+        Create a new publicly-shareable setlist or update an existing one.
+        When updating, the caller must provide the original `id` and matching
+        `owner` UUID. Each shared setlist can contain up to 200 songs with
+        optional per-song arrangements.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [setlist_share]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, songs, owner]
+              properties:
+                name:
+                  type: string
+                  description: Setlist name
+                  maxLength: 200
+                  example: Sunday Morning Service
+                songs:
+                  type: array
+                  description: Ordered list of song IDs
+                  items:
+                    type: string
+                    pattern: "^[A-Za-z]+-\\d+$"
+                  minItems: 1
+                  maxItems: 200
+                  example: ["CP-0202", "MP-0042", "CP-0501"]
+                owner:
+                  type: string
+                  description: Owner UUID (client-generated)
+                  example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                id:
+                  type: string
+                  description: Existing setlist ID (for updates only)
+                  example: "1a2b3c4d"
+                arrangements:
+                  type: object
+                  description: Optional per-song arrangements mapping song IDs to component index arrays
+                  additionalProperties:
+                    type: array
+                    items:
+                      type: integer
+                      minimum: 0
+                  example:
+                    CP-0202: [0, 1, 2, 1, 3]
+      responses:
+        "200":
+          description: Setlist created or updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    description: 8-character hex share ID
+                    example: "1a2b3c4d"
+                  url:
+                    type: string
+                    description: Shareable URL path
+                    example: /setlist/shared/1a2b3c4d
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Ownership verification failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: You do not own this shared set list.
+        "404":
+          description: Setlist not found (when updating)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Shared set list not found.
+        "405":
+          description: Method not allowed (must be POST)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Server error saving setlist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api.php?action=setlist_get:
+    get:
+      operationId: getSharedSetlist
+      tags: [Setlists]
+      summary: Retrieve a shared setlist
+      description: |
+        Retrieve a shared setlist by its short hex ID. Returns public-safe
+        fields only (the owner UUID is excluded).
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [setlist_get]
+        - name: id
+          in: query
+          required: true
+          description: 8-character hex setlist ID
+          schema:
+            type: string
+            example: "1a2b3c4d"
+      responses:
+        "200":
+          description: Shared setlist data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SharedSetlist"
+        "400":
+          description: Invalid or missing setlist ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Setlist not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api.php?action=user_setlists:
+    get:
+      operationId: getUserSetlists
+      tags: [Setlists]
+      summary: Get user's setlists
+      description: Retrieve all setlists belonging to the authenticated user, ordered by last update.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [user_setlists]
+      responses:
+        "200":
+          description: User setlists
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  setlists:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UserSetlist"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Not authenticated.
+
+  /api.php?action=user_setlists_sync:
+    post:
+      operationId: syncUserSetlists
+      tags: [Setlists]
+      summary: Sync setlists with server
+      description: |
+        Merge local setlists with server-side storage. New setlists (by ID)
+        are inserted; existing setlists are updated if the local version is
+        newer; server-only setlists are preserved. Maximum 50 setlists per
+        user with up to 200 songs each.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [user_setlists_sync]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [setlists]
+              properties:
+                setlists:
+                  type: array
+                  maxItems: 50
+                  items:
+                    type: object
+                    required: [id, name, songs]
+                    properties:
+                      id:
+                        type: string
+                        description: Client-generated setlist ID
+                      name:
+                        type: string
+                        maxLength: 200
+                      createdAt:
+                        type: string
+                        format: date-time
+                      songs:
+                        type: array
+                        maxItems: 200
+                        items:
+                          $ref: "#/components/schemas/SetlistSongEntry"
+      responses:
+        "200":
+          description: Merged setlists
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  setlists:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UserSetlist"
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "405":
+          description: Method not allowed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ===========================================================================
+  # SONG REQUESTS
+  # ===========================================================================
+
+  /api.php?action=song_request:
+    post:
+      operationId: submitSongRequest
+      tags: [Song Requests]
+      summary: Submit a song request
+      description: |
+        Submit a community song request. Available to all users (authentication
+        is optional but links the request to the user's account if provided).
+        Rate-limited by IP address (configurable, default 5 per day).
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [song_request]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title:
+                  type: string
+                  description: Song title
+                  maxLength: 500
+                  example: How Great Thou Art
+                songbook:
+                  type: string
+                  description: Songbook the song should be added to
+                  maxLength: 100
+                  example: CP
+                song_number:
+                  type: string
+                  description: Known song number (if applicable)
+                  maxLength: 20
+                  example: "456"
+                language:
+                  type: string
+                  description: Language code
+                  maxLength: 10
+                  default: en
+                  example: en
+                details:
+                  type: string
+                  description: Additional details or notes
+                  maxLength: 2000
+                contact_email:
+                  type: string
+                  format: email
+                  description: Contact email for follow-up
+                  maxLength: 255
+      responses:
+        "201":
+          description: Song request submitted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  id:
+                    type: integer
+                    description: ID of the created request
+                    example: 42
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Song requests are disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Song requests are currently disabled.
+        "405":
+          description: Method not allowed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Rate limit exceeded. Maximum 5 requests per day.
+
+  /api.php?action=my_song_requests:
+    get:
+      operationId: getMySongRequests
+      tags: [Song Requests]
+      summary: Get my song requests
+      description: Retrieve the authenticated user's submitted song requests.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [my_song_requests]
+      responses:
+        "200":
+          description: User's song requests
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requests:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SongRequest"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ===========================================================================
+  # FAVORITES
+  # ===========================================================================
+
+  /api.php?action=favorites:
+    get:
+      operationId: getFavorites
+      tags: [Favorites]
+      summary: Get user favorites
+      description: Retrieve all favorite song IDs for the authenticated user.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [favorites]
+      responses:
+        "200":
+          description: Favorite song IDs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  favorites:
+                    type: array
+                    items:
+                      type: string
+                    example: ["CP-0202", "MP-0042"]
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api.php?action=favorites_sync:
+    post:
+      operationId: syncFavorites
+      tags: [Favorites]
+      summary: Sync favorites
+      description: |
+        Merge local favorites with server-side storage. The result is the
+        union of both sets (no favorites are removed during sync). Maximum
+        500 favorites per user.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [favorites_sync]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [favorites]
+              properties:
+                favorites:
+                  type: array
+                  description: Array of song IDs from local storage
+                  maxItems: 500
+                  items:
+                    type: string
+                    pattern: "^[A-Za-z]+-\\d+$"
+                  example: ["CP-0202", "MP-0042"]
+      responses:
+        "200":
+          description: Merged favorites
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  favorites:
+                    type: array
+                    items:
+                      type: string
+                    example: ["CP-0202", "MP-0042", "CP-0501"]
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api.php?action=favorites_remove:
+    post:
+      operationId: removeFavorite
+      tags: [Favorites]
+      summary: Remove a favorite
+      description: Remove a single song from the authenticated user's favorites.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [favorites_remove]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [song_id]
+              properties:
+                song_id:
+                  type: string
+                  description: Song ID to remove
+                  pattern: "^[A-Za-z]+-\\d+$"
+                  example: CP-0202
+      responses:
+        "200":
+          description: Favorite removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "400":
+          description: Invalid song ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ===========================================================================
+  # AUTHENTICATION
+  # ===========================================================================
+
+  /api.php?action=auth_register:
+    post:
+      operationId: register
+      tags: [Authentication]
+      summary: Register a new account
+      description: |
+        Create a new user account. The first registered user automatically
+        receives the `global_admin` role; all subsequent users get the `user`
+        role. Returns a bearer token valid for 30 days.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [auth_register]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                  description: "Lowercase username (letters, numbers, _, -, . only)"
+                  minLength: 3
+                  pattern: "^[a-z0-9_.\\-]+$"
+                  example: john.doe
+                password:
+                  type: string
+                  description: Password (minimum 8 characters)
+                  format: password
+                  minLength: 8
+                display_name:
+                  type: string
+                  description: Display name (defaults to username if omitted)
+                  maxLength: 100
+                  example: John Doe
+      responses:
+        "201":
+          description: Account created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "405":
+          description: Method not allowed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Username already taken
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Username already taken.
+
+  /api.php?action=auth_login:
+    post:
+      operationId: login
+      tags: [Authentication]
+      summary: Log in
+      description: |
+        Authenticate with username and password. Returns a bearer token
+        valid for 30 days.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [auth_login]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                  example: john.doe
+                password:
+                  type: string
+                  format: password
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Missing credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Invalid username or password.
+        "403":
+          description: Account disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Account is disabled.
+
+  /api.php?action=auth_logout:
+    post:
+      operationId: logout
+      tags: [Authentication]
+      summary: Log out
+      description: Invalidate the current bearer token.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [auth_logout]
+      responses:
+        "200":
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /api.php?action=auth_me:
+    get:
+      operationId: getCurrentUser
+      tags: [Authentication]
+      summary: Get current user
+      description: Retrieve the profile of the currently authenticated user.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [auth_me]
+      responses:
+        "200":
+          description: Current user info
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user:
+                    $ref: "#/components/schemas/User"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api.php?action=auth_update_profile:
+    post:
+      operationId: updateProfile
+      tags: [Authentication]
+      summary: Update profile
+      description: Update the authenticated user's display name and email.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [auth_update_profile]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [display_name]
+              properties:
+                display_name:
+                  type: string
+                  description: New display name
+                  maxLength: 100
+                  example: John D.
+                email:
+                  type: string
+                  format: email
+                  description: New email address
+                  maxLength: 255
+                  example: john@example.com
+      responses:
+        "200":
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  user:
+                    $ref: "#/components/schemas/UserWithEmail"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api.php?action=auth_change_password:
+    post:
+      operationId: changePassword
+      tags: [Authentication]
+      summary: Change password
+      description: |
+        Change the authenticated user's password. Requires the current password
+        for verification. All other active tokens are invalidated after a
+        successful change (the current token remains valid).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [auth_change_password]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password:
+                  type: string
+                  format: password
+                new_password:
+                  type: string
+                  format: password
+                  minLength: 8
+      responses:
+        "200":
+          description: Password changed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: Password changed successfully.
+        "400":
+          description: New password too short
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Not authenticated or wrong current password
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api.php?action=auth_forgot_password:
+    post:
+      operationId: forgotPassword
+      tags: [Authentication]
+      summary: Request password reset
+      description: |
+        Request a password reset token. Accepts a username or email. Always
+        returns HTTP 200 to prevent user enumeration.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [auth_forgot_password]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username]
+              properties:
+                username:
+                  type: string
+                  description: Username or email address
+                  example: john.doe
+      responses:
+        "200":
+          description: Reset token generated (always returns 200)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: If an account exists with that username or email, a reset link has been generated.
+        "400":
+          description: Missing username/email
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api.php?action=auth_reset_password:
+    post:
+      operationId: resetPassword
+      tags: [Authentication]
+      summary: Reset password with token
+      description: Reset a user's password using a valid reset token obtained via `auth_forgot_password`.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [auth_reset_password]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token:
+                  type: string
+                  description: Password reset token
+                password:
+                  type: string
+                  format: password
+                  description: New password (minimum 8 characters)
+                  minLength: 8
+      responses:
+        "200":
+          description: Password reset successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: Password reset successfully. Please sign in with your new password.
+        "400":
+          description: Invalid or expired token, or password too short
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ===========================================================================
+  # EMAIL LOGIN (PASSWORDLESS)
+  # ===========================================================================
+
+  /api.php?action=auth_email_login_request:
+    post:
+      operationId: authEmailLoginRequest
+      tags: [Authentication]
+      summary: Request an email login link/code
+      description: |
+        Sends a magic link and 6-digit code to the given email address.
+        The code expires after 10 minutes. Always returns 200 to prevent
+        email enumeration. Rate-limited to 5 requests per email per hour.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [auth_email_login_request]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+      responses:
+        "200":
+          description: Request accepted (always 200, even if email not found)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "A login code has been sent to your email address. It expires in 10 minutes."
+        "400":
+          description: Invalid email address
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api.php?action=auth_email_login_verify:
+    post:
+      operationId: authEmailLoginVerify
+      tags: [Authentication]
+      summary: Verify an email login token or code
+      description: |
+        Validates the token (from the magic link URL) or the email + 6-digit code
+        and returns a bearer token. If the email doesn't have an existing account,
+        a new user account is auto-created.
+
+        Two verification modes:
+        - **Magic link**: provide `token` (48-char hex from the email link)
+        - **Code entry**: provide `email` + `code` (6-digit number from the email)
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [auth_email_login_verify]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+                  description: 48-char hex token from the magic link (mode 1)
+                  example: "a1b2c3d4e5f6..."
+                email:
+                  type: string
+                  format: email
+                  description: Email address the code was sent to (mode 2)
+                  example: user@example.com
+                code:
+                  type: string
+                  pattern: "^\\d{6}$"
+                  description: 6-digit code from the email (mode 2)
+                  example: "482917"
+      responses:
+        "200":
+          description: Login successful — returns bearer token and user info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Missing token or email+code combination
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Invalid or expired token/code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ===========================================================================
+  # USER ACCESS
+  # ===========================================================================
+
+  /api.php?action=user_access:
+    get:
+      operationId: getUserAccess
+      tags: [User Access]
+      summary: Get user access level
+      description: |
+        Retrieve the authenticated user's group memberships and effective
+        access permissions. Access flags control which app versions (alpha,
+        beta, RC, RTW) the user can access.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [user_access]
+      responses:
+        "200":
+          description: User access information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  groups:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UserGroup"
+                  effectiveAccess:
+                    type: object
+                    description: Union of permissions across all user groups
+                    properties:
+                      alpha:
+                        type: boolean
+                      beta:
+                        type: boolean
+                      rc:
+                        type: boolean
+                      rtw:
+                        type: boolean
+                    example:
+                      alpha: false
+                      beta: true
+                      rc: true
+                      rtw: true
+                  role:
+                    type: string
+                    description: User's role
+                    enum: [user, editor, admin, global_admin]
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api.php?action=app_status:
+    get:
+      operationId: getAppStatus
+      tags: [User Access]
+      summary: Get app status
+      description: |
+        Retrieve public application status flags. No authentication required.
+        Used by the PWA on startup to check for maintenance mode and
+        feature availability.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [app_status]
+      responses:
+        "200":
+          description: App status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  maintenance:
+                    type: boolean
+                    description: Whether the app is in maintenance mode
+                    example: false
+                  songRequestsEnabled:
+                    type: boolean
+                    description: Whether song requests are currently accepted
+                    example: true
+
+  # ===========================================================================
+  # ADMIN
+  # ===========================================================================
+
+  /api.php?action=admin_users:
+    get:
+      operationId: adminListUsers
+      tags: [Admin]
+      summary: List all users
+      description: Retrieve all registered users. Requires admin or global_admin role.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [admin_users]
+      responses:
+        "200":
+          description: User list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AdminUser"
+        "403":
+          description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Admin access required.
+
+  /api.php?action=admin_groups:
+    get:
+      operationId: adminListGroups
+      tags: [Admin]
+      summary: List all user groups
+      description: Retrieve all user groups with their access permissions. Requires admin or global_admin role.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [admin_groups]
+      responses:
+        "200":
+          description: Group list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  groups:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AdminGroup"
+        "403":
+          description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api.php?action=admin_activity_log:
+    get:
+      operationId: adminGetActivityLog
+      tags: [Admin]
+      summary: Get activity log
+      description: |
+        Retrieve the system activity log with optional filtering by action
+        type or user. Requires admin or global_admin role.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [admin_activity_log]
+        - name: limit
+          in: query
+          required: false
+          description: Number of entries to return
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 200
+        - name: offset
+          in: query
+          required: false
+          description: Number of entries to skip (for pagination)
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+        - name: action_filter
+          in: query
+          required: false
+          description: Filter by action type
+          schema:
+            type: string
+        - name: user_id
+          in: query
+          required: false
+          description: Filter by user ID
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Activity log entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ActivityLogEntry"
+                  limit:
+                    type: integer
+                    example: 50
+                  offset:
+                    type: integer
+                    example: 0
+        "403":
+          description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api.php?action=admin_song_requests:
+    get:
+      operationId: adminListSongRequests
+      tags: [Admin]
+      summary: List all song requests
+      description: |
+        Retrieve all community song requests with optional status filtering.
+        Requires editor, admin, or global_admin role.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [admin_song_requests]
+        - name: status
+          in: query
+          required: false
+          description: Filter by request status
+          schema:
+            type: string
+            enum: [pending, reviewed, added, declined]
+      responses:
+        "200":
+          description: Song requests
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requests:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AdminSongRequest"
+        "403":
+          description: Editor access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api.php?action=admin_song_request_update:
+    post:
+      operationId: adminUpdateSongRequest
+      tags: [Admin]
+      summary: Update a song request
+      description: |
+        Update the status and admin notes on a song request. Requires editor,
+        admin, or global_admin role.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [admin_song_request_update]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, status]
+              properties:
+                id:
+                  type: integer
+                  description: Song request ID
+                  example: 42
+                status:
+                  type: string
+                  description: New status
+                  enum: [pending, reviewed, added, declined]
+                  example: reviewed
+                admin_notes:
+                  type: string
+                  description: Admin notes or response
+                  example: This song will be added in the next update.
+                resolved_song_id:
+                  type: string
+                  description: Song ID if the request has been fulfilled
+                  example: CP-0651
+      responses:
+        "200":
+          description: Request updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "400":
+          description: Invalid ID or status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Editor access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "405":
+          description: Method not allowed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+# =============================================================================
+# COMPONENTS
+# =============================================================================
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        64-character hex token obtained from `auth_register` or `auth_login`.
+        Tokens expire after 30 days.
+
+  schemas:
+    # -------------------------------------------------------------------------
+    # Core domain models
+    # -------------------------------------------------------------------------
+
+    Song:
+      type: object
+      description: Complete song object with lyrics components
+      properties:
+        id:
+          type: string
+          description: "Unique song ID in BOOK-NUMBER format"
+          example: CP-0202
+        number:
+          type: integer
+          description: Song number within the songbook
+          example: 202
+        title:
+          type: string
+          description: Song title
+          example: Amazing Grace
+        songbook:
+          type: string
+          description: Songbook abbreviation
+          example: CP
+        songbookName:
+          type: string
+          description: Full songbook name
+          example: Christian Praise
+        language:
+          type: string
+          description: Language code
+          example: en
+        copyright:
+          type: string
+          nullable: true
+          description: Copyright information
+        ccli:
+          type: string
+          nullable: true
+          description: CCLI license number
+        verified:
+          type: boolean
+          description: Whether the song lyrics have been verified
+        lyricsPublicDomain:
+          type: boolean
+          description: Whether the lyrics are in the public domain
+        musicPublicDomain:
+          type: boolean
+          description: Whether the music is in the public domain
+        hasAudio:
+          type: boolean
+          description: Whether an audio recording is available
+        hasSheetMusic:
+          type: boolean
+          description: Whether sheet music is available
+        writers:
+          type: array
+          items:
+            type: string
+          description: Lyricist / writer names
+          example: ["John Newton"]
+        composers:
+          type: array
+          items:
+            type: string
+          description: Composer / tune names
+          example: ["Virginia Harmony"]
+        components:
+          type: array
+          description: Ordered song components (verses, choruses, etc.)
+          items:
+            $ref: "#/components/schemas/SongComponent"
+
+    SongComponent:
+      type: object
+      description: A single verse, chorus, or other song section
+      properties:
+        type:
+          type: string
+          description: "Component type (e.g., verse, chorus, bridge)"
+          example: verse
+        number:
+          type: integer
+          description: Component number (e.g., verse 1, verse 2)
+          example: 1
+        lines:
+          type: array
+          items:
+            type: string
+          description: Lines of text in this component
+          example:
+            - Amazing grace how sweet the sound
+            - That saved a wretch like me
+            - I once was lost but now am found
+            - Was blind but now I see
+
+    SongSummary:
+      type: object
+      description: Lightweight song summary for list views (no lyrics)
+      properties:
+        id:
+          type: string
+          example: CP-0202
+        number:
+          type: integer
+          example: 202
+        title:
+          type: string
+          example: Amazing Grace
+        songbook:
+          type: string
+          example: CP
+        songbookName:
+          type: string
+          example: Christian Praise
+        writers:
+          type: array
+          items:
+            type: string
+          example: ["John Newton"]
+        hasAudio:
+          type: boolean
+        hasSheetMusic:
+          type: boolean
+
+    Songbook:
+      type: object
+      description: A songbook / hymnal
+      properties:
+        id:
+          type: string
+          description: Songbook abbreviation
+          example: CP
+        name:
+          type: string
+          description: Full songbook name
+          example: Christian Praise
+        songCount:
+          type: integer
+          description: Number of songs in the songbook
+          example: 650
+
+    Stats:
+      type: object
+      description: Aggregate collection statistics
+      properties:
+        totalSongs:
+          type: integer
+          example: 4500
+        totalSongbooks:
+          type: integer
+          example: 6
+        songbooks:
+          type: array
+          items:
+            $ref: "#/components/schemas/Songbook"
+
+    # -------------------------------------------------------------------------
+    # Language & translation models
+    # -------------------------------------------------------------------------
+
+    Language:
+      type: object
+      properties:
+        code:
+          type: string
+          description: ISO language code
+          example: en
+        name:
+          type: string
+          description: Language name in English
+          example: English
+        nativeName:
+          type: string
+          description: Language name in the native language
+          example: English
+        textDirection:
+          type: string
+          description: Text direction
+          enum: [ltr, rtl]
+          example: ltr
+
+    SongTranslation:
+      type: object
+      properties:
+        songId:
+          type: string
+          description: Translated song ID
+          example: FR-0202
+        language:
+          type: string
+          description: Target language code
+          example: fr
+        languageName:
+          type: string
+          description: Target language name in English
+          example: French
+        languageNativeName:
+          type: string
+          description: Target language native name
+          example: "Fran\u00E7ais"
+        title:
+          type: string
+          description: Translated song title
+          example: "Gr\u00E2ce infinie"
+        number:
+          type: integer
+          description: Song number in the translated songbook
+          example: 202
+        translator:
+          type: string
+          nullable: true
+          description: Translator name
+        verified:
+          type: boolean
+          description: Whether the translation has been verified
+
+    # -------------------------------------------------------------------------
+    # Setlist models
+    # -------------------------------------------------------------------------
+
+    SharedSetlist:
+      type: object
+      description: A publicly shared setlist (owner UUID excluded)
+      properties:
+        id:
+          type: string
+          description: 8-character hex share ID
+          example: "1a2b3c4d"
+        name:
+          type: string
+          example: Sunday Morning Service
+        songs:
+          type: array
+          items:
+            type: string
+          example: ["CP-0202", "MP-0042"]
+        created:
+          type: string
+          format: date-time
+          nullable: true
+        updated:
+          type: string
+          format: date-time
+          nullable: true
+        arrangements:
+          type: object
+          description: Optional per-song arrangements (only present if set)
+          additionalProperties:
+            type: array
+            items:
+              type: integer
+
+    UserSetlist:
+      type: object
+      description: A user-owned setlist stored server-side
+      properties:
+        id:
+          type: string
+          description: Client-generated setlist ID
+        name:
+          type: string
+          example: Evening Worship
+        songs:
+          type: array
+          items:
+            $ref: "#/components/schemas/SetlistSongEntry"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    SetlistSongEntry:
+      type: object
+      description: A song entry within a user setlist
+      properties:
+        id:
+          type: string
+          description: Song ID
+          example: CP-0202
+        title:
+          type: string
+          maxLength: 300
+          example: Amazing Grace
+        songbook:
+          type: string
+          maxLength: 20
+          example: CP
+        number:
+          type: integer
+          example: 202
+        arrangement:
+          type: array
+          description: Optional custom component arrangement (array of component indices)
+          items:
+            type: integer
+            minimum: 0
+          example: [0, 1, 2, 1, 3]
+
+    # -------------------------------------------------------------------------
+    # Song request models
+    # -------------------------------------------------------------------------
+
+    SongRequest:
+      type: object
+      description: A user's own song request
+      properties:
+        id:
+          type: integer
+          example: 42
+        title:
+          type: string
+          example: How Great Thou Art
+        songbook:
+          type: string
+          nullable: true
+        songNumber:
+          type: string
+          nullable: true
+        language:
+          type: string
+          example: en
+        details:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [pending, reviewed, added, declined]
+          example: pending
+        resolvedSongId:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    AdminSongRequest:
+      type: object
+      description: Song request with admin-visible fields
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        songbook:
+          type: string
+          nullable: true
+        songNumber:
+          type: string
+          nullable: true
+        language:
+          type: string
+        details:
+          type: string
+          nullable: true
+        contactEmail:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [pending, reviewed, added, declined]
+        adminNotes:
+          type: string
+          nullable: true
+        resolvedSongId:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+        submittedBy:
+          type: string
+          nullable: true
+          description: Username of the submitter (null if anonymous)
+
+    # -------------------------------------------------------------------------
+    # User & auth models
+    # -------------------------------------------------------------------------
+
+    User:
+      type: object
+      description: Public user profile
+      properties:
+        id:
+          type: integer
+          example: 1
+        username:
+          type: string
+          example: john.doe
+        display_name:
+          type: string
+          example: John Doe
+        role:
+          type: string
+          enum: [user, editor, admin, global_admin]
+          example: user
+
+    UserWithEmail:
+      type: object
+      description: User profile including email (returned after profile update)
+      properties:
+        id:
+          type: integer
+          example: 1
+        username:
+          type: string
+          example: john.doe
+        display_name:
+          type: string
+          example: John Doe
+        email:
+          type: string
+          example: john@example.com
+        role:
+          type: string
+          enum: [user, editor, admin, global_admin]
+
+    AuthResponse:
+      type: object
+      description: Authentication response with token and user info
+      properties:
+        token:
+          type: string
+          description: 64-character hex bearer token (valid for 30 days)
+          example: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+        user:
+          $ref: "#/components/schemas/User"
+
+    # -------------------------------------------------------------------------
+    # Access & group models
+    # -------------------------------------------------------------------------
+
+    UserGroup:
+      type: object
+      description: A user group with version access flags
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: Beta Testers
+        accessAlpha:
+          type: boolean
+          description: Access to alpha builds
+        accessBeta:
+          type: boolean
+          description: Access to beta builds
+        accessRc:
+          type: boolean
+          description: Access to release candidate builds
+        accessRtw:
+          type: boolean
+          description: Access to release-to-web builds
+
+    # -------------------------------------------------------------------------
+    # Admin models
+    # -------------------------------------------------------------------------
+
+    AdminUser:
+      type: object
+      description: User record visible to administrators
+      properties:
+        id:
+          type: integer
+          example: 1
+        username:
+          type: string
+          example: john.doe
+        email:
+          type: string
+          nullable: true
+        display_name:
+          type: string
+          example: John Doe
+        role:
+          type: string
+          enum: [user, editor, admin, global_admin]
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        group_name:
+          type: string
+          nullable: true
+          description: Name of the user's primary group
+
+    AdminGroup:
+      type: object
+      description: User group record for administration
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        accessAlpha:
+          type: boolean
+        accessBeta:
+          type: boolean
+        accessRc:
+          type: boolean
+        accessRtw:
+          type: boolean
+
+    ActivityLogEntry:
+      type: object
+      description: A single activity log entry
+      properties:
+        id:
+          type: integer
+        action:
+          type: string
+          description: Action type identifier
+        entityType:
+          type: string
+          nullable: true
+          description: Type of entity affected
+        entityId:
+          type: string
+          nullable: true
+          description: ID of the entity affected
+        details:
+          type: object
+          nullable: true
+          description: Additional structured details (JSON)
+        ipAddress:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        username:
+          type: string
+          nullable: true
+          description: Username of the actor
+
+    # -------------------------------------------------------------------------
+    # Generic response models
+    # -------------------------------------------------------------------------
+
+    Error:
+      type: object
+      description: Error response
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Human-readable error message
+          example: Something went wrong.
+
+    SuccessResponse:
+      type: object
+      description: Generic success response
+      properties:
+        ok:
+          type: boolean
+          example: true

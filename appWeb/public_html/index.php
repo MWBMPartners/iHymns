@@ -40,6 +40,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/includes/config.php';
 require_once __DIR__ . '/includes/infoAppVer.php';
+require_once __DIR__ . '/includes/db_mysql.php';
 require_once __DIR__ . '/includes/SongData.php';
 
 /* =========================================================================
@@ -217,6 +218,8 @@ try {
             $ogTitle = htmlspecialchars($ogBook['name']) . ' — ' . $appName;
             $ogDescription = 'Browse ' . number_format($ogBook['songCount'])
                            . ' songs from ' . $ogBook['name'] . ' on ' . $appName;
+            $ogImage = getCanonicalUrl('/og-image.php?songbook=' . urlencode($matches[1]));
+            $ogImageAlt = $ogBook['name'] . ' songbook on ' . $appName;
 
             /* Breadcrumb: Home > Songbooks > Songbook Name */
             $breadcrumbItems = [
@@ -225,6 +228,32 @@ try {
                 ['name' => $ogBook['name'], 'url' => $canonicalUrl],
             ];
         }
+    }
+    /* Shared setlist page: /setlist/shared/abc123 */
+    elseif (preg_match('#^/setlist/shared/([a-f0-9]+)$#', $requestPath, $matches)) {
+        $pageType = 'other';
+        $shareId = $matches[1];
+        $shareFile = APP_SETLIST_SHARE_DIR . '/' . $shareId . '.json';
+        if (file_exists($shareFile)) {
+            $shareData = json_decode(file_get_contents($shareFile), true);
+            if (is_array($shareData)) {
+                $setlistName = $shareData['name'] ?? 'Shared Set List';
+                $setlistSongCount = count($shareData['songs'] ?? []);
+                $ogTitle = htmlspecialchars($setlistName) . ' — Shared Set List — ' . $appName;
+                $ogDescription = 'A curated set list with ' . $setlistSongCount
+                               . ' ' . ($setlistSongCount === 1 ? 'song' : 'songs')
+                               . ' on ' . $appName;
+                $ogImage = getCanonicalUrl('/og-image.php?setlist=' . urlencode($shareId));
+                $ogImageAlt = 'Set list "' . $setlistName . '" on ' . $appName;
+            }
+        }
+
+        /* Breadcrumb: Home > Set Lists > Shared */
+        $breadcrumbItems = [
+            ['name' => 'Home',     'url' => getCanonicalUrl('/')],
+            ['name' => 'Set List', 'url' => getCanonicalUrl('/setlist')],
+            ['name' => 'Shared',   'url' => $canonicalUrl],
+        ];
     }
     /* Songbooks listing page */
     elseif ($requestPath === '/songbooks') {
@@ -331,9 +360,12 @@ if (!empty($breadcrumbItems)) {
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="<?= htmlspecialchars($appName) ?>">
-    <!-- Smart App Banner — only shown when a verified iOS app exists (#99) -->
+    <!-- Smart App Banner — only shown when a verified native app exists (#99) -->
     <?php if ($iosApp['verified']): ?>
         <meta name="apple-itunes-app" content="app-id=<?= htmlspecialchars($iosApp['appId']) ?>, app-argument=<?= htmlspecialchars($requestPath) ?>">
+    <?php endif; ?>
+    <?php if ($androidApp['verified']): ?>
+        <meta name="google-play-app" content="app-id=<?= htmlspecialchars($androidApp['appId']) ?>">
     <?php endif; ?>
     <meta name="msapplication-TileColor" content="#4f46e5">
     <meta name="msapplication-config" content="none">
@@ -377,6 +409,9 @@ if (!empty($breadcrumbItems)) {
 
     <!-- iHymns Application Stylesheet -->
     <link rel="stylesheet" href="/css/app.css?v=<?= urlencode($appVersion) ?>">
+
+    <!-- Accessibility Stylesheet (high contrast, colour blind modes, RTL) -->
+    <link rel="stylesheet" href="/css/accessibility.css?v=<?= urlencode($appVersion) ?>">
 
     <!-- Print Stylesheet -->
     <link rel="stylesheet" href="/css/print.css?v=<?= urlencode($appVersion) ?>" media="print">
@@ -1150,5 +1185,8 @@ if (!empty($breadcrumbItems)) {
 
     <!-- iHymns Application Scripts (ES Modules) -->
     <script src="/js/app.js?v=<?= urlencode($appVersion) ?>" type="module"></script>
+
+    <!-- Colour Vision Deficiency (CVD) SVG correction filters (#319) -->
+    <?php readfile(__DIR__ . '/assets/cvd-filters.svg'); ?>
 </body>
 </html>

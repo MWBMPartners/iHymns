@@ -2217,6 +2217,14 @@ function bindGlobalEventListeners() {
         });
     }
 
+    /* ---- Export JSON button (#235) ---- */
+    var jsonExportBtn = document.getElementById('btn-export-json');
+    if (jsonExportBtn) {
+        jsonExportBtn.addEventListener('click', function () {
+            exportJSON();
+        });
+    }
+
     /* ---- Export CSV button ---- */
     var csvBtn = document.getElementById('btn-export-csv');
     if (csvBtn) {

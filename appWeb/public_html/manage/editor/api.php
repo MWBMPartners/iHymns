@@ -4,24 +4,25 @@ declare(strict_types=1);
 
 /**
  * ============================================================================
- * iHymns Song Editor — API Endpoint (#154, #227)
+ * iHymns Song Editor — API Endpoint (#154, #227, #275)
  * ============================================================================
  *
- * Provides PHP-powered read/write access to the canonical songs.json file
- * stored in appWeb/data_share/song_data/songs.json. Protected by session-based
- * authentication — only authenticated admin users can access this endpoint.
+ * Provides PHP-powered read/write access to song data via MySQL.
+ * Protected by session-based authentication — only authenticated
+ * admin users can access this endpoint.
  *
  * ENDPOINTS:
- *   GET  api.php?action=load  — Read songs.json, returns JSON content
- *   POST api.php?action=save  — Write songs.json from POST body
+ *   GET  api.php?action=load  — Read all song data from MySQL, returns JSON
+ *   POST api.php?action=save  — Write song data to MySQL from POST body
  *
  * SECURITY:
  *   - Requires authenticated session (via /manage/ auth system)
+ *   - All MySQL queries use MySQLi with prepared statements
  *   - Input validation on save: must be valid JSON with required structure
  *
  * Copyright (c) 2026 iHymns. All rights reserved.
  * @license Proprietary — All rights reserved
- * @requires PHP 8.5+
+ * @requires PHP 8.1+ with mysqli extension
  * ============================================================================
  */
 
@@ -31,7 +32,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../includes/auth.php';
 
-/* Verify authentication — return 401 JSON for AJAX requests */
+/* Verify authentication and editor+ role — return 401/403 JSON for AJAX */
 if (!isAuthenticated()) {
     header('Content-Type: application/json; charset=UTF-8');
     http_response_code(401);
@@ -39,65 +40,21 @@ if (!isAuthenticated()) {
     exit;
 }
 
+$currentUser = getCurrentUser();
+if (!$currentUser || !hasRole($currentUser['Role'], 'editor')) {
+    header('Content-Type: application/json; charset=UTF-8');
+    http_response_code(403);
+    echo json_encode(['error' => 'Editor access required.']);
+    exit;
+}
+
 /* =========================================================================
- * PATH CONFIGURATION
- *
- * The canonical songs.json lives in data_share/song_data/ which is a
- * sibling directory to public_html/.
- * From public_html/manage/editor/, the relative path is ../../../data_share/.
+ * BOOTSTRAP — Load MySQL connection and SongData
  * ========================================================================= */
 
-$candidatePaths = [
-    __DIR__ . '/../../../data_share/song_data/songs.json',   /* Deployed: standard location */
-    __DIR__ . '/../../../private_html/data/songs.json',       /* Legacy: private_html/data/ */
-    __DIR__ . '/../../../../data/songs.json',                  /* Local dev: project root data/ */
-];
-
-/**
- * Find the songs.json file from candidate paths.
- * Returns the first path that exists, or null.
- */
-function findSongsFile(array $candidates): ?string
-{
-    foreach ($candidates as $path) {
-        $resolved = realpath($path);
-        if ($resolved !== false && file_exists($resolved)) {
-            return $resolved;
-        }
-    }
-    return null;
-}
-
-/**
- * Find the writable songs.json path for saving.
- * Prefers the data_share location; creates directory if needed.
- */
-function getWritableSongsPath(array $candidates): ?string
-{
-    /* Prefer the primary (data_share) location */
-    $primary = $candidates[0];
-    $dir = dirname($primary);
-
-    /* Create directory if it doesn't exist */
-    if (!is_dir($dir)) {
-        @mkdir($dir, 0755, true);
-    }
-
-    /* If the primary location's directory is writable, use it */
-    if (is_dir($dir) && is_writable($dir)) {
-        return $primary;
-    }
-
-    /* Fall back to any existing writable path */
-    foreach ($candidates as $path) {
-        $resolved = realpath($path);
-        if ($resolved !== false && is_writable($resolved)) {
-            return $resolved;
-        }
-    }
-
-    return null;
-}
+require_once __DIR__ . '/../../includes/config.php';
+require_once __DIR__ . '/../../includes/db_mysql.php';
+require_once __DIR__ . '/../../includes/SongData.php';
 
 /* =========================================================================
  * REQUEST HANDLING
@@ -111,28 +68,25 @@ $action = $_GET['action'] ?? '';
 switch ($action) {
 
     /* -----------------------------------------------------------------
-     * LOAD — Read songs.json and return its contents
+     * LOAD — Read all song data from MySQL and return as JSON
      * ----------------------------------------------------------------- */
     case 'load':
-        $filePath = findSongsFile($candidatePaths);
+        try {
+            $songData = new SongData();
+            $fullData = $songData->exportAsJson();
 
-        if ($filePath === null) {
-            http_response_code(404);
-            error_log('[iHymns Editor] songs.json not found. Checked: ' . implode(', ', $candidatePaths));
-            echo json_encode([
-                'error' => 'songs.json not found.',
-            ]);
-            break;
+            header('Content-Type: application/json; charset=UTF-8');
+            header('X-Content-Type-Options: nosniff');
+            echo json_encode($fullData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
+        } catch (\Exception $e) {
+            http_response_code(500);
+            error_log('[iHymns Editor] Failed to load song data: ' . $e->getMessage());
+            echo json_encode(['error' => 'Failed to load song data from database.']);
         }
-
-        /* Stream the file contents directly (efficient for large files) */
-        header('Content-Type: application/json; charset=UTF-8');
-        header('X-Content-Type-Options: nosniff');
-        readfile($filePath);
         break;
 
     /* -----------------------------------------------------------------
-     * SAVE — Write songs.json from the POST body
+     * SAVE — Write song data to MySQL from the POST body
      * ----------------------------------------------------------------- */
     case 'save':
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -160,50 +114,133 @@ switch ($action) {
         /* Validate required top-level keys */
         if (!isset($data['meta']) || !isset($data['songbooks']) || !isset($data['songs'])) {
             http_response_code(400);
-            echo json_encode(['error' => 'Invalid songs.json structure. Required keys: meta, songbooks, songs.']);
+            echo json_encode(['error' => 'Invalid songs data structure. Required keys: meta, songbooks, songs.']);
             break;
         }
 
-        /* Find a writable path */
-        $writePath = getWritableSongsPath($candidatePaths);
-        if ($writePath === null) {
-            http_response_code(500);
-            error_log('[iHymns Editor] No writable path found. Checked: ' . implode(', ', $candidatePaths));
-            echo json_encode([
-                'error' => 'No writable path found for songs.json.',
-            ]);
-            break;
-        }
+        /* Save to MySQL using transaction */
+        try {
+            $db = getDbMysqli();
+            $db->query("SET FOREIGN_KEY_CHECKS = 0");
+            $db->begin_transaction();
 
-        /* Create a backup before overwriting */
-        $backupPath = $writePath . '.backup';
-        if (file_exists($writePath)) {
-            copy($writePath, $backupPath);
-        }
+            /* Clear existing data */
+            $db->query("TRUNCATE TABLE tblSongComponents");
+            $db->query("TRUNCATE TABLE tblSongComposers");
+            $db->query("TRUNCATE TABLE tblSongWriters");
+            $db->query("TRUNCATE TABLE tblSongs");
+            $db->query("TRUNCATE TABLE tblSongbooks");
 
-        /* Write the file with pretty-print for human readability */
-        $jsonOutput = json_encode(
-            $data,
-            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT
-        );
+            $db->query("SET FOREIGN_KEY_CHECKS = 1");
 
-        $written = file_put_contents($writePath, $jsonOutput, LOCK_EX);
-
-        if ($written === false) {
-            /* Restore backup on failure */
-            if (file_exists($backupPath)) {
-                copy($backupPath, $writePath);
+            /* Insert songbooks */
+            $stmtSongbook = $db->prepare(
+                "INSERT INTO tblSongbooks (Abbreviation, Name, SongCount) VALUES (?, ?, ?)"
+            );
+            foreach ($data['songbooks'] as $book) {
+                $abbr  = $book['id'];
+                $name  = $book['name'];
+                $count = (int)($book['songCount'] ?? 0);
+                $stmtSongbook->bind_param('ssi', $abbr, $name, $count);
+                $stmtSongbook->execute();
             }
-            http_response_code(500);
-            echo json_encode(['error' => 'Failed to write songs.json.']);
-            break;
-        }
+            $stmtSongbook->close();
 
-        echo json_encode([
-            'success'  => true,
-            'bytes'    => $written,
-            'songs'    => count($data['songs']),
-        ]);
+            /* Prepare song statements */
+            $stmtSong = $db->prepare(
+                "INSERT INTO tblSongs (SongId, Number, Title, SongbookAbbr, SongbookName,
+                 Language, Copyright, Ccli, Verified, LyricsPublicDomain,
+                 MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            );
+            $stmtWriter = $db->prepare(
+                "INSERT INTO tblSongWriters (SongId, Name) VALUES (?, ?)"
+            );
+            $stmtComposer = $db->prepare(
+                "INSERT INTO tblSongComposers (SongId, Name) VALUES (?, ?)"
+            );
+            $stmtComponent = $db->prepare(
+                "INSERT INTO tblSongComponents (SongId, Type, Number, SortOrder, LinesJson)
+                 VALUES (?, ?, ?, ?, ?)"
+            );
+
+            /* Insert songs */
+            foreach ($data['songs'] as $song) {
+                $songId       = $song['id'];
+                $number       = (int)$song['number'];
+                $title        = $song['title'];
+                $songbookAbbr = $song['songbook'];
+                $songbookName = $song['songbookName'] ?? '';
+                $language     = $song['language'] ?? 'en';
+                $copyright    = $song['copyright'] ?? '';
+                $ccli         = $song['ccli'] ?? '';
+                $verified     = (int)($song['verified'] ?? false);
+                $lyricsPD     = (int)($song['lyricsPublicDomain'] ?? false);
+                $musicPD      = (int)($song['musicPublicDomain'] ?? false);
+                $hasAudio     = (int)($song['hasAudio'] ?? false);
+                $hasSheet     = (int)($song['hasSheetMusic'] ?? false);
+
+                /* Build lyrics_text */
+                $lyricsLines = [];
+                foreach ($song['components'] ?? [] as $comp) {
+                    foreach ($comp['lines'] ?? [] as $line) {
+                        $lyricsLines[] = $line;
+                    }
+                }
+                $lyricsText = implode("\n", $lyricsLines);
+
+                $stmtSong->bind_param(
+                    'sissssssiiiiis',
+                    $songId, $number, $title, $songbookAbbr, $songbookName,
+                    $language, $copyright, $ccli, $verified, $lyricsPD,
+                    $musicPD, $hasAudio, $hasSheet, $lyricsText
+                );
+                $stmtSong->execute();
+
+                /* Writers */
+                foreach ($song['writers'] ?? [] as $writer) {
+                    $stmtWriter->bind_param('ss', $songId, $writer);
+                    $stmtWriter->execute();
+                }
+
+                /* Composers */
+                foreach ($song['composers'] ?? [] as $composer) {
+                    $stmtComposer->bind_param('ss', $songId, $composer);
+                    $stmtComposer->execute();
+                }
+
+                /* Components */
+                $sortOrder = 0;
+                foreach ($song['components'] ?? [] as $comp) {
+                    $compType   = $comp['type'];
+                    $compNumber = (int)$comp['number'];
+                    $linesJson  = json_encode($comp['lines'] ?? [], JSON_UNESCAPED_UNICODE);
+                    $stmtComponent->bind_param('ssiis', $songId, $compType, $compNumber, $sortOrder, $linesJson);
+                    $stmtComponent->execute();
+                    $sortOrder++;
+                }
+            }
+
+            $stmtSong->close();
+            $stmtWriter->close();
+            $stmtComposer->close();
+            $stmtComponent->close();
+
+            $db->commit();
+
+            echo json_encode([
+                'success'   => true,
+                'songs'     => count($data['songs']),
+                'songbooks' => count($data['songbooks']),
+            ]);
+
+        } catch (\Exception $e) {
+            $db->rollback();
+            $db->query("SET FOREIGN_KEY_CHECKS = 1");
+            http_response_code(500);
+            error_log('[iHymns Editor] Save failed: ' . $e->getMessage());
+            echo json_encode(['error' => 'Failed to save song data. Check server logs for details.']);
+        }
         break;
 
     /* -----------------------------------------------------------------

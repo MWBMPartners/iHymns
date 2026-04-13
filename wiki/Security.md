@@ -8,7 +8,7 @@
 
 Every request generates a unique nonce for inline scripts. The CSP header includes:
 
-```
+```text
 default-src 'self';
 script-src 'self' 'nonce-<random>' https://cdn.jsdelivr.net ...;
 style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net ...;
@@ -28,24 +28,28 @@ All CDN resources include **Subresource Integrity (SRI)** hashes.
 ## Authentication Security
 
 ### Password Hashing
+
 - Algorithm: **BCRYPT** (`PASSWORD_BCRYPT`)
 - Cost factor: **12** (higher than default for stronger protection)
 - PHP's `password_hash()` / `password_verify()` — timing-safe comparison
 
 ### Bearer Tokens
+
 - 64-character lowercase hexadecimal (32 bytes of `random_bytes()`)
 - 30-day expiry with server-side validation
-- Stored in `api_tokens` table
+- Stored in `tblApiTokens` table
 - Deleted on logout and password reset
 
 ### Password Reset Tokens
+
 - 48-character lowercase hexadecimal (24 bytes of `random_bytes()`)
 - 1-hour expiry
-- Single-use (marked as `used` after consumption)
+- Single-use (marked as `Used` after consumption)
 - Previous tokens for the same user are deleted when a new one is generated
 - Password reset invalidates ALL API tokens (forces re-login on all devices)
 
 ### Session Security (Admin Panel)
+
 - `httponly` flag — prevents JavaScript access to session cookie
 - `samesite=Strict` — prevents CSRF via cross-site requests
 - `secure` flag — when HTTPS is detected
@@ -53,15 +57,41 @@ All CDN resources include **Subresource Integrity (SRI)** hashes.
 - Session cookie scoped to `/manage/` path only
 
 ### CSRF Protection
+
 - Per-session CSRF token (64 hex chars via `random_bytes(32)`)
 - Validated with `hash_equals()` — timing-safe comparison
 - Required on all admin panel form submissions
 
 ---
 
+## Database Security
+
+### MySQLi Prepared Statements
+
+All song data queries use MySQLi with **prepared statements** — no string interpolation of user input into SQL. This prevents SQL injection attacks.
+
+### PDO Prepared Statements
+
+All admin panel / auth queries use PDO with prepared statements, providing the same SQL injection protection.
+
+### Credential Storage
+
+- Stored in `appWeb/.auth/db_credentials.php` — **outside the public web root**
+- File permissions set to `0600` (owner read/write only) by the installer
+- `.htaccess` in `appWeb/.auth/` denies all web access (defense-in-depth)
+- Credentials file is excluded from version control via `.gitignore`
+
+### Database Naming Convention
+
+- Tables: `tblCamelCase` (e.g., `tblSongs`, `tblUserGroups`)
+- Columns: `CamelCase` (e.g., `SongId`, `CreatedAt`, `SongbookAbbr`)
+
+---
+
 ## Input Sanitisation
 
 ### API Inputs
+
 - Usernames: lowercased, trimmed, validated against `/^[a-z0-9_.\-]+$/`
 - Song IDs: validated against `/^[A-Za-z]+-\d+$/`
 - Setlist IDs: alphanumeric only (regex filtered)
@@ -72,6 +102,7 @@ All CDN resources include **Subresource Integrity (SRI)** hashes.
 - Arrangements: validated as arrays of non-negative integers
 
 ### HTML Output
+
 - All dynamic content escaped with `htmlspecialchars()`
 - JavaScript uses `escapeHtml()` from `js/utils/html.js`
 - No raw HTML interpolation of user data
@@ -81,7 +112,9 @@ All CDN resources include **Subresource Integrity (SRI)** hashes.
 ## File Security
 
 ### Direct Access Prevention
+
 Every PHP include file starts with:
+
 ```php
 if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     http_response_code(403);
@@ -89,12 +122,8 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 }
 ```
 
-### SQLite Database Location
-- Stored in `appWeb/data_share/SQLite/` — **outside the public web root**
-- Not directly accessible via HTTP
-- `.htaccess` rules prevent access to `data_share/` if misconfigured
-
 ### Shared Setlist Files
+
 - Stored in `appWeb/data_share/setlist_json/`
 - Setlist IDs are 8-character hex strings (4 bytes of randomness)
 - Atomic file creation with `fopen('x')` to prevent TOCTOU races
@@ -112,16 +141,18 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 ## Rate Limiting
 
 Currently not implemented at the application level. Recommendations:
+
 - Use web server rate limiting (Apache `mod_ratelimit`, nginx `limit_req`)
 - Consider adding application-level rate limiting for auth endpoints
 - Rate limit password reset requests per IP
+- Song requests are rate-limited to `max_song_requests_per_day` per IP (configurable via `tblAppSettings`)
 
 ---
 
 ## Security Headers
 
 | Header | Value |
-|---|---|
+| --- | --- |
 | `Content-Security-Policy` | Per-request with nonce (see above) |
 | `X-Content-Type-Options` | `nosniff` (on all JSON responses) |
 | `Cache-Control` | `no-cache, must-revalidate` (on API responses) |
@@ -134,5 +165,6 @@ Currently not implemented at the application level. Recommendations:
 2. **Set up rate limiting** at the web server level for `/api.php` auth endpoints
 3. **Remove `_dev_token`** from `auth_forgot_password` response in production
 4. **Implement email delivery** for password reset tokens
-5. **Monitor** `api_tokens` table size and clean up expired tokens periodically
-6. **Backup** the SQLite database regularly (it's in `data_share/SQLite/`)
+5. **Monitor** `tblApiTokens` table size and clean up expired tokens periodically
+6. **Backup** the MySQL database regularly
+7. **Restrict MySQL user permissions** — grant only the minimum required (SELECT, INSERT, UPDATE, DELETE)

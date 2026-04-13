@@ -6,28 +6,43 @@ declare(strict_types=1);
  * iHymns — Dynamic Open Graph Image Generator
  *
  * PURPOSE:
- * Generates a 1200×630 social sharing preview image (OG image) for
- * link previews in iMessage, Facebook, Twitter, Slack, Discord, etc.
+ * Generates social sharing preview images (OG images) for link previews
+ * in iMessage, Facebook, Twitter/X, LinkedIn, Slack, Discord, WhatsApp,
+ * Telegram, Pinterest, and Android share sheets.
  *
  * MODES:
- *   /og-image.php            — Generic app branding image
- *   /og-image.php?song=CP-1  — Contextual image for a specific song (#173)
+ *   /og-image.php                   — Generic app branding image
+ *   /og-image.php?song=CP-1        — Song-specific image (#173)
+ *   /og-image.php?songbook=CP      — Songbook-specific image
+ *   /og-image.php?setlist=abc123   — Shared setlist image
  *
  * LAYOUT:
- *   All critical content is centred within a ~630×630 "safe zone" so that
+ *   All critical content is centred within a ~630x630 "safe zone" so that
  *   iMessage's square centre-crop still shows the key information (#172).
  *
  * OUTPUT:
- *   PNG image, 1200×630px, Content-Type: image/png
+ *   PNG image, 1200x630px, Content-Type: image/png
+ *
+ * PLATFORM COMPATIBILITY:
+ *   - Facebook/LinkedIn: 1200x630 (1.91:1) — native
+ *   - Twitter/X: summary_large_image uses 1200x628 — near-identical
+ *   - WhatsApp: Crops to ~1.91:1, falls back to square thumbnail — safe zone handles both
+ *   - iMessage: Centre-crops to ~630x630 square — safe zone designed for this
+ *   - Slack/Discord: 1200x630 — native
+ *   - Telegram: Uses 1200x630 — native
+ *   - Pinterest: Can crop tall; safe zone keeps content visible
+ *   - Google Search: Rich results use this image — native
+ *   - Android share sheets: Uses og:image directly — native
  */
 
 /* =========================================================================
- * BOOTSTRAP (minimal — only what we need for song data)
+ * BOOTSTRAP (minimal — only what we need for song/setlist data)
  * ========================================================================= */
 require_once __DIR__ . '/includes/config.php';
+require_once __DIR__ . '/includes/db_mysql.php';
 require_once __DIR__ . '/includes/SongData.php';
 
-/* Cache for 24 hours — the image rarely changes */
+/* Cache for 24 hours — images rarely change */
 header('Cache-Control: public, max-age=86400');
 header('Content-Type: image/png');
 
@@ -37,7 +52,7 @@ header('Content-Type: image/png');
 $W = 1200;
 $H = 630;
 
-/* Safe zone for iMessage square crop — centred 630×630 */
+/* Safe zone for iMessage square crop — centred 630x630 */
 $safeLeft  = ($W - $H) / 2;   /* 285 */
 $safeRight = $safeLeft + $H;   /* 915 */
 
@@ -56,18 +71,38 @@ $songbookColours = [
 ];
 
 /* =========================================================================
- * DETECT MODE — generic or song-specific
+ * DETECT MODE — generic, song, songbook, or setlist
  * ========================================================================= */
-$songId   = $_GET['song'] ?? null;
-$songInfo = null;
+$songId     = $_GET['song'] ?? null;
+$songbookId = $_GET['songbook'] ?? null;
+$setlistId  = $_GET['setlist'] ?? null;
 
-if ($songId !== null && preg_match('/^[A-Za-z]+-\d+$/', $songId)) {
-    try {
-        $songData = new SongData();
+$songInfo    = null;
+$bookInfo    = null;
+$setlistInfo = null;
+$mode        = 'generic';
+
+try {
+    $songData = new SongData();
+
+    if ($songId !== null && preg_match('/^[A-Za-z]+-\d+$/', $songId)) {
         $songInfo = $songData->getSongById($songId);
-    } catch (\Throwable $e) {
-        /* Fall through to generic image */
+        if ($songInfo !== null) $mode = 'song';
+    } elseif ($songbookId !== null && preg_match('/^[A-Za-z]+$/', $songbookId)) {
+        $bookInfo = $songData->getSongbook($songbookId);
+        if ($bookInfo !== null) $mode = 'songbook';
+    } elseif ($setlistId !== null) {
+        $cleanId = preg_replace('/[^a-f0-9]/', '', strtolower(trim($setlistId)));
+        if ($cleanId !== '' && strlen($cleanId) <= 16) {
+            $filePath = APP_SETLIST_SHARE_DIR . '/' . $cleanId . '.json';
+            if (file_exists($filePath)) {
+                $setlistInfo = json_decode(file_get_contents($filePath), true);
+                if (is_array($setlistInfo)) $mode = 'setlist';
+            }
+        }
     }
+} catch (\Throwable $e) {
+    /* Fall through to generic image */
 }
 
 /* =========================================================================
@@ -99,6 +134,7 @@ for ($y = 0; $y < $H; $y++) {
 $white     = imagecolorallocate($img, 255, 255, 255);
 $grey      = imagecolorallocate($img, 160, 165, 185);
 $greyLight = imagecolorallocate($img, 120, 125, 145);
+$greyDark  = imagecolorallocate($img, 80, 85, 100);
 $accent    = imagecolorallocate($img, 124, 88, 246);  /* Purple accent */
 
 /* =========================================================================
@@ -157,10 +193,69 @@ function drawRoundedRect(GdImage $img, int $x1, int $y1, int $x2, int $y2, int $
     imagefilledellipse($img, $x2 - $radius, $y2 - $radius, $radius * 2, $radius * 2, $color);
 }
 
+/**
+ * Word-wrap text into multiple lines that fit within maxWidth.
+ * Returns an array of line strings.
+ */
+function wordWrapText(string $text, float $size, string $font, int $maxWidth, int $maxLines = 2): array
+{
+    $bbox = imagettfbbox($size, 0, $font, $text);
+    if (abs($bbox[4] - $bbox[0]) <= $maxWidth) {
+        return [$text];
+    }
+
+    $words = explode(' ', $text);
+    $lines = [];
+    $current = '';
+
+    foreach ($words as $word) {
+        $test = $current === '' ? $word : $current . ' ' . $word;
+        $testBbox = imagettfbbox($size, 0, $font, $test);
+        if (abs($testBbox[4] - $testBbox[0]) <= $maxWidth) {
+            $current = $test;
+        } else {
+            if ($current !== '') {
+                $lines[] = $current;
+            }
+            $current = $word;
+            if (count($lines) >= $maxLines - 1) {
+                /* Last allowed line — truncate remainder */
+                $remaining = implode(' ', array_slice($words, array_search($word, $words)));
+                $lines[] = truncateText($remaining, $size, $font, $maxWidth);
+                return $lines;
+            }
+        }
+    }
+    if ($current !== '') {
+        $lines[] = $current;
+    }
+
+    return array_slice($lines, 0, $maxLines);
+}
+
+/**
+ * Draw the iHymns branding at the bottom-centre of the image.
+ */
+function drawBranding(GdImage $img, int $W, int $H, int $grey, string $fontBold): void
+{
+    $iconPath = __DIR__ . '/assets/icon-512.png';
+    if (file_exists($iconPath)) {
+        $icon = imagecreatefrompng($iconPath);
+        if ($icon) {
+            $iconSize = 28;
+            $brandY = $H - 55;
+            $iconX = ($W / 2) - 55;
+            imagecopyresampled($img, $icon, (int)$iconX, $brandY, 0, 0, $iconSize, $iconSize, imagesx($icon), imagesy($icon));
+            imagedestroy($icon);
+            imagettftext($img, 12, 0, (int)$iconX + 34, $brandY + 20, $grey, $fontBold, 'iHymns');
+        }
+    }
+}
+
 /* =========================================================================
  * RENDER — SONG-SPECIFIC IMAGE
  * ========================================================================= */
-if ($songInfo !== null) {
+if ($mode === 'song') {
     $bookId = strtoupper($songInfo['songbook'] ?? 'Misc');
     $accentRgb = $songbookColours[$bookId] ?? $songbookColours['Misc'];
     $bookAccent = imagecolorallocate($img, $accentRgb[0], $accentRgb[1], $accentRgb[2]);
@@ -187,41 +282,18 @@ if ($songInfo !== null) {
     $title = $songInfo['title'] ?? 'Untitled';
     $maxTextW = (int)($H - 60); /* Safe zone width minus padding */
 
-    /* Split title across up to 2 lines if needed */
     $titleSize = 32;
-    $bbox = imagettfbbox($titleSize, 0, $fontBold, $title);
-    $titleW = abs($bbox[4] - $bbox[0]);
-
+    $titleLines = wordWrapText($title, $titleSize, $fontBold, $maxTextW, 2);
     $titleY = 160;
-    if ($titleW <= $maxTextW) {
-        /* Single line — centre it */
-        drawCentredText($img, $titleSize, $fontBold, $title, $titleY, $white, $W);
-    } else {
-        /* Word-wrap into 2 lines */
-        $words = explode(' ', $title);
-        $line1 = '';
-        $line2 = '';
-        foreach ($words as $word) {
-            $test = $line1 === '' ? $word : $line1 . ' ' . $word;
-            $testBbox = imagettfbbox($titleSize, 0, $fontBold, $test);
-            if (abs($testBbox[4] - $testBbox[0]) <= $maxTextW) {
-                $line1 = $test;
-            } else {
-                $line2 .= ($line2 === '' ? '' : ' ') . $word;
-            }
-        }
-        $line2 = truncateText($line2, $titleSize, $fontBold, $maxTextW);
-        drawCentredText($img, $titleSize, $fontBold, $line1, $titleY, $white, $W);
-        if ($line2 !== '' && $line2 !== '…') {
-            drawCentredText($img, $titleSize, $fontBold, $line2, $titleY + 44, $white, $W);
-            $titleY += 44; /* Shift subsequent content down */
-        }
+    foreach ($titleLines as $i => $line) {
+        drawCentredText($img, $titleSize, $fontBold, $line, $titleY + ($i * 44), $white, $W);
     }
+    $titleBottom = $titleY + ((count($titleLines) - 1) * 44);
 
     /* --- Songbook name (below title) --- */
     $bookName = $songInfo['songbookName'] ?? '';
     if ($bookName !== '') {
-        drawCentredText($img, 16, $fontRegular, $bookName, $titleY + 50, $bookAccent, $W);
+        drawCentredText($img, 16, $fontRegular, $bookName, $titleBottom + 50, $bookAccent, $W);
     }
 
     /* --- Writers (below songbook name) --- */
@@ -229,11 +301,11 @@ if ($songInfo !== null) {
     if (!empty($writers)) {
         $writerText = implode(', ', $writers);
         $writerText = truncateText($writerText, 13, $fontRegular, $maxTextW);
-        drawCentredText($img, 13, $fontRegular, $writerText, $titleY + 80, $grey, $W);
+        drawCentredText($img, 13, $fontRegular, $writerText, $titleBottom + 80, $grey, $W);
     }
 
     /* --- Accent line --- */
-    $lineY = $titleY + 105;
+    $lineY = $titleBottom + 105;
     imagefilledrectangle($img, ($W / 2) - 100, $lineY, ($W / 2) + 100, $lineY + 2, $bookAccent);
 
     /* --- First verse lyrics (faded, below accent) --- */
@@ -253,19 +325,137 @@ if ($songInfo !== null) {
         }
     }
 
-    /* --- App branding (bottom centre, within safe zone) --- */
-    $iconPath = __DIR__ . '/assets/icon-512.png';
-    if (file_exists($iconPath)) {
-        $icon = imagecreatefrompng($iconPath);
-        if ($icon) {
-            $iconSize = 28;
-            $brandY = $H - 55;
-            $iconX = ($W / 2) - 55;
-            imagecopyresampled($img, $icon, (int)$iconX, $brandY, 0, 0, $iconSize, $iconSize, imagesx($icon), imagesy($icon));
-            imagedestroy($icon);
-            imagettftext($img, 12, 0, (int)$iconX + 34, $brandY + 20, $grey, $fontBold, 'iHymns');
+    /* --- App branding (bottom centre) --- */
+    drawBranding($img, $W, $H, $grey, $fontBold);
+}
+
+/* =========================================================================
+ * RENDER — SONGBOOK-SPECIFIC IMAGE
+ * ========================================================================= */
+elseif ($mode === 'songbook') {
+    $bookId = strtoupper($bookInfo['id'] ?? 'Misc');
+    $accentRgb = $songbookColours[$bookId] ?? $songbookColours['Misc'];
+    $bookAccent = imagecolorallocate($img, $accentRgb[0], $accentRgb[1], $accentRgb[2]);
+
+    /* --- Songbook accent bar (left side) --- */
+    imagefilledrectangle($img, 0, 0, 6, $H, $bookAccent);
+
+    /* --- Large songbook abbreviation badge (centred, top area) --- */
+    $badgeW = 140;
+    $badgeH = 56;
+    $badgeX = (int)(($W - $badgeW) / 2);
+    $badgeY = 100;
+    drawRoundedRect($img, $badgeX, $badgeY, $badgeX + $badgeW, $badgeY + $badgeH, 10, $bookAccent);
+
+    /* Badge text — abbreviation */
+    $abbr = $bookInfo['id'] ?? '';
+    $abbrBbox = imagettfbbox(22, 0, $fontBold, $abbr);
+    $abbrW = abs($abbrBbox[4] - $abbrBbox[0]);
+    imagettftext($img, 22, 0, $badgeX + (int)(($badgeW - $abbrW) / 2), $badgeY + 40, $white, $fontBold, $abbr);
+
+    /* --- Songbook full name --- */
+    $bookName = $bookInfo['name'] ?? 'Songbook';
+    $maxTextW = (int)($H - 60);
+    $nameLines = wordWrapText($bookName, 28, $fontBold, $maxTextW, 2);
+    $nameY = 220;
+    foreach ($nameLines as $i => $line) {
+        drawCentredText($img, 28, $fontBold, $line, $nameY + ($i * 38), $white, $W);
+    }
+    $nameBottom = $nameY + ((count($nameLines) - 1) * 38);
+
+    /* --- Song count --- */
+    $songCount = (int)($bookInfo['songCount'] ?? 0);
+    $countText = number_format($songCount) . ' ' . ($songCount === 1 ? 'song' : 'songs');
+    drawCentredText($img, 16, $fontRegular, $countText, $nameBottom + 45, $bookAccent, $W);
+
+    /* --- Accent line --- */
+    $lineY = $nameBottom + 75;
+    imagefilledrectangle($img, ($W / 2) - 100, $lineY, ($W / 2) + 100, $lineY + 2, $bookAccent);
+
+    /* --- Subtitle --- */
+    drawCentredText($img, 14, $fontRegular, 'Browse hymns and worship songs', $lineY + 35, $grey, $W);
+
+    /* --- App branding (bottom centre) --- */
+    drawBranding($img, $W, $H, $grey, $fontBold);
+}
+
+/* =========================================================================
+ * RENDER — SHARED SETLIST IMAGE
+ * ========================================================================= */
+elseif ($mode === 'setlist') {
+    $setlistName = $setlistInfo['name'] ?? 'Shared Set List';
+    $songs = $setlistInfo['songs'] ?? [];
+    $songCount = count($songs);
+
+    /* --- Purple accent bar (left side) for setlists --- */
+    imagefilledrectangle($img, 0, 0, 6, $H, $accent);
+
+    /* --- Setlist icon area (list icon placeholder) --- */
+    $iconY = 65;
+    /* Draw a simple list icon using rectangles */
+    $iconCx = (int)($W / 2);
+    for ($i = 0; $i < 3; $i++) {
+        $dotY = $iconY + ($i * 16);
+        /* Bullet dot */
+        imagefilledellipse($img, $iconCx - 20, $dotY + 5, 6, 6, $accent);
+        /* Line */
+        imagefilledrectangle($img, $iconCx - 10, $dotY + 2, $iconCx + 30, $dotY + 8, $greyDark);
+    }
+
+    /* --- "SHARED SET LIST" label --- */
+    drawCentredText($img, 11, $fontBold, 'SHARED SET LIST', 140, $accent, $W);
+
+    /* --- Setlist name (large) --- */
+    $maxTextW = (int)($H - 60);
+    $nameLines = wordWrapText($setlistName, 28, $fontBold, $maxTextW, 2);
+    $nameY = 200;
+    foreach ($nameLines as $i => $line) {
+        drawCentredText($img, 28, $fontBold, $line, $nameY + ($i * 38), $white, $W);
+    }
+    $nameBottom = $nameY + ((count($nameLines) - 1) * 38);
+
+    /* --- Song count --- */
+    $countText = number_format($songCount) . ' ' . ($songCount === 1 ? 'song' : 'songs');
+    drawCentredText($img, 16, $fontRegular, $countText, $nameBottom + 45, $accent, $W);
+
+    /* --- Accent line --- */
+    $lineY = $nameBottom + 75;
+    imagefilledrectangle($img, ($W / 2) - 100, $lineY, ($W / 2) + 100, $lineY + 2, $accent);
+
+    /* --- Song titles preview (up to 5) --- */
+    $previewY = $lineY + 30;
+    $maxSongs = min(5, $songCount);
+    if ($maxSongs > 0 && isset($songData)) {
+        for ($i = 0; $i < $maxSongs; $i++) {
+            if ($previewY > $H - 70) break; /* Leave room for branding */
+            $sid = $songs[$i] ?? '';
+            if (!is_string($sid)) continue;
+
+            /* Try to resolve the song title */
+            $previewTitle = $sid;
+            try {
+                $resolved = $songData->getSongById($sid);
+                if ($resolved) {
+                    $previewTitle = ($i + 1) . '. ' . $resolved['title'];
+                } else {
+                    $previewTitle = ($i + 1) . '. ' . $sid;
+                }
+            } catch (\Throwable $e) {
+                $previewTitle = ($i + 1) . '. ' . $sid;
+            }
+
+            $previewTitle = truncateText($previewTitle, 12, $fontRegular, $maxTextW);
+            drawCentredText($img, 12, $fontRegular, $previewTitle, $previewY, $greyLight, $W);
+            $previewY += 22;
+        }
+        if ($songCount > $maxSongs) {
+            $moreText = '+ ' . ($songCount - $maxSongs) . ' more';
+            drawCentredText($img, 11, $fontRegular, $moreText, $previewY + 5, $greyDark, $W);
         }
     }
+
+    /* --- App branding (bottom centre) --- */
+    drawBranding($img, $W, $H, $grey, $fontBold);
 }
 
 /* =========================================================================

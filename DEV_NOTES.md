@@ -279,6 +279,7 @@ First line of refrain,
 
 Words and music by ...  ← Writer/composer credits (some files only)
 © Copyright holder      ← Copyright info (some files only)
+Language: fr-FR         ← Optional IETF BCP 47 language tag (defaults to songbook language)
 ```
 
 ### Key Observations
@@ -290,6 +291,7 @@ Words and music by ...  ← Writer/composer credits (some files only)
 5. **Encoding**: UTF-8, some files contain special characters (curly quotes, em dashes)
 6. **Song component order**: Components appear in the order they are sung
 7. **No consistent blank line rules**: Some files have extra blank lines, parser must be tolerant
+8. **Language tag**: Optional `Language: xx` line (IETF BCP 47 format, e.g., `en`, `fr-FR`, `zh-Hans-CN`). Falls back to songbook default if absent
 
 ---
 
@@ -436,4 +438,175 @@ test: add or update tests          → patch version bump
 
 ---
 
-Last updated: 2026-04-05
+## MySQL Database Setup (v0.10.0+)
+
+Starting with v0.10.0, iHymns uses MySQL as the primary data store for songs, replacing the flat-file `songs.json` approach. This provides better searchability (full-text indexing), concurrent write safety, and scalability.
+
+### Prerequisites
+
+- **MySQL 5.7+** or **MariaDB 10.3+** with InnoDB support
+- **PHP 8.1+** with the `mysqli` extension enabled
+- A MySQL database created for iHymns (e.g., `ihymns`)
+
+### Step 1: Run the Interactive Installer
+
+The installer prompts for your MySQL credentials, tests the connection, writes them to `appWeb/.auth/db_credentials.php`, and then creates all database tables:
+
+```bash
+# From the project root
+php appWeb/.sql/install.php
+```
+
+The wizard will prompt for:
+
+| Prompt | Default | Description |
+| --- | --- | --- |
+| MySQL Host | `127.0.0.1` | Server hostname or IP |
+| MySQL Port | `3306` | Server port |
+| Database Name | `ihymns` | Must already exist |
+| Username | `ihymns_user` | MySQL user with access to the database |
+| Password | _(none)_ | Hidden input on supported terminals |
+| Table Prefix | _(none)_ | Optional prefix (e.g., `ih_`) for shared databases |
+
+The installer will:
+
+1. Test the connection before writing anything
+2. Write credentials to `appWeb/.auth/db_credentials.php` (permissions set to `0600`)
+3. Create all tables from `schema.sql`
+4. Seed default user groups (Developers, Beta Testers, RC Testers, Public)
+
+> **Note:** If you cannot use the interactive installer (e.g., non-interactive shell), copy `appWeb/.auth/db_credentials.example.php` to `appWeb/.auth/db_credentials.php` and edit it manually. Then re-run the installer to create tables.
+> The installer is idempotent — safe to re-run. Existing tables are skipped.
+
+### Step 3: Migrate Song Data from JSON
+
+After the tables are created, import the song data from `songs.json`:
+
+```bash
+# Uses default path (data/songs.json or appWeb/data_share/song_data/songs.json)
+php appWeb/.sql/migrate-json.php
+
+# Or specify a custom path
+php appWeb/.sql/migrate-json.php --json=/path/to/songs.json
+```
+
+Expected output:
+
+```text
+=== iHymns JSON-to-MySQL Migration ===
+
+Loading: /path/to/data/songs.json
+Found: 6 songbooks, 3612 songs
+
+Connecting to MySQL...
+Connected.
+
+Clearing existing data...
+Inserting songbooks...
+  Inserted 6 songbooks.
+Inserting songs...
+  ... 10% (361/3612 songs)
+  ... 20% (722/3612 songs)
+  ...
+  ... 100% (3612/3612 songs)
+
+--- Migration Complete ---
+  Songs:      3612
+  Songbooks:  6
+  Writers:    2847
+  Composers:  2634
+  Components: 14891
+
+Migration successful.
+```
+
+> The migration clears all existing data and re-imports. It is transaction-wrapped — if any error occurs, all changes are rolled back.
+
+### Database Schema Overview
+
+**Song Data:**
+
+| Table | Purpose |
+| --- | --- |
+| `songbooks` | Songbook definitions (CP, JP, MP, SDAH, CH, Misc) |
+| `songs` | Core song metadata + `lyrics_text` for full-text search |
+| `song_writers` | Song lyricist credits (many-to-one) |
+| `song_composers` | Song composer credits (many-to-one) |
+| `song_components` | Verses, choruses with lyrics as JSON lines array |
+
+**User Accounts & Access Control:**
+
+| Table | Purpose |
+| --- | --- |
+| `user_groups` | Groups with version channel access flags (Alpha/Beta/RC/RTW) |
+| `users` | User accounts with role (global_admin/admin/editor/user) and group link |
+| `sessions` | Server-side admin panel sessions |
+| `api_tokens` | Bearer tokens for PWA/native app authentication |
+| `password_reset_tokens` | Single-use password reset tokens (1-hour expiry) |
+| `user_group_members` | Many-to-many user-to-group membership |
+| `user_permissions` | Fine-grained per-user permission overrides |
+| `user_setlists` | Server-side setlist storage for cross-device sync |
+| `migrations` | Schema migration tracking |
+
+The full schema is in `appWeb/.sql/schema.sql`.
+
+### File Structure
+
+```text
+appWeb/
+├── .auth/
+│   ├── .htaccess                      ← Blocks web access (defense-in-depth)
+│   ├── db_credentials.example.php     ← Template (tracked in git)
+│   └── db_credentials.php             ← Your credentials (NOT in git)
+│
+├── .sql/
+│   ├── schema.sql                     ← Full MySQL schema
+│   ├── install.php                    ← Database table installer
+│   └── migrate-json.php              ← JSON-to-MySQL data migration
+│
+└── public_html/
+    └── includes/
+        ├── db_mysql.php               ← MySQLi connection factory
+        └── SongData.php               ← Song data handler (MySQL-backed)
+```
+
+### Troubleshooting
+
+| Issue | Solution |
+| --- | --- |
+| "Database credentials file not found" | Copy `db_credentials.example.php` to `db_credentials.php` |
+| "Failed to connect to MySQL" | Check host, port, username, password in credentials file |
+| "Unknown database 'ihymns'" | Create the database: `CREATE DATABASE ihymns CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;` |
+| "Table already exists" | This is normal — the installer uses `CREATE TABLE IF NOT EXISTS` |
+| "Migration failed — all changes rolled back" | Check the error message; fix the issue and re-run |
+
+### Architecture Decision: Why MySQL?
+
+The move from JSON to MySQL is driven by:
+
+1. **Full-text search** — MySQL's FULLTEXT indexes replace the in-memory substring search
+2. **Concurrent writes** — Multiple editors can safely modify data simultaneously
+3. **Scalability** — Database handles growth better than loading a ~5MB JSON into memory
+4. **Structured queries** — Complex filtering (by songbook, by writer, etc.) is more efficient
+5. **Editor safety** — Transaction-wrapped saves with automatic rollback on failure
+6. **User accounts** — Proper relational storage for users, groups, permissions, and sessions
+7. **Version access control** — Group-based gating for Alpha/Beta/RC/RTW release channels
+
+The application still exports JSON for the PWA client-side cache (Fuse.js fuzzy search), maintaining full offline support.
+
+### User Groups & Version Access
+
+The database includes a built-in version access control system via `user_groups`:
+
+| Group | Alpha | Beta | RC | RTW |
+| --- | --- | --- | --- | --- |
+| Developers | Yes | Yes | Yes | Yes |
+| Beta Testers | No | Yes | Yes | Yes |
+| RC Testers | No | No | Yes | Yes |
+| Public | No | No | No | Yes |
+
+Users inherit access from their group. The application checks group permissions to gate access to non-production deployment channels (Alpha = `dev.ihymns.app`, Beta = `beta.ihymns.app`).
+
+---
+
+Last updated: 2026-04-12

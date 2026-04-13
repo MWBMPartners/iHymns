@@ -490,6 +490,49 @@ export class UserAuth {
                                 Forgot password?
                             </small>
                         </div>
+                        <div class="text-center mt-2" id="auth-email-toggle-wrapper" style="display:${mode === 'register' ? 'none' : ''}">
+                            <small id="auth-email-toggle" role="button" class="text-primary" style="cursor:pointer">
+                                <i class="fa-solid fa-envelope me-1" aria-hidden="true"></i>Sign in with email instead
+                            </small>
+                        </div>
+
+                        <!-- Email Login Section (hidden by default) -->
+                        <div id="auth-email-section" class="d-none mt-3">
+                            <hr>
+                            <h6 class="mb-2">Sign in with Email</h6>
+                            <div id="auth-email-error" class="alert alert-danger d-none py-2" role="alert"></div>
+                            <div id="auth-email-success" class="alert alert-success d-none py-2" role="alert"></div>
+                            <form id="auth-email-form" novalidate>
+                                <div class="mb-2" id="auth-email-step1">
+                                    <label for="auth-email-input" class="form-label small">Email Address</label>
+                                    <input type="email" class="form-control form-control-sm" id="auth-email-input"
+                                           placeholder="Enter your email address" autocomplete="email" required>
+                                    <button type="submit" class="btn btn-sm btn-primary w-100 mt-2" id="auth-email-submit">
+                                        <span id="auth-email-submit-text">Send Login Code</span>
+                                        <span id="auth-email-submit-spinner" class="spinner-border spinner-border-sm ms-2 d-none" role="status"></span>
+                                    </button>
+                                </div>
+                            </form>
+                            <div id="auth-email-code-section" class="d-none">
+                                <form id="auth-email-code-form" novalidate>
+                                    <div class="mb-2">
+                                        <label for="auth-email-code-input" class="form-label small">Enter the 6-digit code sent to your email</label>
+                                        <input type="text" class="form-control form-control-sm text-center" id="auth-email-code-input"
+                                               placeholder="000000" maxlength="6" pattern="[0-9]{6}" inputmode="numeric"
+                                               autocomplete="one-time-code" required>
+                                    </div>
+                                    <button type="submit" class="btn btn-sm btn-primary w-100" id="auth-email-code-submit">
+                                        <span id="auth-email-code-submit-text">Verify Code</span>
+                                        <span id="auth-email-code-spinner" class="spinner-border spinner-border-sm ms-2 d-none" role="status"></span>
+                                    </button>
+                                </form>
+                            </div>
+                            <div class="text-center mt-2">
+                                <small id="auth-back-to-password" role="button" class="text-primary" style="cursor:pointer">
+                                    Back to password sign-in
+                                </small>
+                            </div>
+                        </div>
 
                         <!-- Forgot Password Form (hidden by default) -->
                         <div id="auth-forgot-section" class="d-none mt-3">
@@ -548,8 +591,10 @@ export class UserAuth {
             modal.querySelector('#auth-toggle').innerHTML = isReg
                 ? 'Already have an account? <strong>Sign in</strong>'
                 : 'No account? <strong>Create one</strong>';
+            modal.querySelector('#auth-email-toggle-wrapper').style.display = isReg ? 'none' : '';
             modal.querySelector('#auth-error')?.classList.add('d-none');
             modal.querySelector('#auth-forgot-section')?.classList.add('d-none');
+            modal.querySelector('#auth-email-section')?.classList.add('d-none');
         });
 
         /* Forgot password link */
@@ -557,6 +602,7 @@ export class UserAuth {
             modal.querySelector('#auth-form').style.display = 'none';
             modal.querySelector('#auth-toggle').style.display = 'none';
             modal.querySelector('#auth-forgot-link-wrapper').style.display = 'none';
+            modal.querySelector('#auth-email-toggle-wrapper').style.display = 'none';
             modal.querySelector('#auth-forgot-section')?.classList.remove('d-none');
             modal.querySelector('#auth-modal-title').textContent = 'Reset Password';
         });
@@ -566,6 +612,7 @@ export class UserAuth {
             modal.querySelector('#auth-form').style.display = '';
             modal.querySelector('#auth-toggle').style.display = '';
             modal.querySelector('#auth-forgot-link-wrapper').style.display = '';
+            modal.querySelector('#auth-email-toggle-wrapper').style.display = '';
             modal.querySelector('#auth-forgot-section')?.classList.add('d-none');
             modal.querySelector('#auth-modal-title').textContent = 'Sign In';
             /* Reset forgot password state */
@@ -573,6 +620,132 @@ export class UserAuth {
             modal.querySelector('#auth-reset-form')?.classList.add('d-none');
             modal.querySelector('#auth-forgot-error')?.classList.add('d-none');
             modal.querySelector('#auth-forgot-success')?.classList.add('d-none');
+        });
+
+        /* Email login toggle */
+        modal.querySelector('#auth-email-toggle')?.addEventListener('click', () => {
+            modal.querySelector('#auth-form').style.display = 'none';
+            modal.querySelector('#auth-toggle').style.display = 'none';
+            modal.querySelector('#auth-forgot-link-wrapper').style.display = 'none';
+            modal.querySelector('#auth-email-toggle-wrapper').style.display = 'none';
+            modal.querySelector('#auth-email-section')?.classList.remove('d-none');
+            modal.querySelector('#auth-modal-title').textContent = 'Sign in with Email';
+        });
+
+        /* Back to password sign-in from email login */
+        modal.querySelector('#auth-back-to-password')?.addEventListener('click', () => {
+            modal.querySelector('#auth-form').style.display = '';
+            modal.querySelector('#auth-toggle').style.display = '';
+            modal.querySelector('#auth-forgot-link-wrapper').style.display = '';
+            modal.querySelector('#auth-email-toggle-wrapper').style.display = '';
+            modal.querySelector('#auth-email-section')?.classList.add('d-none');
+            modal.querySelector('#auth-modal-title').textContent = 'Sign In';
+            /* Reset email login state */
+            modal.querySelector('#auth-email-step1')?.classList.remove('d-none');
+            modal.querySelector('#auth-email-code-section')?.classList.add('d-none');
+            modal.querySelector('#auth-email-error')?.classList.add('d-none');
+            modal.querySelector('#auth-email-success')?.classList.add('d-none');
+            modal.querySelector('#auth-email-input').value = '';
+            modal.querySelector('#auth-email-code-input').value = '';
+        });
+
+        /* Email login — request code */
+        let emailLoginAddress = '';
+        modal.querySelector('#auth-email-form')?.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = modal.querySelector('#auth-email-input')?.value.trim();
+            const errorEl = modal.querySelector('#auth-email-error');
+            const successEl = modal.querySelector('#auth-email-success');
+            const spinner = modal.querySelector('#auth-email-submit-spinner');
+            const submitBtn = modal.querySelector('#auth-email-submit');
+
+            if (!email) {
+                errorEl.textContent = 'Please enter your email address.';
+                errorEl.classList.remove('d-none');
+                return;
+            }
+
+            errorEl?.classList.add('d-none');
+            successEl?.classList.add('d-none');
+            spinner?.classList.remove('d-none');
+            submitBtn.disabled = true;
+
+            try {
+                const res = await fetch(`${this.app.config.apiUrl}?action=auth_email_login_request`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                    },
+                    body: JSON.stringify({ email }),
+                });
+
+                const data = await res.json();
+
+                if (!res.ok) {
+                    errorEl.textContent = data.error || 'Failed to send login code.';
+                    errorEl.classList.remove('d-none');
+                } else {
+                    emailLoginAddress = email;
+                    successEl.textContent = data.message || 'A 6-digit code has been sent to your email.';
+                    successEl.classList.remove('d-none');
+                    modal.querySelector('#auth-email-step1')?.classList.add('d-none');
+                    modal.querySelector('#auth-email-code-section')?.classList.remove('d-none');
+                }
+            } catch {
+                errorEl.textContent = 'Network error. Please try again.';
+                errorEl.classList.remove('d-none');
+            }
+
+            spinner?.classList.add('d-none');
+            submitBtn.disabled = false;
+        });
+
+        /* Email login — verify code */
+        modal.querySelector('#auth-email-code-form')?.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const code = modal.querySelector('#auth-email-code-input')?.value.trim();
+            const errorEl = modal.querySelector('#auth-email-error');
+            const successEl = modal.querySelector('#auth-email-success');
+            const spinner = modal.querySelector('#auth-email-code-spinner');
+            const submitBtn = modal.querySelector('#auth-email-code-submit');
+
+            if (!code || code.length !== 6) {
+                errorEl.textContent = 'Please enter the 6-digit code.';
+                errorEl.classList.remove('d-none');
+                return;
+            }
+
+            errorEl?.classList.add('d-none');
+            successEl?.classList.add('d-none');
+            spinner?.classList.remove('d-none');
+            submitBtn.disabled = true;
+
+            try {
+                const res = await fetch(`${this.app.config.apiUrl}?action=auth_email_login_verify`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                    },
+                    body: JSON.stringify({ email: emailLoginAddress, code }),
+                });
+
+                const data = await res.json();
+
+                if (!res.ok) {
+                    errorEl.textContent = data.error || 'Verification failed.';
+                    errorEl.classList.remove('d-none');
+                } else {
+                    this._onLoginSuccess(data, bsModal);
+                }
+            } catch {
+                errorEl.textContent = 'Network error. Please try again.';
+                errorEl.classList.remove('d-none');
+            }
+
+            spinner?.classList.add('d-none');
+            submitBtn.disabled = false;
         });
 
         /* Forgot password form submission */
@@ -677,15 +850,12 @@ export class UserAuth {
 
             if (result.success) {
                 bsModal.hide();
-                /* Update header menu to reflect logged-in state */
                 this._updateHeaderState();
-                /* Re-render setlist sync bar if on that page */
                 this.app.setList?.renderSyncBar();
                 this.app.showToast(
                     currentMode === 'register' ? 'Account created! Syncing setlists...' : 'Signed in! Syncing setlists...',
                     'success', 3000
                 );
-                /* Trigger setlist sync */
                 this.triggerSetlistSync();
             } else {
                 errorEl.textContent = result.error;
@@ -695,6 +865,21 @@ export class UserAuth {
 
         modal.addEventListener('hidden.bs.modal', () => modal.remove());
         bsModal.show();
+    }
+
+    /**
+     * Handle successful email-based login.
+     * Stores credentials, closes modal, updates UI, and triggers sync.
+     * @param {object} data  API response with { token, user }
+     * @param {object} bsModal  Bootstrap Modal instance to close
+     */
+    _onLoginSuccess(data, bsModal) {
+        this.saveCredentials(data.token, data.user);
+        bsModal.hide();
+        this._updateHeaderState();
+        this.app.setList?.renderSyncBar();
+        this.app.showToast('Signed in! Syncing setlists...', 'success', 3000);
+        this.triggerSetlistSync();
     }
 
     /**

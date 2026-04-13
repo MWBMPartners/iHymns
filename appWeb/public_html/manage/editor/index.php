@@ -524,6 +524,16 @@ $currentUser = getCurrentUser();
                 <i class="bi bi-folder2-open me-1"></i>Load JSON
             </button>
 
+            <!-- LOAD FROM URL — Load songs.json from a remote URL (#235) -->
+            <button
+                type="button"
+                class="btn btn-sm btn-outline-amber"
+                id="btn-load-url"
+                title="Load songs.json from a URL"
+            >
+                <i class="bi bi-link-45deg me-1"></i>Load URL
+            </button>
+
             <!-- SAVE JSON — Saves the current state back to a downloadable JSON file -->
             <button
                 type="button"
@@ -532,6 +542,16 @@ $currentUser = getCurrentUser();
                 title="Download the current songs as a JSON file"
             >
                 <i class="bi bi-download me-1"></i>Save JSON
+            </button>
+
+            <!-- VALIDATE — Check all songs for data quality issues (#235) -->
+            <button
+                type="button"
+                class="btn btn-sm btn-outline-success"
+                id="btn-validate"
+                title="Validate all song data for errors"
+            >
+                <i class="bi bi-check-circle me-1"></i>Validate
             </button>
 
             <!-- EXPORT DROPDOWN — Provides JSON and CSV export options -->
@@ -680,11 +700,11 @@ $currentUser = getCurrentUser();
                     <span id="songCountFiltered" style="display: none;"> (showing <span id="filteredCount">0</span>)</span>
                 </span>
                 <span>
-                    <button type="button" class="btn btn-sm btn-amber py-0 px-1" id="btn-add-song" title="Add new song">
-                        <i class="bi bi-plus-lg"></i>
+                    <button type="button" class="btn btn-sm btn-amber" id="btn-add-song" title="Add new song">
+                        <i class="bi bi-plus-lg me-1"></i>Add
                     </button>
-                    <button type="button" class="btn btn-sm btn-outline-danger py-0 px-1" id="btn-delete-song" title="Delete selected song">
-                        <i class="bi bi-trash"></i>
+                    <button type="button" class="btn btn-sm btn-outline-danger" id="btn-delete-song" title="Delete selected song">
+                        <i class="bi bi-trash me-1"></i>Delete
                     </button>
                 </span>
             </div>

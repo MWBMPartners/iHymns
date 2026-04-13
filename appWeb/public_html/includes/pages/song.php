@@ -117,6 +117,20 @@ $components  = $song['components'] ?? [];
                 </div>
             <?php endif; ?>
 
+            <!-- Song key display and transpose buttons (#298) -->
+            <div id="song-key-container" class="d-inline-flex align-items-center gap-2 mb-2" style="display:none !important">
+                <span class="badge bg-secondary" id="song-key-badge" title="Song key"></span>
+                <div class="btn-group btn-group-sm">
+                    <button class="btn btn-outline-secondary" id="btn-transpose-down" title="Transpose down">
+                        <i class="fa-solid fa-minus"></i>
+                    </button>
+                    <button class="btn btn-outline-secondary" id="btn-transpose-up" title="Transpose up">
+                        <i class="fa-solid fa-plus"></i>
+                    </button>
+                </div>
+                <small class="text-muted" id="song-key-info"></small>
+            </div>
+
             <!-- Action buttons row -->
             <div class="d-flex flex-wrap gap-2">
                 <!-- Favourite toggle -->
@@ -187,6 +201,16 @@ $components  = $song['components'] ?? [];
                     <span>Save Offline</span>
                 </button>
 
+                <!-- Presentation mode (#297) -->
+                <button type="button"
+                        class="btn btn-outline-secondary btn-sm"
+                        id="btn-present"
+                        title="Presentation mode"
+                        aria-label="Enter presentation mode">
+                    <i class="fa-solid fa-display me-1" aria-hidden="true"></i>
+                    Present
+                </button>
+
                 <!-- Print button -->
                 <button type="button"
                         class="btn btn-outline-secondary btn-sm btn-print"
@@ -195,6 +219,17 @@ $components  = $song['components'] ?? [];
                     <i class="fa-solid fa-print me-1" aria-hidden="true"></i>
                     Print
                 </button>
+
+                <!-- Chord charts toggle (#299) -->
+                <button class="btn btn-sm btn-outline-secondary" id="btn-toggle-chords" style="display:none" title="Show/hide chord charts">
+                    <i class="fa-solid fa-guitar me-1" aria-hidden="true"></i>Chords
+                </button>
+            </div>
+
+            <!-- Song tags display (#288) -->
+            <div id="song-tags-container" class="mt-2 mb-3" style="display:none">
+                <small class="text-muted"><i class="fa-solid fa-tags me-1"></i>Tags:</small>
+                <span id="song-tags-list"></span>
             </div>
         </div>
     </div>
@@ -258,6 +293,14 @@ $components  = $song['components'] ?? [];
         </div>
     <?php endif; ?>
 
+    <!-- Report missing song link -->
+    <div class="mt-3">
+        <a href="/help" data-navigate="help" class="text-muted small text-decoration-none">
+            <i class="fa-solid fa-flag me-1" aria-hidden="true"></i>
+            Report a missing song or suggest a correction
+        </a>
+    </div>
+
     <!-- Related songs (#118) — populated client-side from songs.json -->
     <section id="related-songs" class="related-songs mt-4 pt-3 border-top d-none" aria-label="Related songs">
         <h2 class="h6 mb-3 d-flex align-items-center gap-2" role="button" data-bs-toggle="collapse" data-bs-target="#related-songs-list" aria-expanded="true" aria-controls="related-songs-list">
@@ -315,3 +358,103 @@ $components  = $song['components'] ?? [];
     </nav>
 
 </article>
+
+<!-- Presentation mode JS (#297) -->
+<script>
+(function() {
+    const btnPresent = document.getElementById('btn-present');
+    if (!btnPresent) return;
+
+    btnPresent.addEventListener('click', () => {
+        /* Collect all song components from the rendered page */
+        const comps = document.querySelectorAll('.lyric-component');
+        if (comps.length === 0) return;
+
+        const slides = [];
+        comps.forEach(comp => {
+            const label = comp.querySelector('.lyric-label')?.textContent?.trim() || '';
+            const lines = Array.from(comp.querySelectorAll('.lyric-line')).map(l => l.textContent);
+            slides.push({ label, text: lines.join('\n') });
+        });
+
+        let current = 0;
+
+        /* Create overlay */
+        const overlay = document.createElement('div');
+        overlay.className = 'presentation-overlay';
+        overlay.innerHTML = `
+            <button class="present-close" aria-label="Close presentation">&times;</button>
+            <div class="present-label"></div>
+            <div class="present-lyrics"></div>
+            <div class="present-nav">
+                <button class="present-prev" aria-label="Previous"><i class="fa-solid fa-chevron-left me-1"></i>Prev</button>
+                <button class="present-counter"></button>
+                <button class="present-next" aria-label="Next">Next<i class="fa-solid fa-chevron-right ms-1"></i></button>
+            </div>
+        `;
+
+        const labelEl = overlay.querySelector('.present-label');
+        const lyricsEl = overlay.querySelector('.present-lyrics');
+        const counterEl = overlay.querySelector('.present-counter');
+        const prevBtn = overlay.querySelector('.present-prev');
+        const nextBtn = overlay.querySelector('.present-next');
+
+        function render() {
+            const slide = slides[current];
+            labelEl.textContent = slide.label;
+            lyricsEl.textContent = slide.text;
+            counterEl.textContent = (current + 1) + ' / ' + slides.length;
+            prevBtn.disabled = current === 0;
+            nextBtn.disabled = current === slides.length - 1;
+        }
+
+        function close() {
+            if (document.fullscreenElement) {
+                document.exitFullscreen().catch(() => {});
+            }
+            overlay.remove();
+        }
+
+        function next() { if (current < slides.length - 1) { current++; render(); } }
+        function prev() { if (current > 0) { current--; render(); } }
+
+        /* Navigation events */
+        overlay.querySelector('.present-close').addEventListener('click', close);
+        prevBtn.addEventListener('click', (e) => { e.stopPropagation(); prev(); });
+        nextBtn.addEventListener('click', (e) => { e.stopPropagation(); next(); });
+        counterEl.addEventListener('click', (e) => e.stopPropagation());
+
+        /* Click on lyrics area advances */
+        lyricsEl.addEventListener('click', next);
+
+        /* Keyboard navigation */
+        function onKey(e) {
+            if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); }
+            else if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); next(); }
+            else if (e.key === 'ArrowLeft') { e.preventDefault(); prev(); }
+        }
+        document.addEventListener('keydown', onKey);
+
+        /* Touch swipe support */
+        let touchStartX = 0;
+        overlay.addEventListener('touchstart', (e) => { touchStartX = e.changedTouches[0].screenX; }, { passive: true });
+        overlay.addEventListener('touchend', (e) => {
+            const diff = e.changedTouches[0].screenX - touchStartX;
+            if (Math.abs(diff) > 50) {
+                if (diff < 0) next(); else prev();
+            }
+        }, { passive: true });
+
+        /* Cleanup on removal */
+        overlay.addEventListener('remove', () => document.removeEventListener('keydown', onKey));
+
+        render();
+        document.body.appendChild(overlay);
+
+        /* Enter fullscreen if available */
+        if (overlay.requestFullscreen) {
+            overlay.requestFullscreen().catch(() => {});
+        }
+    });
+})();
+</script>
