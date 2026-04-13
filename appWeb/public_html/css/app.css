@@ -1504,6 +1504,38 @@ body.reduce-motion .scroll-to-top-btn {
     font-size: 0.85rem;
 }
 
+/* Auto-scroll floating stop button — stays visible when toolbar scrolls away */
+.btn-autoscroll-fab {
+    position: fixed;
+    bottom: calc(var(--footer-total-height, 88px) + 16px);
+    right: 16px;
+    z-index: 1025;
+    border-radius: var(--radius-pill, 50px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    font-size: 0.85rem;
+    padding: 8px 16px;
+    animation: fabSlideIn 0.25s ease;
+}
+
+@keyframes fabSlideIn {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+@media (display-mode: standalone) {
+    .btn-autoscroll-fab {
+        bottom: calc(var(--footer-total-height, 88px) + env(safe-area-inset-bottom, 0px) + 16px);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .btn-autoscroll-fab { animation: none; }
+}
+
+body.reduce-motion .btn-autoscroll-fab {
+    animation: none;
+}
+
 /* Line spacing variants */
 .song-lyrics.spacing-compact .lyric-line {
     margin-bottom: 0 !important;

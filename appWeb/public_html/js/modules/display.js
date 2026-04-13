@@ -21,8 +21,8 @@ export class Display {
         /** @type {string} localStorage key */
         this.storageKey = STORAGE_DISPLAY;
 
-        /** @type {number|null} Auto-scroll interval ID */
-        this.autoScrollInterval = null;
+        /** @type {number|null} requestAnimationFrame ID for auto-scroll */
+        this.autoScrollRAF = null;
 
         /** @type {boolean} Whether auto-scroll is active */
         this.autoScrollActive = false;
@@ -345,37 +345,89 @@ export class Display {
         }
     }
 
-    /** Start auto-scrolling */
+    /**
+     * Start auto-scrolling using requestAnimationFrame.
+     * Uses rAF instead of setInterval for reliable scrolling on all
+     * platforms including iOS Safari, which throttles setInterval.
+     * Delta-time based so scroll speed is consistent regardless of
+     * frame rate (e.g. 60fps, 120fps ProMotion, or throttled).
+     */
     startAutoScroll() {
         this.autoScrollActive = true;
         const speed = this.get('autoScrollSpeed');
-        const pxPerFrame = speed / 60; /* 60fps */
 
         const btn = document.getElementById('display-autoscroll-btn');
         if (btn) btn.classList.add('active', 'btn-primary');
         btn?.classList.remove('btn-outline-secondary');
 
-        this.autoScrollInterval = setInterval(() => {
-            window.scrollBy({ top: pxPerFrame, behavior: 'auto' });
+        this._showFloatingStop();
 
-            /* Stop at bottom */
-            if ((window.innerHeight + window.scrollY) >= document.body.scrollHeight) {
-                this.stopAutoScroll();
+        let lastTime = null;
+
+        const tick = (timestamp) => {
+            if (!this.autoScrollActive) return;
+
+            if (lastTime !== null) {
+                const delta = (timestamp - lastTime) / 1000; /* seconds */
+                const px = speed * delta;
+                /* Use simple (x, y) signature — the options-object form
+                   is unreliable on iOS Safari */
+                window.scrollBy(0, px);
             }
-        }, 1000 / 60);
+            lastTime = timestamp;
+
+            /* Stop at bottom of page */
+            if ((window.innerHeight + window.scrollY) >= document.body.scrollHeight - 1) {
+                this.stopAutoScroll();
+                return;
+            }
+
+            this.autoScrollRAF = requestAnimationFrame(tick);
+        };
+
+        this.autoScrollRAF = requestAnimationFrame(tick);
     }
 
     /** Stop auto-scrolling */
     stopAutoScroll() {
         this.autoScrollActive = false;
-        if (this.autoScrollInterval) {
-            clearInterval(this.autoScrollInterval);
-            this.autoScrollInterval = null;
+        if (this.autoScrollRAF) {
+            cancelAnimationFrame(this.autoScrollRAF);
+            this.autoScrollRAF = null;
         }
 
         const btn = document.getElementById('display-autoscroll-btn');
         if (btn) btn.classList.remove('active', 'btn-primary');
         btn?.classList.add('btn-outline-secondary');
+
+        this._hideFloatingStop();
+    }
+
+    /**
+     * Show a floating "Stop" button so auto-scroll can be stopped
+     * even after the toolbar has scrolled off-screen.
+     * @private
+     */
+    _showFloatingStop() {
+        if (document.getElementById('autoscroll-fab')) return;
+
+        const fab = document.createElement('button');
+        fab.id = 'autoscroll-fab';
+        fab.type = 'button';
+        fab.className = 'btn btn-primary btn-autoscroll-fab';
+        fab.setAttribute('aria-label', 'Stop auto-scroll');
+        fab.title = 'Stop auto-scroll';
+        fab.innerHTML = '<i class="fa-solid fa-stop me-1" aria-hidden="true"></i> Stop';
+        fab.addEventListener('click', () => this.stopAutoScroll());
+        document.body.appendChild(fab);
+    }
+
+    /**
+     * Remove the floating stop button.
+     * @private
+     */
+    _hideFloatingStop() {
+        document.getElementById('autoscroll-fab')?.remove();
     }
 
     /* =====================================================================
