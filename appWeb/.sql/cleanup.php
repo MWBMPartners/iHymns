@@ -45,14 +45,14 @@ $credentialsFile = dirname(__DIR__) . '/.auth/db_credentials.php';
 if (!file_exists($credentialsFile)) {
     echo "ERROR: Database credentials not found at: $credentialsFile\n";
     echo "Run: php appWeb/.sql/install.php\n";
-    exit(1);
+    return;
 }
 
 require_once $credentialsFile;
 
 if (!defined('DB_HOST') || !defined('DB_USER') || !defined('DB_PASS') || !defined('DB_NAME')) {
     echo "ERROR: Database credentials are incomplete.\n";
-    exit(1);
+    return;
 }
 
 $port    = defined('DB_PORT') ? (int)DB_PORT : 3306;
@@ -71,7 +71,7 @@ try {
     ]);
 } catch (PDOException $e) {
     echo "ERROR: Database connection failed: " . $e->getMessage() . "\n";
-    exit(1);
+    return;
 }
 
 /* =========================================================================

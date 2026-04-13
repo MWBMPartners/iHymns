@@ -125,7 +125,7 @@ if (!$hasExistingCreds) {
         output("     to   appWeb/.auth/db_credentials.php");
         output("  2. Edit db_credentials.php with your MySQL details");
         output("  3. Re-run this installer");
-        exit(1);
+        return;
     }
 
     /* Check SSL support */
@@ -152,7 +152,7 @@ if (!$hasExistingCreds) {
     /* Validate port is numeric */
     if (!is_numeric($dbPort)) {
         output("ERROR: Port must be a number. Got: {$dbPort}");
-        exit(1);
+        return;
     }
 
     /* Sanitise table prefix (alphanumeric + underscore only) */
@@ -188,7 +188,7 @@ if (!$hasExistingCreds) {
         output("");
         output("  To create the database:");
         output("    mysql -u root -p -e \"CREATE DATABASE {$dbName} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\"");
-        exit(1);
+        return;
     }
 
     /* Write credentials file */
@@ -227,7 +227,7 @@ PHP;
     if ($written === false) {
         output("ERROR: Failed to write credentials file.");
         output("Check write permissions on: {$credentialsDir}");
-        exit(1);
+        return;
     }
     /* Restrict file permissions (owner read/write only) */
     chmod($credentialsFile, 0600);
@@ -245,7 +245,7 @@ require_once $credentialsFile;
 foreach (['DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER', 'DB_PASS'] as $const) {
     if (!defined($const)) {
         output("ERROR: Required constant {$const} not defined in db_credentials.php");
-        exit(1);
+        return;
     }
 }
 
@@ -265,7 +265,7 @@ try {
     output("ERROR: Failed to connect to MySQL: " . $e->getMessage());
     output("");
     output("Check your credentials in: " . realpath($credentialsFile));
-    exit(1);
+    return;
 }
 
 $charset = defined('DB_CHARSET') ? DB_CHARSET : 'utf8mb4';
@@ -283,14 +283,14 @@ $schemaFile = __DIR__ . '/schema.sql';
 if (!file_exists($schemaFile)) {
     output("ERROR: Schema file not found: " . $schemaFile);
     $mysqli->close();
-    exit(1);
+    return;
 }
 
 $schemaSql = file_get_contents($schemaFile);
 if ($schemaSql === false) {
     output("ERROR: Failed to read schema file.");
     $mysqli->close();
-    exit(1);
+    return;
 }
 
 /* Apply table prefix if configured.
@@ -365,7 +365,7 @@ output("");
 if ($errors > 0) {
     output("WARNING: Some operations failed. Check errors above.");
     $mysqli->close();
-    exit(1);
+    return;
 }
 
 output("Database installation complete.");
@@ -375,4 +375,4 @@ output("  1. Import song data:  php appWeb/.sql/migrate-json.php");
 output("  2. Set up admin:      Visit /manage/setup in your browser");
 
 $mysqli->close();
-exit(0);
+return;

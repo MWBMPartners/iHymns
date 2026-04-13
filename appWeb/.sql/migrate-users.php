@@ -54,7 +54,7 @@ function output(string $msg): void {
 $credFile = __DIR__ . '/../.auth/db_credentials.php';
 if (!file_exists($credFile)) {
     output("ERROR: MySQL credentials not found. Run install.php first.");
-    exit(1);
+    return;
 }
 require_once $credFile;
 
@@ -74,7 +74,7 @@ try {
     $mysql->set_charset(defined('DB_CHARSET') ? DB_CHARSET : 'utf8mb4');
 } catch (\mysqli_sql_exception $e) {
     output("ERROR: MySQL connection failed: " . $e->getMessage());
-    exit(1);
+    return;
 }
 output("Connected to MySQL: " . DB_NAME);
 
@@ -266,4 +266,4 @@ output("");
 output("Migration complete.");
 
 $mysql->close();
-exit(0);
+return;

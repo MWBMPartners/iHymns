@@ -53,7 +53,7 @@ $credentialsFile = __DIR__ . '/../.auth/db_credentials.php';
 if (!file_exists($credentialsFile)) {
     output("ERROR: Database credentials file not found.");
     output("Run: cp appWeb/.auth/db_credentials.example.php appWeb/.auth/db_credentials.php");
-    exit(1);
+    return;
 }
 
 require_once $credentialsFile;
@@ -95,7 +95,7 @@ if ($jsonPath === null || !file_exists($jsonPath)) {
     }
     output("");
     output("Use: php migrate-json.php --json=/path/to/songs.json");
-    exit(1);
+    return;
 }
 
 /* =========================================================================
@@ -109,13 +109,13 @@ output("Loading: " . $jsonPath);
 $jsonContent = file_get_contents($jsonPath);
 if ($jsonContent === false) {
     output("ERROR: Failed to read songs.json");
-    exit(1);
+    return;
 }
 
 $data = json_decode($jsonContent, true, 512, JSON_THROW_ON_ERROR);
 if (!is_array($data) || !isset($data['songbooks'], $data['songs'])) {
     output("ERROR: Invalid songs.json structure (missing 'songbooks' or 'songs')");
-    exit(1);
+    return;
 }
 
 $songbookCount = count($data['songbooks']);
@@ -135,7 +135,7 @@ try {
     $mysqli = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME, (int)DB_PORT);
 } catch (\mysqli_sql_exception $e) {
     output("ERROR: MySQL connection failed: " . $e->getMessage());
-    exit(1);
+    return;
 }
 
 $charset = defined('DB_CHARSET') ? DB_CHARSET : 'utf8mb4';
@@ -299,8 +299,8 @@ try {
     output("ERROR: Migration failed — all changes rolled back.");
     output("Reason: " . $e->getMessage());
     $mysqli->close();
-    exit(1);
+    return;
 }
 
 $mysqli->close();
-exit(0);
+return;
