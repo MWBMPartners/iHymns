@@ -1,5 +1,5 @@
 - [User Profile](user_profile.md) — Lance at MWBM Partners Ltd, wants detailed annotations, modular architecture
-- [iHymns Project](project_ihymns.md) — Multiplatform Christian lyrics app, MySQL DB (30+ tables), 50+ API endpoints, v0.10.0
+- [iHymns Project](project_ihymns.md) — Multiplatform Christian lyrics app, MySQL (30+ tables), 50+ API endpoints, v0.10.0
 - [Never touch SourceSongData](feedback_source_data.md) — .SourceSongData/ must never be deleted or modified
 - [Use appX/ directories](feedback_app_dirs.md) — appWeb/, appApple/, appAndroid/ naming convention
 - [Web app can use PHP](feedback_php_web.md) — PHP 8.5+ on shared hosting (DreamHost)
