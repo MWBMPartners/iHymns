@@ -69,17 +69,55 @@ function toTitleCase(string $str): string
 
 class SongData
 {
-    /** MySQLi connection */
-    private mysqli $db;
+    /** MySQLi connection (null when using JSON fallback) */
+    private ?mysqli $db = null;
+
+    /** JSON fallback data (used when MySQL is not configured) */
+    private ?array $jsonData = null;
+
+    /** Whether we're using JSON fallback mode */
+    private bool $jsonMode = false;
 
     /**
-     * Constructor — establishes MySQL connection.
+     * Constructor — connects to MySQL, or falls back to JSON file.
      *
-     * @throws RuntimeException If the database connection fails
+     * When MySQL credentials are not configured (e.g., fresh deployment
+     * before database setup), the class falls back to reading songs.json
+     * so the app remains functional.
      */
     public function __construct()
     {
-        $this->db = getDbMysqli();
+        try {
+            $this->db = getDbMysqli();
+        } catch (\Throwable $e) {
+            /* MySQL not available — fall back to JSON file */
+            $this->jsonMode = true;
+            $this->_loadJsonFallback();
+        }
+    }
+
+    /**
+     * Load song data from the JSON file as a fallback.
+     */
+    private function _loadJsonFallback(): void
+    {
+        $candidates = [
+            defined('APP_DATA_FILE') ? APP_DATA_FILE : '',
+            dirname(__DIR__, 2) . '/data_share/song_data/songs.json',
+            dirname(__DIR__, 3) . '/data/songs.json',
+        ];
+
+        foreach ($candidates as $path) {
+            if ($path !== '' && file_exists($path)) {
+                $json = file_get_contents($path);
+                if ($json !== false) {
+                    $this->jsonData = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+                    return;
+                }
+            }
+        }
+
+        throw new \RuntimeException('Song data not available: MySQL not configured and songs.json not found.');
     }
 
     /* =====================================================================
@@ -93,6 +131,10 @@ class SongData
      */
     public function getMeta(): array
     {
+        if ($this->jsonMode) {
+            return $this->jsonData['meta'] ?? [];
+        }
+
         $stmt = $this->db->prepare("SELECT COUNT(*) AS total FROM tblSongs");
         $stmt->execute();
         $result = $stmt->get_result();
@@ -124,6 +166,12 @@ class SongData
      */
     public function getSongbooks(): array
     {
+        if ($this->jsonMode) {
+            $books = $this->jsonData['songbooks'] ?? [];
+            usort($books, fn($a, $b) => strcmp($a['name'] ?? '', $b['name'] ?? ''));
+            return $books;
+        }
+
         $stmt = $this->db->prepare(
             "SELECT Abbreviation AS id, Name AS name, SongCount AS songCount
              FROM tblSongbooks
@@ -149,6 +197,12 @@ class SongData
     public function getSongbook(string $id): ?array
     {
         $id = strtoupper(trim($id));
+        if ($this->jsonMode) {
+            foreach ($this->jsonData['songbooks'] ?? [] as $book) {
+                if (strtoupper($book['id']) === $id) return $book;
+            }
+            return null;
+        }
         $stmt = $this->db->prepare(
             "SELECT Abbreviation AS id, Name AS name, SongCount AS songCount
              FROM tblSongbooks
@@ -182,6 +236,15 @@ class SongData
      */
     public function getSongs(?string $songbookId = null): array
     {
+        if ($this->jsonMode) {
+            $songs = $this->jsonData['songs'] ?? [];
+            if ($songbookId !== null) {
+                $songbookId = strtoupper(trim($songbookId));
+                $songs = array_values(array_filter($songs, fn($s) => strtoupper($s['songbook']) === $songbookId));
+            }
+            return $songs;
+        }
+
         $where = [];
         $params = [];
         $types = '';
@@ -251,6 +314,16 @@ class SongData
     {
         $id = strtoupper(trim($id));
 
+        if ($this->jsonMode) {
+            foreach ($this->jsonData['songs'] ?? [] as $song) {
+                if (strtoupper($song['id']) === $id) return $song;
+            }
+            if (preg_match('/^([A-Z]+)-0*(\d+)$/', $id, $m)) {
+                return $this->getSongByNumber($m[1], (int)$m[2]);
+            }
+            return null;
+        }
+
         /* Try exact match first (fast path) */
         $song = $this->_fetchSongRow($id);
 
@@ -274,6 +347,12 @@ class SongData
     public function getSongByNumber(string $songbook, int $number): ?array
     {
         $songbook = strtoupper(trim($songbook));
+        if ($this->jsonMode) {
+            foreach ($this->jsonData['songs'] ?? [] as $song) {
+                if (strtoupper($song['songbook']) === $songbook && (int)$song['number'] === $number) return $song;
+            }
+            return null;
+        }
 
         $stmt = $this->db->prepare(
             "SELECT SongId FROM tblSongs WHERE SongbookAbbr = ? AND Number = ? LIMIT 1"
@@ -311,6 +390,24 @@ class SongData
         $query = trim($query);
         if ($query === '') {
             return [];
+        }
+
+        /* JSON fallback: simple substring search */
+        if ($this->jsonMode) {
+            $q = mb_strtolower($query);
+            $songs = $this->getSongs($songbookId);
+            $results = [];
+            foreach ($songs as $song) {
+                if (mb_stripos($song['title'] ?? '', $q) !== false) { $results[] = $song; continue; }
+                foreach ($song['writers'] ?? [] as $w) { if (mb_stripos($w, $q) !== false) { $results[] = $song; continue 2; } }
+                foreach ($song['composers'] ?? [] as $c) { if (mb_stripos($c, $q) !== false) { $results[] = $song; continue 2; } }
+                foreach ($song['components'] ?? [] as $comp) {
+                    foreach ($comp['lines'] ?? [] as $line) {
+                        if (mb_stripos($line, $q) !== false) { $results[] = $song; continue 3; }
+                    }
+                }
+            }
+            return $limit > 0 ? array_slice($results, 0, $limit) : $results;
         }
 
         $results = [];
@@ -432,6 +529,11 @@ class SongData
             return [];
         }
 
+        if ($this->jsonMode) {
+            $songs = $this->getSongs($songbookId);
+            return array_values(array_filter($songs, fn($s) => str_starts_with((string)$s['number'], $number)));
+        }
+
         /* Use LIKE for prefix matching on the number cast to string */
         $likeNumber = $number . '%';
         $stmt = $this->db->prepare(
@@ -478,6 +580,10 @@ class SongData
      */
     public function getRandomSong(?string $songbookId = null): ?array
     {
+        if ($this->jsonMode) {
+            $songs = $this->getSongs($songbookId);
+            return empty($songs) ? null : $songs[random_int(0, count($songs) - 1)];
+        }
         if ($songbookId !== null) {
             $songbookId = strtoupper(trim($songbookId));
             $stmt = $this->db->prepare(
