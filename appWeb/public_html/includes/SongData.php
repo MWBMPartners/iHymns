@@ -78,6 +78,9 @@ class SongData
     /** Whether we're using JSON fallback mode */
     private bool $jsonMode = false;
 
+    /** Check if running in JSON fallback mode (no MySQL) */
+    public function isJsonFallback(): bool { return $this->jsonMode; }
+
     /**
      * Constructor — connects to MySQL, or falls back to JSON file.
      *

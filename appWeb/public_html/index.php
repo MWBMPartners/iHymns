@@ -848,7 +848,12 @@ if (!empty($breadcrumbItems)) {
             <small>
                 <?= $appCopyright ?>
                 &nbsp;|&nbsp;
-                v<?= htmlspecialchars($versionDisplay) ?>
+                v<?= htmlspecialchars($versionDisplay) ?><?php
+                    /* Subtle data source indicator — Alpha/Beta only */
+                    if ($appDevStatus !== null && isset($songData) && $songData->isJsonFallback()) {
+                        echo ' <span title="Using JSON fallback (MySQL not configured)" style="opacity:0.4;cursor:help">&#9679; json</span>';
+                    }
+                ?>
                 &nbsp;|&nbsp;
                 <a href="/terms" data-navigate="terms" class="footer-link">Terms</a>
                 &nbsp;|&nbsp;
