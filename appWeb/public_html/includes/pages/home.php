@@ -107,6 +107,28 @@ $songbooks = $songData->getSongbooks();
     <!-- Song of the Day (#108) — populated by JS -->
     <div id="song-of-the-day"></div>
 
+    <!-- Recently Viewed Songs (#304) — shown for authenticated users -->
+    <div class="mb-4" id="recent-songs-section" style="display:none">
+        <h5><i class="fa-solid fa-clock-rotate-left me-2"></i>Recently Viewed</h5>
+        <div id="recent-songs-list" class="list-group list-group-flush"></div>
+    </div>
+
+    <!-- Popular Songs (#303) -->
+    <div class="mb-4" id="popular-songs-section">
+        <h5><i class="fa-solid fa-fire me-2 text-warning"></i>Popular Songs</h5>
+        <div id="popular-songs-list" class="list-group list-group-flush">
+            <div class="text-muted small p-2">Loading...</div>
+        </div>
+    </div>
+
+    <!-- Browse by Theme (#305) -->
+    <div class="mb-4" id="tags-section">
+        <h5><i class="fa-solid fa-tags me-2"></i>Browse by Theme</h5>
+        <div id="tags-list" class="d-flex flex-wrap gap-2">
+            <span class="text-muted small">Loading...</span>
+        </div>
+    </div>
+
     <!-- Songbook Cards Grid (#151 — section ID for sitelink eligibility) -->
     <section id="songbooks" aria-label="Songbooks">
         <h2 class="h5 mb-3">
@@ -144,5 +166,51 @@ $songbooks = $songData->getSongbooks();
             <?php endforeach; ?>
         </div>
     </section>
+
+    <!-- Inline JS for dynamic home page sections (#303, #304, #305) -->
+    <script>
+    (function() {
+        // #303 — Popular Songs
+        fetch('/api?action=popular_songs&period=month&limit=10')
+            .then(r => r.json())
+            .then(data => {
+                const el = document.getElementById('popular-songs-list');
+                if (!el || !data.songs?.length) { el?.closest('#popular-songs-section')?.remove(); return; }
+                el.innerHTML = data.songs.map(s =>
+                    `<a href="/song/${s.songId}" data-navigate="song" class="list-group-item list-group-item-action d-flex justify-content-between">
+                        <span>${s.songId}</span>
+                        <span class="badge bg-secondary">${s.views} views</span>
+                    </a>`
+                ).join('');
+            }).catch(() => document.getElementById('popular-songs-section')?.remove());
+
+        // #304 — Recently Viewed (authenticated users only)
+        const token = localStorage.getItem('ihymns_auth_token');
+        if (token) {
+            fetch('/api?action=song_history&limit=8', {
+                headers: { 'Authorization': 'Bearer ' + token }
+            }).then(r => r.json()).then(data => {
+                const section = document.getElementById('recent-songs-section');
+                const el = document.getElementById('recent-songs-list');
+                if (!data.history?.length) return;
+                section.style.display = '';
+                el.innerHTML = data.history.map(h =>
+                    `<a href="/song/${h.songId}" data-navigate="song" class="list-group-item list-group-item-action">${h.songId}</a>`
+                ).join('');
+            }).catch(() => {});
+        }
+
+        // #305 — Browse by Theme
+        fetch('/api?action=tags')
+            .then(r => r.json())
+            .then(data => {
+                const el = document.getElementById('tags-list');
+                if (!data.tags?.length) { el?.closest('#tags-section')?.remove(); return; }
+                el.innerHTML = data.tags.map(t =>
+                    `<a href="/tag/${t.slug}" class="btn btn-sm btn-outline-secondary">${t.name}</a>`
+                ).join('');
+            }).catch(() => document.getElementById('tags-section')?.remove());
+    })();
+    </script>
 
 </section>
