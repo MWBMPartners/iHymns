@@ -410,6 +410,9 @@ if (!empty($breadcrumbItems)) {
     <!-- iHymns Application Stylesheet -->
     <link rel="stylesheet" href="/css/app.css?v=<?= urlencode($appVersion) ?>">
 
+    <!-- Accessibility Stylesheet (high contrast, colour blind modes, RTL) -->
+    <link rel="stylesheet" href="/css/accessibility.css?v=<?= urlencode($appVersion) ?>">
+
     <!-- Print Stylesheet -->
     <link rel="stylesheet" href="/css/print.css?v=<?= urlencode($appVersion) ?>" media="print">
 
@@ -1182,5 +1185,8 @@ if (!empty($breadcrumbItems)) {
 
     <!-- iHymns Application Scripts (ES Modules) -->
     <script src="/js/app.js?v=<?= urlencode($appVersion) ?>" type="module"></script>
+
+    <!-- Colour Vision Deficiency (CVD) SVG correction filters (#319) -->
+    <?php readfile(__DIR__ . '/assets/cvd-filters.svg'); ?>
 </body>
 </html>

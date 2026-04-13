@@ -2932,6 +2932,591 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
+         * Related songs — server-side recommendations (#308)
+         * Parameters: id (required), limit (optional, default 10)
+         * No auth required.
+         * Finds related songs by: shared writer/composer, shared tags,
+         * same songbook.
+         * ----------------------------------------------------------------- */
+        case 'related_songs':
+            $songId = isset($_GET['id']) ? trim($_GET['id']) : '';
+            $relLimit = isset($_GET['limit']) ? min((int)$_GET['limit'], 50) : 10;
+
+            if ($songId === '' || !preg_match('/^[A-Za-z]+-\d+$/', $songId)) {
+                sendJson(['error' => 'Valid song ID is required.'], 400);
+                break;
+            }
+
+            $db = getDb();
+
+            /* Verify the source song exists and get its songbook */
+            $stmt = $db->prepare('SELECT SongId, SongbookAbbr FROM tblSongs WHERE SongId = ?');
+            $stmt->execute([$songId]);
+            $sourceSong = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$sourceSong) {
+                sendJson(['error' => 'Song not found.'], 404);
+                break;
+            }
+
+            $related = [];
+            $seenIds = [$songId => true];
+
+            /* 1. Songs by the same writer(s) */
+            $stmt = $db->prepare(
+                'SELECT DISTINCT s.SongId AS id, s.Title AS title, s.SongbookAbbr AS songbook,
+                        s.Number AS number, w2.Name AS reason
+                 FROM tblSongWriters w1
+                 JOIN tblSongWriters w2 ON w2.Name = w1.Name AND w2.SongId != w1.SongId
+                 JOIN tblSongs s ON s.SongId = w2.SongId
+                 WHERE w1.SongId = ?
+                 LIMIT 20'
+            );
+            $stmt->execute([$songId]);
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                if (isset($seenIds[$row['id']])) continue;
+                $seenIds[$row['id']] = true;
+                $row['number'] = (int)$row['number'];
+                $row['reason'] = 'Same writer: ' . $row['reason'];
+                $related[] = $row;
+            }
+
+            /* 2. Songs by the same composer(s) */
+            $stmt = $db->prepare(
+                'SELECT DISTINCT s.SongId AS id, s.Title AS title, s.SongbookAbbr AS songbook,
+                        s.Number AS number, c2.Name AS reason
+                 FROM tblSongComposers c1
+                 JOIN tblSongComposers c2 ON c2.Name = c1.Name AND c2.SongId != c1.SongId
+                 JOIN tblSongs s ON s.SongId = c2.SongId
+                 WHERE c1.SongId = ?
+                 LIMIT 20'
+            );
+            $stmt->execute([$songId]);
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                if (isset($seenIds[$row['id']])) continue;
+                $seenIds[$row['id']] = true;
+                $row['number'] = (int)$row['number'];
+                $row['reason'] = 'Same composer: ' . $row['reason'];
+                $related[] = $row;
+            }
+
+            /* 3. Songs with shared tags */
+            $stmt = $db->prepare(
+                'SELECT DISTINCT s.SongId AS id, s.Title AS title, s.SongbookAbbr AS songbook,
+                        s.Number AS number, t.Name AS reason
+                 FROM tblSongTagMap tm1
+                 JOIN tblSongTagMap tm2 ON tm2.TagId = tm1.TagId AND tm2.SongId != tm1.SongId
+                 JOIN tblSongs s ON s.SongId = tm2.SongId
+                 JOIN tblSongTags t ON t.Id = tm1.TagId
+                 WHERE tm1.SongId = ?
+                 LIMIT 20'
+            );
+            $stmt->execute([$songId]);
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                if (isset($seenIds[$row['id']])) continue;
+                $seenIds[$row['id']] = true;
+                $row['number'] = (int)$row['number'];
+                $row['reason'] = 'Shared tag: ' . $row['reason'];
+                $related[] = $row;
+            }
+
+            /* 4. Same songbook (fill remaining slots) */
+            if (count($related) < $relLimit) {
+                $remaining = $relLimit - count($related);
+                $excludeIds = array_keys($seenIds);
+                $placeholders = implode(',', array_fill(0, count($excludeIds), '?'));
+                $stmt = $db->prepare(
+                    "SELECT s.SongId AS id, s.Title AS title, s.SongbookAbbr AS songbook,
+                            s.Number AS number
+                     FROM tblSongs s
+                     WHERE s.SongbookAbbr = ? AND s.SongId NOT IN ($placeholders)
+                     ORDER BY RAND()
+                     LIMIT " . (int)$remaining
+                );
+                $params = array_merge([$sourceSong['SongbookAbbr']], $excludeIds);
+                $stmt->execute($params);
+                foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                    $row['number'] = (int)$row['number'];
+                    $row['reason'] = 'Same songbook';
+                    $related[] = $row;
+                }
+            }
+
+            /* Trim to requested limit */
+            $related = array_slice($related, 0, $relLimit);
+
+            sendJson(['related' => $related]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Admin: bulk export (#314)
+         * Parameters: format (json|csv|xml|opensong|videopsalm)
+         * Requires: editor+ role
+         * Streams download with Content-Disposition header.
+         * ----------------------------------------------------------------- */
+        case 'admin_export':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['editor', 'admin', 'global_admin'])) {
+                sendJson(['error' => 'Editor access required.'], 403);
+                break;
+            }
+
+            $format = mb_strtolower(trim($_GET['format'] ?? 'json'));
+            $validFormats = ['json', 'csv', 'xml', 'opensong', 'videopsalm'];
+            if (!in_array($format, $validFormats)) {
+                sendJson(['error' => 'Invalid format. Supported: ' . implode(', ', $validFormats)], 400);
+                break;
+            }
+
+            $db = getDb();
+
+            /* Fetch all songs with writers and composers */
+            $stmt = $db->query(
+                'SELECT s.SongId, s.Number, s.Title, s.SongbookAbbr, s.SongbookName,
+                        s.Language, s.Copyright, s.Ccli, s.Verified, s.HasAudio, s.HasSheetMusic,
+                        s.LyricsText
+                 FROM tblSongs s
+                 ORDER BY s.SongbookAbbr, s.Number'
+            );
+            $songs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            /* Pre-fetch writers and composers keyed by SongId */
+            $writerMap = [];
+            $composerMap = [];
+            $wStmt = $db->query('SELECT SongId, Name FROM tblSongWriters ORDER BY SongId, Id');
+            foreach ($wStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $writerMap[$row['SongId']][] = $row['Name'];
+            }
+            $cStmt = $db->query('SELECT SongId, Name FROM tblSongComposers ORDER BY SongId, Id');
+            foreach ($cStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $composerMap[$row['SongId']][] = $row['Name'];
+            }
+
+            switch ($format) {
+                case 'json':
+                    $exportData = [];
+                    foreach ($songs as $s) {
+                        $exportData[] = [
+                            'id'        => $s['SongId'],
+                            'number'    => (int)$s['Number'],
+                            'title'     => $s['Title'],
+                            'songbook'  => $s['SongbookAbbr'],
+                            'songbookName' => $s['SongbookName'],
+                            'writers'   => $writerMap[$s['SongId']] ?? [],
+                            'composers' => $composerMap[$s['SongId']] ?? [],
+                            'copyright' => $s['Copyright'],
+                            'language'  => $s['Language'],
+                            'ccli'      => $s['Ccli'],
+                            'verified'  => (bool)$s['Verified'],
+                            'hasAudio'  => (bool)$s['HasAudio'],
+                            'hasSheetMusic' => (bool)$s['HasSheetMusic'],
+                        ];
+                    }
+                    header('Content-Type: application/json; charset=UTF-8');
+                    header('Content-Disposition: attachment; filename="ihymns-export.json"');
+                    echo json_encode(['songs' => $exportData], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
+                    break;
+
+                case 'csv':
+                    header('Content-Type: text/csv; charset=UTF-8');
+                    header('Content-Disposition: attachment; filename="ihymns-export.csv"');
+                    $out = fopen('php://output', 'w');
+                    fputcsv($out, ['id', 'number', 'title', 'songbook', 'writers', 'composers', 'copyright', 'language']);
+                    foreach ($songs as $s) {
+                        fputcsv($out, [
+                            $s['SongId'],
+                            $s['Number'],
+                            $s['Title'],
+                            $s['SongbookAbbr'],
+                            implode('; ', $writerMap[$s['SongId']] ?? []),
+                            implode('; ', $composerMap[$s['SongId']] ?? []),
+                            $s['Copyright'],
+                            $s['Language'],
+                        ]);
+                    }
+                    fclose($out);
+                    break;
+
+                case 'xml':
+                    header('Content-Type: application/xml; charset=UTF-8');
+                    header('Content-Disposition: attachment; filename="ihymns-export.xml"');
+                    $xml = new \SimpleXMLElement('<?xml version="1.0" encoding="UTF-8"?><songs/>');
+                    foreach ($songs as $s) {
+                        $node = $xml->addChild('song');
+                        $node->addAttribute('id', $s['SongId']);
+                        $node->addChild('number', (string)$s['Number']);
+                        $node->addChild('title', htmlspecialchars($s['Title'], ENT_XML1));
+                        $node->addChild('songbook', $s['SongbookAbbr']);
+                        $node->addChild('language', $s['Language']);
+                        $node->addChild('copyright', htmlspecialchars($s['Copyright'], ENT_XML1));
+                        $writersNode = $node->addChild('writers');
+                        foreach ($writerMap[$s['SongId']] ?? [] as $w) {
+                            $writersNode->addChild('writer', htmlspecialchars($w, ENT_XML1));
+                        }
+                        $composersNode = $node->addChild('composers');
+                        foreach ($composerMap[$s['SongId']] ?? [] as $c) {
+                            $composersNode->addChild('composer', htmlspecialchars($c, ENT_XML1));
+                        }
+                    }
+                    echo $xml->asXML();
+                    break;
+
+                case 'opensong':
+                    /* OpenSong format: one XML file per song, zipped */
+                    header('Content-Type: application/zip');
+                    header('Content-Disposition: attachment; filename="ihymns-opensong.zip"');
+                    $zipPath = tempnam(sys_get_temp_dir(), 'ihymns_opensong_');
+                    $zip = new \ZipArchive();
+                    $zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE);
+                    foreach ($songs as $s) {
+                        $osXml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<song>\n";
+                        $osXml .= "  <title>" . htmlspecialchars($s['Title'], ENT_XML1) . "</title>\n";
+                        $osXml .= "  <author>" . htmlspecialchars(implode(', ', $writerMap[$s['SongId']] ?? []), ENT_XML1) . "</author>\n";
+                        $osXml .= "  <copyright>" . htmlspecialchars($s['Copyright'], ENT_XML1) . "</copyright>\n";
+                        $osXml .= "  <ccli>" . htmlspecialchars($s['Ccli'], ENT_XML1) . "</ccli>\n";
+                        /* Convert lyrics: OpenSong uses [V1], [C], etc. — simplify to plain text */
+                        $osXml .= "  <lyrics>" . htmlspecialchars($s['LyricsText'], ENT_XML1) . "</lyrics>\n";
+                        $osXml .= "</song>\n";
+                        $zip->addFromString($s['SongId'] . '.xml', $osXml);
+                    }
+                    $zip->close();
+                    readfile($zipPath);
+                    unlink($zipPath);
+                    break;
+
+                case 'videopsalm':
+                    header('Content-Type: application/json; charset=UTF-8');
+                    header('Content-Disposition: attachment; filename="ihymns-videopsalm.json"');
+                    $vpSongs = [];
+                    foreach ($songs as $s) {
+                        $vpSongs[] = [
+                            'Text'      => $s['Title'],
+                            'Author'    => implode(', ', $writerMap[$s['SongId']] ?? []),
+                            'Copyright' => $s['Copyright'],
+                            'CCLI'      => $s['Ccli'],
+                            'Verses'    => array_map(
+                                fn($line) => ['Text' => $line],
+                                array_filter(explode("\n\n", $s['LyricsText']))
+                            ),
+                        ];
+                    }
+                    echo json_encode(
+                        ['Songs' => $vpSongs],
+                        JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT
+                    );
+                    break;
+            }
+            break;
+
+        /* -----------------------------------------------------------------
+         * Admin: songbook health / completion dashboard (#315)
+         * Parameters: songbook (optional — filter to one songbook)
+         * Requires: editor+ role
+         * ----------------------------------------------------------------- */
+        case 'admin_songbook_health':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['editor', 'admin', 'global_admin'])) {
+                sendJson(['error' => 'Editor access required.'], 403);
+                break;
+            }
+
+            $filterBook = isset($_GET['songbook']) ? trim($_GET['songbook']) : null;
+            if ($filterBook === '') $filterBook = null;
+
+            $db = getDb();
+
+            /* Get songbooks to report on */
+            if ($filterBook) {
+                $stmt = $db->prepare('SELECT Abbreviation FROM tblSongbooks WHERE Abbreviation = ?');
+                $stmt->execute([$filterBook]);
+            } else {
+                $stmt = $db->query('SELECT Abbreviation FROM tblSongbooks ORDER BY Abbreviation');
+            }
+            $bookAbbrs = $stmt->fetchAll(PDO::FETCH_COLUMN);
+
+            if (empty($bookAbbrs)) {
+                sendJson(['error' => 'Songbook not found.'], 404);
+                break;
+            }
+
+            $health = [];
+            foreach ($bookAbbrs as $abbr) {
+                /* Core counts */
+                $stmt = $db->prepare(
+                    'SELECT
+                        COUNT(*) AS totalSongs,
+                        SUM(Verified = 1) AS verified,
+                        SUM(Verified = 0) AS unverified,
+                        SUM(HasAudio = 1) AS withAudio,
+                        SUM(HasSheetMusic = 1) AS withSheetMusic,
+                        SUM(Copyright != \'\') AS withCopyright
+                     FROM tblSongs WHERE SongbookAbbr = ?'
+                );
+                $stmt->execute([$abbr]);
+                $counts = $stmt->fetch(PDO::FETCH_ASSOC);
+
+                $totalSongs = (int)$counts['totalSongs'];
+
+                /* Writers count */
+                $stmt = $db->prepare(
+                    'SELECT COUNT(DISTINCT s.SongId)
+                     FROM tblSongs s
+                     JOIN tblSongWriters w ON w.SongId = s.SongId
+                     WHERE s.SongbookAbbr = ?'
+                );
+                $stmt->execute([$abbr]);
+                $withWriters = (int)$stmt->fetchColumn();
+
+                /* Composers count */
+                $stmt = $db->prepare(
+                    'SELECT COUNT(DISTINCT s.SongId)
+                     FROM tblSongs s
+                     JOIN tblSongComposers c ON c.SongId = s.SongId
+                     WHERE s.SongbookAbbr = ?'
+                );
+                $stmt->execute([$abbr]);
+                $withComposers = (int)$stmt->fetchColumn();
+
+                /* Missing numbers: find gaps in the number sequence */
+                $stmt = $db->prepare(
+                    'SELECT Number FROM tblSongs WHERE SongbookAbbr = ? ORDER BY Number'
+                );
+                $stmt->execute([$abbr]);
+                $existingNumbers = $stmt->fetchAll(PDO::FETCH_COLUMN);
+                $existingNumbers = array_map('intval', $existingNumbers);
+
+                $missingNumbers = [];
+                if (!empty($existingNumbers)) {
+                    $maxNum = max($existingNumbers);
+                    $existingSet = array_flip($existingNumbers);
+                    for ($i = 1; $i <= $maxNum; $i++) {
+                        if (!isset($existingSet[$i])) {
+                            $missingNumbers[] = $i;
+                        }
+                    }
+                }
+
+                /* Completion: count of fields filled out of total possible */
+                $filledFields = (int)$counts['verified'] + (int)$counts['withAudio']
+                    + (int)$counts['withSheetMusic'] + $withWriters + $withComposers
+                    + (int)$counts['withCopyright'];
+                $totalFields = $totalSongs * 6; /* 6 tracked fields */
+                $completionPercent = $totalFields > 0
+                    ? round(($filledFields / $totalFields) * 100, 1)
+                    : 0;
+
+                $health[] = [
+                    'songbook'          => $abbr,
+                    'totalSongs'        => $totalSongs,
+                    'verified'          => (int)$counts['verified'],
+                    'unverified'        => (int)$counts['unverified'],
+                    'withAudio'         => (int)$counts['withAudio'],
+                    'withSheetMusic'    => (int)$counts['withSheetMusic'],
+                    'withWriters'       => $withWriters,
+                    'withComposers'     => $withComposers,
+                    'withCopyright'     => (int)$counts['withCopyright'],
+                    'missingNumbers'    => $missingNumbers,
+                    'completionPercent' => $completionPercent,
+                ];
+            }
+
+            sendJson(['health' => $health]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Admin: review pending revisions (#316)
+         * POST body: { "id": 123, "action": "approve"|"reject", "note": "..." }
+         * Requires: admin+ role
+         * ----------------------------------------------------------------- */
+        case 'admin_revision_review':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            $revisionId   = (int)($body['id'] ?? 0);
+            $reviewAction = mb_strtolower(trim($body['action'] ?? ''));
+            $reviewNote   = mb_substr(trim($body['note'] ?? ''), 0, 2000);
+
+            if ($revisionId <= 0) {
+                sendJson(['error' => 'Revision ID is required.'], 400);
+                break;
+            }
+            if (!in_array($reviewAction, ['approve', 'reject'])) {
+                sendJson(['error' => 'Action must be "approve" or "reject".'], 400);
+                break;
+            }
+
+            $db = getDb();
+
+            /* Verify revision exists and is pending */
+            $stmt = $db->prepare('SELECT Id, Status FROM tblSongRevisions WHERE Id = ?');
+            $stmt->execute([$revisionId]);
+            $revision = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$revision) {
+                sendJson(['error' => 'Revision not found.'], 404);
+                break;
+            }
+            if ($revision['Status'] !== 'pending') {
+                sendJson(['error' => 'Revision has already been reviewed (status: ' . $revision['Status'] . ').'], 409);
+                break;
+            }
+
+            $newStatus = ($reviewAction === 'approve') ? 'approved' : 'rejected';
+            $stmt = $db->prepare(
+                'UPDATE tblSongRevisions SET Status = ?, ReviewedBy = ?, ReviewNote = ? WHERE Id = ?'
+            );
+            $stmt->execute([$newStatus, $authUser['Id'], $reviewNote, $revisionId]);
+
+            sendJson(['ok' => true, 'status' => $newStatus]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Push notification: subscribe (#311)
+         * POST body: { "endpoint": "...", "p256dh_key": "...", "auth_key": "..." }
+         * Requires: authenticated user
+         * ----------------------------------------------------------------- */
+        case 'push_subscribe':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            $pushEndpoint = trim($body['endpoint'] ?? '');
+            $pushP256dh   = trim($body['p256dh_key'] ?? '');
+            $pushAuth     = trim($body['auth_key'] ?? '');
+
+            if ($pushEndpoint === '' || $pushP256dh === '' || $pushAuth === '') {
+                sendJson(['error' => 'Required: endpoint, p256dh_key, auth_key.'], 400);
+                break;
+            }
+
+            /* Validate endpoint is a URL */
+            if (!filter_var($pushEndpoint, FILTER_VALIDATE_URL)) {
+                sendJson(['error' => 'Invalid endpoint URL.'], 400);
+                break;
+            }
+
+            $db = getDb();
+
+            /* Upsert: delete any existing subscription with the same endpoint for this user,
+             * then insert the new one */
+            $stmt = $db->prepare('DELETE FROM tblPushSubscriptions WHERE UserId = ? AND Endpoint = ?');
+            $stmt->execute([$authUser['Id'], $pushEndpoint]);
+
+            $stmt = $db->prepare(
+                'INSERT INTO tblPushSubscriptions (UserId, Endpoint, P256dhKey, AuthKey)
+                 VALUES (?, ?, ?, ?)'
+            );
+            $stmt->execute([$authUser['Id'], $pushEndpoint, $pushP256dh, $pushAuth]);
+
+            sendJson(['ok' => true]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Push notification: unsubscribe (#311)
+         * POST body: { "endpoint": "..." }
+         * Requires: authenticated user
+         * ----------------------------------------------------------------- */
+        case 'push_unsubscribe':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+            $pushEndpoint = trim($body['endpoint'] ?? '');
+
+            if ($pushEndpoint === '') {
+                sendJson(['error' => 'Endpoint is required.'], 400);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->prepare('DELETE FROM tblPushSubscriptions WHERE Endpoint = ? AND UserId = ?');
+            $stmt->execute([$pushEndpoint, $authUser['Id']]);
+
+            sendJson(['ok' => true, 'deleted' => $stmt->rowCount()]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Admin: token cleanup (#323)
+         * POST, global_admin only
+         * Deletes expired tokens from tblApiTokens, tblEmailLoginTokens,
+         * tblPasswordResetTokens, and old tblLoginAttempts (30+ days).
+         * ----------------------------------------------------------------- */
+        case 'admin_cleanup':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || $authUser['Role'] !== 'global_admin') {
+                sendJson(['error' => 'Global admin access required.'], 403);
+                break;
+            }
+
+            $db = getDb();
+            $now = gmdate('c');
+
+            /* Expired API tokens */
+            $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE ExpiresAt < ?');
+            $stmt->execute([$now]);
+            $deletedApiTokens = $stmt->rowCount();
+
+            /* Expired or used email login tokens */
+            $stmt = $db->prepare('DELETE FROM tblEmailLoginTokens WHERE ExpiresAt < ? OR Used = 1');
+            $stmt->execute([$now]);
+            $deletedEmailTokens = $stmt->rowCount();
+
+            /* Expired or used password reset tokens */
+            $stmt = $db->prepare('DELETE FROM tblPasswordResetTokens WHERE ExpiresAt < ? OR Used = 1');
+            $stmt->execute([$now]);
+            $deletedResetTokens = $stmt->rowCount();
+
+            /* Old login attempts (30+ days) */
+            $stmt = $db->prepare('DELETE FROM tblLoginAttempts WHERE AttemptedAt < DATE_SUB(NOW(), INTERVAL 30 DAY)');
+            $stmt->execute();
+            $deletedLoginAttempts = $stmt->rowCount();
+
+            sendJson([
+                'ok' => true,
+                'deleted' => [
+                    'apiTokens'     => $deletedApiTokens,
+                    'emailTokens'   => $deletedEmailTokens,
+                    'resetTokens'   => $deletedResetTokens,
+                    'loginAttempts' => $deletedLoginAttempts,
+                ],
+            ]);
+            break;
+
+        /* -----------------------------------------------------------------
          * Admin: list all organisations
          * Requires: admin+ role
          * ----------------------------------------------------------------- */
