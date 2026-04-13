@@ -45,6 +45,7 @@ require_once __DIR__ . '/includes/config.php';
 require_once __DIR__ . '/includes/infoAppVer.php';
 require_once __DIR__ . '/includes/db_mysql.php';
 require_once __DIR__ . '/includes/SongData.php';
+require_once __DIR__ . '/includes/content_access.php';
 require_once __DIR__ . '/manage/includes/db.php';
 
 /* =========================================================================
@@ -1801,6 +1802,315 @@ if ($action !== null) {
             $stmt->execute([$newStatus, $notes, $resolved ?: null, $reqId]);
 
             sendJson(['ok' => true]);
+            break;
+
+        /* =================================================================
+         * ORGANISATIONS & LICENSING (#326)
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Get the authenticated user's organisations
+         * Requires: Bearer token
+         * ----------------------------------------------------------------- */
+        case 'my_organisations':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->prepare(
+                'SELECT o.Id AS id, o.Name AS name, o.Slug AS slug,
+                        o.ParentOrgId AS parentOrgId, o.Description AS description,
+                        o.LicenceType AS licenceType, o.IsActive AS isActive,
+                        m.Role AS memberRole
+                 FROM tblOrganisations o
+                 JOIN tblOrganisationMembers m ON m.OrgId = o.Id
+                 WHERE m.UserId = ? AND o.IsActive = 1
+                 ORDER BY o.Name ASC'
+            );
+            $stmt->execute([$authUser['Id']]);
+            $orgs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            foreach ($orgs as &$org) {
+                $org['id'] = (int)$org['id'];
+                $org['parentOrgId'] = $org['parentOrgId'] ? (int)$org['parentOrgId'] : null;
+                $org['isActive'] = (bool)$org['isActive'];
+            }
+            unset($org);
+
+            sendJson(['organisations' => $orgs]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Get organisation details (public if active)
+         * Parameters: id or slug (required)
+         * ----------------------------------------------------------------- */
+        case 'organisation':
+            $orgId   = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+            $orgSlug = trim($_GET['slug'] ?? '');
+
+            $db = getDb();
+            if ($orgId > 0) {
+                $stmt = $db->prepare(
+                    'SELECT Id AS id, Name AS name, Slug AS slug,
+                            ParentOrgId AS parentOrgId, Description AS description,
+                            LicenceType AS licenceType
+                     FROM tblOrganisations WHERE Id = ? AND IsActive = 1'
+                );
+                $stmt->execute([$orgId]);
+            } elseif ($orgSlug !== '') {
+                $stmt = $db->prepare(
+                    'SELECT Id AS id, Name AS name, Slug AS slug,
+                            ParentOrgId AS parentOrgId, Description AS description,
+                            LicenceType AS licenceType
+                     FROM tblOrganisations WHERE Slug = ? AND IsActive = 1'
+                );
+                $stmt->execute([$orgSlug]);
+            } else {
+                sendJson(['error' => 'Organisation id or slug required.'], 400);
+                break;
+            }
+
+            $org = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$org) {
+                sendJson(['error' => 'Organisation not found.'], 404);
+                break;
+            }
+            $org['id'] = (int)$org['id'];
+            $org['parentOrgId'] = $org['parentOrgId'] ? (int)$org['parentOrgId'] : null;
+
+            /* Get child organisations */
+            $stmt = $db->prepare(
+                'SELECT Id AS id, Name AS name, Slug AS slug
+                 FROM tblOrganisations WHERE ParentOrgId = ? AND IsActive = 1
+                 ORDER BY Name ASC'
+            );
+            $stmt->execute([$org['id']]);
+            $org['children'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            /* Get member count */
+            $stmt = $db->prepare('SELECT COUNT(*) FROM tblOrganisationMembers WHERE OrgId = ?');
+            $stmt->execute([$org['id']]);
+            $org['memberCount'] = (int)$stmt->fetchColumn();
+
+            sendJson(['organisation' => $org]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Create an organisation
+         * POST body: { "name": "...", "description": "...", "parent_org_id": null }
+         * Requires: Bearer token
+         * ----------------------------------------------------------------- */
+        case 'organisation_create':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            $orgName   = mb_substr(trim($body['name'] ?? ''), 0, 255);
+            $orgDesc   = mb_substr(trim($body['description'] ?? ''), 0, 2000);
+            $parentId  = !empty($body['parent_org_id']) ? (int)$body['parent_org_id'] : null;
+
+            if ($orgName === '') {
+                sendJson(['error' => 'Organisation name is required.'], 400);
+                break;
+            }
+
+            /* Generate slug */
+            $slug = preg_replace('/[^a-z0-9]+/', '-', mb_strtolower($orgName));
+            $slug = trim($slug, '-');
+            if (strlen($slug) < 2) $slug = 'org-' . bin2hex(random_bytes(3));
+
+            $db = getDb();
+
+            /* Ensure unique slug */
+            $baseSlug = $slug;
+            $counter = 1;
+            while (true) {
+                $stmt = $db->prepare('SELECT COUNT(*) FROM tblOrganisations WHERE Slug = ?');
+                $stmt->execute([$slug]);
+                if ((int)$stmt->fetchColumn() === 0) break;
+                $slug = $baseSlug . '-' . $counter;
+                $counter++;
+            }
+
+            $stmt = $db->prepare(
+                'INSERT INTO tblOrganisations (Name, Slug, ParentOrgId, Description)
+                 VALUES (?, ?, ?, ?)'
+            );
+            $stmt->execute([$orgName, $slug, $parentId, $orgDesc]);
+            $newOrgId = (int)$db->lastInsertId();
+
+            /* Creator becomes owner */
+            $stmt = $db->prepare(
+                'INSERT INTO tblOrganisationMembers (UserId, OrgId, Role) VALUES (?, ?, ?)'
+            );
+            $stmt->execute([$authUser['Id'], $newOrgId, 'owner']);
+
+            sendJson(['ok' => true, 'id' => $newOrgId, 'slug' => $slug], 201);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Check content access for a specific entity
+         * Parameters: entity_type (song/songbook/feature), entity_id, platform (optional)
+         * Requires: Bearer token (optional — anonymous access checked too)
+         * ----------------------------------------------------------------- */
+        case 'content_access':
+            $entityType = trim($_GET['entity_type'] ?? '');
+            $entityId   = trim($_GET['entity_id'] ?? '');
+            $platform   = trim($_GET['platform'] ?? 'PWA');
+
+            if ($entityType === '' || $entityId === '') {
+                sendJson(['error' => 'entity_type and entity_id are required.'], 400);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            $userId = $authUser ? $authUser['Id'] : null;
+
+            $result = checkContentAccess($entityType, $entityId, $userId, $platform);
+            sendJson($result);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Admin: manage content restrictions
+         * Requires: admin+ role
+         * ----------------------------------------------------------------- */
+        case 'admin_restrictions':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->query(
+                'SELECT Id AS id, EntityType AS entityType, EntityId AS entityId,
+                        RestrictionType AS restrictionType, TargetType AS targetType,
+                        TargetId AS targetId, Effect AS effect, Priority AS priority,
+                        Reason AS reason, CreatedAt AS createdAt
+                 FROM tblContentRestrictions
+                 ORDER BY Priority DESC, CreatedAt DESC
+                 LIMIT 200'
+            );
+            $restrictions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            sendJson(['restrictions' => $restrictions]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Admin: create a content restriction
+         * POST body: { entity_type, entity_id, restriction_type, target_type, target_id, effect, priority, reason }
+         * ----------------------------------------------------------------- */
+        case 'admin_restriction_create':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            $db = getDb();
+            $stmt = $db->prepare(
+                'INSERT INTO tblContentRestrictions
+                 (EntityType, EntityId, RestrictionType, TargetType, TargetId, Effect, Priority, Reason)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+            );
+            $stmt->execute([
+                trim($body['entity_type'] ?? ''),
+                trim($body['entity_id'] ?? ''),
+                trim($body['restriction_type'] ?? ''),
+                trim($body['target_type'] ?? ''),
+                trim($body['target_id'] ?? ''),
+                trim($body['effect'] ?? 'deny'),
+                (int)($body['priority'] ?? 0),
+                trim($body['reason'] ?? ''),
+            ]);
+
+            sendJson(['ok' => true, 'id' => (int)$db->lastInsertId()], 201);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Admin: delete a content restriction
+         * POST body: { "id": 123 }
+         * ----------------------------------------------------------------- */
+        case 'admin_restriction_delete':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+            $delId = (int)($body['id'] ?? 0);
+
+            if ($delId <= 0) {
+                sendJson(['error' => 'Restriction ID required.'], 400);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->prepare('DELETE FROM tblContentRestrictions WHERE Id = ?');
+            $stmt->execute([$delId]);
+
+            sendJson(['ok' => true]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Admin: list all organisations
+         * Requires: admin+ role
+         * ----------------------------------------------------------------- */
+        case 'admin_organisations':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDb();
+            $stmt = $db->query(
+                'SELECT o.Id AS id, o.Name AS name, o.Slug AS slug,
+                        o.ParentOrgId AS parentOrgId, o.LicenceType AS licenceType,
+                        o.LicenceNumber AS licenceNumber, o.LicenceExpiresAt AS licenceExpiresAt,
+                        o.IsActive AS isActive, o.CreatedAt AS createdAt,
+                        (SELECT COUNT(*) FROM tblOrganisationMembers WHERE OrgId = o.Id) AS memberCount
+                 FROM tblOrganisations o
+                 ORDER BY o.Name ASC'
+            );
+            $orgs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($orgs as &$org) {
+                $org['id'] = (int)$org['id'];
+                $org['parentOrgId'] = $org['parentOrgId'] ? (int)$org['parentOrgId'] : null;
+                $org['isActive'] = (bool)$org['isActive'];
+                $org['memberCount'] = (int)$org['memberCount'];
+            }
+            unset($org);
+
+            sendJson(['organisations' => $orgs]);
             break;
 
         /* -----------------------------------------------------------------

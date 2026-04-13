@@ -284,6 +284,113 @@ CREATE TABLE IF NOT EXISTS tblEmailLoginTokens (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
+-- ============================================================================
+-- ORGANISATIONS & LICENSING
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- tblOrganisations
+-- Multi-tenancy: churches, worship teams, denominations.
+-- Supports nested hierarchy via ParentOrgId (self-referencing FK).
+-- Holds licence information for content access control.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblOrganisations (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    Name            VARCHAR(255)    NOT NULL,
+    Slug            VARCHAR(100)    NOT NULL UNIQUE COMMENT 'URL-safe identifier',
+    ParentOrgId     INT UNSIGNED    NULL DEFAULT NULL COMMENT 'Self-ref FK for nested orgs',
+    Description     TEXT            NOT NULL DEFAULT '',
+    LicenceType     VARCHAR(30)     NOT NULL DEFAULT 'none' COMMENT 'none, ihymns_basic, ihymns_pro, ccli',
+    LicenceNumber   VARCHAR(100)    NOT NULL DEFAULT '' COMMENT 'CCLI licence number or iHymns key',
+    LicenceExpiresAt TIMESTAMP      NULL DEFAULT NULL,
+    IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_Parent    (ParentOrgId),
+    INDEX idx_Slug      (Slug),
+    INDEX idx_Licence   (LicenceType),
+
+    CONSTRAINT fk_Org_Parent
+        FOREIGN KEY (ParentOrgId) REFERENCES tblOrganisations(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblOrganisationMembers
+-- Many-to-many: users belong to organisations with a role within each.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblOrganisationMembers (
+    UserId          INT UNSIGNED    NOT NULL,
+    OrgId           INT UNSIGNED    NOT NULL,
+    Role            VARCHAR(20)     NOT NULL DEFAULT 'member' COMMENT 'owner, admin, member',
+    JoinedAt        TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (UserId, OrgId),
+
+    CONSTRAINT fk_OrgMember_User
+        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_OrgMember_Org
+        FOREIGN KEY (OrgId) REFERENCES tblOrganisations(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblContentLicences
+-- Licences that grant access to specific songbooks/features.
+-- Can be attached to an org OR a user (or both).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblContentLicences (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    OrgId           INT UNSIGNED    NULL DEFAULT NULL,
+    UserId          INT UNSIGNED    NULL DEFAULT NULL,
+    LicenceType     VARCHAR(30)     NOT NULL COMMENT 'ihymns_basic, ihymns_pro, ccli, custom',
+    LicenceKey      VARCHAR(100)    NOT NULL DEFAULT '',
+    ExpiresAt       TIMESTAMP       NULL DEFAULT NULL,
+    IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
+    SongbooksAllowed JSON           NULL COMMENT 'JSON array of songbook abbrevs, NULL = all',
+    FeaturesAllowed JSON            NULL COMMENT 'JSON array of feature flags, NULL = all',
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_Org   (OrgId),
+    INDEX idx_User  (UserId),
+
+    CONSTRAINT fk_Licence_Org
+        FOREIGN KEY (OrgId) REFERENCES tblOrganisations(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_Licence_User
+        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblContentRestrictions
+-- Rule-based content lockout system. Combines org, user, platform, licence,
+-- songbook, song, and feature restrictions with priority-based evaluation.
+-- Higher Priority values override lower ones. Deny beats allow at same priority.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblContentRestrictions (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    EntityType      VARCHAR(20)     NOT NULL COMMENT 'song, songbook, feature',
+    EntityId        VARCHAR(50)     NOT NULL COMMENT 'Song ID, songbook abbr, or feature name',
+    RestrictionType VARCHAR(30)     NOT NULL COMMENT 'require_licence, require_org, block_platform, block_user, block_org',
+    TargetType      VARCHAR(20)     NOT NULL DEFAULT '' COMMENT 'platform, org, user, licence_type',
+    TargetId        VARCHAR(50)     NOT NULL DEFAULT '' COMMENT 'PWA/Apple/Android, org ID, user ID, licence type',
+    Effect          VARCHAR(5)      NOT NULL DEFAULT 'deny' COMMENT 'allow or deny',
+    Priority        INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'Higher = overrides lower',
+    Reason          VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Human-readable reason for restriction',
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_Entity    (EntityType, EntityId),
+    INDEX idx_Target    (TargetType, TargetId),
+    INDEX idx_Priority  (Priority)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
 -- ----------------------------------------------------------------------------
 -- tblUserGroupMembers
 -- Many-to-many user-to-group membership.
