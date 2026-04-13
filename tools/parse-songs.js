@@ -372,13 +372,30 @@ function extractWritersFromCredits(creditLines) {
       continue;
     }
 
-    /* Check for "Words and music by <name>" — adds to both writers and composers */
+    /* Check for "Words and music by <name>" — adds to both writers and composers.
+     * Handles compound lines like "Words and Music by X © 2006 Publisher CCLI: 123" */
     const wordsAndMusicMatch = trimmed.match(/^words\s+and\s+music\s+by\s+(.+)$/i);
     if (wordsAndMusicMatch) {
-      /* Extract the name and add to both lists */
-      const name = wordsAndMusicMatch[1].trim();
-      writers.push(name);
-      composers.push(name);
+      let namePart = wordsAndMusicMatch[1].trim();
+
+      /* Split off copyright (© or "Copyright") */
+      const copySplit = namePart.match(/^(.+?)\s*[©]\s*(.+)$/);
+      if (copySplit) {
+        namePart = copySplit[1].replace(/[.,;]+$/, '').trim();
+        let copyText = copySplit[2].trim();
+        /* Extract CCLI number if embedded */
+        const ccliMatch = copyText.match(/^(.+?)\s*CCLI[:\s#]*(\d+)\s*$/i);
+        if (ccliMatch) {
+          copyText = ccliMatch[1].trim();
+          /* Store CCLI — we'll capture it below if not already set */
+        }
+        if (!copyright) copyright = copyText;
+      }
+
+      if (namePart) {
+        writers.push(namePart);
+        composers.push(namePart);
+      }
       continue;
     }
 
@@ -419,7 +436,14 @@ function extractWritersFromCredits(creditLines) {
     /* Check for "Music by <name>" or "Music arranged by <name>" — adds to composers */
     const musicByMatch = trimmed.match(/^music\s+(?:arranged\s+)?by\s+(.+)$/i);
     if (musicByMatch) {
-      composers.push(musicByMatch[1].trim());
+      let composerPart = musicByMatch[1].trim();
+      /* Split off copyright if embedded */
+      const copySplit = composerPart.match(/^(.+?)\s*[©]\s*(.+)$/);
+      if (copySplit) {
+        composerPart = copySplit[1].replace(/[.,;]+$/, '').trim();
+        if (!copyright) copyright = copySplit[2].trim();
+      }
+      composers.push(composerPart);
       continue;
     }
 
