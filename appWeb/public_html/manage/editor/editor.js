@@ -28,14 +28,14 @@ var songData = {
  * Primary load/save endpoint — the editor's PHP API reads/writes
  * directly from/to appWeb/data_share/song_data/songs.json (#154).
  */
-var EDITOR_API_URL = 'api.php';
+var EDITOR_API_URL = 'api';
 
 /**
  * Fallback relative paths for loading songs.json when the PHP API
  * is not available (e.g., running the editor without PHP).
  */
 var SONGS_URL_CANDIDATES = [
-    'api.php?action=load',                    /* Primary: PHP API reads from data_share/ */
+    'api?action=load',                        /* Primary: PHP API reads from data_share/ */
     '../data/songs.json',                     /* Deployed server: data/ inside private_html/ */
     '../../data/songs.json',                  /* Alternative: data/ one up from private_html/ */
     '../../../data/songs.json',               /* Local dev: relative to appWeb/private_html/editor/ → appWeb/data/ */

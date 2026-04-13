@@ -138,7 +138,7 @@ $canonicalUrl = getCanonicalUrl();
 $ogTitle       = $appName . ' — Christian Hymns & Worship Songs';
 $ogDescription = $appDesc;
 $ogType        = 'website';
-$ogImage       = getCanonicalUrl('/og-image.php');
+$ogImage       = getCanonicalUrl('/og-image');
 $ogImageAlt    = $appName . ' logo';
 
 /* JSON-LD structured data — built during OG detection, rendered in <head> */
@@ -170,7 +170,7 @@ try {
                 $ogDescription .= '. "' . implode(' / ', $firstLines) . '..."';
             }
             $ogType = 'article';
-            $ogImage = getCanonicalUrl('/og-image.php?song=' . urlencode($matches[1]));
+            $ogImage = getCanonicalUrl('/og-image?song=' . urlencode($matches[1]));
             $ogImageAlt = 'Preview of "' . $ogSong['title'] . '" from ' . $ogSong['songbookName'];
 
             /* JSON-LD: MusicComposition */
@@ -218,7 +218,7 @@ try {
             $ogTitle = htmlspecialchars($ogBook['name']) . ' — ' . $appName;
             $ogDescription = 'Browse ' . number_format($ogBook['songCount'])
                            . ' songs from ' . $ogBook['name'] . ' on ' . $appName;
-            $ogImage = getCanonicalUrl('/og-image.php?songbook=' . urlencode($matches[1]));
+            $ogImage = getCanonicalUrl('/og-image?songbook=' . urlencode($matches[1]));
             $ogImageAlt = $ogBook['name'] . ' songbook on ' . $appName;
 
             /* Breadcrumb: Home > Songbooks > Songbook Name */
@@ -243,7 +243,7 @@ try {
                 $ogDescription = 'A curated set list with ' . $setlistSongCount
                                . ' ' . ($setlistSongCount === 1 ? 'song' : 'songs')
                                . ' on ' . $appName;
-                $ogImage = getCanonicalUrl('/og-image.php?setlist=' . urlencode($shareId));
+                $ogImage = getCanonicalUrl('/og-image?setlist=' . urlencode($shareId));
                 $ogImageAlt = 'Set list "' . $setlistName . '" on ' . $appName;
             }
         }

@@ -33,6 +33,17 @@ RewriteRule ^setup$ setup.php [L]
 # /manage/users → users.php (admin-only user management)
 RewriteRule ^users$ users.php [L]
 
+# /manage/setup-database → setup-database.php (DB setup dashboard)
+RewriteRule ^setup-database$ setup-database.php [L]
+
+# /manage/editor/api → /manage/editor/api.php (editor API)
+RewriteRule ^editor/api$ editor/api.php [QSA,L]
+
+# Block direct .php access in /manage/ (hide PHP from URLs)
+RewriteCond %{THE_REQUEST} \.php[\s?/] [NC]
+RewriteCond %{REQUEST_URI} !^/manage/includes/ [NC]
+RewriteRule ^(.+)\.php$ /manage/$1 [R=301,L]
+
 # /manage/ root → serve dashboard (index.php via DirectoryIndex)
 # No rewrite needed — DirectoryIndex handles it
 
