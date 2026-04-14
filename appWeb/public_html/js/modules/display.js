@@ -363,21 +363,33 @@ export class Display {
         this._showFloatingStop();
 
         let lastTime = null;
+        let remainder = 0;
 
         const tick = (timestamp) => {
             if (!this.autoScrollActive) return;
 
             if (lastTime !== null) {
                 const delta = (timestamp - lastTime) / 1000; /* seconds */
-                const px = speed * delta;
-                /* Use simple (x, y) signature — the options-object form
-                   is unreliable on iOS Safari */
-                window.scrollBy(0, px);
+                remainder += speed * delta;
+
+                /*
+                 * Accumulate fractional pixels and only scroll whole pixels.
+                 * iOS Safari ignores sub-pixel scrollBy values (e.g. 0.5px
+                 * at 60fps or 0.25px at 120fps ProMotion), causing auto-scroll
+                 * to appear completely broken. By accumulating and flushing
+                 * whole pixels we ensure visible movement on every platform.
+                 */
+                const px = Math.floor(remainder);
+                if (px >= 1) {
+                    document.documentElement.scrollTop += px;
+                    remainder -= px;
+                }
             }
             lastTime = timestamp;
 
             /* Stop at bottom of page */
-            if ((window.innerHeight + window.scrollY) >= document.body.scrollHeight - 1) {
+            const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
+            if ((window.innerHeight + scrollTop) >= document.body.scrollHeight - 2) {
                 this.stopAutoScroll();
                 return;
             }
