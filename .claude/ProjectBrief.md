@@ -13,8 +13,10 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 - **License**: Proprietary (third-party components retain their own licenses)
 - **GitHub Repo**: <https://github.com/MWBMPartners/iHymns>
 - **Current Version**: 0.10.0 (pre-release, Phase 1)
-- **Database**: MySQL 5.7+ (30+ tables, tblCamelCase naming)
-- **API**: 50+ JSON endpoints via `api.php`
+- **Database**: MySQL 5.7+ (35+ tables, tblCamelCase naming)
+- **API**: 60+ JSON endpoints via `api.php`
+- **Content Tiers**: 5-level access system (public/free/ccli/premium/pro) with CCLI validation
+- **Hosting**: DreamHost shared hosting (NO CLI access — all admin via web dashboard)
 
 ---
 
@@ -141,6 +143,7 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 | `data/songs.json` | Canonical song database (single source of truth) |
 | `data/songs.schema.json` | JSON Schema (draft 2020-12) for songs.json validation (#226) |
 | `tools/parse-songs.js` | Parses .SourceSongData/ → songs.json |
+| `.importers/scrapers/` | Hymn scraper scripts (5 platforms × 2 sources = 10 files) |
 | `tools/build-web.js` | Web build/packaging script |
 | `appWeb/public_html/includes/infoAppVer.php` | App version metadata |
 | `appWeb/public_html/includes/components/*.php` | Modular PHP components |
