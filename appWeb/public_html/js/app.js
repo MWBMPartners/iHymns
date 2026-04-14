@@ -746,6 +746,20 @@ class iHymnsApp {
     registerServiceWorker() {
         if (!('serviceWorker' in navigator)) return;
 
+        /*
+         * Reload when a new service worker takes control.
+         * The SW now calls skipWaiting() during install, so it activates
+         * immediately. This listener ensures the page reloads to pick up
+         * fresh HTML and newly cached CDN resources. The { once: true }
+         * flag prevents infinite reload loops.
+         */
+        let refreshing = false;
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+            if (refreshing) return;
+            refreshing = true;
+            window.location.reload();
+        });
+
         navigator.serviceWorker.register('/service-worker.js', {
             scope: '/'
         }).then(registration => {

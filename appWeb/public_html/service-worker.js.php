@@ -213,13 +213,24 @@ self.addEventListener('install', (event) => {
 
                 return Promise.all([localPromise, cdnPromise, vendorPromise]);
             })
-            /*
-             * NOTE (#83): We intentionally do NOT call self.skipWaiting() here.
-             * The new service worker waits in the "installed" state until the user
-             * clicks the "Refresh" button in the update notification, which sends
-             * a SKIP_WAITING message (handled below). This gives users control
-             * over when the update activates, preventing mid-session disruption.
-             */
+            .then(() => {
+                /*
+                 * Activate immediately so critical fixes (e.g., offline/CDN
+                 * caching) take effect on the very next page load.
+                 *
+                 * Previously (#83) skipWaiting was omitted to let users control
+                 * when updates activate via the "Refresh" notification. However,
+                 * this caused the old SW (which doesn't cache CDN resources) to
+                 * remain in control indefinitely, leaving offline support broken
+                 * until the user happened to close every tab.
+                 *
+                 * The controllerchange listener in app.js will auto-reload the
+                 * page when this new SW takes over, ensuring fresh HTML + cached
+                 * CDN assets are served.
+                 */
+                console.log('[SW] Activating immediately via skipWaiting');
+                return self.skipWaiting();
+            })
     );
 });
 
