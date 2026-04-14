@@ -13,7 +13,27 @@ header('Cache-Control: no-cache, no-store, must-revalidate');
 header('Service-Worker-Allowed: /');
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 $swVersion = $app['Application']['Version']['Number'] ?? '0.0.0';
+$libs = APP_CONFIG['libraries'];
+
+/* Collect CDN URLs for critical app shell resources */
+$cdnAssets = array_filter([
+    $libs['bootstrap']['css_cdn']   ?? null,
+    $libs['bootstrap']['js_cdn']    ?? null,
+    $libs['fontawesome']['css_cdn'] ?? null,
+    $libs['jquery']['js_cdn']       ?? null,
+    $libs['animatecss']['css_cdn']  ?? null,
+]);
+
+/* Collect local vendor fallback paths */
+$vendorAssets = array_filter([
+    $libs['bootstrap']['css_local']   ?? null,
+    $libs['bootstrap']['js_local']    ?? null,
+    $libs['fontawesome']['css_local'] ?? null,
+    $libs['jquery']['js_local']       ?? null,
+    $libs['animatecss']['css_local']  ?? null,
+]);
 ?>
 /**
  * iHymns — Service Worker
@@ -28,7 +48,8 @@ $swVersion = $app['Application']['Version']['Number'] ?? '0.0.0';
  *   - Always try to load content from the host (network) first
  *   - Only fall back to cached content when the network is unreachable
  *   - Pre-caches essential app shell assets for instant offline access
- *   - CDN resources are NOT cached to avoid cache poisoning
+ *   - Trusted CDN resources (Bootstrap, Font Awesome, jQuery, etc.) are
+ *     cached for offline use — these CDNs serve CORS headers so SRI still works
  *
  * CACHE MANAGEMENT:
  *   - Cache version is derived from infoAppVer.php automatically
@@ -62,11 +83,11 @@ const RECENT_CACHE_LIMIT = 2000;
 /**
  * Assets to pre-cache during service worker installation.
  * These are the essential app shell files needed for offline access.
- * Only local files — CDN resources are never cached.
  */
 const PRECACHE_ASSETS = [
     '/',
     '/css/app.css',
+    '/css/accessibility.css',
     '/css/print.css',
     '/js/app.js',
     '/js/modules/router.js',
@@ -92,6 +113,33 @@ const PRECACHE_ASSETS = [
     '/manifest.json',
     '/assets/favicon.svg',
 ];
+
+/**
+ * Trusted CDN origins whose resources are cached for offline use.
+ * These CDNs serve CORS headers (Access-Control-Allow-Origin: *)
+ * so responses can be cached and later served with SRI verification.
+ */
+const TRUSTED_CDN_ORIGINS = [
+    'https://cdn.jsdelivr.net',
+    'https://cdnjs.cloudflare.com',
+];
+
+/**
+ * Critical CDN assets to pre-cache during install for offline app shell.
+ * Injected from config.php so CDN URLs stay in sync automatically.
+ * These are fetched best-effort — CDN failures won't block installation.
+ */
+const PRECACHE_CDN_ASSETS = <?= json_encode(array_values($cdnAssets), JSON_UNESCAPED_SLASHES) ?>;
+
+/**
+ * Local vendor fallback paths — pre-cached best-effort.
+ * These files are served when CDN resources are unavailable and the
+ * CDN cache is also empty (e.g., first offline launch after install).
+ */
+const PRECACHE_VENDOR_ASSETS = <?= json_encode(
+    array_map(fn($p) => '/' . $p, array_values($vendorAssets)),
+    JSON_UNESCAPED_SLASHES
+) ?>;
 
 /**
  * Auto-update flag for offline songs (#132).
@@ -130,7 +178,40 @@ self.addEventListener('install', (event) => {
         caches.open(CACHE_VERSION)
             .then(cache => {
                 console.log('[SW] Pre-caching app shell assets');
-                return cache.addAll(PRECACHE_ASSETS);
+
+                /* Local assets — must all succeed for install to complete */
+                const localPromise = cache.addAll(PRECACHE_ASSETS);
+
+                /*
+                 * CDN assets — best effort. Failures are silently ignored so
+                 * a CDN outage doesn't block service worker installation.
+                 * These will be cached at runtime on the next page load anyway.
+                 */
+                const cdnPromise = Promise.allSettled(
+                    PRECACHE_CDN_ASSETS.map(url =>
+                        fetch(url, { mode: 'cors' })
+                            .then(resp => {
+                                if (resp.ok) return cache.put(url, resp);
+                            })
+                            .catch(() => console.warn('[SW] CDN precache skipped:', url))
+                    )
+                );
+
+                /*
+                 * Local vendor fallback files — best effort.
+                 * These may not exist if the download-vendor script hasn't run.
+                 */
+                const vendorPromise = Promise.allSettled(
+                    PRECACHE_VENDOR_ASSETS.map(path =>
+                        fetch(path)
+                            .then(resp => {
+                                if (resp.ok) return cache.put(path, resp);
+                            })
+                            .catch(() => {})
+                    )
+                );
+
+                return Promise.all([localPromise, cdnPromise, vendorPromise]);
             })
             /*
              * NOTE (#83): We intentionally do NOT call self.skipWaiting() here.
@@ -173,18 +254,29 @@ self.addEventListener('activate', (event) => {
  * FETCH EVENT — Network-first strategy with offline fallback
  *
  * Strategy per resource type:
- *   1. CDN resources → Network-only (never cache third-party)
- *   2. API requests  → Network-first, no caching (dynamic data)
- *   3. Local assets  → Network-first, cache on success, serve cache if offline
- *   4. Navigation    → Network-first, fall back to cached '/' for offline shell
+ *   1. Trusted CDNs  → Network-first, cache for offline (Bootstrap, FA, jQuery)
+ *   2. Other CDNs    → Network-only (analytics, third-party scripts)
+ *   3. API requests  → Network-first, cache song pages for offline (#105)
+ *   4. Local assets  → Network-first, cache on success, serve cache if offline
+ *   5. Navigation    → Network-first, fall back to cached '/' for offline shell
  * ========================================================================= */
 
 self.addEventListener('fetch', (event) => {
     const url = new URL(event.request.url);
 
-    /* --- CDN / Third-party resources: network-only, never cache --- */
+    /* --- CDN / Third-party resources --- */
     if (url.origin !== self.location.origin) {
-        /* Let the browser handle CDN requests normally */
+        /*
+         * Trusted CDN resources (Bootstrap, Font Awesome, jQuery, etc.)
+         * are cached with network-first strategy so the app shell renders
+         * offline. These CDNs serve CORS headers, so cached responses
+         * remain readable for SRI verification.
+         */
+        if (TRUSTED_CDN_ORIGINS.some(origin => url.origin === origin)) {
+            event.respondWith(networkFirstWithCache(event.request));
+            return;
+        }
+        /* Other third-party resources: let the browser handle normally */
         return;
     }
 
@@ -288,9 +380,10 @@ self.addEventListener('fetch', (event) => {
                 return response;
             })
             .catch(() => {
-                /* Offline — serve cached version or the app shell */
+                /* Offline — serve cached version, app shell, or branded fallback */
                 return caches.match(event.request)
-                    .then(cached => cached || caches.match('/'));
+                    .then(cached => cached || caches.match('/'))
+                    .then(resp => resp || offlineFallbackResponse());
             })
             .finally(() => {
                 inflightNavigations.delete(navKey);
@@ -308,6 +401,116 @@ self.addEventListener('fetch', (event) => {
 /* =========================================================================
  * HELPER FUNCTIONS
  * ========================================================================= */
+
+/**
+ * Self-contained offline fallback page.
+ * Shown when the user is offline AND no cached version of the page exists
+ * (e.g., first launch of a freshly installed PWA with no network).
+ * All styles and assets are inlined so no external requests are needed.
+ */
+const OFFLINE_FALLBACK_HTML = `<!DOCTYPE html>
+<html lang="en" data-bs-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>iHymns — Offline</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --accent:#6366f1;--accent-end:#8b5cf6;
+  --bg:#f8fafc;--card:#fff;--text:#1e293b;--text-sec:#64748b;--text-muted:#94a3b8;
+  --radius:16px;--shadow:0 4px 24px rgba(0,0,0,.08);
+}
+@media(prefers-color-scheme:dark){:root{
+  --accent:#818cf8;--accent-end:#a78bfa;
+  --bg:#0f172a;--card:#1e293b;--text:#f1f5f9;--text-sec:#94a3b8;--text-muted:#64748b;
+  --shadow:0 4px 24px rgba(0,0,0,.3);
+}}
+html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;background:var(--bg);color:var(--text)}
+body{display:flex;align-items:center;justify-content:center;padding:24px;
+  padding-top:env(safe-area-inset-top,0);padding-bottom:env(safe-area-inset-bottom,0)}
+.offline-wrap{text-align:center;max-width:420px;width:100%}
+.offline-icon{margin:0 auto 28px;width:88px;height:88px;border-radius:50%;
+  background:linear-gradient(135deg,var(--accent),var(--accent-end));
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 8px 32px rgba(99,102,241,.25);animation:pulse-glow 3s ease-in-out infinite}
+.offline-icon svg{width:44px;height:44px;opacity:.95}
+@keyframes pulse-glow{0%,100%{box-shadow:0 8px 32px rgba(99,102,241,.25)}
+  50%{box-shadow:0 8px 48px rgba(99,102,241,.4)}}
+.offline-card{background:var(--card);border-radius:var(--radius);padding:32px 28px;
+  box-shadow:var(--shadow)}
+h1{font-size:1.5rem;font-weight:700;margin-bottom:8px;
+  background:linear-gradient(135deg,var(--accent),var(--accent-end));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  background-clip:text}
+.subtitle{font-size:.95rem;color:var(--text-sec);margin-bottom:24px;line-height:1.5}
+.divider{width:48px;height:3px;border-radius:2px;margin:0 auto 24px;
+  background:linear-gradient(90deg,var(--accent),var(--accent-end))}
+.help-text{font-size:.875rem;color:var(--text-muted);line-height:1.6;margin-bottom:24px}
+.help-text p{margin-bottom:12px}
+.retry-btn{display:inline-flex;align-items:center;gap:8px;padding:12px 28px;
+  border:none;border-radius:50px;font-size:.95rem;font-weight:600;cursor:pointer;
+  background:linear-gradient(135deg,var(--accent),var(--accent-end));color:#fff;
+  box-shadow:0 4px 16px rgba(99,102,241,.3);transition:transform .15s ease,box-shadow .15s ease}
+.retry-btn:hover{transform:translateY(-1px);box-shadow:0 6px 24px rgba(99,102,241,.4)}
+.retry-btn:active{transform:translateY(0);box-shadow:0 2px 8px rgba(99,102,241,.3)}
+.retry-icon{display:inline-block;width:18px;height:18px;transition:transform .3s ease}
+.retry-btn:hover .retry-icon{transform:rotate(180deg)}
+.brand{margin-top:28px;font-size:.8rem;color:var(--text-muted);letter-spacing:.02em}
+@media(prefers-reduced-motion:reduce){
+  .offline-icon{animation:none}
+  .retry-icon{transition:none}
+}
+</style>
+</head>
+<body>
+<div class="offline-wrap">
+  <div class="offline-icon">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+         stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="1" y1="1" x2="23" y2="23"/>
+      <path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/>
+      <path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/>
+      <path d="M10.71 5.05A16 16 0 0 1 22.56 9"/>
+      <path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/>
+      <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
+      <line x1="12" y1="20" x2="12.01" y2="20"/>
+    </svg>
+  </div>
+  <div class="offline-card">
+    <h1>You're Offline</h1>
+    <p class="subtitle">iHymns needs an internet connection to load for the first time.</p>
+    <div class="divider"></div>
+    <div class="help-text">
+      <p>Once you've opened iHymns with a connection, it will cache everything you need for offline use.</p>
+      <p>You can also download entire songbooks for offline access from Settings.</p>
+    </div>
+    <button class="retry-btn" onclick="window.location.reload()">
+      <svg class="retry-icon" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="23 4 23 10 17 10"/>
+        <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+      </svg>
+      Try Again
+    </button>
+  </div>
+  <p class="brand">iHymns — Christian Hymns &amp; Worship Songs</p>
+</div>
+</body>
+</html>`;
+
+/**
+ * Return the offline fallback page as a Response.
+ * @returns {Response}
+ */
+function offlineFallbackResponse() {
+    return new Response(OFFLINE_FALLBACK_HTML, {
+        status: 503,
+        statusText: 'Service Unavailable',
+        headers: { 'Content-Type': 'text/html; charset=UTF-8' }
+    });
+}
 
 /**
  * Network-first caching strategy.
@@ -337,12 +540,8 @@ async function networkFirstWithCache(request) {
             return cachedResponse;
         }
 
-        /* Nothing in cache either — return a generic offline response */
-        return new Response('Offline — content not available', {
-            status: 503,
-            statusText: 'Service Unavailable',
-            headers: { 'Content-Type': 'text/plain' }
-        });
+        /* Nothing in cache either — show the branded offline page */
+        return offlineFallbackResponse();
     }
 }
 

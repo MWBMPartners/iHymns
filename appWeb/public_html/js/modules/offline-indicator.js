@@ -103,7 +103,7 @@ export class OfflineIndicator {
     async getCachedSongCount() {
         try {
             if (!('caches' in window)) return 0;
-            const cache = await caches.open('ihymns-recent-v1');
+            const cache = await caches.open('ihymns-recent-songs');
             const keys = await cache.keys();
             /* Count only song API requests */
             return keys.filter(req => req.url.includes('page=song')).length;

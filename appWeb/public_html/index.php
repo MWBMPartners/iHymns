@@ -363,7 +363,7 @@ if (!empty($breadcrumbItems)) {
     <meta name="format-detection" content="telephone=no">
 
     <!-- PWA Manifest -->
-    <link rel="manifest" href="/manifest.json" crossorigin="use-credentials">
+    <link rel="manifest" href="/manifest.json">
 
     <!-- ================================================================
          FAVICON & APP ICONS
@@ -377,26 +377,29 @@ if (!empty($breadcrumbItems)) {
          STYLESHEETS — CDN with local fallback
          ================================================================ -->
 
-    <!-- Bootstrap CSS -->
+    <!-- Bootstrap CSS — CDN with local fallback for offline PWA -->
     <link rel="stylesheet"
           href="<?= $libs['bootstrap']['css_cdn'] ?>"
           integrity="<?= $libs['bootstrap']['css_sri'] ?>"
           crossorigin="anonymous"
-          id="bootstrap-css">
+          id="bootstrap-css"
+          onerror="this.onerror=null;this.removeAttribute('integrity');this.removeAttribute('crossorigin');this.href='/<?= $libs['bootstrap']['css_local'] ?>';">
 
-    <!-- Font Awesome CSS -->
+    <!-- Font Awesome CSS — CDN with local fallback for offline PWA -->
     <link rel="stylesheet"
           href="<?= $libs['fontawesome']['css_cdn'] ?>"
           integrity="<?= $libs['fontawesome']['css_sri'] ?>"
           crossorigin="anonymous"
-          id="fontawesome-css">
+          id="fontawesome-css"
+          onerror="this.onerror=null;this.removeAttribute('integrity');this.removeAttribute('crossorigin');this.href='/<?= $libs['fontawesome']['css_local'] ?>';">
 
-    <!-- Animate.css — CSS animation library (respects prefers-reduced-motion) -->
+    <!-- Animate.css — CDN with local fallback for offline PWA -->
     <link rel="stylesheet"
           href="<?= $libs['animatecss']['css_cdn'] ?>"
           integrity="<?= $libs['animatecss']['css_sri'] ?>"
           crossorigin="anonymous"
-          id="animatecss">
+          id="animatecss"
+          onerror="this.onerror=null;this.removeAttribute('integrity');this.removeAttribute('crossorigin');this.href='/<?= $libs['animatecss']['css_local'] ?>';">
 
     <!-- iHymns Application Stylesheet -->
     <link rel="stylesheet" href="/css/app.css?v=<?= urlencode($app["Application"]["Version"]["Number"]) ?>">
