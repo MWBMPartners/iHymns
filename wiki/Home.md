@@ -2,7 +2,7 @@
 
 > A multiplatform Christian lyrics application for worship enhancement
 
-**Website**: [iHymns.app](https://ihymns.app) | **Repo**: [GitHub](https://github.com/MWBMPartners/iHymns) | **Version**: 0.10.0 (Phase 1 pre-release)
+**Website**: [iHymns.app](https://ihymns.app) | **Repo**: [GitHub](https://github.com/MWBMPartners/iHymns) | **Version**: 0.11.0 (Phase 1 pre-release, content tiers + CCLI)
 
 ---
 

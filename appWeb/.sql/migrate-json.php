@@ -48,7 +48,7 @@ function output(string $message): void
  * LOAD CREDENTIALS
  * ========================================================================= */
 
-$credentialsFile = __DIR__ . '/../.auth/db_credentials.php';
+$credentialsFile = dirname(__DIR__) . DIRECTORY_SEPARATOR . '.auth' . DIRECTORY_SEPARATOR . 'db_credentials.php';
 
 if (!file_exists($credentialsFile)) {
     output("ERROR: Database credentials file not found.");
@@ -76,8 +76,8 @@ if ($isCli) {
 /* Default candidate paths */
 if ($jsonPath === null) {
     $candidates = [
-        __DIR__ . '/../data_share/song_data/songs.json',   /* Deployed runtime */
-        __DIR__ . '/../../data/songs.json',                  /* Project root data/ */
+        dirname(__DIR__) . DIRECTORY_SEPARATOR . 'data_share' . DIRECTORY_SEPARATOR . 'song_data' . DIRECTORY_SEPARATOR . 'songs.json',   /* Deployed runtime */
+        dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR . 'songs.json',                  /* Project root data/ */
     ];
     foreach ($candidates as $path) {
         if (file_exists($path)) {

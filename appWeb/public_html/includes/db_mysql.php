@@ -13,7 +13,7 @@ declare(strict_types=1);
  * Connection is created once per request and reused (singleton pattern).
  *
  * USAGE:
- *   require_once __DIR__ . '/db_mysql.php';
+ *   require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
  *   $db = getDbMysqli();
  *   $stmt = $db->prepare("SELECT * FROM songs WHERE song_id = ?");
  *
@@ -32,7 +32,7 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
  * LOAD CREDENTIALS
  * ========================================================================= */
 
-$_dbCredentialsFile = dirname(__DIR__, 2) . '/.auth/db_credentials.php';
+$_dbCredentialsFile = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . '.auth' . DIRECTORY_SEPARATOR . 'db_credentials.php';
 if (file_exists($_dbCredentialsFile) && !defined('DB_HOST')) {
     require_once $_dbCredentialsFile;
 }

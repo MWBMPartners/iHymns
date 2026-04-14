@@ -117,6 +117,24 @@ $components  = $song['components'] ?? [];
                 </div>
             <?php endif; ?>
 
+            <!-- Copyright and CCLI in song header -->
+            <?php if (!empty($copyright) || !empty($ccli)): ?>
+                <div class="song-meta-copyright mb-3">
+                    <?php if (!empty($copyright)): ?>
+                        <p class="mb-1 small text-muted">
+                            <i class="fa-regular fa-copyright me-2" aria-hidden="true"></i>
+                            <?= htmlspecialchars($copyright) ?>
+                        </p>
+                    <?php endif; ?>
+                    <?php if (!empty($ccli)): ?>
+                        <p class="mb-0 small text-muted">
+                            <i class="fa-solid fa-hashtag me-2" aria-hidden="true"></i>
+                            CCLI Song #<?= htmlspecialchars($ccli) ?>
+                        </p>
+                    <?php endif; ?>
+                </div>
+            <?php endif; ?>
+
             <!-- Song key display and transpose buttons (#298) -->
             <div id="song-key-container" class="d-inline-flex align-items-center gap-2 mb-2" style="display:none !important">
                 <span class="badge bg-secondary" id="song-key-badge" title="Song key"></span>
@@ -287,7 +305,8 @@ $components  = $song['components'] ?? [];
             <?php endif; ?>
             <?php if (!empty($ccli)): ?>
                 <p class="text-muted small mb-0">
-                    CCLI: <?= htmlspecialchars($ccli) ?>
+                    <i class="fa-solid fa-hashtag me-1" aria-hidden="true"></i>
+                    CCLI Song #<?= htmlspecialchars($ccli) ?>
                 </p>
             <?php endif; ?>
         </div>

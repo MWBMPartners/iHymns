@@ -34,7 +34,7 @@ function output(string $msg): void {
 }
 
 /* Load credentials */
-$credFile = __DIR__ . '/../.auth/db_credentials.php';
+$credFile = dirname(__DIR__) . DIRECTORY_SEPARATOR . '.auth' . DIRECTORY_SEPARATOR . 'db_credentials.php';
 if (!file_exists($credFile)) {
     output("ERROR: Database credentials not found.");
     return;
@@ -42,7 +42,7 @@ if (!file_exists($credFile)) {
 require_once $credFile;
 
 /* Create backup directory */
-$backupDir = __DIR__ . '/../data_share/backups';
+$backupDir = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'data_share' . DIRECTORY_SEPARATOR . 'backups';
 if (!is_dir($backupDir)) {
     mkdir($backupDir, 0755, true);
 }

@@ -12,7 +12,7 @@ declare(strict_types=1);
  * (or any time-based counter) to throttle requests per IP and action.
  *
  * USAGE:
- *   require_once __DIR__ . '/rate_limit.php';
+ *   require_once __DIR__ . DIRECTORY_SEPARATOR . 'rate_limit.php';
  *
  *   // Returns true if allowed, false if rate limited
  *   $allowed = checkRateLimit('auth_login', $clientIp, 10, 900);

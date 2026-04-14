@@ -12,7 +12,7 @@ declare(strict_types=1);
  * Automatically disabled once at least one user exists.
  */
 
-require_once __DIR__ . '/includes/auth.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 
 /* If users already exist, setup is disabled — redirect to login */
 if (!needsSetup()) {

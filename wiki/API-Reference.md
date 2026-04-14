@@ -286,6 +286,38 @@ Verify an email login token or code. Returns a bearer token. Auto-creates a new 
 
 ---
 
+## Content Tier & CCLI Endpoints
+
+### `?action=ccli_validate` (POST)
+
+Validate and save a CCLI licence number for the authenticated user. Requires: Bearer token.
+
+**Body:** `{ ccli_number: "1234567" }`
+
+**Validation:** Must be a numeric string (typically 5-8 digits). Non-numeric characters are rejected.
+
+**Response:** `{ ok: true, ccli_number: "1234567", verified: false }`
+
+**Errors:** 400 if the format is invalid.
+
+### `?action=tier_check`
+
+Check whether the authenticated user's content tier permits a given action. Requires: Bearer token.
+
+| Param | Required | Description |
+| --- | --- | --- |
+| `feature` | Yes | Feature to check (e.g., `audio`, `midi`, `pdf`) |
+
+**Response:** `{ allowed: true, effectiveTier: 3, requiredTier: 2 }`
+
+### `?action=access_tiers`
+
+List all available content access tiers. No authentication required.
+
+**Response:** `{ tiers: [{ id, name, level, description }] }`
+
+---
+
 ## User Data Endpoints (Authenticated)
 
 ### `?action=favorites`
@@ -386,6 +418,22 @@ Update a song request status (editor+ role).
 **Body:** `{ id, status: "pending|reviewed|added|declined", admin_notes?, resolved_song_id? }`
 
 **Response:** `{ ok: true }`
+
+### `?action=admin_set_user_tier` (POST)
+
+Set a user's content access tier. Requires: admin+ role via Bearer token.
+
+**Body:** `{ user_id: 42, tier_id: 3 }`
+
+**Response:** `{ ok: true, user_id: 42, tier: { id: 3, name: "Premium", level: 3 } }`
+
+### `?action=admin_set_user_ccli` (POST)
+
+Set or update a user's CCLI licence number. Requires: admin+ role via Bearer token.
+
+**Body:** `{ user_id: 42, ccli_number: "1234567" }`
+
+**Response:** `{ ok: true, user_id: 42, ccli_number: "1234567", verified: false }`
 
 ---
 

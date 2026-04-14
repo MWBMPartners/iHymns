@@ -372,27 +372,78 @@ function extractWritersFromCredits(creditLines) {
       continue;
     }
 
-    /* Check for "Words and music by <name>" — adds to both writers and composers */
+    /* Check for "Words and music by <name>" — adds to both writers and composers.
+     * Handles compound lines like "Words and Music by X © 2006 Publisher CCLI: 123" */
     const wordsAndMusicMatch = trimmed.match(/^words\s+and\s+music\s+by\s+(.+)$/i);
     if (wordsAndMusicMatch) {
-      /* Extract the name and add to both lists */
-      const name = wordsAndMusicMatch[1].trim();
-      writers.push(name);
-      composers.push(name);
+      let namePart = wordsAndMusicMatch[1].trim();
+
+      /* Split off copyright (© or "Copyright") */
+      const copySplit = namePart.match(/^(.+?)\s*[©]\s*(.+)$/);
+      if (copySplit) {
+        namePart = copySplit[1].replace(/[.,;]+$/, '').trim();
+        let copyText = copySplit[2].trim();
+        /* Extract CCLI number if embedded */
+        const ccliMatch = copyText.match(/^(.+?)\s*CCLI[:\s#]*(\d+)\s*$/i);
+        if (ccliMatch) {
+          copyText = ccliMatch[1].trim();
+          /* Store CCLI — we'll capture it below if not already set */
+        }
+        if (!copyright) copyright = copyText;
+      }
+
+      if (namePart) {
+        writers.push(namePart);
+        composers.push(namePart);
+      }
       continue;
     }
 
-    /* Check for "Words by <name>" — adds to writers only */
+    /* Check for "Words by <name>" — adds to writers only.
+     * Handle compound lines like "Words by X. Music by Y. © Copyright Z"
+     * by splitting at ". Music by" or ". ©" boundaries. */
     const wordsByMatch = trimmed.match(/^words\s+by\s+(.+)$/i);
     if (wordsByMatch) {
-      writers.push(wordsByMatch[1].trim());
+      let writerPart = wordsByMatch[1].trim();
+
+      /* Split off "Music by ..." if embedded in the same line */
+      const musicSplit = writerPart.match(/^(.+?)\.\s*Music\s+by\s+(.+)$/i);
+      if (musicSplit) {
+        writerPart = musicSplit[1].trim();
+        let composerPart = musicSplit[2].trim();
+        /* Split off copyright from composer part */
+        const copySplit2 = composerPart.match(/^(.+?)\.\s*[©(](.+)$/);
+        if (copySplit2) {
+          composerPart = copySplit2[1].trim();
+          if (!copyright) copyright = copySplit2[2].trim();
+        }
+        composers.push(composerPart);
+      }
+
+      /* Split off copyright if embedded after writer name */
+      const copySplit = writerPart.match(/^(.+?)\.\s*[©(](.+)$/);
+      if (copySplit) {
+        writerPart = copySplit[1].trim();
+        if (!copyright) copyright = copySplit[2].trim();
+      }
+
+      /* Remove trailing period from name */
+      writerPart = writerPart.replace(/\.$/, '').trim();
+      if (writerPart) writers.push(writerPart);
       continue;
     }
 
     /* Check for "Music by <name>" or "Music arranged by <name>" — adds to composers */
     const musicByMatch = trimmed.match(/^music\s+(?:arranged\s+)?by\s+(.+)$/i);
     if (musicByMatch) {
-      composers.push(musicByMatch[1].trim());
+      let composerPart = musicByMatch[1].trim();
+      /* Split off copyright if embedded */
+      const copySplit = composerPart.match(/^(.+?)\s*[©]\s*(.+)$/);
+      if (copySplit) {
+        composerPart = copySplit[1].replace(/[.,;]+$/, '').trim();
+        if (!copyright) copyright = copySplit[2].trim();
+      }
+      composers.push(composerPart);
       continue;
     }
 
@@ -415,8 +466,19 @@ function extractWritersFromCredits(creditLines) {
     }
   }
 
+  /* Deduplicate writers and composers (case-insensitive, keep first occurrence) */
+  const dedup = (arr) => {
+    const seen = new Set();
+    return arr.filter(name => {
+      const key = name.toLowerCase().replace(/\.\s*/g, ' ').trim();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+
   /* Return the extracted data */
-  return { writers, composers, copyright };
+  return { writers: dedup(writers), composers: dedup(composers), copyright };
 }
 
 /**

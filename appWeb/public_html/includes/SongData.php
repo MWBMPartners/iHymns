@@ -14,7 +14,7 @@ declare(strict_types=1);
  * and songbook data for the iHymns web application.
  *
  * USAGE:
- *   require_once __DIR__ . '/db_mysql.php';
+ *   require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
  *   $songData = new SongData();
  *   $songbooks = $songData->getSongbooks();
  *   $song = $songData->getSongById('CP-0001');
@@ -78,6 +78,9 @@ class SongData
     /** Whether we're using JSON fallback mode */
     private bool $jsonMode = false;
 
+    /** Check if running in JSON fallback mode (no MySQL) */
+    public function isJsonFallback(): bool { return $this->jsonMode; }
+
     /**
      * Constructor — connects to MySQL, or falls back to JSON file.
      *
@@ -103,8 +106,8 @@ class SongData
     {
         $candidates = [
             defined('APP_DATA_FILE') ? APP_DATA_FILE : '',
-            dirname(__DIR__, 2) . '/data_share/song_data/songs.json',
-            dirname(__DIR__, 3) . '/data/songs.json',
+            dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'data_share' . DIRECTORY_SEPARATOR . 'song_data' . DIRECTORY_SEPARATOR . 'songs.json',
+            dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR . 'songs.json',
         ];
 
         foreach ($candidates as $path) {

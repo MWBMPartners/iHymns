@@ -8,7 +8,7 @@ declare(strict_types=1);
  * Copyright (c) 2026 iHymns. All rights reserved.
  */
 
-require_once __DIR__ . '/includes/auth.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 
 /* Redirect to setup if no users exist */
 if (needsSetup()) {

@@ -609,4 +609,136 @@ Users inherit access from their group. The application checks group permissions 
 
 ---
 
-Last updated: 2026-04-12
+## Content Access Tiers & CCLI Licensing
+
+### Overview
+
+iHymns uses a tiered content access system to control what songs, media, and features a user can access. Tiers are defined in `tblAccessTiers` and assigned per-user (`tblUsers.AccessTier`) or per-organisation (`tblOrganisations.LicenceType`).
+
+**Content gating is OFF by default** (`content_gating_enabled=0` in `tblAppSettings`). Set to `1` to enforce tier restrictions.
+
+### Default Tiers
+
+| Tier | Level | Lyrics | Copyrighted | Audio | MIDI DL | PDF DL | Offline | CCLI Req'd |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **Public** | 0 | Yes | - | - | - | - | - | - |
+| **Free** | 10 | Yes | Yes | - | - | - | - | - |
+| **CCLI** | 20 | Yes | Yes | Yes | - | - | - | Yes |
+| **Premium** | 30 | Yes | Yes | Yes | Yes | Yes | Yes | - |
+| **Pro** | 40 | Yes | Yes | Yes | Yes | Yes | Yes | - |
+
+Each tier inherits all capabilities of lower tiers. The `Level` column determines the hierarchy — higher level = more access.
+
+### Tier Resolution (Personal vs Organisation)
+
+A user's **effective tier** is the **highest** of:
+
+1. Their personal `AccessTier` on `tblUsers`
+2. Any tier inherited from their organisation memberships
+
+For example:
+
+- User has personal tier `free` (level 10)
+- User belongs to a church with `ihymns_pro` licence (maps to `premium`, level 30)
+- **Effective tier = `premium`** (the higher of the two)
+
+This is resolved by `resolveEffectiveTier()` in `ccli_validator.php`.
+
+### Organisation Licence → Tier Mapping
+
+| Org LicenceType | Maps to Tier |
+| --- | --- |
+| `none` | public |
+| `ihymns_basic` | free |
+| `ccli` | ccli |
+| `ihymns_pro` / `premium` | premium |
+| `pro` | pro |
+
+### CCLI Licence Numbers
+
+CCLI (Christian Copyright Licensing International) licence numbers are:
+- 5–8 digit numeric identifiers
+- Assigned to churches/organisations for copyright compliance
+- Validated via `validateCcliNumber()` in `ccli_validator.php`
+- Stored on `tblUsers.CcliNumber` with `CcliVerified` flag
+
+When a user enters a valid CCLI number:
+1. Format validated (5-8 digits, numeric only)
+2. Stored and marked as verified
+3. If user is on `free` tier, auto-upgraded to `ccli`
+
+### Adding New Tiers
+
+To create a new tier:
+
+```sql
+INSERT INTO tblAccessTiers (Name, DisplayName, Level, Description,
+    CanViewLyrics, CanViewCopyrighted, CanPlayAudio,
+    CanDownloadMidi, CanDownloadPdf, CanOfflineSave, RequiresCcli)
+VALUES ('church_basic', 'Church Basic', 15,
+    'Church plan with copyrighted songs and audio.',
+    1, 1, 1, 0, 0, 0, 0);
+```
+
+Then update `checkTierAccess()` in `ccli_validator.php` to include the new tier in the capability matrix, and add the tier name to the `$validTiers` array in the `admin_set_user_tier` API endpoint.
+
+### Setting Up Pricing / Prerequisites
+
+Pricing and payment integration are managed via `tblUserPurchases`:
+
+| Column | Purpose |
+| --- | --- |
+| `ProductType` | `tier_upgrade`, `songbook_unlock`, `feature_unlock`, `subscription` |
+| `TierGranted` | Which tier this purchase unlocks |
+| `Amount` / `Currency` | Payment amount (GBP default) |
+| `Status` | `active`, `expired`, `refunded`, `cancelled` |
+| `ExpiresAt` | NULL for one-off purchases; date for subscriptions |
+
+To set up a paid tier:
+
+1. Create the tier in `tblAccessTiers`
+2. Configure your payment processor (Stripe, PayPal, etc.)
+3. On successful payment, insert a row into `tblUserPurchases`
+4. Update the user's `AccessTier` to the purchased tier
+
+### Restricting Media Access
+
+Audio playback, MIDI downloads, and PDF sheet music downloads are controlled by tier capabilities:
+
+| Media Type | Controlled By | API Check |
+| --- | --- | --- |
+| Audio playback (MIDI) | `CanPlayAudio` | `?action=tier_check&check=play_audio` |
+| MIDI file download | `CanDownloadMidi` | `?action=tier_check&check=download_midi` |
+| Sheet music PDF | `CanDownloadPdf` | `?action=tier_check&check=download_pdf` |
+| Offline song save | `CanOfflineSave` | `?action=tier_check&check=offline_save` |
+
+The frontend should call `tier_check` before showing media controls. If denied, show an upgrade prompt with the `upgradeTo` tier from the response.
+
+### Admin Management
+
+Tier management is restricted to **Admin** and **Global Admin** roles only.
+
+**API endpoints (Admin/Global Admin):**
+
+| Endpoint | Method | Description |
+| --- | --- | --- |
+| `admin_set_user_tier` | POST | Set a user's access tier |
+| `admin_set_user_ccli` | POST | Validate and set a user's CCLI number |
+| `access_tiers` | GET | List all available tiers |
+
+**Web dashboard:** `/manage/setup-database` for database administration.
+
+### Combining with Other Access Controls
+
+Content tiers work alongside other gating mechanisms:
+
+1. **Content Restrictions** (`tblContentRestrictions`) — block specific songs/songbooks by org/user/platform
+2. **User Groups** (`tblUserGroups`) — version channel access (Alpha/Beta/RC/RTW)
+3. **Organisation Licences** (`tblContentLicences`) — per-org songbook and feature access
+4. **Tiers** — broad capability levels for media and content types
+
+The most restrictive rule wins when multiple systems overlap.
+
+---
+
+Last updated: 2026-04-13

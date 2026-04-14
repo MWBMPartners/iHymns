@@ -17,9 +17,9 @@ declare(strict_types=1);
  *   Standard XML sitemap per https://www.sitemaps.org/protocol.html
  */
 
-require_once __DIR__ . '/includes/config.php';
-require_once __DIR__ . '/includes/db_mysql.php';
-require_once __DIR__ . '/includes/SongData.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
 
 /* =========================================================================
  * CONFIGURATION

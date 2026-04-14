@@ -1733,6 +1733,123 @@ paths:
                     description: Whether song requests are currently accepted
                     example: true
 
+  /api?action=ccli_validate:
+    post:
+      operationId: ccliValidate
+      tags: [User Access]
+      summary: Validate and save a CCLI licence number
+      description: Validates format (5-8 digit numeric), stores on user profile, auto-upgrades tier from free to ccli.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [ccli_validate]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ccli_number]
+              properties:
+                ccli_number:
+                  type: string
+                  example: "1234567"
+      responses:
+        "200":
+          description: CCLI number validated and saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid: { type: boolean }
+                  normalized: { type: string }
+                  type: { type: string, example: "licence" }
+                  tier: { type: string, example: "ccli" }
+        "400":
+          description: Invalid CCLI format
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api?action=tier_check:
+    get:
+      operationId: tierCheck
+      tags: [User Access]
+      summary: Check if user's tier allows an action
+      description: |
+        Resolves the user's effective tier (highest of personal + org tiers)
+        and checks if the specified action is permitted.
+        Actions: view_lyrics, view_copyrighted, play_audio, download_midi, download_pdf, offline_save, api_access, bulk_export
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [tier_check]
+        - name: check
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [view_lyrics, view_copyrighted, play_audio, download_midi, download_pdf, offline_save, api_access, bulk_export]
+      responses:
+        "200":
+          description: Access check result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  allowed: { type: boolean }
+                  reason: { type: string }
+                  upgradeTo: { type: string }
+                  tier: { type: string }
+
+  /api?action=access_tiers:
+    get:
+      operationId: getAccessTiers
+      tags: [User Access]
+      summary: List all available content access tiers
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [access_tiers]
+      responses:
+        "200":
+          description: List of tiers with capabilities
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tiers:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        displayName: { type: string }
+                        level: { type: integer }
+                        description: { type: string }
+                        canViewLyrics: { type: boolean }
+                        canViewCopyrighted: { type: boolean }
+                        canPlayAudio: { type: boolean }
+                        canDownloadMidi: { type: boolean }
+                        canDownloadPdf: { type: boolean }
+                        canOfflineSave: { type: boolean }
+                        requiresCcli: { type: boolean }
+
   # ===========================================================================
   # ADMIN
   # ===========================================================================
@@ -1988,6 +2105,70 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+  /api?action=admin_set_user_tier:
+    post:
+      operationId: adminSetUserTier
+      tags: [Admin]
+      summary: Set a user's content access tier (admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [admin_set_user_tier]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, tier]
+              properties:
+                user_id: { type: integer }
+                tier: { type: string, enum: [public, free, ccli, premium, pro] }
+      responses:
+        "200":
+          description: Tier updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /api?action=admin_set_user_ccli:
+    post:
+      operationId: adminSetUserCcli
+      tags: [Admin]
+      summary: Validate and set a user's CCLI number (admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [admin_set_user_ccli]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id: { type: integer }
+                ccli_number: { type: string, description: "Empty string to clear" }
+      responses:
+        "200":
+          description: CCLI number set or cleared
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
 
 # =============================================================================
 # COMPONENTS
