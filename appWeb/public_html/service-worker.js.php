@@ -13,7 +13,27 @@ header('Cache-Control: no-cache, no-store, must-revalidate');
 header('Service-Worker-Allowed: /');
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 $swVersion = $app['Application']['Version']['Number'] ?? '0.0.0';
+$libs = APP_CONFIG['libraries'];
+
+/* Collect CDN URLs for critical app shell resources */
+$cdnAssets = array_filter([
+    $libs['bootstrap']['css_cdn']   ?? null,
+    $libs['bootstrap']['js_cdn']    ?? null,
+    $libs['fontawesome']['css_cdn'] ?? null,
+    $libs['jquery']['js_cdn']       ?? null,
+    $libs['animatecss']['css_cdn']  ?? null,
+]);
+
+/* Collect local vendor fallback paths */
+$vendorAssets = array_filter([
+    $libs['bootstrap']['css_local']   ?? null,
+    $libs['bootstrap']['js_local']    ?? null,
+    $libs['fontawesome']['css_local'] ?? null,
+    $libs['jquery']['js_local']       ?? null,
+    $libs['animatecss']['css_local']  ?? null,
+]);
 ?>
 /**
  * iHymns — Service Worker
@@ -28,7 +48,8 @@ $swVersion = $app['Application']['Version']['Number'] ?? '0.0.0';
  *   - Always try to load content from the host (network) first
  *   - Only fall back to cached content when the network is unreachable
  *   - Pre-caches essential app shell assets for instant offline access
- *   - CDN resources are NOT cached to avoid cache poisoning
+ *   - Trusted CDN resources (Bootstrap, Font Awesome, jQuery, etc.) are
+ *     cached for offline use — these CDNs serve CORS headers so SRI still works
  *
  * CACHE MANAGEMENT:
  *   - Cache version is derived from infoAppVer.php automatically
@@ -62,11 +83,11 @@ const RECENT_CACHE_LIMIT = 2000;
 /**
  * Assets to pre-cache during service worker installation.
  * These are the essential app shell files needed for offline access.
- * Only local files — CDN resources are never cached.
  */
 const PRECACHE_ASSETS = [
     '/',
     '/css/app.css',
+    '/css/accessibility.css',
     '/css/print.css',
     '/js/app.js',
     '/js/modules/router.js',
@@ -92,6 +113,33 @@ const PRECACHE_ASSETS = [
     '/manifest.json',
     '/assets/favicon.svg',
 ];
+
+/**
+ * Trusted CDN origins whose resources are cached for offline use.
+ * These CDNs serve CORS headers (Access-Control-Allow-Origin: *)
+ * so responses can be cached and later served with SRI verification.
+ */
+const TRUSTED_CDN_ORIGINS = [
+    'https://cdn.jsdelivr.net',
+    'https://cdnjs.cloudflare.com',
+];
+
+/**
+ * Critical CDN assets to pre-cache during install for offline app shell.
+ * Injected from config.php so CDN URLs stay in sync automatically.
+ * These are fetched best-effort — CDN failures won't block installation.
+ */
+const PRECACHE_CDN_ASSETS = <?= json_encode(array_values($cdnAssets), JSON_UNESCAPED_SLASHES) ?>;
+
+/**
+ * Local vendor fallback paths — pre-cached best-effort.
+ * These files are served when CDN resources are unavailable and the
+ * CDN cache is also empty (e.g., first offline launch after install).
+ */
+const PRECACHE_VENDOR_ASSETS = <?= json_encode(
+    array_map(fn($p) => '/' . $p, array_values($vendorAssets)),
+    JSON_UNESCAPED_SLASHES
+) ?>;
 
 /**
  * Auto-update flag for offline songs (#132).
@@ -130,7 +178,40 @@ self.addEventListener('install', (event) => {
         caches.open(CACHE_VERSION)
             .then(cache => {
                 console.log('[SW] Pre-caching app shell assets');
-                return cache.addAll(PRECACHE_ASSETS);
+
+                /* Local assets — must all succeed for install to complete */
+                const localPromise = cache.addAll(PRECACHE_ASSETS);
+
+                /*
+                 * CDN assets — best effort. Failures are silently ignored so
+                 * a CDN outage doesn't block service worker installation.
+                 * These will be cached at runtime on the next page load anyway.
+                 */
+                const cdnPromise = Promise.allSettled(
+                    PRECACHE_CDN_ASSETS.map(url =>
+                        fetch(url, { mode: 'cors' })
+                            .then(resp => {
+                                if (resp.ok) return cache.put(url, resp);
+                            })
+                            .catch(() => console.warn('[SW] CDN precache skipped:', url))
+                    )
+                );
+
+                /*
+                 * Local vendor fallback files — best effort.
+                 * These may not exist if the download-vendor script hasn't run.
+                 */
+                const vendorPromise = Promise.allSettled(
+                    PRECACHE_VENDOR_ASSETS.map(path =>
+                        fetch(path)
+                            .then(resp => {
+                                if (resp.ok) return cache.put(path, resp);
+                            })
+                            .catch(() => {})
+                    )
+                );
+
+                return Promise.all([localPromise, cdnPromise, vendorPromise]);
             })
             /*
              * NOTE (#83): We intentionally do NOT call self.skipWaiting() here.
@@ -173,18 +254,29 @@ self.addEventListener('activate', (event) => {
  * FETCH EVENT — Network-first strategy with offline fallback
  *
  * Strategy per resource type:
- *   1. CDN resources → Network-only (never cache third-party)
- *   2. API requests  → Network-first, no caching (dynamic data)
- *   3. Local assets  → Network-first, cache on success, serve cache if offline
- *   4. Navigation    → Network-first, fall back to cached '/' for offline shell
+ *   1. Trusted CDNs  → Network-first, cache for offline (Bootstrap, FA, jQuery)
+ *   2. Other CDNs    → Network-only (analytics, third-party scripts)
+ *   3. API requests  → Network-first, cache song pages for offline (#105)
+ *   4. Local assets  → Network-first, cache on success, serve cache if offline
+ *   5. Navigation    → Network-first, fall back to cached '/' for offline shell
  * ========================================================================= */
 
 self.addEventListener('fetch', (event) => {
     const url = new URL(event.request.url);
 
-    /* --- CDN / Third-party resources: network-only, never cache --- */
+    /* --- CDN / Third-party resources --- */
     if (url.origin !== self.location.origin) {
-        /* Let the browser handle CDN requests normally */
+        /*
+         * Trusted CDN resources (Bootstrap, Font Awesome, jQuery, etc.)
+         * are cached with network-first strategy so the app shell renders
+         * offline. These CDNs serve CORS headers, so cached responses
+         * remain readable for SRI verification.
+         */
+        if (TRUSTED_CDN_ORIGINS.some(origin => url.origin === origin)) {
+            event.respondWith(networkFirstWithCache(event.request));
+            return;
+        }
+        /* Other third-party resources: let the browser handle normally */
         return;
     }
 
