@@ -226,6 +226,31 @@ switch ($action) {
             $stmtComposer->close();
             $stmtComponent->close();
 
+            /*
+             * Import translation links from songs.json (#352).
+             * Each song may have a "translations" array with {songId, language} entries.
+             * Clear and re-import so translations stay in sync with the data file.
+             */
+            $db->query("DELETE FROM tblSongTranslations");
+            $stmtTrans = $db->prepare(
+                "INSERT IGNORE INTO tblSongTranslations (SourceSongId, TranslatedSongId, TargetLanguage)
+                 VALUES (?, ?, ?)"
+            );
+            foreach ($data['songs'] as $song) {
+                if (!empty($song['translations']) && is_array($song['translations'])) {
+                    $srcId = $song['id'];
+                    foreach ($song['translations'] as $tr) {
+                        $tgtId = $tr['songId'] ?? '';
+                        $lang  = $tr['language'] ?? '';
+                        if ($tgtId !== '' && $lang !== '') {
+                            $stmtTrans->bind_param('sss', $srcId, $tgtId, $lang);
+                            $stmtTrans->execute();
+                        }
+                    }
+                }
+            }
+            $stmtTrans->close();
+
             $db->commit();
 
             echo json_encode([
@@ -244,10 +269,115 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
+     * TRANSLATIONS — Manage song translation links (#352)
+     * ----------------------------------------------------------------- */
+
+    /* Get translations for a song */
+    case 'get_translations':
+        $songId = isset($_GET['id']) ? trim($_GET['id']) : '';
+        if ($songId === '') {
+            http_response_code(400);
+            echo json_encode(['error' => 'Song ID is required.']);
+            break;
+        }
+        try {
+            $db = getDb();
+            $stmt = $db->prepare(
+                'SELECT t.Id AS id, t.TranslatedSongId AS songId,
+                        t.TargetLanguage AS language, t.Translator AS translator,
+                        t.Verified AS verified, s.Title AS title, s.Number AS number
+                 FROM tblSongTranslations t
+                 JOIN tblSongs s ON s.SongId = t.TranslatedSongId
+                 WHERE t.SourceSongId = ?
+                 ORDER BY t.TargetLanguage ASC'
+            );
+            $stmt->execute([$songId]);
+            $translations = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($translations as &$tr) {
+                $tr['id'] = (int)$tr['id'];
+                $tr['verified'] = (bool)$tr['verified'];
+                $tr['number'] = (int)$tr['number'];
+            }
+            unset($tr);
+            echo json_encode(['translations' => $translations]);
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(['error' => 'Failed to load translations.']);
+        }
+        break;
+
+    /* Add a translation link */
+    case 'add_translation':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        $body = json_decode(file_get_contents('php://input'), true);
+        $srcId = trim($body['sourceSongId'] ?? '');
+        $tgtId = trim($body['translatedSongId'] ?? '');
+        $lang  = trim($body['language'] ?? '');
+        $translator = trim($body['translator'] ?? '');
+
+        if ($srcId === '' || $tgtId === '' || $lang === '') {
+            http_response_code(400);
+            echo json_encode(['error' => 'sourceSongId, translatedSongId, and language are required.']);
+            break;
+        }
+        if ($srcId === $tgtId) {
+            http_response_code(400);
+            echo json_encode(['error' => 'A song cannot be a translation of itself.']);
+            break;
+        }
+
+        try {
+            $db = getDb();
+            $stmt = $db->prepare(
+                'INSERT INTO tblSongTranslations (SourceSongId, TranslatedSongId, TargetLanguage, Translator)
+                 VALUES (?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE TranslatedSongId = VALUES(TranslatedSongId),
+                                         Translator = VALUES(Translator)'
+            );
+            $stmt->execute([$srcId, $tgtId, $lang, $translator]);
+            echo json_encode(['success' => true]);
+        } catch (Exception $e) {
+            http_response_code(500);
+            error_log('[iHymns Editor] add_translation failed: ' . $e->getMessage());
+            echo json_encode(['error' => 'Failed to add translation link.']);
+        }
+        break;
+
+    /* Remove a translation link */
+    case 'remove_translation':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        $body = json_decode(file_get_contents('php://input'), true);
+        $removeId = (int)($body['id'] ?? 0);
+        if ($removeId <= 0) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Translation link ID is required.']);
+            break;
+        }
+
+        try {
+            $db = getDb();
+            $stmt = $db->prepare('DELETE FROM tblSongTranslations WHERE Id = ?');
+            $stmt->execute([$removeId]);
+            echo json_encode(['success' => true, 'deleted' => $stmt->rowCount()]);
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(['error' => 'Failed to remove translation link.']);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
      * Unknown action
      * ----------------------------------------------------------------- */
     default:
         http_response_code(400);
-        echo json_encode(['error' => 'Unknown action. Use: load, save']);
+        echo json_encode(['error' => 'Unknown action. Use: load, save, get_translations, add_translation, remove_translation']);
         break;
 }

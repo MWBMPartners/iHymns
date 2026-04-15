@@ -1405,6 +1405,16 @@ if ($action !== null) {
             }
 
             $db = getDb();
+
+            /*
+             * Bidirectional lookup (#352):
+             * 1. Forward: this song is the source → find its translations
+             * 2. Reverse: this song is a translation → find the source + siblings
+             */
+            $translations = [];
+            $seen = [$translationSongId => true]; /* avoid duplicates */
+
+            /* Forward: translations OF this song */
             $stmt = $db->prepare(
                 'SELECT t.TranslatedSongId AS songId, t.TargetLanguage AS language,
                         t.Translator AS translator, t.Verified AS verified,
@@ -1417,13 +1427,54 @@ if ($action !== null) {
                  ORDER BY l.Name ASC'
             );
             $stmt->execute([$translationSongId]);
-            $translations = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-            foreach ($translations as &$tr) {
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $tr) {
                 $tr['verified'] = (bool)$tr['verified'];
                 $tr['number'] = (int)$tr['number'];
+                $seen[$tr['songId']] = true;
+                $translations[] = $tr;
             }
-            unset($tr);
+
+            /* Reverse: find the source song this is a translation of */
+            $stmt2 = $db->prepare(
+                'SELECT t.SourceSongId FROM tblSongTranslations t WHERE t.TranslatedSongId = ?'
+            );
+            $stmt2->execute([$translationSongId]);
+            $sourceRow = $stmt2->fetch(PDO::FETCH_ASSOC);
+
+            if ($sourceRow) {
+                $sourceId = $sourceRow['SourceSongId'];
+
+                /* Add the source song itself (if not already listed) */
+                if (empty($seen[$sourceId])) {
+                    $stmtSrc = $db->prepare(
+                        'SELECT s.SongId AS songId, s.Language AS language,
+                                s.Title AS title, s.Number AS number,
+                                l.Name AS languageName, l.NativeName AS languageNativeName
+                         FROM tblSongs s
+                         LEFT JOIN tblLanguages l ON l.Code = s.Language
+                         WHERE s.SongId = ?'
+                    );
+                    $stmtSrc->execute([$sourceId]);
+                    $src = $stmtSrc->fetch(PDO::FETCH_ASSOC);
+                    if ($src) {
+                        $src['translator'] = '';
+                        $src['verified'] = false;
+                        $src['number'] = (int)$src['number'];
+                        $seen[$sourceId] = true;
+                        $translations[] = $src;
+                    }
+                }
+
+                /* Add sibling translations (other translations of the same source) */
+                $stmt->execute([$sourceId]);
+                foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $tr) {
+                    if (!empty($seen[$tr['songId']])) continue;
+                    $tr['verified'] = (bool)$tr['verified'];
+                    $tr['number'] = (int)$tr['number'];
+                    $seen[$tr['songId']] = true;
+                    $translations[] = $tr;
+                }
+            }
 
             sendJson(['translations' => $translations, 'sourceId' => $translationSongId]);
             break;

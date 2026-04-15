@@ -2157,6 +2157,26 @@ body.reduce-motion .offline-banner {
 }
 
 /* =========================================================================
+ * SONG TRANSLATIONS — Collapsible section on song pages (#352)
+ * ========================================================================= */
+
+.song-translations h2 {
+    cursor: pointer;
+}
+
+.song-translations h2[aria-expanded="false"] i.fa-chevron-down {
+    transform: rotate(-90deg);
+}
+
+.song-translations i.fa-chevron-down {
+    transition: transform 0.2s ease;
+}
+
+body.reduce-motion .song-translations i.fa-chevron-down {
+    transition: none;
+}
+
+/* =========================================================================
  * RELATED SONGS — Collapsible section on song pages (#118)
  * ========================================================================= */
 
