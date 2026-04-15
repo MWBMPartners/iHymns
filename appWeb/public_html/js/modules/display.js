@@ -378,17 +378,23 @@ export class Display {
                  * at 60fps or 0.25px at 120fps ProMotion), causing auto-scroll
                  * to appear completely broken. By accumulating and flushing
                  * whole pixels we ensure visible movement on every platform.
+                 *
+                 * Use document.scrollingElement (W3C standard) to get the
+                 * correct scrollable element — iOS Safari in standalone PWA
+                 * mode may use document.body instead of documentElement (#353).
                  */
                 const px = Math.floor(remainder);
                 if (px >= 1) {
-                    document.documentElement.scrollTop += px;
+                    const scrollEl = document.scrollingElement || document.documentElement;
+                    scrollEl.scrollTop += px;
                     remainder -= px;
                 }
             }
             lastTime = timestamp;
 
             /* Stop at bottom of page */
-            const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
+            const scrollEl = document.scrollingElement || document.documentElement;
+            const scrollTop = scrollEl.scrollTop;
             if ((window.innerHeight + scrollTop) >= document.body.scrollHeight - 2) {
                 this.stopAutoScroll();
                 return;

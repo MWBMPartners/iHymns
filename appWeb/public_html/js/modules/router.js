@@ -397,6 +397,9 @@ export class Router {
                     }).catch(() => {}); // fire-and-forget
                 }
 
+                /* Load song translations (#352) — async, non-blocking */
+                this.loadTranslations(songId);
+
                 /* Load related songs (#118) — async, non-blocking */
                 this.loadRelatedSongs(songId);
             }
@@ -696,6 +699,50 @@ export class Router {
         if (el('stats-views-today')) el('stats-views-today').textContent = today;
         if (el('stats-views-week')) el('stats-views-week').textContent = week;
         if (el('stats-views-month')) el('stats-views-month').textContent = month;
+    }
+
+    /**
+     * Fetch and render translation links for the current song (#352).
+     * Queries the API for songs linked as translations in other languages.
+     * Also checks the reverse direction (if this song is itself a translation).
+     *
+     * @param {string} songId The current song's ID
+     */
+    async loadTranslations(songId) {
+        const container = document.getElementById('song-translations');
+        const itemsEl = document.getElementById('song-translations-items');
+        if (!container || !itemsEl) return;
+
+        try {
+            const resp = await fetch(`${this.apiUrl}?action=song_translations&id=${encodeURIComponent(songId)}`);
+            if (!resp.ok) return;
+            const data = await resp.json();
+
+            const translations = data.translations || [];
+            if (translations.length === 0) return;
+
+            itemsEl.innerHTML = translations.map(tr => `
+                <a href="/song/${escapeHtml(tr.songId)}"
+                   class="list-group-item list-group-item-action song-list-item"
+                   data-navigate="song"
+                   data-song-id="${escapeHtml(tr.songId)}"
+                   role="listitem">
+                    <span class="song-number-badge">${tr.number || '?'}</span>
+                    <div class="song-info flex-grow-1">
+                        <span class="song-title">${escapeHtml(toTitleCase(tr.title))}${tr.verified ? ' <i class="fa-solid fa-circle-check text-success small" aria-hidden="true" title="Verified"></i>' : ''}</span>
+                        <small class="text-muted d-block">
+                            <i class="fa-solid fa-language me-1" aria-hidden="true"></i>${escapeHtml(tr.languageNativeName || tr.languageName || tr.language)}${tr.translator ? ` — ${escapeHtml(tr.translator)}` : ''}
+                        </small>
+                    </div>
+                    <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>
+                </a>
+            `).join('');
+
+            container.classList.remove('d-none');
+            this.fixBadgeContrast();
+        } catch (err) {
+            console.warn('[Router] Failed to load translations:', err.message);
+        }
     }
 
     /**

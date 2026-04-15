@@ -503,6 +503,9 @@ function selectSong(songId) {
     /* Render the composers list. */
     renderComposers(song);
 
+    /* Render the translations panel (#352). */
+    renderTranslations(song);
+
     /* Render the copyright textarea. */
     setVal('edit-copyright', song.copyright || '');
 
@@ -1360,6 +1363,138 @@ function renderComposers(song) {
         renderComposers(song);       // re-render
     });
     container.appendChild(addBtn);
+}
+
+/**
+ * renderTranslations(song)
+ * ------------------------
+ * Populates the #translations-container with linked translation rows.
+ * Each row shows the translated song ID, language, and title with a remove button.
+ * Also populates the datalist for the add-translation input with all songs (#352).
+ *
+ * @param {Object} song - The song object.
+ */
+function renderTranslations(song) {
+    var container = document.getElementById('translations-container');
+    if (!container) return;
+
+    container.innerHTML = '';
+
+    /* Ensure the song has a translations array. */
+    if (!song.translations) song.translations = [];
+
+    /* Render each translation link */
+    song.translations.forEach(function (tr, i) {
+        var targetSong = songData.songs.find(function (s) { return s.id === tr.songId; });
+        var displayTitle = targetSong ? targetSong.title : '(unknown)';
+        var displayLang = tr.language || '?';
+
+        var row = document.createElement('div');
+        row.className = 'd-flex align-items-center gap-2 mb-1';
+
+        var badge = document.createElement('span');
+        badge.className = 'badge bg-secondary';
+        badge.textContent = displayLang;
+
+        var info = document.createElement('span');
+        info.className = 'flex-grow-1 small';
+        var strong = document.createElement('strong');
+        strong.textContent = tr.songId;
+        info.appendChild(strong);
+        info.appendChild(document.createTextNode(' \u2014 ' + displayTitle));
+
+        var removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'btn btn-sm btn-outline-danger';
+        removeBtn.title = 'Remove translation link';
+        removeBtn.innerHTML = '<i class="bi bi-x-lg"></i>';
+
+        row.appendChild(badge);
+        row.appendChild(info);
+        row.appendChild(removeBtn);
+
+        removeBtn.addEventListener('click', function () {
+            song.translations.splice(i, 1);
+            markModified(song.id);
+            renderTranslations(song);
+        });
+
+        container.appendChild(row);
+    });
+
+    if (song.translations.length === 0) {
+        var empty = document.createElement('div');
+        empty.className = 'text-muted small';
+        empty.textContent = 'No translations linked.';
+        container.appendChild(empty);
+    }
+
+    /* Populate the datalist with all songs for autocomplete */
+    var datalist = document.getElementById('translation-song-list');
+    if (datalist) {
+        datalist.innerHTML = '';
+        songData.songs.forEach(function (s) {
+            if (s.id === song.id) return; /* skip self */
+            var opt = document.createElement('option');
+            opt.value = s.id;
+            opt.textContent = s.title + ' (' + (s.language || 'en') + ')';
+            datalist.appendChild(opt);
+        });
+    }
+}
+
+/**
+ * Initialise the "Add Translation" button event handler (#352).
+ * Called once after DOM is ready.
+ */
+function initTranslationControls() {
+    var addBtn = document.getElementById('add-translation-btn');
+    if (!addBtn) return;
+
+    addBtn.addEventListener('click', function () {
+        if (!currentSongId) {
+            showToast('Select a song first.', 'warning');
+            return;
+        }
+        var input = document.getElementById('add-translation-songid');
+        var targetId = (input.value || '').trim();
+        if (!targetId) {
+            showToast('Enter a target Song ID.', 'warning');
+            return;
+        }
+
+        var song = songData.songs.find(function (s) { return s.id === currentSongId; });
+        if (!song) return;
+
+        /* Check target song exists */
+        var targetSong = songData.songs.find(function (s) { return s.id === targetId; });
+        if (!targetSong) {
+            showToast('Song "' + targetId + '" not found in the database.', 'danger');
+            return;
+        }
+
+        /* Check not a duplicate */
+        if (!song.translations) song.translations = [];
+        if (song.translations.some(function (t) { return t.songId === targetId; })) {
+            showToast('Translation link already exists.', 'warning');
+            return;
+        }
+
+        /* Check not self */
+        if (targetId === currentSongId) {
+            showToast('A song cannot be a translation of itself.', 'warning');
+            return;
+        }
+
+        song.translations.push({
+            songId: targetId,
+            language: targetSong.language || 'en'
+        });
+        markModified(song.id);
+        renderTranslations(song);
+        input.value = '';
+        showToast('Translation link added.', 'success');
+    });
 }
 
 /**
@@ -2315,6 +2450,9 @@ function init() {
 
     /* Bind arrangement editor listeners (#161). */
     bindArrangementListeners();
+
+    /* Bind translation controls (#352). */
+    initTranslationControls();
 
     /* Register the beforeunload handler for unsaved-changes protection. */
     window.addEventListener('beforeunload', warnBeforeUnload);

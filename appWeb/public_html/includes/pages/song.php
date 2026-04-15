@@ -320,6 +320,20 @@ $components  = $song['components'] ?? [];
         </a>
     </div>
 
+    <!-- Song translations (#352) — populated client-side from API -->
+    <section id="song-translations" class="song-translations mt-4 pt-3 border-top d-none" aria-label="Translations">
+        <h2 class="h6 mb-3 d-flex align-items-center gap-2" role="button" data-bs-toggle="collapse" data-bs-target="#song-translations-list" aria-expanded="true" aria-controls="song-translations-list">
+            <i class="fa-solid fa-language me-1 text-muted" aria-hidden="true"></i>
+            Translations
+            <i class="fa-solid fa-chevron-down ms-auto small text-muted" aria-hidden="true"></i>
+        </h2>
+        <div class="collapse show" id="song-translations-list">
+            <div class="list-group list-group-flush" id="song-translations-items" role="list">
+                <!-- Rendered by JS -->
+            </div>
+        </div>
+    </section>
+
     <!-- Related songs (#118) — populated client-side from songs.json -->
     <section id="related-songs" class="related-songs mt-4 pt-3 border-top d-none" aria-label="Related songs">
         <h2 class="h6 mb-3 d-flex align-items-center gap-2" role="button" data-bs-toggle="collapse" data-bs-target="#related-songs-list" aria-expanded="true" aria-controls="related-songs-list">

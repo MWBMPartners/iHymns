@@ -761,9 +761,13 @@ class SongData
         $row['musicPublicDomain'] = (bool)$row['musicPublicDomain'];
         $row['hasAudio'] = (bool)$row['hasAudio'];
         $row['hasSheetMusic'] = (bool)$row['hasSheetMusic'];
-        $row['writers']    = $this->_getWriters($songId);
-        $row['composers'] = $this->_getComposers($songId);
-        $row['components'] = $this->_getComponents($songId);
+        $row['writers']      = $this->_getWriters($songId);
+        $row['composers']   = $this->_getComposers($songId);
+        $row['components']  = $this->_getComponents($songId);
+        $translations = $this->_getTranslations($songId);
+        if (!empty($translations)) {
+            $row['translations'] = $translations;
+        }
 
         return $row;
     }
@@ -839,6 +843,31 @@ class SongData
         }
         $stmt->close();
         return $components;
+    }
+
+    /**
+     * Get translation links for a song (#352).
+     *
+     * @param string $songId Song ID
+     * @return array Array of {songId, language} objects
+     */
+    private function _getTranslations(string $songId): array
+    {
+        $stmt = $this->db->prepare(
+            "SELECT TranslatedSongId AS songId, TargetLanguage AS language
+             FROM tblSongTranslations
+             WHERE SourceSongId = ?
+             ORDER BY TargetLanguage"
+        );
+        $stmt->bind_param('s', $songId);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $translations = [];
+        while ($row = $result->fetch_assoc()) {
+            $translations[] = $row;
+        }
+        $stmt->close();
+        return $translations;
     }
 
     /**

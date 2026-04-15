@@ -1235,6 +1235,31 @@ $currentUser = getCurrentUser();
                             <!-- Add Composer button is dynamically rendered by editor.js inside composers-container -->
                         </div>
 
+                        <!-- Translations Section — linked translations in other languages (#352) -->
+                        <div class="mb-4">
+                            <label class="form-label">
+                                <i class="bi bi-translate me-1"></i>Translations
+                            </label>
+                            <div class="form-text mb-2" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                                Link this song to its translations in other languages. Linked songs appear on each other's page.
+                            </div>
+
+                            <!-- Dynamic list of translation rows -->
+                            <div id="translations-container">
+                                <!-- Rendered by editor.js -->
+                            </div>
+
+                            <!-- Add Translation form -->
+                            <div class="input-group input-group-sm mt-2">
+                                <input type="text" class="form-control" id="add-translation-songid"
+                                       placeholder="Target Song ID (e.g. CP-0001)" list="translation-song-list">
+                                <datalist id="translation-song-list"></datalist>
+                                <button type="button" class="btn btn-outline-primary" id="add-translation-btn">
+                                    <i class="bi bi-plus-lg me-1"></i>Link
+                                </button>
+                            </div>
+                        </div>
+
                         <!-- Copyright Text — free-text copyright notice -->
                         <div class="mb-3">
                             <label for="edit-copyright" class="form-label">
