@@ -298,34 +298,51 @@ declare(strict_types=1);
             <div class="mb-3">
                 <label class="form-label fw-semibold">Offline Songs</label>
 
-                <!-- Per-songbook download options -->
+                <!-- Per-songbook download options (#356, #357) -->
                 <div class="mb-2" id="offline-songbook-list">
                     <?php
                         $offlineSongbooks = $songData->getSongbooks();
+                        $avgBytesPerSong = 4096; /* ~4 KB per cached song page */
+                        $totalSongs = 0;
+                        $totalEstBytes = 0;
                         foreach ($offlineSongbooks as $book):
-                            if (($book['songCount'] ?? 0) > 0):
+                            $count = (int)($book['songCount'] ?? 0);
+                            if ($count > 0):
+                                $estBytes = $count * $avgBytesPerSong;
+                                $totalSongs += $count;
+                                $totalEstBytes += $estBytes;
+                                if ($estBytes >= 1048576) {
+                                    $estSize = round($estBytes / 1048576, 1) . ' MB';
+                                } else {
+                                    $estSize = round($estBytes / 1024) . ' KB';
+                                }
                     ?>
-                    <div class="d-flex align-items-center justify-content-between py-1 border-bottom">
-                        <div class="d-flex align-items-center gap-2">
-                            <span class="badge songbook-badge" data-songbook="<?= htmlspecialchars($book['id']) ?>">
-                                <?= htmlspecialchars($book['id']) ?>
-                            </span>
+                    <div class="offline-songbook-row">
+                        <span class="badge songbook-badge" data-songbook="<?= htmlspecialchars($book['id']) ?>">
+                            <?= htmlspecialchars($book['id']) ?>
+                        </span>
+                        <div class="offline-songbook-info">
                             <span class="small"><?= htmlspecialchars($book['name']) ?></span>
-                            <span class="text-muted small">(<?= (int)$book['songCount'] ?> songs)</span>
+                            <span class="text-muted small">(<?= $count ?> songs)</span>
                         </div>
-                        <div class="d-flex align-items-center gap-2">
-                            <span class="small text-muted offline-songbook-status" data-songbook="<?= htmlspecialchars($book['id']) ?>"></span>
-                            <button type="button"
-                                    class="btn btn-outline-success btn-sm btn-download-songbook"
-                                    data-songbook-id="<?= htmlspecialchars($book['id']) ?>"
-                                    aria-label="Download <?= htmlspecialchars($book['name']) ?> for offline use">
-                                <i class="fa-solid fa-cloud-arrow-down" aria-hidden="true"></i>
-                            </button>
-                        </div>
+                        <span class="text-muted small offline-songbook-size">~<?= $estSize ?></span>
+                        <span class="small text-muted offline-songbook-status" data-songbook="<?= htmlspecialchars($book['id']) ?>"></span>
+                        <button type="button"
+                                class="btn btn-outline-success btn-sm btn-download-songbook"
+                                data-songbook-id="<?= htmlspecialchars($book['id']) ?>"
+                                aria-label="Download <?= htmlspecialchars($book['name']) ?> for offline use">
+                            <i class="fa-solid fa-cloud-arrow-down" aria-hidden="true"></i>
+                        </button>
                     </div>
                     <?php
                             endif;
                         endforeach;
+                        /* Format total estimate */
+                        if ($totalEstBytes >= 1048576) {
+                            $totalEstSize = round($totalEstBytes / 1048576, 1) . ' MB';
+                        } else {
+                            $totalEstSize = round($totalEstBytes / 1024) . ' KB';
+                        }
                     ?>
                 </div>
 
@@ -336,6 +353,7 @@ declare(strict_types=1);
                         <i class="fa-solid fa-cloud-arrow-down me-1" aria-hidden="true"></i>
                         Download All Songbooks
                     </button>
+                    <span class="text-muted small">~<?= $totalEstSize ?></span>
                     <span id="download-songs-status" class="small text-muted"></span>
                 </div>
 
