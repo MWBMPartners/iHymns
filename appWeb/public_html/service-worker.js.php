@@ -7,33 +7,18 @@
  * The .htaccess rule rewrites /service-worker.js → service-worker.js.php.
  *
  * Content-Type is set to JavaScript so the browser treats it correctly.
+ *
+ * IMPORTANT: This file must ONLY include infoAppVer.php. Including
+ * config.php or other files risks PHP errors/warnings that would
+ * corrupt the JavaScript output and break service worker registration.
+ * CDN URLs are hardcoded here — update them when library versions change.
  */
 header('Content-Type: application/javascript; charset=UTF-8');
 header('Cache-Control: no-cache, no-store, must-revalidate');
 header('Service-Worker-Allowed: /');
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
-require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 $swVersion = $app['Application']['Version']['Number'] ?? '0.0.0';
-$libs = APP_CONFIG['libraries'];
-
-/* Collect CDN URLs for critical app shell resources */
-$cdnAssets = array_filter([
-    $libs['bootstrap']['css_cdn']   ?? null,
-    $libs['bootstrap']['js_cdn']    ?? null,
-    $libs['fontawesome']['css_cdn'] ?? null,
-    $libs['jquery']['js_cdn']       ?? null,
-    $libs['animatecss']['css_cdn']  ?? null,
-]);
-
-/* Collect local vendor fallback paths */
-$vendorAssets = array_filter([
-    $libs['bootstrap']['css_local']   ?? null,
-    $libs['bootstrap']['js_local']    ?? null,
-    $libs['fontawesome']['css_local'] ?? null,
-    $libs['jquery']['js_local']       ?? null,
-    $libs['animatecss']['css_local']  ?? null,
-]);
 ?>
 /**
  * iHymns — Service Worker
@@ -126,20 +111,30 @@ const TRUSTED_CDN_ORIGINS = [
 
 /**
  * Critical CDN assets to pre-cache during install for offline app shell.
- * Injected from config.php so CDN URLs stay in sync automatically.
- * These are fetched best-effort — CDN failures won't block installation.
+ * Hardcoded here (not injected from config.php) to avoid any risk of PHP
+ * errors corrupting the JS output and breaking SW registration.
+ * UPDATE THESE when library versions change in config.php.
  */
-const PRECACHE_CDN_ASSETS = <?= json_encode(array_values($cdnAssets), JSON_UNESCAPED_SLASHES) ?>;
+const PRECACHE_CDN_ASSETS = [
+    'https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/css/bootstrap.min.css',
+    'https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/js/bootstrap.bundle.min.js',
+    'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css',
+    'https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js',
+    'https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css',
+];
 
 /**
  * Local vendor fallback paths — pre-cached best-effort.
  * These files are served when CDN resources are unavailable and the
  * CDN cache is also empty (e.g., first offline launch after install).
  */
-const PRECACHE_VENDOR_ASSETS = <?= json_encode(
-    array_map(fn($p) => '/' . $p, array_values($vendorAssets)),
-    JSON_UNESCAPED_SLASHES
-) ?>;
+const PRECACHE_VENDOR_ASSETS = [
+    '/vendor/bootstrap/bootstrap.min.css',
+    '/vendor/bootstrap/bootstrap.bundle.min.js',
+    '/vendor/fontawesome/css/all.min.css',
+    '/vendor/jquery/jquery.min.js',
+    '/vendor/animate/animate.min.css',
+];
 
 /**
  * Auto-update flag for offline songs (#132).
