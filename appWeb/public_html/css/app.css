@@ -499,10 +499,9 @@ body.banner-visible.search-open .main-content {
         padding-bottom: env(safe-area-inset-bottom, 0px);
     }
 
-    /* Full-screen overlays — respect safe areas when they take over the screen */
-    .presentation-overlay {
-        padding-top: max(2rem, env(safe-area-inset-top, 0px));
-        padding-bottom: env(safe-area-inset-bottom, 0px);
+    /* Reading progress bar — account for taller header in standalone mode (#350) */
+    .reading-progress-bar {
+        top: calc(var(--header-height, 56px) + env(safe-area-inset-top, 0px));
     }
 
     .compare-header {
@@ -513,7 +512,6 @@ body.banner-visible.search-open .main-content {
     .app-header,
     .main-content,
     .app-footer,
-    .presentation-overlay,
     .compare-overlay {
         padding-left: env(safe-area-inset-left, 0px);
         padding-right: env(safe-area-inset-right, 0px);
@@ -1594,7 +1592,12 @@ body.reduce-motion .btn-autoscroll-fab {
     background: var(--bs-body-bg, #fff);
     color: var(--bs-body-color, #000);
     overflow-y: auto;
+    /* Always respect safe areas — values default to 0px on devices without them (#351) */
     padding: 2rem;
+    padding-top: max(2rem, env(safe-area-inset-top, 0px));
+    padding-bottom: max(2rem, env(safe-area-inset-bottom, 0px));
+    padding-left: max(2rem, env(safe-area-inset-left, 0px));
+    padding-right: max(2rem, env(safe-area-inset-right, 0px));
 }
 
 .presentation-header {
