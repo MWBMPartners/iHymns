@@ -581,7 +581,7 @@ self.addEventListener('message', (event) => {
         self.skipWaiting();
     }
 
-    /* Download all songs for offline use */
+    /* Download all songs for offline use (#359: optimised batching) */
     if (event.data.type === 'CACHE_ALL_SONGS' && Array.isArray(event.data.songIds)) {
         const songIds = event.data.songIds;
         const total = songIds.length;
@@ -589,37 +589,71 @@ self.addEventListener('message', (event) => {
         let failed = 0;
 
         caches.open(RECENT_CACHE).then(async (cache) => {
-            /* Process in batches of 5 to avoid overwhelming the server */
-            const BATCH_SIZE = 5;
-            for (let i = 0; i < songIds.length; i += BATCH_SIZE) {
-                const batch = songIds.slice(i, i + BATCH_SIZE);
-                const results = await Promise.allSettled(
+            /*
+             * Bulk pre-check: load all cached keys once and build a Set.
+             * This avoids an individual cache.match() per song, saving
+             * thousands of async I/O operations.
+             */
+            const cachedKeys = await cache.keys();
+            const cachedIds = new Set(
+                cachedKeys.map(req => {
+                    try { return new URL(req.url).searchParams.get('id'); }
+                    catch { return null; }
+                }).filter(Boolean)
+            );
+
+            /* Filter out already-cached songs upfront */
+            const uncachedIds = [];
+            for (const id of songIds) {
+                if (cachedIds.has(id)) {
+                    completed++;
+                } else {
+                    uncachedIds.push(id);
+                }
+            }
+
+            /* Report initial progress (cached songs counted immediately) */
+            notifyClients({ type: 'CACHE_ALL_SONGS_PROGRESS', completed, failed, total });
+
+            /*
+             * Process uncached songs in larger batches for speed.
+             * Modern browsers multiplex HTTP/2 connections efficiently;
+             * 20 concurrent requests is a good balance between throughput
+             * and not overwhelming the server.
+             */
+            const BATCH_SIZE = 20;
+            const REPORT_INTERVAL = Math.max(1, Math.floor(uncachedIds.length / 20)); /* ~5% steps */
+            let sinceLastReport = 0;
+
+            for (let i = 0; i < uncachedIds.length; i += BATCH_SIZE) {
+                const batch = uncachedIds.slice(i, i + BATCH_SIZE);
+                await Promise.allSettled(
                     batch.map(async (id) => {
                         const url = `/api?page=song&id=${encodeURIComponent(id)}`;
-                        /* Skip if already cached */
-                        const existing = await cache.match(url);
-                        if (existing) { completed++; return; }
-                        const response = await fetch(url);
-                        if (response.ok) {
-                            await cache.put(url, response);
-                            completed++;
-                        } else {
+                        try {
+                            const response = await fetch(url);
+                            if (response.ok) {
+                                await cache.put(url, response);
+                                completed++;
+                            } else {
+                                failed++;
+                            }
+                        } catch {
                             failed++;
                         }
                     })
                 );
 
-                /* Report progress back to client */
-                const clients = await self.clients.matchAll();
-                clients.forEach(client => {
-                    client.postMessage({
-                        type: 'CACHE_ALL_SONGS_PROGRESS',
-                        completed,
-                        failed,
-                        total,
-                    });
-                });
+                sinceLastReport += batch.length;
+                /* Report progress every ~5% or on the final batch */
+                if (sinceLastReport >= REPORT_INTERVAL || i + BATCH_SIZE >= uncachedIds.length) {
+                    sinceLastReport = 0;
+                    notifyClients({ type: 'CACHE_ALL_SONGS_PROGRESS', completed, failed, total });
+                }
             }
+
+            /* Final progress report */
+            notifyClients({ type: 'CACHE_ALL_SONGS_PROGRESS', completed, failed, total });
 
             /* Remove the LRU limit for bulk downloads — keep all songs */
         });

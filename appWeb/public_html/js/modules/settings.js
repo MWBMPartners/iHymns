@@ -38,6 +38,14 @@ export class Settings {
             reduceTransparency: false,
             fontSize: 18,
         };
+
+        /**
+         * Active download state (#358). Tracked on the instance so it
+         * survives SPA page navigation (settings page DOM is destroyed
+         * but this object persists).
+         * @type {{ active: boolean, completed: number, failed: number, total: number }}
+         */
+        this._downloadState = { active: false, completed: 0, failed: 0, total: 0 };
     }
 
     /**
@@ -73,6 +81,20 @@ export class Settings {
 
         /* Analytics consent banner */
         this.initConsentBanner();
+
+        /*
+         * Listen for offline download progress from service worker (#358).
+         * Registered here in init() (called once at app startup) rather
+         * than in initSettingsPage() so downloads continue to be tracked
+         * when the user navigates away from Settings.
+         */
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.addEventListener('message', (event) => {
+                if (event.data?.type === 'CACHE_ALL_SONGS_PROGRESS') {
+                    this._handleDownloadProgress(event.data);
+                }
+            });
+        }
     }
 
     /* =====================================================================
@@ -493,17 +515,13 @@ export class Settings {
             });
         }
 
-        /* Listen for progress messages from service worker */
-        if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.addEventListener('message', (event) => {
-                if (event.data?.type === 'CACHE_ALL_SONGS_PROGRESS') {
-                    this.updateDownloadProgress(event.data);
-                }
-            });
-        }
-
         /* Check which songbooks are already cached */
         this.updateSongbookCacheStatus();
+
+        /* Re-hydrate download UI if a download is in progress (#358) */
+        if (this._downloadState.active) {
+            this.updateDownloadProgress(this._downloadState);
+        }
 
         /* Reset settings button */
         const resetBtn = document.getElementById('reset-settings-btn');
@@ -688,6 +706,9 @@ export class Settings {
             const songIds = songs.map(s => s.id);
             if (statusEl) statusEl.textContent = `Downloading 0 / ${songIds.length} songs...`;
 
+            /* Track download state so progress survives page navigation (#358) */
+            this._downloadState = { active: true, completed: 0, failed: 0, total: songIds.length };
+
             /* Disable all songbook buttons during bulk download */
             document.querySelectorAll('.btn-download-songbook').forEach(b => b.disabled = true);
 
@@ -738,6 +759,9 @@ export class Settings {
             const songIds = songbookSongs.map(s => s.id);
             if (statusEl) statusEl.textContent = `Downloading ${songbookId}: 0 / ${songIds.length}...`;
 
+            /* Track download state so progress survives page navigation (#358) */
+            this._downloadState = { active: true, completed: 0, failed: 0, total: songIds.length };
+
             navigator.serviceWorker.controller.postMessage({
                 type: 'CACHE_ALL_SONGS',
                 songIds: songIds,
@@ -753,7 +777,26 @@ export class Settings {
     }
 
     /**
+     * Global handler for SW download progress messages (#358).
+     * Updates persistent state and routes to the settings page UI
+     * updater if available, otherwise shows a completion toast.
+     * @param {object} data Progress data: { completed, failed, total }
+     */
+    _handleDownloadProgress(data) {
+        this._downloadState = {
+            active: (data.completed + data.failed) < data.total,
+            completed: data.completed,
+            failed: data.failed,
+            total: data.total,
+        };
+        /* Try to update the settings page UI (may not exist) */
+        this.updateDownloadProgress(data);
+    }
+
+    /**
      * Update the download progress UI from service worker messages.
+     * Safe to call when the settings page is not visible — DOM lookups
+     * will return null and updates are silently skipped.
      * @param {object} data Progress data: { completed, failed, total }
      */
     updateDownloadProgress(data) {
@@ -766,6 +809,7 @@ export class Settings {
         const percent = Math.round(((completed + failed) / total) * 100);
 
         if (statusEl) statusEl.textContent = `Downloading ${completed + failed} / ${total} songs...`;
+        if (progressWrap) progressWrap.classList.remove('d-none');
         if (progressBar) {
             progressBar.style.width = percent + '%';
             progressBar.setAttribute('aria-valuenow', String(percent));
@@ -773,6 +817,8 @@ export class Settings {
 
         /* Download complete */
         if (completed + failed >= total) {
+            this._downloadState.active = false;
+
             if (btn) {
                 btn.disabled = false;
                 btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down me-1" aria-hidden="true"></i> Download All Songbooks';
