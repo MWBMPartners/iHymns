@@ -82,6 +82,7 @@ declare(strict_types=1);
                         <li>Press the <strong>Go</strong> button to navigate to the song</li>
                     </ol>
                     <p>The number pad is available on the Search page and via the <strong>#</strong> icon in the navigation.</p>
+                    <p><strong>Keyboard users:</strong> When the number pad is open, you can type digits on your physical keyboard, press <kbd>Enter</kbd> to go, and <kbd>Backspace</kbd> to delete.</p>
                     <p><strong>Live search</strong> (showing matching songs as you type) can be enabled in Settings under <em>Live number search</em>.</p>
                 </div>
             </div>

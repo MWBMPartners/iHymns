@@ -65,8 +65,54 @@ export class Numpad {
         /* Show the Bootstrap modal */
         const modal = document.getElementById('numpad-modal');
         if (modal) {
-            new bootstrap.Modal(modal).show();
+            const bsModal = new bootstrap.Modal(modal);
+            bsModal.show();
+
+            /* Bind physical keyboard input while modal is open */
+            this._modalKeyHandler = (e) => this._handlePhysicalKey(e, 'modal');
+            document.addEventListener('keydown', this._modalKeyHandler);
+
+            /* Unbind when modal closes */
+            modal.addEventListener('hidden.bs.modal', () => {
+                document.removeEventListener('keydown', this._modalKeyHandler);
+                this._modalKeyHandler = null;
+            }, { once: true });
         }
+    }
+
+    /**
+     * Handle physical keyboard input for numpad (modal or search page).
+     * Maps digit keys, Backspace, Enter, and Escape to numpad actions.
+     * @param {KeyboardEvent} e
+     * @param {string} context 'modal' or 'page'
+     */
+    _handlePhysicalKey(e, context) {
+        /* Ignore if user is typing in the songbook dropdown */
+        if (e.target.tagName === 'SELECT') return;
+
+        if (e.key >= '0' && e.key <= '9') {
+            e.preventDefault();
+            if (context === 'modal') {
+                this.handleModalKey(e.key);
+            } else {
+                this.handlePageKey(e.key);
+            }
+        } else if (e.key === 'Backspace') {
+            e.preventDefault();
+            if (context === 'modal') {
+                this.handleModalKey('clear');
+            } else {
+                this.handlePageKey('clear');
+            }
+        } else if (e.key === 'Enter') {
+            e.preventDefault();
+            if (context === 'modal') {
+                this.handleModalKey('go');
+            } else {
+                this.handlePageKey('go');
+            }
+        }
+        /* Escape is handled by Bootstrap modal dismiss */
     }
 
     /**
@@ -117,6 +163,19 @@ export class Numpad {
                 this.handlePageKey(btn.dataset.pageNum);
             });
         });
+
+        /*
+         * Physical keyboard support for the search page numpad.
+         * Only active when the number search panel is visible and
+         * no text input has focus (to avoid capturing search bar typing).
+         */
+        this._pageKeyHandler = (e) => {
+            const panel = document.getElementById('panel-number-search');
+            if (!panel || panel.classList.contains('d-none')) return;
+            if (e.target.matches('input[type="text"], input[type="search"], textarea')) return;
+            this._handlePhysicalKey(e, 'page');
+        };
+        document.addEventListener('keydown', this._pageKeyHandler);
     }
 
     /**
