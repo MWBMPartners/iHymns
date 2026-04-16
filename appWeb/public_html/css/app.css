@@ -868,7 +868,7 @@ body.banner-visible.search-open .main-content {
     display: flex;
     align-items: center;
     justify-content: center;
-    min-width: 40px;
+    min-width: 52px;
     height: 36px;
     padding: 0 8px;
     border-radius: var(--radius-sm);
