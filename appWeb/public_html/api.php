@@ -306,6 +306,53 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
+         * Bulk download rendered song pages for offline caching (#359)
+         *
+         * Returns all songs for a songbook (or all songbooks) as a JSON
+         * object mapping song ID → rendered HTML. The service worker can
+         * split this into individual cache entries, turning 3,612
+         * requests into ~6 (one per songbook).
+         *
+         * Parameters:
+         *   songbook (optional) — filter by songbook abbreviation
+         *
+         * Response: { "songs": { "CP-0001": "<html>...", ... } }
+         * ----------------------------------------------------------------- */
+        case 'bulk_songs':
+            $bulkSongbook = isset($_GET['songbook']) ? trim($_GET['songbook']) : '';
+            $bulkSongs = $bulkSongbook !== ''
+                ? $songData->getSongs($bulkSongbook)
+                : $songData->getSongs();
+
+            if (empty($bulkSongs)) {
+                sendJson(['songs' => new \stdClass()]);
+                break;
+            }
+
+            $rendered = [];
+            foreach ($bulkSongs as $bulkSong) {
+                $songId = $bulkSong['id'];
+                /* Render the song page HTML into a buffer */
+                $song = $songData->getSongById($songId);
+                if ($song === null) continue;
+
+                ob_start();
+                require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'song.php';
+                $rendered[$songId] = ob_get_clean();
+            }
+
+            /* Use streaming-friendly output with gzip */
+            $json = json_encode(
+                ['songs' => $rendered, 'count' => count($rendered)],
+                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+            );
+
+            header('Content-Type: application/json; charset=UTF-8');
+            header('Cache-Control: public, max-age=3600, must-revalidate');
+            echo $json;
+            break;
+
+        /* -----------------------------------------------------------------
          * Serve the full song data as JSON (#154, #270)
          *
          * Exports the complete song database from MySQL as JSON for

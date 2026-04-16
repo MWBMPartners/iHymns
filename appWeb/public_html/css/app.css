@@ -508,6 +508,11 @@ body.banner-visible.search-open .main-content {
         padding-top: max(0.75rem, env(safe-area-inset-top, 0px));
     }
 
+    /* Scroll-to-top button — account for taller footer from safe area */
+    .scroll-to-top-btn {
+        bottom: calc(var(--footer-total-height, 88px) + env(safe-area-inset-bottom, 0px) + 20px);
+    }
+
     /* Landscape — respect left/right safe areas on notched/punch-hole devices */
     .app-header,
     .main-content,
@@ -1448,7 +1453,7 @@ body.reduce-motion .song-list-item {
 
 .scroll-to-top-btn {
     position: fixed;
-    bottom: 110px; /* above fixed footer */
+    bottom: calc(var(--footer-total-height, 88px) + 20px);
     right: 20px;
     z-index: 1050;
     width: 48px;

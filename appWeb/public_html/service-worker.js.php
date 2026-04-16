@@ -581,82 +581,110 @@ self.addEventListener('message', (event) => {
         self.skipWaiting();
     }
 
-    /* Download all songs for offline use (#359: optimised batching) */
-    if (event.data.type === 'CACHE_ALL_SONGS' && Array.isArray(event.data.songIds)) {
-        const songIds = event.data.songIds;
-        const total = songIds.length;
-        let completed = 0;
-        let failed = 0;
+    /*
+     * Download songs for offline use via bulk API (#359 rewrite).
+     *
+     * Instead of fetching each song individually (3,612 requests!),
+     * we fetch entire songbooks in bulk via /api?action=bulk_songs.
+     * Each bulk response contains all rendered HTML for a songbook,
+     * which we split into individual cache entries. This reduces
+     * thousands of requests to ~6, making the download near-instant
+     * on any decent connection.
+     *
+     * Message format:
+     *   { type: 'CACHE_ALL_SONGS', songbooks: ['CP','JP',...] }
+     *   OR legacy: { type: 'CACHE_ALL_SONGS', songIds: [...] }
+     */
+    if (event.data.type === 'CACHE_ALL_SONGS') {
+        const songbooks = event.data.songbooks;
+        const totalSongs = event.data.totalSongs || 0;
+
+        /* Legacy fallback: if songIds array sent, use old per-song method */
+        if (!songbooks && Array.isArray(event.data.songIds)) {
+            _downloadSongsLegacy(event.data.songIds);
+            return;
+        }
+
+        if (!Array.isArray(songbooks) || songbooks.length === 0) return;
 
         caches.open(RECENT_CACHE).then(async (cache) => {
-            /*
-             * Bulk pre-check: load all cached keys once and build a Set.
-             * This avoids an individual cache.match() per song, saving
-             * thousands of async I/O operations.
-             */
-            const cachedKeys = await cache.keys();
-            const cachedIds = new Set(
-                cachedKeys.map(req => {
-                    try { return new URL(req.url).searchParams.get('id'); }
-                    catch { return null; }
-                }).filter(Boolean)
-            );
+            let completed = 0;
+            let failed = 0;
+            const total = totalSongs;
 
-            /* Filter out already-cached songs upfront */
-            const uncachedIds = [];
-            for (const id of songIds) {
-                if (cachedIds.has(id)) {
-                    completed++;
-                } else {
-                    uncachedIds.push(id);
-                }
-            }
+            for (const songbook of songbooks) {
+                try {
+                    notifyClients({
+                        type: 'CACHE_ALL_SONGS_PROGRESS',
+                        completed, failed, total,
+                        status: `Downloading ${songbook}...`,
+                    });
 
-            /* Report initial progress (cached songs counted immediately) */
-            notifyClients({ type: 'CACHE_ALL_SONGS_PROGRESS', completed, failed, total });
+                    const resp = await fetch(`/api?action=bulk_songs&songbook=${encodeURIComponent(songbook)}`);
+                    if (!resp.ok) {
+                        failed++;
+                        continue;
+                    }
 
-            /*
-             * Process uncached songs in larger batches for speed.
-             * Modern browsers multiplex HTTP/2 connections efficiently;
-             * 20 concurrent requests is a good balance between throughput
-             * and not overwhelming the server.
-             */
-            const BATCH_SIZE = 20;
-            const REPORT_INTERVAL = Math.max(1, Math.floor(uncachedIds.length / 20)); /* ~5% steps */
-            let sinceLastReport = 0;
+                    const data = await resp.json();
+                    const songs = data.songs || {};
+                    const ids = Object.keys(songs);
 
-            for (let i = 0; i < uncachedIds.length; i += BATCH_SIZE) {
-                const batch = uncachedIds.slice(i, i + BATCH_SIZE);
-                await Promise.allSettled(
-                    batch.map(async (id) => {
-                        const url = `/api?page=song&id=${encodeURIComponent(id)}`;
+                    /* Store each song's HTML as an individual cache entry */
+                    for (const id of ids) {
                         try {
-                            const response = await fetch(url);
-                            if (response.ok) {
-                                await cache.put(url, response);
-                                completed++;
-                            } else {
-                                failed++;
-                            }
+                            const url = `/api?page=song&id=${encodeURIComponent(id)}`;
+                            const html = songs[id];
+                            const fakeResponse = new Response(html, {
+                                status: 200,
+                                headers: {
+                                    'Content-Type': 'text/html; charset=UTF-8',
+                                    'X-Bulk-Cached': 'true',
+                                },
+                            });
+                            await cache.put(url, fakeResponse);
+                            completed++;
                         } catch {
                             failed++;
                         }
-                    })
-                );
-
-                sinceLastReport += batch.length;
-                /* Report progress every ~5% or on the final batch */
-                if (sinceLastReport >= REPORT_INTERVAL || i + BATCH_SIZE >= uncachedIds.length) {
-                    sinceLastReport = 0;
-                    notifyClients({ type: 'CACHE_ALL_SONGS_PROGRESS', completed, failed, total });
+                    }
+                } catch {
+                    /* Network error for this songbook */
+                    failed++;
                 }
+
+                notifyClients({
+                    type: 'CACHE_ALL_SONGS_PROGRESS',
+                    completed, failed, total,
+                });
             }
 
-            /* Final progress report */
-            notifyClients({ type: 'CACHE_ALL_SONGS_PROGRESS', completed, failed, total });
-
-            /* Remove the LRU limit for bulk downloads — keep all songs */
+            /* Final report */
+            notifyClients({
+                type: 'CACHE_ALL_SONGS_PROGRESS',
+                completed, failed, total,
+            });
         });
+    }
+
+    /* Legacy per-song download (fallback if bulk not available) */
+    async function _downloadSongsLegacy(songIds) {
+        const total = songIds.length;
+        let completed = 0, failed = 0;
+        const cache = await caches.open(RECENT_CACHE);
+        const BATCH = 20;
+        for (let i = 0; i < songIds.length; i += BATCH) {
+            const batch = songIds.slice(i, i + BATCH);
+            await Promise.allSettled(batch.map(async (id) => {
+                try {
+                    const url = `/api?page=song&id=${encodeURIComponent(id)}`;
+                    const r = await fetch(url);
+                    if (r.ok) { await cache.put(url, r); completed++; } else { failed++; }
+                } catch { failed++; }
+            }));
+            notifyClients({ type: 'CACHE_ALL_SONGS_PROGRESS', completed, failed, total });
+        }
+        notifyClients({ type: 'CACHE_ALL_SONGS_PROGRESS', completed, failed, total });
     }
 
     /* Set auto-update preference (#132) */

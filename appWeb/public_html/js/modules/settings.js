@@ -674,9 +674,9 @@ export class Settings {
     }
 
     /**
-     * Download all songs for offline use.
-     * Fetches songs.json to get the full song list, then sends all IDs
-     * to the service worker for background caching.
+     * Download ALL songs for offline use via bulk API.
+     * Sends songbook IDs to the service worker which fetches entire
+     * songbooks in single requests (~6 requests instead of 3,612).
      */
     async downloadAllSongs() {
         const btn = document.getElementById('download-all-songs-btn');
@@ -703,18 +703,22 @@ export class Settings {
                 return;
             }
 
-            const songIds = songs.map(s => s.id);
-            if (statusEl) statusEl.textContent = `Downloading 0 / ${songIds.length} songs...`;
+            /* Build list of unique songbook IDs for bulk download */
+            const songbookSet = new Set(songs.map(s => s.songbook));
+            const songbooks = [...songbookSet].filter(Boolean);
+
+            if (statusEl) statusEl.textContent = `Downloading 0 / ${songs.length} songs...`;
 
             /* Track download state so progress survives page navigation (#358) */
-            this._downloadState = { active: true, completed: 0, failed: 0, total: songIds.length };
+            this._downloadState = { active: true, completed: 0, failed: 0, total: songs.length };
 
             /* Disable all songbook buttons during bulk download */
             document.querySelectorAll('.btn-download-songbook').forEach(b => b.disabled = true);
 
             navigator.serviceWorker.controller.postMessage({
                 type: 'CACHE_ALL_SONGS',
-                songIds: songIds,
+                songbooks: songbooks,
+                totalSongs: songs.length,
             });
 
         } catch (error) {
@@ -756,15 +760,15 @@ export class Settings {
                 return;
             }
 
-            const songIds = songbookSongs.map(s => s.id);
-            if (statusEl) statusEl.textContent = `Downloading ${songbookId}: 0 / ${songIds.length}...`;
+            if (statusEl) statusEl.textContent = `Downloading ${songbookId}...`;
 
             /* Track download state so progress survives page navigation (#358) */
-            this._downloadState = { active: true, completed: 0, failed: 0, total: songIds.length };
+            this._downloadState = { active: true, completed: 0, failed: 0, total: songbookSongs.length };
 
             navigator.serviceWorker.controller.postMessage({
                 type: 'CACHE_ALL_SONGS',
-                songIds: songIds,
+                songbooks: [songbookId],
+                totalSongs: songbookSongs.length,
             });
 
         } catch (error) {
@@ -808,7 +812,8 @@ export class Settings {
         const { completed, failed, total } = data;
         const percent = Math.round(((completed + failed) / total) * 100);
 
-        if (statusEl) statusEl.textContent = `Downloading ${completed + failed} / ${total} songs...`;
+        const statusMsg = data.status || `Downloading ${completed + failed} / ${total} songs...`;
+        if (statusEl) statusEl.textContent = statusMsg;
         if (progressWrap) progressWrap.classList.remove('d-none');
         if (progressBar) {
             progressBar.style.width = percent + '%';
