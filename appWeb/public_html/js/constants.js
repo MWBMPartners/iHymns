@@ -26,6 +26,7 @@ export const STORAGE_REDUCE_TRANSPARENCY = 'ihymns_reduceTransparency';
 export const STORAGE_TRANSITION         = 'ihymns_transition';
 export const STORAGE_DEFAULT_SONGBOOK   = 'ihymns_default_songbook';
 export const STORAGE_AUTO_UPDATE_SONGS  = 'ihymns_auto_update_songs';
+export const STORAGE_NUMPAD_LIVE_SEARCH = 'ihymns_numpad_live_search';
 export const STORAGE_SEARCH_LYRICS      = 'ihymns_search_lyrics';
 export const STORAGE_DISPLAY            = 'ihymns_display';
 

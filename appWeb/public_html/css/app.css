@@ -1233,6 +1233,11 @@ body.banner-visible.search-open .main-content {
     color: var(--accent-solid);
 }
 
+.btn-shuffle-option.btn-shuffle-default {
+    border-color: var(--accent-solid);
+    box-shadow: inset 0 0 0 1px var(--accent-solid);
+}
+
 /* ---------------------------------------------------------------------------
    Theme option buttons (settings page)
    --------------------------------------------------------------------------- */
