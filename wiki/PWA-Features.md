@@ -75,14 +75,30 @@
 
 ### Offline Support
 - **Service worker** — caches all assets and song data for offline use
+- **Bulk download** — download entire songbooks in seconds via optimised bulk API (~6 requests instead of 3,612 individual requests)
+- **Per-songbook downloads** — download individual songbooks from Settings with estimated storage sizes
+- **Background downloads** — downloads continue when navigating away from Settings
 - **Offline indicator** — shows connection status in UI
-- **Auto-update** — detects new service worker versions and prompts to refresh
+- **Auto-update** — detects new service worker versions and prompts to refresh; optional auto-update for offline songs
 - **Songs cached** — full `songs.json` available offline via service worker
+- **Popular songs offline** — falls back to localStorage view history when server unavailable
+- **Graceful degradation** — all features work in JSON fallback mode when database is unavailable
 
 ### Installation
 - **Install banner** — dismissible prompt for PWA installation
 - **Cross-subdomain detection** — hides banner if already installed on another subdomain
 - **Manifest** — full PWA manifest with icons (48px–512px), theme colours, display mode
+- **Safe areas** — respects device safe areas (notch, home indicator) on all screens including presentation mode
+
+### Number Search & Default Songbook
+- **Default songbook** — pre-selects in number search, quick-jump, and shuffle
+- **Live search toggle** — configurable in Settings (off by default to avoid disruption)
+- **Numeric keypad** — touch-friendly with Go button for explicit navigation
+
+### Song Translations
+- **Translation linking** — songs linked to equivalent translations in other languages
+- **Bidirectional lookup** — viewing any translation shows all related language versions
+- **Editor support** — manage translation links in the song editor
 
 ---
 

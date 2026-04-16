@@ -34,24 +34,31 @@
 
 | Platform | Technology | Status |
 | --- | --- | --- |
-| 🌐 Web PWA | HTML5, CSS3, Bootstrap 5.3, Vanilla JS, Vite | 🔲 Not Started |
-| 🍎 iOS / iPadOS / tvOS | Swift 6.3, SwiftUI | 🔲 Not Started |
-| 🤖 Android | Kotlin, Jetpack Compose | 🔲 Not Started |
+| 🌐 Web PWA | HTML5, CSS3, Bootstrap 5.3, Vanilla JS | ✅ Alpha |
+| 🍎 iOS / iPadOS / tvOS | Swift 6.3, SwiftUI | 🔧 In Progress |
+| 🤖 Android | Kotlin, Jetpack Compose | 🔲 Planned |
 
 ---
 
-## ✨ Planned Features
+## ✨ Features
 
-- 🔍 **Full-text search** — by title, lyrics, songbook, song number, writer
-- 📚 **Songbook browser** — organised by songbook with number index
-- 📖 **Formatted lyrics** — clear verse/chorus/refrain display
-- ⭐ **Favorites** — save songs for quick access
+- 🔍 **Full-text search** — by title, lyrics, songbook, song number, writer, composer
+- 📚 **Songbook browser** — organised by songbook with alphabetical index
+- 📖 **Formatted lyrics** — verse, chorus, refrain, bridge with optional numbering
+- ⭐ **Favourites** — save songs with custom tags for quick access
 - 🎵 **Audio playback** — MIDI files where available
 - 📄 **Sheet music** — PDF viewer where available
-- 🌙 **Dark mode** — light/dark theme toggle
-- 📴 **Offline mode** — PWA caches all data
-- ♿ **Accessible** — WCAG 2.1 AA compliant
-- 🔄 **Auto-update** — built-in update checking
+- 🌙 **Themes** — light, dark, high contrast, and system-adaptive modes
+- 📴 **Offline mode** — download individual songbooks or all songs for offline use; bulk download completes in seconds via optimised API
+- 🔢 **Number search** — numeric keypad with configurable live search (off by default) and default songbook
+- 🔀 **Shuffle** — random song from any songbook, pre-selects your default songbook
+- 🎤 **Presentation mode** — fullscreen lyrics display with auto-scroll
+- 🌐 **Translation linking** — songs linked to translations in other languages
+- 🔥 **Popular songs** — homepage shows trending songs (server-side) with client-side fallback
+- 🏷️ **Browse by theme** — filter songs by thematic tags
+- 📋 **Setlists** — create, arrange, and share worship setlists with custom component arrangements
+- ♿ **Accessible** — WCAG 2.1 AA compliant, keyboard shortcuts, screen reader support, colour vision deficiency modes
+- 🔄 **Auto-update** — service worker detects updates and prompts to refresh
 
 ---
 

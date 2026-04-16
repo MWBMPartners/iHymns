@@ -77,12 +77,12 @@ declare(strict_types=1);
                     <h3 class="h6">Number Search</h3>
                     <p>Use the numeric keypad to jump directly to a song by its number:</p>
                     <ol>
-                        <li>Select a songbook from the dropdown</li>
+                        <li>The songbook defaults to your <strong>Default Songbook</strong> (set in Settings), or select one from the dropdown</li>
                         <li>Enter the song number using the keypad</li>
-                        <li>Matching songs appear as you type</li>
-                        <li>Tap a result or press the arrow button to go to the song</li>
+                        <li>Press the <strong>Go</strong> button to navigate to the song</li>
                     </ol>
-                    <p>The number pad is available on the Search page, the Home page, and from within any songbook.</p>
+                    <p>The number pad is available on the Search page and via the <strong>#</strong> icon in the navigation.</p>
+                    <p><strong>Live search</strong> (showing matching songs as you type) can be enabled in Settings under <em>Live number search</em>.</p>
                 </div>
             </div>
         </div>
@@ -163,6 +163,59 @@ declare(strict_types=1);
                         <li><strong>Desktop (Chrome/Edge):</strong> Click the install icon in the address bar or use the browser menu</li>
                     </ul>
                     <p>Once installed, the app opens in its own window and works offline with cached content.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Offline Songs -->
+        <div class="accordion-item">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#help-offline"
+                        aria-expanded="false"
+                        aria-controls="help-offline">
+                    <i class="fa-solid fa-cloud-arrow-down me-2" aria-hidden="true"></i>
+                    Offline Songs
+                </button>
+            </h2>
+            <div id="help-offline" class="accordion-collapse collapse" data-bs-parent="#help-accordion">
+                <div class="accordion-body">
+                    <p>Download songs for offline access so you can use iHymns without an internet connection:</p>
+                    <ul>
+                        <li>Go to <strong>Settings</strong> &rarr; <strong>Offline Songs</strong></li>
+                        <li>Download individual songbooks or tap <strong>Download All Songbooks</strong> (~14 MB total)</li>
+                        <li>Downloads continue in the background if you navigate away from Settings</li>
+                        <li>Estimated storage sizes are shown for each songbook</li>
+                    </ul>
+                    <p>Songs you view are also automatically cached for offline use. The <strong>Popular Songs</strong> section on the home page works offline using your local viewing history.</p>
+                    <p><strong>Auto-update:</strong> Enable <em>Auto-update offline songs</em> in Settings to keep your saved songs up to date when connected.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Default Songbook -->
+        <div class="accordion-item">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#help-default-songbook"
+                        aria-expanded="false"
+                        aria-controls="help-default-songbook">
+                    <i class="fa-solid fa-book me-2" aria-hidden="true"></i>
+                    Default Songbook
+                </button>
+            </h2>
+            <div id="help-default-songbook" class="accordion-collapse collapse" data-bs-parent="#help-accordion">
+                <div class="accordion-body">
+                    <p>Set a default songbook in <strong>Settings</strong> to streamline navigation:</p>
+                    <ul>
+                        <li><strong>Number search:</strong> The keypad pre-selects your default songbook automatically</li>
+                        <li><strong>Quick-jump:</strong> Type a song number from any page to navigate directly (no songbook picker needed)</li>
+                        <li><strong>Shuffle:</strong> Your default songbook is highlighted in the shuffle modal</li>
+                    </ul>
                 </div>
             </div>
         </div>
