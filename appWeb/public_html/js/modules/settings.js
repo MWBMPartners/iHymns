@@ -17,6 +17,7 @@ import {
     STORAGE_TRANSITION,
     STORAGE_DEFAULT_SONGBOOK,
     STORAGE_AUTO_UPDATE_SONGS,
+    STORAGE_NUMPAD_LIVE_SEARCH,
     STORAGE_ANALYTICS_CONSENT,
     STORAGE_SEARCH_HISTORY,
 } from '../constants.js';
@@ -411,6 +412,17 @@ export class Settings {
                     localStorage.removeItem(STORAGE_DEFAULT_SONGBOOK);
                 }
                 this.app.syncStorage(STORAGE_DEFAULT_SONGBOOK);
+            });
+        }
+
+        /* Numpad live search toggle */
+        const liveSearchToggle = document.getElementById('setting-numpad-live-search');
+        if (liveSearchToggle) {
+            liveSearchToggle.checked = localStorage.getItem(STORAGE_NUMPAD_LIVE_SEARCH) === 'true';
+            liveSearchToggle.addEventListener('change', () => {
+                const enabled = liveSearchToggle.checked;
+                localStorage.setItem(STORAGE_NUMPAD_LIVE_SEARCH, String(enabled));
+                this.app.syncStorage(STORAGE_NUMPAD_LIVE_SEARCH);
             });
         }
 

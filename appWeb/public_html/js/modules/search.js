@@ -18,7 +18,7 @@
  *   5. Offline search works when songs.json is cached by service worker.
  */
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
-import { STORAGE_SEARCH_LYRICS } from '../constants.js';
+import { STORAGE_SEARCH_LYRICS, songbookLabel } from '../constants.js';
 
 export class Search {
     /**
@@ -521,7 +521,7 @@ export class Search {
                     <div class="song-info flex-grow-1">
                         <span class="song-title">${escapeHtml(song.title)}${verifiedBadge(song)}</span>
                         <small class="text-muted d-block">
-                            ${escapeHtml(song.songbookName || '')}
+                            ${songbookLabel(song.songbook, song.songbookName)}
                             ${writers ? ' &middot; ' + escapeHtml(writers) : ''}
                         </small>
                         ${snippet}

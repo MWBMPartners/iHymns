@@ -9,6 +9,7 @@
  * API's random endpoint for server-side randomness.
  */
 import { escapeHtml } from '../utils/html.js';
+import { STORAGE_DEFAULT_SONGBOOK } from '../constants.js';
 
 export class Shuffle {
     constructor(app) {
@@ -69,6 +70,16 @@ export class Shuffle {
                             this.shuffleFromBook(btn.dataset.shuffleBook);
                         });
                     });
+
+                    /* Highlight the default songbook if set */
+                    const defaultBook = localStorage.getItem(STORAGE_DEFAULT_SONGBOOK);
+                    if (defaultBook) {
+                        const defaultBtn = list.querySelector(`[data-shuffle-book="${defaultBook}"]`);
+                        if (defaultBtn) {
+                            defaultBtn.classList.add('btn-shuffle-default');
+                            defaultBtn.scrollIntoView({ block: 'nearest' });
+                        }
+                    }
                 }
             } catch (error) {
                 console.error('[Shuffle] Failed to load songbooks:', error);

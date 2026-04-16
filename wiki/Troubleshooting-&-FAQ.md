@@ -36,6 +36,14 @@
 - **Cause:** Already installed, or browser doesn't support PWA installation
 - **Fix:** The banner is hidden if the app is detected as already installed (including cross-subdomain detection). Check the browser's "Install app" option in the address bar
 
+#### PWA shows blank page when opened offline
+- **Cause:** Service worker may not have cached all required JavaScript modules
+- **Fix:** Open the app once while online to ensure all assets are precached. Go to Settings > Offline Songs and download at least one songbook. If the issue persists, clear the app cache (Settings > Clear Cache) and reload while online
+
+#### Popular Songs or Browse by Theme shows "Loading..."
+- **Cause:** These features require a database connection. In JSON fallback mode (no MySQL), the API returns empty data
+- **Fix:** This is expected in JSON-only mode. Popular Songs will fall back to your local viewing history. Browse by Theme requires the database with configured tags. If you're running with MySQL, check your database connection credentials
+
 #### MIDI audio not playing
 - **Cause:** Browser may not support MIDI playback, or the MIDI file is missing
 - **Fix:** MIDI playback requires Web MIDI API support. Not all songbooks have MIDI files (only CP, JP, MP)
@@ -66,7 +74,13 @@
 A: The web PWA is freely accessible at [iHymns.app](https://ihymns.app). Native apps may be distributed via app stores.
 
 **Q: Can I use iHymns offline?**
-A: Yes. The PWA caches all song data via a service worker. Once loaded, it works fully offline. Native apps bundle all data locally.
+A: Yes. Go to Settings > Offline Songs to download songbooks for offline use. You can download individual songbooks or all at once (~14 MB total). The bulk download uses an optimised API and completes in seconds. Songs you view are also automatically cached. The Popular Songs section works offline using your local viewing history.
+
+**Q: Why is the offline download slow?**
+A: If you're on an older version, update to the latest. The bulk download API (introduced in v0.10.x) reduces 3,612 individual HTTP requests to ~6, making downloads near-instant on any connection.
+
+**Q: Does offline data sync across subdomains (dev/beta/live)?**
+A: No. Browser cache storage is origin-scoped — each subdomain has its own cache. However, with the fast bulk download, re-downloading on each subdomain takes only seconds.
 
 **Q: What songbooks are included?**
 A: Carol Praise (CP), Junior Praise (JP), Mission Praise (MP), SDA Hymnal (SDAH), The Church Hymnal (CH), and Miscellaneous.

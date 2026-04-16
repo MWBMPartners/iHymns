@@ -170,46 +170,76 @@ $songbooks = $songData->getSongbooks();
     <!-- Inline JS for dynamic home page sections (#303, #304, #305) -->
     <script>
     (function() {
-        // #303 — Popular Songs
+        var esc = function(s) { return (s||'').replace(/[&<>"']/g, function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]}); };
+        var SONGBOOK_NAMES = {CP:'Carol Praise',JP:'Junior Praise',MP:'Mission Praise',SDAH:'Seventh-day Adventist Hymnal',CH:'The Church Hymnal',Misc:'Miscellaneous'};
+
+        // #303 — Popular Songs (server or client-side fallback)
         fetch('/api?action=popular_songs&period=month&limit=10')
-            .then(r => r.json())
-            .then(data => {
-                const el = document.getElementById('popular-songs-list');
-                if (!el || !data.songs?.length) { el?.closest('#popular-songs-section')?.remove(); return; }
-                el.innerHTML = data.songs.map(s =>
-                    `<a href="/song/${s.songId}" data-navigate="song" class="list-group-item list-group-item-action d-flex justify-content-between">
-                        <span>${s.songId}</span>
-                        <span class="badge bg-secondary">${s.views} views</span>
-                    </a>`
-                ).join('');
-            }).catch(() => document.getElementById('popular-songs-section')?.remove());
+            .then(function(r){return r.json()})
+            .then(function(data) {
+                var el = document.getElementById('popular-songs-list');
+                if (!el) return;
+
+                var songs = data.songs || [];
+
+                /* If server returned empty (JSON fallback mode), build from localStorage history */
+                if (!songs.length) {
+                    try {
+                        var hist = JSON.parse(localStorage.getItem('ihymns_history') || '[]');
+                        /* Count song occurrences to estimate popularity */
+                        var counts = {};
+                        hist.forEach(function(h) {
+                            if (!counts[h.id]) counts[h.id] = { songId: h.id, title: h.title, songbook: h.songbook, number: h.number, views: 0 };
+                            counts[h.id].views++;
+                        });
+                        songs = Object.values(counts).sort(function(a,b){return b.views-a.views}).slice(0, 10);
+                    } catch(e) { songs = []; }
+                }
+
+                if (!songs.length) { el.closest('#popular-songs-section')?.remove(); return; }
+
+                el.innerHTML = songs.map(function(s) {
+                    var id = s.songId || s.id || '';
+                    var title = s.title || id;
+                    var book = s.songbook || id.split('-')[0] || '';
+                    var bookName = SONGBOOK_NAMES[book] || book;
+                    return '<a href="/song/' + esc(id) + '" data-navigate="song" data-song-id="' + esc(id) + '" class="list-group-item list-group-item-action song-list-item">' +
+                        '<span class="song-number-badge" data-songbook="' + esc(book) + '">' + (s.number || '?') + '</span>' +
+                        '<div class="song-info flex-grow-1">' +
+                            '<span class="song-title">' + esc(title) + '</span>' +
+                            '<small class="text-muted d-block"><span class="songbook-name-full">' + esc(bookName) + '</span><span class="songbook-name-abbr">' + esc(book) + '</span></small>' +
+                        '</div>' +
+                        '<span class="badge bg-secondary">' + s.views + '</span>' +
+                    '</a>';
+                }).join('');
+            }).catch(function() { document.getElementById('popular-songs-section')?.remove(); });
 
         // #304 — Recently Viewed (authenticated users only)
-        const token = localStorage.getItem('ihymns_auth_token');
+        var token = localStorage.getItem('ihymns_auth_token');
         if (token) {
             fetch('/api?action=song_history&limit=8', {
                 headers: { 'Authorization': 'Bearer ' + token }
-            }).then(r => r.json()).then(data => {
-                const section = document.getElementById('recent-songs-section');
-                const el = document.getElementById('recent-songs-list');
+            }).then(function(r){return r.json()}).then(function(data) {
+                var section = document.getElementById('recent-songs-section');
+                var el = document.getElementById('recent-songs-list');
                 if (!data.history?.length) return;
                 section.style.display = '';
-                el.innerHTML = data.history.map(h =>
-                    `<a href="/song/${h.songId}" data-navigate="song" class="list-group-item list-group-item-action">${h.songId}</a>`
-                ).join('');
-            }).catch(() => {});
+                el.innerHTML = data.history.map(function(h) {
+                    return '<a href="/song/' + esc(h.songId) + '" data-navigate="song" class="list-group-item list-group-item-action">' + esc(h.songId) + '</a>';
+                }).join('');
+            }).catch(function(){});
         }
 
         // #305 — Browse by Theme
         fetch('/api?action=tags')
-            .then(r => r.json())
-            .then(data => {
-                const el = document.getElementById('tags-list');
+            .then(function(r){return r.json()})
+            .then(function(data) {
+                var el = document.getElementById('tags-list');
                 if (!data.tags?.length) { el?.closest('#tags-section')?.remove(); return; }
-                el.innerHTML = data.tags.map(t =>
-                    `<a href="/tag/${t.slug}" class="btn btn-sm btn-outline-secondary">${t.name}</a>`
-                ).join('');
-            }).catch(() => document.getElementById('tags-section')?.remove());
+                el.innerHTML = data.tags.map(function(t) {
+                    return '<a href="/tag/' + esc(t.slug) + '" data-navigate="tag" class="btn btn-sm btn-outline-secondary">' + esc(t.name) + '</a>';
+                }).join('');
+            }).catch(function() { document.getElementById('tags-section')?.remove(); });
     })();
     </script>
 

@@ -2527,24 +2527,29 @@ if ($action !== null) {
             ];
             $days = $periodMap[$period] ?? 7;
 
-            $db = getDb();
-            $stmt = $db->prepare(
-                'SELECT SongId AS songId, COUNT(*) AS views
-                 FROM tblSongHistory
-                 WHERE ViewedAt > DATE_SUB(NOW(), INTERVAL ? DAY)
-                 GROUP BY SongId
-                 ORDER BY views DESC
-                 LIMIT ?'
-            );
-            $stmt->execute([$days, $popLimit]);
-            $songs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            try {
+                $db = getDb();
+                $stmt = $db->prepare(
+                    'SELECT SongId AS songId, COUNT(*) AS views
+                     FROM tblSongHistory
+                     WHERE ViewedAt > DATE_SUB(NOW(), INTERVAL ? DAY)
+                     GROUP BY SongId
+                     ORDER BY views DESC
+                     LIMIT ?'
+                );
+                $stmt->execute([$days, $popLimit]);
+                $songs = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-            foreach ($songs as &$ps) {
-                $ps['views'] = (int)$ps['views'];
+                foreach ($songs as &$ps) {
+                    $ps['views'] = (int)$ps['views'];
+                }
+                unset($ps);
+
+                sendJson(['songs' => $songs, 'period' => $period]);
+            } catch (\Throwable $e) {
+                /* DB unavailable (JSON fallback mode) — return empty gracefully */
+                sendJson(['songs' => [], 'period' => $period, 'fallback' => true]);
             }
-            unset($ps);
-
-            sendJson(['songs' => $songs, 'period' => $period]);
             break;
 
         /* =================================================================
@@ -2563,18 +2568,21 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
-            $stmt = $db->prepare(
-                'SELECT SongId AS songId, ViewedAt AS viewedAt
-                 FROM tblSongHistory
-                 WHERE UserId = ?
-                 ORDER BY ViewedAt DESC
-                 LIMIT 50'
-            );
-            $stmt->execute([$authUser['Id']]);
-            $history = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-            sendJson(['history' => $history]);
+            try {
+                $db = getDb();
+                $stmt = $db->prepare(
+                    'SELECT SongId AS songId, ViewedAt AS viewedAt
+                     FROM tblSongHistory
+                     WHERE UserId = ?
+                     ORDER BY ViewedAt DESC
+                     LIMIT 50'
+                );
+                $stmt->execute([$authUser['Id']]);
+                $history = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                sendJson(['history' => $history]);
+            } catch (\Throwable $e) {
+                sendJson(['history' => [], 'fallback' => true]);
+            }
             break;
 
         /* -----------------------------------------------------------------
@@ -2601,13 +2609,17 @@ if ($action !== null) {
             $authUser = getAuthenticatedUser();
             $viewUserId = $authUser ? $authUser['Id'] : null;
 
-            $db = getDb();
-            $stmt = $db->prepare(
-                'INSERT INTO tblSongHistory (SongId, UserId) VALUES (?, ?)'
-            );
-            $stmt->execute([$viewSongId, $viewUserId]);
-
-            sendJson(['ok' => true]);
+            try {
+                $db = getDb();
+                $stmt = $db->prepare(
+                    'INSERT INTO tblSongHistory (SongId, UserId) VALUES (?, ?)'
+                );
+                $stmt->execute([$viewSongId, $viewUserId]);
+                sendJson(['ok' => true]);
+            } catch (\Throwable $e) {
+                /* DB unavailable — silently skip view tracking */
+                sendJson(['ok' => false, 'fallback' => true]);
+            }
             break;
 
         /* =================================================================
@@ -2618,21 +2630,26 @@ if ($action !== null) {
          * Get all song tags
          * ----------------------------------------------------------------- */
         case 'tags':
-            $db = getDb();
-            $stmt = $db->query(
-                'SELECT Id AS id, Name AS name, Slug AS slug,
-                        Description AS description
-                 FROM tblSongTags
-                 ORDER BY Name ASC'
-            );
-            $tags = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            try {
+                $db = getDb();
+                $stmt = $db->query(
+                    'SELECT Id AS id, Name AS name, Slug AS slug,
+                            Description AS description
+                     FROM tblSongTags
+                     ORDER BY Name ASC'
+                );
+                $tags = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-            foreach ($tags as &$tag) {
-                $tag['id'] = (int)$tag['id'];
+                foreach ($tags as &$tag) {
+                    $tag['id'] = (int)$tag['id'];
+                }
+                unset($tag);
+
+                sendJson(['tags' => $tags]);
+            } catch (\Throwable $e) {
+                /* DB unavailable — return empty gracefully */
+                sendJson(['tags' => [], 'fallback' => true]);
             }
-            unset($tag);
-
-            sendJson(['tags' => $tags]);
             break;
 
         /* -----------------------------------------------------------------
@@ -2646,42 +2663,46 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
+            try {
+                $db = getDb();
 
-            /* Get the tag info */
-            $stmt = $db->prepare(
-                'SELECT Id AS id, Name AS name, Slug AS slug,
-                        Description AS description
-                 FROM tblSongTags
-                 WHERE Slug = ?'
-            );
-            $stmt->execute([$tagSlug]);
-            $tagInfo = $stmt->fetch(PDO::FETCH_ASSOC);
+                /* Get the tag info */
+                $stmt = $db->prepare(
+                    'SELECT Id AS id, Name AS name, Slug AS slug,
+                            Description AS description
+                     FROM tblSongTags
+                     WHERE Slug = ?'
+                );
+                $stmt->execute([$tagSlug]);
+                $tagInfo = $stmt->fetch(PDO::FETCH_ASSOC);
 
-            if (!$tagInfo) {
-                sendJson(['error' => 'Tag not found.'], 404);
-                break;
+                if (!$tagInfo) {
+                    sendJson(['error' => 'Tag not found.'], 404);
+                    break;
+                }
+                $tagInfo['id'] = (int)$tagInfo['id'];
+
+                /* Get songs linked to this tag */
+                $stmt = $db->prepare(
+                    'SELECT s.SongId AS id, s.Title AS title,
+                            s.SongbookAbbr AS songbook, s.Number AS number
+                     FROM tblSongTagMap tm
+                     JOIN tblSongs s ON s.SongId = tm.SongId
+                     WHERE tm.TagId = ?
+                     ORDER BY s.Title ASC'
+                );
+                $stmt->execute([$tagInfo['id']]);
+                $tagSongs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+                foreach ($tagSongs as &$ts) {
+                    $ts['number'] = (int)$ts['number'];
+                }
+                unset($ts);
+
+                sendJson(['songs' => $tagSongs, 'tag' => $tagInfo]);
+            } catch (\Throwable $e) {
+                sendJson(['songs' => [], 'tag' => null, 'fallback' => true]);
             }
-            $tagInfo['id'] = (int)$tagInfo['id'];
-
-            /* Get songs linked to this tag */
-            $stmt = $db->prepare(
-                'SELECT s.SongId AS id, s.Title AS title,
-                        s.SongbookAbbr AS songbook, s.Number AS number
-                 FROM tblSongTagMap tm
-                 JOIN tblSongs s ON s.SongId = tm.SongId
-                 WHERE tm.TagId = ?
-                 ORDER BY s.Title ASC'
-            );
-            $stmt->execute([$tagInfo['id']]);
-            $tagSongs = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-            foreach ($tagSongs as &$ts) {
-                $ts['number'] = (int)$ts['number'];
-            }
-            unset($ts);
-
-            sendJson(['songs' => $tagSongs, 'tag' => $tagInfo]);
             break;
 
         /* =================================================================

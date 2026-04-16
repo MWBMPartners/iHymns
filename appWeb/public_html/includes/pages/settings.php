@@ -177,8 +177,25 @@ declare(strict_types=1);
                     ?>
                 </select>
                 <small class="text-muted mt-1 d-block">
-                    Used for keyboard quick-jump: type a song number from any page to navigate directly.
+                    Used for keyboard quick-jump, number search, and shuffle mode.
                 </small>
+            </div>
+
+            <!-- Numpad live search toggle -->
+            <div class="mb-3">
+                <div class="form-check form-switch">
+                    <input class="form-check-input"
+                           type="checkbox"
+                           id="setting-numpad-live-search"
+                           role="switch"
+                           aria-label="Enable live search in number search">
+                    <label class="form-check-label" for="setting-numpad-live-search">
+                        <strong>Live number search</strong>
+                        <small class="text-muted d-block">
+                            Show matching songs as you type numbers. When off, press the Go button to navigate.
+                        </small>
+                    </label>
+                </div>
             </div>
 
             <!-- Font size -->

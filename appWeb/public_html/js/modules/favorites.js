@@ -10,7 +10,7 @@
 
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
-import { STORAGE_FAVORITES, STORAGE_CUSTOM_TAGS } from '../constants.js';
+import { STORAGE_FAVORITES, STORAGE_CUSTOM_TAGS, songbookLabel } from '../constants.js';
 
 export class Favorites {
     constructor(app) {
@@ -431,7 +431,7 @@ export class Favorites {
                     <span class="song-number-badge" data-songbook="${escapeHtml(fav.songbook)}">${fav.number || '?'}</span>
                     <div class="song-info flex-grow-1">
                         <span class="song-title">${escapeHtml(toTitleCase(fav.title))}${verifiedBadge(fav)}</span>
-                        <small class="text-muted d-block">${escapeHtml(fav.songbook)}${tagsHtml}</small>
+                        <small class="text-muted d-block">${songbookLabel(fav.songbook)}${tagsHtml}</small>
                     </div>
                     <button type="button" class="btn btn-sm btn-link text-muted fav-edit-tags p-0 me-2"
                             data-song-id="${escapeHtml(fav.id)}"
