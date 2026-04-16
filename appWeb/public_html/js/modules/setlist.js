@@ -20,7 +20,7 @@
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { shortTag, fullLabel, typeColor, typeTextColor, COMPONENT_TYPES } from '../utils/components.js';
-import { STORAGE_SETLISTS, STORAGE_OWNER_ID } from '../constants.js';
+import { STORAGE_SETLISTS, STORAGE_OWNER_ID, songbookLabel, SONGBOOK_NAMES } from '../constants.js';
 
 export class SetList {
     /**
@@ -354,7 +354,7 @@ export class SetList {
                                 <a href="/song/${escapeHtml(song.id)}" data-navigate="song"
                                    class="text-decoration-none">${escapeHtml(toTitleCase(song.title))}${verifiedBadge(song)}</a>
                                 <small class="text-muted d-block">
-                                    ${escapeHtml(song.songbook)}${song.arrangement ? ` <span class="badge bg-warning bg-opacity-25 text-warning-emphasis arrangement-badge" style="font-size:0.6rem" title="${song.arrangementLabel ? escapeHtml(song.arrangementLabel) : 'Custom arrangement: ' + song.arrangement.length + ' component' + (song.arrangement.length !== 1 ? 's' : '')}">Custom Arr.</span>` : ''}
+                                    ${songbookLabel(song.songbook)}${song.arrangement ? ` <span class="badge bg-warning bg-opacity-25 text-warning-emphasis arrangement-badge" style="font-size:0.6rem" title="${song.arrangementLabel ? escapeHtml(song.arrangementLabel) : 'Custom arrangement: ' + song.arrangement.length + ' component' + (song.arrangement.length !== 1 ? 's' : '')}">Custom Arr.</span>` : ''}
                                 </small>
                             </div>
                             <button type="button" class="btn btn-sm btn-outline-warning btn-arrange-song"
@@ -1715,7 +1715,7 @@ export class SetList {
 
         /* Build running order summary */
         const orderSummary = list.songs.map((song, i) =>
-            `<tr><td class="pe-3 text-muted">${i + 1}.</td><td>${escapeHtml(toTitleCase(song.title))}</td><td class="text-muted">${escapeHtml(song.songbook)} #${song.number || '?'}</td></tr>`
+            `<tr><td class="pe-3 text-muted">${i + 1}.</td><td>${escapeHtml(toTitleCase(song.title))}</td><td class="text-muted">${escapeHtml(SONGBOOK_NAMES[song.songbook] || song.songbook)} #${song.number || '?'}</td></tr>`
         ).join('');
 
         /* Build individual song pages */
@@ -1727,7 +1727,7 @@ export class SetList {
                     <div class="print-song-header">
                         <span class="print-song-order">${index + 1}</span>
                         <h2>${escapeHtml(toTitleCase(page.song.title))}</h2>
-                        <p class="print-song-meta">${escapeHtml(page.song.songbook)} #${page.song.number || '?'}</p>
+                        <p class="print-song-meta">${escapeHtml(SONGBOOK_NAMES[page.song.songbook] || page.song.songbook)} #${page.song.number || '?'}</p>
                     </div>
                     <div class="print-song-content">${page.html}</div>
                 </div>`;

@@ -934,6 +934,20 @@ body.banner-visible.search-open .main-content {
     color: var(--text-primary);
 }
 
+/* Responsive songbook name — show full name by default, abbreviation on narrow screens */
+.songbook-name-abbr {
+    display: none;
+}
+
+@media (max-width: 359.98px) {
+    .songbook-name-full {
+        display: none;
+    }
+    .songbook-name-abbr {
+        display: inline;
+    }
+}
+
 /* Verified badge — inline icon next to song titles (#222) */
 .verified-badge {
     display: inline-flex;

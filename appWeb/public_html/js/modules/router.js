@@ -21,6 +21,7 @@ import {
     STORAGE_HISTORY,
     STORAGE_SEARCH_HISTORY,
     STORAGE_RECENT_SONGBOOKS,
+    songbookLabel,
 } from '../constants.js';
 
 export class Router {
@@ -838,7 +839,7 @@ export class Router {
                     <span class="song-number-badge" data-songbook="${escapeHtml(song.songbook)}">${song.number || '?'}</span>
                     <div class="song-info flex-grow-1">
                         <span class="song-title">${escapeHtml(toTitleCase(song.title))}${verifiedBadge(song)}</span>
-                        <small class="text-muted d-block">${escapeHtml(song.songbookName || song.songbook)}</small>
+                        <small class="text-muted d-block">${songbookLabel(song.songbook, song.songbookName)}</small>
                     </div>
                     <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>
                 </a>

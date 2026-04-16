@@ -39,3 +39,33 @@ export const STORAGE_RECENT_SONGBOOKS = 'ihymns_recent_songbooks';
 
 /* Dynamic key prefix (appended with song ID) */
 export const STORAGE_TRANSPOSE_PREFIX   = 'ihymns_transpose_';
+
+/* ── Songbook Name Lookup ─────────────────────────────────────────────── */
+
+/**
+ * Canonical mapping of songbook abbreviation → full display name.
+ * Used by songbookLabel() to render responsive names across the app.
+ */
+export const SONGBOOK_NAMES = {
+    CP:   'Carol Praise',
+    JP:   'Junior Praise',
+    MP:   'Mission Praise',
+    SDAH: 'Seventh-day Adventist Hymnal',
+    CH:   'The Church Hymnal',
+    Misc: 'Miscellaneous',
+};
+
+/**
+ * Return responsive songbook label HTML showing full name by default
+ * and abbreviation on narrow screens. Both are always present in the
+ * DOM; CSS toggles visibility based on viewport width.
+ *
+ * @param {string} abbr  Songbook abbreviation (e.g. 'MP')
+ * @param {string} [fullName]  Optional override for full name
+ * @returns {string} HTML with both spans
+ */
+export function songbookLabel(abbr, fullName) {
+    const full = fullName || SONGBOOK_NAMES[abbr] || abbr;
+    if (full === abbr) return abbr; /* no full name available */
+    return `<span class="songbook-name-full">${full}</span><span class="songbook-name-abbr">${abbr}</span>`;
+}
