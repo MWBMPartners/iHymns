@@ -9,6 +9,7 @@
  * Performs live search-as-you-type against the API.
  */
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
+import { toTitleCase } from '../utils/text.js';
 import { STORAGE_DEFAULT_SONGBOOK, STORAGE_NUMPAD_LIVE_SEARCH } from '../constants.js';
 
 export class Numpad {
@@ -243,7 +244,7 @@ export class Numpad {
                             <a href="/song/${song.id}"
                                class="list-group-item list-group-item-action py-2"
                                data-navigate="song" data-song-id="${song.id}">
-                                <strong>#${song.number}</strong> — ${escapeHtml(song.title)}${verifiedBadge(song)}
+                                <strong>#${song.number}</strong> — ${escapeHtml(toTitleCase(song.title))}${verifiedBadge(song)}
                             </a>
                         `).join('') + '</div>';
 
