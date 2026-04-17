@@ -132,8 +132,9 @@ jobs:
             echo "has_changes=true" >> $GITHUB_OUTPUT
             echo "full_deploy=true" >> $GITHUB_OUTPUT
           else
-            # Check last 5 commits for changes in the source directory
-            CHANGED=$(git diff --name-only HEAD~5 HEAD -- "$SOURCE_DIR" 2>/dev/null \
+            # Check last 5 commits for changes in the source directory OR
+            # the sibling directories we also deploy (.sql, .auth).
+            CHANGED=$(git diff --name-only HEAD~5 HEAD -- "$SOURCE_DIR" "appWeb/.sql/" "appWeb/.auth/" 2>/dev/null \
               | grep -vE "$EXCLUDES" | sort -u || true)
 
             if [[ -z "$CHANGED" ]]; then
@@ -462,6 +463,106 @@ jobs:
             appWeb/data_share/ ${DATA_SHARE_PATH}; bye" \
             "sftp://${SFTP_HOST}:${SFTP_PORT}"
           echo "Data share deployed to ${DATA_SHARE_PATH}"
+
+      # ================================================================
+      # .sql/ DEPLOYMENT (#272)
+      # Uploads appWeb/.sql/ (installer, migrators, schema.sql) to the
+      # server as a sibling of public_html/. This allows the web-based
+      # setup dashboard at /manage/setup-database.php to find and
+      # require the scripts without exposing them to the public web.
+      # ================================================================
+
+      # -- Deploy .sql/ via SFTP (SSH key) --
+      - name: Deploy .sql via SFTP (SSH key)
+        if: steps.changes.outputs.has_changes == 'true' && steps.auth.outputs.method == 'key'
+        env:
+          SFTP_USER: ${{ secrets.SFTP_USER }}
+          SFTP_HOST: ${{ secrets.SFTP_HOST }}
+          SFTP_PORT: ${{ steps.port.outputs.port }}
+          SFTP_KEY: ${{ secrets.SFTP_KEY }}
+          REMOTE_PATH: ${{ steps.target.outputs.remote_path }}
+        run: |
+          SQL_PATH=$(dirname "$REMOTE_PATH")/.sql/
+          echo "Deploying .sql to: $SQL_PATH"
+          cat > /tmp/lftp_sql.txt <<LFTP_EOF
+          set sftp:connect-program "ssh -o StrictHostKeyChecking=no -i $HOME/.ssh/deploy_key -p ${SFTP_PORT}"
+          open sftp://${SFTP_USER}@${SFTP_HOST}:${SFTP_PORT}
+          mirror --reverse --delete --verbose --only-newer --no-empty-dirs $LFTP_EXCLUDES appWeb/.sql/ ${SQL_PATH}
+          bye
+          LFTP_EOF
+          lftp -f /tmp/lftp_sql.txt
+          echo ".sql deployed to ${SQL_PATH}"
+
+      # -- Deploy .sql/ via SFTP (password) --
+      - name: Deploy .sql via SFTP (password)
+        if: steps.changes.outputs.has_changes == 'true' && steps.auth.outputs.method == 'password'
+        env:
+          SFTP_USER: ${{ secrets.SFTP_USER }}
+          SFTP_PASS: ${{ secrets.SFTP_PASSWORD }}
+          SFTP_HOST: ${{ secrets.SFTP_HOST }}
+          SFTP_PORT: ${{ steps.port.outputs.port }}
+          REMOTE_PATH: ${{ steps.target.outputs.remote_path }}
+        run: |
+          SQL_PATH=$(dirname "$REMOTE_PATH")/.sql/
+          echo "Deploying .sql to: $SQL_PATH"
+          lftp -u "${SFTP_USER},${SFTP_PASS}" \
+            -e "set sftp:auto-confirm yes; set ssl:verify-certificate no; \
+            mirror --reverse --delete --verbose --only-newer --no-empty-dirs \
+            $LFTP_EXCLUDES \
+            appWeb/.sql/ ${SQL_PATH}; bye" \
+            "sftp://${SFTP_HOST}:${SFTP_PORT}"
+          echo ".sql deployed to ${SQL_PATH}"
+
+      # ================================================================
+      # .auth/ DEPLOYMENT (#272)
+      # Uploads appWeb/.auth/ (.htaccess, db_credentials.example.php)
+      # as a sibling of public_html/. The real db_credentials.php is
+      # written by the Setup dashboard at runtime and MUST be preserved,
+      # so we use --no-delete and exclude db_credentials.php from the
+      # mirror. This ensures the directory exists and is writable by
+      # the web user, without clobbering real credentials.
+      # ================================================================
+
+      # -- Deploy .auth/ via SFTP (SSH key) --
+      - name: Deploy .auth via SFTP (SSH key)
+        if: steps.changes.outputs.has_changes == 'true' && steps.auth.outputs.method == 'key'
+        env:
+          SFTP_USER: ${{ secrets.SFTP_USER }}
+          SFTP_HOST: ${{ secrets.SFTP_HOST }}
+          SFTP_PORT: ${{ steps.port.outputs.port }}
+          SFTP_KEY: ${{ secrets.SFTP_KEY }}
+          REMOTE_PATH: ${{ steps.target.outputs.remote_path }}
+        run: |
+          AUTH_PATH=$(dirname "$REMOTE_PATH")/.auth/
+          echo "Deploying .auth to: $AUTH_PATH (excluding db_credentials.php)"
+          cat > /tmp/lftp_auth.txt <<LFTP_EOF
+          set sftp:connect-program "ssh -o StrictHostKeyChecking=no -i $HOME/.ssh/deploy_key -p ${SFTP_PORT}"
+          open sftp://${SFTP_USER}@${SFTP_HOST}:${SFTP_PORT}
+          mirror --reverse --verbose --only-newer --no-empty-dirs --exclude ^db_credentials\.php$ $LFTP_EXCLUDES appWeb/.auth/ ${AUTH_PATH}
+          bye
+          LFTP_EOF
+          lftp -f /tmp/lftp_auth.txt
+          echo ".auth deployed to ${AUTH_PATH}"
+
+      # -- Deploy .auth/ via SFTP (password) --
+      - name: Deploy .auth via SFTP (password)
+        if: steps.changes.outputs.has_changes == 'true' && steps.auth.outputs.method == 'password'
+        env:
+          SFTP_USER: ${{ secrets.SFTP_USER }}
+          SFTP_PASS: ${{ secrets.SFTP_PASSWORD }}
+          SFTP_HOST: ${{ secrets.SFTP_HOST }}
+          SFTP_PORT: ${{ steps.port.outputs.port }}
+          REMOTE_PATH: ${{ steps.target.outputs.remote_path }}
+        run: |
+          AUTH_PATH=$(dirname "$REMOTE_PATH")/.auth/
+          echo "Deploying .auth to: $AUTH_PATH (excluding db_credentials.php)"
+          lftp -u "${SFTP_USER},${SFTP_PASS}" \
+            -e "set sftp:auto-confirm yes; set ssl:verify-certificate no; \
+            mirror --reverse --verbose --only-newer --no-empty-dirs \
+            --exclude ^db_credentials\.php$ $LFTP_EXCLUDES \
+            appWeb/.auth/ ${AUTH_PATH}; bye" \
+            "sftp://${SFTP_HOST}:${SFTP_PORT}"
+          echo ".auth deployed to ${AUTH_PATH}"
 
       # ================================================================
       # DEPLOYMENT SUMMARY
