@@ -172,6 +172,21 @@ $songbooks = $songData->getSongbooks();
     (function() {
         var esc = function(s) { return (s||'').replace(/[&<>"']/g, function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]}); };
         var SONGBOOK_NAMES = {CP:'Carol Praise',JP:'Junior Praise',MP:'Mission Praise',SDAH:'Seventh-day Adventist Hymnal',CH:'The Church Hymnal',Misc:'Miscellaneous'};
+        /* Minimal title-case for this inline script — mirrors utils/text.js toTitleCase. */
+        var MINOR = {a:1,an:1,and:1,as:1,at:1,but:1,by:1,for:1,in:1,nor:1,of:1,on:1,or:1,so:1,the:1,to:1,up:1,yet:1};
+        var titleCase = function(s) {
+            if (!s) return s || '';
+            var w = String(s).toLowerCase().split(/\s+/), last = w.length - 1;
+            return w.map(function(word, i) {
+                var prev = i > 0 ? w[i - 1] : '';
+                var newClause = i > 0 && /[.!?:\u2014\u2013]$/.test(prev);
+                var bare = word.replace(/[^\p{L}\p{N}']/gu, '');
+                if (i === 0 || i === last || newClause || !MINOR[bare]) {
+                    word = word.replace(/^([^\p{L}]*)(\p{L})/u, function(_, p, c){ return p + c.toUpperCase(); });
+                }
+                return word.replace(/-\w/g, function(m){ return m.toUpperCase(); });
+            }).join(' ');
+        };
 
         // #303 — Popular Songs (server or client-side fallback)
         fetch('/api?action=popular_songs&period=month&limit=10')
@@ -200,7 +215,7 @@ $songbooks = $songData->getSongbooks();
 
                 el.innerHTML = songs.map(function(s) {
                     var id = s.songId || s.id || '';
-                    var title = s.title || id;
+                    var title = titleCase(s.title || id);
                     var book = s.songbook || id.split('-')[0] || '';
                     var bookName = SONGBOOK_NAMES[book] || book;
                     return '<a href="/song/' + esc(id) + '" data-navigate="song" data-song-id="' + esc(id) + '" class="list-group-item list-group-item-action song-list-item">' +

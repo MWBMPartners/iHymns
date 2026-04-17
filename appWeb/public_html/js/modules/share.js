@@ -16,6 +16,7 @@
  * Note: In future iterations (v2+), additional permalink formats
  * may be supported (e.g., /s/CP-0001 for short links).
  */
+import { toTitleCase } from '../utils/text.js';
 
 export class Share {
     constructor(app) {
@@ -179,7 +180,7 @@ export class Share {
      * @returns {string} Formatted text
      */
     buildShareText(meta, permalink) {
-        let text = `"${meta.title}"`;
+        let text = `"${toTitleCase(meta.title || '')}"`;
         if (meta.songbook && meta.number) {
             text += ` (${meta.songbook} #${meta.number})`;
         }

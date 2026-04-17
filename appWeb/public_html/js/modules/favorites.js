@@ -426,7 +426,7 @@ export class Favorites {
                    role="listitem">
                     <input type="checkbox" class="form-check-input fav-select-check d-none me-2"
                            data-song-id="${escapeHtml(fav.id)}"
-                           aria-label="Select ${escapeHtml(fav.title)}"
+                           aria-label="Select ${escapeHtml(toTitleCase(fav.title))}"
                            onclick="event.stopPropagation()">
                     <span class="song-number-badge" data-songbook="${escapeHtml(fav.songbook)}">${fav.number || '?'}</span>
                     <div class="song-info flex-grow-1">

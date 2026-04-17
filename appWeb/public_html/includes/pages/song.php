@@ -369,7 +369,7 @@ $components  = $song['components'] ?? [];
                    class="btn btn-outline-secondary btn-sm"
                    data-navigate="song"
                    data-song-id="<?= htmlspecialchars($prevSong['id']) ?>"
-                   aria-label="Previous song: <?= htmlspecialchars($prevSong['title']) ?>">
+                   aria-label="Previous song: <?= htmlspecialchars(toTitleCase($prevSong['title'])) ?>">
                     <i class="fa-solid fa-chevron-left me-1" aria-hidden="true"></i>
                     #<?= (int)$prevSong['number'] ?>
                 </a>
@@ -382,7 +382,7 @@ $components  = $song['components'] ?? [];
                    class="btn btn-outline-secondary btn-sm"
                    data-navigate="song"
                    data-song-id="<?= htmlspecialchars($nextSong['id']) ?>"
-                   aria-label="Next song: <?= htmlspecialchars($nextSong['title']) ?>">
+                   aria-label="Next song: <?= htmlspecialchars(toTitleCase($nextSong['title'])) ?>">
                     #<?= (int)$nextSong['number'] ?>
                     <i class="fa-solid fa-chevron-right ms-1" aria-hidden="true"></i>
                 </a>

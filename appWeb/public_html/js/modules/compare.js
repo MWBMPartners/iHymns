@@ -9,6 +9,7 @@
  * Responsive: side-by-side on desktop, tabbed on mobile.
  */
 import { escapeHtml } from '../utils/html.js';
+import { toTitleCase } from '../utils/text.js';
 
 export class Compare {
     /**
@@ -101,7 +102,7 @@ export class Compare {
                         <button type="button" class="list-group-item list-group-item-action compare-pick"
                                 data-song-id="${escapeHtml(s.id)}">
                             <span class="song-number-badge me-2" data-songbook="${escapeHtml(s.songbook || '')}">${s.number}</span>
-                            <strong>${escapeHtml(s.title)}</strong>
+                            <strong>${escapeHtml(toTitleCase(s.title))}</strong>
                             <small class="text-muted ms-1">${escapeHtml(s.songbookName || '')}</small>
                         </button>`).join('');
 

@@ -46,21 +46,36 @@ function toTitleCase(string $str): string
     $minor = ['a','an','and','as','at','but','by','for','in','nor','of','on','or','so','the','to','up','yet'];
     $words = preg_split('/\s+/', mb_strtolower(trim($str)));
     $lastIndex = count($words) - 1;
+
+    /* Capitalise the first Unicode letter in a word, skipping any leading
+       quotes or punctuation (e.g. "come → "Come). */
+    $capFirstLetter = function (string $word): string {
+        if (preg_match('/^([^\p{L}]*)(\p{L})(.*)$/u', $word, $m)) {
+            return $m[1] . mb_strtoupper($m[2]) . $m[3];
+        }
+        return $word;
+    };
+
+    /* Strip non-letter/digit chars (except apostrophes) so that "and,"
+       compares equal to "and" for the minor-words check. */
+    $stripPunct = fn(string $w) => preg_replace('/[^\p{L}\p{N}\']/u', '', $w);
+
     foreach ($words as $i => &$word) {
         /* Handle hyphenated words — capitalise each part */
         if (strpos($word, '-') !== false) {
             $word = implode('-', array_map(
-                fn($p) => mb_strtoupper(mb_substr($p, 0, 1)) . mb_substr($p, 1),
+                fn($p) => $capFirstLetter($p),
                 explode('-', $word)
             ));
-            /* Still apply first/last rule to the whole hyphenated word */
-            if ($i !== 0 && $i !== $lastIndex) {
-                continue;
-            }
+            continue;
         }
-        /* Always capitalise first and last word; capitalise non-minor words */
-        if ($i === 0 || $i === $lastIndex || !in_array($word, $minor)) {
-            $word = mb_strtoupper(mb_substr($word, 0, 1)) . mb_substr($word, 1);
+        $prev = $i > 0 ? $words[$i - 1] : '';
+        /* Word following ., !, ?, :, em/en dash starts a new clause and is
+           always capitalised regardless of the minor-word rule. */
+        $newClause = $i > 0 && preg_match('/[.!?:—–]$/u', $prev);
+        $isMinor = in_array($stripPunct($word), $minor, true);
+        if ($i === 0 || $i === $lastIndex || $newClause || !$isMinor) {
+            $word = $capFirstLetter($word);
         }
     }
     unset($word);
