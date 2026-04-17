@@ -440,134 +440,181 @@ test: add or update tests          → patch version bump
 
 ## MySQL Database Setup (v0.10.0+)
 
-Starting with v0.10.0, iHymns uses MySQL as the primary data store for songs, replacing the flat-file `songs.json` approach. This provides better searchability (full-text indexing), concurrent write safety, and scalability.
+Starting with v0.10.0, iHymns uses MySQL as the primary data store, with JSON fallback for environments without a database. MySQL provides full-text search indexing, concurrent write safety, user accounts, and features like popular songs, song tags, and translation linking.
 
 ### Prerequisites
 
 - **MySQL 5.7+** or **MariaDB 10.3+** with InnoDB support
 - **PHP 8.1+** with the `mysqli` extension enabled
-- A MySQL database created for iHymns (e.g., `ihymns`)
+- A MySQL database created for iHymns:
+  ```sql
+  CREATE DATABASE ihymns CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+  ```
 
-### Step 1: Run the Interactive Installer
+### Step-by-Step Installation
 
-The installer prompts for your MySQL credentials, tests the connection, writes them to `appWeb/.auth/db_credentials.php`, and then creates all database tables:
+#### Step 1: Run the Interactive Installer
 
 ```bash
-# From the project root
 php appWeb/.sql/install.php
 ```
 
-The wizard will prompt for:
+The wizard prompts for:
 
 | Prompt | Default | Description |
 | --- | --- | --- |
 | MySQL Host | `127.0.0.1` | Server hostname or IP |
 | MySQL Port | `3306` | Server port |
 | Database Name | `ihymns` | Must already exist |
-| Username | `ihymns_user` | MySQL user with access to the database |
+| Username | `ihymns_user` | MySQL user with full privileges on the DB |
 | Password | _(none)_ | Hidden input on supported terminals |
 | Table Prefix | _(none)_ | Optional prefix (e.g., `ih_`) for shared databases |
 
 The installer will:
 
 1. Test the connection before writing anything
-2. Write credentials to `appWeb/.auth/db_credentials.php` (permissions set to `0600`)
-3. Create all tables from `schema.sql`
-4. Seed default user groups (Developers, Beta Testers, RC Testers, Public)
+2. Write credentials to `appWeb/.auth/db_credentials.php` (permissions `0600`)
+3. Create all 30+ tables from `schema.sql` (idempotent — safe to re-run)
+4. Seed default data: user groups, 14 languages, 5 access tiers, app settings
 
-> **Note:** If you cannot use the interactive installer (e.g., non-interactive shell), copy `appWeb/.auth/db_credentials.example.php` to `appWeb/.auth/db_credentials.php` and edit it manually. Then re-run the installer to create tables.
-> The installer is idempotent — safe to re-run. Existing tables are skipped.
+> **Manual setup:** Copy `appWeb/.auth/db_credentials.example.php` to `db_credentials.php`, edit it, then re-run the installer.
 
-### Step 3: Migrate Song Data from JSON
-
-After the tables are created, import the song data from `songs.json`:
+#### Step 2: Migrate Song Data from JSON
 
 ```bash
-# Uses default path (data/songs.json or appWeb/data_share/song_data/songs.json)
 php appWeb/.sql/migrate-json.php
-
-# Or specify a custom path
-php appWeb/.sql/migrate-json.php --json=/path/to/songs.json
 ```
 
-Expected output:
+This imports all songs from `data/songs.json` into MySQL:
+- Clears existing song data and re-imports (transaction-wrapped)
+- Populates: songbooks, songs, writers, composers, components
+- Imports translation links from `songs[].translations` array
+- Builds `LyricsText` column for MySQL FULLTEXT search
 
-```text
-=== iHymns JSON-to-MySQL Migration ===
+> Specify a custom path: `php appWeb/.sql/migrate-json.php --json=/path/to/songs.json`
 
-Loading: /path/to/data/songs.json
-Found: 6 songbooks, 3612 songs
+#### Step 3: Create Initial Admin User
 
-Connecting to MySQL...
-Connected.
+Navigate to `/manage/setup` in the browser. The first account becomes the **Global Admin**.
 
-Clearing existing data...
-Inserting songbooks...
-  Inserted 6 songbooks.
-Inserting songs...
-  ... 10% (361/3612 songs)
-  ... 20% (722/3612 songs)
-  ...
-  ... 100% (3612/3612 songs)
+#### Step 4: Verify Installation
 
---- Migration Complete ---
-  Songs:      3612
-  Songbooks:  6
-  Writers:    2847
-  Composers:  2634
-  Components: 14891
+Navigate to `/manage/setup-database.php` to see:
+- Database connection status
+- Table row counts
+- Run additional migrations (users, cleanup, backup)
 
-Migration successful.
+#### Web-Based Setup (No CLI Required)
+
+For shared hosting without SSH:
+
+1. Copy `appWeb/.auth/db_credentials.example.php` to `db_credentials.php` and edit
+2. Navigate to `/manage/setup-database.php`
+3. Click **Run Install** (creates tables)
+4. Click **Run Song Migration** (imports songs)
+5. Visit `/manage/setup` (create admin account)
+
+#### One-Shot Alternative
+
+```bash
+mysql -u user -p ihymns < appWeb/.sql/.fulldata/ihymns-full.sql
 ```
 
-> The migration clears all existing data and re-imports. It is transaction-wrapped — if any error occurs, all changes are rolled back.
+### JSON Fallback Mode
+
+When MySQL is unavailable, the application automatically falls back to reading `data/songs.json`:
+
+| Feature | MySQL Mode | JSON Fallback |
+| --- | --- | --- |
+| Song browsing & search | FULLTEXT index | Fuse.js client-side |
+| Popular songs | Server view counts | Client localStorage history |
+| Browse by theme (tags) | Tag tables | Hidden (no data) |
+| Song view tracking | tblSongHistory | Silently skipped |
+| User accounts | Full auth system | Not available |
+| Translation links | tblSongTranslations | From songs.json |
+| Song editor | Full CRUD | Read-only |
+| Offline downloads | Bulk API | Per-song fallback |
+
+API endpoints gracefully return empty arrays with `fallback: true` flag when the database is unavailable.
 
 ### Database Schema Overview
 
-**Song Data:**
+**Song Data (6 tables):**
 
 | Table | Purpose |
 | --- | --- |
-| `songbooks` | Songbook definitions (CP, JP, MP, SDAH, CH, Misc) |
-| `songs` | Core song metadata + `lyrics_text` for full-text search |
-| `song_writers` | Song lyricist credits (many-to-one) |
-| `song_composers` | Song composer credits (many-to-one) |
-| `song_components` | Verses, choruses with lyrics as JSON lines array |
+| `tblSongbooks` | Songbook definitions (CP, JP, MP, SDAH, CH, Misc) |
+| `tblSongs` | Core metadata + `LyricsText` for FULLTEXT search |
+| `tblSongWriters` | Lyricist credits (many-to-one) |
+| `tblSongComposers` | Composer credits (many-to-one) |
+| `tblSongComponents` | Verses, choruses with lyrics as JSON lines array |
+| `tblSongTranslations` | Links songs to translations in other languages |
 
-**User Accounts & Access Control:**
+**Discovery & Community (4 tables):**
 
 | Table | Purpose |
 | --- | --- |
-| `user_groups` | Groups with version channel access flags (Alpha/Beta/RC/RTW) |
-| `users` | User accounts with role (global_admin/admin/editor/user) and group link |
-| `sessions` | Server-side admin panel sessions |
-| `api_tokens` | Bearer tokens for PWA/native app authentication |
-| `password_reset_tokens` | Single-use password reset tokens (1-hour expiry) |
-| `user_group_members` | Many-to-many user-to-group membership |
-| `user_permissions` | Fine-grained per-user permission overrides |
-| `user_setlists` | Server-side setlist storage for cross-device sync |
-| `migrations` | Schema migration tracking |
+| `tblSongHistory` | View tracking for popular songs ranking |
+| `tblSongTags` | Thematic tag definitions (Easter, Advent, etc.) |
+| `tblSongTagMap` | Song-to-tag mapping |
+| `tblSongRequests` | User-submitted song requests |
 
-The full schema is in `appWeb/.sql/schema.sql`.
+**Languages (1 table):**
+
+| Table | Purpose |
+| --- | --- |
+| `tblLanguages` | 14 supported languages with text direction (ltr/rtl) |
+
+**User Accounts & Access (10+ tables):**
+
+| Table | Purpose |
+| --- | --- |
+| `tblUsers` | Accounts with role-based access |
+| `tblUserGroups` | Version channel access (Alpha/Beta/RC/RTW) |
+| `tblSessions` / `tblApiTokens` | Admin panel sessions and API auth tokens |
+| `tblAccessTiers` | Content gating levels (public → pro) |
+| `tblOrganisations` | Church/organisation licensing |
+| `tblUserSetlists` | Cross-device setlist sync |
+| `tblActivityLog` | Audit trail |
+
+Full schema: `appWeb/.sql/schema.sql` (30+ tables, ~50 KB)
+
+### Key API Endpoints
+
+| Endpoint | Description |
+| --- | --- |
+| `?action=bulk_songs&songbook=X` | Bulk download: all rendered HTML for a songbook in one response |
+| `?action=songs_json` | Full songs.json export with ETag caching |
+| `?action=song_translations&id=X` | Bidirectional translation lookup |
+| `?action=popular_songs&period=month` | Popular songs by view count |
+| `?action=tags` | All thematic tags |
+| `?page=song&id=X` | Rendered song page HTML (cached by service worker) |
 
 ### File Structure
 
 ```text
 appWeb/
 ├── .auth/
-│   ├── .htaccess                      ← Blocks web access (defense-in-depth)
-│   ├── db_credentials.example.php     ← Template (tracked in git)
-│   └── db_credentials.php             ← Your credentials (NOT in git)
-│
+│   ├── .htaccess                      # Blocks web access
+│   ├── db_credentials.example.php     # Template (tracked in git)
+│   └── db_credentials.php             # Credentials (NOT in git)
 ├── .sql/
-│   ├── schema.sql                     ← Full MySQL schema
-│   ├── install.php                    ← Database table installer
-│   └── migrate-json.php              ← JSON-to-MySQL data migration
-│
+│   ├── schema.sql                     # Full MySQL schema
+│   ├── install.php                    # Interactive table installer
+│   ├── migrate-json.php              # JSON → MySQL migration
+│   ├── migrate-users.php             # User/setlist migration
+│   ├── cleanup.php                    # Token/session cleanup
+│   ├── backup.php                     # Database backup
+│   └── .fulldata/
+│       ├── generate-full-sql.php      # One-shot SQL generator
+│       └── ihymns-full.sql            # Pre-built full SQL (~6.8 MB)
 └── public_html/
-    └── includes/
-        ├── db_mysql.php               ← MySQLi connection factory
-        └── SongData.php               ← Song data handler (MySQL-backed)
+    ├── includes/
+    │   ├── db_mysql.php               # MySQLi connection factory
+    │   └── SongData.php               # Song data (MySQL + JSON fallback)
+    └── manage/
+        ├── setup.php                  # Initial admin setup
+        └── setup-database.php         # Web DB admin dashboard
 ```
 
 ### Troubleshooting
@@ -577,26 +624,27 @@ appWeb/
 | "Database credentials file not found" | Copy `db_credentials.example.php` to `db_credentials.php` |
 | "Failed to connect to MySQL" | Check host, port, username, password in credentials file |
 | "Unknown database 'ihymns'" | Create the database: `CREATE DATABASE ihymns CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;` |
-| "Table already exists" | This is normal — the installer uses `CREATE TABLE IF NOT EXISTS` |
-| "Migration failed — all changes rolled back" | Check the error message; fix the issue and re-run |
+| "Table already exists" | Normal — the installer uses `CREATE TABLE IF NOT EXISTS` |
+| "Migration failed — all changes rolled back" | Check error message; fix and re-run |
+| Popular Songs shows "Loading..." | Database required for server-side view tracking; falls back to localStorage |
+| Browse by Theme missing | Tags must be populated in `tblSongTags` via the admin tools |
 
-### Architecture Decision: Why MySQL?
+### Architecture: Why MySQL + JSON Fallback?
 
-The move from JSON to MySQL is driven by:
+MySQL is the primary store for:
+1. **Full-text search** — FULLTEXT indexes on title and lyrics
+2. **Concurrent writes** — Multiple editors can safely modify data
+3. **User accounts** — Relational storage for users, groups, permissions
+4. **View tracking** — Popular songs ranking from `tblSongHistory`
+5. **Tags & translations** — Structured relational data
 
-1. **Full-text search** — MySQL's FULLTEXT indexes replace the in-memory substring search
-2. **Concurrent writes** — Multiple editors can safely modify data simultaneously
-3. **Scalability** — Database handles growth better than loading a ~5MB JSON into memory
-4. **Structured queries** — Complex filtering (by songbook, by writer, etc.) is more efficient
-5. **Editor safety** — Transaction-wrapped saves with automatic rollback on failure
-6. **User accounts** — Proper relational storage for users, groups, permissions, and sessions
-7. **Version access control** — Group-based gating for Alpha/Beta/RC/RTW release channels
-
-The application still exports JSON for the PWA client-side cache (Fuse.js fuzzy search), maintaining full offline support.
+JSON fallback ensures the app works everywhere:
+- Shared hosting without MySQL
+- Development without database setup
+- Offline via service worker cached `songs.json`
+- The PWA client always has `songs.json` for Fuse.js fuzzy search
 
 ### User Groups & Version Access
-
-The database includes a built-in version access control system via `user_groups`:
 
 | Group | Alpha | Beta | RC | RTW |
 | --- | --- | --- | --- | --- |
@@ -605,7 +653,7 @@ The database includes a built-in version access control system via `user_groups`
 | RC Testers | No | No | Yes | Yes |
 | Public | No | No | No | Yes |
 
-Users inherit access from their group. The application checks group permissions to gate access to non-production deployment channels (Alpha = `dev.ihymns.app`, Beta = `beta.ihymns.app`).
+Users inherit access from their group. The app checks group permissions to gate access to deployment channels (Alpha = `dev.ihymns.app`, Beta = `beta.ihymns.app`).
 
 ---
 
@@ -741,4 +789,4 @@ The most restrictive rule wins when multiple systems overlap.
 
 ---
 
-Last updated: 2026-04-13
+Last updated: 2026-04-16
