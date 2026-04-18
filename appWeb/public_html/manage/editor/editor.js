@@ -1934,6 +1934,57 @@ function markModified(songId) {
 
     /* Refresh the status bar to reflect the new count. */
     updateStatusBar();
+
+    /* Schedule a debounced auto-save (#394). */
+    scheduleAutoSave();
+}
+
+/* ============================================================================
+ *  AUTO-SAVE (#394)
+ *  --------------------------------------------------------------------------
+ *  Debounced save: 3 s after the last edit we run saveSongs() to persist the
+ *  full songData via the existing server-side save endpoint. Manual Save is
+ *  unchanged; this is purely a safety net so an admin can't lose work by
+ *  forgetting to click the button.
+ *
+ *  TODO (follow-up): add a /api?action=save_song per-song endpoint so we're
+ *  not rewriting every row on every edit. Tracked in #394.
+ * ========================================================================== */
+
+var _autoSaveTimer   = null;
+var _autoSaveDelayMs = 3000;
+var _autoSaveRunning = false;
+
+function scheduleAutoSave() {
+    /* Drop any pending save; each edit resets the timer. */
+    if (_autoSaveTimer) clearTimeout(_autoSaveTimer);
+
+    /* Don't stack saves — if one is in flight the "modified" flag will
+       remain set when it returns and the next edit will re-schedule. */
+    _autoSaveTimer = setTimeout(function () {
+        _autoSaveTimer = null;
+        if (_autoSaveRunning)      return;
+        if (modifiedSongIds.size === 0) return;
+
+        /* Skip if validation fails — don't persist broken state, and don't
+           spam the toast system; the error surfaces on manual Save. */
+        if (validateSongData().length > 0) return;
+
+        _autoSaveRunning = true;
+        /* Reflect state in the status bar */
+        var text = document.getElementById('status-text');
+        if (text) text.textContent = 'Auto-saving…';
+
+        /* Fire the existing full save. saveSongs() handles toasts + UI
+           state; we just wrap to track running state. */
+        try {
+            saveSongs();
+        } finally {
+            /* saveSongs() is fire-and-forget (returns promise internally);
+               clear the flag after a tick so the status resets. */
+            setTimeout(function () { _autoSaveRunning = false; }, 500);
+        }
+    }, _autoSaveDelayMs);
 }
 
 /**
