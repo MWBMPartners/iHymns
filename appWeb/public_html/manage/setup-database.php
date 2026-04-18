@@ -179,11 +179,12 @@ if ($action !== '') {
 
     $scriptDir = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . '.sql' . DIRECTORY_SEPARATOR . '';
     $scriptMap = [
-        'install' => 'install.php',
-        'migrate' => 'migrate-json.php',
-        'users'   => 'migrate-users.php',
-        'cleanup' => 'cleanup.php',
-        'backup'  => 'backup.php',
+        'install'     => 'install.php',
+        'migrate'     => 'migrate-json.php',
+        'users'       => 'migrate-users.php',
+        'cleanup'     => 'cleanup.php',
+        'backup'      => 'backup.php',
+        'drop-legacy' => 'drop-legacy-tables.php',
     ];
 
     $scriptName = $scriptMap[$action] ?? null;
@@ -463,6 +464,28 @@ if ($hasCredentials && defined('DB_HOST')) {
                         <a href="?action=backup" class="btn btn-outline-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run Backup
                         </a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-danger h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">6. Drop Legacy Tables</h5>
+                        <p class="card-text text-secondary small">
+                            Drop any tables in the database that are <strong>not</strong>
+                            part of the current <code>schema.sql</code>. Useful after
+                            importing an existing MySQL database that still holds tables
+                            from a previous iHymns incarnation.
+                        </p>
+                        <div class="d-flex gap-2 flex-wrap">
+                            <a href="?action=drop-legacy" class="btn btn-outline-warning btn-sm <?= $hasCredentials ? '' : 'disabled' ?>">
+                                Preview
+                            </a>
+                            <a href="?action=drop-legacy&amp;confirm=1" class="btn btn-danger btn-sm <?= $hasCredentials ? '' : 'disabled' ?>"
+                               onclick="return confirm('This will DROP all tables in the database that are not defined in schema.sql.\n\nThis cannot be undone. Run a Backup first.\n\nContinue?')">
+                                Drop Them
+                            </a>
+                        </div>
                     </div>
                 </div>
             </div>
