@@ -36,8 +36,15 @@ export class SetList {
         this.activeSetListId = null;
     }
 
-    /** Initialise — nothing needed on startup */
-    init() {}
+    /** Initialise — re-render the sync bar whenever auth state flips. */
+    init() {
+        document.addEventListener('ihymns:auth-changed', () => {
+            /* Only re-render if the sync bar is currently in the DOM. */
+            if (document.getElementById('setlist-sync-bar')) {
+                this.renderSyncBar();
+            }
+        });
+    }
 
     /* =====================================================================
      * CRUD OPERATIONS

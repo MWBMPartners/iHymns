@@ -40,8 +40,15 @@ declare(strict_types=1);
                 Account
             </h2>
 
+            <!--
+                Both states default to d-none so that if JS fails to toggle
+                (e.g. module load error, service worker cache stale),
+                we show nothing rather than the wrong thing. settings.js
+                reveals the correct one via refreshAccountSection(), and
+                re-applies whenever ihymns:auth-changed fires.
+            -->
             <!-- Logged-out state -->
-            <div id="auth-logged-out">
+            <div id="auth-logged-out" class="d-none">
                 <p class="text-muted small mb-3">
                     Sign in to sync your set lists across devices. Your favourites
                     and settings stay on this device.

@@ -96,6 +96,38 @@ export class Settings {
                 }
             });
         }
+
+        /* Re-apply the Account section whenever auth state changes, even if
+           the user is on the Settings page (no navigation triggered). */
+        document.addEventListener('ihymns:auth-changed', () => {
+            this.refreshAccountSection();
+        });
+    }
+
+    /**
+     * Refresh the Account section visibility based on current auth state.
+     * Safe to call at any time; no-ops if the Settings page markup is not
+     * currently in the DOM. Idempotent — only the class toggles run; click
+     * handlers are (re)bound inside _initAccountSection.
+     */
+    refreshAccountSection() {
+        const loggedOutEl = document.getElementById('auth-logged-out');
+        const loggedInEl  = document.getElementById('auth-logged-in');
+        if (!loggedOutEl && !loggedInEl) return;
+
+        const auth = this.app.userAuth;
+        const loggedIn = !!auth?.isLoggedIn();
+
+        loggedOutEl?.classList.toggle('d-none', loggedIn);
+        loggedInEl?.classList.toggle('d-none', !loggedIn);
+
+        if (loggedIn) {
+            const user = auth.getUser();
+            const nameEl = document.getElementById('auth-display-name-text');
+            const userEl = document.getElementById('auth-username-text');
+            if (nameEl) nameEl.textContent = user?.display_name || user?.username || '';
+            if (userEl) userEl.textContent = '@' + (user?.username || '');
+        }
     }
 
     /* =====================================================================
@@ -1012,21 +1044,8 @@ export class Settings {
         const auth = this.app.userAuth;
         if (!auth) return;
 
-        const loggedOutEl = document.getElementById('auth-logged-out');
-        const loggedInEl  = document.getElementById('auth-logged-in');
-
-        if (auth.isLoggedIn()) {
-            const user = auth.getUser();
-            loggedOutEl?.classList.add('d-none');
-            loggedInEl?.classList.remove('d-none');
-            const nameEl = document.getElementById('auth-display-name-text');
-            const userEl = document.getElementById('auth-username-text');
-            if (nameEl) nameEl.textContent = user?.display_name || user?.username || '';
-            if (userEl) userEl.textContent = '@' + (user?.username || '');
-        } else {
-            loggedOutEl?.classList.remove('d-none');
-            loggedInEl?.classList.add('d-none');
-        }
+        /* Apply current auth state to the card */
+        this.refreshAccountSection();
 
         /* Sign In button */
         document.getElementById('btn-auth-login')?.addEventListener('click', () => {
