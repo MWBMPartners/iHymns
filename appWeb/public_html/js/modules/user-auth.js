@@ -535,7 +535,10 @@ export class UserAuth {
                                 Forgot password?
                             </small>
                         </div>
-                        <div class="text-center mt-2" id="auth-email-toggle-wrapper" style="display:${mode === 'register' ? 'none' : ''}">
+                        <!-- Legacy "Sign in with email instead" link kept for the
+                             register-flow fallback path; hidden for login because
+                             magic-link email is now the primary sign-in path (#395). -->
+                        <div class="text-center mt-2" id="auth-email-toggle-wrapper" style="display:none">
                             <small id="auth-email-toggle" role="button" class="text-primary" style="cursor:pointer">
                                 <i class="fa-solid fa-envelope me-1" aria-hidden="true"></i>Sign in with email instead
                             </small>
@@ -574,7 +577,7 @@ export class UserAuth {
                             </div>
                             <div class="text-center mt-2">
                                 <small id="auth-back-to-password" role="button" class="text-primary" style="cursor:pointer">
-                                    Back to password sign-in
+                                    <i class="fa-solid fa-key me-1" aria-hidden="true"></i>Sign in with a password instead
                                 </small>
                             </div>
                         </div>
@@ -624,6 +627,17 @@ export class UserAuth {
         const bsModal = new bootstrap.Modal(modal);
 
         let currentMode = mode;
+
+        /* Promote magic-link email as the primary sign-in path (#395).
+           For the login flow we hide the password form and reveal the
+           email section on open. Users can click "Sign in with a password
+           instead" to fall back to the username/password form. */
+        if (mode === 'login') {
+            modal.querySelector('#auth-form').style.display = 'none';
+            modal.querySelector('#auth-email-section')?.classList.remove('d-none');
+            modal.querySelector('#auth-toggle').style.display = 'none';
+            modal.querySelector('#auth-forgot-link-wrapper').style.display = 'none';
+        }
 
         /* Toggle between login and register */
         modal.querySelector('#auth-toggle')?.addEventListener('click', () => {
