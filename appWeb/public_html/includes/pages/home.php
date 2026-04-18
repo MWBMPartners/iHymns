@@ -219,7 +219,7 @@ $songbooks = $songData->getSongbooks();
                     var book = s.songbook || id.split('-')[0] || '';
                     var bookName = SONGBOOK_NAMES[book] || book;
                     return '<a href="/song/' + esc(id) + '" data-navigate="song" data-song-id="' + esc(id) + '" class="list-group-item list-group-item-action song-list-item">' +
-                        '<span class="song-number-badge" data-songbook="' + esc(book) + '">' + (s.number || '?') + '</span>' +
+                        '<span class="song-number-badge" data-songbook="' + esc(book) + '">' + (s.number ?? '') + '</span>' +
                         '<div class="song-info flex-grow-1">' +
                             '<span class="song-title">' + esc(title) + '</span>' +
                             '<small class="text-muted d-block"><span class="songbook-name-full">' + esc(bookName) + '</span><span class="songbook-name-abbr">' + esc(book) + '</span></small>' +

@@ -641,7 +641,7 @@ export class Router {
                     <div class="d-flex align-items-center gap-2 mb-2">
                         <a href="/song/${escapeHtml(s.id)}" class="text-decoration-none flex-grow-1 text-truncate"
                            data-navigate="song" data-song-id="${escapeHtml(s.id)}">
-                            <span class="song-number-badge song-number-badge-sm" data-songbook="${escapeHtml(s.songbook)}">${s.number || '?'}</span>
+                            <span class="song-number-badge song-number-badge-sm" data-songbook="${escapeHtml(s.songbook)}">${s.number ?? ''}</span>
                             <span class="ms-1">${escapeHtml(toTitleCase(s.title))}</span>
                         </a>
                         <div class="stats-bar-wrap">
@@ -848,7 +848,7 @@ export class Router {
                    data-navigate="song"
                    data-song-id="${escapeHtml(song.id)}"
                    role="listitem">
-                    <span class="song-number-badge" data-songbook="${escapeHtml(song.songbook)}">${song.number || '?'}</span>
+                    <span class="song-number-badge" data-songbook="${escapeHtml(song.songbook)}">${song.number ?? ''}</span>
                     <div class="song-info flex-grow-1">
                         <span class="song-title">${escapeHtml(toTitleCase(song.title))}${verifiedBadge(song)}</span>
                         <small class="text-muted d-block">${songbookLabel(song.songbook, song.songbookName)}</small>
