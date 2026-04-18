@@ -423,6 +423,18 @@ export class Router {
             this.app.settings.initSettingsPage();
         }
 
+        /* After the new page HTML is in the DOM, broadcast the current auth
+           state so any just-injected markup (Account card, sync bars, etc.)
+           lands in the correct logged-in/logged-out state. */
+        try {
+            document.dispatchEvent(new CustomEvent('ihymns:auth-changed', {
+                detail: {
+                    loggedIn: !!this.app.userAuth?.isLoggedIn(),
+                    user: this.app.userAuth?.getUser() ?? null,
+                },
+            }));
+        } catch { /* legacy browsers — ignore */ }
+
         /* Initialise set list page controls (#94) */
         if (page === 'setlist') {
             this.app.setList.initSetListPage();

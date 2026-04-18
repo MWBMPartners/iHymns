@@ -534,14 +534,16 @@ $currentUser = getCurrentUser();
                 <i class="bi bi-link-45deg me-1"></i>Load URL
             </button>
 
-            <!-- SAVE JSON — Saves the current state back to a downloadable JSON file -->
+            <!-- SAVE — Writes all songs to MySQL (primary path). If the DB
+                 is unavailable, the editor falls back to a JSON download so
+                 you never lose changes. -->
             <button
                 type="button"
                 class="btn btn-sm btn-amber-solid"
                 id="btn-save"
-                title="Download the current songs as a JSON file"
+                title="Save all changes to the database"
             >
-                <i class="bi bi-download me-1"></i>Save JSON
+                <i class="bi bi-floppy me-1"></i>Save
             </button>
 
             <!-- VALIDATE — Check all songs for data quality issues (#235) -->

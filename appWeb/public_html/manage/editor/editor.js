@@ -194,14 +194,18 @@ function _fetchAndParseSongs(target) {
 }
 
 /**
- * saveSongsToFile()
- * -----------------
- * Serialises the current `songData` to a pretty-printed JSON string and saves
- * it directly to the server via the editor PHP API (#154). This writes to the
- * canonical appWeb/data_share/song_data/songs.json file. Falls back to a
- * browser download if the server save fails.
+ * saveSongs()
+ * -----------
+ * Primary save action for the editor. Writes the current `songData` to the
+ * MySQL database via the editor PHP API (POST api.php?action=save).
+ *
+ * If the server is unreachable or the DB is not configured, the editor falls
+ * back to a browser download of songs.json so the admin never loses changes.
+ *
+ * Invoked by the toolbar "Save" button (#btn-save) and by saveToJSON()
+ * (legacy alias used by the validation flow).
  */
-function saveSongsToFile() {
+function saveSongs() {
     /* Run validation first; abort if the data is not valid. */
     var errors = validateSongData();
     if (errors.length > 0) {
@@ -218,7 +222,7 @@ function saveSongsToFile() {
     /* Serialise with 2-space indentation for human readability. */
     var jsonString = JSON.stringify(songData, null, 2);
 
-    /* Try saving via the PHP API first (writes directly to data_share/) */
+    /* Primary path: save to MySQL via the editor API. */
     fetch(EDITOR_API_URL + '?action=save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -227,28 +231,40 @@ function saveSongsToFile() {
     .then(function (response) {
         return response.json().then(function (data) {
             if (response.ok && data.success) {
-                /* Server save succeeded */
+                /* DB save succeeded */
                 lastSaveTime = new Date();
                 modifiedSongIds.clear();
                 renderSongList();
                 updateStatusBar();
                 showToast(
-                    'Saved ' + data.songs + ' songs to server (' + Math.round(data.bytes / 1024) + ' KB).',
+                    'Saved ' + data.songs + ' songs to the database.',
                     'success'
                 );
             } else {
-                /* Server returned an error — fall back to download */
-                showToast('Server save failed: ' + (data.error || 'Unknown error') + '. Downloading instead.', 'warning');
+                /* Server reachable but the DB save failed — fall back to a
+                   JSON download so the admin can recover the work manually. */
+                showToast(
+                    'Database save failed: ' + (data.error || 'Unknown error') +
+                    '. Downloading a JSON backup so you don\u2019t lose changes.',
+                    'warning'
+                );
                 downloadSongsJson(jsonString);
             }
         });
     })
     .catch(function (err) {
-        /* Network error — fall back to browser download */
-        showToast('Server unavailable: ' + err.message + '. Downloading instead.', 'warning');
+        /* Network error / server unavailable — fall back to browser download. */
+        showToast(
+            'Server unavailable: ' + err.message +
+            '. Downloading a JSON backup so you don\u2019t lose changes.',
+            'warning'
+        );
         downloadSongsJson(jsonString);
     });
 }
+
+/* Backwards-compatible alias for the old function name. */
+var saveSongsToFile = saveSongs;
 
 /**
  * downloadSongsJson(jsonString)
@@ -2344,11 +2360,11 @@ function bindGlobalEventListeners() {
         });
     }
 
-    /* ---- Save / Export JSON button ---- */
+    /* ---- Save button — writes to MySQL, falls back to JSON download ---- */
     var saveBtn = document.getElementById('btn-save');
     if (saveBtn) {
         saveBtn.addEventListener('click', function () {
-            saveSongsToFile();
+            saveSongs();
         });
     }
 

@@ -62,6 +62,27 @@ export class UserAuth {
     }
 
     /**
+     * Fire the global `ihymns:auth-changed` event so any UI that depends
+     * on signed-in state can refresh itself (header menu, settings page
+     * Account card, setlist sync bar, etc.). The detail payload is the
+     * current user object, or null when signed out.
+     */
+    _broadcastAuthChanged() {
+        try {
+            document.dispatchEvent(new CustomEvent('ihymns:auth-changed', {
+                detail: {
+                    loggedIn: this.isLoggedIn(),
+                    user: this.getUser(),
+                },
+            }));
+        } catch { /* IE/legacy — ignore */ }
+        /* Also refresh the header and settings account card immediately so
+           callers don't have to wait for event handlers to bind. */
+        this._updateHeaderState();
+        this.app.settings?.refreshAccountSection?.();
+    }
+
+    /**
      * Save auth credentials to localStorage.
      * @param {string} token Bearer token
      * @param {object} user  User info { id, username, display_name }
@@ -69,6 +90,7 @@ export class UserAuth {
     saveCredentials(token, user) {
         localStorage.setItem(STORAGE_AUTH_TOKEN, token);
         localStorage.setItem(STORAGE_AUTH_USER, JSON.stringify(user));
+        this._broadcastAuthChanged();
     }
 
     /**
@@ -77,6 +99,7 @@ export class UserAuth {
     clearCredentials() {
         localStorage.removeItem(STORAGE_AUTH_TOKEN);
         localStorage.removeItem(STORAGE_AUTH_USER);
+        this._broadcastAuthChanged();
     }
 
     /**
