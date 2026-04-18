@@ -36,6 +36,9 @@ RewriteRule ^users$ users.php [L]
 # /manage/setup-database → setup-database.php (DB setup dashboard)
 RewriteRule ^setup-database$ setup-database.php [L]
 
+# /manage/analytics → analytics.php (admin analytics dashboard, #404)
+RewriteRule ^analytics$ analytics.php [L]
+
 # /manage/editor/api → /manage/editor/api.php (editor API)
 RewriteRule ^editor/api$ editor/api.php [QSA,L]
 

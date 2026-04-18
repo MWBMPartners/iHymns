@@ -141,6 +141,17 @@ $csrf = csrfToken();
                 </div>
             </div>
             <?php endif; ?>
+            <?php if (hasRole($currentUser['role'], 'admin')): ?>
+            <div class="col-md-4">
+                <div class="card-admin">
+                    <a href="/manage/analytics" class="quick-link">
+                        <i class="bi bi-graph-up d-block mb-2"></i>
+                        <strong>Analytics</strong>
+                        <div class="small text-muted">Top songs, searches, and user activity</div>
+                    </a>
+                </div>
+            </div>
+            <?php endif; ?>
             <div class="col-md-4">
                 <div class="card-admin">
                     <a href="/" class="quick-link" target="_blank">
