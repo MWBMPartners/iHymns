@@ -414,6 +414,31 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
+    /* --- Audio / sheet-music: cache-first (#401) ---
+       On-demand caching: once a user plays or views a song, the underlying
+       audio or PDF is cached. Subsequent plays — including offline — hit
+       the cache immediately with no network round-trip. Separate cache
+       bucket so it can be cleared independently of the app shell. */
+    if (event.request.method === 'GET'
+        && (url.pathname.startsWith('/data/audio/') || url.pathname.startsWith('/data/music/'))) {
+        event.respondWith(
+            caches.open('iHymns-media-v1').then(async (cache) => {
+                const hit = await cache.match(event.request);
+                if (hit) return hit;
+                try {
+                    const res = await fetch(event.request);
+                    if (res.ok) cache.put(event.request, res.clone());
+                    return res;
+                } catch {
+                    /* Offline + not cached — let the media element show its
+                       own error UI rather than injecting a PNG/JSON. */
+                    return new Response('', { status: 504, statusText: 'Offline' });
+                }
+            })
+        );
+        return;
+    }
+
     /* --- All other local assets: network-first with cache fallback --- */
     event.respondWith(networkFirstWithCache(event.request));
 });
