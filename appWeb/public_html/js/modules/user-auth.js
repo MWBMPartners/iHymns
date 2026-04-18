@@ -204,21 +204,35 @@ export class UserAuth {
                     'X-Requested-With': 'XMLHttpRequest',
                     ...this.authHeaders(),
                 },
+                /* Include cookies so the server can renew the auth cookie
+                   lifetime (sliding expiry, #390). */
+                credentials: 'same-origin',
             });
 
-            if (!res.ok) {
+            /* Only clear credentials on an explicit "your token is bad" —
+               401 Unauthorized or 403 Forbidden. Network failures, 5xx,
+               CORS errors etc. are transient and must NOT log the user
+               out, otherwise a momentary blip kicks everyone to sign-in. */
+            if (res.status === 401 || res.status === 403) {
                 this.clearCredentials();
+                return false;
+            }
+            if (!res.ok) {
+                /* Keep the token; just couldn't refresh right now. */
                 return false;
             }
 
             const data = await res.json();
             if (data.user) {
-                /* Update cached user info */
+                /* Update cached user info + notify any listeners so UI
+                   matches the latest server-reported role / display name. */
                 localStorage.setItem(STORAGE_AUTH_USER, JSON.stringify(data.user));
+                this._broadcastAuthChanged();
             }
 
             return true;
         } catch {
+            /* Offline / DNS / TLS failure — keep the token. */
             return false;
         }
     }
@@ -294,6 +308,14 @@ export class UserAuth {
      */
     initUserMenu() {
         this._updateHeaderState();
+
+        /* Refresh cached user info + bump the server-side sliding expiry
+           once per boot (#390). Fire-and-forget: never blocks the UI, and
+           verify() itself keeps the token on network errors so an offline
+           launch doesn't sign the user out. */
+        if (this.isLoggedIn()) {
+            this.verify().catch(() => { /* non-fatal */ });
+        }
 
         /* Sign In button */
         document.getElementById('header-signin-btn')?.addEventListener('click', () => {

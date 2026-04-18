@@ -679,9 +679,15 @@ if ($action !== null) {
 
             /* Generate API token (64-character hex string, 30-day expiry) */
             $token = bin2hex(random_bytes(32));
-            $expiresAt = gmdate('c', time() + 30 * 86400);
+            $expiresAtTs = time() + 30 * 86400;
+            $expiresAt   = gmdate('c', $expiresAtTs);
             $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
             $stmt->execute([hash('sha256', $token), $userId, $expiresAt]);
+
+            /* Cross-subdomain cookie — keeps sign-in state on every
+               *.ihymns.app subdomain and survives iOS ITP longer than
+               script-accessible storage (#390). */
+            setAuthTokenCookie($token, $expiresAtTs);
 
             sendJson([
                 'token' => $token,
@@ -768,9 +774,13 @@ if ($action !== null) {
 
             /* Generate API token */
             $token = bin2hex(random_bytes(32));
-            $expiresAt = gmdate('c', time() + 30 * 86400);
+            $expiresAtTs = time() + 30 * 86400;
+            $expiresAt   = gmdate('c', $expiresAtTs);
             $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
             $stmt->execute([hash('sha256', $token), (int)$user['Id'], $expiresAt]);
+
+            /* Cross-subdomain cookie (#390) */
+            setAuthTokenCookie($token, $expiresAtTs);
 
             sendJson([
                 'token' => $token,
@@ -799,6 +809,10 @@ if ($action !== null) {
                 $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE Token = ?');
                 $stmt->execute([hash('sha256', $token)]);
             }
+
+            /* Also clear the auth cookie (#390) so a subsequent page load
+               on any iHymns subdomain is properly signed-out. */
+            clearAuthTokenCookie();
 
             sendJson(['ok' => true]);
             break;
@@ -1172,6 +1186,13 @@ if ($action !== null) {
 
             /* Complete the login: find/create user, generate bearer token */
             $loginResult = completeEmailLogin($verified['email'], $verified['userId']);
+
+            /* Cross-subdomain auth cookie (#390) — completeEmailLogin()
+               issues a 30-day token in tblApiTokens; mirror that lifetime
+               on the browser cookie so the two stay in sync. */
+            if (!empty($loginResult['token'])) {
+                setAuthTokenCookie($loginResult['token'], time() + 30 * 86400);
+            }
 
             /* Log the successful login */
             $clientIp = $_SERVER['REMOTE_ADDR'] ?? '';
@@ -3953,7 +3974,93 @@ function getAuthBearerToken(): ?string
         return $m[1];
     }
 
+    /* Cookie fallback (#390) — enables cross-subdomain sign-in and plain
+       page loads without JS having to attach the Authorization header. */
+    if (!empty($_COOKIE['ihymns_auth']) && preg_match('/^[a-f0-9]{64}$/i', $_COOKIE['ihymns_auth'])) {
+        return $_COOKIE['ihymns_auth'];
+    }
+
     return null;
+}
+
+/**
+ * Return the standard cookie options used for the auth cookie (#390).
+ *
+ * The `Domain` attribute is only set when the current host is under
+ * `ihymns.app`, so in local/dev environments (e.g. `localhost`) the
+ * cookie stays host-only. `Secure` is set whenever the request arrived
+ * over HTTPS (including via a reverse proxy that set X-Forwarded-Proto).
+ */
+function _authCookieOpts(int $expiresAtTimestamp): array
+{
+    $host  = preg_replace('/:\d+$/', '', $_SERVER['HTTP_HOST'] ?? '');
+    $https = !empty($_SERVER['HTTPS'])
+          || ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https';
+
+    $opts = [
+        'expires'  => $expiresAtTimestamp,
+        'path'     => '/',
+        'httponly' => true,
+        'samesite' => 'Lax',
+        'secure'   => $https,
+    ];
+
+    /* Scope the cookie to the parent domain so every iHymns subdomain
+       (alpha/beta/dev/production/sync) sees the same sign-in. */
+    if (preg_match('/(?:^|\.)ihymns\.app$/i', $host)) {
+        $opts['domain'] = '.ihymns.app';
+    }
+
+    return $opts;
+}
+
+/**
+ * Set the `ihymns_auth` cookie used for cross-subdomain sign-in and
+ * ITP-resilient persistence (#390). Safe to call before any output.
+ */
+function setAuthTokenCookie(string $token, int $expiresAtTimestamp): void
+{
+    if (headers_sent()) return;
+    setcookie('ihymns_auth', $token, _authCookieOpts($expiresAtTimestamp));
+}
+
+/**
+ * Clear the `ihymns_auth` cookie (logout + 401 paths).
+ */
+function clearAuthTokenCookie(): void
+{
+    if (headers_sent()) return;
+    setcookie('ihymns_auth', '', _authCookieOpts(time() - 3600));
+}
+
+/**
+ * Slide the token's ExpiresAt forward by 30 days so that any active use
+ * resets the clock (#390). To avoid a DB write on every authenticated
+ * request, we only bump when the current ExpiresAt is less than
+ * (30 days - 1 day) from now — i.e. at most once per day per token.
+ * Also refreshes the browser-side cookie lifetime so the two stay in sync.
+ */
+function slideAuthTokenExpiry(string $rawToken): void
+{
+    try {
+        $hashedToken  = hash('sha256', $rawToken);
+        $newExpiresTs = time() + 30 * 86400;
+        $newExpiresAt = gmdate('c', $newExpiresTs);
+        $threshold    = gmdate('c', time() + 29 * 86400);
+
+        $db = getDb();
+        $stmt = $db->prepare(
+            'UPDATE tblApiTokens SET ExpiresAt = ? WHERE Token = ? AND ExpiresAt < ?'
+        );
+        $stmt->execute([$newExpiresAt, $hashedToken, $threshold]);
+
+        /* If the DB row was bumped, push the cookie forward as well. */
+        if ($stmt->rowCount() > 0) {
+            setAuthTokenCookie($rawToken, $newExpiresTs);
+        }
+    } catch (\Throwable) {
+        /* Non-fatal: sliding expiry is best-effort. */
+    }
 }
 
 /**
@@ -3979,6 +4086,11 @@ function getAuthenticatedUser(): ?array
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$user) return null;
+
+    /* Sliding expiry (#390) — any active use extends the token 30 days,
+       at most once per day per token. Keeps long-term users signed in
+       without daily DB writes. */
+    slideAuthTokenExpiry($token);
 
     $user['Id'] = (int)$user['Id'];
     return $user;

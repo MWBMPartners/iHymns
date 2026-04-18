@@ -2327,13 +2327,18 @@ body.reduce-motion .related-songs-chevron {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 1.5rem;
+    /* Wide enough to fit 4-digit song numbers at 0.65rem bold so every
+       row in a list (e.g. Usage Stats → Most Viewed) gets the same
+       badge width regardless of digit count. */
+    min-width: 2.75rem;
     height: 1.5rem;
+    padding: 0 0.4rem;
     font-size: 0.65rem;
     font-weight: 700;
     border-radius: 4px;
     background: var(--bs-secondary-bg, #e9ecef);
     color: var(--bs-body-color);
+    flex-shrink: 0;
 }
 
 /* =========================================================================
