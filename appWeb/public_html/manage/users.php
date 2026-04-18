@@ -181,28 +181,9 @@ function canManage(array $target, array $actor): bool {
           href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
           integrity="sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+"
           crossorigin="anonymous">
-    <style>
-        :root {
-            --ih-bg: #1a1a2e;
-            --ih-surface: #16213e;
-            --ih-amber: #f59e0b;
-            --ih-amber-hover: #d97706;
-            --ih-text: #e2e8f0;
-            --ih-text-muted: #94a3b8;
-            --ih-border: #334155;
-        }
-        body { background: var(--ih-bg); color: var(--ih-text); }
-        .navbar-admin { background: var(--ih-surface); border-bottom: 1px solid var(--ih-border); padding: 0.75rem 1rem; }
-        .navbar-admin .nav-link { color: var(--ih-text-muted); }
-        .navbar-admin .nav-link:hover, .navbar-admin .nav-link.active { color: var(--ih-amber); }
-        .card-admin { background: var(--ih-surface); border: 1px solid var(--ih-border); border-radius: 12px; }
-        .btn-amber { background: var(--ih-amber); border-color: var(--ih-amber); color: #1a1a2e; font-weight: 600; }
-        .btn-amber:hover { background: var(--ih-amber-hover); border-color: var(--ih-amber-hover); color: #1a1a2e; }
-        .form-control:focus, .form-select:focus { border-color: var(--ih-amber); box-shadow: 0 0 0 0.2rem rgba(245, 158, 11, 0.25); }
-        .table { color: var(--ih-text); }
-        .user-row:hover { background: rgba(255,255,255,0.02); }
-        .user-actions .btn { padding: 0.15rem 0.4rem; font-size: 0.75rem; }
-    </style>
+    <!-- Shared iHymns palette + admin styles -->
+    <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__) . "/css/app.css") ?>">
+    <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime(dirname(__DIR__) . "/css/admin.css") ?>">
 </head>
 <body>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>

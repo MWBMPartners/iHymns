@@ -63,54 +63,11 @@ $csrf = csrfToken();
           href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
           integrity="sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+"
           crossorigin="anonymous">
-    <style>
-        :root {
-            --ih-bg: #1a1a2e;
-            --ih-surface: #16213e;
-            --ih-amber: #f59e0b;
-            --ih-amber-hover: #d97706;
-            --ih-text: #e2e8f0;
-            --ih-text-muted: #94a3b8;
-            --ih-border: #334155;
-        }
-        body {
-            background: var(--ih-bg);
-            color: var(--ih-text);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .login-card {
-            background: var(--ih-surface);
-            border: 1px solid var(--ih-border);
-            border-radius: 12px;
-            width: 100%;
-            max-width: 400px;
-            padding: 2rem;
-        }
-        .login-card h1 {
-            font-size: 1.5rem;
-            color: var(--ih-amber);
-        }
-        .btn-amber {
-            background: var(--ih-amber);
-            border-color: var(--ih-amber);
-            color: #1a1a2e;
-            font-weight: 600;
-        }
-        .btn-amber:hover {
-            background: var(--ih-amber-hover);
-            border-color: var(--ih-amber-hover);
-            color: #1a1a2e;
-        }
-        .form-control:focus {
-            border-color: var(--ih-amber);
-            box-shadow: 0 0 0 0.2rem rgba(245, 158, 11, 0.25);
-        }
-    </style>
+    <!-- Shared iHymns palette + admin styles -->
+    <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__) . "/css/app.css") ?>">
+    <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime(dirname(__DIR__) . "/css/admin.css") ?>">
 </head>
-<body>
+<body class="auth-center-page">
     <div class="login-card">
         <div class="text-center mb-4">
             <h1><i class="bi bi-music-note-beamed me-2"></i>iHymns</h1>

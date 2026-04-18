@@ -263,16 +263,9 @@ if ($hasCredentials && defined('DB_HOST')) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Database Setup — iHymns Admin</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        body { background: #1a1a2e; color: #e0e0e0; }
-        .output-log {
-            background: #0d1117; color: #c9d1d9; font-family: 'Menlo', 'Consolas', monospace;
-            font-size: 12px; padding: 1rem; border-radius: 0.5rem;
-            max-height: 500px; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word;
-            line-height: 1.5;
-        }
-        .btn-action { min-width: 180px; }
-    </style>
+    <!-- Shared iHymns palette + admin styles -->
+    <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__) . "/css/app.css") ?>">
+    <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime(dirname(__DIR__) . "/css/admin.css") ?>">
 </head>
 <body>
 <div class="container py-4" style="max-width: 900px;">
