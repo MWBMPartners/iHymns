@@ -58,31 +58,9 @@ $csrf = csrfToken();
           href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
           integrity="sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+"
           crossorigin="anonymous">
-    <style>
-        :root {
-            --ih-bg: #1a1a2e;
-            --ih-surface: #16213e;
-            --ih-amber: #f59e0b;
-            --ih-amber-hover: #d97706;
-            --ih-text: #e2e8f0;
-            --ih-text-muted: #94a3b8;
-            --ih-border: #334155;
-        }
-        body { background: var(--ih-bg); color: var(--ih-text); }
-        .navbar-admin { background: var(--ih-surface); border-bottom: 1px solid var(--ih-border); padding: 0.75rem 1rem; }
-        .navbar-admin .nav-link { color: var(--ih-text-muted); }
-        .navbar-admin .nav-link:hover, .navbar-admin .nav-link.active { color: var(--ih-amber); }
-        .card-admin { background: var(--ih-surface); border: 1px solid var(--ih-border); border-radius: 12px; }
-        .stat-card { text-align: center; padding: 1.25rem; }
-        .stat-card .stat-number { font-size: 2rem; font-weight: 700; color: var(--ih-amber); }
-        .stat-card .stat-label { font-size: 0.8rem; color: var(--ih-text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
-        .btn-amber { background: var(--ih-amber); border-color: var(--ih-amber); color: #1a1a2e; font-weight: 600; }
-        .btn-amber:hover { background: var(--ih-amber-hover); border-color: var(--ih-amber-hover); color: #1a1a2e; }
-        .table { color: var(--ih-text); }
-        .quick-link { display: block; padding: 1rem; border-radius: 8px; text-decoration: none; color: var(--ih-text); transition: background 0.2s; }
-        .quick-link:hover { background: rgba(245, 158, 11, 0.1); color: var(--ih-amber); }
-        .quick-link i { font-size: 1.5rem; color: var(--ih-amber); }
-    </style>
+    <!-- Shared iHymns palette + admin styles -->
+    <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__) . "/css/app.css") ?>">
+    <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime(dirname(__DIR__) . "/css/admin.css") ?>">
 </head>
 <body>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>
