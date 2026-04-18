@@ -189,6 +189,8 @@ export class Router {
                 return { page: 'terms', params: {} };
             case 'privacy':
                 return { page: 'privacy', params: {} };
+            case 'request-a-song':
+                return { page: 'request-a-song', params: {} };
             case 'login':
                 return { page: 'login', params: {} };
             default:
@@ -336,6 +338,7 @@ export class Router {
             'help': 'Help — ' + appName,
             'terms': 'Terms of Use — ' + appName,
             'privacy': 'Privacy Policy — ' + appName,
+            'request-a-song': 'Request a Song — ' + appName,
         };
         document.title = titles[page] || appName;
     }

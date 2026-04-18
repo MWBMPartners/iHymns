@@ -160,6 +160,10 @@ if ($page !== null) {
             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'privacy.php';
             break;
 
+        case 'request-a-song':
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'request-a-song.php';
+            break;
+
         default:
             http_response_code(404);
             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'not-found.php';
@@ -3921,6 +3925,74 @@ if ($action !== null) {
             unset($org);
 
             sendJson(['organisations' => $orgs]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Submit a song request (#403). Public endpoint; rate-limited by
+         * IP to 5 submissions per 24 h. Honeypot field rejects bots.
+         * ----------------------------------------------------------------- */
+        case 'song_request_submit':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $body    = json_decode((string)file_get_contents('php://input'), true) ?? [];
+            $title   = trim((string)($body['title']    ?? ''));
+            $book    = trim((string)($body['songbook'] ?? ''));
+            $details = trim((string)($body['details']  ?? ''));
+            $email   = trim((string)($body['email']    ?? ''));
+            $honey   = (string)($body['website']       ?? '');
+            $ip      = $_SERVER['REMOTE_ADDR'] ?? '';
+
+            /* Honeypot: real users leave this blank; bots fill every field. */
+            if ($honey !== '') {
+                sendJson(['ok' => true, 'trackingId' => 0]); /* Silent success to not tip off the bot. */
+                break;
+            }
+
+            if ($title === '') {
+                sendJson(['error' => 'A song title is required.'], 400);
+                break;
+            }
+            if (mb_strlen($title)   > 500)  { sendJson(['error' => 'Title too long.'],    400); break; }
+            if (mb_strlen($book)    > 100)  { sendJson(['error' => 'Songbook too long.'], 400); break; }
+            if (mb_strlen($details) > 2000) { sendJson(['error' => 'Details too long.'],  400); break; }
+            if (mb_strlen($email)   > 255)  { sendJson(['error' => 'Email too long.'],    400); break; }
+            if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                sendJson(['error' => 'Email address is not valid.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDb();
+
+                /* Rate-limit: reject if this IP has ≥5 submissions in the last 24 h. */
+                $stmt = $db->prepare(
+                    'SELECT COUNT(*) FROM tblSongRequests WHERE IpAddress = ? AND CreatedAt > (NOW() - INTERVAL 1 DAY)'
+                );
+                $stmt->execute([$ip]);
+                if ((int)$stmt->fetchColumn() >= 5) {
+                    sendJson(['error' => 'You have submitted several requests recently. Please try again tomorrow.'], 429);
+                    break;
+                }
+
+                /* Link to a signed-in user if the caller sent a bearer token. */
+                $authUser = getAuthenticatedUser();
+                $userId   = $authUser ? (int)$authUser['Id'] : null;
+
+                $stmt = $db->prepare(
+                    'INSERT INTO tblSongRequests
+                        (Title, Songbook, Details, ContactEmail, UserId, IpAddress, Status)
+                     VALUES (?, ?, ?, ?, ?, ?, "pending")'
+                );
+                $stmt->execute([$title, $book, $details, $email, $userId, $ip]);
+
+                sendJson(['ok' => true, 'trackingId' => (int)$db->lastInsertId()]);
+            } catch (\Throwable $e) {
+                error_log('[song_request_submit] ' . $e->getMessage());
+                sendJson(['error' => 'Could not save your request. Please try again.'], 500);
+            }
             break;
 
         /* -----------------------------------------------------------------
