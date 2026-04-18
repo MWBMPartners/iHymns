@@ -2639,3 +2639,43 @@ body.reduce-motion .related-songs-chevron {
 .privacy-consent-status.text-danger {
     color: var(--bs-danger) !important;
 }
+
+
+/* ==========================================================================
+   PRACTICE / MEMORISATION MODE (#402)
+   ========================================================================== */
+.song-lyrics[data-practice-level="1"] .lyric-line {
+    opacity: 0.25;
+    transition: opacity var(--transition-fast);
+}
+.song-lyrics[data-practice-level="1"] .lyric-line:hover,
+.song-lyrics[data-practice-level="1"] .lyric-line:focus,
+.song-lyrics[data-practice-level="1"] .lyric-line.revealed {
+    opacity: 1;
+}
+.song-lyrics[data-practice-level="2"] .lyric-line {
+    color: transparent;
+    background-color: var(--surface-elevated);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: color var(--transition-fast), background-color var(--transition-fast);
+    user-select: none;
+}
+.song-lyrics[data-practice-level="2"] .lyric-line::before {
+    content: '\f06e'; /* Font Awesome "eye" */
+    font-family: 'Font Awesome 6 Free';
+    font-weight: 900;
+    color: var(--text-muted);
+    margin-right: 0.4em;
+    opacity: 0.55;
+}
+.song-lyrics[data-practice-level="2"] .lyric-line.revealed,
+.song-lyrics[data-practice-level="2"] .lyric-line:hover {
+    color: var(--text-primary);
+    background-color: transparent;
+    user-select: text;
+}
+.song-lyrics[data-practice-level="2"] .lyric-line.revealed::before,
+.song-lyrics[data-practice-level="2"] .lyric-line:hover::before {
+    display: none;
+}
