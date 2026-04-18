@@ -38,6 +38,7 @@ export class Settings {
             reduceMotion: false,      /* Animations enabled by default */
             reduceTransparency: false,
             fontSize: 18,
+            keyboardShortcuts: true,  /* '?' opens help, '/' focuses search, etc. (#406) */
         };
 
         /**
@@ -414,6 +415,16 @@ export class Settings {
             transparencyToggle.addEventListener('change', () => {
                 this.set('reduceTransparency', transparencyToggle.checked);
                 this.applyReduceTransparency(transparencyToggle.checked);
+            });
+        }
+
+        /* Keyboard shortcuts toggle (#406). Takes effect on next keydown —
+           app.js reads the setting at event time, no rebind needed. */
+        const shortcutsToggle = document.getElementById('setting-keyboard-shortcuts');
+        if (shortcutsToggle) {
+            shortcutsToggle.checked = this.get('keyboardShortcuts') !== false;
+            shortcutsToggle.addEventListener('change', () => {
+                this.set('keyboardShortcuts', shortcutsToggle.checked);
             });
         }
 
