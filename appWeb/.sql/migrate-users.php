@@ -105,10 +105,10 @@ if (file_exists($sqliteFile)) {
             $users = $sqlite->query('SELECT * FROM users')->fetchAll(PDO::FETCH_ASSOC);
             output("Found " . count($users) . " users in SQLite");
 
-            $stmtCheck = $mysql->prepare("SELECT COUNT(*) AS cnt FROM tblUsers WHERE Username = ?");
+            $stmtCheck  = $mysql->prepare("SELECT COUNT(*) AS cnt FROM tblUsers WHERE Username = ?");
             $stmtInsert = $mysql->prepare(
                 "INSERT INTO tblUsers (Username, Email, PasswordHash, DisplayName, Role, IsActive, CreatedAt, UpdatedAt)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                 VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())"
             );
 
             foreach ($users as $user) {
@@ -127,44 +127,25 @@ if (file_exists($sqliteFile)) {
                     continue;
                 }
 
-                $email       = $user['email'] ?? '';
+                $email       = $user['email']         ?? '';
                 $passHash    = $user['password_hash'] ?? '';
-                $displayName = $user['display_name'] ?? $username;
-                $role        = $user['role'] ?? 'user';
+                $displayName = $user['display_name']  ?? $username;
+                $role        = $user['role']          ?? 'user';
                 $isActive    = (int)($user['is_active'] ?? 1);
-                $createdAt   = $user['created_at'] ?? date('c');
-                $updatedAt   = $user['updated_at'] ?? date('c');
 
-                $stmtInsert->bind_param('sssssisss',
-                    $username, $email, $passHash, $displayName,
-                    $role, $isActive, $createdAt, $updatedAt
+                /* 5 strings + 1 int — CreatedAt/UpdatedAt are set via NOW() in SQL */
+                $stmtInsert->bind_param(
+                    'sssssi',
+                    $username, $email, $passHash, $displayName, $role, $isActive
                 );
-
-                /* Fix: bind_param expects references for 'i' type */
-                $stmtInsert2 = $mysql->prepare(
-                    "INSERT INTO tblUsers (Username, Email, PasswordHash, DisplayName, Role, IsActive, CreatedAt, UpdatedAt)
-                     VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())"
-                );
-                $stmtInsert2->bind_param('ssssi', $username, $email, $passHash, $displayName, $isActive);
-                /* Actually we need to set Role too */
-                $stmtInsert2->close();
-
-                /* Use a simpler approach */
-                $escapedUser = $mysql->real_escape_string($username);
-                $escapedEmail = $mysql->real_escape_string($email);
-                $escapedHash = $mysql->real_escape_string($passHash);
-                $escapedName = $mysql->real_escape_string($displayName);
-                $escapedRole = $mysql->real_escape_string($role);
-
-                $mysql->query(
-                    "INSERT INTO tblUsers (Username, Email, PasswordHash, DisplayName, Role, IsActive)
-                     VALUES ('{$escapedUser}', '{$escapedEmail}', '{$escapedHash}', '{$escapedName}', '{$escapedRole}', {$isActive})"
-                );
+                $stmtInsert->execute();
 
                 output("  [OK]   {$username} ({$role})");
                 $migratedUsers++;
             }
+
             $stmtCheck->close();
+            $stmtInsert->close();
 
             /* Migrate user setlists */
             if (in_array('user_setlists', $tables)) {
