@@ -885,6 +885,18 @@ body.banner-visible.search-open .main-content {
     text-shadow: 0 1px 2px rgba(0,0,0,0.5); /* #263 — improve contrast in dark mode */
 }
 
+/* Misc / unnumbered songs: badge is kept for list alignment but renders a
+   small book glyph instead of a song number (#392). Applied automatically
+   whenever the badge ends up empty (e.g. Misc songs with Number IS NULL). */
+.song-number-badge:empty::before,
+.song-number-badge-lg:empty::before {
+    content: '\f02d'; /* Font Awesome "book" */
+    font-family: 'Font Awesome 6 Free', 'FontAwesome';
+    font-weight: 900;
+    opacity: 0.8;
+    font-size: 0.9em;
+}
+
 /* Songbook-specific badge colours + contrast-safe text (#98, #152) */
 .song-number-badge[data-songbook="CP"]   { background: var(--songbook-CP);   color: var(--songbook-CP-text); }
 .song-number-badge[data-songbook="JP"]   { background: var(--songbook-JP);   color: var(--songbook-JP-text); }

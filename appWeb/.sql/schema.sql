@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS tblSongbooks (
 CREATE TABLE IF NOT EXISTS tblSongs (
     Id                  INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
     SongId              VARCHAR(20)     NOT NULL UNIQUE COMMENT 'Canonical ID, e.g. CP-0001',
-    Number              INT UNSIGNED    NOT NULL COMMENT 'Song number within its songbook',
+    Number              INT UNSIGNED    NULL DEFAULT NULL COMMENT 'Song number within its songbook; NULL for Misc (unstructured collection)',
     Title               VARCHAR(500)    NOT NULL,
     SongbookAbbr        VARCHAR(10)     NOT NULL COMMENT 'FK to tblSongbooks.Abbreviation',
     SongbookName        VARCHAR(255)    NOT NULL COMMENT 'Denormalised songbook name for convenience',
@@ -1008,3 +1008,19 @@ CREATE TABLE IF NOT EXISTS tblLoginAttempts (
     INDEX idx_Ip        (IpAddress),
     INDEX idx_IpTime    (IpAddress, AttemptedAt)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ============================================================================
+-- IN-PLACE MIGRATIONS (safe to re-run)
+-- These run after the CREATE TABLE IF NOT EXISTS statements so existing
+-- deployments upgrade without manual DB work. Each statement is idempotent:
+-- MySQL treats a no-op ALTER (column already matches) as a successful
+-- metadata-only operation.
+-- ============================================================================
+
+-- Make tblSongs.Number nullable so the Misc ("unsorted") songbook can hold
+-- songs without a songbook number (#392).
+ALTER TABLE tblSongs MODIFY Number INT UNSIGNED NULL DEFAULT NULL;
+
+-- Zero out any existing Misc song numbers (historic placeholders).
+UPDATE tblSongs SET Number = NULL WHERE SongbookAbbr = 'Misc' AND Number IS NOT NULL;

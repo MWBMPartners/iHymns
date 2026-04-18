@@ -272,7 +272,7 @@ declare(strict_types=1);
             </div>
 
             <!-- Reduce transparency toggle -->
-            <div class="form-check form-switch mb-0">
+            <div class="form-check form-switch mb-3">
                 <input class="form-check-input"
                        type="checkbox"
                        id="setting-reduce-transparency"
@@ -282,6 +282,22 @@ declare(strict_types=1);
                     <strong>Reduce Transparency</strong>
                     <small class="text-muted d-block">
                         Removes glass-like blur effects for improved readability.
+                    </small>
+                </label>
+            </div>
+
+            <!-- Keyboard shortcuts toggle (#406) -->
+            <div class="form-check form-switch mb-0">
+                <input class="form-check-input"
+                       type="checkbox"
+                       id="setting-keyboard-shortcuts"
+                       role="switch"
+                       aria-label="Enable keyboard shortcuts">
+                <label class="form-check-label" for="setting-keyboard-shortcuts">
+                    <strong>Keyboard Shortcuts</strong>
+                    <small class="text-muted d-block">
+                        Press <kbd>?</kbd> to view all shortcuts, <kbd>/</kbd> to focus search,
+                        arrow keys to navigate songs, and more.
                     </small>
                 </label>
             </div>

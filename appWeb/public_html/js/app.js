@@ -333,6 +333,11 @@ class iHymnsApp {
             const tag = (e.target.tagName || '').toLowerCase();
             if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
 
+            /* Honour the user's "Enable keyboard shortcuts" setting (#406).
+               Off by default means all shortcuts — including the `?` help
+               overlay — are disabled. Users can toggle in Settings → Input. */
+            if (this.settings && this.settings.get('keyboardShortcuts') === false) return;
+
             /* Quick-jump: capture digit keys (#96) */
             if (e.key >= '0' && e.key <= '9') {
                 e.preventDefault();

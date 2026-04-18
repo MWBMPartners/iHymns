@@ -223,21 +223,22 @@ self.addEventListener('install', (event) => {
             })
             .then(() => {
                 /*
-                 * Activate immediately so critical fixes (e.g., offline/CDN
-                 * caching) take effect on the very next page load.
+                 * Let the new SW enter the "waiting" state instead of
+                 * skipWaiting immediately (#396). app.js picks up the
+                 * `updatefound` → statechange === 'installed' transition
+                 * and shows a "New version available — Refresh" toast.
+                 * The user clicks Refresh → client posts SKIP_WAITING
+                 * below → SW activates → controllerchange → page reloads.
                  *
-                 * Previously (#83) skipWaiting was omitted to let users control
-                 * when updates activate via the "Refresh" notification. However,
-                 * this caused the old SW (which doesn't cache CDN resources) to
-                 * remain in control indefinitely, leaving offline support broken
-                 * until the user happened to close every tab.
+                 * This gives users agency over reloads mid-session (they
+                 * don't lose unsaved setlist edits to an abrupt reload)
+                 * while still being able to roll out critical fixes fast.
                  *
-                 * The controllerchange listener in app.js will auto-reload the
-                 * page when this new SW takes over, ensuring fresh HTML + cached
-                 * CDN assets are served.
+                 * If the user dismisses the toast without refreshing,
+                 * the new SW stays "waiting" until every tab of the app
+                 * is closed, at which point it activates naturally.
                  */
-                console.log('[SW] Activating immediately via skipWaiting');
-                return self.skipWaiting();
+                console.log('[SW] Installed; awaiting user confirmation to activate');
             })
     );
 });

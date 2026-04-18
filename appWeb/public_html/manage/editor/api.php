@@ -167,9 +167,16 @@ switch ($action) {
             /* Insert songs */
             foreach ($data['songs'] as $song) {
                 $songId       = $song['id'];
-                $number       = (int)$song['number'];
-                $title        = $song['title'];
                 $songbookAbbr = $song['songbook'];
+
+                /* Misc songs (and anything without a meaningful number)
+                   persist Number as NULL (#392). */
+                $rawNumber = $song['number'] ?? null;
+                $number    = ($songbookAbbr === 'Misc' || $rawNumber === null || $rawNumber === '' || (int)$rawNumber <= 0)
+                    ? null
+                    : (int)$rawNumber;
+
+                $title        = $song['title'];
                 $songbookName = $song['songbookName'] ?? '';
                 $language     = $song['language'] ?? 'en';
                 $copyright    = $song['copyright'] ?? '';

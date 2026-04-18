@@ -31,8 +31,9 @@ if ($song === null) {
     return;
 }
 
-/* Extract metadata for convenience */
-$songNumber  = (int)$song['number'];
+/* Extract metadata for convenience — Number is null for Misc songs (#392) */
+$rawSongNumber = $song['number'] ?? null;
+$songNumber    = ($rawSongNumber === null || $rawSongNumber === '') ? null : (int)$rawSongNumber;
 $songTitle   = toTitleCase($song['title'] ?? 'Untitled');
 $songbook    = $song['songbook'] ?? '';
 $bookName    = $song['songbookName'] ?? '';
@@ -81,8 +82,9 @@ $components  = $song['components'] ?? [];
         <div class="card-body">
             <!-- Song number and title -->
             <div class="d-flex align-items-start gap-3 mb-3">
-                <span class="song-number-badge-lg" data-songbook="<?= htmlspecialchars($songbook) ?>" aria-label="Song number <?= $songNumber ?>">
-                    <?= $songNumber ?>
+                <span class="song-number-badge-lg" data-songbook="<?= htmlspecialchars($songbook) ?>"
+                      aria-label="<?= $songNumber === null ? 'Unnumbered song' : 'Song number ' . (int)$songNumber ?>">
+                    <?= $songNumber === null ? '' : (int)$songNumber ?>
                 </span>
                 <div class="flex-grow-1">
                     <h1 class="h4 mb-1"><?= htmlspecialchars($songTitle) ?><?php if (!empty($song['verified'])): ?><span class="verified-badge" title="Verified lyrics" aria-label="Verified lyrics"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.15"/><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M7.5 12.5L10.5 15.5L16.5 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><?php endif; ?></h1>

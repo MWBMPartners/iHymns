@@ -214,9 +214,17 @@ try {
 
     foreach ($data['songs'] as $i => $song) {
         $songId       = $song['id'];
-        $number       = (int)$song['number'];
-        $title        = $song['title'];
         $songbookAbbr = $song['songbook'];
+
+        /* Number is NULL for Misc (unstructured collection) or when the
+           source simply doesn't have one (#392). Anything else is stored
+           as its integer value. */
+        $rawNumber = $song['number'] ?? null;
+        $number    = ($songbookAbbr === 'Misc' || $rawNumber === null || $rawNumber === '' || (int)$rawNumber <= 0)
+            ? null
+            : (int)$rawNumber;
+
+        $title        = $song['title'];
         $songbookName = $song['songbookName'] ?? '';
         $language     = $song['language'] ?? 'en';
         $copyright    = $song['copyright'] ?? '';

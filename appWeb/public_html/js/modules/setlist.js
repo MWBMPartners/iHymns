@@ -356,7 +356,7 @@ export class SetList {
                              data-song-id="${escapeHtml(song.id)}" data-index="${index}"
                              draggable="true">
                             <span class="text-muted fw-bold me-1" style="min-width:24px">${index + 1}.</span>
-                            <span class="song-number-badge" data-songbook="${escapeHtml(song.songbook)}">${song.number || '?'}</span>
+                            <span class="song-number-badge" data-songbook="${escapeHtml(song.songbook)}">${song.number ?? ''}</span>
                             <div class="flex-grow-1">
                                 <a href="/song/${escapeHtml(song.id)}" data-navigate="song"
                                    class="text-decoration-none">${escapeHtml(toTitleCase(song.title))}${verifiedBadge(song)}</a>
@@ -1584,7 +1584,7 @@ export class SetList {
                     if (titleEl) titleEl.textContent = toTitleCase(json.song.title) || songId;
                     if (metaEl) metaEl.textContent = json.song.songbook || '';
                     if (badge) {
-                        badge.textContent = json.song.number || '?';
+                        badge.textContent = json.song.number ?? '';
                         badge.dataset.songbook = json.song.songbook || '';
                     }
                 } catch {
@@ -1722,7 +1722,7 @@ export class SetList {
 
         /* Build running order summary */
         const orderSummary = list.songs.map((song, i) =>
-            `<tr><td class="pe-3 text-muted">${i + 1}.</td><td>${escapeHtml(toTitleCase(song.title))}</td><td class="text-muted">${escapeHtml(SONGBOOK_NAMES[song.songbook] || song.songbook)} #${song.number || '?'}</td></tr>`
+            `<tr><td class="pe-3 text-muted">${i + 1}.</td><td>${escapeHtml(toTitleCase(song.title))}</td><td class="text-muted">${escapeHtml(SONGBOOK_NAMES[song.songbook] || song.songbook)}${song.number != null ? ' #' + song.number : ''}</td></tr>`
         ).join('');
 
         /* Build individual song pages */
@@ -1734,7 +1734,7 @@ export class SetList {
                     <div class="print-song-header">
                         <span class="print-song-order">${index + 1}</span>
                         <h2>${escapeHtml(toTitleCase(page.song.title))}</h2>
-                        <p class="print-song-meta">${escapeHtml(SONGBOOK_NAMES[page.song.songbook] || page.song.songbook)} #${page.song.number || '?'}</p>
+                        <p class="print-song-meta">${escapeHtml(SONGBOOK_NAMES[page.song.songbook] || page.song.songbook)}${page.song.number != null ? ' #' + page.song.number : ''}</p>
                     </div>
                     <div class="print-song-content">${page.html}</div>
                 </div>`;

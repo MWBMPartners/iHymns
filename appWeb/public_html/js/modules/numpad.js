@@ -303,8 +303,10 @@ export class Numpad {
             const data = await response.json();
 
             if (data.songbooks) {
+                /* Exclude Misc — songs in that collection have no songbook
+                   number, so "jump by number" makes no sense there (#392). */
                 select.innerHTML = data.songbooks
-                    .filter(b => b.songCount > 0)
+                    .filter(b => b.songCount > 0 && b.id !== 'Misc')
                     .map(b => `<option value="${escapeHtml(b.id)}">${escapeHtml(b.name)} (${escapeHtml(b.id)})</option>`)
                     .join('');
 

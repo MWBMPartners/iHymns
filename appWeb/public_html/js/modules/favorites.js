@@ -428,7 +428,7 @@ export class Favorites {
                            data-song-id="${escapeHtml(fav.id)}"
                            aria-label="Select ${escapeHtml(toTitleCase(fav.title))}"
                            onclick="event.stopPropagation()">
-                    <span class="song-number-badge" data-songbook="${escapeHtml(fav.songbook)}">${fav.number || '?'}</span>
+                    <span class="song-number-badge" data-songbook="${escapeHtml(fav.songbook)}">${fav.number ?? ''}</span>
                     <div class="song-info flex-grow-1">
                         <span class="song-title">${escapeHtml(toTitleCase(fav.title))}${verifiedBadge(fav)}</span>
                         <small class="text-muted d-block">${songbookLabel(fav.songbook)}${tagsHtml}</small>

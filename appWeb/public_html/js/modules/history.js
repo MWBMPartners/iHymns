@@ -132,7 +132,7 @@ export class History {
                        class="list-group-item list-group-item-action song-list-item"
                        data-navigate="song"
                        data-song-id="${escapeHtml(h.id)}">
-                        <span class="song-number-badge" data-songbook="${escapeHtml(h.songbook)}">${h.number || '?'}</span>
+                        <span class="song-number-badge" data-songbook="${escapeHtml(h.songbook)}">${h.number ?? ''}</span>
                         <div class="song-info flex-grow-1">
                             <span class="song-title">${escapeHtml(toTitleCase(h.title))}${verifiedBadge(h)}</span>
                             <small class="text-muted d-block">${songbookLabel(h.songbook)}</small>
