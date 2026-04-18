@@ -105,11 +105,22 @@ $credentialsFile = dirname(__DIR__) . DIRECTORY_SEPARATOR . '.auth' . DIRECTORY_
 $credentialsDir  = dirname($credentialsFile);
 $hasExistingCreds = file_exists($credentialsFile);
 
+/* Interactive input is only possible in a real CLI environment with STDIN.
+ * The web dashboard runs this script with IHYMNS_SETUP_DASHBOARD defined;
+ * shared hosting web invocations lack STDIN too. In non-interactive mode
+ * we never prompt — we just honour whatever credentials file is present. */
+$isInteractive = $isCli && defined('STDIN') && is_resource(STDIN);
+
 if ($hasExistingCreds) {
     output("Found existing credentials: " . realpath($credentialsFile));
-    $useExisting = strtolower(prompt("Use existing credentials? (y/n)", "y"));
-    if ($useExisting === 'n' || $useExisting === 'no') {
-        $hasExistingCreds = false;
+    if ($isInteractive) {
+        $useExisting = strtolower(prompt("Use existing credentials? (y/n)", "y"));
+        if ($useExisting === 'n' || $useExisting === 'no') {
+            $hasExistingCreds = false;
+        }
+    } else {
+        output("Using existing credentials (non-interactive mode).");
+        output("");
     }
 }
 
@@ -118,15 +129,12 @@ if ($hasExistingCreds) {
  * ========================================================================= */
 
 if (!$hasExistingCreds) {
-    /* Check if we can read from STDIN interactively */
-    if (!defined('STDIN') || !is_resource(STDIN)) {
-        output("ERROR: Cannot read interactive input.");
+    if (!$isInteractive) {
+        output("ERROR: Cannot prompt for credentials (non-interactive mode).");
         output("");
-        output("To configure credentials manually:");
-        output("  1. Copy appWeb/.auth/db_credentials.example.php");
-        output("     to   appWeb/.auth/db_credentials.php");
-        output("  2. Edit db_credentials.php with your MySQL details");
-        output("  3. Re-run this installer");
+        output("Use the Setup dashboard form at /manage/setup-database.php, or");
+        output("copy appWeb/.auth/db_credentials.example.php to db_credentials.php");
+        output("and edit it by hand, then re-run this installer.");
         return;
     }
 
