@@ -168,6 +168,13 @@ $actionOutput = '';
 $actionSuccess = false;
 
 if ($action !== '') {
+    /* Signal to the included scripts that they're being run from the
+     * dashboard, so they skip `header('Content-Type: text/plain')` which
+     * would otherwise leak to the outer response and cause iOS Safari/Edge
+     * to render this page as raw plaintext (the child's <br> output is
+     * still fine — only the header propagates via buffered output). */
+    define('IHYMNS_SETUP_DASHBOARD', true);
+
     ob_start();
 
     $scriptDir = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . '.sql' . DIRECTORY_SEPARATOR . '';
@@ -210,6 +217,12 @@ if ($action !== '') {
     }
 
     $actionOutput = ob_get_clean();
+
+    /* Defence in depth: if any child script still managed to set a
+     * non-HTML Content-Type (e.g. old cached copy), override it so the
+     * dashboard HTML renders correctly on iOS Safari/Edge. */
+    header('Content-Type: text/html; charset=UTF-8');
+    header_remove('X-Content-Type-Options');
 }
 
 /* =========================================================================

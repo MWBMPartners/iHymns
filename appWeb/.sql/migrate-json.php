@@ -34,7 +34,11 @@ declare(strict_types=1);
 
 $isCli = (php_sapi_name() === 'cli');
 
-if (!$isCli) {
+if (!$isCli && !defined('IHYMNS_SETUP_DASHBOARD')) {
+    /* Only set a plaintext Content-Type when invoked standalone. When the
+     * Setup dashboard includes this script, it renders the captured <br>
+     * output inside its HTML page, so text/plain would corrupt the outer
+     * response on strict browsers (iOS Safari/Edge with nosniff). */
     header('Content-Type: text/plain; charset=UTF-8');
 }
 

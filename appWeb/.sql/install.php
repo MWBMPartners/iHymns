@@ -33,8 +33,10 @@ declare(strict_types=1);
 
 $isCli = (php_sapi_name() === 'cli');
 
-if (!$isCli) {
-    /* Web mode — works on shared hosting without CLI access (e.g., DreamHost) */
+if (!$isCli && !defined('IHYMNS_SETUP_DASHBOARD')) {
+    /* Standalone web mode — works on shared hosting without CLI access
+     * (e.g., DreamHost). When invoked by the Setup dashboard we skip
+     * these headers so the dashboard's HTML response isn't hijacked. */
     header('Content-Type: text/plain; charset=UTF-8');
     header('X-Content-Type-Options: nosniff');
     header('Cache-Control: no-store');
