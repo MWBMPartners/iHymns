@@ -184,6 +184,7 @@ if ($action !== '') {
         'users'       => 'migrate-users.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
+        'restore'     => 'restore.php',
         'drop-legacy' => 'drop-legacy-tables.php',
     ];
 
@@ -460,10 +461,52 @@ if ($hasCredentials && defined('DB_HOST')) {
                     </div>
                 </div>
             </div>
+            <?php
+                /* List available backups for restore (#405). */
+                $backupFiles = [];
+                $backupDir = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'data_share' . DIRECTORY_SEPARATOR . 'backups';
+                if (is_dir($backupDir)) {
+                    foreach (scandir($backupDir) ?: [] as $f) {
+                        if (preg_match('/^ihymns-backup-[0-9-]+\.sql(?:\.gz)?$/', $f)) {
+                            $backupFiles[] = $f;
+                        }
+                    }
+                    rsort($backupFiles);
+                }
+            ?>
             <div class="col-md-6">
                 <div class="card bg-dark border-danger h-100">
                     <div class="card-body">
-                        <h5 class="card-title">6. Drop Legacy Tables</h5>
+                        <h5 class="card-title">6. Restore from Backup</h5>
+                        <p class="card-text text-secondary small">
+                            Replace every table in the database with data from a previous backup.
+                            <strong>Destructive — consider running a fresh Backup first.</strong>
+                        </p>
+                        <?php if (!$backupFiles): ?>
+                            <p class="text-muted small mb-0">No backups found in <code>data_share/backups/</code>.</p>
+                        <?php else: ?>
+                            <form action="" method="get" class="d-flex gap-2 flex-wrap">
+                                <input type="hidden" name="action" value="restore">
+                                <select name="file" class="form-select form-select-sm" style="flex:1 1 200px">
+                                    <?php foreach ($backupFiles as $f): ?>
+                                        <option value="<?= htmlspecialchars($f) ?>"><?= htmlspecialchars($f) ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                                <button type="submit" class="btn btn-sm btn-outline-warning <?= $hasCredentials ? '' : 'disabled' ?>">Preview</button>
+                                <button type="submit" name="confirm" value="1"
+                                        class="btn btn-sm btn-danger <?= $hasCredentials ? '' : 'disabled' ?>"
+                                        onclick="return prompt('Type RESTORE (all caps) to confirm replacing every table with the selected backup.') === 'RESTORE'">
+                                    Restore
+                                </button>
+                            </form>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-danger h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">7. Drop Legacy Tables</h5>
                         <p class="card-text text-secondary small">
                             Drop any tables in the database that are <strong>not</strong>
                             part of the current <code>schema.sql</code>. Useful after
