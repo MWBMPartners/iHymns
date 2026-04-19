@@ -37,6 +37,11 @@ $err   = '';
 
 /* --- POST: update status / notes --- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+        http_response_code(403);
+        echo 'Invalid CSRF token';
+        exit;
+    }
     $id           = (int)($_POST['id']            ?? 0);
     $newStatus    = (string)($_POST['new_status'] ?? '');
     $adminNotes   = trim((string)($_POST['admin_notes'] ?? ''));
@@ -55,7 +60,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt->execute([$newStatus, $adminNotes, $resolvedSong ?: null, $id]);
             $flash = 'Request #' . $id . ' updated.';
         } catch (\Throwable $e) {
-            $err = 'Database error: ' . $e->getMessage();
+            error_log('[manage/requests.php] ' . $e->getMessage());
+            $err = 'Database error — check server logs for details.';
         }
     }
 }
@@ -84,7 +90,10 @@ try {
         $stmt->execute([$filter]);
     }
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (\Throwable $e) { $err = $e->getMessage(); }
+} catch (\Throwable $e) {
+    error_log('[manage/requests.php] ' . $e->getMessage());
+    $err = 'Could not load requests — check server logs for details.';
+}
 
 $counts = [];
 try {
@@ -198,6 +207,7 @@ try {
                     <tr class="collapse" id="row-<?= (int)$r['Id'] ?>">
                         <td colspan="7" class="bg-body-secondary p-3">
                             <form method="post" class="row g-2">
+                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(csrfToken()) ?>">
                                 <input type="hidden" name="id" value="<?= (int)$r['Id'] ?>">
                                 <div class="col-md-3">
                                     <label class="form-label small">Status</label>

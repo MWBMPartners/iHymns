@@ -34,6 +34,13 @@ $error = '';
 
 /* ---------- POST: persist new mapping ---------- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    /* CSRF check — matches the token minted by csrfToken() and stored in
+       the admin session. */
+    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+        http_response_code(403);
+        echo 'Invalid CSRF token';
+        exit;
+    }
     $submitted = $_POST['ent'] ?? [];
     if (!is_array($submitted)) $submitted = [];
 
@@ -128,6 +135,7 @@ foreach (ENTITLEMENTS as $n => $_) {
     <?php endif; ?>
 
     <form method="post" action="">
+        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(csrfToken()) ?>">
         <?php foreach ($grouped as $groupName => $ents): ?>
             <div class="card-admin p-3 mb-3">
                 <h2 class="h6 mb-3"><?= htmlspecialchars($groupName) ?></h2>

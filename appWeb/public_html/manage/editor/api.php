@@ -541,7 +541,9 @@ switch ($action) {
             }
             http_response_code(500);
             error_log('[editor save_song] ' . $e->getMessage());
-            echo json_encode(['error' => 'Failed to save song: ' . $e->getMessage()]);
+            /* Do not expose DB internals to the client — the details are
+               in the server error log for admins to inspect. */
+            echo json_encode(['error' => 'Failed to save song. Check server logs for details.']);
         }
         break;
 

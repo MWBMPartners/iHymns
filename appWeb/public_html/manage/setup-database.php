@@ -75,6 +75,16 @@ $credFormValues = [
 $credError   = '';
 $credSuccess = '';
 
+/* CSRF gate for every POST on this page — the credentials form AND
+   the backup-upload form go through here. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+        http_response_code(403);
+        echo 'Invalid CSRF token';
+        exit;
+    }
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save-credentials') {
     $host   = trim((string)($_POST['host']    ?? ''));
     $port   = trim((string)($_POST['port']    ?? '3306'));
@@ -308,6 +318,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                     <?php endif; ?>
                 </p>
                 <form method="post" action="" autocomplete="off">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(csrfToken()) ?>">
                     <input type="hidden" name="action" value="save-credentials">
                     <div class="row g-3">
                         <div class="col-md-8">
@@ -564,6 +575,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                         <hr class="my-2">
                         <p class="text-muted small mb-2">Or upload a `.sql.gz` / `.sql` from your computer:</p>
                         <form action="" method="post" enctype="multipart/form-data" class="d-flex gap-2 flex-wrap">
+                            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(csrfToken()) ?>">
                             <input type="hidden" name="action" value="upload-backup">
                             <input type="file" name="backup" accept=".sql,.sql.gz,.gz" required
                                    class="form-control form-control-sm" style="flex:1 1 200px">
