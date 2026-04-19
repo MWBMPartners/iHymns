@@ -473,6 +473,62 @@ if ($hasCredentials && defined('DB_HOST')) {
                     }
                     rsort($backupFiles);
                 }
+
+                /* Handle an admin-supplied upload (#405). Accepts .sql + .sql.gz
+                   files matching the backup naming pattern, drops them into
+                   the server's backups directory, and logs the upload. */
+                $uploadMsg = '';
+                if ($_SERVER['REQUEST_METHOD'] === 'POST'
+                    && ($_POST['action'] ?? '') === 'upload-backup'
+                    && !empty($_FILES['backup']['name'])) {
+                    $f = $_FILES['backup'];
+                    $safeName = basename((string)$f['name']);
+                    if ($f['error'] !== UPLOAD_ERR_OK) {
+                        $uploadMsg = 'Upload failed (error ' . (int)$f['error'] . ').';
+                    } elseif (!preg_match('/^ihymns-backup-[0-9-]+\.sql(?:\.gz)?$/', $safeName)) {
+                        $uploadMsg = 'Filename must match ihymns-backup-YYYYMMDD-HHMMSS.sql(.gz).';
+                    } elseif ((int)$f['size'] > 256 * 1024 * 1024) {
+                        $uploadMsg = 'Upload rejected: file exceeds 256 MB.';
+                    } else {
+                        if (!is_dir($backupDir)) { @mkdir($backupDir, 0755, true); }
+                        $dest = $backupDir . DIRECTORY_SEPARATOR . $safeName;
+                        if (move_uploaded_file($f['tmp_name'], $dest)) {
+                            @chmod($dest, 0640);
+                            $uploadMsg = 'Uploaded: ' . $safeName . ' — pick it from the list below to restore.';
+                            /* Audit-log entry (#405). Silent no-op if the table is
+                               absent or the activity log helper isn't available. */
+                            try {
+                                $auditDb = getDbMysqli();
+                                $auditUser = $currentUser['Username'] ?? 'unknown';
+                                $auditSql = sprintf(
+                                    'backup upload by %s: %s (%d bytes)',
+                                    $auditUser, $safeName, (int)$f['size']
+                                );
+                                $stmt = $auditDb->prepare(
+                                    'INSERT INTO tblActivityLog (UserId, ActionType, Details) VALUES (?, ?, ?)'
+                                );
+                                if ($stmt) {
+                                    $uid = isset($currentUser['Id']) ? (int)$currentUser['Id'] : 0;
+                                    $action = 'backup_upload';
+                                    $stmt->bind_param('iss', $uid, $action, $auditSql);
+                                    @$stmt->execute();
+                                    $stmt->close();
+                                }
+                            } catch (\Throwable $_e) { /* best effort */ }
+                            /* Refresh the file list so the uploaded file appears
+                               in the dropdown immediately. */
+                            $backupFiles = [];
+                            foreach (scandir($backupDir) ?: [] as $bf) {
+                                if (preg_match('/^ihymns-backup-[0-9-]+\.sql(?:\.gz)?$/', $bf)) {
+                                    $backupFiles[] = $bf;
+                                }
+                            }
+                            rsort($backupFiles);
+                        } else {
+                            $uploadMsg = 'Could not save the uploaded file.';
+                        }
+                    }
+                }
             ?>
             <div class="col-md-6">
                 <div class="card bg-dark border-danger h-100">
@@ -482,10 +538,12 @@ if ($hasCredentials && defined('DB_HOST')) {
                             Replace every table in the database with data from a previous backup.
                             <strong>Destructive — consider running a fresh Backup first.</strong>
                         </p>
-                        <?php if (!$backupFiles): ?>
-                            <p class="text-muted small mb-0">No backups found in <code>data_share/backups/</code>.</p>
-                        <?php else: ?>
-                            <form action="" method="get" class="d-flex gap-2 flex-wrap">
+                        <?php if ($uploadMsg): ?>
+                            <div class="alert alert-info py-2 small"><?= htmlspecialchars($uploadMsg) ?></div>
+                        <?php endif; ?>
+
+                        <?php if ($backupFiles): ?>
+                            <form action="" method="get" class="d-flex gap-2 flex-wrap mb-2">
                                 <input type="hidden" name="action" value="restore">
                                 <select name="file" class="form-select form-select-sm" style="flex:1 1 200px">
                                     <?php foreach ($backupFiles as $f): ?>
@@ -499,7 +557,20 @@ if ($hasCredentials && defined('DB_HOST')) {
                                     Restore
                                 </button>
                             </form>
+                        <?php else: ?>
+                            <p class="text-muted small mb-2">No backups found in <code>data_share/backups/</code>.</p>
                         <?php endif; ?>
+
+                        <hr class="my-2">
+                        <p class="text-muted small mb-2">Or upload a `.sql.gz` / `.sql` from your computer:</p>
+                        <form action="" method="post" enctype="multipart/form-data" class="d-flex gap-2 flex-wrap">
+                            <input type="hidden" name="action" value="upload-backup">
+                            <input type="file" name="backup" accept=".sql,.sql.gz,.gz" required
+                                   class="form-control form-control-sm" style="flex:1 1 200px">
+                            <button type="submit" class="btn btn-sm btn-outline-secondary <?= $hasCredentials ? '' : 'disabled' ?>">
+                                Upload
+                            </button>
+                        </form>
                     </div>
                 </div>
             </div>
