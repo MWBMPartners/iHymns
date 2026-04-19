@@ -54,7 +54,94 @@ const ENTITLEMENTS = [
 
     /* Content moderation */
     'review_song_requests' => ['editor', 'admin', 'global_admin'],
+
+    /* Meta */
+    'manage_entitlements'  => ['global_admin'],
 ];
+
+/**
+ * In-memory cache of the effective map (defaults merged with any admin
+ * overrides from tblAppSettings). Populated lazily by effectiveEntitlements().
+ */
+$_ihymns_effective_entitlements = null;
+
+/**
+ * Return the effective entitlement map, applying any admin overrides
+ * saved under `tblAppSettings.SettingKey = 'entitlements_overrides'`.
+ *
+ * The override value is a JSON map of `entitlement => [role, …]` that
+ * completely replaces the default list for each entitlement it covers.
+ * Entitlements absent from the override keep their hardcoded default,
+ * so adding a new entitlement in code never needs a DB change.
+ *
+ * @return array<string, string[]>
+ */
+function effectiveEntitlements(): array
+{
+    global $_ihymns_effective_entitlements;
+    if ($_ihymns_effective_entitlements !== null) {
+        return $_ihymns_effective_entitlements;
+    }
+
+    $map = ENTITLEMENTS;
+
+    /* getDb() is PDO, defined in manage/includes/db.php. Not every
+       caller pre-loads it, so fail soft — an unreachable DB falls back
+       to the hardcoded defaults. */
+    if (function_exists('getDb')) {
+        try {
+            $db = getDb();
+            $stmt = $db->prepare(
+                'SELECT SettingValue FROM tblAppSettings WHERE SettingKey = ?'
+            );
+            $stmt->execute(['entitlements_overrides']);
+            $raw = (string)($stmt->fetchColumn() ?: '');
+            if ($raw !== '') {
+                $decoded = json_decode($raw, true);
+                if (is_array($decoded)) {
+                    foreach ($decoded as $ent => $roles) {
+                        if (isset($map[$ent]) && is_array($roles)) {
+                            $map[$ent] = array_values(array_filter($roles, 'is_string'));
+                        }
+                    }
+                }
+            }
+        } catch (\Throwable $_e) {
+            /* DB unreachable — stick with defaults. */
+        }
+    }
+
+    $_ihymns_effective_entitlements = $map;
+    return $map;
+}
+
+/**
+ * Replace (or clear) the admin overrides. Called from
+ * /manage/entitlements.php after the form is saved.
+ *
+ * @param array<string, string[]> $overrides Full intended map
+ *        (overrides for every entitlement, not deltas).
+ * @return bool
+ */
+function saveEntitlementOverrides(array $overrides): bool
+{
+    global $_ihymns_effective_entitlements;
+    if (!function_exists('getDb')) return false;
+    try {
+        $db = getDb();
+        $json = json_encode($overrides, JSON_UNESCAPED_SLASHES);
+        $stmt = $db->prepare(
+            'INSERT INTO tblAppSettings (SettingKey, SettingValue)
+             VALUES (?, ?)
+             ON DUPLICATE KEY UPDATE SettingValue = VALUES(SettingValue)'
+        );
+        $stmt->execute(['entitlements_overrides', (string)$json]);
+        $_ihymns_effective_entitlements = null; /* bust cache */
+        return true;
+    } catch (\Throwable $_e) {
+        return false;
+    }
+}
 
 /**
  * Does the given role hold the named entitlement?
@@ -68,7 +155,8 @@ function userHasEntitlement(string $entitlement, ?string $role): bool
     if ($role === null || $role === '') {
         return false;
     }
-    $allowed = ENTITLEMENTS[$entitlement] ?? null;
+    $map = effectiveEntitlements();
+    $allowed = $map[$entitlement] ?? null;
     if ($allowed === null) {
         /* Unknown entitlement — fail closed. */
         return false;
@@ -88,7 +176,7 @@ function entitlementsFor(?string $role): array
 {
     if ($role === null || $role === '') return [];
     $out = [];
-    foreach (ENTITLEMENTS as $name => $roles) {
+    foreach (effectiveEntitlements() as $name => $roles) {
         if (in_array($role, $roles, true)) {
             $out[] = $name;
         }

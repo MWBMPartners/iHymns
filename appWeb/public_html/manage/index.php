@@ -152,6 +152,20 @@ $csrf = csrfToken();
                 </div>
             </div>
             <?php endif; ?>
+            <?php
+                require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+                if (userHasEntitlement('manage_entitlements', $currentUser['role'] ?? null)):
+            ?>
+            <div class="col-md-4">
+                <div class="card-admin">
+                    <a href="/manage/entitlements" class="quick-link">
+                        <i class="bi bi-key d-block mb-2"></i>
+                        <strong>Entitlements</strong>
+                        <div class="small text-muted">Assign capabilities to roles</div>
+                    </a>
+                </div>
+            </div>
+            <?php endif; ?>
             <div class="col-md-4">
                 <div class="card-admin">
                     <a href="/" class="quick-link" target="_blank">
