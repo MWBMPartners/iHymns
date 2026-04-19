@@ -357,6 +357,38 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
+         * Bulk audio manifest (#401) — returns the list of audio URLs
+         * for a songbook so the service worker can pre-cache audio
+         * separately from song HTML. Only songs whose `hasAudio` flag
+         * is set are returned.
+         *
+         * Parameters: songbook (optional; all if omitted)
+         * ----------------------------------------------------------------- */
+        case 'bulk_audio':
+            $audioBook  = isset($_GET['songbook']) ? trim($_GET['songbook']) : '';
+            $audioSongs = $audioBook !== ''
+                ? $songData->getSongs($audioBook)
+                : $songData->getSongs();
+
+            $manifest = [];
+            foreach ($audioSongs as $s) {
+                if (empty($s['hasAudio'])) continue;
+                $sid = $s['id'] ?? '';
+                if ($sid === '') continue;
+                $manifest[] = [
+                    'songId' => $sid,
+                    'url'    => '/data/audio/' . rawurlencode($sid) . '.mp3',
+                ];
+            }
+
+            sendJson([
+                'songbook' => $audioBook ?: 'all',
+                'count'    => count($manifest),
+                'audio'    => $manifest,
+            ]);
+            break;
+
+        /* -----------------------------------------------------------------
          * Serve the full song data as JSON (#154, #270)
          *
          * Exports the complete song database from MySQL as JSON for

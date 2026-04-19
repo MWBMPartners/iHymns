@@ -39,6 +39,7 @@ export class Settings {
             reduceTransparency: false,
             fontSize: 18,
             keyboardShortcuts: true,  /* '?' opens help, '/' focuses search, etc. (#406) */
+            includeAudioOffline: false, /* Include audio files in offline download (#401) */
         };
 
         /**
@@ -425,6 +426,17 @@ export class Settings {
             shortcutsToggle.checked = this.get('keyboardShortcuts') !== false;
             shortcutsToggle.addEventListener('change', () => {
                 this.set('keyboardShortcuts', shortcutsToggle.checked);
+            });
+        }
+
+        /* Include-audio-offline toggle (#401). Read by the offline download
+           flow; when true, each songbook download fetches /api?action=bulk_audio
+           and asks the SW to cache every listed audio URL. */
+        const audioOfflineToggle = document.getElementById('setting-include-audio-offline');
+        if (audioOfflineToggle) {
+            audioOfflineToggle.checked = !!this.get('includeAudioOffline');
+            audioOfflineToggle.addEventListener('change', () => {
+                this.set('includeAudioOffline', audioOfflineToggle.checked);
             });
         }
 
