@@ -1034,37 +1034,64 @@ body.banner-visible.search-open .main-content {
     line-height: 1.7;
 }
 
+/* Song components — each verse / chorus / bridge is a distinct block.
+   The left-border acts as an identity strip per component type, and a
+   subtle top hairline separates consecutive components so verse
+   boundaries are unambiguous in dark mode (#407). */
 .lyric-component {
     margin-bottom: 1.5rem;
-    padding-left: 1rem;
-    border-left: 3px solid transparent;
+    padding: 0.5rem 1rem 0.5rem 1rem;
+    border-left: 4px solid var(--card-border);
+    border-top: 1px solid var(--card-border);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+/* First component in a song — no top hairline needed. */
+.song-lyrics > .lyric-component:first-child,
+.presentation-lyrics > .lyric-component:first-child {
+    border-top-color: transparent;
 }
 
 .lyric-label {
-    font-size: 0.75rem;
+    display: inline-block;
+    font-size: 0.7rem;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-muted);
-    margin-bottom: 0.25rem;
+    letter-spacing: 0.08em;
+    color: var(--text-primary);
+    background-color: var(--surface-elevated);
+    padding: 0.15em 0.55em;
+    border-radius: 999px;
+    margin-bottom: 0.4rem;
+    border: 1px solid var(--card-border);
+    opacity: 0.9;
 }
 
 .lyric-line {
     margin-bottom: 0.15rem;
 }
 
-/* Verse styling */
+/* Verse styling — neutral border so it reads as the "default" block. */
 .lyric-verse {
     border-left-color: var(--card-border);
 }
+[data-bs-theme="dark"] .lyric-verse {
+    /* Bump contrast in dark mode where `--card-border` is nearly invisible. */
+    border-left-color: rgba(255, 255, 255, 0.18);
+}
 
-/* Chorus styling — highlighted */
+/* Chorus styling — emphasised with accent gradient strip + subtle tint. */
 .lyric-chorus,
 .lyric-refrain {
     background-color: var(--lyric-chorus-bg);
     border-left-color: var(--lyric-chorus-border);
-    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
     padding: 0.75rem 1rem;
+}
+.lyric-chorus .lyric-label,
+.lyric-refrain .lyric-label {
+    background-color: var(--lyric-chorus-border);
+    color: #ffffff;
+    border-color: transparent;
+    opacity: 1;
 }
 
 /* Bridge styling */
@@ -1670,15 +1697,33 @@ body.reduce-motion .btn-autoscroll-fab {
 
 .presentation-lyrics .lyric-component {
     margin-bottom: 2rem;
+    /* Presentation mode uses a stronger left-border and a softer top
+       separator so verses read as distinct slabs at projector scale. */
+    border-left-width: 5px;
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+    padding: 0.75rem 1.25rem;
+}
+.presentation-lyrics > .lyric-component:first-child {
+    border-top-color: transparent;
 }
 
 .presentation-lyrics .lyric-label {
-    font-size: 0.5em;
-    font-weight: 600;
+    display: inline-block;
+    font-size: 0.4em;
+    font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--bs-secondary-color, #6c757d);
-    margin-bottom: 0.5rem;
+    letter-spacing: 0.1em;
+    color: #fff;
+    background-color: rgba(255, 255, 255, 0.12);
+    padding: 0.2em 0.75em;
+    border-radius: 999px;
+    margin-bottom: 0.7rem;
+    opacity: 0.85;
+}
+.presentation-lyrics .lyric-chorus .lyric-label,
+.presentation-lyrics .lyric-refrain .lyric-label {
+    background-color: var(--lyric-chorus-border);
+    opacity: 1;
 }
 
 /* Hide header/footer/scroll-to-top in presentation mode */

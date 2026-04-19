@@ -2538,6 +2538,17 @@ function init() {
     loadSongsFromURL(DEFAULT_SONGS_URL).then(function () {
         /* After successful load, populate the songbook dropdown with real data. */
         populateSongbookFilterDropdown();
+
+        /* Deep-link support (#407): /manage/editor/?song=<SongId> opens
+           directly on that song when it exists in songData. Used by the
+           Edit button on the public song view. */
+        try {
+            var sid = new URLSearchParams(window.location.search).get('song');
+            if (sid && Array.isArray(songData.songs)
+                && songData.songs.some(function (s) { return s.id === sid; })) {
+                selectSong(sid);
+            }
+        } catch (_e) { /* malformed URL — ignore */ }
     });
 }
 
