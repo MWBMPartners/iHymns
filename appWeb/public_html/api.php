@@ -3931,6 +3931,105 @@ if ($action !== null) {
          * Submit a song request (#403). Public endpoint; rate-limited by
          * IP to 5 submissions per 24 h. Honeypot field rejects bots.
          * ----------------------------------------------------------------- */
+        /* -----------------------------------------------------------------
+         * Setlist scheduling (#398) — ties a setlist to a date.
+         * Auth required. Operates on the signed-in user's own setlists
+         * via the SetlistId string (same ID used by tblUserSetlists).
+         * ----------------------------------------------------------------- */
+        case 'setlist_schedule_set':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+
+            $body      = json_decode((string)file_get_contents('php://input'), true) ?? [];
+            $setlistId = trim((string)($body['setlistId'] ?? ''));
+            $dateStr   = trim((string)($body['date']      ?? ''));
+            $notes     = trim((string)($body['notes']     ?? ''));
+
+            if ($setlistId === '' || $dateStr === '') {
+                sendJson(['error' => 'setlistId and date are required.'], 400);
+                break;
+            }
+            /* Validate YYYY-MM-DD */
+            $d = DateTime::createFromFormat('Y-m-d', $dateStr);
+            if (!$d || $d->format('Y-m-d') !== $dateStr) {
+                sendJson(['error' => 'Invalid date (expected YYYY-MM-DD).'], 400);
+                break;
+            }
+
+            try {
+                $db = getDb();
+                /* Verify the caller owns the setlist */
+                $own = $db->prepare('SELECT 1 FROM tblUserSetlists WHERE UserId = ? AND SetlistId = ? LIMIT 1');
+                $own->execute([(int)$authUser['Id'], $setlistId]);
+                if (!$own->fetchColumn()) {
+                    sendJson(['error' => 'Setlist not found.'], 404);
+                    break;
+                }
+                /* Replace any existing schedule for this (user, setlist) pair. */
+                $del = $db->prepare('DELETE FROM tblSetlistSchedule WHERE UserId = ? AND SetlistId = ?');
+                $del->execute([(int)$authUser['Id'], $setlistId]);
+                $ins = $db->prepare(
+                    'INSERT INTO tblSetlistSchedule (SetlistId, UserId, ScheduledDate, Notes)
+                     VALUES (?, ?, ?, ?)'
+                );
+                $ins->execute([$setlistId, (int)$authUser['Id'], $dateStr, $notes]);
+                sendJson(['ok' => true]);
+            } catch (\Throwable $e) {
+                error_log('[setlist_schedule_set] ' . $e->getMessage());
+                sendJson(['error' => 'Could not schedule the setlist.'], 500);
+            }
+            break;
+
+        case 'setlist_schedule_clear':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            $body = json_decode((string)file_get_contents('php://input'), true) ?? [];
+            $setlistId = trim((string)($body['setlistId'] ?? ''));
+            if ($setlistId === '') { sendJson(['error' => 'setlistId required.'], 400); break; }
+
+            try {
+                $db = getDb();
+                $stmt = $db->prepare('DELETE FROM tblSetlistSchedule WHERE UserId = ? AND SetlistId = ?');
+                $stmt->execute([(int)$authUser['Id'], $setlistId]);
+                sendJson(['ok' => true]);
+            } catch (\Throwable $e) {
+                error_log('[setlist_schedule_clear] ' . $e->getMessage());
+                sendJson(['error' => 'Could not clear schedule.'], 500);
+            }
+            break;
+
+        case 'setlist_schedule_upcoming':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+
+            try {
+                $db = getDb();
+                $stmt = $db->prepare(
+                    'SELECT s.SetlistId, s.ScheduledDate, s.Notes, l.Name AS name
+                       FROM tblSetlistSchedule s
+                       LEFT JOIN tblUserSetlists l
+                              ON l.UserId = s.UserId AND l.SetlistId = s.SetlistId
+                      WHERE s.UserId = ? AND s.ScheduledDate >= CURRENT_DATE()
+                      ORDER BY s.ScheduledDate ASC
+                      LIMIT 25'
+                );
+                $stmt->execute([(int)$authUser['Id']]);
+                $upcoming = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                sendJson(['upcoming' => $upcoming]);
+            } catch (\Throwable $e) {
+                error_log('[setlist_schedule_upcoming] ' . $e->getMessage());
+                sendJson(['error' => 'Could not load schedule.'], 500);
+            }
+            break;
+
         case 'song_request_submit':
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
                 sendJson(['error' => 'POST method required.'], 405);
