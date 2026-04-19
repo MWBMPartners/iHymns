@@ -298,12 +298,32 @@ $currentUser = getCurrentUser();
                     <span id="song-count">0 songs</span>
                     <span id="songCountFiltered" style="display: none;"> (showing <span id="filteredCount">0</span>)</span>
                 </span>
-                <span>
+                <span class="d-flex gap-1">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-select-mode"
+                            title="Multi-select mode (#399)" aria-pressed="false">
+                        <i class="bi bi-check2-square me-1"></i>Select
+                    </button>
                     <button type="button" class="btn btn-sm btn-amber" id="btn-add-song" title="Add new song">
                         <i class="bi bi-plus-lg me-1"></i>Add
                     </button>
                     <button type="button" class="btn btn-sm btn-outline-danger" id="btn-delete-song" title="Delete selected song">
                         <i class="bi bi-trash me-1"></i>Delete
+                    </button>
+                </span>
+            </div>
+
+            <!-- Bulk-actions toolbar — shown only in multi-select mode (#399). -->
+            <div class="bulk-actions-bar d-none align-items-center justify-content-between px-3 py-2"
+                 id="bulk-actions-bar"
+                 style="background-color: rgba(129,140,248,0.1); border-top: 1px solid var(--card-border);">
+                <span class="small">
+                    <span id="bulk-selected-count">0</span> selected
+                </span>
+                <span class="d-flex gap-1">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-bulk-select-all">All</button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-bulk-select-none">None</button>
+                    <button type="button" class="btn btn-sm btn-danger" id="btn-bulk-delete" disabled>
+                        <i class="bi bi-trash me-1"></i>Delete selected
                     </button>
                 </span>
             </div>

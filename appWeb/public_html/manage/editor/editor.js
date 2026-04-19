@@ -371,6 +371,27 @@ function renderSongList(filter) {
         li.href = '#';
         li.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center';
 
+        /* Multi-select mode (#399): prepend a checkbox that mirrors
+           the selected state and clicking it toggles selection without
+           navigating to the song. */
+        if (window._selectMode) {
+            var cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.className = 'form-check-input me-2 flex-shrink-0';
+            cb.dataset.songId = song.id;
+            cb.checked = window._selectedIds && window._selectedIds.has(song.id);
+            cb.addEventListener('click', function (e) {
+                e.stopPropagation();
+            });
+            cb.addEventListener('change', function () {
+                if (!window._selectedIds) window._selectedIds = new Set();
+                if (cb.checked) window._selectedIds.add(song.id);
+                else window._selectedIds.delete(song.id);
+                updateBulkActionsBar();
+            });
+            li.appendChild(cb);
+        }
+
         /* Highlight the currently selected song. */
         if (song.id === currentSongId) {
             li.classList.add('active');
@@ -2593,5 +2614,95 @@ function init() {
     });
 }
 
+/* ============================================================================
+ *  MULTI-SELECT MODE (#399)
+ *  --------------------------------------------------------------------------
+ *  Lightweight multi-select in the sidebar for bulk-delete. Not as rich as
+ *  the originally-scoped "bulk tag / move / export" toolbar — the delete
+ *  path alone covers the most-requested curator need; richer actions can
+ *  be added later without the sidebar surgery needed for multi-select.
+ * ========================================================================== */
+
+function updateBulkActionsBar() {
+    var bar = document.getElementById('bulk-actions-bar');
+    var countEl = document.getElementById('bulk-selected-count');
+    var deleteBtn = document.getElementById('btn-bulk-delete');
+    if (!bar || !countEl) return;
+    var count = (window._selectedIds && window._selectedIds.size) || 0;
+    countEl.textContent = count;
+    if (deleteBtn) deleteBtn.disabled = count === 0;
+}
+
+function toggleSelectMode(on) {
+    window._selectMode = !!on;
+    window._selectedIds = window._selectedIds || new Set();
+    if (!on) window._selectedIds.clear();
+
+    var bar    = document.getElementById('bulk-actions-bar');
+    var toggle = document.getElementById('btn-select-mode');
+    if (bar) bar.classList.toggle('d-none', !on);
+    if (toggle) {
+        toggle.setAttribute('aria-pressed', on ? 'true' : 'false');
+        toggle.classList.toggle('btn-amber-solid', on);
+        toggle.classList.toggle('btn-outline-secondary', !on);
+    }
+    renderSongList();
+    updateBulkActionsBar();
+}
+
+function bindMultiSelectListeners() {
+    var toggle = document.getElementById('btn-select-mode');
+    if (toggle) toggle.addEventListener('click', function () {
+        toggleSelectMode(!window._selectMode);
+    });
+
+    var all = document.getElementById('btn-bulk-select-all');
+    if (all) all.addEventListener('click', function () {
+        window._selectedIds = new Set(
+            (songData.songs || []).map(function (s) { return s.id; })
+        );
+        renderSongList();
+        updateBulkActionsBar();
+    });
+
+    var none = document.getElementById('btn-bulk-select-none');
+    if (none) none.addEventListener('click', function () {
+        window._selectedIds = new Set();
+        renderSongList();
+        updateBulkActionsBar();
+    });
+
+    var del = document.getElementById('btn-bulk-delete');
+    if (del) del.addEventListener('click', function () {
+        var ids = Array.from(window._selectedIds || []);
+        if (!ids.length) return;
+        var threshold = 10;
+        if (ids.length >= threshold) {
+            var typed = prompt(
+                'About to delete ' + ids.length + ' songs. Type DELETE to confirm.'
+            );
+            if (typed !== 'DELETE') return;
+        } else if (!confirm('Delete ' + ids.length + ' selected song(s)? This cannot be undone until you Save.')) {
+            return;
+        }
+
+        var idSet = new Set(ids);
+        songData.songs = (songData.songs || []).filter(function (s) { return !idSet.has(s.id); });
+        ids.forEach(function (id) { modifiedSongIds.delete(id); });
+        if (currentSongId && idSet.has(currentSongId)) {
+            currentSongId = null;
+            clearEditForm();
+        }
+        window._selectedIds = new Set();
+        renderSongList();
+        updateStatusBar();
+        updateBulkActionsBar();
+        showToast('Deleted ' + ids.length + ' songs. Click Save to persist.', 'warning');
+    });
+}
+
 /* ---- Kick everything off once the DOM is ready ---- */
-document.addEventListener('DOMContentLoaded', init);
+document.addEventListener('DOMContentLoaded', function () {
+    init();
+    bindMultiSelectListeners();
+});
