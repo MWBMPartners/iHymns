@@ -4077,6 +4077,175 @@ if ($action !== null) {
             }
             break;
 
+        /* -------------------------------------------------------------
+         * SETLIST COLLABORATION (#398)
+         * Four endpoints manage tblSetlistCollaborators. Owner of the
+         * setlist can invite by email, list existing collaborators,
+         * and revoke. A separate endpoint returns the setlists the
+         * current user has been invited to.
+         * ----------------------------------------------------------- */
+
+        /* GET ?action=setlist_schedule_current&setlistId=X — fetch the
+         * existing schedule (if any) for a setlist the caller owns. */
+        case 'setlist_schedule_current':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            $setlistId = trim((string)($_GET['setlistId'] ?? ''));
+            if ($setlistId === '') { sendJson(['error' => 'setlistId required.'], 400); break; }
+            try {
+                $db = getDb();
+                $stmt = $db->prepare(
+                    'SELECT ScheduledDate, Notes
+                       FROM tblSetlistSchedule
+                      WHERE UserId = ? AND SetlistId = ?
+                      LIMIT 1'
+                );
+                $stmt->execute([(int)$authUser['Id'], $setlistId]);
+                $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                sendJson(['schedule' => $row ?: null]);
+            } catch (\Throwable $e) {
+                error_log('[setlist_schedule_current] ' . $e->getMessage());
+                sendJson(['error' => 'Could not load schedule.'], 500);
+            }
+            break;
+
+        case 'setlist_collab_invite':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            $body = json_decode((string)file_get_contents('php://input'), true) ?? [];
+            $setlistId  = trim((string)($body['setlistId']        ?? ''));
+            $collabEml  = trim((string)($body['collaboratorEmail'] ?? ''));
+            $permission = strtolower(trim((string)($body['permission'] ?? 'edit')));
+            if (!in_array($permission, ['view', 'edit'], true)) { $permission = 'edit'; }
+            if ($setlistId === '' || $collabEml === '') {
+                sendJson(['error' => 'setlistId and collaboratorEmail required.'], 400);
+                break;
+            }
+            if (!filter_var($collabEml, FILTER_VALIDATE_EMAIL)) {
+                sendJson(['error' => 'Invalid email address.'], 400);
+                break;
+            }
+            try {
+                $db = getDb();
+                /* Owner check */
+                $own = $db->prepare('SELECT 1 FROM tblUserSetlists WHERE UserId = ? AND SetlistId = ? LIMIT 1');
+                $own->execute([(int)$authUser['Id'], $setlistId]);
+                if (!$own->fetchColumn()) { sendJson(['error' => 'Setlist not found.'], 404); break; }
+
+                /* Resolve collaborator by email */
+                $usr = $db->prepare('SELECT Id, Username FROM tblUsers WHERE Email = ? LIMIT 1');
+                $usr->execute([$collabEml]);
+                $collab = $usr->fetch(PDO::FETCH_ASSOC);
+                if (!$collab) {
+                    sendJson(['error' => 'No user with that email yet — ask them to sign in first.'], 404);
+                    break;
+                }
+                if ((int)$collab['Id'] === (int)$authUser['Id']) {
+                    sendJson(['error' => 'You cannot invite yourself.'], 400);
+                    break;
+                }
+
+                $ins = $db->prepare(
+                    'INSERT INTO tblSetlistCollaborators (SetlistOwnerId, SetlistId, CollaboratorId, Permission)
+                     VALUES (?, ?, ?, ?)
+                     ON DUPLICATE KEY UPDATE Permission = VALUES(Permission)'
+                );
+                $ins->execute([(int)$authUser['Id'], $setlistId, (int)$collab['Id'], $permission]);
+                sendJson([
+                    'ok' => true,
+                    'collaborator' => [
+                        'id'         => (int)$collab['Id'],
+                        'username'   => $collab['Username'],
+                        'permission' => $permission,
+                    ],
+                ]);
+            } catch (\Throwable $e) {
+                error_log('[setlist_collab_invite] ' . $e->getMessage());
+                sendJson(['error' => 'Could not invite collaborator.'], 500);
+            }
+            break;
+
+        case 'setlist_collab_list':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            $setlistId = trim((string)($_GET['setlistId'] ?? ''));
+            if ($setlistId === '') { sendJson(['error' => 'setlistId required.'], 400); break; }
+            try {
+                $db = getDb();
+                $stmt = $db->prepare(
+                    'SELECT c.CollaboratorId AS id, u.Username AS username, u.Email AS email,
+                            c.Permission AS permission, c.InvitedAt AS invitedAt
+                       FROM tblSetlistCollaborators c
+                       JOIN tblUsers u ON u.Id = c.CollaboratorId
+                      WHERE c.SetlistOwnerId = ? AND c.SetlistId = ?
+                      ORDER BY c.InvitedAt DESC'
+                );
+                $stmt->execute([(int)$authUser['Id'], $setlistId]);
+                $list = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                sendJson(['collaborators' => $list]);
+            } catch (\Throwable $e) {
+                error_log('[setlist_collab_list] ' . $e->getMessage());
+                sendJson(['error' => 'Could not load collaborators.'], 500);
+            }
+            break;
+
+        case 'setlist_collab_remove':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            $body = json_decode((string)file_get_contents('php://input'), true) ?? [];
+            $setlistId = trim((string)($body['setlistId'] ?? ''));
+            $collabId  = (int)($body['collaboratorId'] ?? 0);
+            if ($setlistId === '' || $collabId <= 0) {
+                sendJson(['error' => 'setlistId and collaboratorId required.'], 400);
+                break;
+            }
+            try {
+                $db = getDb();
+                $stmt = $db->prepare(
+                    'DELETE FROM tblSetlistCollaborators
+                      WHERE SetlistOwnerId = ? AND SetlistId = ? AND CollaboratorId = ?'
+                );
+                $stmt->execute([(int)$authUser['Id'], $setlistId, $collabId]);
+                sendJson(['ok' => true, 'removed' => $stmt->rowCount()]);
+            } catch (\Throwable $e) {
+                error_log('[setlist_collab_remove] ' . $e->getMessage());
+                sendJson(['error' => 'Could not remove collaborator.'], 500);
+            }
+            break;
+
+        case 'setlist_collab_shared_with_me':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            try {
+                $db = getDb();
+                $stmt = $db->prepare(
+                    'SELECT c.SetlistOwnerId AS ownerId, u.Username AS ownerName,
+                            c.SetlistId AS setlistId, c.Permission AS permission,
+                            l.Name AS name
+                       FROM tblSetlistCollaborators c
+                       JOIN tblUsers u ON u.Id = c.SetlistOwnerId
+                       LEFT JOIN tblUserSetlists l
+                              ON l.UserId = c.SetlistOwnerId AND l.SetlistId = c.SetlistId
+                      WHERE c.CollaboratorId = ?
+                      ORDER BY c.InvitedAt DESC'
+                );
+                $stmt->execute([(int)$authUser['Id']]);
+                $shared = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                sendJson(['shared' => $shared]);
+            } catch (\Throwable $e) {
+                error_log('[setlist_collab_shared_with_me] ' . $e->getMessage());
+                sendJson(['error' => 'Could not load shared setlists.'], 500);
+            }
+            break;
+
         case 'song_request_submit':
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
                 sendJson(['error' => 'POST method required.'], 405);
