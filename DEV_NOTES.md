@@ -728,6 +728,41 @@ Tier management is restricted to **Admin** and **Global Admin** roles only.
 
 **Web dashboard:** `/manage/setup-database` for database administration.
 
+---
+
+## Admin Portal (`/manage/` + `/admin/` alias)
+
+| Route | Purpose | Entitlement |
+| --- | --- | --- |
+| `/manage/` | Dashboard (library + activity stats) | `view_admin_dashboard` |
+| `/manage/editor/` | Song editor | `edit_songs` |
+| `/manage/users` | Users + roles | `view_users` / `edit_users` |
+| `/manage/requests` | Song-request triage queue | `review_song_requests` |
+| `/manage/analytics` | Usage analytics with CSV export | `view_analytics` |
+| `/manage/entitlements` | Reassign capabilities to roles | `manage_entitlements` |
+| `/manage/setup-database` | Install, migrate, backup, restore | `run_db_install` etc. |
+| `/manage/login` · `/manage/logout` · `/manage/setup` | Auth flow (session-based) | — |
+
+### Entitlements
+
+Defined in `appWeb/public_html/includes/entitlements.php` (PHP, authoritative) and mirrored in `appWeb/public_html/js/modules/entitlements.js` (UI affordance only). Runtime overrides stored in `tblAppSettings.SettingKey = 'entitlements_overrides'` as JSON and merged over the hardcoded defaults by `effectiveEntitlements()`. Admins edit the mapping at `/manage/entitlements` — the form prevents removing `global_admin` from the `manage_entitlements` entitlement so the editor can never be locked out.
+
+Check PHP: `userHasEntitlement($name, $role)`. Check JS: `userHasEntitlement(name, role)` (same signature).
+
+### Channel Gating
+
+`alpha.ihymns.app` and `beta.ihymns.app` require the `access_alpha` / `access_beta` entitlements respectively. Production (`ihymns.app`) is never gated. Gate logic lives in `includes/channel_gate.php` and runs from `index.php`. The gate page embeds the magic-link sign-in form so users can authenticate without leaving.
+
+### Auth + persistence
+
+- Bearer token stored in both `Authorization: Bearer` header (JS fetches) and as `Set-Cookie: ihymns_auth; Domain=.ihymns.app; HttpOnly; SameSite=Lax; Secure` (cross-subdomain).
+- Sliding 30-day expiry via `slideAuthTokenExpiry()` — bumps `tblApiTokens.ExpiresAt` at most once per day per token.
+- Client `user-auth.js#verify()` only clears credentials on 401/403 (not on any non-ok), so a transient 500 doesn't sign the user out.
+
+### CSRF
+
+Every write-performing admin page (`users`, `setup`, `login`, `setup-database`, `requests`, `entitlements`) uses `csrfToken()` + `validateCsrf()` from `manage/includes/auth.php`. The token is rendered as a hidden input named `csrf_token`.
+
 ### Combining with Other Access Controls
 
 Content tiers work alongside other gating mechanisms:

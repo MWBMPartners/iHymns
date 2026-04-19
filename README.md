@@ -59,6 +59,32 @@
 - 📋 **Setlists** — create, arrange, and share worship setlists with custom component arrangements
 - ♿ **Accessible** — WCAG 2.1 AA compliant, keyboard shortcuts, screen reader support, colour vision deficiency modes
 - 🔄 **Auto-update** — service worker detects updates and prompts to refresh
+- 🔑 **Magic-link sign-in** — primary auth path (email + 6-digit code); HttpOnly cross-subdomain cookie with 30-day sliding expiry survives iOS ITP
+- 🎓 **Practice mode** — Full / Dimmed / Hidden cycle for memorising hymns with tap-to-reveal
+- ✝️ **Scripture search** — `Ps 23`, `1 Cor 13`, `Rev 21` etc. match through abbreviation expansion + curated tags
+- 📨 **Request a song** — public form plus admin triage queue
+- 📊 **Admin analytics** — top songs, top songbooks, top/zero-result search queries, CSV export (admin+)
+- 🧾 **Song revision history** — every save logged to `tblSongRevisions` for audit + future restore
+- 🗝 **Entitlements** — capability-based permissions, editable at runtime by global admin
+- 🚧 **Channel gating** — alpha / beta subdomains require the relevant access entitlement
+
+---
+
+## 🧑‍💼 Admin Portal
+
+Accessible at **`/manage/`** (alias: `/admin/`) for users with the appropriate role. Main surfaces:
+
+| Surface | Purpose | Default role |
+| --- | --- | --- |
+| Dashboard | Library + activity snapshot, quick-links | editor+ |
+| Song Editor | Per-song UPSERT, multi-select bulk delete, auto-save, tag editor | editor+ |
+| User Management | Roles, passwords, activation | admin+ |
+| Song Requests | Triage user-submitted requests | editor+ |
+| Analytics | Top songs/books/queries, CSV export | admin+ |
+| Entitlements | Reassign capabilities to roles | global_admin |
+| Database Setup | Install schema, migrate, backup, restore, drop legacy | admin+ |
+
+Every write on these pages is CSRF-protected. DB error messages are never leaked to clients (see server error log).
 
 ---
 

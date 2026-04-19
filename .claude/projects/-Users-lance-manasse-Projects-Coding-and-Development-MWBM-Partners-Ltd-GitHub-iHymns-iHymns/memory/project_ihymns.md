@@ -52,11 +52,42 @@ type: project
 
 **Authentication (3 methods):**
 
-- Password login (username + password → bearer token)
-- Email magic link / 6-digit code (tblEmailLoginTokens, 10-min expiry)
-- Admin session (PHP session + CSRF)
+- **Magic-link is the primary sign-in path** (email + 6-digit code); username/password behind a "Sign in with a password instead" link on the login modal
+- Password login (username + password → bearer token) — still supported
+- Admin session (PHP session + CSRF) for `/manage/` pages; every write-performing admin page validates a hidden `csrf_token` input via `validateCsrf()`
+- Bearer token: `Authorization: Bearer` header **and** `Set-Cookie: ihymns_auth; Domain=.ihymns.app; HttpOnly; SameSite=Lax; Secure` — cross-subdomain sign-in plus ITP-resistant persistence (#390)
+- Sliding 30-day expiry — `slideAuthTokenExpiry()` bumps at most once per day per token (#390)
+- `user-auth.js#verify()` hardened: only 401/403 clears credentials (#390)
 - Brute force protection: tblLoginAttempts, 10 failures / 15 min lockout
 - Future: SIGNula.id OAuth2/SSO + TOTP 2FA (#309)
+
+**Entitlements (#407):**
+
+- Capability-based permission layer on top of roles. `includes/entitlements.php` (PHP, authoritative) + `js/modules/entitlements.js` (UI affordance only).
+- Admins reassign at `/manage/entitlements`; overrides in `tblAppSettings.SettingKey = 'entitlements_overrides'`.
+- Default entitlements: `edit_songs`, `delete_songs`, `bulk_edit_songs`, `verify_songs`, `view_users`, `edit_users`, `change_user_roles`, `assign_global_admin`, `delete_users`, `view_admin_dashboard`, `view_analytics`, `run_db_install/migrate/backup/restore`, `drop_legacy_tables`, `review_song_requests`, `access_alpha`, `access_beta`, `manage_entitlements`.
+- `alpha.` / `beta.ihymns.app` gated by `access_alpha` / `access_beta` via `includes/channel_gate.php`; gate page embeds magic-link form.
+
+**Admin portal (`/manage/`, alias `/admin/`):**
+
+- Dashboard with Library + Activity stat groups (Songs, Songbooks, Synced setlists, Pending requests, Active/Total users, Logins 24h, Song views 24h).
+- `/manage/editor/` — per-song auto-save via `/api?action=save_song`, multi-select bulk delete, revision audit log.
+- `/manage/users` — accounts/roles/passwords.
+- `/manage/requests` — song-request triage queue.
+- `/manage/analytics` — 7/30/90-day top songs/books/queries, zero-result queries, CSV export.
+- `/manage/entitlements` — role × capability matrix editor.
+- `/manage/setup-database` — install/migrate/backup/restore/drop-legacy, credentials form, backup upload.
+
+**Recent shipped features (Apr 2026, alpha):**
+
+- Scripture-aware search (abbreviation expansion + tag match).
+- Practice mode (Full/Dimmed/Hidden + tap-to-reveal).
+- Misc songbook supports NULL Number; book-glyph badge.
+- Title Case renderer everywhere; admin area re-skinned to main palette (`css/admin.css`).
+- SW update toast restored; on-demand audio cache + bulk_audio manifest + Settings toggle.
+- Song-request public form (rate-limited, honeypot) + admin triage queue.
+- Backup restore UI (server-list + upload-from-device) with audit log on upload.
+- Setlist scheduling API endpoints (UI + collaboration deferred to follow-up).
 
 **Accessibility:**
 
