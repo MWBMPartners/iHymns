@@ -1959,32 +1959,73 @@ function scheduleAutoSave() {
     /* Drop any pending save; each edit resets the timer. */
     if (_autoSaveTimer) clearTimeout(_autoSaveTimer);
 
-    /* Don't stack saves — if one is in flight the "modified" flag will
-       remain set when it returns and the next edit will re-schedule. */
     _autoSaveTimer = setTimeout(function () {
         _autoSaveTimer = null;
         if (_autoSaveRunning)      return;
         if (modifiedSongIds.size === 0) return;
-
-        /* Skip if validation fails — don't persist broken state, and don't
-           spam the toast system; the error surfaces on manual Save. */
         if (validateSongData().length > 0) return;
 
         _autoSaveRunning = true;
-        /* Reflect state in the status bar */
         var text = document.getElementById('status-text');
         if (text) text.textContent = 'Auto-saving…';
 
-        /* Fire the existing full save. saveSongs() handles toasts + UI
-           state; we just wrap to track running state. */
-        try {
-            saveSongs();
-        } finally {
-            /* saveSongs() is fire-and-forget (returns promise internally);
-               clear the flag after a tick so the status resets. */
-            setTimeout(function () { _autoSaveRunning = false; }, 500);
-        }
+        /* Per-song endpoint (#394). Walk the modified set and POST each
+           song individually to /api?action=save_song. Much cheaper than
+           the full-corpus `save`, and writes one row to tblSongRevisions
+           per actual edit (#400). Falls back to saveSongs() (full save)
+           if the per-song endpoint returns a non-ok status. */
+        var ids = Array.from(modifiedSongIds);
+        autoSaveSongsPerSong(ids).then(function (summary) {
+            if (summary.failed.length > 0) {
+                /* Something wasn't UPSERT-friendly — fall back to full save so
+                   the user never ends up stuck with un-persistable diffs. */
+                saveSongs();
+            } else {
+                lastSaveTime = new Date();
+                summary.saved.forEach(function (id) { modifiedSongIds.delete(id); });
+                renderSongList();
+                updateStatusBar();
+            }
+        }).finally(function () {
+            _autoSaveRunning = false;
+        });
     }, _autoSaveDelayMs);
+}
+
+/**
+ * autoSaveSongsPerSong(ids)
+ * -------------------------
+ * POST each song in `ids` to /api?action=save_song sequentially.
+ * Returns a summary { saved: [ids], failed: [{id, error}] }.
+ *
+ * Sequential (not Promise.all) so we stay polite to the DB and can
+ * short-circuit on the first persistent error.
+ */
+function autoSaveSongsPerSong(ids) {
+    var saved  = [];
+    var failed = [];
+    var chain  = Promise.resolve();
+
+    ids.forEach(function (id) {
+        chain = chain.then(function () {
+            var song = (songData.songs || []).find(function (s) { return s.id === id; });
+            if (!song) { failed.push({ id: id, error: 'not found locally' }); return; }
+            return fetch(EDITOR_API_URL + '?action=save_song', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(song),
+            }).then(function (res) {
+                return res.json().then(function (data) {
+                    if (res.ok && data.ok) saved.push(id);
+                    else failed.push({ id: id, error: data.error || ('HTTP ' + res.status) });
+                });
+            }).catch(function (err) {
+                failed.push({ id: id, error: err.message });
+            });
+        });
+    });
+
+    return chain.then(function () { return { saved: saved, failed: failed }; });
 }
 
 /**
