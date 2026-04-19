@@ -743,6 +743,124 @@ self.addEventListener('message', (event) => {
         });
     }
 
+    /* Pre-cache a batch of audio URLs into iHymns-media-v1 (#401).
+     * Settings page sends this when the "Include audio in offline
+     * downloads" toggle is on — once per songbook covered by the
+     * current download, after CACHE_ALL_SONGS has been dispatched.
+     * Message: { type: 'CACHE_AUDIO_URLS', urls: [...], songbook: 'XX' }
+     */
+    if (event.data.type === 'CACHE_AUDIO_URLS' && Array.isArray(event.data.urls)) {
+        const urls = event.data.urls;
+        const songbook = event.data.songbook || '';
+
+        caches.open('iHymns-media-v1').then(async (cache) => {
+            let completed = 0, failed = 0;
+            const total = urls.length;
+            const BATCH = 6;
+
+            for (let i = 0; i < urls.length; i += BATCH) {
+                const batch = urls.slice(i, i + BATCH);
+                await Promise.allSettled(batch.map(async (u) => {
+                    try {
+                        const cacheUrl = new URL(u, self.location.origin);
+                        if (cacheUrl.origin !== self.location.origin) { failed++; return; }
+                        const existing = await cache.match(u);
+                        if (existing) { completed++; return; }
+                        const r = await fetch(u);
+                        if (r.ok) { await cache.put(u, r); completed++; }
+                        else { failed++; }
+                    } catch { failed++; }
+                }));
+                notifyClients({
+                    type: 'CACHE_AUDIO_PROGRESS',
+                    songbook, completed, failed, total,
+                });
+            }
+            notifyClients({
+                type: 'CACHE_AUDIO_PROGRESS',
+                songbook, completed, failed, total, done: true,
+            });
+        });
+    }
+
+    /* Evict every cached entry belonging to one songbook (#401).
+     * Removes matching entries from RECENT_CACHE (song HTML pages
+     * whose id starts with <songbook>-) and iHymns-media-v1 (audio +
+     * sheet music under /data/audio/<songbook>/ and /data/music/<songbook>/).
+     * Message: { type: 'EVICT_SONGBOOK', songbook: 'XX' }
+     */
+    if (event.data.type === 'EVICT_SONGBOOK' && typeof event.data.songbook === 'string') {
+        const songbook = event.data.songbook;
+        if (!/^[A-Za-z0-9_-]{1,16}$/.test(songbook)) return;
+        const prefix = songbook.toUpperCase() + '-';
+        (async () => {
+            let removed = 0;
+            try {
+                const recent = await caches.open(RECENT_CACHE);
+                const keys = await recent.keys();
+                for (const req of keys) {
+                    const id = new URL(req.url).searchParams.get('id') || '';
+                    if (id.toUpperCase().startsWith(prefix)) {
+                        if (await recent.delete(req)) removed++;
+                    }
+                }
+            } catch {}
+            try {
+                const media = await caches.open('iHymns-media-v1');
+                const keys = await media.keys();
+                const lcSongbook = songbook.toLowerCase();
+                for (const req of keys) {
+                    const path = new URL(req.url).pathname.toLowerCase();
+                    if (path.includes(`/data/audio/${lcSongbook}/`)
+                        || path.includes(`/data/music/${lcSongbook}/`)) {
+                        if (await media.delete(req)) removed++;
+                    }
+                }
+            } catch {}
+            notifyClients({ type: 'SONGBOOK_EVICTED', songbook, removed });
+        })();
+    }
+
+    /* Report total bytes cached per songbook across both caches (#401).
+     * Returns { type: 'CACHE_SIZES', sizes: { 'CP': 1234567, ... } } to the
+     * requesting client. Sizes are summed from Content-Length headers (when
+     * present) plus a per-entry fallback estimate for entries without them.
+     * Message: { type: 'GET_CACHE_SIZES' }
+     */
+    if (event.data.type === 'GET_CACHE_SIZES') {
+        const client = event.source;
+        (async () => {
+            const sizes = {};
+            const addFor = (songbook, bytes) => {
+                sizes[songbook] = (sizes[songbook] || 0) + bytes;
+            };
+            try {
+                const recent = await caches.open(RECENT_CACHE);
+                for (const req of await recent.keys()) {
+                    const id = new URL(req.url).searchParams.get('id') || '';
+                    const dash = id.indexOf('-');
+                    if (dash <= 0) continue;
+                    const songbook = id.slice(0, dash).toUpperCase();
+                    const resp = await recent.match(req);
+                    const len = Number(resp?.headers.get('content-length')) || 4096;
+                    addFor(songbook, len);
+                }
+            } catch {}
+            try {
+                const media = await caches.open('iHymns-media-v1');
+                for (const req of await media.keys()) {
+                    const m = new URL(req.url).pathname.match(/^\/data\/(?:audio|music)\/([^\/]+)\//i);
+                    if (!m) continue;
+                    const songbook = m[1].toUpperCase();
+                    const resp = await media.match(req);
+                    const len = Number(resp?.headers.get('content-length')) || 262144;
+                    addFor(songbook, len);
+                }
+            } catch {}
+            client?.postMessage({ type: 'CACHE_SIZES', sizes });
+        })();
+    }
+
     /* Proactively cache a recently viewed song page (#105) */
     if (event.data.type === 'CACHE_SONG' && event.data.url) {
         /* Validate URL origin to prevent cache poisoning */

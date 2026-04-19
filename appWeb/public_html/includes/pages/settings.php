@@ -373,6 +373,14 @@ declare(strict_types=1);
                                 aria-label="Download <?= htmlspecialchars($book['name']) ?> for offline use">
                             <i class="fa-solid fa-cloud-arrow-down" aria-hidden="true"></i>
                         </button>
+                        <!-- Per-songbook eviction button (#401). Hidden until
+                             updateSongbookCacheStatus() detects cached entries. -->
+                        <button type="button"
+                                class="btn btn-outline-warning btn-sm btn-evict-songbook d-none"
+                                data-songbook-id="<?= htmlspecialchars($book['id']) ?>"
+                                aria-label="Remove <?= htmlspecialchars($book['name']) ?> from offline cache">
+                            <i class="fa-solid fa-trash" aria-hidden="true"></i>
+                        </button>
                     </div>
                     <?php
                             endif;
@@ -403,6 +411,8 @@ declare(strict_types=1);
                          id="download-songs-bar" role="progressbar"
                          aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
                 </div>
+                <!-- Audio pre-cache progress line (#401) -->
+                <small class="text-muted d-block mt-1" id="download-audio-status"></small>
                 <small class="text-muted mt-1 d-block">
                     Save songs to your device for offline access. Download individual songbooks or all at once.
                 </small>

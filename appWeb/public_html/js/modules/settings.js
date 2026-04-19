@@ -96,6 +96,13 @@ export class Settings {
                 if (event.data?.type === 'CACHE_ALL_SONGS_PROGRESS') {
                     this._handleDownloadProgress(event.data);
                 }
+                /* Audio pre-cache progress (#401). Surfaced as a status
+                   line under the existing progress bar so users can see
+                   the slower audio job catching up after the lyrics are
+                   already done. */
+                if (event.data?.type === 'CACHE_AUDIO_PROGRESS') {
+                    this._handleAudioProgress(event.data);
+                }
             });
         }
 
@@ -564,6 +571,14 @@ export class Settings {
             });
         });
 
+        /* Per-songbook eviction buttons (#401) */
+        document.querySelectorAll('.btn-evict-songbook').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const songbookId = btn.dataset.songbookId;
+                if (songbookId) this.evictSongbook(songbookId, btn);
+            });
+        });
+
         /* Auto-update offline songs toggle (#132) */
         const autoUpdateToggle = document.getElementById('setting-auto-update-songs');
         if (autoUpdateToggle) {
@@ -788,6 +803,13 @@ export class Settings {
                 totalSongs: songs.length,
             });
 
+            /* If audio-offline is on, dispatch per-songbook audio pre-cache
+               jobs in parallel with the lyric pre-cache. The SW handles them
+               independently — completion is reported via CACHE_AUDIO_PROGRESS. */
+            if (this.get('includeAudioOffline')) {
+                this._queueAudioCacheForSongbooks(songbooks);
+            }
+
         } catch (error) {
             console.error('[Settings] Download all songs error:', error);
             this.app.showToast('Failed to start download. Please try again.', 'danger');
@@ -838,6 +860,10 @@ export class Settings {
                 totalSongs: songbookSongs.length,
             });
 
+            if (this.get('includeAudioOffline')) {
+                this._queueAudioCacheForSongbooks([songbookId]);
+            }
+
         } catch (error) {
             console.error(`[Settings] Download songbook ${songbookId} error:`, error);
             this.app.showToast(`Failed to download ${songbookId}. Please try again.`, 'danger');
@@ -862,6 +888,27 @@ export class Settings {
         };
         /* Try to update the settings page UI (may not exist) */
         this.updateDownloadProgress(data);
+    }
+
+    /**
+     * Handle audio pre-cache progress messages from the SW (#401).
+     * @param {{songbook:string, completed:number, failed:number, total:number, done?:boolean}} data
+     */
+    _handleAudioProgress(data) {
+        const statusEl = document.getElementById('download-audio-status');
+        if (!statusEl) return;
+        const { songbook, completed, failed, total, done } = data;
+        if (done) {
+            statusEl.textContent = failed > 0
+                ? `${songbook} audio: ${completed} cached, ${failed} failed`
+                : `${songbook} audio: ${completed} cached`;
+            if (failed === 0) {
+                setTimeout(() => { statusEl.textContent = ''; }, 4000);
+            }
+            this._refreshSongbookCacheSizes();
+        } else {
+            statusEl.textContent = `${songbook} audio: ${completed + failed} / ${total}…`;
+        }
     }
 
     /**
@@ -967,10 +1014,122 @@ export class Settings {
                     btn.innerHTML = '<i class="fa-solid fa-check" aria-hidden="true"></i>';
                     btn.title = `${id} — all songs saved offline`;
                 }
+                /* Show the matching "Remove from offline" button only when
+                   the songbook actually has cached content. */
+                const evictBtn = document.querySelector(
+                    `.btn-evict-songbook[data-songbook-id="${id}"]`
+                );
+                if (evictBtn) {
+                    evictBtn.classList.toggle('d-none', !info || info.cached === 0);
+                }
             });
+
+            /* Replace the server-side estimate with the real cached size. */
+            this._refreshSongbookCacheSizes();
         } catch {
             /* Ignore — non-critical */
         }
+    }
+
+    /**
+     * Ask the SW for per-songbook cached byte totals (#401).
+     * Updates each `.offline-songbook-size` span with a real size when
+     * the songbook has cached content.
+     */
+    _refreshSongbookCacheSizes() {
+        if (!('serviceWorker' in navigator) || !navigator.serviceWorker.controller) return;
+
+        const handler = (event) => {
+            if (event.data?.type !== 'CACHE_SIZES') return;
+            navigator.serviceWorker.removeEventListener('message', handler);
+            const sizes = event.data.sizes || {};
+            document.querySelectorAll('.offline-songbook-size').forEach(el => {
+                const row = el.closest('.offline-songbook-row');
+                const id = row?.querySelector('[data-songbook-id]')?.dataset.songbookId;
+                if (!id) return;
+                const bytes = sizes[id] || sizes[id?.toUpperCase()] || 0;
+                if (bytes > 0) {
+                    el.textContent = bytes >= 1048576
+                        ? (bytes / 1048576).toFixed(1) + ' MB'
+                        : Math.round(bytes / 1024) + ' KB';
+                    el.classList.remove('text-muted');
+                }
+            });
+        };
+        navigator.serviceWorker.addEventListener('message', handler);
+        navigator.serviceWorker.controller.postMessage({ type: 'GET_CACHE_SIZES' });
+    }
+
+    /**
+     * Fetch the bulk_audio manifest for each songbook and dispatch
+     * one CACHE_AUDIO_URLS message per songbook to the SW (#401).
+     * Failures are logged but do not block the lyric download.
+     * @param {string[]} songbooks
+     */
+    async _queueAudioCacheForSongbooks(songbooks) {
+        if (!navigator.serviceWorker?.controller) return;
+        for (const songbook of songbooks) {
+            try {
+                const r = await fetch(`/api?action=bulk_audio&songbook=${encodeURIComponent(songbook)}`);
+                if (!r.ok) continue;
+                const data = await r.json();
+                const urls = (data.audio || []).map(a => a.url).filter(Boolean);
+                if (urls.length === 0) continue;
+                navigator.serviceWorker.controller.postMessage({
+                    type: 'CACHE_AUDIO_URLS',
+                    urls,
+                    songbook,
+                });
+            } catch (err) {
+                console.warn(`[Settings] Audio manifest fetch failed for ${songbook}:`, err.message);
+            }
+        }
+    }
+
+    /**
+     * Remove every cached entry for a songbook (#401). Asks the SW to
+     * purge both the song-page cache and the audio/sheet-music cache.
+     * @param {string} songbookId
+     * @param {HTMLElement} btn
+     */
+    async evictSongbook(songbookId, btn) {
+        if (!navigator.serviceWorker?.controller) {
+            this.app.showToast('Service worker not available.', 'warning');
+            return;
+        }
+        const ok = await this.app.showConfirm(
+            `Remove all cached content for ${songbookId}? You can re-download at any time.`,
+            { title: 'Remove from offline', okText: 'Remove', okClass: 'btn-warning' }
+        );
+        if (!ok) return;
+
+        const handler = (event) => {
+            if (event.data?.type !== 'SONGBOOK_EVICTED' || event.data.songbook !== songbookId) return;
+            navigator.serviceWorker.removeEventListener('message', handler);
+            this.app.showToast(
+                event.data.removed > 0
+                    ? `${songbookId} removed from offline (${event.data.removed} entries)`
+                    : `${songbookId} had no cached entries`,
+                'success'
+            );
+            /* Reset the corresponding download button to its starting state */
+            const dlBtn = document.querySelector(
+                `.btn-download-songbook[data-songbook-id="${songbookId}"]`
+            );
+            if (dlBtn) {
+                dlBtn.classList.remove('btn-success');
+                dlBtn.classList.add('btn-outline-success');
+                dlBtn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down" aria-hidden="true"></i>';
+                dlBtn.title = '';
+            }
+            this.updateSongbookCacheStatus();
+            this.updateCacheStatus();
+        };
+        navigator.serviceWorker.addEventListener('message', handler);
+        navigator.serviceWorker.controller.postMessage({
+            type: 'EVICT_SONGBOOK',
+            songbook: songbookId,
+        });
     }
 
     /**
