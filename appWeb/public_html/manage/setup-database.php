@@ -562,12 +562,22 @@ if ($hasCredentials && defined('DB_HOST')) {
                                     <?php endforeach; ?>
                                 </select>
                                 <button type="submit" class="btn btn-sm btn-outline-warning <?= $hasCredentials ? '' : 'disabled' ?>">Preview</button>
+                                <button type="submit" name="preflight" value="1"
+                                        class="btn btn-sm btn-outline-info <?= $hasCredentials ? '' : 'disabled' ?>"
+                                        title="Parse the backup and show a summary without touching the database (#405)">
+                                    Pre-flight
+                                </button>
                                 <button type="submit" name="confirm" value="1"
                                         class="btn btn-sm btn-danger <?= $hasCredentials ? '' : 'disabled' ?>"
-                                        onclick="return prompt('Type RESTORE (all caps) to confirm replacing every table with the selected backup.') === 'RESTORE'">
+                                        onclick="return prompt('Type RESTORE (all caps) to confirm replacing every table with the selected backup. A snapshot of current state is saved automatically before the restore runs.') === 'RESTORE'">
                                     Restore
                                 </button>
                             </form>
+                            <p class="text-muted small mb-0">
+                                <i class="bi bi-info-circle me-1"></i>
+                                Restore always takes a pre-restore snapshot first. Data INSERTs
+                                are transactional — a failure rolls data back automatically.
+                            </p>
                         <?php else: ?>
                             <p class="text-muted small mb-2">No backups found in <code>data_share/backups/</code>.</p>
                         <?php endif; ?>
