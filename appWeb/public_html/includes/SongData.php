@@ -594,7 +594,95 @@ class SongData
             $results = $this->_searchByWriterComposer($query, $songbookId, $limit);
         }
 
+        /* Scripture-reference tag matches (#397 follow-up) — if the query
+           looked like a scripture reference, ALSO surface songs that have
+           been tagged with the canonical book or full reference. Merges
+           de-duplicated into the existing result list at the top so
+           curated matches outrank text matches. */
+        if ($scriptureExpansion !== null) {
+            $tagHits = $this->_searchByScriptureTag($scriptureExpansion, $songbookId);
+            if (!empty($tagHits)) {
+                $seen = [];
+                foreach ($results as $r) { $seen[$r['id']] = true; }
+                $merged = $tagHits;
+                foreach ($results as $r) {
+                    if (!isset($seen[$r['id']])) $merged[] = $r; /* already seen via tag hit */
+                    elseif (!isset($tagHits[$r['id'] ?? ''])) $merged[] = $r;
+                }
+                $results = array_values($merged);
+                if ($limit > 0) $results = array_slice($results, 0, $limit);
+            }
+        }
+
         return $results;
+    }
+
+    /**
+     * Find songs tagged with the given scripture reference (#397).
+     *
+     * Matches `Name = <reference>` (e.g. "Psalm 23"), `Name = <book>`
+     * (e.g. "Psalm"), or the kebab-case slug form. Curators tag songs
+     * via /manage/editor/ (tags UI) and the hit merges into search
+     * results for scripture-style queries.
+     */
+    private function _searchByScriptureTag(string $scriptureRef, ?string $songbookId): array
+    {
+        if ($this->jsonMode || !$this->db) return [];
+
+        /* Derive the base book (strip trailing chapter/verse). */
+        $book = preg_replace('/\s+\d+(?::\d+)?$/', '', $scriptureRef);
+
+        $slugRef  = self::_tagSlug($scriptureRef);
+        $slugBook = self::_tagSlug($book);
+
+        $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
+                       s.SongbookAbbr AS songbook, s.SongbookName AS songbookName,
+                       s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
+                       s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
+                       s.MusicPublicDomain AS musicPublicDomain,
+                       s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
+                  FROM tblSongs s
+                  JOIN tblSongTagMap m ON m.SongId = s.SongId
+                  JOIN tblSongTags   t ON t.Id = m.TagId
+                 WHERE t.Name IN (?, ?) OR t.Slug IN (?, ?)";
+        $types  = 'ssss';
+        $params = [$scriptureRef, $book, $slugRef, $slugBook];
+
+        if ($songbookId !== null) {
+            $sql .= ' AND s.SongbookAbbr = ?';
+            $types .= 's';
+            $params[] = strtoupper(trim($songbookId));
+        }
+
+        $sql .= ' ORDER BY s.SongbookAbbr, s.Number';
+
+        try {
+            $stmt = $this->db->prepare($sql);
+            $stmt->bind_param($types, ...$params);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $out = [];
+            while ($row = $result->fetch_assoc()) {
+                $row['number']             = $row['number'] !== null ? (int)$row['number'] : null;
+                $row['verified']           = (bool)$row['verified'];
+                $row['lyricsPublicDomain'] = (bool)$row['lyricsPublicDomain'];
+                $row['musicPublicDomain']  = (bool)$row['musicPublicDomain'];
+                $row['hasAudio']           = (bool)$row['hasAudio'];
+                $row['hasSheetMusic']      = (bool)$row['hasSheetMusic'];
+                $out[] = $row;
+            }
+            $stmt->close();
+            return $out;
+        } catch (\Throwable $_e) {
+            return [];
+        }
+    }
+
+    private static function _tagSlug(string $s): string
+    {
+        $s = mb_strtolower($s);
+        $s = preg_replace('/[^a-z0-9]+/', '-', $s);
+        return trim((string)$s, '-');
     }
 
     /**
