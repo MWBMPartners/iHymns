@@ -153,6 +153,18 @@ $currentUser = getCurrentUser();
                 <i class="bi bi-check-circle me-1"></i>Validate
             </button>
 
+            <!-- HISTORY — Show revision history for the currently-selected
+                 song, with a restore action per revision (#400). -->
+            <button
+                type="button"
+                class="btn btn-sm btn-outline-info"
+                id="btn-history"
+                title="Show revision history for the selected song"
+                disabled
+            >
+                <i class="bi bi-clock-history me-1"></i>History
+            </button>
+
             <!-- EXPORT DROPDOWN — Provides JSON and CSV export options -->
             <div class="dropdown">
                 <button
@@ -1147,6 +1159,26 @@ $currentUser = getCurrentUser();
         integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
         crossorigin="anonymous"
     ></script>
+
+    <!-- Revision history modal (#400). Populated on demand when the
+         History button is clicked; shows the timeline + side-by-side
+         JSON for each revision + a Restore button per row. -->
+    <div class="modal fade" id="history-modal" tabindex="-1" aria-labelledby="history-modal-title" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content bg-dark text-light border-info">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title" id="history-modal-title">
+                        <i class="bi bi-clock-history me-2"></i>Revision history
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="history-list" class="list-group list-group-flush"></div>
+                    <div id="history-detail" class="mt-3"></div>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <!-- Editor JavaScript — all interactive logic (loading, saving, editing, previewing)
          is handled in this separate file to keep concerns separated -->

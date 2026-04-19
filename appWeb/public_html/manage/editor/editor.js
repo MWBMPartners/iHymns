@@ -504,6 +504,7 @@ function selectSong(songId) {
 
     /* Store the selection globally. */
     currentSongId = songId;
+    updateHistoryButtonState();
 
     /* Show the editor form, hide the empty state (#246). */
     var editorEmpty = document.getElementById('editorEmpty');
@@ -2828,8 +2829,164 @@ function bindMultiSelectListeners() {
     });
 }
 
+/* ============================================================================
+ *  REVISION HISTORY (#400)
+ *  --------------------------------------------------------------------------
+ *  Toolbar "History" button opens a modal that lists revisions for the
+ *  currently-selected song (newest first), with a Restore button per row
+ *  and a side-by-side JSON diff on click.
+ * ========================================================================== */
+
+function bindHistoryListener() {
+    var btn = document.getElementById('btn-history');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+        if (!currentSongId) {
+            showToast('Select a song first.', 'warning');
+            return;
+        }
+        openHistoryModal(currentSongId);
+    });
+}
+
+function updateHistoryButtonState() {
+    var btn = document.getElementById('btn-history');
+    if (btn) btn.disabled = !currentSongId;
+}
+
+function openHistoryModal(songId) {
+    var listEl = document.getElementById('history-list');
+    var detailEl = document.getElementById('history-detail');
+    var titleEl = document.getElementById('history-modal-title');
+    if (!listEl || !detailEl) return;
+
+    if (titleEl) titleEl.innerHTML = '<i class="bi bi-clock-history me-2"></i>Revision history — ' + songId;
+    listEl.innerHTML = '<div class="text-center p-3"><i class="bi bi-hourglass-split me-1"></i>Loading…</div>';
+    detailEl.innerHTML = '';
+
+    var modalEl = document.getElementById('history-modal');
+    if (modalEl && window.bootstrap) {
+        var modal = window.bootstrap.Modal.getOrCreateInstance(modalEl);
+        modal.show();
+    }
+
+    fetch(EDITOR_API_URL + '?action=list_revisions&songId=' + encodeURIComponent(songId), {
+        credentials: 'same-origin',
+    })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, data: j }; }); })
+        .then(function (res) {
+            if (!res.ok) {
+                listEl.innerHTML = '<div class="text-danger p-3">Failed to load revisions: ' +
+                    (res.data.error || 'unknown error') + '</div>';
+                return;
+            }
+            renderHistoryList(res.data.revisions || [], listEl, detailEl);
+        })
+        .catch(function (err) {
+            listEl.innerHTML = '<div class="text-danger p-3">Request failed: ' + err.message + '</div>';
+        });
+}
+
+function renderHistoryList(revisions, listEl, detailEl) {
+    if (!revisions.length) {
+        listEl.innerHTML = '<div class="text-muted p-3">No revisions recorded for this song yet.</div>';
+        return;
+    }
+    listEl.innerHTML = '';
+    revisions.forEach(function (rev) {
+        var item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'list-group-item list-group-item-action bg-dark text-light border-secondary d-flex justify-content-between align-items-center';
+        var badgeClass = rev.action === 'create' ? 'bg-success'
+            : rev.action === 'restore' ? 'bg-info'
+            : 'bg-secondary';
+        item.innerHTML =
+            '<div>' +
+                '<span class="badge ' + badgeClass + ' me-2">' + rev.action + '</span>' +
+                '<span class="small text-muted">' + rev.createdAt + '</span>' +
+                '<span class="ms-2">by ' + (rev.username || '—') + '</span>' +
+            '</div>' +
+            '<div class="d-flex gap-2">' +
+                '<button class="btn btn-sm btn-outline-info" data-rev-id="' + rev.id + '">View diff</button>' +
+                (rev.previousData
+                    ? '<button class="btn btn-sm btn-outline-warning btn-restore-rev" data-rev-id="' + rev.id + '">Restore</button>'
+                    : '') +
+            '</div>';
+        item.querySelector('[data-rev-id]').addEventListener('click', function (ev) {
+            ev.stopPropagation();
+            renderRevisionDiff(rev, detailEl);
+        });
+        var restore = item.querySelector('.btn-restore-rev');
+        if (restore) {
+            restore.addEventListener('click', function (ev) {
+                ev.stopPropagation();
+                triggerRevisionRestore(rev);
+            });
+        }
+        listEl.appendChild(item);
+    });
+    /* Show the first diff by default so the modal never looks empty. */
+    renderRevisionDiff(revisions[0], detailEl);
+}
+
+function renderRevisionDiff(rev, detailEl) {
+    var beforeJson = rev.previousData ? JSON.stringify(rev.previousData, null, 2) : '(none — initial create)';
+    var afterJson  = rev.newData      ? JSON.stringify(rev.newData,      null, 2) : '(none)';
+    detailEl.innerHTML =
+        '<div class="row g-2 small">' +
+            '<div class="col-md-6">' +
+                '<h6 class="text-muted">Before</h6>' +
+                '<pre class="bg-black p-2 rounded" style="max-height:400px;overflow:auto;">' +
+                    escapeHtml(beforeJson) +
+                '</pre>' +
+            '</div>' +
+            '<div class="col-md-6">' +
+                '<h6 class="text-muted">After</h6>' +
+                '<pre class="bg-black p-2 rounded" style="max-height:400px;overflow:auto;">' +
+                    escapeHtml(afterJson) +
+                '</pre>' +
+            '</div>' +
+        '</div>';
+}
+
+function triggerRevisionRestore(rev) {
+    if (!confirm('Restore the song to the state BEFORE revision #' + rev.id + '? ' +
+                 'This will create a new "restore" revision row and overwrite the current tblSongs row.')) {
+        return;
+    }
+    fetch(EDITOR_API_URL + '?action=restore_revision', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ revisionId: rev.id }),
+    })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, data: j }; }); })
+        .then(function (res) {
+            if (!res.ok) {
+                showToast('Restore failed: ' + (res.data.error || 'unknown error'), 'danger');
+                return;
+            }
+            showToast('Restored. Reload the editor to see the current state.', 'success');
+            /* Close the modal; the user can manually reload to see results. */
+            var modalEl = document.getElementById('history-modal');
+            if (modalEl && window.bootstrap) {
+                window.bootstrap.Modal.getOrCreateInstance(modalEl).hide();
+            }
+        })
+        .catch(function (err) {
+            showToast('Restore request failed: ' + err.message, 'danger');
+        });
+}
+
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+}
+
 /* ---- Kick everything off once the DOM is ready ---- */
 document.addEventListener('DOMContentLoaded', function () {
     init();
     bindMultiSelectListeners();
+    bindHistoryListener();
 });

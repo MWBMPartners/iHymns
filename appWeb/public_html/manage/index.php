@@ -207,6 +207,15 @@ $csrf = csrfToken();
                     </a>
                 </div>
             </div>
+            <div class="col-md-4">
+                <div class="card-admin">
+                    <a href="/manage/revisions" class="quick-link">
+                        <i class="bi bi-clock-history d-block mb-2"></i>
+                        <strong>Revisions</strong>
+                        <div class="small text-muted">Audit song edits; open any row in the editor to diff / restore</div>
+                    </a>
+                </div>
+            </div>
             <?php endif; ?>
             <?php
                 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
