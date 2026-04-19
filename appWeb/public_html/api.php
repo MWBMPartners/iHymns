@@ -195,6 +195,21 @@ if ($action !== null) {
             }
 
             $results = $songData->searchSongs($query, $bookId, $limit);
+
+            /* Fire-and-forget search-query logging (#404). Silently no-ops
+               if the table is missing (fresh installs before the schema
+               ALTER has been applied). */
+            try {
+                $logDb = getDb();
+                $uid   = null;
+                $logAuth = getAuthenticatedUser();
+                if ($logAuth) $uid = (int)$logAuth['Id'];
+                $logStmt = $logDb->prepare(
+                    'INSERT INTO tblSearchQueries (Query, ResultCount, UserId) VALUES (?, ?, ?)'
+                );
+                $logStmt->execute([$query, count($results), $uid]);
+            } catch (\Throwable $_e) { /* best-effort */ }
+
             sendJson([
                 'results' => array_map('songToSummary', $results),
                 'total'   => count($results),

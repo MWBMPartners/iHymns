@@ -1024,3 +1024,17 @@ ALTER TABLE tblSongs MODIFY Number INT UNSIGNED NULL DEFAULT NULL;
 
 -- Zero out any existing Misc song numbers (historic placeholders).
 UPDATE tblSongs SET Number = NULL WHERE SongbookAbbr = 'Misc' AND Number IS NOT NULL;
+
+-- Search-query log for analytics (#404). Captures every search so we can
+-- surface top queries + zero-result queries in the admin dashboard.
+CREATE TABLE IF NOT EXISTS tblSearchQueries (
+    Id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    Query           VARCHAR(500)    NOT NULL,
+    ResultCount     INT UNSIGNED    NOT NULL DEFAULT 0,
+    UserId          INT UNSIGNED    NULL,
+    SearchedAt      TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_SearchedAt (SearchedAt),
+    INDEX idx_Query      (Query(191)),
+    CONSTRAINT fk_Search_User FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

@@ -26,6 +26,68 @@ $since = (new DateTime("-{$range} days"))->format('Y-m-d H:i:s');
 
 $db = getDb();
 
+/* -----------------------------------------------------------------
+ * CSV export (#404). Any panel can be requested as download by
+ * adding ?export=<panel>&range=<n>. We short-circuit before the HTML
+ * render so the browser gets a CSV file.
+ * ----------------------------------------------------------------- */
+$exportPanel = (string)($_GET['export'] ?? '');
+if ($exportPanel !== '') {
+    $since = (new DateTime("-{$range} days"))->format('Y-m-d H:i:s');
+    header('Content-Type: text/csv; charset=UTF-8');
+    header('Content-Disposition: attachment; filename="ihymns-' . $exportPanel . '-' . $range . 'd.csv"');
+    $fp = fopen('php://output', 'w');
+    try {
+        switch ($exportPanel) {
+            case 'top_songs':
+                fputcsv($fp, ['SongId', 'Title', 'SongbookAbbr', 'Number', 'Views']);
+                $stmt = $db->prepare(
+                    'SELECT h.SongId, s.Title, s.SongbookAbbr, s.Number, COUNT(*) AS views
+                       FROM tblSongHistory h
+                       LEFT JOIN tblSongs s ON s.SongId = h.SongId
+                      WHERE h.ViewedAt >= ?
+                      GROUP BY h.SongId
+                      ORDER BY views DESC'
+                );
+                $stmt->execute([$since]);
+                while ($row = $stmt->fetch(PDO::FETCH_NUM)) { fputcsv($fp, $row); }
+                break;
+            case 'top_books':
+                fputcsv($fp, ['SongbookAbbr', 'Views']);
+                $stmt = $db->prepare(
+                    'SELECT s.SongbookAbbr, COUNT(*) AS views
+                       FROM tblSongHistory h
+                       JOIN tblSongs s ON s.SongId = h.SongId
+                      WHERE h.ViewedAt >= ?
+                      GROUP BY s.SongbookAbbr
+                      ORDER BY views DESC'
+                );
+                $stmt->execute([$since]);
+                while ($row = $stmt->fetch(PDO::FETCH_NUM)) { fputcsv($fp, $row); }
+                break;
+            case 'searches':
+                fputcsv($fp, ['Query', 'ResultCount', 'Hits']);
+                try {
+                    $stmt = $db->prepare(
+                        'SELECT Query, ResultCount, COUNT(*) AS hits
+                           FROM tblSearchQueries
+                          WHERE SearchedAt >= ?
+                          GROUP BY Query, ResultCount
+                          ORDER BY hits DESC'
+                    );
+                    $stmt->execute([$since]);
+                    while ($row = $stmt->fetch(PDO::FETCH_NUM)) { fputcsv($fp, $row); }
+                } catch (\Throwable $_e) { /* table absent */ }
+                break;
+            default:
+                fputcsv($fp, ['Unknown panel: ' . $exportPanel]);
+        }
+    } finally {
+        fclose($fp);
+    }
+    exit;
+}
+
 /* --- Top songs last $range days --- */
 $topSongs = [];
 try {
@@ -148,17 +210,23 @@ try {
 
     <!-- Top songs -->
     <div class="card-admin p-3 mb-4">
-        <h2 class="h6 mb-3"><i class="bi bi-fire me-2"></i>Top songs</h2>
+        <div class="d-flex align-items-center justify-content-between mb-3">
+            <h2 class="h6 mb-0"><i class="bi bi-fire me-2"></i>Top songs</h2>
+            <a class="btn btn-sm btn-outline-secondary" href="?range=<?= (int)$range ?>&export=top_songs">CSV</a>
+        </div>
         <?php if (!$topSongs): ?>
             <p class="text-muted small mb-0">No song views in this period yet.</p>
         <?php else: ?>
             <table class="table table-sm table-hover mb-0">
                 <thead><tr><th>Song</th><th>Songbook</th><th class="text-end">Views</th></tr></thead>
                 <tbody>
-                <?php foreach ($topSongs as $s): ?>
+                <?php foreach ($topSongs as $s):
+                    $num = $s['Number'] ?? null;
+                    $numLabel = ($num !== null && (int)$num > 0) ? ' #' . (int)$num : '';
+                ?>
                     <tr>
                         <td><?= htmlspecialchars($s['Title'] ?? $s['SongId']) ?></td>
-                        <td class="text-muted"><?= htmlspecialchars(($s['SongbookAbbr'] ?? '—') . ($s['Number'] ? ' #' . $s['Number'] : '')) ?></td>
+                        <td class="text-muted"><?= htmlspecialchars(($s['SongbookAbbr'] ?? '—') . $numLabel) ?></td>
                         <td class="text-end"><?= number_format((int)$s['views']) ?></td>
                     </tr>
                 <?php endforeach; ?>
@@ -167,9 +235,74 @@ try {
         <?php endif; ?>
     </div>
 
+    <!-- Top search queries -->
+    <div class="card-admin p-3 mb-4">
+        <div class="d-flex align-items-center justify-content-between mb-3">
+            <h2 class="h6 mb-0"><i class="bi bi-search me-2"></i>Top search queries</h2>
+            <a class="btn btn-sm btn-outline-secondary" href="?range=<?= (int)$range ?>&export=searches">CSV</a>
+        </div>
+        <?php
+            $topSearches = [];
+            $zeroResults = [];
+            try {
+                $stmt = $db->prepare(
+                    'SELECT Query, COUNT(*) AS hits, MAX(ResultCount) AS top_count
+                       FROM tblSearchQueries
+                      WHERE SearchedAt >= ? AND Query <> ""
+                      GROUP BY Query
+                      ORDER BY hits DESC
+                      LIMIT 15'
+                );
+                $stmt->execute([$since]);
+                $topSearches = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+                $stmt = $db->prepare(
+                    'SELECT Query, COUNT(*) AS hits
+                       FROM tblSearchQueries
+                      WHERE SearchedAt >= ? AND ResultCount = 0 AND Query <> ""
+                      GROUP BY Query
+                      ORDER BY hits DESC
+                      LIMIT 10'
+                );
+                $stmt->execute([$since]);
+                $zeroResults = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            } catch (\Throwable $_e) {}
+        ?>
+        <?php if (!$topSearches): ?>
+            <p class="text-muted small mb-0">No search activity yet (or the tblSearchQueries table hasn't been created — re-run install).</p>
+        <?php else: ?>
+            <table class="table table-sm table-hover mb-0">
+                <thead><tr><th>Query</th><th class="text-end">Hits</th></tr></thead>
+                <tbody>
+                <?php foreach ($topSearches as $s): ?>
+                    <tr>
+                        <td><code><?= htmlspecialchars($s['Query']) ?></code></td>
+                        <td class="text-end"><?= number_format((int)$s['hits']) ?></td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        <?php endif; ?>
+    </div>
+
+    <!-- Zero-result queries -->
+    <?php if ($zeroResults): ?>
+    <div class="card-admin p-3 mb-4 border-warning">
+        <h2 class="h6 mb-3"><i class="bi bi-question-circle me-2"></i>Zero-result queries — candidates for tagging or new songs</h2>
+        <ul class="list-unstyled mb-0 small">
+            <?php foreach ($zeroResults as $z): ?>
+                <li><code><?= htmlspecialchars($z['Query']) ?></code> <span class="text-muted">× <?= (int)$z['hits'] ?></span></li>
+            <?php endforeach; ?>
+        </ul>
+    </div>
+    <?php endif; ?>
+
     <!-- Top songbooks -->
     <div class="card-admin p-3 mb-4">
-        <h2 class="h6 mb-3"><i class="bi bi-book me-2"></i>Songbook opens</h2>
+        <div class="d-flex align-items-center justify-content-between mb-3">
+            <h2 class="h6 mb-0"><i class="bi bi-book me-2"></i>Songbook opens</h2>
+            <a class="btn btn-sm btn-outline-secondary" href="?range=<?= (int)$range ?>&export=top_books">CSV</a>
+        </div>
         <?php if (!$topBooks): ?>
             <p class="text-muted small mb-0">No data yet.</p>
         <?php else: ?>
