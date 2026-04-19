@@ -68,6 +68,7 @@ $groups = [
     'User management' => ['view_users', 'edit_users', 'change_user_roles', 'assign_global_admin', 'delete_users'],
     'Database & operations' => ['view_admin_dashboard', 'view_analytics', 'run_db_install', 'run_db_migrate', 'run_db_backup', 'run_db_restore', 'drop_legacy_tables'],
     'Content moderation' => ['review_song_requests'],
+    'Channel access'     => ['access_alpha', 'access_beta'],
     'Meta' => ['manage_entitlements'],
 ];
 $grouped  = [];

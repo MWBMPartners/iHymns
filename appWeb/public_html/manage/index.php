@@ -18,29 +18,51 @@ requireEditor();
 $currentUser = getCurrentUser();
 $activePage  = 'dashboard';
 
-/* Gather stats */
+/* Gather stats — all queries updated for the v0.10 PascalCase schema
+   (#407). Each is wrapped in try/catch so a missing table during early
+   setup doesn't blank the whole dashboard. */
 $db = getDb();
-$totalUsers   = (int)$db->query('SELECT COUNT(*) FROM users')->fetchColumn();
-$activeUsers  = (int)$db->query('SELECT COUNT(*) FROM users WHERE is_active = 1')->fetchColumn();
+
+$tryInt = function (string $sql, array $params = []) use ($db): int {
+    try {
+        $stmt = $db->prepare($sql);
+        $stmt->execute($params);
+        return (int)$stmt->fetchColumn();
+    } catch (\Throwable $_e) {
+        return 0;
+    }
+};
+
+$totalUsers    = $tryInt('SELECT COUNT(*) FROM tblUsers');
+$activeUsers   = $tryInt('SELECT COUNT(*) FROM tblUsers WHERE IsActive = 1');
+$activeTokens  = $tryInt('SELECT COUNT(*) FROM tblApiTokens WHERE ExpiresAt > ?', [gmdate('c')]);
+$totalSetlists = $tryInt('SELECT COUNT(*) FROM tblUserSetlists');
+$totalSongs    = $tryInt('SELECT COUNT(*) FROM tblSongs');
+$totalSongbooks= $tryInt('SELECT COUNT(*) FROM tblSongbooks WHERE SongCount > 0');
+$pendingReqs   = $tryInt("SELECT COUNT(*) FROM tblSongRequests WHERE Status = 'pending'");
+$logins24h     = $tryInt('SELECT COUNT(*) FROM tblLoginAttempts WHERE Success = 1 AND AttemptedAt >= (NOW() - INTERVAL 1 DAY)');
+$views24h      = $tryInt('SELECT COUNT(*) FROM tblSongHistory WHERE ViewedAt >= (NOW() - INTERVAL 1 DAY)');
 
 /* User counts by role */
-$roleStmt = $db->query('SELECT role, COUNT(*) as cnt FROM users WHERE is_active = 1 GROUP BY role');
 $roleCounts = [];
-while ($row = $roleStmt->fetch(PDO::FETCH_ASSOC)) {
-    $roleCounts[$row['role']] = (int)$row['cnt'];
-}
+try {
+    $rs = $db->query('SELECT Role, COUNT(*) AS cnt FROM tblUsers WHERE IsActive = 1 GROUP BY Role');
+    while ($row = $rs->fetch(PDO::FETCH_ASSOC)) {
+        $roleCounts[$row['Role']] = (int)$row['cnt'];
+    }
+} catch (\Throwable $_e) {}
 
 /* Recent users (last 10) */
-$recentUsers = $db->query('SELECT id, username, display_name, role, is_active, created_at FROM users ORDER BY created_at DESC LIMIT 10')->fetchAll(PDO::FETCH_ASSOC);
-
-/* Active API tokens count */
-$activeTokens = (int)$db->prepare('SELECT COUNT(*) FROM api_tokens WHERE expires_at > ?')->execute([gmdate('c')]) ? (int)$db->query('SELECT COUNT(*) FROM api_tokens WHERE expires_at > \'' . gmdate('c') . '\'')->fetchColumn() : 0;
-
-/* Total setlists stored */
-$totalSetlists = 0;
+$recentUsers = [];
 try {
-    $totalSetlists = (int)$db->query('SELECT COUNT(*) FROM user_setlists')->fetchColumn();
-} catch (\Exception $e) { /* table may not exist yet */ }
+    $recentUsers = $db->query(
+        'SELECT Id AS id, Username AS username, DisplayName AS display_name,
+                Role AS role, IsActive AS is_active, CreatedAt AS created_at
+           FROM tblUsers
+          ORDER BY CreatedAt DESC
+          LIMIT 10'
+    )->fetchAll(PDO::FETCH_ASSOC);
+} catch (\Throwable $_e) {}
 
 $csrf = csrfToken();
 ?>
@@ -67,32 +89,66 @@ $csrf = csrfToken();
 
     <div class="container py-4" style="max-width: 960px;">
 
-        <h1 class="h4 mb-4"><i class="bi bi-speedometer2 me-2"></i>Dashboard</h1>
+        <h1 class="h4 mb-1"><i class="bi bi-speedometer2 me-2"></i>Admin Portal</h1>
+        <p class="text-secondary small mb-4">
+            Welcome back, <strong><?= htmlspecialchars($currentUser['display_name'] ?? $currentUser['username'] ?? 'admin') ?></strong>.
+            Quick snapshot of the app + shortcuts to every admin surface.
+        </p>
 
-        <!-- Stats Cards -->
+        <!-- Library snapshot -->
+        <h2 class="h6 text-uppercase text-muted small mb-2">Library</h2>
         <div class="row g-3 mb-4">
             <div class="col-6 col-md-3">
                 <div class="card-admin stat-card">
-                    <div class="stat-number"><?= $activeUsers ?></div>
-                    <div class="stat-label">Active Users</div>
+                    <div class="stat-number"><?= number_format($totalSongs) ?></div>
+                    <div class="stat-label">Songs</div>
                 </div>
             </div>
             <div class="col-6 col-md-3">
                 <div class="card-admin stat-card">
-                    <div class="stat-number"><?= $totalUsers ?></div>
-                    <div class="stat-label">Total Users</div>
+                    <div class="stat-number"><?= number_format($totalSongbooks) ?></div>
+                    <div class="stat-label">Songbooks</div>
                 </div>
             </div>
             <div class="col-6 col-md-3">
                 <div class="card-admin stat-card">
-                    <div class="stat-number"><?= $activeTokens ?></div>
-                    <div class="stat-label">Active Tokens</div>
+                    <div class="stat-number"><?= number_format($totalSetlists) ?></div>
+                    <div class="stat-label">Synced setlists</div>
                 </div>
             </div>
             <div class="col-6 col-md-3">
                 <div class="card-admin stat-card">
-                    <div class="stat-number"><?= $totalSetlists ?></div>
-                    <div class="stat-label">Synced Setlists</div>
+                    <div class="stat-number"><?= number_format($pendingReqs) ?></div>
+                    <div class="stat-label">Pending requests</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- People + activity -->
+        <h2 class="h6 text-uppercase text-muted small mb-2">People &amp; activity</h2>
+        <div class="row g-3 mb-4">
+            <div class="col-6 col-md-3">
+                <div class="card-admin stat-card">
+                    <div class="stat-number"><?= number_format($activeUsers) ?></div>
+                    <div class="stat-label">Active users</div>
+                </div>
+            </div>
+            <div class="col-6 col-md-3">
+                <div class="card-admin stat-card">
+                    <div class="stat-number"><?= number_format($totalUsers) ?></div>
+                    <div class="stat-label">Total users</div>
+                </div>
+            </div>
+            <div class="col-6 col-md-3">
+                <div class="card-admin stat-card">
+                    <div class="stat-number"><?= number_format($logins24h) ?></div>
+                    <div class="stat-label">Logins (24 h)</div>
+                </div>
+            </div>
+            <div class="col-6 col-md-3">
+                <div class="card-admin stat-card">
+                    <div class="stat-number"><?= number_format($views24h) ?></div>
+                    <div class="stat-label">Song views (24 h)</div>
                 </div>
             </div>
         </div>
@@ -154,8 +210,19 @@ $csrf = csrfToken();
             <?php endif; ?>
             <?php
                 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
-                if (userHasEntitlement('manage_entitlements', $currentUser['role'] ?? null)):
             ?>
+            <?php if (userHasEntitlement('view_admin_dashboard', $currentUser['role'] ?? null)): ?>
+            <div class="col-md-4">
+                <div class="card-admin">
+                    <a href="/manage/setup-database" class="quick-link">
+                        <i class="bi bi-database-gear d-block mb-2"></i>
+                        <strong>Database Setup</strong>
+                        <div class="small text-muted">Install, migrate, backup, restore, cleanup</div>
+                    </a>
+                </div>
+            </div>
+            <?php endif; ?>
+            <?php if (userHasEntitlement('manage_entitlements', $currentUser['role'] ?? null)): ?>
             <div class="col-md-4">
                 <div class="card-admin">
                     <a href="/manage/entitlements" class="quick-link">

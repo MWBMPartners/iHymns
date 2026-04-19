@@ -36,6 +36,13 @@ export const ENTITLEMENTS = {
 
     /* Content moderation */
     review_song_requests: ['editor', 'admin', 'global_admin'],
+
+    /* Channel access (#407) */
+    access_alpha:         ['user', 'editor', 'admin', 'global_admin'],
+    access_beta:          ['user', 'editor', 'admin', 'global_admin'],
+
+    /* Meta */
+    manage_entitlements:  ['global_admin'],
 };
 
 /**
