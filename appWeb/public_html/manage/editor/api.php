@@ -548,10 +548,130 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
+     * POST api.php?action=bulk_tag   (#399)
+     * Add and/or remove a set of tag names across a list of songs.
+     * Body: { songIds: [...], add: [tagNames], remove: [tagNames] }
+     * Response: { songsAffected, added, removed }
+     * ----------------------------------------------------------------- */
+    case 'bulk_tag':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST required.']);
+            break;
+        }
+        $rawBody = file_get_contents('php://input');
+        $payload = json_decode($rawBody ?: '', true);
+        if (!is_array($payload) || !isset($payload['songIds']) || !is_array($payload['songIds'])) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Missing songIds array.']);
+            break;
+        }
+        $songIds = array_values(array_filter(array_map('strval', $payload['songIds']), function ($id) {
+            return $id !== '' && preg_match('/^[A-Za-z0-9_-]{1,32}$/', $id);
+        }));
+        $addTags = is_array($payload['add'] ?? null) ? $payload['add'] : [];
+        $remTags = is_array($payload['remove'] ?? null) ? $payload['remove'] : [];
+        $normaliseTag = function ($name) {
+            $trimmed = trim((string)$name);
+            return $trimmed === '' ? null : mb_substr($trimmed, 0, 50);
+        };
+        $addTags = array_values(array_filter(array_map($normaliseTag, $addTags)));
+        $remTags = array_values(array_filter(array_map($normaliseTag, $remTags)));
+
+        if (empty($songIds) || (empty($addTags) && empty($remTags))) {
+            http_response_code(400);
+            echo json_encode(['error' => 'No valid songIds or tag changes supplied.']);
+            break;
+        }
+
+        $totalAdded = 0;
+        $totalRemoved = 0;
+        try {
+            $db = getDbMysqli();
+            $db->begin_transaction();
+
+            /* Resolve / create tag rows for each ADD name. Keep a map of
+               Name -> Id so we can insert mapping rows. */
+            $addIds = [];
+            foreach ($addTags as $name) {
+                $slug = strtolower(preg_replace('/[^a-z0-9]+/i', '-', $name));
+                $slug = trim($slug, '-');
+                if ($slug === '') { continue; }
+                $stmt = $db->prepare(
+                    'INSERT INTO tblSongTags (Name, Slug) VALUES (?, ?) ' .
+                    'ON DUPLICATE KEY UPDATE Id = LAST_INSERT_ID(Id)'
+                );
+                $stmt->bind_param('ss', $name, $slug);
+                $stmt->execute();
+                $addIds[$name] = (int)$db->insert_id;
+                $stmt->close();
+            }
+
+            /* Insert mapping rows (ignore duplicates). */
+            if (!empty($addIds) && !empty($songIds)) {
+                $userId = (int)($currentUser['Id'] ?? 0);
+                $stmt = $db->prepare(
+                    'INSERT IGNORE INTO tblSongTagMap (SongId, TagId, TaggedBy) VALUES (?, ?, ?)'
+                );
+                foreach ($songIds as $sid) {
+                    foreach ($addIds as $tagId) {
+                        $stmt->bind_param('sii', $sid, $tagId, $userId);
+                        $stmt->execute();
+                        $totalAdded += $db->affected_rows > 0 ? 1 : 0;
+                    }
+                }
+                $stmt->close();
+            }
+
+            /* Remove mapping rows. Resolve tag Ids by Name first (only
+               delete if the tag exists — names that don't match anything
+               are silently ignored). */
+            if (!empty($remTags) && !empty($songIds)) {
+                $remIds = [];
+                $nameStmt = $db->prepare('SELECT Id FROM tblSongTags WHERE Name = ? LIMIT 1');
+                foreach ($remTags as $name) {
+                    $nameStmt->bind_param('s', $name);
+                    $nameStmt->execute();
+                    $row = $nameStmt->get_result()->fetch_assoc();
+                    if ($row) { $remIds[] = (int)$row['Id']; }
+                }
+                $nameStmt->close();
+                if (!empty($remIds)) {
+                    $delStmt = $db->prepare(
+                        'DELETE FROM tblSongTagMap WHERE SongId = ? AND TagId = ?'
+                    );
+                    foreach ($songIds as $sid) {
+                        foreach ($remIds as $tagId) {
+                            $delStmt->bind_param('si', $sid, $tagId);
+                            $delStmt->execute();
+                            $totalRemoved += $db->affected_rows > 0 ? 1 : 0;
+                        }
+                    }
+                    $delStmt->close();
+                }
+            }
+
+            $db->commit();
+            echo json_encode([
+                'songsAffected' => count($songIds),
+                'added'         => $totalAdded,
+                'removed'       => $totalRemoved,
+            ]);
+        } catch (\Throwable $e) {
+            if (isset($db) && $db instanceof mysqli) {
+                try { $db->rollback(); } catch (\Throwable $_) {}
+            }
+            http_response_code(500);
+            error_log('[editor bulk_tag] ' . $e->getMessage());
+            echo json_encode(['error' => 'Failed to apply bulk tag changes. Check server logs.']);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
      * Unknown action
      * ----------------------------------------------------------------- */
     default:
         http_response_code(400);
-        echo json_encode(['error' => 'Unknown action. Use: load, save, save_song, get_translations, add_translation, remove_translation']);
+        echo json_encode(['error' => 'Unknown action. Use: load, save, save_song, bulk_tag, get_translations, add_translation, remove_translation']);
         break;
 }

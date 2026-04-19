@@ -319,11 +319,27 @@ $currentUser = getCurrentUser();
                 <span class="small">
                     <span id="bulk-selected-count">0</span> selected
                 </span>
-                <span class="d-flex gap-1">
+                <span class="d-flex gap-1 flex-wrap">
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-bulk-select-all">All</button>
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-bulk-select-none">None</button>
+                    <button type="button" class="btn btn-sm btn-outline-success" id="btn-bulk-verify" disabled
+                            title="Mark selected songs as verified">
+                        <i class="bi bi-patch-check me-1"></i>Verify
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-primary" id="btn-bulk-tag" disabled
+                            title="Add or remove tags on selected songs">
+                        <i class="bi bi-tags me-1"></i>Tag
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-warning" id="btn-bulk-move" disabled
+                            title="Move selected songs to another songbook">
+                        <i class="bi bi-arrow-right-circle me-1"></i>Move
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-bulk-export" disabled
+                            title="Export selected songs as JSON">
+                        <i class="bi bi-download me-1"></i>Export
+                    </button>
                     <button type="button" class="btn btn-sm btn-danger" id="btn-bulk-delete" disabled>
-                        <i class="bi bi-trash me-1"></i>Delete selected
+                        <i class="bi bi-trash me-1"></i>Delete
                     </button>
                 </span>
             </div>

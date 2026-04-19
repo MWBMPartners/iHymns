@@ -2626,11 +2626,15 @@ function init() {
 function updateBulkActionsBar() {
     var bar = document.getElementById('bulk-actions-bar');
     var countEl = document.getElementById('bulk-selected-count');
-    var deleteBtn = document.getElementById('btn-bulk-delete');
     if (!bar || !countEl) return;
     var count = (window._selectedIds && window._selectedIds.size) || 0;
     countEl.textContent = count;
-    if (deleteBtn) deleteBtn.disabled = count === 0;
+    /* All bulk-action buttons enable only when something is selected. */
+    ['btn-bulk-delete', 'btn-bulk-verify', 'btn-bulk-tag',
+     'btn-bulk-move', 'btn-bulk-export'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) el.disabled = count === 0;
+    });
 }
 
 function toggleSelectMode(on) {
@@ -2698,6 +2702,129 @@ function bindMultiSelectListeners() {
         updateStatusBar();
         updateBulkActionsBar();
         showToast('Deleted ' + ids.length + ' songs. Click Save to persist.', 'warning');
+    });
+
+    /* Bulk Verify (#399) — sets verified = true on every selected song
+       and marks each as modified so the existing Save flow persists it. */
+    var verify = document.getElementById('btn-bulk-verify');
+    if (verify) verify.addEventListener('click', function () {
+        var ids = Array.from(window._selectedIds || []);
+        if (!ids.length) return;
+        var idSet = new Set(ids);
+        var changed = 0;
+        (songData.songs || []).forEach(function (s) {
+            if (!idSet.has(s.id)) return;
+            if (!s.verified) {
+                s.verified = true;
+                modifiedSongIds.add(s.id);
+                changed++;
+            }
+        });
+        renderSongList();
+        updateStatusBar();
+        updateBulkActionsBar();
+        showToast(
+            changed > 0
+                ? 'Marked ' + changed + ' song(s) verified. Click Save to persist.'
+                : 'Nothing to change — all selected songs were already verified.',
+            changed > 0 ? 'success' : 'info'
+        );
+    });
+
+    /* Bulk Move (#399) — relocates every selected song to a different
+       songbook. Clears Number on each (set to NULL) because re-numbering
+       to avoid collisions is per-book and needs a proper UI. The user
+       can renumber per-song afterwards. */
+    var move = document.getElementById('btn-bulk-move');
+    if (move) move.addEventListener('click', function () {
+        var ids = Array.from(window._selectedIds || []);
+        if (!ids.length) return;
+        var choices = (songData.songbooks || []).map(function (sb) { return sb.id; }).join(', ');
+        var target = prompt(
+            'Move ' + ids.length + ' selected song(s) to which songbook?\n\n' +
+            'Available: ' + choices + '\n\n' +
+            'Number will be cleared (NULL) — renumber individually afterwards.'
+        );
+        if (!target) return;
+        var targetId = target.trim();
+        var sb = (songData.songbooks || []).find(function (s) { return s.id === targetId; });
+        if (!sb) { showToast('No songbook "' + targetId + '".', 'warning'); return; }
+
+        var idSet = new Set(ids);
+        (songData.songs || []).forEach(function (s) {
+            if (!idSet.has(s.id)) return;
+            s.songbook = sb.id;
+            s.songbookName = sb.name;
+            s.number = null;
+            modifiedSongIds.add(s.id);
+        });
+        renderSongList();
+        updateStatusBar();
+        updateBulkActionsBar();
+        showToast('Moved ' + ids.length + ' song(s) to ' + sb.id + '. Click Save to persist.', 'success');
+    });
+
+    /* Bulk Export (#399) — downloads the selected songs as JSON. */
+    var exp = document.getElementById('btn-bulk-export');
+    if (exp) exp.addEventListener('click', function () {
+        var ids = Array.from(window._selectedIds || []);
+        if (!ids.length) return;
+        var idSet = new Set(ids);
+        var subset = (songData.songs || []).filter(function (s) { return idSet.has(s.id); });
+        downloadBlob(
+            JSON.stringify({ songs: subset }, null, 2),
+            'songs-export-' + new Date().toISOString().slice(0, 10) + '.json',
+            'application/json'
+        );
+        showToast('Exported ' + subset.length + ' song(s) to JSON.', 'success');
+    });
+
+    /* Bulk Tag (#399) — adds and/or removes tags on every selected song.
+       Posts to /api?action=bulk_tag; tag membership lives server-side
+       in tblSongTagMap, outside the save_song flow. */
+    var tag = document.getElementById('btn-bulk-tag');
+    if (tag) tag.addEventListener('click', function () {
+        var ids = Array.from(window._selectedIds || []);
+        if (!ids.length) return;
+        var toAdd = prompt(
+            'Tags to ADD on ' + ids.length + ' selected song(s)?\n' +
+            'Comma-separated (e.g. "Easter, Communion"). Leave blank to skip.'
+        );
+        if (toAdd === null) return; /* user cancelled */
+        var toRemove = prompt(
+            'Tags to REMOVE on ' + ids.length + ' selected song(s)?\n' +
+            'Comma-separated. Leave blank to skip.'
+        );
+        if (toRemove === null) return;
+
+        var add = toAdd.split(',').map(function (t) { return t.trim(); }).filter(Boolean);
+        var rem = toRemove.split(',').map(function (t) { return t.trim(); }).filter(Boolean);
+        if (!add.length && !rem.length) {
+            showToast('No tag changes specified.', 'info');
+            return;
+        }
+
+        fetch(EDITOR_API_URL + '?action=bulk_tag', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ songIds: ids, add: add, remove: rem })
+        })
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, data: j }; }); })
+            .then(function (res) {
+                if (!res.ok) {
+                    showToast('Bulk tag failed: ' + (res.data.error || 'Unknown error.'), 'danger');
+                    return;
+                }
+                showToast(
+                    'Tagged ' + res.data.songsAffected + ' song(s) ' +
+                    '(+' + res.data.added + ', -' + res.data.removed + ').',
+                    'success'
+                );
+            })
+            .catch(function (err) {
+                showToast('Bulk tag request failed: ' + err.message, 'danger');
+            });
     });
 }
 
