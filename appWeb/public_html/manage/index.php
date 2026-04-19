@@ -233,6 +233,19 @@ $csrf = csrfToken();
                 </div>
             </div>
             <?php endif; ?>
+            <?php if (userHasEntitlement('review_song_requests', $currentUser['role'] ?? null)): ?>
+            <div class="col-md-4">
+                <div class="card-admin">
+                    <a href="/manage/requests" class="quick-link">
+                        <i class="bi bi-lightbulb d-block mb-2"></i>
+                        <strong>Song Requests</strong>
+                        <div class="small text-muted">
+                            <?= $pendingReqs ?> pending · triage &amp; resolve
+                        </div>
+                    </a>
+                </div>
+            </div>
+            <?php endif; ?>
             <div class="col-md-4">
                 <div class="card-admin">
                     <a href="/" class="quick-link" target="_blank">

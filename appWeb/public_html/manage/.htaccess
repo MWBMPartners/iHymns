@@ -42,6 +42,9 @@ RewriteRule ^analytics$ analytics.php [L]
 # /manage/entitlements → entitlements.php (entitlements editor, #407)
 RewriteRule ^entitlements$ entitlements.php [L]
 
+# /manage/requests → requests.php (song-request triage, #403)
+RewriteRule ^requests$ requests.php [L]
+
 # /manage/editor/api → /manage/editor/api.php (editor API)
 RewriteRule ^editor/api$ editor/api.php [QSA,L]
 
