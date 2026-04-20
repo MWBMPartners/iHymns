@@ -43,6 +43,13 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
 
+/* Channel gate (#407) — alpha / beta subdomains require the user to
+   hold access_alpha / access_beta entitlements. Never gates production
+   or /api / /manage / static assets (those paths never hit index.php
+   thanks to the root .htaccess). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'channel_gate.php';
+enforceChannelGate($app["Application"]["Version"]["Development"]["Status"] ?? null);
+
 /* =========================================================================
  * APPLICATION METADATA — accessed directly via $app array
  * ========================================================================= */

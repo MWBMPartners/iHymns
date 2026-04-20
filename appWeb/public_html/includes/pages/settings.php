@@ -373,6 +373,14 @@ declare(strict_types=1);
                                 aria-label="Download <?= htmlspecialchars($book['name']) ?> for offline use">
                             <i class="fa-solid fa-cloud-arrow-down" aria-hidden="true"></i>
                         </button>
+                        <!-- Per-songbook eviction button (#401). Hidden until
+                             updateSongbookCacheStatus() detects cached entries. -->
+                        <button type="button"
+                                class="btn btn-outline-warning btn-sm btn-evict-songbook d-none"
+                                data-songbook-id="<?= htmlspecialchars($book['id']) ?>"
+                                aria-label="Remove <?= htmlspecialchars($book['name']) ?> from offline cache">
+                            <i class="fa-solid fa-trash" aria-hidden="true"></i>
+                        </button>
                     </div>
                     <?php
                             endif;
@@ -403,9 +411,29 @@ declare(strict_types=1);
                          id="download-songs-bar" role="progressbar"
                          aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
                 </div>
+                <!-- Audio pre-cache progress line (#401) -->
+                <small class="text-muted d-block mt-1" id="download-audio-status"></small>
                 <small class="text-muted mt-1 d-block">
                     Save songs to your device for offline access. Download individual songbooks or all at once.
                 </small>
+
+                <!-- Offline audio bulk download (#401).
+                     Enabled by default; pulls /api?action=bulk_audio&songbook=<id>
+                     and asks the service worker to pre-cache every audio URL so
+                     playback works offline without first needing to play online. -->
+                <div class="form-check form-switch mt-2">
+                    <input class="form-check-input" type="checkbox"
+                           id="setting-include-audio-offline" role="switch"
+                           aria-label="Include audio in offline downloads">
+                    <label class="form-check-label" for="setting-include-audio-offline">
+                        <strong>Include audio in offline downloads</strong>
+                        <small class="text-muted d-block">
+                            When downloading a songbook, also pre-cache every available
+                            audio file. Significantly larger but means audio plays
+                            offline without needing to play once online first.
+                        </small>
+                    </label>
+                </div>
 
                 <!-- Auto-update toggle (#132) -->
                 <div class="form-check form-switch mt-2">

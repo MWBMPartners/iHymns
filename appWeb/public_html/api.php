@@ -160,6 +160,10 @@ if ($page !== null) {
             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'privacy.php';
             break;
 
+        case 'request-a-song':
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'request-a-song.php';
+            break;
+
         default:
             http_response_code(404);
             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'not-found.php';
@@ -191,6 +195,21 @@ if ($action !== null) {
             }
 
             $results = $songData->searchSongs($query, $bookId, $limit);
+
+            /* Fire-and-forget search-query logging (#404). Silently no-ops
+               if the table is missing (fresh installs before the schema
+               ALTER has been applied). */
+            try {
+                $logDb = getDb();
+                $uid   = null;
+                $logAuth = getAuthenticatedUser();
+                if ($logAuth) $uid = (int)$logAuth['Id'];
+                $logStmt = $logDb->prepare(
+                    'INSERT INTO tblSearchQueries (Query, ResultCount, UserId) VALUES (?, ?, ?)'
+                );
+                $logStmt->execute([$query, count($results), $uid]);
+            } catch (\Throwable $_e) { /* best-effort */ }
+
             sendJson([
                 'results' => array_map('songToSummary', $results),
                 'total'   => count($results),
@@ -350,6 +369,38 @@ if ($action !== null) {
             header('Content-Type: application/json; charset=UTF-8');
             header('Cache-Control: public, max-age=3600, must-revalidate');
             echo $json;
+            break;
+
+        /* -----------------------------------------------------------------
+         * Bulk audio manifest (#401) — returns the list of audio URLs
+         * for a songbook so the service worker can pre-cache audio
+         * separately from song HTML. Only songs whose `hasAudio` flag
+         * is set are returned.
+         *
+         * Parameters: songbook (optional; all if omitted)
+         * ----------------------------------------------------------------- */
+        case 'bulk_audio':
+            $audioBook  = isset($_GET['songbook']) ? trim($_GET['songbook']) : '';
+            $audioSongs = $audioBook !== ''
+                ? $songData->getSongs($audioBook)
+                : $songData->getSongs();
+
+            $manifest = [];
+            foreach ($audioSongs as $s) {
+                if (empty($s['hasAudio'])) continue;
+                $sid = $s['id'] ?? '';
+                if ($sid === '') continue;
+                $manifest[] = [
+                    'songId' => $sid,
+                    'url'    => '/data/audio/' . rawurlencode($sid) . '.mp3',
+                ];
+            }
+
+            sendJson([
+                'songbook' => $audioBook ?: 'all',
+                'count'    => count($manifest),
+                'audio'    => $manifest,
+            ]);
             break;
 
         /* -----------------------------------------------------------------
@@ -3921,6 +3972,342 @@ if ($action !== null) {
             unset($org);
 
             sendJson(['organisations' => $orgs]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Submit a song request (#403). Public endpoint; rate-limited by
+         * IP to 5 submissions per 24 h. Honeypot field rejects bots.
+         * ----------------------------------------------------------------- */
+        /* -----------------------------------------------------------------
+         * Setlist scheduling (#398) — ties a setlist to a date.
+         * Auth required. Operates on the signed-in user's own setlists
+         * via the SetlistId string (same ID used by tblUserSetlists).
+         * ----------------------------------------------------------------- */
+        case 'setlist_schedule_set':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+
+            $body      = json_decode((string)file_get_contents('php://input'), true) ?? [];
+            $setlistId = trim((string)($body['setlistId'] ?? ''));
+            $dateStr   = trim((string)($body['date']      ?? ''));
+            $notes     = trim((string)($body['notes']     ?? ''));
+
+            if ($setlistId === '' || $dateStr === '') {
+                sendJson(['error' => 'setlistId and date are required.'], 400);
+                break;
+            }
+            /* Validate YYYY-MM-DD */
+            $d = DateTime::createFromFormat('Y-m-d', $dateStr);
+            if (!$d || $d->format('Y-m-d') !== $dateStr) {
+                sendJson(['error' => 'Invalid date (expected YYYY-MM-DD).'], 400);
+                break;
+            }
+
+            try {
+                $db = getDb();
+                /* Verify the caller owns the setlist */
+                $own = $db->prepare('SELECT 1 FROM tblUserSetlists WHERE UserId = ? AND SetlistId = ? LIMIT 1');
+                $own->execute([(int)$authUser['Id'], $setlistId]);
+                if (!$own->fetchColumn()) {
+                    sendJson(['error' => 'Setlist not found.'], 404);
+                    break;
+                }
+                /* Replace any existing schedule for this (user, setlist) pair. */
+                $del = $db->prepare('DELETE FROM tblSetlistSchedule WHERE UserId = ? AND SetlistId = ?');
+                $del->execute([(int)$authUser['Id'], $setlistId]);
+                $ins = $db->prepare(
+                    'INSERT INTO tblSetlistSchedule (SetlistId, UserId, ScheduledDate, Notes)
+                     VALUES (?, ?, ?, ?)'
+                );
+                $ins->execute([$setlistId, (int)$authUser['Id'], $dateStr, $notes]);
+                sendJson(['ok' => true]);
+            } catch (\Throwable $e) {
+                error_log('[setlist_schedule_set] ' . $e->getMessage());
+                sendJson(['error' => 'Could not schedule the setlist.'], 500);
+            }
+            break;
+
+        case 'setlist_schedule_clear':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            $body = json_decode((string)file_get_contents('php://input'), true) ?? [];
+            $setlistId = trim((string)($body['setlistId'] ?? ''));
+            if ($setlistId === '') { sendJson(['error' => 'setlistId required.'], 400); break; }
+
+            try {
+                $db = getDb();
+                $stmt = $db->prepare('DELETE FROM tblSetlistSchedule WHERE UserId = ? AND SetlistId = ?');
+                $stmt->execute([(int)$authUser['Id'], $setlistId]);
+                sendJson(['ok' => true]);
+            } catch (\Throwable $e) {
+                error_log('[setlist_schedule_clear] ' . $e->getMessage());
+                sendJson(['error' => 'Could not clear schedule.'], 500);
+            }
+            break;
+
+        case 'setlist_schedule_upcoming':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+
+            try {
+                $db = getDb();
+                $stmt = $db->prepare(
+                    'SELECT s.SetlistId, s.ScheduledDate, s.Notes, l.Name AS name
+                       FROM tblSetlistSchedule s
+                       LEFT JOIN tblUserSetlists l
+                              ON l.UserId = s.UserId AND l.SetlistId = s.SetlistId
+                      WHERE s.UserId = ? AND s.ScheduledDate >= CURRENT_DATE()
+                      ORDER BY s.ScheduledDate ASC
+                      LIMIT 25'
+                );
+                $stmt->execute([(int)$authUser['Id']]);
+                $upcoming = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                sendJson(['upcoming' => $upcoming]);
+            } catch (\Throwable $e) {
+                error_log('[setlist_schedule_upcoming] ' . $e->getMessage());
+                sendJson(['error' => 'Could not load schedule.'], 500);
+            }
+            break;
+
+        /* -------------------------------------------------------------
+         * SETLIST COLLABORATION (#398)
+         * Four endpoints manage tblSetlistCollaborators. Owner of the
+         * setlist can invite by email, list existing collaborators,
+         * and revoke. A separate endpoint returns the setlists the
+         * current user has been invited to.
+         * ----------------------------------------------------------- */
+
+        /* GET ?action=setlist_schedule_current&setlistId=X — fetch the
+         * existing schedule (if any) for a setlist the caller owns. */
+        case 'setlist_schedule_current':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            $setlistId = trim((string)($_GET['setlistId'] ?? ''));
+            if ($setlistId === '') { sendJson(['error' => 'setlistId required.'], 400); break; }
+            try {
+                $db = getDb();
+                $stmt = $db->prepare(
+                    'SELECT ScheduledDate, Notes
+                       FROM tblSetlistSchedule
+                      WHERE UserId = ? AND SetlistId = ?
+                      LIMIT 1'
+                );
+                $stmt->execute([(int)$authUser['Id'], $setlistId]);
+                $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                sendJson(['schedule' => $row ?: null]);
+            } catch (\Throwable $e) {
+                error_log('[setlist_schedule_current] ' . $e->getMessage());
+                sendJson(['error' => 'Could not load schedule.'], 500);
+            }
+            break;
+
+        case 'setlist_collab_invite':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            $body = json_decode((string)file_get_contents('php://input'), true) ?? [];
+            $setlistId  = trim((string)($body['setlistId']        ?? ''));
+            $collabEml  = trim((string)($body['collaboratorEmail'] ?? ''));
+            $permission = strtolower(trim((string)($body['permission'] ?? 'edit')));
+            if (!in_array($permission, ['view', 'edit'], true)) { $permission = 'edit'; }
+            if ($setlistId === '' || $collabEml === '') {
+                sendJson(['error' => 'setlistId and collaboratorEmail required.'], 400);
+                break;
+            }
+            if (!filter_var($collabEml, FILTER_VALIDATE_EMAIL)) {
+                sendJson(['error' => 'Invalid email address.'], 400);
+                break;
+            }
+            try {
+                $db = getDb();
+                /* Owner check */
+                $own = $db->prepare('SELECT 1 FROM tblUserSetlists WHERE UserId = ? AND SetlistId = ? LIMIT 1');
+                $own->execute([(int)$authUser['Id'], $setlistId]);
+                if (!$own->fetchColumn()) { sendJson(['error' => 'Setlist not found.'], 404); break; }
+
+                /* Resolve collaborator by email */
+                $usr = $db->prepare('SELECT Id, Username FROM tblUsers WHERE Email = ? LIMIT 1');
+                $usr->execute([$collabEml]);
+                $collab = $usr->fetch(PDO::FETCH_ASSOC);
+                if (!$collab) {
+                    sendJson(['error' => 'No user with that email yet — ask them to sign in first.'], 404);
+                    break;
+                }
+                if ((int)$collab['Id'] === (int)$authUser['Id']) {
+                    sendJson(['error' => 'You cannot invite yourself.'], 400);
+                    break;
+                }
+
+                $ins = $db->prepare(
+                    'INSERT INTO tblSetlistCollaborators (SetlistOwnerId, SetlistId, CollaboratorId, Permission)
+                     VALUES (?, ?, ?, ?)
+                     ON DUPLICATE KEY UPDATE Permission = VALUES(Permission)'
+                );
+                $ins->execute([(int)$authUser['Id'], $setlistId, (int)$collab['Id'], $permission]);
+                sendJson([
+                    'ok' => true,
+                    'collaborator' => [
+                        'id'         => (int)$collab['Id'],
+                        'username'   => $collab['Username'],
+                        'permission' => $permission,
+                    ],
+                ]);
+            } catch (\Throwable $e) {
+                error_log('[setlist_collab_invite] ' . $e->getMessage());
+                sendJson(['error' => 'Could not invite collaborator.'], 500);
+            }
+            break;
+
+        case 'setlist_collab_list':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            $setlistId = trim((string)($_GET['setlistId'] ?? ''));
+            if ($setlistId === '') { sendJson(['error' => 'setlistId required.'], 400); break; }
+            try {
+                $db = getDb();
+                $stmt = $db->prepare(
+                    'SELECT c.CollaboratorId AS id, u.Username AS username, u.Email AS email,
+                            c.Permission AS permission, c.InvitedAt AS invitedAt
+                       FROM tblSetlistCollaborators c
+                       JOIN tblUsers u ON u.Id = c.CollaboratorId
+                      WHERE c.SetlistOwnerId = ? AND c.SetlistId = ?
+                      ORDER BY c.InvitedAt DESC'
+                );
+                $stmt->execute([(int)$authUser['Id'], $setlistId]);
+                $list = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                sendJson(['collaborators' => $list]);
+            } catch (\Throwable $e) {
+                error_log('[setlist_collab_list] ' . $e->getMessage());
+                sendJson(['error' => 'Could not load collaborators.'], 500);
+            }
+            break;
+
+        case 'setlist_collab_remove':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            $body = json_decode((string)file_get_contents('php://input'), true) ?? [];
+            $setlistId = trim((string)($body['setlistId'] ?? ''));
+            $collabId  = (int)($body['collaboratorId'] ?? 0);
+            if ($setlistId === '' || $collabId <= 0) {
+                sendJson(['error' => 'setlistId and collaboratorId required.'], 400);
+                break;
+            }
+            try {
+                $db = getDb();
+                $stmt = $db->prepare(
+                    'DELETE FROM tblSetlistCollaborators
+                      WHERE SetlistOwnerId = ? AND SetlistId = ? AND CollaboratorId = ?'
+                );
+                $stmt->execute([(int)$authUser['Id'], $setlistId, $collabId]);
+                sendJson(['ok' => true, 'removed' => $stmt->rowCount()]);
+            } catch (\Throwable $e) {
+                error_log('[setlist_collab_remove] ' . $e->getMessage());
+                sendJson(['error' => 'Could not remove collaborator.'], 500);
+            }
+            break;
+
+        case 'setlist_collab_shared_with_me':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            try {
+                $db = getDb();
+                $stmt = $db->prepare(
+                    'SELECT c.SetlistOwnerId AS ownerId, u.Username AS ownerName,
+                            c.SetlistId AS setlistId, c.Permission AS permission,
+                            l.Name AS name
+                       FROM tblSetlistCollaborators c
+                       JOIN tblUsers u ON u.Id = c.SetlistOwnerId
+                       LEFT JOIN tblUserSetlists l
+                              ON l.UserId = c.SetlistOwnerId AND l.SetlistId = c.SetlistId
+                      WHERE c.CollaboratorId = ?
+                      ORDER BY c.InvitedAt DESC'
+                );
+                $stmt->execute([(int)$authUser['Id']]);
+                $shared = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                sendJson(['shared' => $shared]);
+            } catch (\Throwable $e) {
+                error_log('[setlist_collab_shared_with_me] ' . $e->getMessage());
+                sendJson(['error' => 'Could not load shared setlists.'], 500);
+            }
+            break;
+
+        case 'song_request_submit':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $body    = json_decode((string)file_get_contents('php://input'), true) ?? [];
+            $title   = trim((string)($body['title']    ?? ''));
+            $book    = trim((string)($body['songbook'] ?? ''));
+            $details = trim((string)($body['details']  ?? ''));
+            $email   = trim((string)($body['email']    ?? ''));
+            $honey   = (string)($body['website']       ?? '');
+            $ip      = $_SERVER['REMOTE_ADDR'] ?? '';
+
+            /* Honeypot: real users leave this blank; bots fill every field. */
+            if ($honey !== '') {
+                sendJson(['ok' => true, 'trackingId' => 0]); /* Silent success to not tip off the bot. */
+                break;
+            }
+
+            if ($title === '') {
+                sendJson(['error' => 'A song title is required.'], 400);
+                break;
+            }
+            if (mb_strlen($title)   > 500)  { sendJson(['error' => 'Title too long.'],    400); break; }
+            if (mb_strlen($book)    > 100)  { sendJson(['error' => 'Songbook too long.'], 400); break; }
+            if (mb_strlen($details) > 2000) { sendJson(['error' => 'Details too long.'],  400); break; }
+            if (mb_strlen($email)   > 255)  { sendJson(['error' => 'Email too long.'],    400); break; }
+            if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                sendJson(['error' => 'Email address is not valid.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDb();
+
+                /* Rate-limit: reject if this IP has ≥5 submissions in the last 24 h. */
+                $stmt = $db->prepare(
+                    'SELECT COUNT(*) FROM tblSongRequests WHERE IpAddress = ? AND CreatedAt > (NOW() - INTERVAL 1 DAY)'
+                );
+                $stmt->execute([$ip]);
+                if ((int)$stmt->fetchColumn() >= 5) {
+                    sendJson(['error' => 'You have submitted several requests recently. Please try again tomorrow.'], 429);
+                    break;
+                }
+
+                /* Link to a signed-in user if the caller sent a bearer token. */
+                $authUser = getAuthenticatedUser();
+                $userId   = $authUser ? (int)$authUser['Id'] : null;
+
+                $stmt = $db->prepare(
+                    'INSERT INTO tblSongRequests
+                        (Title, Songbook, Details, ContactEmail, UserId, IpAddress, Status)
+                     VALUES (?, ?, ?, ?, ?, ?, "pending")'
+                );
+                $stmt->execute([$title, $book, $details, $email, $userId, $ip]);
+
+                sendJson(['ok' => true, 'trackingId' => (int)$db->lastInsertId()]);
+            } catch (\Throwable $e) {
+                error_log('[song_request_submit] ' . $e->getMessage());
+                sendJson(['error' => 'Could not save your request. Please try again.'], 500);
+            }
             break;
 
         /* -----------------------------------------------------------------

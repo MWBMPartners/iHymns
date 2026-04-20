@@ -75,6 +75,16 @@ $credFormValues = [
 $credError   = '';
 $credSuccess = '';
 
+/* CSRF gate for every POST on this page — the credentials form AND
+   the backup-upload form go through here. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+        http_response_code(403);
+        echo 'Invalid CSRF token';
+        exit;
+    }
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save-credentials') {
     $host   = trim((string)($_POST['host']    ?? ''));
     $port   = trim((string)($_POST['port']    ?? '3306'));
@@ -184,6 +194,7 @@ if ($action !== '') {
         'users'       => 'migrate-users.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
+        'restore'     => 'restore.php',
         'drop-legacy' => 'drop-legacy-tables.php',
     ];
 
@@ -307,6 +318,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                     <?php endif; ?>
                 </p>
                 <form method="post" action="" autocomplete="off">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(csrfToken()) ?>">
                     <input type="hidden" name="action" value="save-credentials">
                     <div class="row g-3">
                         <div class="col-md-8">
@@ -460,10 +472,134 @@ if ($hasCredentials && defined('DB_HOST')) {
                     </div>
                 </div>
             </div>
+            <?php
+                /* List available backups for restore (#405). */
+                $backupFiles = [];
+                $backupDir = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'data_share' . DIRECTORY_SEPARATOR . 'backups';
+                if (is_dir($backupDir)) {
+                    foreach (scandir($backupDir) ?: [] as $f) {
+                        if (preg_match('/^ihymns-backup-[0-9-]+\.sql(?:\.gz)?$/', $f)) {
+                            $backupFiles[] = $f;
+                        }
+                    }
+                    rsort($backupFiles);
+                }
+
+                /* Handle an admin-supplied upload (#405). Accepts .sql + .sql.gz
+                   files matching the backup naming pattern, drops them into
+                   the server's backups directory, and logs the upload. */
+                $uploadMsg = '';
+                if ($_SERVER['REQUEST_METHOD'] === 'POST'
+                    && ($_POST['action'] ?? '') === 'upload-backup'
+                    && !empty($_FILES['backup']['name'])) {
+                    $f = $_FILES['backup'];
+                    $safeName = basename((string)$f['name']);
+                    if ($f['error'] !== UPLOAD_ERR_OK) {
+                        $uploadMsg = 'Upload failed (error ' . (int)$f['error'] . ').';
+                    } elseif (!preg_match('/^ihymns-backup-[0-9-]+\.sql(?:\.gz)?$/', $safeName)) {
+                        $uploadMsg = 'Filename must match ihymns-backup-YYYYMMDD-HHMMSS.sql(.gz).';
+                    } elseif ((int)$f['size'] > 256 * 1024 * 1024) {
+                        $uploadMsg = 'Upload rejected: file exceeds 256 MB.';
+                    } else {
+                        if (!is_dir($backupDir)) { @mkdir($backupDir, 0755, true); }
+                        $dest = $backupDir . DIRECTORY_SEPARATOR . $safeName;
+                        if (move_uploaded_file($f['tmp_name'], $dest)) {
+                            @chmod($dest, 0640);
+                            $uploadMsg = 'Uploaded: ' . $safeName . ' — pick it from the list below to restore.';
+                            /* Audit-log entry (#405). Silent no-op if the table is
+                               absent or the activity log helper isn't available. */
+                            try {
+                                $auditDb = getDbMysqli();
+                                $auditUser = $currentUser['Username'] ?? 'unknown';
+                                $auditSql = sprintf(
+                                    'backup upload by %s: %s (%d bytes)',
+                                    $auditUser, $safeName, (int)$f['size']
+                                );
+                                $stmt = $auditDb->prepare(
+                                    'INSERT INTO tblActivityLog (UserId, ActionType, Details) VALUES (?, ?, ?)'
+                                );
+                                if ($stmt) {
+                                    $uid = isset($currentUser['Id']) ? (int)$currentUser['Id'] : 0;
+                                    $action = 'backup_upload';
+                                    $stmt->bind_param('iss', $uid, $action, $auditSql);
+                                    @$stmt->execute();
+                                    $stmt->close();
+                                }
+                            } catch (\Throwable $_e) { /* best effort */ }
+                            /* Refresh the file list so the uploaded file appears
+                               in the dropdown immediately. */
+                            $backupFiles = [];
+                            foreach (scandir($backupDir) ?: [] as $bf) {
+                                if (preg_match('/^ihymns-backup-[0-9-]+\.sql(?:\.gz)?$/', $bf)) {
+                                    $backupFiles[] = $bf;
+                                }
+                            }
+                            rsort($backupFiles);
+                        } else {
+                            $uploadMsg = 'Could not save the uploaded file.';
+                        }
+                    }
+                }
+            ?>
             <div class="col-md-6">
                 <div class="card bg-dark border-danger h-100">
                     <div class="card-body">
-                        <h5 class="card-title">6. Drop Legacy Tables</h5>
+                        <h5 class="card-title">6. Restore from Backup</h5>
+                        <p class="card-text text-secondary small">
+                            Replace every table in the database with data from a previous backup.
+                            <strong>Destructive — consider running a fresh Backup first.</strong>
+                        </p>
+                        <?php if ($uploadMsg): ?>
+                            <div class="alert alert-info py-2 small"><?= htmlspecialchars($uploadMsg) ?></div>
+                        <?php endif; ?>
+
+                        <?php if ($backupFiles): ?>
+                            <form action="" method="get" class="d-flex gap-2 flex-wrap mb-2">
+                                <input type="hidden" name="action" value="restore">
+                                <select name="file" class="form-select form-select-sm" style="flex:1 1 200px">
+                                    <?php foreach ($backupFiles as $f): ?>
+                                        <option value="<?= htmlspecialchars($f) ?>"><?= htmlspecialchars($f) ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                                <button type="submit" class="btn btn-sm btn-outline-warning <?= $hasCredentials ? '' : 'disabled' ?>">Preview</button>
+                                <button type="submit" name="preflight" value="1"
+                                        class="btn btn-sm btn-outline-info <?= $hasCredentials ? '' : 'disabled' ?>"
+                                        title="Parse the backup and show a summary without touching the database (#405)">
+                                    Pre-flight
+                                </button>
+                                <button type="submit" name="confirm" value="1"
+                                        class="btn btn-sm btn-danger <?= $hasCredentials ? '' : 'disabled' ?>"
+                                        onclick="return prompt('Type RESTORE (all caps) to confirm replacing every table with the selected backup. A snapshot of current state is saved automatically before the restore runs.') === 'RESTORE'">
+                                    Restore
+                                </button>
+                            </form>
+                            <p class="text-muted small mb-0">
+                                <i class="bi bi-info-circle me-1"></i>
+                                Restore always takes a pre-restore snapshot first. Data INSERTs
+                                are transactional — a failure rolls data back automatically.
+                            </p>
+                        <?php else: ?>
+                            <p class="text-muted small mb-2">No backups found in <code>data_share/backups/</code>.</p>
+                        <?php endif; ?>
+
+                        <hr class="my-2">
+                        <p class="text-muted small mb-2">Or upload a `.sql.gz` / `.sql` from your computer:</p>
+                        <form action="" method="post" enctype="multipart/form-data" class="d-flex gap-2 flex-wrap">
+                            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(csrfToken()) ?>">
+                            <input type="hidden" name="action" value="upload-backup">
+                            <input type="file" name="backup" accept=".sql,.sql.gz,.gz" required
+                                   class="form-control form-control-sm" style="flex:1 1 200px">
+                            <button type="submit" class="btn btn-sm btn-outline-secondary <?= $hasCredentials ? '' : 'disabled' ?>">
+                                Upload
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-danger h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">7. Drop Legacy Tables</h5>
                         <p class="card-text text-secondary small">
                             Drop any tables in the database that are <strong>not</strong>
                             part of the current <code>schema.sql</code>. Useful after

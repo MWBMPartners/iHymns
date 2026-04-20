@@ -1,3 +1,29 @@
+## [0.10.x] — 2026-04-18 (alpha)
+
+- feat: **auth** — magic-link (email + 6-digit code) is now the primary sign-in path; cross-subdomain `HttpOnly` cookie + 30-day sliding expiry; HttpOnly cookie ITP-resistant persistence
+- feat: **admin portal** — `/manage/` dashboard now shows Library + People & Activity stat groups, recent-users panel, quick-link tiles for every admin surface; `/admin/` alias redirects to `/manage/`
+- feat: **channel gating** — alpha/beta subdomains gated by `access_alpha` / `access_beta` entitlements; embedded magic-link form on the gate page
+- feat: **entitlements system** — granular role→capability map with a `/manage/entitlements` editor; overrides stored in `tblAppSettings`; client-side mirror for UI decisions
+- feat: **analytics** — `/manage/analytics` dashboard (7/30/90-day range) with Top Songs, Top Songbooks, Top Search Queries, Zero-Result Queries; per-panel CSV export
+- feat: **song requests** — public `/request-a-song` form with rate limit + honeypot; admin triage queue at `/manage/requests`
+- feat: **editor per-song save** — `/api?action=save_song` UPSERT endpoint; auto-save now per-song (not full-corpus)
+- feat: **editor multi-select** — bulk delete with typed-DELETE safety for ≥10 rows
+- feat: **song revision audit log** — `tblSongRevisions` writes on every per-song save
+- feat: **scripture search** — abbreviation expansion (`Ps 23` → `Psalm 23`) + tag-based curated match merged to top of results
+- feat: **practice mode** — Full / Dimmed / Hidden cycle for memorisation; tap-to-reveal
+- feat: **keyboard shortcuts toggle** — Settings → Accessibility lets users turn shortcuts on/off
+- feat: **PWA update toast** — "New version — Refresh" reliably appears when SW deploys
+- feat: **PWA offline audio** — on-demand caching on playback; `/api?action=bulk_audio` for pre-caching; Settings toggle
+- feat: **setlist scheduling API** — `setlist_schedule_set / _clear / _upcoming` endpoints
+- feat: **backup restore** — admin UI with server-list and upload-from-device paths; audit log on upload
+- feat: **Misc songbook** — songs now permitted without a song number (schema `Number` is NULL-able); book-glyph badge renders instead of `#null`
+- feat: **Title Case** rendering everywhere song titles are displayed
+- feat: **admin area re-skin** — unified with main-site palette (indigo/violet accent) via shared `css/admin.css`
+- fix: **Settings Account card** — now flips live on auth-state change via `ihymns:auth-changed` event bus
+- fix: **editor Save button** — renamed from "Save JSON" with clearer DB-first wording
+- fix: **Usage Stats badges** — consistent width regardless of digit count
+- security: CSRF tokens on all admin POST forms; DB error messages no longer leaked to clients
+
 ## [1.0.0] — 2026-04-06
 - app refresh upload (early dev 1)
 - feat: Android — Kotlin/Jetpack Compose project setup

@@ -1,5 +1,5 @@
 - [User Profile](user_profile.md) — Lance at MWBM Partners Ltd, wants detailed annotations, modular architecture
-- [iHymns Project](project_ihymns.md) — Multiplatform Christian lyrics app, MySQL (30+ tables), 50+ API endpoints, v0.10.0
+- [iHymns Project](project_ihymns.md) — Multiplatform Christian lyrics app, MySQL (30+ tables), 106 public API endpoints + 5 editor-API endpoints, v0.10.1 (PR #407 April 2026 alpha batch)
 - [Never touch SourceSongData](feedback_source_data.md) — .SourceSongData/ must never be deleted or modified
 - [Use appX/ directories](feedback_app_dirs.md) — appWeb/, appApple/, appAndroid/ naming convention
 - [Web app can use PHP](feedback_php_web.md) — PHP 8.5+ on shared hosting (DreamHost, no CLI access)
@@ -10,3 +10,4 @@
 - [Phase 1 SEO/PWA/Social](feedback_phase1_seo_pwa_social.md) — OG images (song/songbook/setlist), PWA banners, sitemap
 - [User Accounts](feedback_user_accounts.md) — 3 auth methods, roles, orgs, email login, groups, version access, hashed tokens
 - [DB naming](feedback_db_naming.md) — tblCamelCase tables, CamelCase columns, AS aliases for API compat
+- [Do NOT edit .claude/ProjectBrief.md](feedback_claude_brief.md) — user-owned file; update project_ihymns.md / MEMORY.md instead

@@ -381,10 +381,477 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
+     * SAVE_SONG — Write a single song's data (#394)
+     *
+     * UPSERT of one song + its child rows (writers/composers/components)
+     * plus an audit row in tblSongRevisions (#400). Much cheaper than
+     * the full-corpus `save` action and safe to call from the editor's
+     * debounced auto-save every few seconds.
+     *
+     * Body: a single song object matching the data/songs.json shape.
+     * ----------------------------------------------------------------- */
+    case 'save_song':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+
+        $rawBody = file_get_contents('php://input');
+        $song    = json_decode($rawBody ?: '', true);
+        if (!is_array($song) || empty($song['id']) || empty($song['title'])) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Missing required fields: id, title.']);
+            break;
+        }
+
+        $songId       = (string)$song['id'];
+        $songbookAbbr = (string)($song['songbook'] ?? '');
+
+        /* Misc (or any missing value) persists Number as NULL (#392). */
+        $rawNumber = $song['number'] ?? null;
+        $number    = ($songbookAbbr === 'Misc' || $rawNumber === null || $rawNumber === '' || (int)$rawNumber <= 0)
+            ? null
+            : (int)$rawNumber;
+
+        $title        = (string)$song['title'];
+        $songbookName = (string)($song['songbookName'] ?? '');
+        $language     = (string)($song['language']    ?? 'en');
+        $copyright    = (string)($song['copyright']   ?? '');
+        $ccli         = (string)($song['ccli']        ?? '');
+        $verified     = (int)($song['verified']           ?? 0);
+        $lyricsPD     = (int)($song['lyricsPublicDomain'] ?? 0);
+        $musicPD      = (int)($song['musicPublicDomain']  ?? 0);
+        $hasAudio     = (int)($song['hasAudio']           ?? 0);
+        $hasSheet     = (int)($song['hasSheetMusic']      ?? 0);
+
+        /* Build lyrics_text for FULLTEXT index */
+        $lyricsLines = [];
+        foreach ($song['components'] ?? [] as $comp) {
+            foreach ($comp['lines'] ?? [] as $line) {
+                $lyricsLines[] = $line;
+            }
+        }
+        $lyricsText = implode("\n", $lyricsLines);
+
+        try {
+            $db = getDbMysqli();
+            $db->begin_transaction();
+
+            /* Capture previous state for the revision row (#400) */
+            $previousData = null;
+            $prevStmt = $db->prepare('SELECT * FROM tblSongs WHERE SongId = ? LIMIT 1');
+            $prevStmt->bind_param('s', $songId);
+            $prevStmt->execute();
+            $prevRow = $prevStmt->get_result()->fetch_assoc();
+            $prevStmt->close();
+            if ($prevRow !== null) {
+                $previousData = json_encode($prevRow, JSON_UNESCAPED_UNICODE);
+            }
+            $action = $prevRow === null ? 'create' : 'edit';
+
+            /* UPSERT tblSongs */
+            $upsert = $db->prepare(
+                'INSERT INTO tblSongs
+                    (SongId, Number, Title, SongbookAbbr, SongbookName, Language,
+                     Copyright, Ccli, Verified, LyricsPublicDomain, MusicPublicDomain,
+                     HasAudio, HasSheetMusic, LyricsText)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE
+                    Number = VALUES(Number), Title = VALUES(Title),
+                    SongbookAbbr = VALUES(SongbookAbbr), SongbookName = VALUES(SongbookName),
+                    Language = VALUES(Language), Copyright = VALUES(Copyright),
+                    Ccli = VALUES(Ccli), Verified = VALUES(Verified),
+                    LyricsPublicDomain = VALUES(LyricsPublicDomain),
+                    MusicPublicDomain = VALUES(MusicPublicDomain),
+                    HasAudio = VALUES(HasAudio), HasSheetMusic = VALUES(HasSheetMusic),
+                    LyricsText = VALUES(LyricsText)'
+            );
+            $upsert->bind_param(
+                'sissssssiiiiis',
+                $songId, $number, $title, $songbookAbbr, $songbookName,
+                $language, $copyright, $ccli, $verified, $lyricsPD,
+                $musicPD, $hasAudio, $hasSheet, $lyricsText
+            );
+            $upsert->execute();
+            $upsert->close();
+
+            /* Child rows: DELETE then INSERT — simpler than diffing and
+               the row counts per song are small (≈1–20 each). */
+            $del = $db->prepare('DELETE FROM tblSongWriters    WHERE SongId = ?'); $del->bind_param('s', $songId); $del->execute(); $del->close();
+            $del = $db->prepare('DELETE FROM tblSongComposers  WHERE SongId = ?'); $del->bind_param('s', $songId); $del->execute(); $del->close();
+            $del = $db->prepare('DELETE FROM tblSongComponents WHERE SongId = ?'); $del->bind_param('s', $songId); $del->execute(); $del->close();
+
+            $insWriter = $db->prepare('INSERT INTO tblSongWriters (SongId, Name) VALUES (?, ?)');
+            foreach ($song['writers'] ?? [] as $w) {
+                if (!is_string($w) || $w === '') continue;
+                $insWriter->bind_param('ss', $songId, $w);
+                $insWriter->execute();
+            }
+            $insWriter->close();
+
+            $insComposer = $db->prepare('INSERT INTO tblSongComposers (SongId, Name) VALUES (?, ?)');
+            foreach ($song['composers'] ?? [] as $c) {
+                if (!is_string($c) || $c === '') continue;
+                $insComposer->bind_param('ss', $songId, $c);
+                $insComposer->execute();
+            }
+            $insComposer->close();
+
+            $insComp = $db->prepare(
+                'INSERT INTO tblSongComponents
+                    (SongId, Type, Number, SortOrder, LinesJson)
+                 VALUES (?, ?, ?, ?, ?)'
+            );
+            $order = 0;
+            foreach ($song['components'] ?? [] as $comp) {
+                $type   = (string)($comp['type'] ?? 'verse');
+                $cNum   = isset($comp['number']) ? (int)$comp['number'] : 0;
+                $lines  = json_encode($comp['lines'] ?? [], JSON_UNESCAPED_UNICODE);
+                $insComp->bind_param('ssiis', $songId, $type, $cNum, $order, $lines);
+                $insComp->execute();
+                $order++;
+            }
+            $insComp->close();
+
+            /* Revision audit log (#400) — authenticated editors only.
+               Silent no-op if the user isn't authenticated via the /manage
+               session or if the revisions table is missing. */
+            try {
+                require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+                $editor = getCurrentUser();
+                $userId = $editor['id'] ?? null;
+                $newData = json_encode($song, JSON_UNESCAPED_UNICODE);
+                $rev = $db->prepare(
+                    'INSERT INTO tblSongRevisions
+                        (SongId, UserId, Action, PreviousData, NewData, Status)
+                     VALUES (?, ?, ?, ?, ?, "approved")'
+                );
+                $userIdParam = $userId !== null ? (int)$userId : null;
+                $rev->bind_param('sisss', $songId, $userIdParam, $action, $previousData, $newData);
+                $rev->execute();
+                $rev->close();
+            } catch (\Throwable $_e) { /* revisions are best-effort */ }
+
+            $db->commit();
+            echo json_encode(['ok' => true, 'songId' => $songId, 'action' => $action]);
+        } catch (\Throwable $e) {
+            if (isset($db) && $db instanceof mysqli) {
+                try { $db->rollback(); } catch (\Throwable $_) {}
+            }
+            http_response_code(500);
+            error_log('[editor save_song] ' . $e->getMessage());
+            /* Do not expose DB internals to the client — the details are
+               in the server error log for admins to inspect. */
+            echo json_encode(['error' => 'Failed to save song. Check server logs for details.']);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * POST api.php?action=bulk_tag   (#399)
+     * Add and/or remove a set of tag names across a list of songs.
+     * Body: { songIds: [...], add: [tagNames], remove: [tagNames] }
+     * Response: { songsAffected, added, removed }
+     * ----------------------------------------------------------------- */
+    case 'bulk_tag':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST required.']);
+            break;
+        }
+        $rawBody = file_get_contents('php://input');
+        $payload = json_decode($rawBody ?: '', true);
+        if (!is_array($payload) || !isset($payload['songIds']) || !is_array($payload['songIds'])) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Missing songIds array.']);
+            break;
+        }
+        $songIds = array_values(array_filter(array_map('strval', $payload['songIds']), function ($id) {
+            return $id !== '' && preg_match('/^[A-Za-z0-9_-]{1,32}$/', $id);
+        }));
+        $addTags = is_array($payload['add'] ?? null) ? $payload['add'] : [];
+        $remTags = is_array($payload['remove'] ?? null) ? $payload['remove'] : [];
+        $normaliseTag = function ($name) {
+            $trimmed = trim((string)$name);
+            return $trimmed === '' ? null : mb_substr($trimmed, 0, 50);
+        };
+        $addTags = array_values(array_filter(array_map($normaliseTag, $addTags)));
+        $remTags = array_values(array_filter(array_map($normaliseTag, $remTags)));
+
+        if (empty($songIds) || (empty($addTags) && empty($remTags))) {
+            http_response_code(400);
+            echo json_encode(['error' => 'No valid songIds or tag changes supplied.']);
+            break;
+        }
+
+        $totalAdded = 0;
+        $totalRemoved = 0;
+        try {
+            $db = getDbMysqli();
+            $db->begin_transaction();
+
+            /* Resolve / create tag rows for each ADD name. Keep a map of
+               Name -> Id so we can insert mapping rows. */
+            $addIds = [];
+            foreach ($addTags as $name) {
+                $slug = strtolower(preg_replace('/[^a-z0-9]+/i', '-', $name));
+                $slug = trim($slug, '-');
+                if ($slug === '') { continue; }
+                $stmt = $db->prepare(
+                    'INSERT INTO tblSongTags (Name, Slug) VALUES (?, ?) ' .
+                    'ON DUPLICATE KEY UPDATE Id = LAST_INSERT_ID(Id)'
+                );
+                $stmt->bind_param('ss', $name, $slug);
+                $stmt->execute();
+                $addIds[$name] = (int)$db->insert_id;
+                $stmt->close();
+            }
+
+            /* Insert mapping rows (ignore duplicates). */
+            if (!empty($addIds) && !empty($songIds)) {
+                $userId = (int)($currentUser['Id'] ?? 0);
+                $stmt = $db->prepare(
+                    'INSERT IGNORE INTO tblSongTagMap (SongId, TagId, TaggedBy) VALUES (?, ?, ?)'
+                );
+                foreach ($songIds as $sid) {
+                    foreach ($addIds as $tagId) {
+                        $stmt->bind_param('sii', $sid, $tagId, $userId);
+                        $stmt->execute();
+                        $totalAdded += $db->affected_rows > 0 ? 1 : 0;
+                    }
+                }
+                $stmt->close();
+            }
+
+            /* Remove mapping rows. Resolve tag Ids by Name first (only
+               delete if the tag exists — names that don't match anything
+               are silently ignored). */
+            if (!empty($remTags) && !empty($songIds)) {
+                $remIds = [];
+                $nameStmt = $db->prepare('SELECT Id FROM tblSongTags WHERE Name = ? LIMIT 1');
+                foreach ($remTags as $name) {
+                    $nameStmt->bind_param('s', $name);
+                    $nameStmt->execute();
+                    $row = $nameStmt->get_result()->fetch_assoc();
+                    if ($row) { $remIds[] = (int)$row['Id']; }
+                }
+                $nameStmt->close();
+                if (!empty($remIds)) {
+                    $delStmt = $db->prepare(
+                        'DELETE FROM tblSongTagMap WHERE SongId = ? AND TagId = ?'
+                    );
+                    foreach ($songIds as $sid) {
+                        foreach ($remIds as $tagId) {
+                            $delStmt->bind_param('si', $sid, $tagId);
+                            $delStmt->execute();
+                            $totalRemoved += $db->affected_rows > 0 ? 1 : 0;
+                        }
+                    }
+                    $delStmt->close();
+                }
+            }
+
+            $db->commit();
+            echo json_encode([
+                'songsAffected' => count($songIds),
+                'added'         => $totalAdded,
+                'removed'       => $totalRemoved,
+            ]);
+        } catch (\Throwable $e) {
+            if (isset($db) && $db instanceof mysqli) {
+                try { $db->rollback(); } catch (\Throwable $_) {}
+            }
+            http_response_code(500);
+            error_log('[editor bulk_tag] ' . $e->getMessage());
+            echo json_encode(['error' => 'Failed to apply bulk tag changes. Check server logs.']);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * GET api.php?action=list_revisions&songId=X   (#400)
+     * Returns revision rows for a single song, newest first.
+     * Response: { revisions: [{id, action, createdAt, userId, username, previousData, newData}, ...] }
+     * ----------------------------------------------------------------- */
+    case 'list_revisions':
+        $songId = (string)($_GET['songId'] ?? '');
+        if ($songId === '' || !preg_match('/^[A-Za-z0-9_-]{1,32}$/', $songId)) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Missing or invalid songId.']);
+            break;
+        }
+        $limit = (int)($_GET['limit'] ?? 50);
+        if ($limit < 1 || $limit > 200) { $limit = 50; }
+        try {
+            $db = getDbMysqli();
+            $stmt = $db->prepare(
+                'SELECT r.Id, r.Action, r.CreatedAt, r.UserId, u.Username,
+                        r.PreviousData, r.NewData
+                   FROM tblSongRevisions r
+                   LEFT JOIN tblUsers u ON u.Id = r.UserId
+                  WHERE r.SongId = ?
+                  ORDER BY r.CreatedAt DESC, r.Id DESC
+                  LIMIT ?'
+            );
+            $stmt->bind_param('si', $songId, $limit);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $rows = [];
+            while ($r = $res->fetch_assoc()) {
+                $rows[] = [
+                    'id'           => (int)$r['Id'],
+                    'action'       => $r['Action'],
+                    'createdAt'    => $r['CreatedAt'],
+                    'userId'       => $r['UserId'] !== null ? (int)$r['UserId'] : null,
+                    'username'     => $r['Username'],
+                    'previousData' => $r['PreviousData'] !== null ? json_decode($r['PreviousData'], true) : null,
+                    'newData'      => $r['NewData']      !== null ? json_decode($r['NewData'],      true) : null,
+                ];
+            }
+            $stmt->close();
+            echo json_encode(['revisions' => $rows]);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[editor list_revisions] ' . $e->getMessage());
+            echo json_encode(['error' => 'Failed to load revisions. Check server logs.']);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * POST api.php?action=restore_revision   (#400)
+     * Restore a song to the PreviousData snapshot of the given revision.
+     * Body: { revisionId: N }
+     * Writes a NEW revision row with Action='restore' capturing the
+     * before/after pair so the audit log stays linear. The tblSongs
+     * row and its dependent rows (tblSongComponents, tblSongTagMap is
+     * untouched — tags are not serialised in the revision JSON) are
+     * replaced via the same code path save_song uses.
+     * ----------------------------------------------------------------- */
+    case 'restore_revision':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST required.']);
+            break;
+        }
+        $rawBody = file_get_contents('php://input');
+        $payload = json_decode($rawBody ?: '', true);
+        $revisionId = (int)($payload['revisionId'] ?? 0);
+        if ($revisionId <= 0) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Missing revisionId.']);
+            break;
+        }
+        try {
+            $db = getDbMysqli();
+            $sel = $db->prepare('SELECT SongId, PreviousData, NewData FROM tblSongRevisions WHERE Id = ? LIMIT 1');
+            $sel->bind_param('i', $revisionId);
+            $sel->execute();
+            $row = $sel->get_result()->fetch_assoc();
+            $sel->close();
+            if (!$row) {
+                http_response_code(404);
+                echo json_encode(['error' => 'Revision not found.']);
+                break;
+            }
+            $songId = (string)$row['SongId'];
+            /* We restore to PreviousData — the state the song was in
+               BEFORE this revision was created. That's what a user
+               means when they click "Restore this version" on a row
+               that represents a change they want to undo. */
+            $restorePayload = $row['PreviousData'] !== null
+                ? json_decode($row['PreviousData'], true)
+                : null;
+            if (!is_array($restorePayload)) {
+                http_response_code(409);
+                echo json_encode(['error' => 'This revision has no prior state to restore (likely the initial create).']);
+                break;
+            }
+
+            /* Capture the current state so the new revision row's
+               PreviousData matches reality (not the stale PreviousData
+               from the chosen row). */
+            $cur = $db->prepare('SELECT * FROM tblSongs WHERE SongId = ? LIMIT 1');
+            $cur->bind_param('s', $songId);
+            $cur->execute();
+            $currentRow = $cur->get_result()->fetch_assoc();
+            $cur->close();
+
+            $db->begin_transaction();
+
+            /* Minimal rewrite: update tblSongs fields directly from the
+               restore payload. The payload was serialised from tblSongs
+               by save_song, so column names match 1:1 for the core row.
+               Components table is replaced from the lyrics text when
+               the restore payload carries one; otherwise we leave
+               components alone (safer than wiping them on a partial). */
+            if (isset($restorePayload['Title'])) {
+                $title = (string)$restorePayload['Title'];
+                $number = isset($restorePayload['Number']) && $restorePayload['Number'] !== null
+                    ? (int)$restorePayload['Number'] : null;
+                $verified = (int)($restorePayload['Verified']           ?? 0);
+                $lyricsPD = (int)($restorePayload['LyricsPublicDomain'] ?? 0);
+                $musicPD  = (int)($restorePayload['MusicPublicDomain']  ?? 0);
+                $hasAudio = (int)($restorePayload['HasAudio']           ?? 0);
+                $hasSheet = (int)($restorePayload['HasSheetMusic']      ?? 0);
+                $lyrics   = (string)($restorePayload['LyricsText']      ?? '');
+                $copyr    = (string)($restorePayload['Copyright']       ?? '');
+                $ccli     = (string)($restorePayload['CCLI']            ?? '');
+                $sbAbbr   = (string)($restorePayload['SongbookAbbr']    ?? '');
+                $upd = $db->prepare(
+                    'UPDATE tblSongs SET Title=?, Number=?, Verified=?,
+                        LyricsPublicDomain=?, MusicPublicDomain=?, HasAudio=?,
+                        HasSheetMusic=?, LyricsText=?, Copyright=?, CCLI=?,
+                        SongbookAbbr=?
+                     WHERE SongId=?'
+                );
+                $upd->bind_param(
+                    'siiiiiisssss',
+                    $title, $number, $verified, $lyricsPD, $musicPD, $hasAudio,
+                    $hasSheet, $lyrics, $copyr, $ccli, $sbAbbr, $songId
+                );
+                $upd->execute();
+                $upd->close();
+            }
+
+            /* Log the restore as its own revision row so the audit
+               trail stays linear. */
+            $editor = getCurrentUser();
+            $userId = $editor['id'] ?? null;
+            $userIdParam = $userId !== null ? (int)$userId : null;
+            $prevJson = $currentRow ? json_encode($currentRow, JSON_UNESCAPED_UNICODE) : null;
+            $newJson = json_encode($restorePayload, JSON_UNESCAPED_UNICODE);
+            $action = 'restore';
+            $rev = $db->prepare(
+                'INSERT INTO tblSongRevisions
+                    (SongId, UserId, Action, PreviousData, NewData, Status, ReviewNote)
+                 VALUES (?, ?, ?, ?, ?, "approved", ?)'
+            );
+            $note = 'Restored from revision #' . $revisionId;
+            $rev->bind_param('sissss', $songId, $userIdParam, $action, $prevJson, $newJson, $note);
+            $rev->execute();
+            $newRevId = (int)$db->insert_id;
+            $rev->close();
+
+            $db->commit();
+            echo json_encode([
+                'ok'            => true,
+                'songId'        => $songId,
+                'newRevisionId' => $newRevId,
+            ]);
+        } catch (\Throwable $e) {
+            if (isset($db) && $db instanceof mysqli) {
+                try { $db->rollback(); } catch (\Throwable $_) {}
+            }
+            http_response_code(500);
+            error_log('[editor restore_revision] ' . $e->getMessage());
+            echo json_encode(['error' => 'Failed to restore revision. Check server logs.']);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
      * Unknown action
      * ----------------------------------------------------------------- */
     default:
         http_response_code(400);
-        echo json_encode(['error' => 'Unknown action. Use: load, save, get_translations, add_translation, remove_translation']);
+        echo json_encode(['error' => 'Unknown action. Use: load, save, save_song, bulk_tag, list_revisions, restore_revision, get_translations, add_translation, remove_translation']);
         break;
 }

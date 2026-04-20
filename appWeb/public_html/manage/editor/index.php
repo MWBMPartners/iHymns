@@ -153,6 +153,18 @@ $currentUser = getCurrentUser();
                 <i class="bi bi-check-circle me-1"></i>Validate
             </button>
 
+            <!-- HISTORY — Show revision history for the currently-selected
+                 song, with a restore action per revision (#400). -->
+            <button
+                type="button"
+                class="btn btn-sm btn-outline-info"
+                id="btn-history"
+                title="Show revision history for the selected song"
+                disabled
+            >
+                <i class="bi bi-clock-history me-1"></i>History
+            </button>
+
             <!-- EXPORT DROPDOWN — Provides JSON and CSV export options -->
             <div class="dropdown">
                 <button
@@ -298,11 +310,47 @@ $currentUser = getCurrentUser();
                     <span id="song-count">0 songs</span>
                     <span id="songCountFiltered" style="display: none;"> (showing <span id="filteredCount">0</span>)</span>
                 </span>
-                <span>
+                <span class="d-flex gap-1">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-select-mode"
+                            title="Multi-select mode (#399)" aria-pressed="false">
+                        <i class="bi bi-check2-square me-1"></i>Select
+                    </button>
                     <button type="button" class="btn btn-sm btn-amber" id="btn-add-song" title="Add new song">
                         <i class="bi bi-plus-lg me-1"></i>Add
                     </button>
                     <button type="button" class="btn btn-sm btn-outline-danger" id="btn-delete-song" title="Delete selected song">
+                        <i class="bi bi-trash me-1"></i>Delete
+                    </button>
+                </span>
+            </div>
+
+            <!-- Bulk-actions toolbar — shown only in multi-select mode (#399). -->
+            <div class="bulk-actions-bar d-none align-items-center justify-content-between px-3 py-2"
+                 id="bulk-actions-bar"
+                 style="background-color: rgba(129,140,248,0.1); border-top: 1px solid var(--card-border);">
+                <span class="small">
+                    <span id="bulk-selected-count">0</span> selected
+                </span>
+                <span class="d-flex gap-1 flex-wrap">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-bulk-select-all">All</button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-bulk-select-none">None</button>
+                    <button type="button" class="btn btn-sm btn-outline-success" id="btn-bulk-verify" disabled
+                            title="Mark selected songs as verified">
+                        <i class="bi bi-patch-check me-1"></i>Verify
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-primary" id="btn-bulk-tag" disabled
+                            title="Add or remove tags on selected songs">
+                        <i class="bi bi-tags me-1"></i>Tag
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-warning" id="btn-bulk-move" disabled
+                            title="Move selected songs to another songbook">
+                        <i class="bi bi-arrow-right-circle me-1"></i>Move
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-bulk-export" disabled
+                            title="Export selected songs as JSON">
+                        <i class="bi bi-download me-1"></i>Export
+                    </button>
+                    <button type="button" class="btn btn-sm btn-danger" id="btn-bulk-delete" disabled>
                         <i class="bi bi-trash me-1"></i>Delete
                     </button>
                 </span>
@@ -1111,6 +1159,26 @@ $currentUser = getCurrentUser();
         integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
         crossorigin="anonymous"
     ></script>
+
+    <!-- Revision history modal (#400). Populated on demand when the
+         History button is clicked; shows the timeline + side-by-side
+         JSON for each revision + a Restore button per row. -->
+    <div class="modal fade" id="history-modal" tabindex="-1" aria-labelledby="history-modal-title" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content bg-dark text-light border-info">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title" id="history-modal-title">
+                        <i class="bi bi-clock-history me-2"></i>Revision history
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="history-list" class="list-group list-group-flush"></div>
+                    <div id="history-detail" class="mt-3"></div>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <!-- Editor JavaScript — all interactive logic (loading, saving, editing, previewing)
          is handled in this separate file to keep concerns separated -->

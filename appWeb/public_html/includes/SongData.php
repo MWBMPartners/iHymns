@@ -97,6 +97,59 @@ class SongData
     public function isJsonFallback(): bool { return $this->jsonMode; }
 
     /**
+     * Expand a scripture reference so a search for an abbreviated book
+     * name ("Ps 23", "1 Cor 13", "Rev 21") also matches the full form
+     * in lyrics / titles (#397). Returns the canonical form (e.g.
+     * "Psalm 23") to be concatenated onto the FULLTEXT query, or NULL
+     * if the input doesn't look like a scripture reference.
+     *
+     * The list is intentionally small — just the 66 canonical books and
+     * their most common abbreviations. It's not a full parser.
+     */
+    public static function expandScriptureReference(string $query): ?string
+    {
+        static $books = [
+            'gen'    => 'Genesis',        'ex'    => 'Exodus',      'exod'  => 'Exodus',
+            'lev'    => 'Leviticus',      'num'   => 'Numbers',     'deut'  => 'Deuteronomy', 'dt' => 'Deuteronomy',
+            'josh'   => 'Joshua',         'judg'  => 'Judges',      'ruth'  => 'Ruth',
+            '1 sam'  => '1 Samuel',       '1sam'  => '1 Samuel',    '2 sam' => '2 Samuel',    '2sam' => '2 Samuel',
+            '1 kgs'  => '1 Kings',        '1kgs'  => '1 Kings',     '2 kgs' => '2 Kings',     '2kgs' => '2 Kings',
+            '1 chr'  => '1 Chronicles',   '2 chr' => '2 Chronicles',
+            'ezra'   => 'Ezra',           'neh'   => 'Nehemiah',    'esth'  => 'Esther',      'est' => 'Esther',
+            'job'    => 'Job',            'ps'    => 'Psalm',       'psa'   => 'Psalm',       'psalms' => 'Psalm',
+            'prov'   => 'Proverbs',       'pr'    => 'Proverbs',    'eccl'  => 'Ecclesiastes',
+            'song'   => 'Song of Solomon','isa'   => 'Isaiah',      'jer'   => 'Jeremiah',
+            'lam'    => 'Lamentations',   'ezek'  => 'Ezekiel',     'dan'   => 'Daniel',
+            'hos'    => 'Hosea',          'joel'  => 'Joel',        'amos'  => 'Amos',        'obad' => 'Obadiah',
+            'jon'    => 'Jonah',          'mic'   => 'Micah',       'nah'   => 'Nahum',       'hab' => 'Habakkuk',
+            'zeph'   => 'Zephaniah',      'hag'   => 'Haggai',      'zech'  => 'Zechariah',   'mal' => 'Malachi',
+            'matt'   => 'Matthew',        'mt'    => 'Matthew',     'mk'    => 'Mark',        'lk' => 'Luke',
+            'jn'     => 'John',           'acts'  => 'Acts',        'rom'   => 'Romans',
+            '1 cor'  => '1 Corinthians',  '1cor'  => '1 Corinthians','2 cor' => '2 Corinthians','2cor' => '2 Corinthians',
+            'gal'    => 'Galatians',      'eph'   => 'Ephesians',   'phil'  => 'Philippians', 'phm' => 'Philemon',
+            'col'    => 'Colossians',     '1 thes'=> '1 Thessalonians', '2 thes' => '2 Thessalonians',
+            '1 tim'  => '1 Timothy',      '2 tim' => '2 Timothy',   'tit'   => 'Titus',       'heb' => 'Hebrews',
+            'jas'    => 'James',          '1 pet' => '1 Peter',     '2 pet' => '2 Peter',
+            '1 jn'   => '1 John',         '2 jn'  => '2 John',      '3 jn'  => '3 John',
+            'jude'   => 'Jude',           'rev'   => 'Revelation',
+        ];
+
+        /* Match patterns like: "ps 23", "1 cor 13:4", "John 3:16", "Rev 21" */
+        if (!preg_match('/^((?:[123]\s*)?[A-Za-z.]+)\s+(\d+(?:\s*:\s*\d+)?)/i', trim($query), $m)) {
+            return null;
+        }
+
+        $bookKey = mb_strtolower(preg_replace('/\./', '', trim($m[1])));
+        /* Collapse any whitespace to a single space so "1  Cor" matches "1 cor" */
+        $bookKey = preg_replace('/\s+/', ' ', $bookKey);
+
+        if (!isset($books[$bookKey])) return null;
+
+        $chapter = preg_replace('/\s*:\s*/', ':', trim($m[2]));
+        return $books[$bookKey] . ' ' . $chapter;
+    }
+
+    /**
      * Constructor — connects to MySQL, or falls back to JSON file.
      *
      * When MySQL credentials are not configured (e.g., fresh deployment
@@ -410,6 +463,13 @@ class SongData
             return [];
         }
 
+        /* Scripture-reference awareness (#397): if the query looks like a
+           Bible reference (e.g. "Ps 23", "1 Cor 13:4"), remember the
+           canonical expansion so we can OR it into the FULLTEXT query
+           below. We don't mutate $query here because the JSON-fallback
+           path below relies on substring matching. */
+        $scriptureExpansion = self::expandScriptureReference($query);
+
         /* JSON fallback: simple substring search */
         if ($this->jsonMode) {
             $q = mb_strtolower($query);
@@ -464,8 +524,14 @@ class SongData
                     ORDER BY s.SongbookAbbr, s.Number
                     {$limitClause}";
         } else {
-            /* FULLTEXT search for longer queries */
+            /* FULLTEXT search for longer queries.
+               If the query looked like a scripture reference, OR in the
+               canonical expansion via BOOLEAN MODE so "Ps 23" also
+               matches "Psalm 23" and vice versa (#397). */
             $ftQuery = $query;
+            if ($scriptureExpansion !== null && $scriptureExpansion !== $query) {
+                $ftQuery = '(' . $query . ') (' . $scriptureExpansion . ')';
+            }
 
             $where = ["MATCH(s.Title, s.LyricsText) AGAINST(? IN BOOLEAN MODE)"];
             $params = [$ftQuery];
@@ -528,7 +594,95 @@ class SongData
             $results = $this->_searchByWriterComposer($query, $songbookId, $limit);
         }
 
+        /* Scripture-reference tag matches (#397 follow-up) — if the query
+           looked like a scripture reference, ALSO surface songs that have
+           been tagged with the canonical book or full reference. Merges
+           de-duplicated into the existing result list at the top so
+           curated matches outrank text matches. */
+        if ($scriptureExpansion !== null) {
+            $tagHits = $this->_searchByScriptureTag($scriptureExpansion, $songbookId);
+            if (!empty($tagHits)) {
+                $seen = [];
+                foreach ($results as $r) { $seen[$r['id']] = true; }
+                $merged = $tagHits;
+                foreach ($results as $r) {
+                    if (!isset($seen[$r['id']])) $merged[] = $r; /* already seen via tag hit */
+                    elseif (!isset($tagHits[$r['id'] ?? ''])) $merged[] = $r;
+                }
+                $results = array_values($merged);
+                if ($limit > 0) $results = array_slice($results, 0, $limit);
+            }
+        }
+
         return $results;
+    }
+
+    /**
+     * Find songs tagged with the given scripture reference (#397).
+     *
+     * Matches `Name = <reference>` (e.g. "Psalm 23"), `Name = <book>`
+     * (e.g. "Psalm"), or the kebab-case slug form. Curators tag songs
+     * via /manage/editor/ (tags UI) and the hit merges into search
+     * results for scripture-style queries.
+     */
+    private function _searchByScriptureTag(string $scriptureRef, ?string $songbookId): array
+    {
+        if ($this->jsonMode || !$this->db) return [];
+
+        /* Derive the base book (strip trailing chapter/verse). */
+        $book = preg_replace('/\s+\d+(?::\d+)?$/', '', $scriptureRef);
+
+        $slugRef  = self::_tagSlug($scriptureRef);
+        $slugBook = self::_tagSlug($book);
+
+        $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
+                       s.SongbookAbbr AS songbook, s.SongbookName AS songbookName,
+                       s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
+                       s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
+                       s.MusicPublicDomain AS musicPublicDomain,
+                       s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
+                  FROM tblSongs s
+                  JOIN tblSongTagMap m ON m.SongId = s.SongId
+                  JOIN tblSongTags   t ON t.Id = m.TagId
+                 WHERE t.Name IN (?, ?) OR t.Slug IN (?, ?)";
+        $types  = 'ssss';
+        $params = [$scriptureRef, $book, $slugRef, $slugBook];
+
+        if ($songbookId !== null) {
+            $sql .= ' AND s.SongbookAbbr = ?';
+            $types .= 's';
+            $params[] = strtoupper(trim($songbookId));
+        }
+
+        $sql .= ' ORDER BY s.SongbookAbbr, s.Number';
+
+        try {
+            $stmt = $this->db->prepare($sql);
+            $stmt->bind_param($types, ...$params);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $out = [];
+            while ($row = $result->fetch_assoc()) {
+                $row['number']             = $row['number'] !== null ? (int)$row['number'] : null;
+                $row['verified']           = (bool)$row['verified'];
+                $row['lyricsPublicDomain'] = (bool)$row['lyricsPublicDomain'];
+                $row['musicPublicDomain']  = (bool)$row['musicPublicDomain'];
+                $row['hasAudio']           = (bool)$row['hasAudio'];
+                $row['hasSheetMusic']      = (bool)$row['hasSheetMusic'];
+                $out[] = $row;
+            }
+            $stmt->close();
+            return $out;
+        } catch (\Throwable $_e) {
+            return [];
+        }
+    }
+
+    private static function _tagSlug(string $s): string
+    {
+        $s = mb_strtolower($s);
+        $s = preg_replace('/[^a-z0-9]+/', '-', $s);
+        return trim((string)$s, '-');
     }
 
     /**

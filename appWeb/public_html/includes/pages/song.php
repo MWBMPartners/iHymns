@@ -244,6 +244,27 @@ $components  = $song['components'] ?? [];
                 <button class="btn btn-sm btn-outline-secondary" id="btn-toggle-chords" style="display:none" title="Show/hide chord charts">
                     <i class="fa-solid fa-guitar me-1" aria-hidden="true"></i>Chords
                 </button>
+
+                <!-- Edit in Song Editor (#407). Hidden by default; revealed
+                     by JS when the signed-in user has the `edit_songs`
+                     entitlement (editor / admin / global_admin). -->
+                <a class="btn btn-sm btn-outline-primary d-none"
+                   id="btn-edit-song"
+                   href="/manage/editor/?song=<?= urlencode($song['id'] ?? '') ?>"
+                   title="Edit this song in the Song Editor">
+                    <i class="fa-solid fa-pen-to-square me-1" aria-hidden="true"></i>
+                    Edit
+                </a>
+
+                <!-- Practice / memorisation mode (#402). Cycles through
+                     Full → Dimmed → Hidden; tap an individual hidden line
+                     to reveal it as a hint. -->
+                <button class="btn btn-sm btn-outline-secondary" id="btn-practice-mode"
+                        data-practice-level="0"
+                        title="Practice mode — hide lyrics progressively for memorisation">
+                    <i class="fa-solid fa-graduation-cap me-1" aria-hidden="true"></i>
+                    <span id="btn-practice-label">Practice</span>
+                </button>
             </div>
 
             <!-- Song tags display (#288) -->

@@ -88,8 +88,56 @@ export class Display {
         this.applyVerseNumbers(lyricsEl);
         this.applyChorusHighlight(lyricsEl);
 
+        /* Practice / memorisation mode (#402) */
+        this.initPracticeMode(lyricsEl);
+
         /* Protect lyrics content — prevent copy/paste and right-click */
         this.protectLyrics(lyricsEl);
+    }
+
+    /**
+     * Practice / memorisation mode (#402).
+     * Cycles the song-lyrics data-practice-level attribute through
+     * 0 (full) → 1 (dimmed) → 2 (hidden) → 0. Dimmed lets users read
+     * while blurring context; hidden masks every line and reveals
+     * individual lines on tap/hover — handy for memorisation.
+     *
+     * State is per-song (fresh on every navigation); users can bind
+     * this to a keyboard shortcut later if desired.
+     */
+    initPracticeMode(lyricsEl) {
+        const btn   = document.getElementById('btn-practice-mode');
+        const label = document.getElementById('btn-practice-label');
+        if (!btn) return;
+
+        const labels = ['Practice', 'Dimmed', 'Hidden'];
+        let level = 0;
+
+        const apply = () => {
+            lyricsEl.dataset.practiceLevel = String(level);
+            btn.dataset.practiceLevel = String(level);
+            btn.classList.toggle('active', level > 0);
+            btn.setAttribute('aria-pressed', level > 0 ? 'true' : 'false');
+            if (label) label.textContent = labels[level];
+            /* Clear any stale reveal state when leaving a mode */
+            lyricsEl.querySelectorAll('.lyric-line.revealed')
+                .forEach(el => el.classList.remove('revealed'));
+        };
+
+        btn.addEventListener('click', () => {
+            level = (level + 1) % labels.length;
+            apply();
+        });
+
+        /* Tap a hidden line to reveal it as a hint (level 2 only). */
+        lyricsEl.addEventListener('click', (e) => {
+            if (lyricsEl.dataset.practiceLevel !== '2') return;
+            const line = e.target.closest('.lyric-line');
+            if (!line) return;
+            line.classList.toggle('revealed');
+        });
+
+        apply();
     }
 
     /**

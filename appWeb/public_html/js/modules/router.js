@@ -15,6 +15,7 @@
 
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
+import { userHasEntitlement } from './entitlements.js';
 import {
     STORAGE_FAVORITES,
     STORAGE_SETLISTS,
@@ -189,6 +190,8 @@ export class Router {
                 return { page: 'terms', params: {} };
             case 'privacy':
                 return { page: 'privacy', params: {} };
+            case 'request-a-song':
+                return { page: 'request-a-song', params: {} };
             case 'login':
                 return { page: 'login', params: {} };
             default:
@@ -336,6 +339,7 @@ export class Router {
             'help': 'Help — ' + appName,
             'terms': 'Terms of Use — ' + appName,
             'privacy': 'Privacy Policy — ' + appName,
+            'request-a-song': 'Request a Song — ' + appName,
         };
         document.title = titles[page] || appName;
     }
@@ -358,6 +362,18 @@ export class Router {
             this.app.compare.initSongPage();
             this.app.transpose.initSongPage();
             this.app.readingProgress.initSongPage();
+
+            /* Edit button — show only to users whose role carries the
+               `edit_songs` entitlement (#407). The PHP editor API
+               re-checks the same map server-side, so hiding the button
+               is purely a UX affordance. */
+            const editBtn = document.getElementById('btn-edit-song');
+            if (editBtn) {
+                const role = this.app.userAuth?.getUser()?.role;
+                if (userHasEntitlement('edit_songs', role)) {
+                    editBtn.classList.remove('d-none');
+                }
+            }
 
             /* Save Offline button — check cache state and bind click */
             const saveOfflineBtn = document.querySelector('.btn-save-offline');
