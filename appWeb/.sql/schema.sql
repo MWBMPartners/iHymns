@@ -183,6 +183,7 @@ CREATE TABLE IF NOT EXISTS tblUsers (
     CcliVerified    TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = CCLI number validated',
     LastLoginAt     TIMESTAMP       NULL DEFAULT NULL COMMENT 'Last successful login timestamp',
     LoginCount      INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'Total successful login count',
+    Settings        JSON            NULL DEFAULT NULL COMMENT 'Synced per-user app preferences (theme, font, accessibility, etc.)',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
@@ -510,6 +511,29 @@ CREATE TABLE IF NOT EXISTS tblUserSetlists (
     CONSTRAINT fk_Setlists_User
         FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
         ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSharedSetlists
+-- Public, link-shared setlists (anyone with the URL can view). Replaces the
+-- legacy file-based store under APP_SETLIST_SHARE_DIR. ShareId stays the
+-- 8-char hex (bin2hex(random_bytes(4))) so existing share URLs keep
+-- working when historical JSON files are imported by the migration.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSharedSetlists (
+    ShareId         VARCHAR(16)     NOT NULL PRIMARY KEY COMMENT '8 hex chars by default; column wider for forward-compat',
+    Data            JSON            NOT NULL COMMENT 'Full setlist payload as written by the share API',
+    CreatedBy       INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK to tblUsers (NULL for guest creates)',
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    ViewCount       INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'Incremented on retrieval for share-link analytics',
+
+    INDEX idx_CreatedBy (CreatedBy),
+    INDEX idx_CreatedAt (CreatedAt),
+
+    CONSTRAINT fk_SharedSetlists_User FOREIGN KEY (CreatedBy) REFERENCES tblUsers(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 

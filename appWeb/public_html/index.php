@@ -231,19 +231,17 @@ try {
     elseif (preg_match('#^/setlist/shared/([a-f0-9]+)$#', $requestPath, $matches)) {
         $pageType = 'other';
         $shareId = $matches[1];
-        $shareFile = APP_SETLIST_SHARE_DIR . '/' . $shareId . '.json';
-        if (file_exists($shareFile)) {
-            $shareData = json_decode(file_get_contents($shareFile), true);
-            if (is_array($shareData)) {
-                $setlistName = $shareData['name'] ?? 'Shared Set List';
-                $setlistSongCount = count($shareData['songs'] ?? []);
-                $ogTitle = htmlspecialchars($setlistName) . ' — Shared Set List — ' . $app["Application"]["Name"];
-                $ogDescription = 'A curated set list with ' . $setlistSongCount
-                               . ' ' . ($setlistSongCount === 1 ? 'song' : 'songs')
-                               . ' on ' . $app["Application"]["Name"];
-                $ogImage = getCanonicalUrl('/og-image?setlist=' . urlencode($shareId));
-                $ogImageAlt = 'Set list "' . $setlistName . '" on ' . $app["Application"]["Name"];
-            }
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';
+        $shareData = sharedSetlistGet($shareId);
+        if (is_array($shareData)) {
+            $setlistName = $shareData['name'] ?? 'Shared Set List';
+            $setlistSongCount = count($shareData['songs'] ?? []);
+            $ogTitle = htmlspecialchars($setlistName) . ' — Shared Set List — ' . $app["Application"]["Name"];
+            $ogDescription = 'A curated set list with ' . $setlistSongCount
+                           . ' ' . ($setlistSongCount === 1 ? 'song' : 'songs')
+                           . ' on ' . $app["Application"]["Name"];
+            $ogImage = getCanonicalUrl('/og-image?setlist=' . urlencode($shareId));
+            $ogImageAlt = 'Set list "' . $setlistName . '" on ' . $app["Application"]["Name"];
         }
 
         /* Breadcrumb: Home > Set Lists > Shared */

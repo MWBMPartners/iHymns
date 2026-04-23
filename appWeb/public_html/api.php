@@ -481,23 +481,20 @@ if ($action !== null) {
                 break;
             }
 
-            $shareDir = APP_SETLIST_SHARE_DIR;
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';
 
             /* Determine ID: use existing if updating, generate new otherwise */
-            $shareId = null;
+            $shareId  = null;
+            $existing = null;
             if (!empty($body['id'])) {
-                /* Updating an existing shared setlist */
                 $candidateId = preg_replace('/[^a-f0-9]/', '', strtolower(trim($body['id'])));
-                $existingFile = $shareDir . '/' . $candidateId . '.json';
-
                 if ($candidateId !== '') {
-                    if (!file_exists($existingFile)) {
+                    $existing = sharedSetlistGet($candidateId);
+                    if ($existing === null) {
                         sendJson(['error' => 'Shared set list not found.'], 404);
                         break;
                     }
-                    /* Verify ownership */
-                    $existing = json_decode(file_get_contents($existingFile), true);
-                    if (!is_array($existing) || ($existing['owner'] ?? '') !== $ownerId) {
+                    if (($existing['owner'] ?? '') !== $ownerId) {
                         sendJson(['error' => 'You do not own this shared set list.'], 403);
                         break;
                     }
@@ -509,7 +506,6 @@ if ($action !== null) {
             $arrangements = [];
             if (isset($body['arrangements']) && is_array($body['arrangements'])) {
                 foreach ($body['arrangements'] as $sid => $arr) {
-                    /* Only accept valid song IDs and arrays of non-negative integers */
                     if (!is_string($sid) || !preg_match('/^[A-Za-z]+-\d+$/', $sid)) continue;
                     if (!is_array($arr)) continue;
                     $validArr = array_values(array_filter($arr, fn($v) => is_int($v) && $v >= 0));
@@ -520,7 +516,7 @@ if ($action !== null) {
             }
 
             /* Build the shared setlist object */
-            $now = gmdate('c');
+            $now      = gmdate('c');
             $isUpdate = ($shareId !== null);
             $shareData = [
                 'name'    => $setlistName,
@@ -530,50 +526,31 @@ if ($action !== null) {
                 'updated' => $now,
                 'version' => 2,
             ];
-
-            /* Include arrangements only if any songs have custom arrangements */
             if (!empty($arrangements)) {
                 $shareData['arrangements'] = $arrangements;
             }
 
             if ($isUpdate) {
-                /* Updating existing — write directly */
                 $shareData['id'] = $shareId;
-                $filePath = $shareDir . '/' . $shareId . '.json';
-                $written = file_put_contents(
-                    $filePath,
-                    json_encode($shareData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT),
-                    LOCK_EX
-                );
-            } else {
-                /* Generate new ID with atomic file creation to prevent TOCTOU race */
-                $written = false;
-                $attempts = 0;
-                do {
-                    $shareId = bin2hex(random_bytes(4)); /* 8 hex chars */
-                    $filePath = $shareDir . '/' . $shareId . '.json';
-                    $shareData['id'] = $shareId;
-                    $jsonEncoded = json_encode($shareData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
-                    $attempts++;
-
-                    /* fopen 'x' mode fails if file already exists — atomic create */
-                    $fp = @fopen($filePath, 'x');
-                    if ($fp !== false) {
-                        $written = fwrite($fp, $jsonEncoded);
-                        fclose($fp);
-                        break;
-                    }
-                } while ($attempts < 10);
-
-                if ($written === false) {
-                    sendJson(['error' => 'Unable to generate unique ID. Try again.'], 500);
+                if (!sharedSetlistUpdate($shareId, $shareData)) {
+                    sendJson(['error' => 'Failed to save shared set list.'], 500);
                     break;
                 }
-            }
-
-            if ($written === false) {
-                sendJson(['error' => 'Failed to save shared set list.'], 500);
-                break;
+            } else {
+                /* Generate a fresh 8-char hex ID with retry on collision */
+                $created = false;
+                for ($i = 0; $i < 10; $i++) {
+                    $shareId         = bin2hex(random_bytes(4));
+                    $shareData['id'] = $shareId;
+                    $result = sharedSetlistInsert($shareId, $shareData);
+                    if ($result === true)  { $created = true;  break; }
+                    if ($result === null)  { /* hard failure */ break; }
+                    /* false = collision; try a new ID */
+                }
+                if (!$created) {
+                    sendJson(['error' => 'Unable to save shared set list. Try again.'], 500);
+                    break;
+                }
             }
 
             sendJson([
@@ -593,17 +570,14 @@ if ($action !== null) {
                 break;
             }
 
-            $filePath = APP_SETLIST_SHARE_DIR . '/' . $shareId . '.json';
-            if (!file_exists($filePath)) {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';
+
+            $data = sharedSetlistGet($shareId);
+            if ($data === null) {
                 sendJson(['error' => 'Shared set list not found.'], 404);
                 break;
             }
-
-            $data = json_decode(file_get_contents($filePath), true);
-            if (!is_array($data)) {
-                sendJson(['error' => 'Invalid set list data.'], 500);
-                break;
-            }
+            sharedSetlistMarkViewed($shareId);
 
             /* Return public-safe fields only (exclude owner UUID) */
             $response = [
@@ -613,8 +587,6 @@ if ($action !== null) {
                 'created' => $data['created'] ?? null,
                 'updated' => $data['updated'] ?? null,
             ];
-
-            /* Include per-song arrangements if present */
             if (!empty($data['arrangements'])) {
                 $response['arrangements'] = $data['arrangements'];
             }
@@ -1036,6 +1008,67 @@ if ($action !== null) {
             }, $mergedRows);
 
             sendJson(['setlists' => $mergedSetlists]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * User app settings — synced across the user's signed-in devices
+         *
+         * GET   /api?action=user_settings
+         *   → { ok: true, settings: { … }, updated_at: '…' }
+         * POST  /api?action=user_settings
+         *   body: { settings: { theme: 'dark', fontSize: 18, … } }
+         *   → { ok: true }
+         *
+         * Stored as a JSON blob in tblUsers.Settings; the client decides
+         * which keys are syncable (a strict whitelist in settings.js) so
+         * we never mirror device-local prefs (analytics consent, install
+         * banner state, etc.) onto the server.
+         * ----------------------------------------------------------------- */
+        case 'user_settings':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            $db = getDb();
+
+            if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+                $stmt = $db->prepare('SELECT Settings, UpdatedAt FROM tblUsers WHERE Id = ?');
+                $stmt->execute([$authUser['Id']]);
+                $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+                $settingsRaw = $row['Settings'] ?? null;
+                $settings = is_string($settingsRaw) && $settingsRaw !== ''
+                    ? (json_decode($settingsRaw, true) ?: new \stdClass())
+                    : new \stdClass();
+                sendJson([
+                    'ok'         => true,
+                    'settings'   => $settings,
+                    'updated_at' => $row['UpdatedAt'] ?? null,
+                ]);
+                break;
+            }
+
+            if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+                $rawBody = file_get_contents('php://input');
+                $body = json_decode($rawBody, true);
+                $settings = $body['settings'] ?? null;
+                if (!is_array($settings)) {
+                    sendJson(['error' => 'Settings object required.'], 400);
+                    break;
+                }
+                /* Cap payload size — prefs are small; this guards against abuse. */
+                $json = json_encode($settings, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+                if (strlen($json) > 16384) {
+                    sendJson(['error' => 'Settings payload too large.'], 413);
+                    break;
+                }
+                $stmt = $db->prepare('UPDATE tblUsers SET Settings = ?, UpdatedAt = NOW() WHERE Id = ?');
+                $stmt->execute([$json, $authUser['Id']]);
+                sendJson(['ok' => true]);
+                break;
+            }
+
+            sendJson(['error' => 'GET or POST method required.'], 405);
             break;
 
         /* =================================================================

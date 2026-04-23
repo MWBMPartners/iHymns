@@ -94,11 +94,9 @@ try {
     } elseif ($setlistId !== null) {
         $cleanId = preg_replace('/[^a-f0-9]/', '', strtolower(trim($setlistId)));
         if ($cleanId !== '' && strlen($cleanId) <= 16) {
-            $filePath = APP_SETLIST_SHARE_DIR . '/' . $cleanId . '.json';
-            if (file_exists($filePath)) {
-                $setlistInfo = json_decode(file_get_contents($filePath), true);
-                if (is_array($setlistInfo)) $mode = 'setlist';
-            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';
+            $setlistInfo = sharedSetlistGet($cleanId);
+            if (is_array($setlistInfo)) $mode = 'setlist';
         }
     }
 } catch (\Throwable $e) {
