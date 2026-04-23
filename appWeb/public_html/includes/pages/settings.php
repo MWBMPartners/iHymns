@@ -227,6 +227,24 @@ declare(strict_types=1);
                     </small>
                 </label>
             </div>
+
+            <div class="form-check form-switch mb-0">
+                <input class="form-check-input"
+                       type="checkbox"
+                       id="setting-sync-app-settings"
+                       role="switch"
+                       checked
+                       aria-label="Sync app settings across devices">
+                <label class="form-check-label" for="setting-sync-app-settings">
+                    <strong>Sync app settings across devices</strong>
+                    <small class="form-text text-muted d-block">
+                        When signed in, your theme, font size, accessibility and
+                        other UI preferences follow you to other devices.
+                        Device-specific settings (offline downloads, analytics
+                        consent) stay local.
+                    </small>
+                </label>
+            </div>
         </div>
     </div>
 

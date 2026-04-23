@@ -22,6 +22,32 @@ import {
     STORAGE_SEARCH_HISTORY,
 } from '../constants.js';
 
+/**
+ * Strict whitelist of localStorage keys that sync to the user's
+ * profile when signed in (and the sync toggle is on). Anything not
+ * listed here stays device-local — that includes analytics consent,
+ * the install banner state, the disclaimer flag, the per-device
+ * owner ID, and the offline-downloads toggles which are tied to
+ * device storage choices rather than UI preferences.
+ */
+const SYNC_PREF_KEYS = Object.freeze([
+    'ihymns_theme',
+    'ihymns_fontSize',
+    'ihymns_reduceMotion',
+    'ihymns_reduceTransparency',
+    'ihymns_transition',
+    'ihymns_default_songbook',
+    'ihymns_auto_update_songs',
+    'ihymns_numpad_live_search',
+    'ihymns_search_lyrics',
+    'ihymns_display',
+    'ihymns_cvd_mode',
+    'ihymns_keyboardShortcuts',
+]);
+
+/** localStorage key for the user's opt-in toggle. Default = on. */
+const SYNC_TOGGLE_KEY = 'ihymns_sync_app_settings';
+
 export class Settings {
     /**
      * @param {object} app Reference to the main iHymnsApp instance
@@ -107,10 +133,105 @@ export class Settings {
         }
 
         /* Re-apply the Account section whenever auth state changes, even if
-           the user is on the Settings page (no navigation triggered). */
-        document.addEventListener('ihymns:auth-changed', () => {
+           the user is on the Settings page (no navigation triggered).
+           When signing in, also pull any synced prefs from the server so
+           the UI reflects choices made on other devices. */
+        document.addEventListener('ihymns:auth-changed', (e) => {
             this.refreshAccountSection();
+            const loggedIn = !!e?.detail?.loggedIn;
+            if (loggedIn && this._isSyncEnabled()) {
+                this._pullSyncedSettings().catch(() => { /* non-fatal */ });
+            }
         });
+    }
+
+    /* =====================================================================
+     * APP-SETTINGS SYNC — push/pull a whitelisted subset of prefs
+     * ===================================================================== */
+
+    /** Is per-user settings sync currently active? */
+    _isSyncEnabled() {
+        if (!this.app.userAuth?.isLoggedIn?.()) return false;
+        /* Default = on; only off when the user has explicitly opted out. */
+        return localStorage.getItem(SYNC_TOGGLE_KEY) !== 'false';
+    }
+
+    /** Snapshot of the syncable prefs currently in localStorage. */
+    _collectSyncableSettings() {
+        const out = {};
+        SYNC_PREF_KEYS.forEach((k) => {
+            const v = localStorage.getItem(k);
+            if (v !== null) out[k] = v;
+        });
+        return out;
+    }
+
+    /**
+     * Schedule a push of synced prefs to the server. Debounced 1.5s
+     * so a flurry of changes (e.g. dragging the font-size slider)
+     * collapses into one POST.
+     */
+    _maybePushSync(fullKey) {
+        if (fullKey && !SYNC_PREF_KEYS.includes(fullKey)) return;
+        if (!this._isSyncEnabled()) return;
+        clearTimeout(this._syncPushTimer);
+        this._syncPushTimer = setTimeout(() => this._pushSyncedSettings(), 1500);
+    }
+
+    async _pushSyncedSettings() {
+        if (!this._isSyncEnabled()) return;
+        try {
+            await fetch(`${this.app.config.apiUrl}?action=user_settings`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    ...this.app.userAuth.authHeaders(),
+                },
+                body: JSON.stringify({ settings: this._collectSyncableSettings() }),
+            });
+        } catch { /* offline / network error — non-fatal */ }
+    }
+
+    /**
+     * Fetch synced prefs from the server and apply them to localStorage,
+     * then re-apply visual settings so the UI updates without a reload.
+     */
+    async _pullSyncedSettings() {
+        if (!this.app.userAuth?.isLoggedIn?.()) return;
+        let payload;
+        try {
+            const res = await fetch(`${this.app.config.apiUrl}?action=user_settings`, {
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    ...this.app.userAuth.authHeaders(),
+                },
+            });
+            if (!res.ok) return;
+            payload = await res.json();
+        } catch { return; }
+
+        const remote = payload?.settings;
+        if (!remote || typeof remote !== 'object') return;
+
+        let appliedTheme = false;
+        SYNC_PREF_KEYS.forEach((k) => {
+            if (Object.prototype.hasOwnProperty.call(remote, k)) {
+                const v = String(remote[k] ?? '');
+                if (v === '') {
+                    localStorage.removeItem(k);
+                } else {
+                    localStorage.setItem(k, v);
+                }
+                if (k === 'ihymns_theme') appliedTheme = true;
+            }
+        });
+
+        /* Re-apply the visual settings so the change is immediate. */
+        if (appliedTheme) this.applyTheme(this.get('theme'));
+        this.applyReduceMotion(this.get('reduceMotion'));
+        this.applyReduceTransparency(this.get('reduceTransparency'));
+        this.applyFontSize(this.get('fontSize'));
     }
 
     /**
@@ -284,6 +405,8 @@ export class Settings {
         localStorage.setItem(fullKey, String(value));
         /* Sync to subdomain cookie + iframe bridge (#133) */
         this.app.syncStorage(fullKey);
+        /* Per-user profile sync (whitelisted keys only — no-ops otherwise) */
+        this._maybePushSync(fullKey);
     }
 
     /**
@@ -428,6 +551,7 @@ export class Settings {
             transitionSelect.addEventListener('change', () => {
                 localStorage.setItem(STORAGE_TRANSITION, transitionSelect.value);
                 this.app.syncStorage(STORAGE_TRANSITION);
+                this._maybePushSync(STORAGE_TRANSITION);
             });
         }
 
@@ -489,6 +613,7 @@ export class Settings {
                     localStorage.removeItem(STORAGE_DEFAULT_SONGBOOK);
                 }
                 this.app.syncStorage(STORAGE_DEFAULT_SONGBOOK);
+                this._maybePushSync(STORAGE_DEFAULT_SONGBOOK);
             });
         }
 
@@ -500,6 +625,7 @@ export class Settings {
                 const enabled = liveSearchToggle.checked;
                 localStorage.setItem(STORAGE_NUMPAD_LIVE_SEARCH, String(enabled));
                 this.app.syncStorage(STORAGE_NUMPAD_LIVE_SEARCH);
+                this._maybePushSync(STORAGE_NUMPAD_LIVE_SEARCH);
             });
         }
 
@@ -516,6 +642,7 @@ export class Settings {
                     localStorage.removeItem('ihymns_cvd_mode');
                     document.documentElement.removeAttribute('data-ihymns-cvd');
                 }
+                this._maybePushSync('ihymns_cvd_mode');
             });
         }
 
@@ -602,6 +729,7 @@ export class Settings {
                 const enabled = autoUpdateToggle.checked;
                 localStorage.setItem(STORAGE_AUTO_UPDATE_SONGS, String(enabled));
                 this.app.syncStorage(STORAGE_AUTO_UPDATE_SONGS);
+                this._maybePushSync(STORAGE_AUTO_UPDATE_SONGS);
                 /* Inform the service worker of the new preference */
                 if (navigator.serviceWorker?.controller) {
                     navigator.serviceWorker.controller.postMessage({
@@ -1307,6 +1435,22 @@ export class Settings {
             /* Refresh account section display */
             this._initAccountSection();
         });
+
+        /* App-settings sync toggle. Default = on; storing 'false' opts out. */
+        const syncToggle = document.getElementById('setting-sync-app-settings');
+        if (syncToggle) {
+            syncToggle.checked = localStorage.getItem(SYNC_TOGGLE_KEY) !== 'false';
+            syncToggle.addEventListener('change', () => {
+                if (syncToggle.checked) {
+                    localStorage.removeItem(SYNC_TOGGLE_KEY);
+                    /* Push current local prefs immediately so the server
+                       reflects this device's state once sync is on. */
+                    this._pushSyncedSettings();
+                } else {
+                    localStorage.setItem(SYNC_TOGGLE_KEY, 'false');
+                }
+            });
+        }
 
         /* Profile save — update display name + email */
         const profileForm = document.getElementById('profile-form');
