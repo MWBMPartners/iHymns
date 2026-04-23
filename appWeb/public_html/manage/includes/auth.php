@@ -83,7 +83,21 @@ function getCurrentUser(): ?array
     }
 
     $db = getDb();
-    $stmt = $db->prepare('SELECT Id, Username, DisplayName, Role FROM tblUsers WHERE Id = ? AND IsActive = 1');
+    /* Aliased to lowercase keys so the rest of /manage/ (index.php,
+       users.php, entitlements.php, admin-nav.php, …) can use the
+       $currentUser['role'] / ['username'] / ['display_name'] shape
+       consistently. Passing a null key to the typed hasRole()
+       parameter previously fatal-errored the admin dashboard mid-
+       render. */
+    $stmt = $db->prepare(
+        'SELECT Id AS id,
+                Username AS username,
+                DisplayName AS display_name,
+                Role AS role,
+                Email AS email
+         FROM tblUsers
+         WHERE Id = ? AND IsActive = 1'
+    );
     $stmt->execute([$_SESSION['user_id']]);
     return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
 }

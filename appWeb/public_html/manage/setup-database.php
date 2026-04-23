@@ -41,7 +41,7 @@ if (!$isInitialSetup) {
         exit;
     }
     $currentUser = getCurrentUser();
-    if (!$currentUser || $currentUser['Role'] !== 'global_admin') {
+    if (!$currentUser || $currentUser['role'] !== 'global_admin') {
         http_response_code(403);
         echo '<!DOCTYPE html><html><body><h1>403 — Global Admin access required</h1></body></html>';
         exit;
@@ -527,7 +527,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                                absent or the activity log helper isn't available. */
                             try {
                                 $auditDb = getDbMysqli();
-                                $auditUser = $currentUser['Username'] ?? 'unknown';
+                                $auditUser = $currentUser['username'] ?? 'unknown';
                                 $auditSql = sprintf(
                                     'backup upload by %s: %s (%d bytes)',
                                     $auditUser, $safeName, (int)$f['size']
@@ -536,7 +536,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                                     'INSERT INTO tblActivityLog (UserId, ActionType, Details) VALUES (?, ?, ?)'
                                 );
                                 if ($stmt) {
-                                    $uid = isset($currentUser['Id']) ? (int)$currentUser['Id'] : 0;
+                                    $uid = isset($currentUser['id']) ? (int)$currentUser['id'] : 0;
                                     $action = 'backup_upload';
                                     $stmt->bind_param('iss', $uid, $action, $auditSql);
                                     @$stmt->execute();
@@ -689,7 +689,7 @@ if ($hasCredentials && defined('DB_HOST')) {
     <p class="text-secondary text-center small">
         iHymns Database Administration &middot; v0.10.0
         <?php if (!$isInitialSetup && isset($currentUser)): ?>
-            &middot; Logged in as <strong><?= htmlspecialchars($currentUser['Username'] ?? '') ?></strong>
+            &middot; Logged in as <strong><?= htmlspecialchars($currentUser['username'] ?? '') ?></strong>
         <?php endif; ?>
     </p>
 </div>
