@@ -62,6 +62,21 @@ function enforceChannelGate(?string $devStatus): void
         return; /* Production — never gated. */
     }
 
+    /* ----------------------------------------------------------------
+     * TEMPORARILY DISABLED
+     * ----------------------------------------------------------------
+     * The gate is off while admin accounts and role/entitlement
+     * mappings are being set up properly (the first admin account was
+     * created as `admin` rather than an email address, and nobody can
+     * sign in through the gate until that's fixed).
+     *
+     * To re-enable invite-only gating once setup is complete:
+     *   1. Delete this early return.
+     *   2. Visit /manage/entitlements and flick the "Enforce
+     *      invite-only access" switch on.
+     * ---------------------------------------------------------------- */
+    return;
+
     /* Bootstrap mode: the gate stays open until an admin explicitly
        turns it on, so the first admin in can sign in and configure
        role-based access without locking themselves out. */
