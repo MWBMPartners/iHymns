@@ -37,6 +37,11 @@ export const ENTITLEMENTS = {
     /* Content moderation */
     review_song_requests: ['editor', 'admin', 'global_admin'],
 
+    /* Content structure — songbook/group/organisation admin surfaces */
+    manage_songbooks:     ['admin', 'global_admin'],
+    manage_user_groups:   ['admin', 'global_admin'],
+    manage_organisations: ['admin', 'global_admin'],
+
     /* Channel access (#407) */
     access_alpha:         ['user', 'editor', 'admin', 'global_admin'],
     access_beta:          ['user', 'editor', 'admin', 'global_admin'],

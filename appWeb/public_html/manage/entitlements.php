@@ -77,6 +77,7 @@ $groups = [
     'User management' => ['view_users', 'edit_users', 'change_user_roles', 'assign_global_admin', 'delete_users'],
     'Database & operations' => ['view_admin_dashboard', 'view_analytics', 'run_db_install', 'run_db_migrate', 'run_db_backup', 'run_db_restore', 'drop_legacy_tables'],
     'Content moderation' => ['review_song_requests'],
+    'Content structure'  => ['manage_songbooks', 'manage_user_groups', 'manage_organisations'],
     'Channel access'     => ['access_alpha', 'access_beta'],
     'Meta' => ['manage_entitlements'],
 ];
@@ -114,7 +115,14 @@ foreach (ENTITLEMENTS as $n => $_) {
 
 <nav class="navbar-admin d-flex align-items-center justify-content-between">
     <a class="navbar-brand" href="/manage/"><i class="bi bi-key me-2"></i>Entitlements</a>
-    <a href="/manage/" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
+    <div class="d-flex align-items-center gap-2">
+        <a href="/manage/" class="btn btn-sm btn-outline-secondary">
+            <i class="bi bi-speedometer2 me-1"></i>Dashboard
+        </a>
+        <a href="/" class="btn btn-sm btn-outline-secondary" title="Back to the iHymns app home">
+            <i class="bi bi-house me-1"></i>Home
+        </a>
+    </div>
 </nav>
 
 <div class="container py-4" style="max-width: 1100px;">

@@ -766,6 +766,21 @@ if (!empty($breadcrumbItems)) {
                                     <i class="fa-solid fa-users me-2" aria-hidden="true"></i> User Management
                                 </a>
                             </li>
+                            <li id="header-admin-groups-li" class="d-none">
+                                <a class="dropdown-item" href="/manage/groups">
+                                    <i class="fa-solid fa-user-group me-2" aria-hidden="true"></i> User Groups
+                                </a>
+                            </li>
+                            <li id="header-admin-organisations-li" class="d-none">
+                                <a class="dropdown-item" href="/manage/organisations">
+                                    <i class="fa-solid fa-building me-2" aria-hidden="true"></i> Organisations
+                                </a>
+                            </li>
+                            <li id="header-admin-songbooks-li" class="d-none">
+                                <a class="dropdown-item" href="/manage/songbooks">
+                                    <i class="fa-solid fa-book-open me-2" aria-hidden="true"></i> Songbooks
+                                </a>
+                            </li>
                             <li id="header-admin-entitlements-li" class="d-none">
                                 <a class="dropdown-item" href="/manage/entitlements">
                                     <i class="fa-solid fa-key me-2" aria-hidden="true"></i> Entitlements &amp; Gating
@@ -774,6 +789,11 @@ if (!empty($breadcrumbItems)) {
                             <li id="header-admin-analytics-li" class="d-none">
                                 <a class="dropdown-item" href="/manage/analytics">
                                     <i class="fa-solid fa-chart-line me-2" aria-hidden="true"></i> Analytics
+                                </a>
+                            </li>
+                            <li id="header-admin-health-li" class="d-none">
+                                <a class="dropdown-item" href="/manage/data-health">
+                                    <i class="fa-solid fa-heart-pulse me-2" aria-hidden="true"></i> Data Health
                                 </a>
                             </li>
                             <li id="header-admin-db-li" class="d-none">

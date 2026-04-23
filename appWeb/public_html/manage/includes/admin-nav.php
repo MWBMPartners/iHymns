@@ -57,6 +57,10 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
             <?= htmlspecialchars(roleLabel($currentUser['role'])) ?>
         </span>
     </span>
+    <a href="/" class="btn btn-sm btn-outline-secondary ms-1"
+       title="Back to the iHymns app home">
+        <i class="bi bi-house me-1"></i>Home
+    </a>
     <a href="/manage/logout" class="btn btn-sm btn-outline-secondary ms-1">
         <i class="bi bi-box-arrow-right me-1"></i>Logout
     </a>

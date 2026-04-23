@@ -231,6 +231,17 @@ $csrf = csrfToken();
                 </div>
             </div>
             <?php endif; ?>
+            <?php if (($currentUser['role'] ?? '') === 'global_admin'): ?>
+            <div class="col-md-4">
+                <div class="card-admin">
+                    <a href="/manage/data-health" class="quick-link">
+                        <i class="bi bi-activity d-block mb-2"></i>
+                        <strong>Data Health</strong>
+                        <div class="small text-muted">Confirm MySQL is authoritative; disconnect legacy fallbacks</div>
+                    </a>
+                </div>
+            </div>
+            <?php endif; ?>
             <?php if (userHasEntitlement('manage_entitlements', $currentUser['role'] ?? null)): ?>
             <div class="col-md-4">
                 <div class="card-admin">
@@ -238,6 +249,39 @@ $csrf = csrfToken();
                         <i class="bi bi-key d-block mb-2"></i>
                         <strong>Entitlements</strong>
                         <div class="small text-muted">Assign capabilities to roles</div>
+                    </a>
+                </div>
+            </div>
+            <?php endif; ?>
+            <?php if (userHasEntitlement('manage_songbooks', $currentUser['role'] ?? null)): ?>
+            <div class="col-md-4">
+                <div class="card-admin">
+                    <a href="/manage/songbooks" class="quick-link">
+                        <i class="bi bi-book d-block mb-2"></i>
+                        <strong>Songbooks</strong>
+                        <div class="small text-muted">Create, rename, reorder the songbook catalogue</div>
+                    </a>
+                </div>
+            </div>
+            <?php endif; ?>
+            <?php if (userHasEntitlement('manage_user_groups', $currentUser['role'] ?? null)): ?>
+            <div class="col-md-4">
+                <div class="card-admin">
+                    <a href="/manage/groups" class="quick-link">
+                        <i class="bi bi-people-fill d-block mb-2"></i>
+                        <strong>User Groups</strong>
+                        <div class="small text-muted">Group users for shared access settings</div>
+                    </a>
+                </div>
+            </div>
+            <?php endif; ?>
+            <?php if (userHasEntitlement('manage_organisations', $currentUser['role'] ?? null)): ?>
+            <div class="col-md-4">
+                <div class="card-admin">
+                    <a href="/manage/organisations" class="quick-link">
+                        <i class="bi bi-building d-block mb-2"></i>
+                        <strong>Organisations</strong>
+                        <div class="small text-muted">Manage organisations &amp; their members</div>
                     </a>
                 </div>
             </div>
