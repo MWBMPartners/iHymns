@@ -101,12 +101,29 @@ $currentUser = getCurrentUser();
          ================================================================= -->
     <nav class="navbar navbar-editor d-flex align-items-center">
 
-        <!-- Brand / logo area -->
-        <a class="navbar-brand d-flex align-items-center gap-2 me-auto" href="#">
-            <!-- Music note icon representing the iHymns brand -->
+        <!-- Brand / logo area. Clicking returns to the admin dashboard —
+             important in PWA mode where there's no browser chrome. -->
+        <a class="navbar-brand d-flex align-items-center gap-2" href="/manage/"
+           title="Back to Admin Dashboard">
             <i class="bi bi-music-note-beamed"></i>
             iHymns Song Editor
         </a>
+
+        <!-- Quick navigation links. `/manage/` returns to the admin dashboard;
+             `/` returns to the public iHymns app (important in PWA mode
+             where there's no browser Back button). -->
+        <div class="d-flex align-items-center gap-2 me-auto ms-2">
+            <a href="/manage/"
+               class="btn btn-sm btn-outline-secondary"
+               title="Back to Admin Dashboard">
+                <i class="bi bi-speedometer2 me-1"></i>Dashboard
+            </a>
+            <a href="/"
+               class="btn btn-sm btn-outline-secondary"
+               title="Back to the iHymns app home">
+                <i class="bi bi-house me-1"></i>Home
+            </a>
+        </div>
 
         <!-- Action buttons group — aligned to the right -->
         <div class="d-flex align-items-center gap-2">
@@ -1184,5 +1201,6 @@ $currentUser = getCurrentUser();
          is handled in this separate file to keep concerns separated -->
     <script src="editor.js"></script>
 
+    <?php require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>
 </html>

@@ -693,6 +693,8 @@ if ($hasCredentials && defined('DB_HOST')) {
         <?php endif; ?>
     </p>
 </div>
+
+<?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>
 </html>
 <?php
