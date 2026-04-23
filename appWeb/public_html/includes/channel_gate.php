@@ -121,26 +121,17 @@ function _renderChannelGate(): void
         </p>
         <div id="gate-msg" class="alert d-none py-2" role="alert"></div>
 
-        <!-- Step 1 — request magic link / code -->
-        <form id="gate-email-form" class="d-grid gap-2 text-start">
-            <label for="gate-email" class="form-label small mb-0">Email address</label>
-            <input type="email" id="gate-email" class="form-control" required autocomplete="email"
-                   placeholder="you@example.com">
-            <button type="submit" class="btn btn-primary">
-                <i class="fa-solid fa-paper-plane me-1"></i>
-                Send login code
-            </button>
-        </form>
+        <form id="gate-login-form" class="d-grid gap-2 text-start">
+            <label for="gate-username" class="form-label small mb-0">Username</label>
+            <input type="text" id="gate-username" class="form-control" required
+                   autocomplete="username" autocapitalize="none" spellcheck="false">
 
-        <!-- Step 2 — verify 6-digit code (hidden until we've sent the email) -->
-        <form id="gate-code-form" class="d-grid gap-2 text-start d-none mt-2">
-            <label for="gate-code" class="form-label small mb-0">6-digit code</label>
-            <input type="text" id="gate-code" class="form-control text-center" maxlength="6"
-                   pattern="[0-9]{6}" inputmode="numeric" autocomplete="one-time-code" required
-                   placeholder="000000">
-            <button type="submit" class="btn btn-success">
-                <i class="fa-solid fa-check me-1"></i>
-                Verify &amp; continue
+            <label for="gate-password" class="form-label small mb-0 mt-1">Password</label>
+            <input type="password" id="gate-password" class="form-control" required
+                   autocomplete="current-password">
+
+            <button type="submit" class="btn btn-primary mt-2">
+                Sign in
             </button>
         </form>
 
@@ -149,54 +140,32 @@ function _renderChannelGate(): void
 
 <script>
 (function () {
-    const msg   = document.getElementById('gate-msg');
-    const show  = (text, kind) => {
+    const msg  = document.getElementById('gate-msg');
+    const show = (text, kind) => {
         msg.className = 'alert py-2 alert-' + kind;
         msg.textContent = text;
         msg.classList.remove('d-none');
     };
-    const emailForm = document.getElementById('gate-email-form');
-    const codeForm  = document.getElementById('gate-code-form');
-    let rememberedEmail = '';
+    const form = document.getElementById('gate-login-form');
 
-    emailForm.addEventListener('submit', async (e) => {
+    form.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const email = document.getElementById('gate-email').value.trim();
-        if (!email) return;
-        rememberedEmail = email;
+        const username = document.getElementById('gate-username').value.trim();
+        const password = document.getElementById('gate-password').value;
+        if (!username || !password) return;
         try {
-            const res = await fetch('/api?action=auth_email_login_request', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-                body: JSON.stringify({ email }),
-            });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || 'Could not send code.');
-            show('Code sent. Check your inbox and enter the 6-digit code.', 'info');
-            codeForm.classList.remove('d-none');
-            document.getElementById('gate-code').focus();
-        } catch (err) {
-            show(err.message, 'danger');
-        }
-    });
-
-    codeForm.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const code = document.getElementById('gate-code').value.trim();
-        if (!code || !rememberedEmail) return;
-        try {
-            const res = await fetch('/api?action=auth_email_login_verify', {
+            const res = await fetch('/api?action=auth_login', {
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-                body: JSON.stringify({ email: rememberedEmail, code }),
+                body: JSON.stringify({ username, password }),
             });
             const data = await res.json();
-            if (!res.ok || !data.token) throw new Error(data.error || 'Invalid code.');
-            /* Server has set the HttpOnly cookie; a reload will pass the
-               gate if the user has the relevant access entitlement. */
-            show('Verified. Redirecting…', 'success');
-            setTimeout(() => window.location.reload(), 600);
+            if (!res.ok) throw new Error(data.error || 'Sign-in failed.');
+            /* Server has set the HttpOnly auth cookie; reload and the
+               gate will re-evaluate against the new session. */
+            show('Signed in. Redirecting…', 'success');
+            setTimeout(() => window.location.reload(), 400);
         } catch (err) {
             show(err.message, 'danger');
         }
