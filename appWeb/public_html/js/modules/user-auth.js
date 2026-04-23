@@ -489,9 +489,13 @@ export class UserAuth {
             admin: [
                 ['header-user-dashboard-li',      'view_admin_dashboard'],
                 ['header-admin-users-li',         'view_users'],
+                ['header-admin-groups-li',        'manage_user_groups'],
+                ['header-admin-organisations-li', 'manage_organisations'],
+                ['header-admin-songbooks-li',     'manage_songbooks'],
                 ['header-admin-entitlements-li',  'manage_entitlements'],
                 ['header-admin-analytics-li',     'view_analytics'],
                 ['header-admin-db-li',            'run_db_install'],
+                ['header-admin-health-li',        'drop_legacy_tables'],
             ],
         };
 

@@ -107,6 +107,45 @@ try {
  * ========================================================================= */
 
 _migAccSync_output("");
+_migAccSync_output("--- Step 1b: tblSongbooks DisplayOrder + Colour columns ---");
+
+foreach ([
+    ['DisplayOrder', "INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Explicit sort order for listings / filter dropdowns'"],
+    ['Colour',       "VARCHAR(7) NOT NULL DEFAULT '' COMMENT 'Badge colour hex #RRGGBB (empty = theme default)'"],
+] as [$colName, $colDef]) {
+    try {
+        $res = $mysql->query("SHOW COLUMNS FROM tblSongbooks LIKE '{$colName}'");
+        if ($res && $res->num_rows > 0) {
+            _migAccSync_output("  [SKIP] tblSongbooks.{$colName} already exists.");
+        } else {
+            $mysql->query("ALTER TABLE tblSongbooks ADD COLUMN {$colName} {$colDef}");
+            _migAccSync_output("  [OK] Added {$colName} column to tblSongbooks.");
+        }
+    } catch (\Throwable $e) {
+        _migAccSync_output("  [ERROR] Could not add {$colName}: " . $e->getMessage());
+    }
+}
+
+/* Seed DisplayOrder from alphabetical Name ordering if every row is still 0. */
+try {
+    $stmt = $mysql->query("SELECT COUNT(*) AS c FROM tblSongbooks WHERE DisplayOrder <> 0");
+    $row = $stmt ? $stmt->fetch_assoc() : ['c' => 0];
+    if ((int)$row['c'] === 0) {
+        $rs = $mysql->query("SELECT Id FROM tblSongbooks ORDER BY Name ASC");
+        $order = 10;
+        while ($r = $rs->fetch_assoc()) {
+            $mysql->query("UPDATE tblSongbooks SET DisplayOrder = {$order} WHERE Id = " . (int)$r['Id']);
+            $order += 10;
+        }
+        _migAccSync_output("  [OK] Seeded DisplayOrder from Name (ascending, step 10).");
+    } else {
+        _migAccSync_output("  [SKIP] DisplayOrder already set on at least one row.");
+    }
+} catch (\Throwable $e) {
+    _migAccSync_output("  [WARN] Could not seed DisplayOrder: " . $e->getMessage());
+}
+
+_migAccSync_output("");
 _migAccSync_output("--- Step 2: tblSharedSetlists table ---");
 
 try {

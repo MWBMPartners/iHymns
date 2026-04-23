@@ -55,6 +55,11 @@ const ENTITLEMENTS = [
     /* Content moderation */
     'review_song_requests' => ['editor', 'admin', 'global_admin'],
 
+    /* Content structure — songbook/group/organisation admin surfaces */
+    'manage_songbooks'     => ['admin', 'global_admin'],
+    'manage_user_groups'   => ['admin', 'global_admin'],
+    'manage_organisations' => ['admin', 'global_admin'],
+
     /* Channel access gating (#407) — controls who can reach alpha/beta
        subdomains. Applied BEFORE the page renders so pre-release builds
        are invisible to the public even when indexed. Defaults intentionally
