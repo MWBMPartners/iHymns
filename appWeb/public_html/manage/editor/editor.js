@@ -371,6 +371,27 @@ function renderSongList(filter) {
         li.href = '#';
         li.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center';
 
+        /* Multi-select mode (#399): prepend a checkbox that mirrors
+           the selected state and clicking it toggles selection without
+           navigating to the song. */
+        if (window._selectMode) {
+            var cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.className = 'form-check-input me-2 flex-shrink-0';
+            cb.dataset.songId = song.id;
+            cb.checked = window._selectedIds && window._selectedIds.has(song.id);
+            cb.addEventListener('click', function (e) {
+                e.stopPropagation();
+            });
+            cb.addEventListener('change', function () {
+                if (!window._selectedIds) window._selectedIds = new Set();
+                if (cb.checked) window._selectedIds.add(song.id);
+                else window._selectedIds.delete(song.id);
+                updateBulkActionsBar();
+            });
+            li.appendChild(cb);
+        }
+
         /* Highlight the currently selected song. */
         if (song.id === currentSongId) {
             li.classList.add('active');
@@ -483,6 +504,7 @@ function selectSong(songId) {
 
     /* Store the selection globally. */
     currentSongId = songId;
+    updateHistoryButtonState();
 
     /* Show the editor form, hide the empty state (#246). */
     var editorEmpty = document.getElementById('editorEmpty');
@@ -1934,6 +1956,98 @@ function markModified(songId) {
 
     /* Refresh the status bar to reflect the new count. */
     updateStatusBar();
+
+    /* Schedule a debounced auto-save (#394). */
+    scheduleAutoSave();
+}
+
+/* ============================================================================
+ *  AUTO-SAVE (#394)
+ *  --------------------------------------------------------------------------
+ *  Debounced save: 3 s after the last edit we run saveSongs() to persist the
+ *  full songData via the existing server-side save endpoint. Manual Save is
+ *  unchanged; this is purely a safety net so an admin can't lose work by
+ *  forgetting to click the button.
+ *
+ *  TODO (follow-up): add a /api?action=save_song per-song endpoint so we're
+ *  not rewriting every row on every edit. Tracked in #394.
+ * ========================================================================== */
+
+var _autoSaveTimer   = null;
+var _autoSaveDelayMs = 3000;
+var _autoSaveRunning = false;
+
+function scheduleAutoSave() {
+    /* Drop any pending save; each edit resets the timer. */
+    if (_autoSaveTimer) clearTimeout(_autoSaveTimer);
+
+    _autoSaveTimer = setTimeout(function () {
+        _autoSaveTimer = null;
+        if (_autoSaveRunning)      return;
+        if (modifiedSongIds.size === 0) return;
+        if (validateSongData().length > 0) return;
+
+        _autoSaveRunning = true;
+        var text = document.getElementById('status-text');
+        if (text) text.textContent = 'Auto-saving…';
+
+        /* Per-song endpoint (#394). Walk the modified set and POST each
+           song individually to /api?action=save_song. Much cheaper than
+           the full-corpus `save`, and writes one row to tblSongRevisions
+           per actual edit (#400). Falls back to saveSongs() (full save)
+           if the per-song endpoint returns a non-ok status. */
+        var ids = Array.from(modifiedSongIds);
+        autoSaveSongsPerSong(ids).then(function (summary) {
+            if (summary.failed.length > 0) {
+                /* Something wasn't UPSERT-friendly — fall back to full save so
+                   the user never ends up stuck with un-persistable diffs. */
+                saveSongs();
+            } else {
+                lastSaveTime = new Date();
+                summary.saved.forEach(function (id) { modifiedSongIds.delete(id); });
+                renderSongList();
+                updateStatusBar();
+            }
+        }).finally(function () {
+            _autoSaveRunning = false;
+        });
+    }, _autoSaveDelayMs);
+}
+
+/**
+ * autoSaveSongsPerSong(ids)
+ * -------------------------
+ * POST each song in `ids` to /api?action=save_song sequentially.
+ * Returns a summary { saved: [ids], failed: [{id, error}] }.
+ *
+ * Sequential (not Promise.all) so we stay polite to the DB and can
+ * short-circuit on the first persistent error.
+ */
+function autoSaveSongsPerSong(ids) {
+    var saved  = [];
+    var failed = [];
+    var chain  = Promise.resolve();
+
+    ids.forEach(function (id) {
+        chain = chain.then(function () {
+            var song = (songData.songs || []).find(function (s) { return s.id === id; });
+            if (!song) { failed.push({ id: id, error: 'not found locally' }); return; }
+            return fetch(EDITOR_API_URL + '?action=save_song', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(song),
+            }).then(function (res) {
+                return res.json().then(function (data) {
+                    if (res.ok && data.ok) saved.push(id);
+                    else failed.push({ id: id, error: data.error || ('HTTP ' + res.status) });
+                });
+            }).catch(function (err) {
+                failed.push({ id: id, error: err.message });
+            });
+        });
+    });
+
+    return chain.then(function () { return { saved: saved, failed: failed }; });
 }
 
 /**
@@ -2487,8 +2601,392 @@ function init() {
     loadSongsFromURL(DEFAULT_SONGS_URL).then(function () {
         /* After successful load, populate the songbook dropdown with real data. */
         populateSongbookFilterDropdown();
+
+        /* Deep-link support (#407): /manage/editor/?song=<SongId> opens
+           directly on that song when it exists in songData. Used by the
+           Edit button on the public song view. */
+        try {
+            var sid = new URLSearchParams(window.location.search).get('song');
+            if (sid && Array.isArray(songData.songs)
+                && songData.songs.some(function (s) { return s.id === sid; })) {
+                selectSong(sid);
+            }
+        } catch (_e) { /* malformed URL — ignore */ }
+    });
+}
+
+/* ============================================================================
+ *  MULTI-SELECT MODE (#399)
+ *  --------------------------------------------------------------------------
+ *  Lightweight multi-select in the sidebar for bulk-delete. Not as rich as
+ *  the originally-scoped "bulk tag / move / export" toolbar — the delete
+ *  path alone covers the most-requested curator need; richer actions can
+ *  be added later without the sidebar surgery needed for multi-select.
+ * ========================================================================== */
+
+function updateBulkActionsBar() {
+    var bar = document.getElementById('bulk-actions-bar');
+    var countEl = document.getElementById('bulk-selected-count');
+    if (!bar || !countEl) return;
+    var count = (window._selectedIds && window._selectedIds.size) || 0;
+    countEl.textContent = count;
+    /* All bulk-action buttons enable only when something is selected. */
+    ['btn-bulk-delete', 'btn-bulk-verify', 'btn-bulk-tag',
+     'btn-bulk-move', 'btn-bulk-export'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) el.disabled = count === 0;
+    });
+}
+
+function toggleSelectMode(on) {
+    window._selectMode = !!on;
+    window._selectedIds = window._selectedIds || new Set();
+    if (!on) window._selectedIds.clear();
+
+    var bar    = document.getElementById('bulk-actions-bar');
+    var toggle = document.getElementById('btn-select-mode');
+    if (bar) bar.classList.toggle('d-none', !on);
+    if (toggle) {
+        toggle.setAttribute('aria-pressed', on ? 'true' : 'false');
+        toggle.classList.toggle('btn-amber-solid', on);
+        toggle.classList.toggle('btn-outline-secondary', !on);
+    }
+    renderSongList();
+    updateBulkActionsBar();
+}
+
+function bindMultiSelectListeners() {
+    var toggle = document.getElementById('btn-select-mode');
+    if (toggle) toggle.addEventListener('click', function () {
+        toggleSelectMode(!window._selectMode);
+    });
+
+    var all = document.getElementById('btn-bulk-select-all');
+    if (all) all.addEventListener('click', function () {
+        window._selectedIds = new Set(
+            (songData.songs || []).map(function (s) { return s.id; })
+        );
+        renderSongList();
+        updateBulkActionsBar();
+    });
+
+    var none = document.getElementById('btn-bulk-select-none');
+    if (none) none.addEventListener('click', function () {
+        window._selectedIds = new Set();
+        renderSongList();
+        updateBulkActionsBar();
+    });
+
+    var del = document.getElementById('btn-bulk-delete');
+    if (del) del.addEventListener('click', function () {
+        var ids = Array.from(window._selectedIds || []);
+        if (!ids.length) return;
+        var threshold = 10;
+        if (ids.length >= threshold) {
+            var typed = prompt(
+                'About to delete ' + ids.length + ' songs. Type DELETE to confirm.'
+            );
+            if (typed !== 'DELETE') return;
+        } else if (!confirm('Delete ' + ids.length + ' selected song(s)? This cannot be undone until you Save.')) {
+            return;
+        }
+
+        var idSet = new Set(ids);
+        songData.songs = (songData.songs || []).filter(function (s) { return !idSet.has(s.id); });
+        ids.forEach(function (id) { modifiedSongIds.delete(id); });
+        if (currentSongId && idSet.has(currentSongId)) {
+            currentSongId = null;
+            clearEditForm();
+        }
+        window._selectedIds = new Set();
+        renderSongList();
+        updateStatusBar();
+        updateBulkActionsBar();
+        showToast('Deleted ' + ids.length + ' songs. Click Save to persist.', 'warning');
+    });
+
+    /* Bulk Verify (#399) — sets verified = true on every selected song
+       and marks each as modified so the existing Save flow persists it. */
+    var verify = document.getElementById('btn-bulk-verify');
+    if (verify) verify.addEventListener('click', function () {
+        var ids = Array.from(window._selectedIds || []);
+        if (!ids.length) return;
+        var idSet = new Set(ids);
+        var changed = 0;
+        (songData.songs || []).forEach(function (s) {
+            if (!idSet.has(s.id)) return;
+            if (!s.verified) {
+                s.verified = true;
+                modifiedSongIds.add(s.id);
+                changed++;
+            }
+        });
+        renderSongList();
+        updateStatusBar();
+        updateBulkActionsBar();
+        showToast(
+            changed > 0
+                ? 'Marked ' + changed + ' song(s) verified. Click Save to persist.'
+                : 'Nothing to change — all selected songs were already verified.',
+            changed > 0 ? 'success' : 'info'
+        );
+    });
+
+    /* Bulk Move (#399) — relocates every selected song to a different
+       songbook. Clears Number on each (set to NULL) because re-numbering
+       to avoid collisions is per-book and needs a proper UI. The user
+       can renumber per-song afterwards. */
+    var move = document.getElementById('btn-bulk-move');
+    if (move) move.addEventListener('click', function () {
+        var ids = Array.from(window._selectedIds || []);
+        if (!ids.length) return;
+        var choices = (songData.songbooks || []).map(function (sb) { return sb.id; }).join(', ');
+        var target = prompt(
+            'Move ' + ids.length + ' selected song(s) to which songbook?\n\n' +
+            'Available: ' + choices + '\n\n' +
+            'Number will be cleared (NULL) — renumber individually afterwards.'
+        );
+        if (!target) return;
+        var targetId = target.trim();
+        var sb = (songData.songbooks || []).find(function (s) { return s.id === targetId; });
+        if (!sb) { showToast('No songbook "' + targetId + '".', 'warning'); return; }
+
+        var idSet = new Set(ids);
+        (songData.songs || []).forEach(function (s) {
+            if (!idSet.has(s.id)) return;
+            s.songbook = sb.id;
+            s.songbookName = sb.name;
+            s.number = null;
+            modifiedSongIds.add(s.id);
+        });
+        renderSongList();
+        updateStatusBar();
+        updateBulkActionsBar();
+        showToast('Moved ' + ids.length + ' song(s) to ' + sb.id + '. Click Save to persist.', 'success');
+    });
+
+    /* Bulk Export (#399) — downloads the selected songs as JSON. */
+    var exp = document.getElementById('btn-bulk-export');
+    if (exp) exp.addEventListener('click', function () {
+        var ids = Array.from(window._selectedIds || []);
+        if (!ids.length) return;
+        var idSet = new Set(ids);
+        var subset = (songData.songs || []).filter(function (s) { return idSet.has(s.id); });
+        downloadBlob(
+            JSON.stringify({ songs: subset }, null, 2),
+            'songs-export-' + new Date().toISOString().slice(0, 10) + '.json',
+            'application/json'
+        );
+        showToast('Exported ' + subset.length + ' song(s) to JSON.', 'success');
+    });
+
+    /* Bulk Tag (#399) — adds and/or removes tags on every selected song.
+       Posts to /api?action=bulk_tag; tag membership lives server-side
+       in tblSongTagMap, outside the save_song flow. */
+    var tag = document.getElementById('btn-bulk-tag');
+    if (tag) tag.addEventListener('click', function () {
+        var ids = Array.from(window._selectedIds || []);
+        if (!ids.length) return;
+        var toAdd = prompt(
+            'Tags to ADD on ' + ids.length + ' selected song(s)?\n' +
+            'Comma-separated (e.g. "Easter, Communion"). Leave blank to skip.'
+        );
+        if (toAdd === null) return; /* user cancelled */
+        var toRemove = prompt(
+            'Tags to REMOVE on ' + ids.length + ' selected song(s)?\n' +
+            'Comma-separated. Leave blank to skip.'
+        );
+        if (toRemove === null) return;
+
+        var add = toAdd.split(',').map(function (t) { return t.trim(); }).filter(Boolean);
+        var rem = toRemove.split(',').map(function (t) { return t.trim(); }).filter(Boolean);
+        if (!add.length && !rem.length) {
+            showToast('No tag changes specified.', 'info');
+            return;
+        }
+
+        fetch(EDITOR_API_URL + '?action=bulk_tag', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ songIds: ids, add: add, remove: rem })
+        })
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, data: j }; }); })
+            .then(function (res) {
+                if (!res.ok) {
+                    showToast('Bulk tag failed: ' + (res.data.error || 'Unknown error.'), 'danger');
+                    return;
+                }
+                showToast(
+                    'Tagged ' + res.data.songsAffected + ' song(s) ' +
+                    '(+' + res.data.added + ', -' + res.data.removed + ').',
+                    'success'
+                );
+            })
+            .catch(function (err) {
+                showToast('Bulk tag request failed: ' + err.message, 'danger');
+            });
+    });
+}
+
+/* ============================================================================
+ *  REVISION HISTORY (#400)
+ *  --------------------------------------------------------------------------
+ *  Toolbar "History" button opens a modal that lists revisions for the
+ *  currently-selected song (newest first), with a Restore button per row
+ *  and a side-by-side JSON diff on click.
+ * ========================================================================== */
+
+function bindHistoryListener() {
+    var btn = document.getElementById('btn-history');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+        if (!currentSongId) {
+            showToast('Select a song first.', 'warning');
+            return;
+        }
+        openHistoryModal(currentSongId);
+    });
+}
+
+function updateHistoryButtonState() {
+    var btn = document.getElementById('btn-history');
+    if (btn) btn.disabled = !currentSongId;
+}
+
+function openHistoryModal(songId) {
+    var listEl = document.getElementById('history-list');
+    var detailEl = document.getElementById('history-detail');
+    var titleEl = document.getElementById('history-modal-title');
+    if (!listEl || !detailEl) return;
+
+    if (titleEl) titleEl.innerHTML = '<i class="bi bi-clock-history me-2"></i>Revision history — ' + songId;
+    listEl.innerHTML = '<div class="text-center p-3"><i class="bi bi-hourglass-split me-1"></i>Loading…</div>';
+    detailEl.innerHTML = '';
+
+    var modalEl = document.getElementById('history-modal');
+    if (modalEl && window.bootstrap) {
+        var modal = window.bootstrap.Modal.getOrCreateInstance(modalEl);
+        modal.show();
+    }
+
+    fetch(EDITOR_API_URL + '?action=list_revisions&songId=' + encodeURIComponent(songId), {
+        credentials: 'same-origin',
+    })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, data: j }; }); })
+        .then(function (res) {
+            if (!res.ok) {
+                listEl.innerHTML = '<div class="text-danger p-3">Failed to load revisions: ' +
+                    (res.data.error || 'unknown error') + '</div>';
+                return;
+            }
+            renderHistoryList(res.data.revisions || [], listEl, detailEl);
+        })
+        .catch(function (err) {
+            listEl.innerHTML = '<div class="text-danger p-3">Request failed: ' + err.message + '</div>';
+        });
+}
+
+function renderHistoryList(revisions, listEl, detailEl) {
+    if (!revisions.length) {
+        listEl.innerHTML = '<div class="text-muted p-3">No revisions recorded for this song yet.</div>';
+        return;
+    }
+    listEl.innerHTML = '';
+    revisions.forEach(function (rev) {
+        var item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'list-group-item list-group-item-action bg-dark text-light border-secondary d-flex justify-content-between align-items-center';
+        var badgeClass = rev.action === 'create' ? 'bg-success'
+            : rev.action === 'restore' ? 'bg-info'
+            : 'bg-secondary';
+        item.innerHTML =
+            '<div>' +
+                '<span class="badge ' + badgeClass + ' me-2">' + rev.action + '</span>' +
+                '<span class="small text-muted">' + rev.createdAt + '</span>' +
+                '<span class="ms-2">by ' + (rev.username || '—') + '</span>' +
+            '</div>' +
+            '<div class="d-flex gap-2">' +
+                '<button class="btn btn-sm btn-outline-info" data-rev-id="' + rev.id + '">View diff</button>' +
+                (rev.previousData
+                    ? '<button class="btn btn-sm btn-outline-warning btn-restore-rev" data-rev-id="' + rev.id + '">Restore</button>'
+                    : '') +
+            '</div>';
+        item.querySelector('[data-rev-id]').addEventListener('click', function (ev) {
+            ev.stopPropagation();
+            renderRevisionDiff(rev, detailEl);
+        });
+        var restore = item.querySelector('.btn-restore-rev');
+        if (restore) {
+            restore.addEventListener('click', function (ev) {
+                ev.stopPropagation();
+                triggerRevisionRestore(rev);
+            });
+        }
+        listEl.appendChild(item);
+    });
+    /* Show the first diff by default so the modal never looks empty. */
+    renderRevisionDiff(revisions[0], detailEl);
+}
+
+function renderRevisionDiff(rev, detailEl) {
+    var beforeJson = rev.previousData ? JSON.stringify(rev.previousData, null, 2) : '(none — initial create)';
+    var afterJson  = rev.newData      ? JSON.stringify(rev.newData,      null, 2) : '(none)';
+    detailEl.innerHTML =
+        '<div class="row g-2 small">' +
+            '<div class="col-md-6">' +
+                '<h6 class="text-muted">Before</h6>' +
+                '<pre class="bg-black p-2 rounded" style="max-height:400px;overflow:auto;">' +
+                    escapeHtml(beforeJson) +
+                '</pre>' +
+            '</div>' +
+            '<div class="col-md-6">' +
+                '<h6 class="text-muted">After</h6>' +
+                '<pre class="bg-black p-2 rounded" style="max-height:400px;overflow:auto;">' +
+                    escapeHtml(afterJson) +
+                '</pre>' +
+            '</div>' +
+        '</div>';
+}
+
+function triggerRevisionRestore(rev) {
+    if (!confirm('Restore the song to the state BEFORE revision #' + rev.id + '? ' +
+                 'This will create a new "restore" revision row and overwrite the current tblSongs row.')) {
+        return;
+    }
+    fetch(EDITOR_API_URL + '?action=restore_revision', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ revisionId: rev.id }),
+    })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, data: j }; }); })
+        .then(function (res) {
+            if (!res.ok) {
+                showToast('Restore failed: ' + (res.data.error || 'unknown error'), 'danger');
+                return;
+            }
+            showToast('Restored. Reload the editor to see the current state.', 'success');
+            /* Close the modal; the user can manually reload to see results. */
+            var modalEl = document.getElementById('history-modal');
+            if (modalEl && window.bootstrap) {
+                window.bootstrap.Modal.getOrCreateInstance(modalEl).hide();
+            }
+        })
+        .catch(function (err) {
+            showToast('Restore request failed: ' + err.message, 'danger');
+        });
+}
+
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
 }
 
 /* ---- Kick everything off once the DOM is ready ---- */
-document.addEventListener('DOMContentLoaded', init);
+document.addEventListener('DOMContentLoaded', function () {
+    init();
+    bindMultiSelectListeners();
+    bindHistoryListener();
+});

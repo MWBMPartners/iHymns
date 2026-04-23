@@ -244,14 +244,106 @@ declare(strict_types=1);
                             </tr>
                         </thead>
                         <tbody>
+                            <tr><td><kbd>?</kbd></td><td>Show full keyboard shortcuts overlay</td></tr>
                             <tr><td><kbd>/</kbd> or <kbd>Ctrl+K</kbd></td><td>Open search</td></tr>
                             <tr><td><kbd>#</kbd></td><td>Open number pad</td></tr>
                             <tr><td><kbd>Esc</kbd></td><td>Close search / modal</td></tr>
                             <tr><td><kbd>F</kbd></td><td>Toggle favourite (on song page)</td></tr>
+                            <tr><td><kbd>P</kbd></td><td>Presentation mode</td></tr>
                             <tr><td><kbd>&larr;</kbd></td><td>Previous song</td></tr>
                             <tr><td><kbd>&rarr;</kbd></td><td>Next song</td></tr>
                         </tbody>
                     </table>
+                    <p class="small text-muted mb-0">
+                        Shortcuts can be disabled in <strong>Settings → Accessibility</strong>.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Practice Mode -->
+        <div class="accordion-item">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#help-practice"
+                        aria-expanded="false"
+                        aria-controls="help-practice">
+                    <i class="fa-solid fa-graduation-cap me-2" aria-hidden="true"></i>
+                    Practice / Memorisation Mode
+                </button>
+            </h2>
+            <div id="help-practice" class="accordion-collapse collapse" data-bs-parent="#help-accordion">
+                <div class="accordion-body">
+                    <p>
+                        On any song page, tap <strong>Practice</strong> to cycle through
+                        three modes for learning hymns by heart:
+                    </p>
+                    <ul class="mb-0">
+                        <li><strong>Full</strong> — normal lyrics.</li>
+                        <li><strong>Dimmed</strong> — lyrics faded; hover or tap a line for a quick glance.</li>
+                        <li><strong>Hidden</strong> — every line masked; tap individual lines to reveal as hints.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- Request a song -->
+        <div class="accordion-item">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#help-request"
+                        aria-expanded="false"
+                        aria-controls="help-request">
+                    <i class="fa-solid fa-lightbulb me-2" aria-hidden="true"></i>
+                    Requesting a song
+                </button>
+            </h2>
+            <div id="help-request" class="accordion-collapse collapse" data-bs-parent="#help-accordion">
+                <div class="accordion-body">
+                    <p>
+                        Can't find a hymn? Submit it via
+                        <a href="/request-a-song" data-navigate="request-a-song">Request a Song</a>.
+                        You'll get a tracking number; our curators triage submissions in
+                        their admin queue.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Admin portal overview -->
+        <div class="accordion-item">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#help-admin"
+                        aria-expanded="false"
+                        aria-controls="help-admin">
+                    <i class="fa-solid fa-user-shield me-2" aria-hidden="true"></i>
+                    Admin Portal (editors &amp; admins)
+                </button>
+            </h2>
+            <div id="help-admin" class="accordion-collapse collapse" data-bs-parent="#help-accordion">
+                <div class="accordion-body">
+                    <p>If you're a <em>Curator/Editor</em>, <em>Admin</em>, or <em>Global Admin</em>, you have access to the portal at <a href="/manage/">/manage/</a> (or the alias <a href="/admin/">/admin/</a>).</p>
+                    <ul class="mb-2">
+                        <li><strong>Song Editor</strong> — edit lyrics, metadata, tags, arrangement; multi-select bulk delete; auto-saves per song.</li>
+                        <li><strong>User Management</strong> — create, edit roles, deactivate.</li>
+                        <li><strong>Analytics</strong> — top songs / searches / logins over 7, 30, 90 days; CSV export.</li>
+                        <li><strong>Song Requests</strong> — triage user-submitted requests.</li>
+                        <li><strong>Entitlements</strong> — grant/revoke per-capability permissions by role.</li>
+                        <li><strong>Database Setup</strong> — install schema, migrate, backup, restore.</li>
+                    </ul>
+                    <p class="small text-muted mb-0">
+                        Permissions use <strong>entitlements</strong>. Each feature is gated by a
+                        named capability (e.g. <code>edit_songs</code>, <code>view_analytics</code>)
+                        assigned to roles. A global-admin can reassign capabilities at
+                        <a href="/manage/entitlements">/manage/entitlements</a>.
+                    </p>
                 </div>
             </div>
         </div>

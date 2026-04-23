@@ -256,6 +256,13 @@ export class SetList {
         const container = document.getElementById('setlist-container');
         if (!container) return;
 
+        /* Hide the per-setlist schedule card on the overview — it's a
+           detail-view concern. */
+        const schedCard = document.getElementById('setlist-schedule-card');
+        if (schedCard) schedCard.style.display = 'none';
+
+        this._renderUpcomingScheduledSetlists();
+
         const lists = this.getAll();
 
         if (lists.length === 0) {
@@ -426,6 +433,12 @@ export class SetList {
             </div>
             <p class="text-muted small">${list.songs.length} song${list.songs.length !== 1 ? 's' : ''}</p>
             ${songsHtml}`;
+
+        /* Scheduling card + collaboration controls (#398). Both are
+           no-ops for anonymous users — the API endpoints 401 and this
+           call also silently gates on authUser. */
+        this._renderSetlistSchedule(listId);
+        this._renderSetlistCollaborators(container, listId);
 
         /* Back button */
         container.querySelector('#setlist-back-btn')?.addEventListener('click', () => {
@@ -1659,6 +1672,266 @@ export class SetList {
      */
     generateId() {
         return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    }
+
+    /**
+     * Render the "Upcoming scheduled set lists" section at the top of
+     * the setlist overview (#398). Silent no-op when the user isn't
+     * authenticated — the endpoint 401s and we drop the node.
+     * @private
+     */
+    _renderUpcomingScheduledSetlists() {
+        const container = document.getElementById('setlist-container');
+        if (!container) return;
+        /* Remove any previous render so we don't stack. */
+        document.getElementById('setlist-upcoming-card')?.remove();
+
+        fetch('/api?action=setlist_schedule_upcoming', { credentials: 'same-origin' })
+            .then(r => r.ok ? r.json() : Promise.reject(r.status))
+            .then(data => {
+                const upcoming = data.upcoming || [];
+                if (upcoming.length === 0) return;
+                const node = document.createElement('div');
+                node.id = 'setlist-upcoming-card';
+                node.className = 'card mb-3';
+                node.innerHTML = `
+                    <div class="card-body">
+                        <h6 class="mb-2"><i class="fa-solid fa-calendar-days me-2"></i>Up next</h6>
+                        <ul class="list-group list-group-flush">
+                            ${upcoming.slice(0, 5).map(u => `
+                                <li class="list-group-item d-flex justify-content-between align-items-center"
+                                    data-setlist-id="${escapeHtml(u.SetlistId)}" role="button">
+                                    <div>
+                                        <strong>${escapeHtml(u.name || u.SetlistId)}</strong>
+                                        ${u.Notes ? `<small class="text-muted d-block">${escapeHtml(u.Notes)}</small>` : ''}
+                                    </div>
+                                    <span class="badge bg-primary">${this.formatDate(u.ScheduledDate)}</span>
+                                </li>
+                            `).join('')}
+                        </ul>
+                    </div>`;
+                container.parentNode.insertBefore(node, container);
+                /* Clicking a row opens the detail view for that setlist. */
+                node.querySelectorAll('[data-setlist-id]').forEach(row => {
+                    row.addEventListener('click', () => {
+                        this.renderSetListDetail(row.dataset.setlistId);
+                    });
+                });
+            })
+            .catch(() => {
+                /* Unauthenticated or endpoint unreachable — fine, no card. */
+            });
+    }
+
+    /**
+     * Show and populate the setlist schedule card (#398). Fetches any
+     * existing schedule for (user, setlist) and pre-fills the inputs,
+     * then wires Save / Clear. Silent no-op if the card isn't in the
+     * DOM (e.g. on the home page) or if the user isn't authenticated
+     * (endpoints return 401; we just keep the card hidden).
+     * @param {string} listId
+     * @private
+     */
+    _renderSetlistSchedule(listId) {
+        const card      = document.getElementById('setlist-schedule-card');
+        const dateInput = document.getElementById('schedule-date');
+        const notesIn   = document.getElementById('schedule-notes');
+        const saveBtn   = document.getElementById('btn-schedule-save');
+        const resultEl  = document.getElementById('schedule-result');
+        if (!card || !dateInput || !saveBtn) return;
+
+        /* Visibility tracks the authenticated-user check via the API's
+           401 on setlist_schedule_current. If we get 401, hide card. */
+        fetch(`/api?action=setlist_schedule_current&setlistId=${encodeURIComponent(listId)}`, {
+            credentials: 'same-origin',
+        })
+            .then(r => r.ok ? r.json() : Promise.reject(r.status))
+            .then(data => {
+                card.style.display = '';
+                const sched = data.schedule;
+                if (sched) {
+                    dateInput.value = sched.ScheduledDate || '';
+                    if (notesIn) notesIn.value = sched.Notes || '';
+                    if (resultEl) {
+                        resultEl.innerHTML = `<span class="text-success"><i class="fa-solid fa-check-circle me-1"></i>Scheduled for ${this.formatDate(sched.ScheduledDate)}</span>`;
+                    }
+                } else {
+                    dateInput.value = '';
+                    if (notesIn) notesIn.value = '';
+                    if (resultEl) resultEl.innerHTML = '';
+                }
+                this._bindScheduleButtons(listId);
+            })
+            .catch(() => {
+                card.style.display = 'none';
+            });
+    }
+
+    _bindScheduleButtons(listId) {
+        const card     = document.getElementById('setlist-schedule-card');
+        const dateIn   = document.getElementById('schedule-date');
+        const notesIn  = document.getElementById('schedule-notes');
+        const saveBtn  = document.getElementById('btn-schedule-save');
+        const resultEl = document.getElementById('schedule-result');
+        if (!card || !saveBtn || !dateIn) return;
+
+        /* Replace to avoid stacking listeners across re-renders. */
+        const newSave = saveBtn.cloneNode(true);
+        saveBtn.parentNode.replaceChild(newSave, saveBtn);
+        newSave.addEventListener('click', () => {
+            const dateVal = (dateIn.value || '').trim();
+            if (!dateVal) {
+                if (resultEl) resultEl.innerHTML = '<span class="text-warning">Pick a date first.</span>';
+                return;
+            }
+            fetch('/api?action=setlist_schedule_set', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify({
+                    setlistId: listId,
+                    date: dateVal,
+                    notes: notesIn?.value || '',
+                }),
+            })
+                .then(r => r.json().then(j => ({ ok: r.ok, data: j })))
+                .then(res => {
+                    if (!res.ok) {
+                        if (resultEl) resultEl.innerHTML = `<span class="text-danger">${escapeHtml(res.data.error || 'Save failed.')}</span>`;
+                        return;
+                    }
+                    if (resultEl) resultEl.innerHTML = `<span class="text-success"><i class="fa-solid fa-check-circle me-1"></i>Saved for ${this.formatDate(dateVal)}</span>`;
+                });
+        });
+
+        /* Add a Clear button next to Save if it's not already there. */
+        if (!document.getElementById('btn-schedule-clear')) {
+            const clearBtn = document.createElement('button');
+            clearBtn.id = 'btn-schedule-clear';
+            clearBtn.type = 'button';
+            clearBtn.className = 'btn btn-outline-secondary';
+            clearBtn.textContent = 'Clear';
+            newSave.parentNode.appendChild(clearBtn);
+            clearBtn.addEventListener('click', () => {
+                fetch('/api?action=setlist_schedule_clear', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ setlistId: listId }),
+                })
+                    .then(r => r.ok ? r.json() : Promise.reject(r))
+                    .then(() => {
+                        dateIn.value = '';
+                        if (notesIn) notesIn.value = '';
+                        if (resultEl) resultEl.innerHTML = '<span class="text-muted">Schedule cleared.</span>';
+                    })
+                    .catch(() => {
+                        if (resultEl) resultEl.innerHTML = '<span class="text-danger">Clear failed.</span>';
+                    });
+            });
+        }
+    }
+
+    /**
+     * Append a "Collaborators" section to the setlist detail view (#398).
+     * Owner can invite by email, change permission, or revoke. The list
+     * is fetched from setlist_collab_list; endpoints silently 401 for
+     * anonymous users so we hide the section on failure.
+     * @param {HTMLElement} container
+     * @param {string} listId
+     * @private
+     */
+    _renderSetlistCollaborators(container, listId) {
+        if (!container) return;
+        const section = document.createElement('div');
+        section.className = 'card mt-3';
+        section.id = 'setlist-collab-card';
+        section.innerHTML = `
+            <div class="card-body">
+                <div class="d-flex align-items-center justify-content-between mb-2">
+                    <h6 class="mb-0"><i class="fa-solid fa-users me-2"></i>Collaborators</h6>
+                    <button type="button" class="btn btn-sm btn-outline-primary" id="btn-invite-collaborator">
+                        <i class="fa-solid fa-user-plus me-1"></i>Invite
+                    </button>
+                </div>
+                <ul class="list-group list-group-flush" id="collaborator-list">
+                    <li class="list-group-item small text-muted">Loading…</li>
+                </ul>
+            </div>`;
+        container.appendChild(section);
+
+        const refresh = () => {
+            fetch(`/api?action=setlist_collab_list&setlistId=${encodeURIComponent(listId)}`, {
+                credentials: 'same-origin',
+            })
+                .then(r => r.ok ? r.json() : Promise.reject(r.status))
+                .then(data => {
+                    const list = document.getElementById('collaborator-list');
+                    if (!list) return;
+                    const rows = data.collaborators || [];
+                    if (rows.length === 0) {
+                        list.innerHTML = '<li class="list-group-item small text-muted">No collaborators yet — click Invite to share.</li>';
+                        return;
+                    }
+                    list.innerHTML = rows.map(c => `
+                        <li class="list-group-item d-flex align-items-center justify-content-between">
+                            <div>
+                                <strong>${escapeHtml(c.username)}</strong>
+                                <small class="text-muted d-block">${escapeHtml(c.email)} &middot; ${escapeHtml(c.permission)}</small>
+                            </div>
+                            <button type="button" class="btn btn-sm btn-outline-danger btn-remove-collab"
+                                    data-id="${c.id}" aria-label="Remove collaborator">
+                                <i class="fa-solid fa-xmark"></i>
+                            </button>
+                        </li>
+                    `).join('');
+                    list.querySelectorAll('.btn-remove-collab').forEach(btn => {
+                        btn.addEventListener('click', () => {
+                            fetch('/api?action=setlist_collab_remove', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                                credentials: 'same-origin',
+                                body: JSON.stringify({
+                                    setlistId: listId,
+                                    collaboratorId: Number(btn.dataset.id),
+                                }),
+                            })
+                                .then(r => r.ok ? r.json() : Promise.reject(r))
+                                .then(() => refresh())
+                                .catch(() => alert('Remove failed.'));
+                        });
+                    });
+                })
+                .catch(() => {
+                    /* Likely unauthenticated or feature-flag off — drop the section. */
+                    section.remove();
+                });
+        };
+
+        section.querySelector('#btn-invite-collaborator').addEventListener('click', () => {
+            const email = prompt(
+                'Invite a collaborator by email.\nThey must already have an iHymns account.'
+            );
+            if (!email) return;
+            const permission = (prompt('Permission: "view" or "edit"?', 'edit') || 'edit').trim().toLowerCase();
+            fetch('/api?action=setlist_collab_invite', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify({
+                    setlistId: listId,
+                    collaboratorEmail: email.trim(),
+                    permission,
+                }),
+            })
+                .then(r => r.json().then(j => ({ ok: r.ok, data: j })))
+                .then(res => {
+                    if (!res.ok) { alert(res.data.error || 'Invite failed.'); return; }
+                    refresh();
+                });
+        });
+
+        refresh();
     }
 
     /**

@@ -2,28 +2,51 @@ openapi: 3.0.3
 
 info:
   title: iHymns API
-  version: "0.10.0"
+  version: "0.10.1"
   description: |
     The iHymns API provides programmatic access to the iHymns hymn and song
     database. It powers the iHymns Progressive Web App (PWA), enabling song
     search, songbook browsing, setlist management, user authentication,
-    favorites sync, and administrative operations.
+    favorites sync, offline PWA caching, and administrative operations.
 
     All endpoints are served from a single PHP entry point (`api.php`) and are
     routed via the `action` query parameter. Responses are JSON unless otherwise
-    noted.
+    noted. The admin-only **Editor API** (`/manage/editor/api.php`) follows the
+    same action-query pattern but is gated by the `/manage/` PHP session.
 
     ## Authentication
 
-    Endpoints that require authentication use Bearer tokens passed in the
-    `Authorization` header:
+    Endpoints that require authentication accept either a Bearer token or the
+    cross-subdomain session cookie:
 
     ```
     Authorization: Bearer <64-character hex token>
     ```
 
-    Tokens are obtained via `auth_register` or `auth_login` and expire after
-    30 days.
+    or
+
+    ```
+    Cookie: ihymns_auth=<64-character hex token>
+    ```
+
+    The cookie is `Domain=.ihymns.app; HttpOnly; SameSite=Lax; Secure` so a
+    single sign-in persists across `ihymns.app`, `alpha.ihymns.app`, and
+    `beta.ihymns.app`. Tokens are issued by `auth_login`,
+    `auth_email_login_verify`, or `auth_register`, and carry a **sliding
+    30-day expiry** — every authenticated request bumps the expiry by one
+    day (at most once per 24h per token).
+
+    Magic-link email sign-in (`auth_email_login_request` →
+    `auth_email_login_verify`) is the primary path surfaced in the UI;
+    username/password (`auth_login`) is the fallback.
+
+    ## Entitlements
+
+    Admin and editor endpoints are gated by **capabilities**, not just roles.
+    The default mapping lives in `includes/entitlements.php` and can be
+    overridden at runtime via `/manage/entitlements`. The `role` field on a
+    user is still returned for compatibility, but authorisation uses the
+    capability check internally.
 
     ## Rate Limiting
 
@@ -39,8 +62,12 @@ info:
 servers:
   - url: https://ihymns.app
     description: Production
+  - url: https://alpha.ihymns.app
+    description: Alpha channel (gated by `access_alpha` entitlement)
+  - url: https://beta.ihymns.app
+    description: Beta channel (gated by `access_beta` entitlement)
   - url: https://beta.ihymns.net
-    description: Beta / Development
+    description: Legacy beta / dev
 
 tags:
   - name: Songs
@@ -48,7 +75,11 @@ tags:
   - name: Languages
     description: Language metadata and song translations
   - name: Setlists
-    description: Create, retrieve, and sync shared setlists
+    description: Create, retrieve, and sync personal setlists
+  - name: Setlists — Scheduling
+    description: Schedule setlists for a date and list upcoming events (#398)
+  - name: Setlists — Collaboration
+    description: Invite collaborators, manage permissions, list shared setlists (#398)
   - name: Song Requests
     description: Submit and view community song requests
   - name: Favorites
@@ -57,8 +88,35 @@ tags:
     description: User registration, login, logout, and profile management
   - name: User Access
     description: Group-based access control and app status
+  - name: Preferences
+    description: Server-side preference sync across devices
+  - name: Offline / PWA
+    description: Bulk-fetch endpoints used by the service worker for offline caching
+  - name: Discovery
+    description: Tags, suggestions, related songs, popular songs
+  - name: Push
+    description: Push-notification subscription endpoints
+  - name: Organisations
+    description: Multi-tenant organisation membership and administration
+  - name: Content Access
+    description: Content-licence + restriction evaluation for gated songs / audio / sheet music
+  - name: Song Metadata
+    description: Per-song data surfaces — history, key, writers, revisions
+  - name: Pages
+    description: HTML + alternate-format (CSV / XML / JSON / OpenSong / VideoPsalm) renderers
   - name: Admin
     description: Administrative endpoints for user, group, and content management
+  - name: Admin — Restrictions
+    description: Content-restriction rule engine (tier / org / platform / licence)
+  - name: Admin — Revisions
+    description: Review pending song revisions
+  - name: Admin — Maintenance
+    description: Cleanup, export, and songbook-health utilities
+  - name: Editor API
+    description: |
+      Admin-only endpoints under `/manage/editor/api.php`, protected by the
+      /manage/ PHP session rather than a Bearer token. Used by the song
+      editor SPA for per-song save, bulk tag, and revision history.
 
 paths:
   # ===========================================================================
@@ -2169,6 +2227,1937 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SuccessResponse"
+
+  # ===========================================================================
+  # OFFLINE / PWA  (bulk fetch endpoints for the service worker)
+  # ===========================================================================
+
+  /api.php?action=bulk_songs:
+    get:
+      operationId: bulkSongs
+      tags: [Offline / PWA]
+      summary: Rendered HTML for every song in a songbook
+      description: |
+        Returns a map of `songId` → pre-rendered song-page HTML for every
+        song in the given songbook. Used by the service worker to pre-cache
+        an entire songbook in a single request (~6 requests for the whole
+        corpus vs. thousands).
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [bulk_songs] }
+        - name: songbook
+          in: query
+          required: true
+          description: Songbook abbreviation (e.g. `CP`, `MP`, `Misc`)
+          schema: { type: string }
+      responses:
+        "200":
+          description: Map of song IDs to rendered HTML
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  songbook: { type: string, example: CP }
+                  count:    { type: integer, example: 642 }
+                  songs:
+                    type: object
+                    additionalProperties:
+                      type: string
+                      description: Rendered `<article>` HTML for the song page
+
+  /api.php?action=bulk_audio:
+    get:
+      operationId: bulkAudio
+      tags: [Offline / PWA]
+      summary: Audio URL manifest for every song with audio (#401)
+      description: |
+        Returns `{songId, url}` for every song whose `HasAudio` flag is set.
+        Used by the service worker to pre-cache audio into `iHymns-media-v1`
+        when the user enables "Include audio in offline downloads" in
+        Settings.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [bulk_audio] }
+        - name: songbook
+          in: query
+          required: false
+          description: Restrict the manifest to one songbook abbreviation
+          schema: { type: string, example: CP }
+      responses:
+        "200":
+          description: Audio URL manifest
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  songbook: { type: string, nullable: true, example: CP }
+                  count:    { type: integer, example: 180 }
+                  audio:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        songId: { type: string, example: CP-0202 }
+                        url:    { type: string, example: /data/audio/CP/0202.mp3 }
+
+  # ===========================================================================
+  # DISCOVERY  (popular / tags / suggest / related)
+  # ===========================================================================
+
+  /api.php?action=popular_songs:
+    get:
+      operationId: popularSongs
+      tags: [Discovery]
+      summary: Most-viewed songs over the trailing window
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [popular_songs] }
+        - name: days
+          in: query
+          required: false
+          schema: { type: integer, default: 30, minimum: 1, maximum: 365 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 12, minimum: 1, maximum: 50 }
+      responses:
+        "200":
+          description: Ranked list of popular songs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  popular:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SongSummary"
+
+  /api.php?action=tags:
+    get:
+      operationId: listTags
+      tags: [Discovery]
+      summary: List every curated song tag
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [tags] }
+      responses:
+        "200":
+          description: Tag list with song counts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tags:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:       { type: integer }
+                        name:     { type: string, example: Easter }
+                        slug:     { type: string, example: easter }
+                        songCount: { type: integer }
+
+  /api.php?action=songs_by_tag:
+    get:
+      operationId: songsByTag
+      tags: [Discovery]
+      summary: Songs tagged with a given slug
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [songs_by_tag] }
+        - name: slug
+          in: query
+          required: true
+          schema: { type: string, example: communion }
+      responses:
+        "200":
+          description: Songs for the tag
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tag:
+                    type: object
+                    properties:
+                      id: { type: integer }
+                      name: { type: string }
+                      slug: { type: string }
+                  songs:
+                    type: array
+                    items: { $ref: "#/components/schemas/SongSummary" }
+
+  /api.php?action=suggest:
+    get:
+      operationId: suggest
+      tags: [Discovery]
+      summary: Typeahead suggestions for the search box
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [suggest] }
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 1 }
+      responses:
+        "200":
+          description: Suggestion list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        label: { type: string }
+                        type:  { type: string, enum: [song, writer, songbook, tag] }
+                        id:    { type: string, nullable: true }
+
+  /api.php?action=related_songs:
+    get:
+      operationId: relatedSongs
+      tags: [Discovery]
+      summary: Songs related to the given song
+      description: Matches by shared tags, same writer, or same songbook vicinity.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [related_songs] }
+        - name: id
+          in: query
+          required: true
+          description: Source song id (e.g. `CP-0202`)
+          schema: { type: string }
+      responses:
+        "200":
+          description: Related songs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  related:
+                    type: array
+                    items: { $ref: "#/components/schemas/SongSummary" }
+
+  /api.php?action=song:
+    get:
+      operationId: getSong
+      tags: [Songs]
+      summary: Full song record (metadata + components + writers/composers)
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song] }
+        - name: id
+          in: query
+          required: true
+          schema: { type: string, example: CP-0202 }
+      responses:
+        "200":
+          description: Full song record
+        "404":
+          description: Song not found
+
+  /api.php?action=song_view:
+    post:
+      operationId: logSongView
+      tags: [Songs]
+      summary: Log a song-view event
+      description: |
+        Fire-and-forget analytics ping. Writes one row to `tblSongHistory`
+        so the dashboard's view counts + `popular_songs` can aggregate.
+        Never blocks the response.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song_view] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId]
+              properties:
+                songId: { type: string, example: CP-0202 }
+      responses:
+        "200":
+          description: Logged (or silently dropped when consent is denied)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  # ===========================================================================
+  # PREFERENCES
+  # ===========================================================================
+
+  /api.php?action=user_preferences:
+    get:
+      operationId: getUserPreferences
+      tags: [Preferences]
+      summary: Fetch the caller's server-synced preferences
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [user_preferences] }
+      responses:
+        "200":
+          description: Preference map
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  preferences:
+                    type: object
+                    additionalProperties:
+                      type: string
+                    example:
+                      theme: dark
+                      fontSize: "18"
+                      defaultSongbook: CP
+
+  /api.php?action=user_preferences_sync:
+    post:
+      operationId: syncUserPreferences
+      tags: [Preferences]
+      summary: Last-write-wins sync of preferences across devices
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [user_preferences_sync] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [preferences]
+              properties:
+                preferences:
+                  type: object
+                  additionalProperties: { type: string }
+      responses:
+        "200":
+          description: Applied server-side; merged result returned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  preferences:
+                    type: object
+                    additionalProperties: { type: string }
+
+  # ===========================================================================
+  # SETLISTS — SCHEDULING (#398)
+  # ===========================================================================
+
+  /api.php?action=setlist_schedule_set:
+    post:
+      operationId: setlistScheduleSet
+      tags: [Setlists — Scheduling]
+      summary: Schedule a setlist for a date
+      description: |
+        Replaces any existing schedule for the (user, setlistId) pair with a
+        new date + optional notes. Ownership is verified against
+        `tblUserSetlists`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [setlist_schedule_set] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [setlistId, date]
+              properties:
+                setlistId: { type: string, example: slist-abc123 }
+                date:
+                  type: string
+                  format: date
+                  example: "2026-05-03"
+                notes:
+                  type: string
+                  description: Optional free-text notes
+                  example: "Sunday 10am — Communion service"
+      responses:
+        "200":
+          description: Scheduled
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SuccessResponse" }
+        "400":
+          description: Missing or malformed fields
+        "401":
+          description: Unauthorised
+        "404":
+          description: Setlist not found or not owned by caller
+
+  /api.php?action=setlist_schedule_clear:
+    post:
+      operationId: setlistScheduleClear
+      tags: [Setlists — Scheduling]
+      summary: Remove the scheduled date for a setlist
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [setlist_schedule_clear] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [setlistId]
+              properties:
+                setlistId: { type: string, example: slist-abc123 }
+      responses:
+        "200":
+          description: Cleared (no-op if nothing was scheduled)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SuccessResponse" }
+
+  /api.php?action=setlist_schedule_current:
+    get:
+      operationId: setlistScheduleCurrent
+      tags: [Setlists — Scheduling]
+      summary: Fetch the current schedule for one setlist
+      description: Used by the setlist detail view to pre-populate the date input.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [setlist_schedule_current] }
+        - name: setlistId
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Schedule row or null
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  schedule:
+                    oneOf:
+                      - type: "null"
+                      - type: object
+                        properties:
+                          ScheduledDate: { type: string, format: date }
+                          Notes:         { type: string }
+
+  /api.php?action=setlist_schedule_upcoming:
+    get:
+      operationId: setlistScheduleUpcoming
+      tags: [Setlists — Scheduling]
+      summary: Next 25 scheduled setlists from today forward
+      description: |
+        Powers the "Up next" card on the setlist overview page. Only
+        returns the caller's own scheduled setlists (not ones shared
+        with them).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [setlist_schedule_upcoming] }
+      responses:
+        "200":
+          description: Upcoming schedule list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  upcoming:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        SetlistId:     { type: string }
+                        ScheduledDate: { type: string, format: date }
+                        Notes:         { type: string }
+                        name:          { type: string, nullable: true }
+
+  # ===========================================================================
+  # SETLISTS — COLLABORATION (#398)
+  # ===========================================================================
+
+  /api.php?action=setlist_collab_invite:
+    post:
+      operationId: setlistCollabInvite
+      tags: [Setlists — Collaboration]
+      summary: Invite a user by email to collaborate on a setlist
+      description: |
+        Owner-only. Resolves the invitee by email (must already have an
+        iHymns account) and upserts a row in `tblSetlistCollaborators`.
+        Re-inviting the same user updates their permission.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [setlist_collab_invite] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [setlistId, collaboratorEmail]
+              properties:
+                setlistId:          { type: string }
+                collaboratorEmail:  { type: string, format: email }
+                permission:
+                  type: string
+                  enum: [view, edit]
+                  default: edit
+      responses:
+        "200":
+          description: Invitation accepted / permission updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  collaborator:
+                    type: object
+                    properties:
+                      id:         { type: integer }
+                      username:   { type: string }
+                      permission: { type: string, enum: [view, edit] }
+        "400":
+          description: Missing fields, invalid email, or self-invite
+        "404":
+          description: Setlist not owned by caller, or no user with that email
+
+  /api.php?action=setlist_collab_list:
+    get:
+      operationId: setlistCollabList
+      tags: [Setlists — Collaboration]
+      summary: List collaborators on a setlist the caller owns
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [setlist_collab_list] }
+        - name: setlistId
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Collaborator list, newest invite first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  collaborators:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:         { type: integer }
+                        username:   { type: string }
+                        email:      { type: string, format: email }
+                        permission: { type: string, enum: [view, edit] }
+                        invitedAt:  { type: string, format: date-time }
+
+  /api.php?action=setlist_collab_remove:
+    post:
+      operationId: setlistCollabRemove
+      tags: [Setlists — Collaboration]
+      summary: Revoke a collaborator's access to a setlist
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [setlist_collab_remove] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [setlistId, collaboratorId]
+              properties:
+                setlistId:      { type: string }
+                collaboratorId: { type: integer }
+      responses:
+        "200":
+          description: Removed (reports how many rows were deleted)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean }
+                  removed: { type: integer, minimum: 0 }
+
+  /api.php?action=setlist_collab_shared_with_me:
+    get:
+      operationId: setlistCollabSharedWithMe
+      tags: [Setlists — Collaboration]
+      summary: Setlists the caller has been invited to
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [setlist_collab_shared_with_me] }
+      responses:
+        "200":
+          description: Shared-with-me list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  shared:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        ownerId:    { type: integer }
+                        ownerName:  { type: string }
+                        setlistId:  { type: string }
+                        permission: { type: string, enum: [view, edit] }
+                        name:       { type: string, nullable: true }
+
+  # ===========================================================================
+  # PUSH NOTIFICATIONS
+  # ===========================================================================
+
+  /api.php?action=push_subscribe:
+    post:
+      operationId: pushSubscribe
+      tags: [Push]
+      summary: Register a Web Push subscription for the current user
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [push_subscribe] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [endpoint, keys]
+              properties:
+                endpoint: { type: string, format: uri }
+                keys:
+                  type: object
+                  required: [p256dh, auth]
+                  properties:
+                    p256dh: { type: string }
+                    auth:   { type: string }
+      responses:
+        "200":
+          description: Subscription stored
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SuccessResponse" }
+
+  /api.php?action=push_unsubscribe:
+    post:
+      operationId: pushUnsubscribe
+      tags: [Push]
+      summary: Remove a Web Push subscription
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [push_unsubscribe] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [endpoint]
+              properties:
+                endpoint: { type: string, format: uri }
+      responses:
+        "200":
+          description: Removed (idempotent)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SuccessResponse" }
+
+  # ===========================================================================
+  # EDITOR API  (separate entry point — /manage/editor/api.php)
+  # ===========================================================================
+
+  /manage/editor/api.php?action=load:
+    get:
+      operationId: editorLoad
+      tags: [Editor API]
+      summary: Load every song + songbook + writer row the editor needs
+      description: |
+        Editor SPA hits this once on open. Returns the full in-memory
+        model. Auth is the `/manage/` PHP session — not a Bearer token.
+      responses:
+        "200":
+          description: Full editor payload
+        "401":
+          description: Not authenticated (redirect the user to /manage/login)
+        "403":
+          description: Authenticated but not an editor
+
+  /manage/editor/api.php?action=save_song:
+    post:
+      operationId: editorSaveSong
+      tags: [Editor API]
+      summary: Transactional UPSERT of one song (#394)
+      description: |
+        Writes `tblSongs` + children in a transaction and records one row
+        in `tblSongRevisions` with `PreviousData` / `NewData` snapshots.
+        The editor calls this per modified song — much cheaper than the
+        legacy full-corpus `save`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, title]
+              properties:
+                id:              { type: string, example: CP-0202 }
+                title:           { type: string }
+                number:
+                  type: integer
+                  nullable: true
+                  description: Null for `Misc` songs or when empty (#392)
+                songbook:        { type: string }
+                songbookName:    { type: string }
+                language:        { type: string, example: en }
+                copyright:       { type: string }
+                ccli:            { type: string }
+                verified:            { type: boolean }
+                lyricsPublicDomain:  { type: boolean }
+                musicPublicDomain:   { type: boolean }
+                hasAudio:            { type: boolean }
+                hasSheetMusic:       { type: boolean }
+                components:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:  { type: string, example: verse }
+                      cNum:  { type: integer }
+                      lines: { type: array, items: { type: string } }
+      responses:
+        "200":
+          description: Saved; revision logged
+        "400":
+          description: Missing required id/title
+        "500":
+          description: Save failed; details in server log
+
+  /manage/editor/api.php?action=bulk_tag:
+    post:
+      operationId: editorBulkTag
+      tags: [Editor API]
+      summary: Add and/or remove tags across a list of songs (#399)
+      description: |
+        Transactional. ADDs upsert `tblSongTags` (with slug) and
+        INSERT-IGNORE into `tblSongTagMap`. REMOVEs resolve by tag name
+        and delete matching mapping rows. Unknown tag names on remove
+        are silently ignored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songIds]
+              properties:
+                songIds:
+                  type: array
+                  items: { type: string, example: CP-0202 }
+                add:
+                  type: array
+                  items: { type: string, example: Easter }
+                remove:
+                  type: array
+                  items: { type: string, example: Funeral }
+      responses:
+        "200":
+          description: Summary of what changed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  songsAffected: { type: integer }
+                  added:         { type: integer, description: Rows actually inserted }
+                  removed:       { type: integer, description: Rows actually deleted }
+        "400":
+          description: No valid songIds or no tag changes supplied
+
+  /manage/editor/api.php?action=list_revisions:
+    get:
+      operationId: editorListRevisions
+      tags: [Editor API]
+      summary: List revisions for one song (#400)
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [list_revisions] }
+        - name: songId
+          in: query
+          required: true
+          schema: { type: string, example: CP-0202 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+      responses:
+        "200":
+          description: Revision list, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revisions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:           { type: integer }
+                        action:       { type: string, enum: [create, edit, restore, delete] }
+                        createdAt:    { type: string, format: date-time }
+                        userId:       { type: integer, nullable: true }
+                        username:     { type: string, nullable: true }
+                        previousData: { type: object, nullable: true }
+                        newData:      { type: object, nullable: true }
+
+  /manage/editor/api.php?action=restore_revision:
+    post:
+      operationId: editorRestoreRevision
+      tags: [Editor API]
+      summary: Restore a song to the state BEFORE a given revision (#400)
+      description: |
+        Rewrites the core `tblSongs` row from the chosen revision's
+        `PreviousData` and records a new revision with `Action='restore'`
+        whose `PreviousData` captures the state just-overwritten.
+        Transactional — rolls back on any failure.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revisionId]
+              properties:
+                revisionId: { type: integer, example: 4712 }
+      responses:
+        "200":
+          description: Restored; new revision row's id is returned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:            { type: boolean }
+                  songId:        { type: string }
+                  newRevisionId: { type: integer }
+        "404":
+          description: Revision id not found
+        "409":
+          description: This revision has no prior state (it's the initial create)
+
+  # ===========================================================================
+  # SONG METADATA  (per-song detail surfaces)
+  # ===========================================================================
+
+  /api.php?action=song_history:
+    get:
+      operationId: songHistory
+      tags: [Song Metadata]
+      summary: Recently viewed songs for the caller
+      description: Backed by `tblSongHistory`; gated on analytics consent.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song_history] }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 50, minimum: 1, maximum: 500 }
+      responses:
+        "200":
+          description: History entries, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  history:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        songId:   { type: string }
+                        title:    { type: string }
+                        songbook: { type: string }
+                        viewedAt: { type: string, format: date-time }
+
+  /api.php?action=song_key:
+    get:
+      operationId: songKeyGet
+      tags: [Song Metadata]
+      summary: Fetch the caller's saved preferred key for a song
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song_key] }
+        - name: songId
+          in: query
+          required: true
+          schema: { type: string, example: CP-0202 }
+      responses:
+        "200":
+          description: Preferred key or null
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key:
+                    type: string
+                    nullable: true
+                    example: G
+
+  /api.php?action=song_key_save:
+    post:
+      operationId: songKeySave
+      tags: [Song Metadata]
+      summary: Save the caller's preferred key for a song
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song_key_save] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, key]
+              properties:
+                songId: { type: string }
+                key:
+                  type: string
+                  description: Musical key (empty string to clear)
+                  example: Eb
+      responses:
+        "200":
+          description: Stored
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SuccessResponse" }
+
+  /api.php?action=song_revisions:
+    get:
+      operationId: songRevisionsPublic
+      tags: [Song Metadata]
+      summary: Revision timeline for one song (read-only public view)
+      description: |
+        Lightweight sibling of the editor-only `list_revisions`. Returns
+        who/when/action for each revision, without the full before/after
+        snapshots (those are editor-only).
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song_revisions] }
+        - name: songId
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Redacted revision list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revisions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:        { type: integer }
+                        action:    { type: string, enum: [create, edit, restore, delete] }
+                        createdAt: { type: string, format: date-time }
+                        username:  { type: string, nullable: true }
+
+  /api.php?action=writer:
+    get:
+      operationId: writerSongs
+      tags: [Song Metadata]
+      summary: Songs attributed to a given writer or composer
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [writer] }
+        - name: name
+          in: query
+          required: true
+          description: Writer / composer name (case-insensitive match)
+          schema: { type: string, example: John Newton }
+      responses:
+        "200":
+          description: Songs by that writer
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  writer: { type: string }
+                  songs:
+                    type: array
+                    items: { $ref: "#/components/schemas/SongSummary" }
+
+  /api.php?action=songbook:
+    get:
+      operationId: songbookSongs
+      tags: [Songs]
+      summary: All songs in one songbook
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [songbook] }
+        - name: abbr
+          in: query
+          required: true
+          description: Songbook abbreviation (`CP`, `MP`, `JP`, `SDAH`, `CH`, `Misc`)
+          schema: { type: string }
+      responses:
+        "200":
+          description: Songbook songs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  songbook:
+                    type: object
+                    properties:
+                      abbr: { type: string }
+                      name: { type: string }
+                  songs:
+                    type: array
+                    items: { $ref: "#/components/schemas/SongSummary" }
+
+  # ===========================================================================
+  # SONG REQUESTS  (submission half — admin half is under Admin tag)
+  # ===========================================================================
+
+  /api.php?action=song_request_submit:
+    post:
+      operationId: songRequestSubmit
+      tags: [Song Requests]
+      summary: Submit a new song-request from the public form
+      description: |
+        Rate-limited (IP-based, 5/day default) and honey-potted. Writes
+        to `tblSongRequests` with status `pending`. Anonymous submissions
+        are allowed.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song_request_submit] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title:     { type: string, example: "Great Is Thy Faithfulness" }
+                writer:    { type: string, example: "Thomas Chisholm" }
+                reason:    { type: string, description: Why the user wants this song added }
+                email:     { type: string, format: email, description: Optional reply-to }
+                hp_field:  { type: string, description: Honeypot — MUST be empty }
+      responses:
+        "200":
+          description: Queued for admin triage
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SuccessResponse" }
+        "429":
+          description: Rate-limit exceeded for this IP
+
+  # ===========================================================================
+  # LEGACY SETLIST ENDPOINTS  (pre-#398; kept for API compatibility)
+  # ===========================================================================
+
+  /api.php?action=setlist:
+    get:
+      operationId: setlistListMine
+      tags: [Setlists]
+      summary: List the caller's setlists (summary view)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [setlist] }
+      responses:
+        "200":
+          description: Setlist summaries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  setlists:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:        { type: string }
+                        name:      { type: string }
+                        songCount: { type: integer }
+                        createdAt: { type: string, format: date-time }
+
+  /api.php?action=setlist_schedule:
+    get:
+      operationId: setlistScheduleLegacy
+      tags: [Setlists — Scheduling]
+      summary: Legacy scheduling lookup (kept for older Apple / Android builds)
+      description: |
+        **Deprecated** — superseded by `setlist_schedule_current` (GET)
+        and `setlist_schedule_set` / `_clear` (POST). Returns the same
+        row via a single call.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [setlist_schedule] }
+        - name: setlistId
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Schedule row or null
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  schedule:
+                    oneOf:
+                      - type: "null"
+                      - type: object
+                        properties:
+                          ScheduledDate: { type: string, format: date }
+                          Notes:         { type: string }
+
+  /api.php?action=setlist_schedule_save:
+    post:
+      operationId: setlistScheduleSaveLegacy
+      tags: [Setlists — Scheduling]
+      summary: Legacy save-or-clear scheduling (Deprecated)
+      description: |
+        **Deprecated** — superseded by `setlist_schedule_set` (upsert)
+        and `setlist_schedule_clear` (delete). This endpoint does both
+        with a nullable date.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [setlist_schedule_save] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [setlistId]
+              properties:
+                setlistId: { type: string }
+                date:
+                  type: string
+                  nullable: true
+                  format: date
+                  description: Null or empty string clears the schedule
+                notes: { type: string }
+      responses:
+        "200":
+          description: Saved or cleared
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SuccessResponse" }
+
+  /api.php?action=setlist_templates:
+    get:
+      operationId: setlistTemplates
+      tags: [Setlists]
+      summary: List saved setlist templates
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [setlist_templates] }
+      responses:
+        "200":
+          description: Template list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  templates:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:         { type: string }
+                        name:       { type: string }
+                        songIds:    { type: array, items: { type: string } }
+                        createdAt:  { type: string, format: date-time }
+
+  /api.php?action=setlist_template_save:
+    post:
+      operationId: setlistTemplateSave
+      tags: [Setlists]
+      summary: Create or update a setlist template
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [setlist_template_save] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, songIds]
+              properties:
+                id:      { type: string, description: Omit to create; pass existing id to update }
+                name:    { type: string }
+                songIds: { type: array, items: { type: string } }
+      responses:
+        "200":
+          description: Saved; returns the template id
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  id: { type: string }
+
+  /api.php?action=setlist_collaborators:
+    get:
+      operationId: setlistCollaboratorsLegacy
+      tags: [Setlists — Collaboration]
+      summary: Legacy collaborators list (Deprecated)
+      description: |
+        **Deprecated** — superseded by `setlist_collab_list`. Kept for
+        older Apple / Android builds that already speak this endpoint.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [setlist_collaborators] }
+        - name: setlistId
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Collaborator list (same shape as `setlist_collab_list`)
+
+  /api.php?action=setlist_collaborator_add:
+    post:
+      operationId: setlistCollaboratorAddLegacy
+      tags: [Setlists — Collaboration]
+      summary: Legacy invite endpoint (Deprecated)
+      description: |
+        **Deprecated** — superseded by `setlist_collab_invite`. Kept for
+        API compatibility.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [setlist_collaborator_add] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [setlistId, collaboratorEmail]
+              properties:
+                setlistId:         { type: string }
+                collaboratorEmail: { type: string, format: email }
+                permission:        { type: string, enum: [view, edit] }
+      responses:
+        "200":
+          description: Added
+
+  /api.php?action=setlist_collaborator_remove:
+    post:
+      operationId: setlistCollaboratorRemoveLegacy
+      tags: [Setlists — Collaboration]
+      summary: Legacy remove-collaborator endpoint (Deprecated)
+      description: |
+        **Deprecated** — superseded by `setlist_collab_remove`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [setlist_collaborator_remove] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [setlistId, collaboratorId]
+              properties:
+                setlistId:      { type: string }
+                collaboratorId: { type: integer }
+      responses:
+        "200":
+          description: Removed
+
+  # ===========================================================================
+  # ORGANISATIONS
+  # ===========================================================================
+
+  /api.php?action=organisation:
+    get:
+      operationId: organisationGet
+      tags: [Organisations]
+      summary: Fetch one organisation by id
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [organisation] }
+        - name: id
+          in: query
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Organisation detail (members, licences, parent)
+
+  /api.php?action=organisation_create:
+    post:
+      operationId: organisationCreate
+      tags: [Organisations]
+      summary: Create a new organisation (owner becomes the caller)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [organisation_create] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:        { type: string, example: "First Baptist Church" }
+                parentOrgId: { type: integer, nullable: true, description: Parent org for nested hierarchy }
+                description: { type: string }
+      responses:
+        "200":
+          description: Created; returns the new org id
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  id: { type: integer }
+
+  /api.php?action=my_organisations:
+    get:
+      operationId: myOrganisations
+      tags: [Organisations]
+      summary: Organisations the caller belongs to
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [my_organisations] }
+      responses:
+        "200":
+          description: Caller's orgs with role per org
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organisations:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:   { type: integer }
+                        name: { type: string }
+                        role: { type: string, enum: [owner, admin, member] }
+
+  # ===========================================================================
+  # CONTENT ACCESS
+  # ===========================================================================
+
+  /api.php?action=content_access:
+    get:
+      operationId: contentAccess
+      tags: [Content Access]
+      summary: Evaluate whether the caller can access one piece of content
+      description: |
+        Combines tier membership, CCLI validity, org-licence, and
+        platform-specific restrictions (`tblContentRestrictions`) into
+        a single yes/no with reason.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [content_access] }
+        - name: songId
+          in: query
+          required: true
+          schema: { type: string }
+        - name: kind
+          in: query
+          required: false
+          description: What aspect is being accessed
+          schema:
+            type: string
+            enum: [lyrics, audio, sheet_music, offline]
+            default: lyrics
+        - name: platform
+          in: query
+          required: false
+          description: Current platform for platform-specific rules
+          schema: { type: string, enum: [pwa, apple, android] }
+      responses:
+        "200":
+          description: Access decision
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  allowed: { type: boolean }
+                  reason:
+                    type: string
+                    description: Human-readable reason when denied
+                    nullable: true
+                  tier:    { type: string, nullable: true }
+
+  # ===========================================================================
+  # ADMIN — RESTRICTIONS / REVISIONS / MAINTENANCE
+  # ===========================================================================
+
+  /api.php?action=admin_restrictions:
+    get:
+      operationId: adminRestrictions
+      tags: [Admin — Restrictions]
+      summary: List every content-restriction rule
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_restrictions] }
+      responses:
+        "200":
+          description: Rule list sorted by priority
+
+  /api.php?action=admin_restriction_create:
+    post:
+      operationId: adminRestrictionCreate
+      tags: [Admin — Restrictions]
+      summary: Create a new content-restriction rule
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_restriction_create] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [priority, ruleKind, ruleValue]
+              properties:
+                priority:   { type: integer }
+                ruleKind:
+                  type: string
+                  enum: [songbook, song, writer, tier, org, platform, licence]
+                ruleValue:  { type: string }
+                action:
+                  type: string
+                  enum: [allow, deny]
+                  default: deny
+                note:       { type: string }
+      responses:
+        "200":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SuccessResponse" }
+
+  /api.php?action=admin_restriction_delete:
+    post:
+      operationId: adminRestrictionDelete
+      tags: [Admin — Restrictions]
+      summary: Delete one restriction rule by id
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_restriction_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Deleted
+
+  /api.php?action=admin_pending_revisions:
+    get:
+      operationId: adminPendingRevisions
+      tags: [Admin — Revisions]
+      summary: List every song revision awaiting review
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_pending_revisions] }
+      responses:
+        "200":
+          description: Pending revision rows
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pending:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:        { type: integer }
+                        songId:    { type: string }
+                        action:    { type: string }
+                        createdAt: { type: string, format: date-time }
+                        username:  { type: string, nullable: true }
+
+  /api.php?action=admin_revision_review:
+    post:
+      operationId: adminRevisionReview
+      tags: [Admin — Revisions]
+      summary: Approve or reject a pending revision
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_revision_review] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revisionId, decision]
+              properties:
+                revisionId: { type: integer }
+                decision:
+                  type: string
+                  enum: [approved, rejected]
+                note:       { type: string, description: Reviewer comment }
+      responses:
+        "200":
+          description: Updated
+
+  /api.php?action=admin_cleanup:
+    post:
+      operationId: adminCleanup
+      tags: [Admin — Maintenance]
+      summary: Run the token / activity-log cleanup sweep
+      description: |
+        Same routine as `appWeb/.sql/cleanup.php` — expires magic-link
+        tokens, trims old `tblLoginAttempts`, and prunes the activity
+        log. Safe to run from cron.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_cleanup] }
+      responses:
+        "200":
+          description: Cleanup summary (counts per table)
+
+  /api.php?action=admin_export:
+    get:
+      operationId: adminExport
+      tags: [Admin — Maintenance]
+      summary: Export a table as CSV (admin audit)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_export] }
+        - name: table
+          in: query
+          required: true
+          description: Table key to export (e.g. `users`, `song_requests`, `activity_log`)
+          schema: { type: string }
+      responses:
+        "200":
+          description: CSV file download
+          content:
+            text/csv:
+              schema: { type: string }
+
+  /api.php?action=admin_organisations:
+    get:
+      operationId: adminOrganisations
+      tags: [Admin]
+      summary: List every organisation (admin view)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_organisations] }
+      responses:
+        "200":
+          description: Org list with member counts + licence tier
+
+  /api.php?action=admin_songbook_health:
+    get:
+      operationId: adminSongbookHealth
+      tags: [Admin — Maintenance]
+      summary: Integrity check across every songbook
+      description: |
+        Returns orphan components, songs missing writers, duplicate
+        numbers, and NULL-number counts per songbook. Drives the
+        "Songbook health" panel on the admin dashboard.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_songbook_health] }
+      responses:
+        "200":
+          description: Health summary per songbook
+
+  # ===========================================================================
+  # PAGES  (HTML renderers + alternate-format exports)
+  # ===========================================================================
+
+  /api.php?action=home:
+    get:
+      operationId: pageHome
+      tags: [Pages]
+      summary: Rendered home-page HTML fragment
+      description: Used by the router when hydrating `/` during offline startup.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [home] }
+      responses:
+        "200":
+          description: HTML fragment
+          content:
+            text/html: { schema: { type: string } }
+
+  /api.php?action=help:
+    get:
+      operationId: pageHelp
+      tags: [Pages]
+      summary: Rendered in-app help page
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [help] }
+      responses:
+        "200":
+          description: HTML fragment
+          content: { text/html: { schema: { type: string } } }
+
+  /api.php?action=terms:
+    get:
+      operationId: pageTerms
+      tags: [Pages]
+      summary: Rendered Terms of Use page
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [terms] }
+      responses:
+        "200":
+          description: HTML fragment
+          content: { text/html: { schema: { type: string } } }
+
+  /api.php?action=privacy:
+    get:
+      operationId: pagePrivacy
+      tags: [Pages]
+      summary: Rendered Privacy Policy page
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [privacy] }
+      responses:
+        "200":
+          description: HTML fragment
+          content: { text/html: { schema: { type: string } } }
+
+  /api.php?action=settings:
+    get:
+      operationId: pageSettings
+      tags: [Pages]
+      summary: Rendered Settings modal HTML
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [settings] }
+      responses:
+        "200":
+          description: HTML fragment
+          content: { text/html: { schema: { type: string } } }
+
+  /api.php?action=json:
+    get:
+      operationId: exportJson
+      tags: [Pages]
+      summary: Export one song as JSON
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [json] }
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Full song JSON
+          content:
+            application/json:
+              schema: { type: object }
+
+  /api.php?action=xml:
+    get:
+      operationId: exportXml
+      tags: [Pages]
+      summary: Export one song as generic XML
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [xml] }
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Song as XML
+          content:
+            application/xml:
+              schema: { type: string }
+
+  /api.php?action=csv:
+    get:
+      operationId: exportCsv
+      tags: [Pages]
+      summary: Export a filtered song list as CSV
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [csv] }
+        - name: songbook
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: CSV file
+          content: { text/csv: { schema: { type: string } } }
+
+  /api.php?action=opensong:
+    get:
+      operationId: exportOpenSong
+      tags: [Pages]
+      summary: Export one song in OpenSong XML format
+      description: See integration notes in `/manage/setup-database` on import compatibility.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [opensong] }
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OpenSong XML
+          content: { application/xml: { schema: { type: string } } }
+
+  /api.php?action=videopsalm:
+    get:
+      operationId: exportVideoPsalm
+      tags: [Pages]
+      summary: Export one song in VideoPsalm JSON format
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [videopsalm] }
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: VideoPsalm JSON
+          content: { application/json: { schema: { type: object } } }
 
 # =============================================================================
 # COMPONENTS

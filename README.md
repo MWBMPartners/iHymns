@@ -44,6 +44,7 @@
 
 ### Song Browsing & Search
 - **Full-text search** — by title, lyrics, songbook, song number, writer, composer (Fuse.js client-side + MySQL FULLTEXT)
+- **Scripture search** — `Ps 23`, `1 Cor 13`, `Rev 21` etc. match through abbreviation expansion + curated tags (#397)
 - **Songbook browser** — organised by songbook with alphabetical index
 - **Number search** — numeric keypad with physical keyboard support; configurable live search (off by default)
 - **Default songbook** — pre-selects in number search, keyboard quick-jump, and shuffle
@@ -52,7 +53,9 @@
 ### Worship Tools
 - **Favourites** — save songs with custom tags for quick access
 - **Setlists** — create, arrange, and share worship setlists with custom component arrangements
+- **Setlist scheduling & collaboration** — schedule setlists for a date/time with an "Up next" overview and invite collaborators with view/edit permissions (#398)
 - **Presentation mode** — fullscreen lyrics display with configurable auto-scroll
+- **Practice / memorisation mode** — Full / Dimmed / Hidden cycle with tap-to-reveal (#402)
 - **Shuffle** — random song from any songbook, highlights your default songbook
 - **Translation linking** — songs linked to equivalent translations in other languages
 - **Audio playback** — MIDI files where available
@@ -67,11 +70,12 @@
 - **Recently viewed** — quick access to your recent songs
 
 ### Offline & PWA
-- **Offline downloads** — download individual songbooks or all at once (~14 MB)
+- **Offline downloads** — individual songbooks or all at once (~14 MB)
 - **Bulk download API** — optimised endpoint fetches entire songbooks in ~6 requests (not 3,612 individual requests)
+- **Offline audio** — opt-in pre-cache of MIDI/OGG so playback works without a connection (#401)
+- **Per-songbook size readout + eviction** — Settings shows actual cached bytes per songbook with a remove-from-offline button (#401)
 - **Background downloads** — continue when navigating away from Settings
-- **Storage estimates** — shows ~X MB per songbook before downloading
-- **Auto-update** — optional automatic update of saved offline songs
+- **Auto-update** — optional automatic update of saved offline songs; service-worker update toast restored (#396)
 - **Service worker** — precaches all app assets for instant offline access
 - **Offline indicator** — shows connection status in UI
 - **JSON fallback** — full functionality when MySQL is unavailable
@@ -79,19 +83,48 @@
 ### Appearance & Accessibility
 - **Themes** — light, dark, high contrast, and system-adaptive modes
 - **Colour vision deficiency** — accessible palette with pattern-based songbook indicators
-- **WCAG 2.1 AA** — keyboard shortcuts, screen reader support, ARIA landmarks
+- **WCAG 2.1 AA** — screen reader support, ARIA landmarks, keyboard shortcuts (toggleable via Accessibility settings, #406)
 - **Responsive songbook names** — full name by default, abbreviation on narrow screens
 - **Adjustable font size** — lyrics scale from 14px to 28px
 - **Reduced motion** — respects `prefers-reduced-motion` and manual toggle
 - **Safe areas** — respects device notch, camera cutout, and home indicator on all screens
 
+### Authentication & Access
+- **Magic-link sign-in** — primary auth path (email + 6-digit code); password sign-in available as a fallback (#395)
+- **Cross-subdomain cookie** — `HttpOnly`, `SameSite=Lax`, `Secure` auth cookie on `.ihymns.app` with 30-day sliding expiry survives iOS ITP (#390)
+- **User accounts** — role-based access (Global Admin, Admin, Editor, User)
+- **Entitlements** — capability-based permissions, editable at runtime by a global admin
+- **Channel gating** — alpha / beta subdomains require the relevant access entitlement
+
+### Community
+- **Song request form** — public, rate-limited, honeypot-protected (#403); admin triage queue at `/manage/requests`
+
 ### Administration
-- **User accounts** — sign in/register with role-based access (Global Admin, Admin, Editor, User)
-- **Song editor** — web-based editor for lyrics, metadata, translations, and arrangements
-- **Database setup** — web-accessible installer at `/manage/setup-database.php`
+- **Song editor** — per-song auto-save, multi-select bulk **delete / verify / tag / move / export** (#399)
+- **Revision history** — every save writes `tblSongRevisions`; editor History modal with JSON diff + per-revision Restore + global audit log at `/manage/revisions` (#400)
+- **Database setup** — web-accessible installer with backup restore upload, **pre-flight summary**, pre-restore auto-snapshot, and transactional data-load (#405)
 - **Content access tiers** — public, free, CCLI, premium, pro with organisation licensing
-- **Activity logging** — audit trail for significant actions
-- **Analytics** — GA4, Plausible, Clarity, Matomo, Fathom with GDPR consent
+- **Activity logging** — audit trail for significant actions (logins, admin writes, backup restores)
+- **Analytics** — GA4, Plausible, Clarity, Matomo, Fathom with GDPR consent; admin dashboard with top songs/books/queries + zero-result queries + CSV export (#404)
+
+---
+
+## Admin Portal
+
+Accessible at **`/manage/`** (alias: `/admin/`) for users with the appropriate role. Main surfaces:
+
+| Surface | Purpose | Default role |
+| --- | --- | --- |
+| Dashboard | Library + activity snapshot, quick-links | editor+ |
+| Song Editor | Per-song UPSERT + auto-save, multi-select bulk delete/verify/tag/move/export, History modal | editor+ |
+| User Management | Roles, passwords, activation | admin+ |
+| Song Requests | Triage user-submitted requests | editor+ |
+| Analytics | Top songs/books/queries, zero-result queries, CSV export | admin+ |
+| Revisions | Global revision audit across every song edit | admin+ |
+| Entitlements | Reassign capabilities to roles | global_admin |
+| Database Setup | Install schema, migrate, backup, restore (with pre-flight), drop legacy | admin+ |
+
+Every write on these pages is CSRF-protected. DB error messages are never leaked to clients (see server error log).
 
 ---
 
