@@ -65,6 +65,7 @@ $currentUser = getCurrentUser();
         /* Shared layout, colours, buttons, cards → /css/admin.css
            Add editor-only tweaks here if truly needed. */
     </style>
+    <?php require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
 <body>
 
