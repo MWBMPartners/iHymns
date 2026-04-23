@@ -596,9 +596,6 @@ if (!empty($breadcrumbItems)) {
                         <li><a class="dropdown-item" href="/stats" data-navigate="stats">
                             <i class="fa-solid fa-chart-simple me-2" aria-hidden="true"></i> Statistics
                         </a></li>
-                        <li><a class="dropdown-item" href="/settings" data-navigate="settings">
-                            <i class="fa-solid fa-gear me-2" aria-hidden="true"></i> Settings
-                        </a></li>
                         <li><a class="dropdown-item" href="/help" data-navigate="help">
                             <i class="fa-solid fa-circle-question me-2" aria-hidden="true"></i> Help
                         </a></li>
@@ -684,14 +681,35 @@ if (!empty($breadcrumbItems)) {
                                     <i class="fa-solid fa-user-plus me-2" aria-hidden="true"></i> Create Account
                                 </button>
                             </li>
-                            <!-- Logged-in state (hidden by default, shown by JS) -->
+                            <!-- ============================================
+                                 Logged-in state (hidden by default; visibility
+                                 toggled by user-auth.js based on signed-in
+                                 state and per-entitlement checks).
+
+                                 Sections:
+                                   • Account   — always visible to signed-in users
+                                   • Curator   — visible if user holds any of
+                                                 edit_songs / review_song_requests
+                                                 / verify_songs
+                                   • Admin     — visible if user holds any of
+                                                 view_admin_dashboard / view_users /
+                                                 manage_entitlements / view_analytics /
+                                                 run_db_install / run_db_migrate
+                                 ============================================ -->
                             <li id="header-user-name" class="d-none">
                                 <span class="dropdown-item-text fw-semibold" id="header-user-display-name"></span>
                             </li>
                             <li id="header-user-role-li" class="d-none">
                                 <span class="dropdown-item-text small text-muted" id="header-user-role-text"></span>
                             </li>
+
+                            <!-- ── Account ── -->
                             <li id="header-user-divider" class="d-none"><hr class="dropdown-divider"></li>
+                            <li id="header-user-settings-li" class="d-none">
+                                <a class="dropdown-item" href="/settings" data-navigate="settings">
+                                    <i class="fa-solid fa-gear me-2" aria-hidden="true"></i> Settings
+                                </a>
+                            </li>
                             <li id="header-user-setlists-li" class="d-none">
                                 <a class="dropdown-item" href="/setlist" data-navigate="setlist">
                                     <i class="fa-solid fa-list-ol me-2" aria-hidden="true"></i> My Set Lists
@@ -702,23 +720,60 @@ if (!empty($breadcrumbItems)) {
                                     <i class="fa-solid fa-arrows-rotate me-2" aria-hidden="true"></i> Sync Set Lists
                                 </button>
                             </li>
-                            <li id="header-user-settings-li" class="d-none">
-                                <a class="dropdown-item" href="/settings" data-navigate="settings">
-                                    <i class="fa-solid fa-gear me-2" aria-hidden="true"></i> Account Settings
-                                </a>
+
+                            <!-- ── Curator ── -->
+                            <li id="header-curator-divider" class="d-none"><hr class="dropdown-divider"></li>
+                            <li id="header-curator-header" class="d-none">
+                                <h6 class="dropdown-header">Curator</h6>
                             </li>
-                            <!-- Admin/Editor links (shown by JS based on role) -->
-                            <li id="header-user-admin-divider" class="d-none"><hr class="dropdown-divider"></li>
                             <li id="header-user-editor-li" class="d-none">
                                 <a class="dropdown-item" href="/manage/editor/">
                                     <i class="fa-solid fa-pen-to-square me-2" aria-hidden="true"></i> Song Editor
                                 </a>
                             </li>
-                            <li id="header-user-dashboard-li" class="d-none">
-                                <a class="dropdown-item" href="/manage/">
-                                    <i class="fa-solid fa-gauge-high me-2" aria-hidden="true"></i> Dashboard
+                            <li id="header-curator-requests-li" class="d-none">
+                                <a class="dropdown-item" href="/manage/requests">
+                                    <i class="fa-solid fa-inbox me-2" aria-hidden="true"></i> Song Requests
                                 </a>
                             </li>
+                            <li id="header-curator-revisions-li" class="d-none">
+                                <a class="dropdown-item" href="/manage/revisions">
+                                    <i class="fa-solid fa-clock-rotate-left me-2" aria-hidden="true"></i> Revisions Audit
+                                </a>
+                            </li>
+
+                            <!-- ── Administration ── -->
+                            <li id="header-admin-divider" class="d-none"><hr class="dropdown-divider"></li>
+                            <li id="header-admin-header" class="d-none">
+                                <h6 class="dropdown-header">Administration</h6>
+                            </li>
+                            <li id="header-user-dashboard-li" class="d-none">
+                                <a class="dropdown-item" href="/manage/">
+                                    <i class="fa-solid fa-gauge-high me-2" aria-hidden="true"></i> Admin Dashboard
+                                </a>
+                            </li>
+                            <li id="header-admin-users-li" class="d-none">
+                                <a class="dropdown-item" href="/manage/users">
+                                    <i class="fa-solid fa-users me-2" aria-hidden="true"></i> User Management
+                                </a>
+                            </li>
+                            <li id="header-admin-entitlements-li" class="d-none">
+                                <a class="dropdown-item" href="/manage/entitlements">
+                                    <i class="fa-solid fa-key me-2" aria-hidden="true"></i> Entitlements &amp; Gating
+                                </a>
+                            </li>
+                            <li id="header-admin-analytics-li" class="d-none">
+                                <a class="dropdown-item" href="/manage/analytics">
+                                    <i class="fa-solid fa-chart-line me-2" aria-hidden="true"></i> Analytics
+                                </a>
+                            </li>
+                            <li id="header-admin-db-li" class="d-none">
+                                <a class="dropdown-item" href="/manage/setup-database">
+                                    <i class="fa-solid fa-database me-2" aria-hidden="true"></i> Database Setup
+                                </a>
+                            </li>
+
+                            <!-- ── Sign out ── -->
                             <li id="header-user-divider2" class="d-none"><hr class="dropdown-divider"></li>
                             <li id="header-user-signout-li" class="d-none">
                                 <button class="dropdown-item" type="button" id="header-signout-btn">

@@ -136,6 +136,14 @@ export class Settings {
             const userEl = document.getElementById('auth-username-text');
             if (nameEl) nameEl.textContent = user?.display_name || user?.username || '';
             if (userEl) userEl.textContent = '@' + (user?.username || '');
+
+            /* Populate the profile edit form with current values. */
+            const profUsername = document.getElementById('profile-username');
+            const profDisplay  = document.getElementById('profile-display-name');
+            const profEmail    = document.getElementById('profile-email');
+            if (profUsername) profUsername.value = user?.username || '';
+            if (profDisplay)  profDisplay.value  = user?.display_name || '';
+            if (profEmail)    profEmail.value    = user?.email || '';
         }
     }
 
@@ -1254,5 +1262,66 @@ export class Settings {
             /* Refresh account section display */
             this._initAccountSection();
         });
+
+        /* Profile save — update display name + email */
+        const profileForm = document.getElementById('profile-form');
+        if (profileForm && !profileForm.dataset.bound) {
+            profileForm.dataset.bound = '1';
+            profileForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const displayName = document.getElementById('profile-display-name').value.trim();
+                const email       = document.getElementById('profile-email').value.trim();
+                const msg = document.getElementById('profile-msg');
+                const show = (text, kind) => {
+                    if (!msg) return;
+                    msg.className = 'alert py-2 small alert-' + kind;
+                    msg.textContent = text;
+                    msg.classList.remove('d-none');
+                };
+                const result = await auth.updateProfile({ displayName, email });
+                if (result.success) {
+                    show('Profile saved.', 'success');
+                } else {
+                    show(result.error || 'Could not save profile.', 'danger');
+                }
+            });
+        }
+
+        /* Change password */
+        const passwordForm = document.getElementById('password-form');
+        if (passwordForm && !passwordForm.dataset.bound) {
+            passwordForm.dataset.bound = '1';
+            passwordForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const cur  = document.getElementById('password-current').value;
+                const next = document.getElementById('password-new').value;
+                const conf = document.getElementById('password-confirm').value;
+                const msg  = document.getElementById('password-msg');
+                const show = (text, kind) => {
+                    if (!msg) return;
+                    msg.className = 'alert py-2 small alert-' + kind;
+                    msg.textContent = text;
+                    msg.classList.remove('d-none');
+                };
+                if (next.length < 8) {
+                    show('New password must be at least 8 characters.', 'danger');
+                    return;
+                }
+                if (next !== conf) {
+                    show('New password and confirmation do not match.', 'danger');
+                    return;
+                }
+                const result = await auth.changePassword({
+                    currentPassword: cur,
+                    newPassword: next,
+                });
+                if (result.success) {
+                    show('Password changed.', 'success');
+                    passwordForm.reset();
+                } else {
+                    show(result.error || 'Could not change password.', 'danger');
+                }
+            });
+        }
     }
 }

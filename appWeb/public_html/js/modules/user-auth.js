@@ -14,6 +14,7 @@
  */
 
 import { escapeHtml } from '../utils/html.js';
+import { userHasEntitlement } from './entitlements.js';
 
 /** @type {string} localStorage key for the auth token */
 const STORAGE_AUTH_TOKEN = 'ihymns_auth_token';
@@ -297,6 +298,66 @@ export class UserAuth {
         }
     }
 
+    /**
+     * Update the signed-in user's display name and email.
+     * @param {{ displayName: string, email: string }} fields
+     * @returns {Promise<{ success: boolean, user?: object, error?: string }>}
+     */
+    async updateProfile({ displayName, email }) {
+        if (!this.isLoggedIn()) return { success: false, error: 'Not signed in.' };
+        try {
+            const res = await fetch(`${this.app.config.apiUrl}?action=auth_update_profile`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    ...this.authHeaders(),
+                },
+                body: JSON.stringify({ display_name: displayName, email }),
+            });
+            const data = await res.json();
+            if (!res.ok) return { success: false, error: data.error || 'Could not save profile.' };
+
+            /* Update the cached user so the header + account card re-render
+               immediately with the new display name. */
+            if (data.user) {
+                localStorage.setItem(STORAGE_AUTH_USER, JSON.stringify(data.user));
+                this._broadcastAuthChanged();
+            }
+            return { success: true, user: data.user };
+        } catch {
+            return { success: false, error: 'Network error. Please try again.' };
+        }
+    }
+
+    /**
+     * Change the signed-in user's password.
+     * @param {{ currentPassword: string, newPassword: string }} fields
+     * @returns {Promise<{ success: boolean, error?: string }>}
+     */
+    async changePassword({ currentPassword, newPassword }) {
+        if (!this.isLoggedIn()) return { success: false, error: 'Not signed in.' };
+        try {
+            const res = await fetch(`${this.app.config.apiUrl}?action=auth_change_password`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    ...this.authHeaders(),
+                },
+                body: JSON.stringify({
+                    current_password: currentPassword,
+                    new_password: newPassword,
+                }),
+            });
+            const data = await res.json();
+            if (!res.ok) return { success: false, error: data.error || 'Could not change password.' };
+            return { success: true };
+        } catch {
+            return { success: false, error: 'Network error. Please try again.' };
+        }
+    }
+
     /* =====================================================================
      * HEADER USER MENU — Toggle logged-in / logged-out state
      * ===================================================================== */
@@ -345,27 +406,30 @@ export class UserAuth {
 
     /**
      * Update the header dropdown to reflect current auth state.
-     * Shows/hides appropriate menu items.
+     *
+     * Account section is visible to any signed-in user. Curator and
+     * Administration sections (each with a label header + divider)
+     * are toggled per-entitlement via userHasEntitlement(); the section
+     * label collapses with the items so a user with no curator/admin
+     * privileges sees a clean menu.
      */
     _updateHeaderState() {
         const loggedIn = this.isLoggedIn();
         const user = this.getUser();
+        const role = user?.role || null;
 
         /* Guest items (sign in / register) */
-        const guestIds = ['header-user-guest', 'header-user-register-li'];
-        /* Logged-in items */
-        const authIds = [
-            'header-user-name', 'header-user-role-li', 'header-user-divider',
-            'header-user-setlists-li', 'header-user-sync-li',
-            'header-user-settings-li', 'header-user-divider2', 'header-user-signout-li',
-        ];
-
-        guestIds.forEach(id => {
+        ['header-user-guest', 'header-user-register-li'].forEach(id => {
             const el = document.getElementById(id);
             if (el) el.classList.toggle('d-none', loggedIn);
         });
 
-        authIds.forEach(id => {
+        /* Always-on items for signed-in users (Account section) */
+        [
+            'header-user-name', 'header-user-role-li', 'header-user-divider',
+            'header-user-settings-li', 'header-user-setlists-li', 'header-user-sync-li',
+            'header-user-divider2', 'header-user-signout-li',
+        ].forEach(id => {
             const el = document.getElementById(id);
             if (el) el.classList.toggle('d-none', !loggedIn);
         });
@@ -378,18 +442,39 @@ export class UserAuth {
             if (roleEl) roleEl.textContent = this._roleLabel(user.role || 'user');
         }
 
-        /* Admin/Editor links — show based on role privilege */
-        const role = user?.role || 'user';
-        const roleLevel = { 'user': 1, 'editor': 2, 'admin': 3, 'global_admin': 4 }[role] || 0;
-        const isEditor = loggedIn && roleLevel >= 2;
-        const isAdmin  = loggedIn && roleLevel >= 3;
+        /* Per-entitlement items. Each entry: [elementId, entitlement-name].
+           When the user is signed out, every gated item is hidden. */
+        const entItems = {
+            curator: [
+                ['header-user-editor-li',         'edit_songs'],
+                ['header-curator-requests-li',    'review_song_requests'],
+                ['header-curator-revisions-li',   'verify_songs'],
+            ],
+            admin: [
+                ['header-user-dashboard-li',      'view_admin_dashboard'],
+                ['header-admin-users-li',         'view_users'],
+                ['header-admin-entitlements-li',  'manage_entitlements'],
+                ['header-admin-analytics-li',     'view_analytics'],
+                ['header-admin-db-li',            'run_db_install'],
+            ],
+        };
 
-        const editorEl = document.getElementById('header-user-editor-li');
-        const dashEl   = document.getElementById('header-user-dashboard-li');
-        const divEl    = document.getElementById('header-user-admin-divider');
-        if (editorEl) editorEl.classList.toggle('d-none', !isEditor);
-        if (dashEl)   dashEl.classList.toggle('d-none', !isAdmin);
-        if (divEl)    divEl.classList.toggle('d-none', !isEditor);
+        const applySection = (items, dividerId, headerId) => {
+            let anyVisible = false;
+            items.forEach(([id, ent]) => {
+                const visible = loggedIn && userHasEntitlement(ent, role);
+                const el = document.getElementById(id);
+                if (el) el.classList.toggle('d-none', !visible);
+                if (visible) anyVisible = true;
+            });
+            const dEl = document.getElementById(dividerId);
+            const hEl = document.getElementById(headerId);
+            if (dEl) dEl.classList.toggle('d-none', !anyVisible);
+            if (hEl) hEl.classList.toggle('d-none', !anyVisible);
+        };
+
+        applySection(entItems.curator, 'header-curator-divider', 'header-curator-header');
+        applySection(entItems.admin,   'header-admin-divider',   'header-admin-header');
 
         /* Update icon style */
         const icon = document.getElementById('header-user-icon');
