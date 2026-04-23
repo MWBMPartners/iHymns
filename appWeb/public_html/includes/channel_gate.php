@@ -62,6 +62,13 @@ function enforceChannelGate(?string $devStatus): void
         return; /* Production — never gated. */
     }
 
+    /* Bootstrap mode: the gate stays open until an admin explicitly
+       turns it on, so the first admin in can sign in and configure
+       role-based access without locking themselves out. */
+    if (!isChannelGateEnabled()) {
+        return;
+    }
+
     $entitlement = ($devStatus === 'Alpha') ? 'access_alpha' : 'access_beta';
     $role        = _channelGateCurrentRole();
 
@@ -70,25 +77,24 @@ function enforceChannelGate(?string $devStatus): void
     }
 
     /* Render the gate page and short-circuit index.php. */
-    _renderChannelGate($devStatus);
+    _renderChannelGate();
     exit;
 }
 
-function _renderChannelGate(string $channel): void
+function _renderChannelGate(): void
 {
     http_response_code(401);
     header('Content-Type: text/html; charset=UTF-8');
     header('Cache-Control: no-store');
     header('X-Robots-Tag: noindex, nofollow');
 
-    $label = htmlspecialchars($channel);
     ?>
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>iHymns <?= $label ?> — Early Access</title>
+    <title>iHymns — Sign in</title>
     <meta name="robots" content="noindex, nofollow">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="/css/app.css">
@@ -104,33 +110,14 @@ function _renderChannelGate(string $channel): void
             padding: 2rem;
             text-align: center;
         }
-        .gate-badge {
-            display: inline-block;
-            background: linear-gradient(135deg, var(--accent-start), var(--accent-end));
-            color: #fff;
-            font-weight: 700;
-            letter-spacing: 0.05em;
-            text-transform: uppercase;
-            font-size: 0.75rem;
-            padding: 0.2em 0.8em;
-            border-radius: 999px;
-        }
         h1 { font-size: 1.5rem; margin: 1rem 0 0.5rem; }
     </style>
 </head>
 <body>
     <div class="gate-card">
-        <span class="gate-badge"><?= $label ?> · Early Access</span>
-        <h1>iHymns <?= $label ?> is invite-only</h1>
+        <h1>Restricted access</h1>
         <p class="text-muted">
-            This build is a pre-release preview. Sign in with an account
-            that has <code><?= $channel === 'Alpha' ? 'access_alpha' : 'access_beta' ?></code>
-            privileges to continue.
-        </p>
-        <p class="text-muted small">
-            Don't have an account yet? You can sign up below, and an admin
-            can grant you early-access on the
-            <code>/manage/entitlements</code> page.
+            Please sign in to continue.
         </p>
         <div id="gate-msg" class="alert d-none py-2" role="alert"></div>
 

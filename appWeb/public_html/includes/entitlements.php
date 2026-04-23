@@ -172,6 +172,52 @@ function userHasEntitlement(string $entitlement, ?string $role): bool
 }
 
 /**
+ * Is invite-only channel gating currently enforced?
+ *
+ * Lives in tblAppSettings under `channel_gate_enabled`. Absent / "0" /
+ * empty → gate is open (bootstrap mode) so the first admin can sign in
+ * and configure role-based access without locking themselves out. An
+ * admin flips this on from /manage/entitlements once entitlements are
+ * set to taste.
+ */
+function isChannelGateEnabled(): bool
+{
+    if (!function_exists('getDb')) return false;
+    try {
+        $db = getDb();
+        $stmt = $db->prepare(
+            'SELECT SettingValue FROM tblAppSettings WHERE SettingKey = ?'
+        );
+        $stmt->execute(['channel_gate_enabled']);
+        $raw = (string)($stmt->fetchColumn() ?: '');
+        return $raw === '1';
+    } catch (\Throwable $_e) {
+        /* DB unreachable — fail open so admins can still sign in. */
+        return false;
+    }
+}
+
+/**
+ * Persist the gate-enabled flag. Called from /manage/entitlements.php.
+ */
+function setChannelGateEnabled(bool $enabled): bool
+{
+    if (!function_exists('getDb')) return false;
+    try {
+        $db = getDb();
+        $stmt = $db->prepare(
+            'INSERT INTO tblAppSettings (SettingKey, SettingValue)
+             VALUES (?, ?)
+             ON DUPLICATE KEY UPDATE SettingValue = VALUES(SettingValue)'
+        );
+        $stmt->execute(['channel_gate_enabled', $enabled ? '1' : '0']);
+        return true;
+    } catch (\Throwable $_e) {
+        return false;
+    }
+}
+
+/**
  * All entitlements a given role carries. Useful for export to the
  * client (so the UI can hide/show controls without having to ship the
  * entire role→entitlement map).

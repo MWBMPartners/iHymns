@@ -58,7 +58,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    if (saveEntitlementOverrides($newMap)) {
+    $gateEnabled = !empty($_POST['channel_gate_enabled']);
+
+    if (saveEntitlementOverrides($newMap) && setChannelGateEnabled($gateEnabled)) {
         $saved = true;
     } else {
         $error = 'Could not save — database write failed.';
@@ -136,6 +138,29 @@ foreach (ENTITLEMENTS as $n => $_) {
 
     <form method="post" action="">
         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(csrfToken()) ?>">
+
+        <div class="card-admin p-3 mb-3">
+            <h2 class="h6 mb-2">Invite-only gating</h2>
+            <div class="form-check form-switch">
+                <input type="checkbox"
+                       class="form-check-input"
+                       id="channel_gate_enabled"
+                       name="channel_gate_enabled"
+                       value="1"
+                       <?= isChannelGateEnabled() ? 'checked' : '' ?>>
+                <label class="form-check-label" for="channel_gate_enabled">
+                    Enforce invite-only access on alpha / beta channels
+                </label>
+            </div>
+            <p class="text-secondary small mb-0 mt-2">
+                Off = anyone can reach the site (bootstrap / setup mode).
+                On = only users whose role carries the channel-access
+                entitlement below may enter. Leave off until you've set
+                the role mapping to your liking, otherwise you'll lock
+                yourself out.
+            </p>
+        </div>
+
         <?php foreach ($grouped as $groupName => $ents): ?>
             <div class="card-admin p-3 mb-3">
                 <h2 class="h6 mb-3"><?= htmlspecialchars($groupName) ?></h2>
