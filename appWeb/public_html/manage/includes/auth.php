@@ -361,13 +361,15 @@ function updateUserRole(int $userId, string $newRole, array $actingUser): bool
     }
 
     $db = getDb();
-    $stmt = $db->prepare('SELECT Id, Role FROM tblUsers WHERE Id = ?');
+    /* $actingUser comes from getCurrentUser() which is lowercase-
+       aliased; match that shape when reading role. */
+    $stmt = $db->prepare('SELECT Role AS role FROM tblUsers WHERE Id = ?');
     $stmt->execute([$userId]);
     $target = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$target) throw new \RuntimeException('User not found.');
 
-    $actingLevel = roleLevel($actingUser['Role']);
-    $targetLevel = roleLevel($target['Role']);
+    $actingLevel = roleLevel($actingUser['role']);
+    $targetLevel = roleLevel($target['role']);
     $newLevel    = roleLevel($newRole);
 
     /* Cannot promote above your own level */
@@ -376,12 +378,12 @@ function updateUserRole(int $userId, string $newRole, array $actingUser): bool
     }
 
     /* Cannot demote someone at or above your level (unless you are global_admin) */
-    if ($targetLevel >= $actingLevel && $actingUser['Role'] !== 'global_admin') {
+    if ($targetLevel >= $actingLevel && $actingUser['role'] !== 'global_admin') {
         throw new \RuntimeException('Cannot modify a user at or above your role level.');
     }
 
     /* Only global_admin can assign global_admin */
-    if ($newRole === 'global_admin' && $actingUser['Role'] !== 'global_admin') {
+    if ($newRole === 'global_admin' && $actingUser['role'] !== 'global_admin') {
         throw new \RuntimeException('Only Global Admin can assign Global Admin role.');
     }
 
@@ -634,8 +636,19 @@ function deleteUser(int $userId): bool
 function getUserById(int $userId): ?array
 {
     $db = getDb();
+    /* Aliased to lowercase keys so callers in manage/users.php can read
+       $target['role'] / ['username'] / ['is_active'] consistently with
+       getCurrentUser() and the main user listing query. */
     $stmt = $db->prepare(
-        'SELECT Id, Username, DisplayName, Email, Role, GroupId, IsActive, CreatedAt, UpdatedAt
+        'SELECT Id AS id,
+                Username AS username,
+                DisplayName AS display_name,
+                Email AS email,
+                Role AS role,
+                GroupId AS group_id,
+                IsActive AS is_active,
+                CreatedAt AS created_at,
+                UpdatedAt AS updated_at
          FROM tblUsers WHERE Id = ?'
     );
     $stmt->execute([$userId]);

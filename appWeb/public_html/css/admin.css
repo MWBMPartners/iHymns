@@ -47,6 +47,18 @@ a:not(.btn):not(.nav-link):not(.dropdown-item):hover {
     box-shadow: var(--card-shadow);
 }
 
+/* Admin footer — static variant of the main app's .footer-info strip.
+   Admin pages don't have the fixed bottom tab-bar so this just sits at
+   the natural end of the document with a light separator + breathing
+   room above. */
+.admin-footer-static {
+    margin-top: 2rem;
+    padding-top: 0.75rem;
+    padding-bottom: 0.75rem;
+    border-top: 1px solid var(--card-border);
+    min-height: auto;
+}
+
 .navbar-admin .navbar-brand,
 .navbar-editor .navbar-brand {
     background: linear-gradient(135deg, var(--accent-start), var(--accent-end));

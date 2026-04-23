@@ -324,5 +324,7 @@ $csrf = csrfToken();
         </div>
 
     </div>
+
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>
 </html>

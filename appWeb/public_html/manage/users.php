@@ -551,5 +551,6 @@ function canManage(array $target, array $actor): bool {
             setTimeout(() => { input.focus(); input.select(); }, 200);
         }
     </script>
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>
 </html>
