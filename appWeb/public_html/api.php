@@ -1801,6 +1801,78 @@ if ($action !== null) {
             sendJson(['ok' => true, 'message' => 'Password changed successfully.']);
             break;
 
+        /* -----------------------------------------------------------------
+         * Change authenticated user's username (self-service)
+         *
+         * POST body (JSON):
+         *   { "new_username": "...", "current_password": "..." }
+         * Requires: Authorization: Bearer <token> + correct current password.
+         * Validation mirrors auth_register: lowercase, [a-z0-9_.\-], 3–100 chars.
+         * Username is UNIQUE; a 409 is returned if taken.
+         * ----------------------------------------------------------------- */
+        case 'auth_change_username':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            $newUsername = mb_strtolower(trim($body['new_username'] ?? ''));
+            $currentPw   = $body['current_password'] ?? '';
+
+            if (strlen($newUsername) < 3
+                || strlen($newUsername) > 100
+                || !preg_match('/^[a-z0-9_.\-]+$/', $newUsername)) {
+                sendJson(['error' => 'Username must be 3–100 characters (letters, numbers, _, -, . only).'], 400);
+                break;
+            }
+            if ($newUsername === mb_strtolower($authUser['Username'])) {
+                sendJson(['error' => 'New username matches your current username.'], 400);
+                break;
+            }
+
+            $db = getDb();
+
+            /* Verify current password before allowing rename */
+            $stmt = $db->prepare('SELECT PasswordHash, Email, DisplayName FROM tblUsers WHERE Id = ?');
+            $stmt->execute([$authUser['Id']]);
+            $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+            if (!$row || !password_verify($currentPw, $row['PasswordHash'])) {
+                sendJson(['error' => 'Current password is incorrect.'], 401);
+                break;
+            }
+
+            /* Uniqueness check (case-insensitive via lowercased compare) */
+            $stmt = $db->prepare('SELECT Id FROM tblUsers WHERE Username = ? AND Id <> ?');
+            $stmt->execute([$newUsername, $authUser['Id']]);
+            if ($stmt->fetch()) {
+                sendJson(['error' => 'Username is already taken.'], 409);
+                break;
+            }
+
+            $stmt = $db->prepare('UPDATE tblUsers SET Username = ?, UpdatedAt = NOW() WHERE Id = ?');
+            $stmt->execute([$newUsername, $authUser['Id']]);
+
+            sendJson([
+                'ok'   => true,
+                'user' => [
+                    'id'           => $authUser['Id'],
+                    'username'     => $newUsername,
+                    'display_name' => $row['DisplayName'],
+                    'email'        => $row['Email'] ?? '',
+                    'role'         => $authUser['Role'],
+                ],
+            ]);
+            break;
+
         /* =================================================================
          * ADMIN USER MANAGEMENT — API endpoints for /manage/ panel
          * Requires: admin+ role via Bearer token

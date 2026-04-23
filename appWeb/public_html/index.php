@@ -592,6 +592,13 @@ if (!empty($breadcrumbItems)) {
                         <li><a class="dropdown-item" href="/setlist" data-navigate="setlist">
                             <i class="fa-solid fa-list-ol me-2" aria-hidden="true"></i> Set Lists
                         </a></li>
+                        <!-- Song Editor — visible to users with the edit_songs
+                             entitlement (toggled by user-auth.js). -->
+                        <li id="nav-app-editor-li" class="d-none">
+                            <a class="dropdown-item" href="/manage/editor/">
+                                <i class="fa-solid fa-pen-to-square me-2" aria-hidden="true"></i> Song Editor
+                            </a>
+                        </li>
                         <li><hr class="dropdown-divider"></li>
                         <li><a class="dropdown-item" href="/stats" data-navigate="stats">
                             <i class="fa-solid fa-chart-simple me-2" aria-hidden="true"></i> Statistics
@@ -696,17 +703,21 @@ if (!empty($breadcrumbItems)) {
                                                  manage_entitlements / view_analytics /
                                                  run_db_install / run_db_migrate
                                  ============================================ -->
+                            <!-- Display name + role are clickable shortcuts that
+                                 deep-link to the Account & Profile tab on /settings. -->
                             <li id="header-user-name" class="d-none">
-                                <span class="dropdown-item-text fw-semibold" id="header-user-display-name"></span>
+                                <a class="dropdown-item fw-semibold" href="/settings#tab-profile"
+                                   data-navigate="settings" id="header-user-display-name"></a>
                             </li>
                             <li id="header-user-role-li" class="d-none">
-                                <span class="dropdown-item-text small text-muted" id="header-user-role-text"></span>
+                                <a class="dropdown-item small text-muted py-1" href="/settings#tab-profile"
+                                   data-navigate="settings" id="header-user-role-text"></a>
                             </li>
 
                             <!-- ── Account ── -->
                             <li id="header-user-divider" class="d-none"><hr class="dropdown-divider"></li>
                             <li id="header-user-settings-li" class="d-none">
-                                <a class="dropdown-item" href="/settings" data-navigate="settings">
+                                <a class="dropdown-item" href="/settings#tab-profile" data-navigate="settings">
                                     <i class="fa-solid fa-gear me-2" aria-hidden="true"></i> Settings
                                 </a>
                             </li>

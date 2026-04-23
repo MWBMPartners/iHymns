@@ -129,6 +129,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 break;
 
+            /* ----- Rename (username change) ----- */
+            case 'rename_user':
+                $targetId    = (int)($_POST['user_id'] ?? 0);
+                $newUsername = trim($_POST['new_username'] ?? '');
+                $target      = getUserById($targetId);
+                if (!$target) {
+                    $error = 'User not found.';
+                } elseif (roleLevel($target['role']) >= roleLevel($currentUser['role']) && $currentUser['role'] !== 'global_admin' && $targetId !== $currentUser['id']) {
+                    $error = 'Cannot rename a user at or above your role level.';
+                } else {
+                    $renameError = null;
+                    if (renameUser($targetId, $newUsername, $renameError)) {
+                        $success = 'User "' . htmlspecialchars($target['username'])
+                                 . '" renamed to "' . htmlspecialchars(mb_strtolower(trim($newUsername))) . '".';
+                    } else {
+                        $error = $renameError ?? 'Could not rename user.';
+                    }
+                }
+                break;
+
             /* ----- Delete user ----- */
             case 'delete':
                 $targetId = (int)($_POST['user_id'] ?? 0);
@@ -253,6 +273,11 @@ function canManage(array $target, array $actor): bool {
                                     <button class="btn btn-outline-info" title="Edit profile"
                                             onclick="openEditModal(<?= (int)$u['id'] ?>, '<?= htmlspecialchars($u['display_name'], ENT_QUOTES) ?>', '<?= htmlspecialchars($u['email'] ?? '', ENT_QUOTES) ?>')">
                                         <i class="bi bi-pencil"></i>
+                                    </button>
+                                    <!-- Rename (change username) -->
+                                    <button class="btn btn-outline-info" title="Rename user"
+                                            onclick="openRenameModal(<?= (int)$u['id'] ?>, '<?= htmlspecialchars($u['username'], ENT_QUOTES) ?>')">
+                                        <i class="bi bi-at"></i>
                                     </button>
                                     <!-- Change Role (not for self) -->
                                     <?php if (!$isSelf): ?>
@@ -418,6 +443,45 @@ function canManage(array $target, array $actor): bool {
         </div>
     </div>
 
+    <!-- Rename User Modal -->
+    <div class="modal fade" id="renameModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
+                <form method="POST">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="rename_user">
+                    <input type="hidden" name="user_id" id="rename-user-id">
+                    <div class="modal-header" style="border-color: var(--ih-border);">
+                        <h5 class="modal-title"><i class="bi bi-at me-2"></i>Rename — <span id="rename-current-username"></span></h5>
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="mb-3">
+                            <label class="form-label">New username</label>
+                            <input type="text" class="form-control" name="new_username" id="rename-new-username"
+                                   minlength="3" maxlength="100" pattern="[a-z0-9_.\-]+"
+                                   autocomplete="off" autocapitalize="none" spellcheck="false" required>
+                            <div class="form-text" style="color: var(--ih-text-muted);">
+                                Lowercase letters, numbers, dots, dashes and underscores only. 3–100 characters.
+                                Usernames must be unique.
+                            </div>
+                        </div>
+                        <div class="alert alert-info py-2 small mb-0">
+                            <i class="bi bi-info-circle me-1"></i>
+                            Existing tokens, setlists, favourites and revisions stay tied to the
+                            user. Old login attempts logged under the previous username remain in
+                            the audit history.
+                        </div>
+                    </div>
+                    <div class="modal-footer" style="border-color: var(--ih-border);">
+                        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-amber">Rename</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
     <!-- Reset Password Modal -->
     <div class="modal fade" id="passwordModal" tabindex="-1">
         <div class="modal-dialog">
@@ -475,6 +539,16 @@ function canManage(array $target, array $actor): bool {
             document.getElementById('pw-user-id').value = userId;
             document.getElementById('pw-username').textContent = username;
             new bootstrap.Modal(document.getElementById('passwordModal')).show();
+        }
+
+        /* Open Rename modal */
+        function openRenameModal(userId, currentUsername) {
+            document.getElementById('rename-user-id').value = userId;
+            document.getElementById('rename-current-username').textContent = currentUsername;
+            const input = document.getElementById('rename-new-username');
+            input.value = currentUsername;
+            new bootstrap.Modal(document.getElementById('renameModal')).show();
+            setTimeout(() => { input.focus(); input.select(); }, 200);
         }
     </script>
 </body>

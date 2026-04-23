@@ -385,6 +385,13 @@ export class Settings {
         /* Account section — user auth buttons */
         this._initAccountSection();
 
+        /* Tab activation:
+             • #tab-profile or #tab-app in the URL → that tab wins
+             • otherwise → Profile if signed in, App if signed out
+           The static markup defaults to App active, so we only need to
+           switch when one of the above conditions wants Profile. */
+        this._activateInitialSettingsTab();
+
         /* Theme buttons */
         document.querySelectorAll('[data-setting-theme]').forEach(btn => {
             const theme = btn.dataset.settingTheme;
@@ -1227,6 +1234,44 @@ export class Settings {
      * ===================================================================== */
 
     /**
+     * Pick which tab is active on a fresh load of the settings page.
+     * Hash wins; otherwise Profile when signed in, App otherwise.
+     */
+    _activateInitialSettingsTab() {
+        const profileBtn = document.getElementById('tab-profile-btn');
+        const appBtn     = document.getElementById('tab-app-btn');
+        if (!profileBtn || !appBtn) return;
+
+        const hash = (window.location.hash || '').toLowerCase();
+        let target = null;
+        if (hash === '#tab-profile') target = profileBtn;
+        else if (hash === '#tab-app') target = appBtn;
+        else if (this.app.userAuth?.isLoggedIn?.()) target = profileBtn;
+
+        if (!target) return; /* leave default (App) active */
+
+        /* Use Bootstrap's Tab API if available; fall back to manual class
+           toggling so the page still renders correctly without bootstrap.bundle. */
+        const Bs = window.bootstrap;
+        if (Bs?.Tab) {
+            Bs.Tab.getOrCreateInstance(target).show();
+            return;
+        }
+        document.querySelectorAll('#settings-tabs .nav-link').forEach(b => {
+            b.classList.remove('active');
+            b.setAttribute('aria-selected', 'false');
+        });
+        document.querySelectorAll('.tab-content > .tab-pane').forEach(p => {
+            p.classList.remove('active', 'show');
+        });
+        target.classList.add('active');
+        target.setAttribute('aria-selected', 'true');
+        const paneId = target.dataset.bsTarget?.replace('#', '');
+        const pane = paneId && document.getElementById(paneId);
+        pane?.classList.add('active', 'show');
+    }
+
+    /**
      * Initialise the account section in settings.
      * Shows logged-in or logged-out state and binds button handlers.
      */
@@ -1283,6 +1328,37 @@ export class Settings {
                     show('Profile saved.', 'success');
                 } else {
                     show(result.error || 'Could not save profile.', 'danger');
+                }
+            });
+        }
+
+        /* Change username — separate form, requires current password */
+        const usernameForm = document.getElementById('username-form');
+        if (usernameForm && !usernameForm.dataset.bound) {
+            usernameForm.dataset.bound = '1';
+            usernameForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const newUsername     = document.getElementById('username-new').value.trim().toLowerCase();
+                const currentPassword = document.getElementById('username-current-password').value;
+                const msg = document.getElementById('username-msg');
+                const show = (text, kind) => {
+                    if (!msg) return;
+                    msg.className = 'alert py-2 small alert-' + kind;
+                    msg.textContent = text;
+                    msg.classList.remove('d-none');
+                };
+                if (!/^[a-z0-9_.\-]{3,100}$/.test(newUsername)) {
+                    show('Username must be 3–100 characters (letters, numbers, _, -, . only).', 'danger');
+                    return;
+                }
+                const result = await auth.changeUsername({ newUsername, currentPassword });
+                if (result.success) {
+                    show('Username changed.', 'success');
+                    document.getElementById('username-current-password').value = '';
+                    /* Re-populate the username field visible in the profile form */
+                    this.refreshAccountSection();
+                } else {
+                    show(result.error || 'Could not change username.', 'danger');
                 }
             });
         }

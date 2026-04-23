@@ -331,6 +331,42 @@ export class UserAuth {
     }
 
     /**
+     * Change the signed-in user's username. Requires the current
+     * password as a confirmation step. Updates the cached user on
+     * success so the header re-renders the new handle.
+     *
+     * @param {{ newUsername: string, currentPassword: string }} fields
+     * @returns {Promise<{ success: boolean, user?: object, error?: string }>}
+     */
+    async changeUsername({ newUsername, currentPassword }) {
+        if (!this.isLoggedIn()) return { success: false, error: 'Not signed in.' };
+        try {
+            const res = await fetch(`${this.app.config.apiUrl}?action=auth_change_username`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    ...this.authHeaders(),
+                },
+                body: JSON.stringify({
+                    new_username: newUsername,
+                    current_password: currentPassword,
+                }),
+            });
+            const data = await res.json();
+            if (!res.ok) return { success: false, error: data.error || 'Could not change username.' };
+
+            if (data.user) {
+                localStorage.setItem(STORAGE_AUTH_USER, JSON.stringify(data.user));
+                this._broadcastAuthChanged();
+            }
+            return { success: true, user: data.user };
+        } catch {
+            return { success: false, error: 'Network error. Please try again.' };
+        }
+    }
+
+    /**
      * Change the signed-in user's password.
      * @param {{ currentPassword: string, newPassword: string }} fields
      * @returns {Promise<{ success: boolean, error?: string }>}
@@ -475,6 +511,14 @@ export class UserAuth {
 
         applySection(entItems.curator, 'header-curator-divider', 'header-curator-header');
         applySection(entItems.admin,   'header-admin-divider',   'header-admin-header');
+
+        /* Left "app name" dropdown also surfaces Song Editor for users
+           who hold edit_songs. Same entitlement check, separate element. */
+        const navEditor = document.getElementById('nav-app-editor-li');
+        if (navEditor) {
+            const canEdit = loggedIn && userHasEntitlement('edit_songs', role);
+            navEditor.classList.toggle('d-none', !canEdit);
+        }
 
         /* Update icon style */
         const icon = document.getElementById('header-user-icon');
