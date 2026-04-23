@@ -110,6 +110,7 @@ foreach (ENTITLEMENTS as $n => $_) {
         .ent-grid td.role-col { text-align: center; }
         .ent-name { font-family: 'Menlo','Consolas',monospace; font-size: 0.85em; }
     </style>
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
 <body>
 

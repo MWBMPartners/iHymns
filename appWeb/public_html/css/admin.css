@@ -47,16 +47,31 @@ a:not(.btn):not(.nav-link):not(.dropdown-item):hover {
     box-shadow: var(--card-shadow);
 }
 
-/* Admin footer — static variant of the main app's .footer-info strip.
-   Admin pages don't have the fixed bottom tab-bar so this just sits at
-   the natural end of the document with a light separator + breathing
-   room above. */
+/* Admin footer — fixed to the bottom of the viewport, mirroring the
+   main app's .app-footer treatment minus the tab-nav. Shares the same
+   blur / shadow / border tokens so both surfaces feel identical. */
 .admin-footer-static {
-    margin-top: 2rem;
-    padding-top: 0.75rem;
-    padding-bottom: 0.75rem;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 1030;
+    padding-top: 0.4rem;
+    padding-bottom: 0.4rem;
+    background: var(--footer-bg);
+    backdrop-filter: blur(16px) saturate(180%);
+    -webkit-backdrop-filter: blur(16px) saturate(180%);
+    box-shadow: var(--footer-shadow);
     border-top: 1px solid var(--card-border);
     min-height: auto;
+}
+
+/* Every admin page loads admin.css, so reserve space under the final
+   row of content so it's never obscured by the fixed footer. Uses the
+   shared --footer-info-height token (28 px normal / 40 px small
+   viewports per app.css media queries). */
+body {
+    padding-bottom: calc(var(--footer-info-height) + 1rem);
 }
 
 .navbar-admin .navbar-brand,
