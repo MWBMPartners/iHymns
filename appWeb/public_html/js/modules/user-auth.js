@@ -297,6 +297,66 @@ export class UserAuth {
         }
     }
 
+    /**
+     * Update the signed-in user's display name and email.
+     * @param {{ displayName: string, email: string }} fields
+     * @returns {Promise<{ success: boolean, user?: object, error?: string }>}
+     */
+    async updateProfile({ displayName, email }) {
+        if (!this.isLoggedIn()) return { success: false, error: 'Not signed in.' };
+        try {
+            const res = await fetch(`${this.app.config.apiUrl}?action=auth_update_profile`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    ...this.authHeaders(),
+                },
+                body: JSON.stringify({ display_name: displayName, email }),
+            });
+            const data = await res.json();
+            if (!res.ok) return { success: false, error: data.error || 'Could not save profile.' };
+
+            /* Update the cached user so the header + account card re-render
+               immediately with the new display name. */
+            if (data.user) {
+                localStorage.setItem(STORAGE_AUTH_USER, JSON.stringify(data.user));
+                this._broadcastAuthChanged();
+            }
+            return { success: true, user: data.user };
+        } catch {
+            return { success: false, error: 'Network error. Please try again.' };
+        }
+    }
+
+    /**
+     * Change the signed-in user's password.
+     * @param {{ currentPassword: string, newPassword: string }} fields
+     * @returns {Promise<{ success: boolean, error?: string }>}
+     */
+    async changePassword({ currentPassword, newPassword }) {
+        if (!this.isLoggedIn()) return { success: false, error: 'Not signed in.' };
+        try {
+            const res = await fetch(`${this.app.config.apiUrl}?action=auth_change_password`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    ...this.authHeaders(),
+                },
+                body: JSON.stringify({
+                    current_password: currentPassword,
+                    new_password: newPassword,
+                }),
+            });
+            const data = await res.json();
+            if (!res.ok) return { success: false, error: data.error || 'Could not change password.' };
+            return { success: true };
+        } catch {
+            return { success: false, error: 'Network error. Please try again.' };
+        }
+    }
+
     /* =====================================================================
      * HEADER USER MENU — Toggle logged-in / logged-out state
      * ===================================================================== */

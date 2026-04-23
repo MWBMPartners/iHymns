@@ -31,6 +31,37 @@ declare(strict_types=1);
     </h1>
 
     <!-- ============================================================
+         SETTINGS TABS — Profile (per-user) vs App (per-device)
+         ============================================================ -->
+    <ul class="nav nav-tabs mb-3" role="tablist" id="settings-tabs">
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="tab-profile-btn" type="button"
+                    role="tab" data-bs-toggle="tab"
+                    data-bs-target="#tab-profile" aria-controls="tab-profile"
+                    aria-selected="false">
+                <i class="fa-solid fa-user me-1" aria-hidden="true"></i>
+                Account &amp; Profile
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="tab-app-btn" type="button"
+                    role="tab" data-bs-toggle="tab"
+                    data-bs-target="#tab-app" aria-controls="tab-app"
+                    aria-selected="true">
+                <i class="fa-solid fa-sliders me-1" aria-hidden="true"></i>
+                App Settings
+            </button>
+        </li>
+    </ul>
+
+    <div class="tab-content">
+
+    <!-- ============================================================
+         TAB: ACCOUNT & PROFILE
+         ============================================================ -->
+    <div class="tab-pane fade" id="tab-profile" role="tabpanel" aria-labelledby="tab-profile-btn">
+
+    <!-- ============================================================
          ACCOUNT SECTION — User authentication for cross-device sync
          ============================================================ -->
     <div class="card card-settings mb-3">
@@ -67,13 +98,72 @@ declare(strict_types=1);
 
             <!-- Logged-in state -->
             <div id="auth-logged-in" class="d-none">
-                <div class="d-flex align-items-center justify-content-between mb-2">
+                <div class="d-flex align-items-center justify-content-between mb-3">
                     <div>
                         <strong id="auth-display-name-text"></strong>
                         <small class="text-muted d-block" id="auth-username-text"></small>
                     </div>
                     <span class="badge bg-success"><i class="fa-solid fa-check me-1" aria-hidden="true"></i>Signed In</span>
                 </div>
+
+                <!-- Profile edit form — display name + email -->
+                <form id="profile-form" class="mb-3" autocomplete="off">
+                    <div id="profile-msg" class="alert d-none py-2 small" role="alert"></div>
+
+                    <div class="mb-2">
+                        <label for="profile-username" class="form-label small mb-1">Username</label>
+                        <input type="text" id="profile-username" class="form-control" readonly
+                               aria-describedby="profile-username-help">
+                        <small id="profile-username-help" class="text-muted d-block mt-1">
+                            Usernames cannot be changed. Contact an administrator if you need a rename.
+                        </small>
+                    </div>
+
+                    <div class="mb-2">
+                        <label for="profile-display-name" class="form-label small mb-1">Display name</label>
+                        <input type="text" id="profile-display-name" class="form-control"
+                               maxlength="100" autocomplete="name">
+                    </div>
+
+                    <div class="mb-2">
+                        <label for="profile-email" class="form-label small mb-1">Email address</label>
+                        <input type="email" id="profile-email" class="form-control"
+                               maxlength="255" autocomplete="email">
+                    </div>
+
+                    <button type="submit" class="btn btn-primary btn-sm" id="profile-save-btn">
+                        <i class="fa-solid fa-floppy-disk me-1" aria-hidden="true"></i>
+                        Save profile
+                    </button>
+                </form>
+
+                <!-- Change password form -->
+                <form id="password-form" class="mb-3" autocomplete="off">
+                    <h3 class="h6 mb-2">Change password</h3>
+                    <div id="password-msg" class="alert d-none py-2 small" role="alert"></div>
+
+                    <div class="mb-2">
+                        <label for="password-current" class="form-label small mb-1">Current password</label>
+                        <input type="password" id="password-current" class="form-control"
+                               autocomplete="current-password">
+                    </div>
+                    <div class="mb-2">
+                        <label for="password-new" class="form-label small mb-1">New password</label>
+                        <input type="password" id="password-new" class="form-control"
+                               minlength="8" maxlength="128" autocomplete="new-password">
+                    </div>
+                    <div class="mb-2">
+                        <label for="password-confirm" class="form-label small mb-1">Confirm new password</label>
+                        <input type="password" id="password-confirm" class="form-control"
+                               minlength="8" maxlength="128" autocomplete="new-password">
+                    </div>
+
+                    <button type="submit" class="btn btn-outline-primary btn-sm" id="password-save-btn">
+                        <i class="fa-solid fa-key me-1" aria-hidden="true"></i>
+                        Change password
+                    </button>
+                </form>
+
                 <div class="d-flex gap-2">
                     <button type="button" class="btn btn-outline-primary btn-sm" id="btn-auth-sync">
                         <i class="fa-solid fa-arrows-rotate me-1" aria-hidden="true"></i>
@@ -113,6 +203,13 @@ declare(strict_types=1);
             </div>
         </div>
     </div>
+
+    </div> <!-- /tab-profile -->
+
+    <!-- ============================================================
+         TAB: APP SETTINGS
+         ============================================================ -->
+    <div class="tab-pane fade show active" id="tab-app" role="tabpanel" aria-labelledby="tab-app-btn">
 
     <!-- ============================================================
          APPEARANCE SECTION
@@ -599,5 +696,9 @@ declare(strict_types=1);
             </dl>
         </div>
     </div>
+
+    </div> <!-- /tab-app -->
+
+    </div> <!-- /tab-content -->
 
 </section>
