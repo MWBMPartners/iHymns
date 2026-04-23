@@ -207,7 +207,7 @@ function requireAdmin(): void
 {
     requireAuth();
     $user = getCurrentUser();
-    if ($user === null || !hasRole($user['Role'], 'admin')) {
+    if ($user === null || !hasRole($user['role'], 'admin')) {
         http_response_code(403);
         exit('Access denied. Admin role required.');
     }
@@ -220,7 +220,7 @@ function requireEditor(): void
 {
     requireAuth();
     $user = getCurrentUser();
-    if ($user === null || !hasRole($user['Role'], 'editor')) {
+    if ($user === null || !hasRole($user['role'], 'editor')) {
         http_response_code(403);
         exit('Access denied. Curator/Editor role required.');
     }
@@ -233,7 +233,7 @@ function requireGlobalAdmin(): void
 {
     requireAuth();
     $user = getCurrentUser();
-    if ($user === null || $user['Role'] !== 'global_admin') {
+    if ($user === null || $user['role'] !== 'global_admin') {
         http_response_code(403);
         exit('Access denied. Global Admin role required.');
     }
