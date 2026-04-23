@@ -41,7 +41,7 @@ if (!isAuthenticated()) {
 }
 
 $currentUser = getCurrentUser();
-if (!$currentUser || !hasRole($currentUser['Role'], 'editor')) {
+if (!$currentUser || !hasRole($currentUser['role'], 'editor')) {
     header('Content-Type: application/json; charset=UTF-8');
     http_response_code(403);
     echo json_encode(['error' => 'Editor access required.']);
@@ -609,7 +609,7 @@ switch ($action) {
 
             /* Insert mapping rows (ignore duplicates). */
             if (!empty($addIds) && !empty($songIds)) {
-                $userId = (int)($currentUser['Id'] ?? 0);
+                $userId = (int)($currentUser['id'] ?? 0);
                 $stmt = $db->prepare(
                     'INSERT IGNORE INTO tblSongTagMap (SongId, TagId, TaggedBy) VALUES (?, ?, ?)'
                 );
