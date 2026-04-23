@@ -326,6 +326,18 @@
     text-align: center;
 }
 
+/* User-account dropdown can grow tall once a curator / admin has
+   several entitlement-gated items visible, so cap its height to the
+   viewport and let the inner list scroll. Also applied to the left
+   app-name dropdown for the same reason. The 96px reserve covers the
+   header bar + a small breathing gap. */
+#header-user-dropdown .dropdown-menu,
+#logo-nav-btn + .dropdown-menu {
+    max-height: calc(100vh - 96px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
 /* ==========================================================================
    2. BASE / RESET STYLES
    ========================================================================== */
