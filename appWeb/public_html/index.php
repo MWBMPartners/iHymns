@@ -231,19 +231,17 @@ try {
     elseif (preg_match('#^/setlist/shared/([a-f0-9]+)$#', $requestPath, $matches)) {
         $pageType = 'other';
         $shareId = $matches[1];
-        $shareFile = APP_SETLIST_SHARE_DIR . '/' . $shareId . '.json';
-        if (file_exists($shareFile)) {
-            $shareData = json_decode(file_get_contents($shareFile), true);
-            if (is_array($shareData)) {
-                $setlistName = $shareData['name'] ?? 'Shared Set List';
-                $setlistSongCount = count($shareData['songs'] ?? []);
-                $ogTitle = htmlspecialchars($setlistName) . ' — Shared Set List — ' . $app["Application"]["Name"];
-                $ogDescription = 'A curated set list with ' . $setlistSongCount
-                               . ' ' . ($setlistSongCount === 1 ? 'song' : 'songs')
-                               . ' on ' . $app["Application"]["Name"];
-                $ogImage = getCanonicalUrl('/og-image?setlist=' . urlencode($shareId));
-                $ogImageAlt = 'Set list "' . $setlistName . '" on ' . $app["Application"]["Name"];
-            }
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';
+        $shareData = sharedSetlistGet($shareId);
+        if (is_array($shareData)) {
+            $setlistName = $shareData['name'] ?? 'Shared Set List';
+            $setlistSongCount = count($shareData['songs'] ?? []);
+            $ogTitle = htmlspecialchars($setlistName) . ' — Shared Set List — ' . $app["Application"]["Name"];
+            $ogDescription = 'A curated set list with ' . $setlistSongCount
+                           . ' ' . ($setlistSongCount === 1 ? 'song' : 'songs')
+                           . ' on ' . $app["Application"]["Name"];
+            $ogImage = getCanonicalUrl('/og-image?setlist=' . urlencode($shareId));
+            $ogImageAlt = 'Set list "' . $setlistName . '" on ' . $app["Application"]["Name"];
         }
 
         /* Breadcrumb: Home > Set Lists > Shared */
@@ -592,6 +590,13 @@ if (!empty($breadcrumbItems)) {
                         <li><a class="dropdown-item" href="/setlist" data-navigate="setlist">
                             <i class="fa-solid fa-list-ol me-2" aria-hidden="true"></i> Set Lists
                         </a></li>
+                        <!-- Song Editor — visible to users with the edit_songs
+                             entitlement (toggled by user-auth.js). -->
+                        <li id="nav-app-editor-li" class="d-none">
+                            <a class="dropdown-item" href="/manage/editor/">
+                                <i class="fa-solid fa-pen-to-square me-2" aria-hidden="true"></i> Song Editor
+                            </a>
+                        </li>
                         <li><hr class="dropdown-divider"></li>
                         <li><a class="dropdown-item" href="/stats" data-navigate="stats">
                             <i class="fa-solid fa-chart-simple me-2" aria-hidden="true"></i> Statistics
@@ -696,17 +701,21 @@ if (!empty($breadcrumbItems)) {
                                                  manage_entitlements / view_analytics /
                                                  run_db_install / run_db_migrate
                                  ============================================ -->
+                            <!-- Display name + role are clickable shortcuts that
+                                 deep-link to the Account & Profile tab on /settings. -->
                             <li id="header-user-name" class="d-none">
-                                <span class="dropdown-item-text fw-semibold" id="header-user-display-name"></span>
+                                <a class="dropdown-item fw-semibold" href="/settings#tab-profile"
+                                   data-navigate="settings" id="header-user-display-name"></a>
                             </li>
                             <li id="header-user-role-li" class="d-none">
-                                <span class="dropdown-item-text small text-muted" id="header-user-role-text"></span>
+                                <a class="dropdown-item small text-muted py-1" href="/settings#tab-profile"
+                                   data-navigate="settings" id="header-user-role-text"></a>
                             </li>
 
                             <!-- ── Account ── -->
                             <li id="header-user-divider" class="d-none"><hr class="dropdown-divider"></li>
                             <li id="header-user-settings-li" class="d-none">
-                                <a class="dropdown-item" href="/settings" data-navigate="settings">
+                                <a class="dropdown-item" href="/settings#tab-profile" data-navigate="settings">
                                     <i class="fa-solid fa-gear me-2" aria-hidden="true"></i> Settings
                                 </a>
                             </li>

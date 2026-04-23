@@ -112,11 +112,7 @@ declare(strict_types=1);
 
                     <div class="mb-2">
                         <label for="profile-username" class="form-label small mb-1">Username</label>
-                        <input type="text" id="profile-username" class="form-control" readonly
-                               aria-describedby="profile-username-help">
-                        <small id="profile-username-help" class="text-muted d-block mt-1">
-                            Usernames cannot be changed. Contact an administrator if you need a rename.
-                        </small>
+                        <input type="text" id="profile-username" class="form-control" readonly>
                     </div>
 
                     <div class="mb-2">
@@ -134,6 +130,36 @@ declare(strict_types=1);
                     <button type="submit" class="btn btn-primary btn-sm" id="profile-save-btn">
                         <i class="fa-solid fa-floppy-disk me-1" aria-hidden="true"></i>
                         Save profile
+                    </button>
+                </form>
+
+                <!-- Change username form — separate because it requires
+                     the current password and has its own validation rules. -->
+                <form id="username-form" class="mb-3" autocomplete="off">
+                    <h3 class="h6 mb-2">Change username</h3>
+                    <div id="username-msg" class="alert d-none py-2 small" role="alert"></div>
+
+                    <div class="mb-2">
+                        <label for="username-new" class="form-label small mb-1">New username</label>
+                        <input type="text" id="username-new" class="form-control"
+                               minlength="3" maxlength="100" pattern="[a-z0-9_.\-]+"
+                               autocapitalize="none" autocomplete="off" spellcheck="false">
+                        <small class="text-muted d-block mt-1">
+                            Lowercase letters, numbers, dots, dashes and underscores only.
+                            Must be unique.
+                        </small>
+                    </div>
+                    <div class="mb-2">
+                        <label for="username-current-password" class="form-label small mb-1">
+                            Confirm with current password
+                        </label>
+                        <input type="password" id="username-current-password" class="form-control"
+                               autocomplete="current-password">
+                    </div>
+
+                    <button type="submit" class="btn btn-outline-primary btn-sm" id="username-save-btn">
+                        <i class="fa-solid fa-at me-1" aria-hidden="true"></i>
+                        Change username
                     </button>
                 </form>
 
@@ -198,6 +224,24 @@ declare(strict_types=1);
                     <strong>Sync favourites across devices</strong>
                     <small class="form-text text-muted d-block">
                         When signed in, your favourites will be synced to the server.
+                    </small>
+                </label>
+            </div>
+
+            <div class="form-check form-switch mb-0">
+                <input class="form-check-input"
+                       type="checkbox"
+                       id="setting-sync-app-settings"
+                       role="switch"
+                       checked
+                       aria-label="Sync app settings across devices">
+                <label class="form-check-label" for="setting-sync-app-settings">
+                    <strong>Sync app settings across devices</strong>
+                    <small class="form-text text-muted d-block">
+                        When signed in, your theme, font size, accessibility and
+                        other UI preferences follow you to other devices.
+                        Device-specific settings (offline downloads, analytics
+                        consent) stay local.
                     </small>
                 </label>
             </div>

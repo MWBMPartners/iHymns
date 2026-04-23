@@ -540,6 +540,41 @@ function updateUserProfile(int $userId, string $displayName, string $email): boo
 }
 
 /**
+ * Rename a user (admin path — no password verification, since the
+ * caller has already been authorised by the surrounding admin check).
+ * Validation mirrors auth_register: lowercased, [a-z0-9_.\-], 3–100
+ * chars. Returns false on validation failure or uniqueness collision;
+ * caller should surface a friendly message.
+ *
+ * @param int    $userId      Target user ID
+ * @param string $newUsername Desired username
+ * @param string &$error      Set to a human-readable message on failure
+ * @return bool
+ */
+function renameUser(int $userId, string $newUsername, ?string &$error = null): bool
+{
+    $newUsername = mb_strtolower(trim($newUsername));
+    if (strlen($newUsername) < 3
+        || strlen($newUsername) > 100
+        || !preg_match('/^[a-z0-9_.\-]+$/', $newUsername)) {
+        $error = 'Username must be 3–100 characters (letters, numbers, _, -, . only).';
+        return false;
+    }
+
+    $db = getDb();
+    $stmt = $db->prepare('SELECT Id FROM tblUsers WHERE Username = ? AND Id <> ?');
+    $stmt->execute([$newUsername, $userId]);
+    if ($stmt->fetch()) {
+        $error = 'Username is already taken.';
+        return false;
+    }
+
+    $stmt = $db->prepare('UPDATE tblUsers SET Username = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
+    $stmt->execute([$newUsername, $userId]);
+    return true;
+}
+
+/**
  * Activate or deactivate a user account.
  *
  * @param int  $userId   Target user ID

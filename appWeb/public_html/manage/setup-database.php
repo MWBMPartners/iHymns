@@ -192,6 +192,7 @@ if ($action !== '') {
         'install'     => 'install.php',
         'migrate'     => 'migrate-json.php',
         'users'       => 'migrate-users.php',
+        'account-sync'=> 'migrate-account-sync.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -440,6 +441,22 @@ if ($hasCredentials && defined('DB_HOST')) {
                         </p>
                         <a href="?action=users" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run User Migration
+                        </a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">3a. Account Sync &amp; Shared Setlists</h5>
+                        <p class="card-text text-secondary small">
+                            Adds the <code>Settings</code> column to <code>tblUsers</code>
+                            (per-device prefs sync) and creates <code>tblSharedSetlists</code>,
+                            then imports any legacy share-link JSON files into the new table.
+                            Idempotent — safe to re-run.
+                        </p>
+                        <a href="?action=account-sync" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run Account Sync Migration
                         </a>
                     </div>
                 </div>
