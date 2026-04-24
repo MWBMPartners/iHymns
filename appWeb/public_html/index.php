@@ -598,85 +598,16 @@ if (!empty($breadcrumbItems)) {
                             <i class="fa-solid fa-circle-question me-2" aria-hidden="true"></i> Help
                         </a></li>
 
-                        <!-- ============================================
-                             Curator + Administration sections — moved out
-                             of the user/avatar menu because these relate to
-                             the app itself, not the logged-in person.
-                             Each section (divider + header + items) is
-                             toggled together by user-auth.js so users who
-                             lack every entitlement in a section see none of
-                             its markup.
-                             ============================================ -->
-
-                        <!-- ── Curator ── -->
-                        <li id="nav-curator-divider" class="d-none"><hr class="dropdown-divider"></li>
-                        <li id="nav-curator-header" class="d-none">
-                            <h6 class="dropdown-header" id="nav-curator-heading">Curator</h6>
-                        </li>
-                        <li id="nav-curator-editor-li" class="d-none">
-                            <a class="dropdown-item" href="/manage/editor/">
-                                <i class="fa-solid fa-pen-to-square me-2" aria-hidden="true"></i> Song Editor
-                            </a>
-                        </li>
-                        <li id="nav-curator-requests-li" class="d-none">
-                            <a class="dropdown-item" href="/manage/requests">
-                                <i class="fa-solid fa-inbox me-2" aria-hidden="true"></i> Song Requests
-                            </a>
-                        </li>
-                        <li id="nav-curator-revisions-li" class="d-none">
-                            <a class="dropdown-item" href="/manage/revisions">
-                                <i class="fa-solid fa-clock-rotate-left me-2" aria-hidden="true"></i> Revisions Audit
-                            </a>
-                        </li>
-
-                        <!-- ── Administration ── -->
-                        <li id="nav-admin-divider" class="d-none"><hr class="dropdown-divider"></li>
-                        <li id="nav-admin-header" class="d-none">
-                            <h6 class="dropdown-header" id="nav-admin-heading">Administration</h6>
-                        </li>
-                        <li id="nav-admin-dashboard-li" class="d-none">
+                        <!-- Single "Manage" entry — opens /manage/ which
+                             shows per-entitlement cards for every
+                             curator and administration surface. Visible
+                             to any signed-in user with at least one
+                             management entitlement (toggled by
+                             user-auth.js). -->
+                        <li id="nav-manage-divider" class="d-none"><hr class="dropdown-divider"></li>
+                        <li id="nav-manage-li" class="d-none">
                             <a class="dropdown-item" href="/manage/">
-                                <i class="fa-solid fa-gauge-high me-2" aria-hidden="true"></i> Admin Dashboard
-                            </a>
-                        </li>
-                        <li id="nav-admin-users-li" class="d-none">
-                            <a class="dropdown-item" href="/manage/users">
-                                <i class="fa-solid fa-users me-2" aria-hidden="true"></i> User Management
-                            </a>
-                        </li>
-                        <li id="nav-admin-groups-li" class="d-none">
-                            <a class="dropdown-item" href="/manage/groups">
-                                <i class="fa-solid fa-user-group me-2" aria-hidden="true"></i> User Groups
-                            </a>
-                        </li>
-                        <li id="nav-admin-organisations-li" class="d-none">
-                            <a class="dropdown-item" href="/manage/organisations">
-                                <i class="fa-solid fa-building me-2" aria-hidden="true"></i> Organisations
-                            </a>
-                        </li>
-                        <li id="nav-admin-songbooks-li" class="d-none">
-                            <a class="dropdown-item" href="/manage/songbooks">
-                                <i class="fa-solid fa-book-open me-2" aria-hidden="true"></i> Songbook Management
-                            </a>
-                        </li>
-                        <li id="nav-admin-entitlements-li" class="d-none">
-                            <a class="dropdown-item" href="/manage/entitlements">
-                                <i class="fa-solid fa-key me-2" aria-hidden="true"></i> Entitlements &amp; Gating
-                            </a>
-                        </li>
-                        <li id="nav-admin-analytics-li" class="d-none">
-                            <a class="dropdown-item" href="/manage/analytics">
-                                <i class="fa-solid fa-chart-line me-2" aria-hidden="true"></i> Analytics
-                            </a>
-                        </li>
-                        <li id="nav-admin-health-li" class="d-none">
-                            <a class="dropdown-item" href="/manage/data-health">
-                                <i class="fa-solid fa-heart-pulse me-2" aria-hidden="true"></i> Data Health
-                            </a>
-                        </li>
-                        <li id="nav-admin-db-li" class="d-none">
-                            <a class="dropdown-item" href="/manage/setup-database">
-                                <i class="fa-solid fa-database me-2" aria-hidden="true"></i> Database Setup
+                                <i class="fa-solid fa-gears me-2" aria-hidden="true"></i> Manage
                             </a>
                         </li>
                     </ul>

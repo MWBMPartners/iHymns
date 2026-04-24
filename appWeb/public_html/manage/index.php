@@ -13,9 +13,32 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
-requireEditor();
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
 
+/* Dashboard is now the single landing page for every management
+   surface, so admit any signed-in user who holds at least one
+   curator/admin entitlement. Each card below is individually
+   gated, so unauthorised users see a subset — or, if they hold
+   none, are bounced to /. */
+requireAuth();
 $currentUser = getCurrentUser();
+$_role = $currentUser['role'] ?? null;
+$_manageEntitlements = [
+    'edit_songs', 'review_song_requests', 'verify_songs',
+    'view_admin_dashboard', 'view_users', 'manage_user_groups',
+    'manage_organisations', 'manage_songbooks',
+    'manage_entitlements', 'view_analytics',
+    'run_db_install', 'drop_legacy_tables',
+];
+$_canManage = false;
+foreach ($_manageEntitlements as $_e) {
+    if (userHasEntitlement($_e, $_role)) { $_canManage = true; break; }
+}
+if (!$_canManage) {
+    http_response_code(403);
+    exit('Access denied. A management entitlement is required.');
+}
+
 $activePage  = 'dashboard';
 
 /* Gather stats — all queries updated for the v0.10 PascalCase schema
@@ -176,8 +199,12 @@ $csrf = csrfToken();
         </div>
         <?php endif; ?>
 
-        <!-- Quick Links -->
+        <!-- Quick Links — every card is gated by the same entitlement
+             that controls visibility of the corresponding menu item, so
+             the dashboard surfaces exactly the areas the user can act
+             on. Gate helper: userHasEntitlement($ent, $role). -->
         <div class="row g-3 mb-4">
+            <?php if (userHasEntitlement('edit_songs', $_role)): ?>
             <div class="col-md-4">
                 <div class="card-admin">
                     <a href="/manage/editor/" class="quick-link">
@@ -187,107 +214,8 @@ $csrf = csrfToken();
                     </a>
                 </div>
             </div>
-            <?php if (hasRole($currentUser['role'], 'admin')): ?>
-            <div class="col-md-4">
-                <div class="card-admin">
-                    <a href="/manage/users" class="quick-link">
-                        <i class="bi bi-people d-block mb-2"></i>
-                        <strong>User Management</strong>
-                        <div class="small text-muted">Manage accounts, roles, and permissions</div>
-                    </a>
-                </div>
-            </div>
             <?php endif; ?>
-            <?php if (hasRole($currentUser['role'], 'admin')): ?>
-            <div class="col-md-4">
-                <div class="card-admin">
-                    <a href="/manage/analytics" class="quick-link">
-                        <i class="bi bi-graph-up d-block mb-2"></i>
-                        <strong>Analytics</strong>
-                        <div class="small text-muted">Top songs, searches, and user activity</div>
-                    </a>
-                </div>
-            </div>
-            <div class="col-md-4">
-                <div class="card-admin">
-                    <a href="/manage/revisions" class="quick-link">
-                        <i class="bi bi-clock-history d-block mb-2"></i>
-                        <strong>Revisions</strong>
-                        <div class="small text-muted">Audit song edits; open any row in the editor to diff / restore</div>
-                    </a>
-                </div>
-            </div>
-            <?php endif; ?>
-            <?php
-                require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
-            ?>
-            <?php if (userHasEntitlement('view_admin_dashboard', $currentUser['role'] ?? null)): ?>
-            <div class="col-md-4">
-                <div class="card-admin">
-                    <a href="/manage/setup-database" class="quick-link">
-                        <i class="bi bi-database-gear d-block mb-2"></i>
-                        <strong>Database Setup</strong>
-                        <div class="small text-muted">Install, migrate, backup, restore, cleanup</div>
-                    </a>
-                </div>
-            </div>
-            <?php endif; ?>
-            <?php if (($currentUser['role'] ?? '') === 'global_admin'): ?>
-            <div class="col-md-4">
-                <div class="card-admin">
-                    <a href="/manage/data-health" class="quick-link">
-                        <i class="bi bi-activity d-block mb-2"></i>
-                        <strong>Data Health</strong>
-                        <div class="small text-muted">Confirm MySQL is authoritative; disconnect legacy fallbacks</div>
-                    </a>
-                </div>
-            </div>
-            <?php endif; ?>
-            <?php if (userHasEntitlement('manage_entitlements', $currentUser['role'] ?? null)): ?>
-            <div class="col-md-4">
-                <div class="card-admin">
-                    <a href="/manage/entitlements" class="quick-link">
-                        <i class="bi bi-key d-block mb-2"></i>
-                        <strong>Entitlements</strong>
-                        <div class="small text-muted">Assign capabilities to roles</div>
-                    </a>
-                </div>
-            </div>
-            <?php endif; ?>
-            <?php if (userHasEntitlement('manage_songbooks', $currentUser['role'] ?? null)): ?>
-            <div class="col-md-4">
-                <div class="card-admin">
-                    <a href="/manage/songbooks" class="quick-link">
-                        <i class="bi bi-book d-block mb-2"></i>
-                        <strong>Songbooks</strong>
-                        <div class="small text-muted">Create, rename, reorder the songbook catalogue</div>
-                    </a>
-                </div>
-            </div>
-            <?php endif; ?>
-            <?php if (userHasEntitlement('manage_user_groups', $currentUser['role'] ?? null)): ?>
-            <div class="col-md-4">
-                <div class="card-admin">
-                    <a href="/manage/groups" class="quick-link">
-                        <i class="bi bi-people-fill d-block mb-2"></i>
-                        <strong>User Groups</strong>
-                        <div class="small text-muted">Group users for shared access settings</div>
-                    </a>
-                </div>
-            </div>
-            <?php endif; ?>
-            <?php if (userHasEntitlement('manage_organisations', $currentUser['role'] ?? null)): ?>
-            <div class="col-md-4">
-                <div class="card-admin">
-                    <a href="/manage/organisations" class="quick-link">
-                        <i class="bi bi-building d-block mb-2"></i>
-                        <strong>Organisations</strong>
-                        <div class="small text-muted">Manage organisations &amp; their members</div>
-                    </a>
-                </div>
-            </div>
-            <?php endif; ?>
-            <?php if (userHasEntitlement('review_song_requests', $currentUser['role'] ?? null)): ?>
+            <?php if (userHasEntitlement('review_song_requests', $_role)): ?>
             <div class="col-md-4">
                 <div class="card-admin">
                     <a href="/manage/requests" class="quick-link">
@@ -300,9 +228,108 @@ $csrf = csrfToken();
                 </div>
             </div>
             <?php endif; ?>
+            <?php if (userHasEntitlement('verify_songs', $_role)): ?>
             <div class="col-md-4">
                 <div class="card-admin">
-                    <a href="/" class="quick-link" target="_blank">
+                    <a href="/manage/revisions" class="quick-link">
+                        <i class="bi bi-clock-history d-block mb-2"></i>
+                        <strong>Revisions Audit</strong>
+                        <div class="small text-muted">Audit song edits; open any row in the editor to diff / restore</div>
+                    </a>
+                </div>
+            </div>
+            <?php endif; ?>
+            <?php if (userHasEntitlement('view_users', $_role)): ?>
+            <div class="col-md-4">
+                <div class="card-admin">
+                    <a href="/manage/users" class="quick-link">
+                        <i class="bi bi-people d-block mb-2"></i>
+                        <strong>User Management</strong>
+                        <div class="small text-muted">Manage accounts, roles, and permissions</div>
+                    </a>
+                </div>
+            </div>
+            <?php endif; ?>
+            <?php if (userHasEntitlement('manage_user_groups', $_role)): ?>
+            <div class="col-md-4">
+                <div class="card-admin">
+                    <a href="/manage/groups" class="quick-link">
+                        <i class="bi bi-people-fill d-block mb-2"></i>
+                        <strong>User Groups</strong>
+                        <div class="small text-muted">Group users for shared access settings</div>
+                    </a>
+                </div>
+            </div>
+            <?php endif; ?>
+            <?php if (userHasEntitlement('manage_organisations', $_role)): ?>
+            <div class="col-md-4">
+                <div class="card-admin">
+                    <a href="/manage/organisations" class="quick-link">
+                        <i class="bi bi-building d-block mb-2"></i>
+                        <strong>Organisations</strong>
+                        <div class="small text-muted">Manage organisations &amp; their members</div>
+                    </a>
+                </div>
+            </div>
+            <?php endif; ?>
+            <?php if (userHasEntitlement('manage_songbooks', $_role)): ?>
+            <div class="col-md-4">
+                <div class="card-admin">
+                    <a href="/manage/songbooks" class="quick-link">
+                        <i class="bi bi-book d-block mb-2"></i>
+                        <strong>Songbook Management</strong>
+                        <div class="small text-muted">Create, rename, reorder the songbook catalogue</div>
+                    </a>
+                </div>
+            </div>
+            <?php endif; ?>
+            <?php if (userHasEntitlement('manage_entitlements', $_role)): ?>
+            <div class="col-md-4">
+                <div class="card-admin">
+                    <a href="/manage/entitlements" class="quick-link">
+                        <i class="bi bi-key d-block mb-2"></i>
+                        <strong>Entitlements &amp; Gating</strong>
+                        <div class="small text-muted">Assign capabilities to roles</div>
+                    </a>
+                </div>
+            </div>
+            <?php endif; ?>
+            <?php if (userHasEntitlement('view_analytics', $_role)): ?>
+            <div class="col-md-4">
+                <div class="card-admin">
+                    <a href="/manage/analytics" class="quick-link">
+                        <i class="bi bi-graph-up d-block mb-2"></i>
+                        <strong>Analytics</strong>
+                        <div class="small text-muted">Top songs, searches, and user activity</div>
+                    </a>
+                </div>
+            </div>
+            <?php endif; ?>
+            <?php if (userHasEntitlement('drop_legacy_tables', $_role)): ?>
+            <div class="col-md-4">
+                <div class="card-admin">
+                    <a href="/manage/data-health" class="quick-link">
+                        <i class="bi bi-activity d-block mb-2"></i>
+                        <strong>Data Health</strong>
+                        <div class="small text-muted">Confirm MySQL is authoritative; disconnect legacy fallbacks</div>
+                    </a>
+                </div>
+            </div>
+            <?php endif; ?>
+            <?php if (userHasEntitlement('run_db_install', $_role)): ?>
+            <div class="col-md-4">
+                <div class="card-admin">
+                    <a href="/manage/setup-database" class="quick-link">
+                        <i class="bi bi-database-gear d-block mb-2"></i>
+                        <strong>Database Setup</strong>
+                        <div class="small text-muted">Install, migrate, backup, restore, cleanup</div>
+                    </a>
+                </div>
+            </div>
+            <?php endif; ?>
+            <div class="col-md-4">
+                <div class="card-admin">
+                    <a href="/" class="quick-link" target="_blank" rel="noopener">
                         <i class="bi bi-globe d-block mb-2"></i>
                         <strong>View Website</strong>
                         <div class="small text-muted">Open iHymns in a new tab</div>

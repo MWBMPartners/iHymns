@@ -477,43 +477,24 @@ export class UserAuth {
             if (roleEl) roleEl.textContent = this._roleLabel(user.role || 'user');
         }
 
-        /* Per-entitlement items on the iHymns (logo) dropdown.
-           Each entry: [elementId, entitlement-name]. Signed-out hides all. */
-        const entItems = {
-            curator: [
-                ['nav-curator-editor-li',     'edit_songs'],
-                ['nav-curator-requests-li',   'review_song_requests'],
-                ['nav-curator-revisions-li',  'verify_songs'],
-            ],
-            admin: [
-                ['nav-admin-dashboard-li',      'view_admin_dashboard'],
-                ['nav-admin-users-li',          'view_users'],
-                ['nav-admin-groups-li',         'manage_user_groups'],
-                ['nav-admin-organisations-li',  'manage_organisations'],
-                ['nav-admin-songbooks-li',      'manage_songbooks'],
-                ['nav-admin-entitlements-li',   'manage_entitlements'],
-                ['nav-admin-analytics-li',      'view_analytics'],
-                ['nav-admin-db-li',             'run_db_install'],
-                ['nav-admin-health-li',         'drop_legacy_tables'],
-            ],
-        };
-
-        const applySection = (items, dividerId, headerId) => {
-            let anyVisible = false;
-            items.forEach(([id, ent]) => {
-                const visible = loggedIn && userHasEntitlement(ent, role);
-                const el = document.getElementById(id);
-                if (el) el.classList.toggle('d-none', !visible);
-                if (visible) anyVisible = true;
-            });
-            const dEl = document.getElementById(dividerId);
-            const hEl = document.getElementById(headerId);
-            if (dEl) dEl.classList.toggle('d-none', !anyVisible);
-            if (hEl) hEl.classList.toggle('d-none', !anyVisible);
-        };
-
-        applySection(entItems.curator, 'nav-curator-divider', 'nav-curator-header');
-        applySection(entItems.admin,   'nav-admin-divider',   'nav-admin-header');
+        /* Single "Manage" entry in the iHymns dropdown. Visible to any
+           signed-in user holding at least one curator or administration
+           entitlement; the landing page (/manage/) then reveals
+           per-card links based on the same entitlements. */
+        const manageEntitlements = [
+            'edit_songs', 'review_song_requests', 'verify_songs',
+            'view_admin_dashboard', 'view_users', 'manage_user_groups',
+            'manage_organisations', 'manage_songbooks',
+            'manage_entitlements', 'view_analytics',
+            'run_db_install', 'drop_legacy_tables',
+        ];
+        const canManage = loggedIn && manageEntitlements.some(
+            ent => userHasEntitlement(ent, role)
+        );
+        ['nav-manage-divider', 'nav-manage-li'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.classList.toggle('d-none', !canManage);
+        });
 
         /* Update icon style */
         const icon = document.getElementById('header-user-icon');
