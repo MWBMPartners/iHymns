@@ -136,10 +136,13 @@ $songbooks = $songData->getSongbooks();
             Songbooks
         </h2>
 
-        <div class="row g-3 mb-4">
+        <!-- `row-cols-*` ladders the column count with the viewport so
+             cards stop stretching on xl/xxl monitors: 2 → 3 → 4 → 5 → 6
+             as the breakpoints unlock. Each child is just `.col`. -->
+        <div class="row row-cols-2 row-cols-md-3 row-cols-lg-4 row-cols-xl-5 row-cols-xxl-6 g-3 mb-4">
             <?php foreach ($songbooks as $index => $book): ?>
                 <?php if (($book['songCount'] ?? 0) > 0): ?>
-                    <div class="col-6 col-md-4 col-lg-3" id="songbook-<?= htmlspecialchars($book['id']) ?>">
+                    <div class="col" id="songbook-<?= htmlspecialchars($book['id']) ?>">
                         <div class="card card-songbook h-100 position-relative"
                              data-songbook-id="<?= htmlspecialchars($book['id']) ?>"
                              data-songbook-songs="<?= (int)$book['songCount'] ?>">
