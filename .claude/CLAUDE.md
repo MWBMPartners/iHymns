@@ -67,6 +67,16 @@ tools/           — Build + data-prep scripts
 - `.claude/ProjectOverview.md` — original multi-platform scoping.
 - `.claude/project-rules.md` — this file's detailed expansion (naming, data-access layers, error handling, i18n, test discipline).
 
-## ℹ️ What is NOT stored in this repo
+## 💾 Session continuity across devices
 
-Claude Code's session transcripts (`~/.claude/projects/<project-hash>/*.jsonl`) and per-user global memory (`~/.claude/CLAUDE.md`) live in the user's home directory, not in the repo. That's intentional — they may contain per-session debugging output and should not leak into the shared codebase. If specific guidance from a session turns out to be permanent, copy it into `.claude/project-rules.md` here so future sessions pick it up automatically.
+Raw session transcripts live at `~/.claude/projects/<project-hash>/*.jsonl` on whichever device Claude Code ran — they contain the full tool-call log (every file read, every command run, every response). The repo carries **scrubbed copies** in `.claude/sessions/`, synced via:
+
+```
+tools/sync-claude-session.sh
+git diff .claude/sessions/    # REVIEW — scrubber is best-effort
+git add .claude/sessions/ && git commit -m "chore(sessions): sync"
+```
+
+The scrubber redacts known token shapes (Anthropic, GitHub, AWS, Google, `Bearer`, private keys). It does **not** catch a password typed into a prompt or customer data in a test fixture. Always review the diff. See `.claude/sessions/README.md` for the full policy.
+
+Per-user global memory (`~/.claude/CLAUDE.md`) stays on the user's machine — it's not project policy. If guidance from a session turns out to be permanent, copy it into `.claude/project-rules.md` here so future sessions pick it up automatically.

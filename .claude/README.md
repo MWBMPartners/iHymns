@@ -10,13 +10,14 @@ Context + rules for anyone — human or Claude — working in this repo.
 | **`project-rules.md`** | Long-form expansion of the rules (naming, auth, errors, a11y, perf, workflow, anti-patterns). Cite in PR reviews. | Linked from `CLAUDE.md` |
 | **`ProjectBrief.md`** | Current state snapshot: version, phase, tech stack, schema summary. | Linked from `CLAUDE.md` |
 | **`ProjectOverview.md`** | Original scoping doc from the start of the project. | Linked from `CLAUDE.md` |
+| **`sessions/`** | Scrubbed Claude Code session transcripts, synced via `tools/sync-claude-session.sh`. Picked up by `/resume` on any dev device with the repo checked out. See `sessions/README.md` for the secret-leak warning and workflow. | Used by `/resume` |
 | **`projects/`** | Historical per-project notes. | No — reference only |
 
 ## What is NOT in here (intentionally)
 
-- **Claude Code session transcripts** (`~/.claude/projects/<hash>/*.jsonl`) live in the user's home directory, not the repo. They can contain API keys or debugging payloads — committing them would be a security risk.
 - **Per-user global memory** (`~/.claude/CLAUDE.md`) — that's user-specific, not project policy.
 - **Custom slash commands / agents** — add these under `.claude/commands/` or `.claude/agents/` if the team agrees a command is worth sharing across sessions. Currently none defined.
+- **Raw, unscrubbed session transcripts** — never. If you need session history in-repo, use `tools/sync-claude-session.sh`, which runs a best-effort token scrubber and requires you to review the diff before committing.
 
 ## How to extend
 
