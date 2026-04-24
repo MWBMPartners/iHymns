@@ -375,10 +375,12 @@ $csrf = csrfToken();
 
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
-            integrity="sha384-zKzgIZcXU99qF1nNW9g+x1znB5NhCPs9qZeGzUnnFOaHJF9jCCKySBjq3vIKabk/"
-            crossorigin="anonymous"></script>
-
+    <?php /* Bootstrap bundle is loaded once, centrally, by admin-footer.php
+             (CLAUDE.md modularity rule: "A <script> loading Bootstrap ...
+             on a page that also includes admin-footer.php (double-load)"
+             is an explicit red flag). The `type="module"` block below uses
+             native ES-module semantics, not Bootstrap, so it does not need
+             the bundle to be loaded first. */ ?>
     <script type="module">
         import { bootCardLayout } from '/js/modules/card-layout.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/card-layout.js') ?>';
         bootCardLayout();

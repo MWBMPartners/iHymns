@@ -123,6 +123,7 @@ const PRECACHE_ASSETS = [
     '/js/modules/analytics.js',
     '/js/modules/offline-queue.js',
     '/js/modules/notifications.js',
+    '/js/modules/home-page.js',
     '/manifest.json',
     '/assets/favicon.svg',
 ];
