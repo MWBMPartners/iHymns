@@ -2597,7 +2597,8 @@ function renderPreview(song) {
     if (song.writers && song.writers.length > 0) {
         var writersEl = document.createElement('p');
         writersEl.className = 'text-muted small mt-3';
-        writersEl.textContent = 'Writers: ' + song.writers.join(', ');
+        /* "; " separator (#495). */
+        writersEl.textContent = 'Writers: ' + song.writers.join('; ');
         container.appendChild(writersEl);
     }
     if (song.copyright) {
