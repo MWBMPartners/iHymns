@@ -45,36 +45,12 @@ $_roleBadge   = match($_role) {
     default        => ['bg-secondary',          'User'],
 };
 
-/* Admin-surface links. Each entry:
- *   id          — matches $activePage set by the page, for highlight
- *   href        — destination
- *   icon        — bi-* class
- *   label       — menu text
- *   entitlement — required entitlement name (null → always visible)
- * Kept in one place so the offcanvas, the brand dropdown, and future
- * command-palette can all iterate the same list. */
-$_adminLinks = [
-    ['dashboard',    '/manage/',                'bi-speedometer2',   'Dashboard',          null],
-    ['editor',       '/manage/editor/',         'bi-pencil-square',  'Song Editor',        'edit_songs'],
-    ['requests',     '/manage/requests',        'bi-lightbulb',      'Song Requests',      'review_song_requests'],
-    ['revisions',    '/manage/revisions',       'bi-clock-history',  'Revisions Audit',    'verify_songs'],
-    ['missing-numbers','/manage/missing-numbers', 'bi-binoculars',    'Missing Numbers',    'edit_songs'],
-    ['users',        '/manage/users',           'bi-people',         'Users',              'view_users'],
-    ['groups',       '/manage/groups',          'bi-people-fill',    'User Groups',        'manage_user_groups'],
-    ['organisations','/manage/organisations',   'bi-building',       'Organisations',      'manage_organisations'],
-    ['songbooks',    '/manage/songbooks',       'bi-book',           'Songbooks',          'manage_songbooks'],
-    ['restrictions', '/manage/restrictions',    'bi-shield-lock',    'Content Restrictions','manage_content_restrictions'],
-    ['tiers',        '/manage/tiers',           'bi-stars',          'Access Tiers',       'manage_access_tiers'],
-    ['entitlements', '/manage/entitlements',    'bi-key',            'Entitlements',       'manage_entitlements'],
-    ['analytics',    '/manage/analytics',       'bi-graph-up',       'Analytics',          'view_analytics'],
-    ['data-health',  '/manage/data-health',     'bi-activity',       'Data Health',        'drop_legacy_tables'],
-    ['setup-database','/manage/setup-database', 'bi-database-gear',  'Database Setup',     'run_db_install'],
-];
-
-$_visibleAdminLinks = array_values(array_filter(
-    $_adminLinks,
-    static fn(array $l): bool => $l[4] === null || userHasEntitlement($l[4], $_role)
-));
+/* Admin-surface link registry lives in admin-links.php so the sidebar
+   (#460, lg+) and the hamburger offcanvas (< lg) iterate the same
+   source and stay in lock-step. `visibleAdminLinks()` applies the
+   per-link entitlement gate for the current role. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'admin-links.php';
+$_visibleAdminLinks = visibleAdminLinks($_role);
 
 ?>
 <header class="app-header navbar-admin" role="banner">
@@ -198,9 +174,10 @@ $_visibleAdminLinks = array_values(array_filter(
                     </ul>
                 </div>
 
-                <!-- Hamburger — opens the offcanvas surface nav -->
+                <!-- Hamburger — opens the offcanvas surface nav. Hidden
+                     at lg+ where the pinned sidebar (#460) takes over. -->
                 <button type="button"
-                        class="btn btn-header-icon"
+                        class="btn btn-header-icon d-lg-none"
                         data-bs-toggle="offcanvas"
                         data-bs-target="#admin-nav-offcanvas"
                         aria-controls="admin-nav-offcanvas"
@@ -248,3 +225,15 @@ $_visibleAdminLinks = array_values(array_filter(
         Each item is shown only when your role holds the entitlement that controls it.
     </div>
 </div>
+
+<?php
+/* Open the sidebar + main flex wrapper for #460. `admin-footer.php`
+   closes it again. A GLOBALS flag lets the footer know the wrapper
+   was actually opened — login.php / setup.php / editor/index.php
+   include the footer without first including this nav, so the
+   footer must not close containers that were never opened. */
+$GLOBALS['_adminLayoutOpen'] = true;
+?>
+<div class="admin-layout">
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'admin-sidebar.php'; ?>
+    <main class="admin-main" role="main">
