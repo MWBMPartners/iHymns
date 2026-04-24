@@ -406,13 +406,17 @@ $csrf = csrfToken();
             <div class="row g-2 mb-2">
                 <div class="col-sm-3">
                     <label class="form-label small">Entity type</label>
-                    <select name="entity_type" id="rx-entity-type" class="form-select form-select-sm" required>
+                    <!-- data-picker-canonical points the shared helper at
+                         the hidden canonical input this type-select feeds. -->
+                    <select name="entity_type" id="rx-entity-type"
+                            class="form-select form-select-sm"
+                            data-picker-canonical="#rx-entity-id" required>
                         <?php foreach (RESTRICTIONS_ENTITY_TYPES as $et): ?>
                             <option value="<?= htmlspecialchars($et) ?>"><?= htmlspecialchars(ucfirst($et)) ?></option>
                         <?php endforeach; ?>
                     </select>
                 </div>
-                <div class="col-sm-5">
+                <div class="col-sm-5" data-picker-group-for="#rx-entity-id">
                     <label class="form-label small">Entity</label>
 
                     <!-- song picker: live-search combobox -->
@@ -470,7 +474,9 @@ $csrf = csrfToken();
             <div class="row g-2 mb-2">
                 <div class="col-sm-3">
                     <label class="form-label small">Target type</label>
-                    <select name="target_type" id="rx-target-type" class="form-select form-select-sm">
+                    <select name="target_type" id="rx-target-type"
+                            class="form-select form-select-sm"
+                            data-picker-canonical="#rx-target-id">
                         <option value="">— (none)</option>
                         <option value="platform">Platform</option>
                         <option value="user">User</option>
@@ -478,7 +484,7 @@ $csrf = csrfToken();
                         <option value="licence_type">Licence type</option>
                     </select>
                 </div>
-                <div class="col-sm-5">
+                <div class="col-sm-5" data-picker-group-for="#rx-target-id">
                     <label class="form-label small">Target</label>
 
                     <!-- platform picker: hard-coded select -->
@@ -552,176 +558,27 @@ $csrf = csrfToken();
             </p>
         </form>
 
-        <!-- Picker behaviour (#498).
-             One tiny inline script keeps the two visible pickers in sync
-             with their type dropdowns and wires the live-search comboboxes. -->
+        <!-- Picker behaviour (#498). Previously a 150-line inline script;
+             now a shared helper at /manage/includes/renderEntityPicker.js
+             that auto-discovers every picker group inside the form via the
+             data-picker-canonical / data-picker-group-for attributes set
+             on the markup above. Other admin pages can reuse the same
+             module by loading this script and calling initEntityPickers. -->
+        <?php
+            /* Cache-bust using the helper file's mtime, so admins get
+               the latest version immediately after a deploy. */
+            $pickerPath = __DIR__ . DIRECTORY_SEPARATOR . 'includes' .
+                          DIRECTORY_SEPARATOR . 'renderEntityPicker.js';
+            $pickerVer  = @filemtime($pickerPath) ?: 0;
+        ?>
+        <script src="/manage/includes/renderEntityPicker.js?v=<?= (int)$pickerVer ?>"></script>
         <script>
-        (function () {
-            var form = document.getElementById('restriction-form');
-            if (!form) return;
-
-            var entityType  = document.getElementById('rx-entity-type');
-            var targetType  = document.getElementById('rx-target-type');
-            var entityId    = document.getElementById('rx-entity-id');
-            var targetId    = document.getElementById('rx-target-id');
-
-            /* Show the picker matching `key`, hide the rest, within `group`
-               (the element holding the sibling pickers). */
-            function swapPicker(group, key) {
-                group.querySelectorAll('.rx-picker').forEach(function (p) {
-                    var want = p.dataset.pickerFor;
-                    p.classList.toggle('d-none', want !== key);
-                });
-            }
-
-            /* Sync the visible picker's chosen value into the hidden
-               canonical field. Called on change + on submit. */
-            function syncHiddenFromPicker(group, hiddenInput) {
-                var visible = group.querySelector('.rx-picker:not(.d-none)');
-                if (!visible) { hiddenInput.value = ''; return; }
-                var sel = visible.querySelector('.rx-picker-select');
-                var inp = visible.querySelector('.rx-picker-input');
-                if (sel) { hiddenInput.value = sel.value || ''; return; }
-                if (inp) { hiddenInput.value = inp.dataset.canonical || inp.value || ''; return; }
-                hiddenInput.value = '';
-            }
-
-            var entityGroup = entityType.closest('.row').querySelector('[data-picker-for="song"]').parentElement;
-            var targetGroup = targetType.closest('.row').querySelector('[data-picker-for="platform"]').parentElement;
-
-            entityType.addEventListener('change', function () {
-                swapPicker(entityGroup, entityType.value);
-                syncHiddenFromPicker(entityGroup, entityId);
-            });
-            targetType.addEventListener('change', function () {
-                swapPicker(targetGroup, targetType.value);
-                syncHiddenFromPicker(targetGroup, targetId);
-            });
-
-            /* Select-based pickers: sync on change. */
-            form.querySelectorAll('.rx-picker-select').forEach(function (sel) {
-                sel.addEventListener('change', function () {
-                    var group = sel.closest('.col-sm-5');
-                    var hidden = group === entityGroup ? entityId : targetId;
-                    syncHiddenFromPicker(group, hidden);
-                });
-            });
-
-            /* Live-search combobox pickers. One handler covers both song
-               and user; the data-picker-source attribute selects the API
-               action (song → /api?action=search, user → /manage/editor/api?action=user_search). */
-            form.querySelectorAll('.rx-picker-input').forEach(function (input) {
-                var popover = input.nextElementSibling;
-                var source  = input.dataset.pickerSource;
-                var debounce = null;
-
-                function close() { popover.classList.add('d-none'); popover.innerHTML = ''; }
-
-                function renderItems(items) {
-                    popover.innerHTML = '';
-                    if (!items.length) { close(); return; }
-                    items.forEach(function (it) {
-                        var row = document.createElement('button');
-                        row.type = 'button';
-                        row.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center';
-                        row.innerHTML = '<span>' + escapeHtml(it.label) + '</span>' +
-                            (it.hint ? '<small class="text-muted">' + escapeHtml(it.hint) + '</small>' : '');
-                        row.addEventListener('click', function () {
-                            input.value = it.label;
-                            input.dataset.canonical = String(it.id);
-                            var group = input.closest('.col-sm-5');
-                            var hidden = group === entityGroup ? entityId : targetId;
-                            hidden.value = String(it.id);
-                            close();
-                        });
-                        popover.appendChild(row);
-                    });
-                    popover.classList.remove('d-none');
+            (function () {
+                var form = document.getElementById('restriction-form');
+                if (form && typeof window.initEntityPickers === 'function') {
+                    window.initEntityPickers(form);
                 }
-
-                function fetchSuggestions(q) {
-                    var url;
-                    if (source === 'song') {
-                        /* Reuse the public song-search endpoint. */
-                        url = '/api?action=search&q=' + encodeURIComponent(q) + '&limit=15';
-                    } else if (source === 'user') {
-                        url = '/manage/editor/api?action=user_search&q=' + encodeURIComponent(q);
-                    } else {
-                        return;
-                    }
-                    fetch(url, { credentials: 'same-origin' })
-                        .then(function (r) { return r.json(); })
-                        .then(function (data) {
-                            var items = [];
-                            if (source === 'song' && Array.isArray(data.results)) {
-                                items = data.results.map(function (s) {
-                                    return {
-                                        id: s.id,
-                                        label: (s.title || s.id) + ' · ' + (s.songbook || ''),
-                                        hint: s.id,
-                                    };
-                                });
-                            } else if (Array.isArray(data.suggestions)) {
-                                items = data.suggestions;
-                            }
-                            renderItems(items);
-                        }).catch(function () { close(); });
-                }
-
-                input.addEventListener('input', function () {
-                    clearTimeout(debounce);
-                    var q = input.value.trim();
-                    /* '*' is a legal canonical match-all value for songs; treat it specially. */
-                    if (q === '*') {
-                        input.dataset.canonical = '*';
-                        var group = input.closest('.col-sm-5');
-                        var hidden = group === entityGroup ? entityId : targetId;
-                        hidden.value = '*';
-                        close();
-                        return;
-                    }
-                    /* Drop the staged canonical id if the user edits the text. */
-                    delete input.dataset.canonical;
-                    var group = input.closest('.col-sm-5');
-                    var hidden = group === entityGroup ? entityId : targetId;
-                    hidden.value = '';
-                    if (q.length < 1) { close(); return; }
-                    debounce = setTimeout(function () { fetchSuggestions(q); }, 200);
-                });
-                input.addEventListener('keydown', function (e) {
-                    if (e.key === 'Escape') close();
-                });
-            });
-
-            /* Click outside any popover dismisses them. */
-            document.addEventListener('click', function (e) {
-                form.querySelectorAll('.rx-picker-popover:not(.d-none)').forEach(function (p) {
-                    if (!p.contains(e.target) && e.target !== p.previousElementSibling) {
-                        p.classList.add('d-none');
-                    }
-                });
-            });
-
-            function escapeHtml(s) {
-                return String(s || '').replace(/[&<>"']/g, function (c) {
-                    return { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c];
-                });
-            }
-
-            /* Initialise visible pickers at load. */
-            swapPicker(entityGroup, entityType.value);
-            swapPicker(targetGroup, targetType.value);
-            syncHiddenFromPicker(entityGroup, entityId);
-            syncHiddenFromPicker(targetGroup, targetId);
-
-            /* Last-chance sync on submit so keyboard-only users who
-               typed-and-picked from the dropdown can't accidentally
-               POST an empty canonical id. */
-            form.addEventListener('submit', function () {
-                syncHiddenFromPicker(entityGroup, entityId);
-                syncHiddenFromPicker(targetGroup, targetId);
-            });
-        })();
+            })();
         </script>
 
     </div>
