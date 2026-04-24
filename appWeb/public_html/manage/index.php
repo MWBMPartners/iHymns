@@ -347,7 +347,10 @@ $csrf = csrfToken();
         </div>
         <?php endif; ?>
 
-        <!-- System Info -->
+        <!-- System Info — infrastructure-level; only Global Admin sees
+             the PHP + DB-driver details. Regular admins / curators see a
+             lightweight "Your session" card instead. -->
+        <?php if (($currentUser['role'] ?? '') === 'global_admin'): ?>
         <div class="card-admin p-3">
             <h2 class="h6 mb-3"><i class="bi bi-info-circle me-2"></i>System Info</h2>
             <table class="table table-sm table-borderless mb-0 small">
@@ -360,6 +363,15 @@ $csrf = csrfToken();
                 <tr><td class="text-muted">Your Username</td><td><code><?= htmlspecialchars($currentUser['username']) ?></code></td></tr>
             </table>
         </div>
+        <?php else: ?>
+        <div class="card-admin p-3">
+            <h2 class="h6 mb-3"><i class="bi bi-person-badge me-2"></i>Your session</h2>
+            <table class="table table-sm table-borderless mb-0 small">
+                <tr><td class="text-muted" style="width:40%">Your Role</td><td><?= htmlspecialchars(roleLabel($currentUser['role'])) ?></td></tr>
+                <tr><td class="text-muted">Your Username</td><td><code><?= htmlspecialchars($currentUser['username']) ?></code></td></tr>
+            </table>
+        </div>
+        <?php endif; ?>
 
     </div>
 

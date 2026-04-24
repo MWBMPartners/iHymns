@@ -146,31 +146,26 @@ $_visibleAdminLinks = array_values(array_filter(
                     </ul>
                 </div>
 
-                <!-- Username + role badge — hidden on xs; shown from sm up.
-                     Clicking opens the avatar dropdown (same target), so
-                     this is a discoverable but optional affordance. -->
-                <button type="button"
-                        class="btn btn-sm d-none d-sm-inline-flex align-items-center gap-2 admin-identity-btn"
-                        data-bs-toggle="dropdown"
-                        data-bs-target="#admin-user-dropdown-menu"
-                        aria-expanded="false"
-                        aria-label="Account menu">
-                    <span><?= htmlspecialchars($_displayName) ?></span>
-                    <span class="badge <?= $_roleBadge[0] ?>" style="font-size: 0.65rem;">
-                        <?= htmlspecialchars($_roleBadge[1]) ?>
-                    </span>
-                </button>
-
-                <!-- Avatar dropdown — profile / logout, matches main site -->
+                <!-- Account dropdown — avatar on xs, avatar + username +
+                     role badge on sm+. A single Bootstrap dropdown (so
+                     the toggle is the one element Bootstrap wires), the
+                     inline text is rendered as a visual affordance
+                     inside the same button; no separate toggle, no
+                     custom data-bs-target (which doesn't apply to
+                     dropdowns). -->
                 <div class="dropdown" id="admin-user-dropdown">
                     <button type="button"
-                            class="btn btn-header-icon dropdown-toggle"
+                            class="btn btn-sm btn-header-icon admin-account-btn d-flex align-items-center gap-2"
                             data-bs-toggle="dropdown"
                             aria-expanded="false"
-                            aria-label="Account"
-                            title="Account"
+                            aria-label="Account menu"
                             id="admin-user-btn">
                         <i class="bi bi-person-circle" aria-hidden="true"></i>
+                        <span class="d-none d-sm-inline"><?= htmlspecialchars($_displayName) ?></span>
+                        <span class="badge <?= $_roleBadge[0] ?> d-none d-sm-inline"
+                              style="font-size: 0.65rem;">
+                            <?= htmlspecialchars($_roleBadge[1]) ?>
+                        </span>
                     </button>
                     <ul class="dropdown-menu dropdown-menu-end"
                         aria-labelledby="admin-user-btn"

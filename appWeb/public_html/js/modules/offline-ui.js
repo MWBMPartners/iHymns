@@ -24,13 +24,19 @@ export function isOfflineSupported() {
         && ('indexedDB' in window);
 }
 
-/** One-time feature-detection toggle — adds body class, unhides controls. */
+/** One-time feature-detection toggle. Controls are rendered visible
+ *  server-side; we only ADD the body class so the shared CSS rule in
+ *  app.css / admin.css can hide them when the browser can't act. */
 export function markOfflineCapability() {
     if (!isOfflineSupported()) {
         document.body.classList.add('offline-unsupported');
         return false;
     }
     document.body.classList.add('offline-supported');
+    /* Legacy cleanup — older builds rendered these with `d-none` and
+       relied on the JS to reveal them. New builds render them visible,
+       but leave this unhide step in place so mid-version caches don't
+       hide buttons on users who just got the refresh. */
     for (const btn of document.querySelectorAll('[data-songbook-download], [data-song-download]')) {
         btn.classList.remove('d-none');
     }

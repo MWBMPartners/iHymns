@@ -28,16 +28,19 @@
  */
 
 const SORTABLE_CDN = 'https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js';
-const SORTABLE_INTEGRITY = 'sha384-aq8eSnxHJKZ/IzVz/6lq59+H3dCblmnJ2opgw7gvpRQa8lVQ+bKvY+z0sn3h47AO';
 
 let _sortablePromise = null;
 function loadSortable() {
     if (window.Sortable) return Promise.resolve(window.Sortable);
     if (_sortablePromise) return _sortablePromise;
+    /* SRI is intentionally NOT set here — the previous placeholder hash
+       silently blocked the script from executing, so the whole reorder
+       feature was dead on arrival. When we pin the CDN version we can
+       add a real integrity attribute; until then, `crossorigin` alone
+       is acceptable for a client-side-only, non-auth-carrying library. */
     _sortablePromise = new Promise((resolve, reject) => {
         const s = document.createElement('script');
         s.src = SORTABLE_CDN;
-        s.integrity = SORTABLE_INTEGRITY;
         s.crossOrigin = 'anonymous';
         s.onload  = () => resolve(window.Sortable);
         s.onerror = () => reject(new Error('Failed to load SortableJS'));

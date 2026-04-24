@@ -218,7 +218,7 @@ $components  = $song['components'] ?? [];
                      tooltip, and click; the legacy .btn-save-offline
                      handler still runs too, so either wire path works. -->
                 <button type="button"
-                        class="btn btn-outline-secondary btn-sm song-toolbar-btn btn-save-offline song-toolbar-btn d-none"
+                        class="btn btn-outline-secondary btn-sm song-toolbar-btn btn-save-offline"
                         data-song-id="<?= htmlspecialchars($song['id']) ?>"
                         data-song-download="<?= htmlspecialchars($song['id']) ?>"
                         aria-label="Save this song for offline use"

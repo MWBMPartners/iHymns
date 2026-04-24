@@ -48,3 +48,12 @@ if (($app['Application']['Version']['Development']['Status'] ?? null) === 'Alpha
         <a href="/privacy" class="footer-link">Privacy</a>
     </small>
 </footer>
+
+<!-- Bootstrap bundle — needed by the shared admin nav (hamburger
+     offcanvas, brand dropdown, theme dropdown, user avatar dropdown)
+     and any per-page modals. Loaded here so every /manage/* page
+     picks it up regardless of whether the page template remembered. -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
+        integrity="sha384-zKzgIZcXU99qF1nNW9g+x1znB5NhCPs9qZeGzUnnFOaHJF9jCCKySBjq3vIKabk/"
+        crossorigin="anonymous"></script>
+
