@@ -1084,6 +1084,100 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
+     * USER_SEARCH (#498) — live-search users by display name / username
+     *
+     * Used by the /manage/restrictions name-first picker to resolve a
+     * human-friendly user label ("Lance Manasse · @admin") to the
+     * canonical tblUsers.Id on save. Admin-gated like every endpoint
+     * in this file.
+     *
+     * GET parameters:
+     *   q     — partial match against DisplayName OR Username (LIKE %q%)
+     *   limit — max 20 suggestions (default 10)
+     *
+     * Response: { suggestions: [{id, label, hint}, ...] }
+     * ----------------------------------------------------------------- */
+    case 'user_search':
+        $q     = trim((string)($_GET['q'] ?? ''));
+        $limit = max(1, min(20, (int)($_GET['limit'] ?? 10)));
+        if ($q === '') {
+            echo json_encode(['suggestions' => []]);
+            break;
+        }
+        try {
+            $db = getDbMysqli();
+            $like = '%' . $q . '%';
+            $stmt = $db->prepare(
+                'SELECT Id, DisplayName, Username, Role
+                 FROM tblUsers
+                 WHERE DisplayName LIKE ? OR Username LIKE ?
+                 ORDER BY DisplayName ASC
+                 LIMIT ?'
+            );
+            $stmt->bind_param('ssi', $like, $like, $limit);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $suggestions = [];
+            while ($row = $res->fetch_assoc()) {
+                $suggestions[] = [
+                    'id'    => (int)$row['Id'],
+                    'label' => $row['DisplayName'] ?: $row['Username'],
+                    'hint'  => '@' . $row['Username'] . ' · ' . $row['Role'],
+                ];
+            }
+            $stmt->close();
+            echo json_encode(['suggestions' => $suggestions]);
+        } catch (\Throwable $e) {
+            error_log('[editor user_search] ' . $e->getMessage());
+            echo json_encode(['suggestions' => []]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * ORG_SEARCH (#498) — live-search organisations by name
+     * ----------------------------------------------------------------- */
+    case 'org_search':
+        $q     = trim((string)($_GET['q'] ?? ''));
+        $limit = max(1, min(50, (int)($_GET['limit'] ?? 20)));
+        try {
+            $db = getDbMysqli();
+            if ($q === '') {
+                $stmt = $db->prepare(
+                    'SELECT Id, Name, Slug, LicenceType FROM tblOrganisations
+                     WHERE IsActive = 1
+                     ORDER BY Name ASC
+                     LIMIT ?'
+                );
+                $stmt->bind_param('i', $limit);
+            } else {
+                $like = '%' . $q . '%';
+                $stmt = $db->prepare(
+                    'SELECT Id, Name, Slug, LicenceType FROM tblOrganisations
+                     WHERE IsActive = 1 AND (Name LIKE ? OR Slug LIKE ?)
+                     ORDER BY Name ASC
+                     LIMIT ?'
+                );
+                $stmt->bind_param('ssi', $like, $like, $limit);
+            }
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $suggestions = [];
+            while ($row = $res->fetch_assoc()) {
+                $suggestions[] = [
+                    'id'    => (int)$row['Id'],
+                    'label' => $row['Name'],
+                    'hint'  => 'licence: ' . ($row['LicenceType'] ?: 'none') . ' · slug: ' . $row['Slug'],
+                ];
+            }
+            $stmt->close();
+            echo json_encode(['suggestions' => $suggestions]);
+        } catch (\Throwable $e) {
+            error_log('[editor org_search] ' . $e->getMessage());
+            echo json_encode(['suggestions' => []]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
      * Unknown action
      * ----------------------------------------------------------------- */
     default:
