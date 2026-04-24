@@ -203,9 +203,15 @@ RewriteRule ^ index.php [QSA,L]
         Header set Expires "0"
     </FilesMatch>
 
-    # CSS and JS — short cache in beta
+    # CSS and JS — always revalidate so deploys take effect immediately.
+    # ES module graphs make per-file cache-busting impractical (only the
+    # entry script tag carries ?v=...; its static imports do not), and
+    # the semver bumps only on release, not on every alpha/beta deploy.
+    # "no-cache, must-revalidate" still caches the response but forces a
+    # conditional GET — the server answers 304 when unchanged (cheap) and
+    # sends fresh bytes only when the file really changed.
     <FilesMatch "\.(css|js|mjs)$">
-        Header set Cache-Control "public, max-age=3600"
+        Header set Cache-Control "no-cache, must-revalidate"
     </FilesMatch>
 
     # Images and fonts — longer cache
