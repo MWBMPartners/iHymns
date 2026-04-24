@@ -37,10 +37,15 @@ $songNumber    = ($rawSongNumber === null || $rawSongNumber === '') ? null : (in
 $songTitle   = toTitleCase($song['title'] ?? 'Untitled');
 $songbook    = $song['songbook'] ?? '';
 $bookName    = $song['songbookName'] ?? '';
-$writers     = $song['writers'] ?? [];
-$composers   = $song['composers'] ?? [];
-$copyright   = $song['copyright'] ?? '';
-$ccli        = $song['ccli'] ?? '';
+$writers     = $song['writers']     ?? [];
+$composers   = $song['composers']   ?? [];
+$arrangers   = $song['arrangers']   ?? [];   /* #497 */
+$adaptors    = $song['adaptors']    ?? [];   /* #497 */
+$translators = $song['translators'] ?? [];   /* #497 */
+$tuneName    = $song['tuneName']    ?? '';   /* #497 */
+$iswc        = $song['iswc']        ?? '';   /* #497 */
+$copyright   = $song['copyright']   ?? '';
+$ccli        = $song['ccli']        ?? '';
 $hasAudio    = !empty($song['hasAudio']);
 $hasSheet    = !empty($song['hasSheetMusic']);
 $components  = $song['components'] ?? [];
@@ -178,28 +183,50 @@ unset($_t);
                 </div>
             </div>
 
-            <!-- Writers and composers -->
-            <?php if (!empty($writers) || !empty($composers)): ?>
+            <!-- Credits block (#497).
+                 Five collections now: Writers · Composers · Arrangers ·
+                 Adaptors · Translators. Each is a many-to-one list from
+                 its own MySQL table; we render a row per non-empty
+                 collection and join names with "; " (per #495) since
+                 surname-first hymnal citations can legitimately contain
+                 commas inside a single name. -->
+            <?php
+            $_creditRows = [
+                ['words',       'Words',       'fa-solid fa-pen-fancy',   $writers],
+                ['music',       'Music',       'fa-solid fa-music',       $composers],
+                ['arranged',    'Arranged by', 'fa-solid fa-sliders',     $arrangers],
+                ['adapted',     'Adapted by',  'fa-solid fa-compact-disc',$adaptors],
+                ['translated',  'Translated by','fa-solid fa-language',   $translators],
+            ];
+            $_hasAnyCredit = false;
+            foreach ($_creditRows as $row) { if (!empty($row[3])) { $_hasAnyCredit = true; break; } }
+            ?>
+            <?php if ($_hasAnyCredit): ?>
                 <div class="song-meta mb-3">
-                    <?php if (!empty($writers)): ?>
-                        <p class="mb-1">
-                            <i class="fa-solid fa-pen-fancy me-2 text-muted" aria-hidden="true"></i>
-                            <strong>Words:</strong>
-                            <?php foreach ($writers as $i => $w): ?><a href="/writer/<?= htmlspecialchars(urlencode(strtolower(str_replace(' ', '-', $w)))) ?>"
+                    <?php foreach ($_creditRows as $rowIdx => $row): ?>
+                        <?php [$rowId, $rowLabel, $rowIcon, $rowNames] = $row; ?>
+                        <?php if (empty($rowNames)) continue; ?>
+                        <p class="mb-<?= $rowIdx === count($_creditRows) - 1 || empty(array_slice($_creditRows, $rowIdx + 1, null, true)) ? '0' : '1' ?> song-credit-row" data-credit-kind="<?= htmlspecialchars($rowId) ?>">
+                            <i class="<?= htmlspecialchars($rowIcon) ?> me-2 text-muted" aria-hidden="true"></i>
+                            <strong><?= htmlspecialchars($rowLabel) ?>:</strong>
+                            <?php foreach ($rowNames as $i => $name): ?><a href="/writer/<?= htmlspecialchars(urlencode(strtolower(str_replace(' ', '-', $name)))) ?>"
                                    class="writer-link"
-                                   data-navigate="writer"><?= htmlspecialchars($w) ?></a><?php if ($i < count($writers) - 1): ?>, <?php endif; ?><?php endforeach; ?>
+                                   data-navigate="writer"><?= htmlspecialchars($name) ?></a><?php if ($i < count($rowNames) - 1): ?>;&nbsp;<?php endif; ?><?php endforeach; ?>
                         </p>
-                    <?php endif; ?>
-                    <?php if (!empty($composers)): ?>
-                        <p class="mb-0">
-                            <i class="fa-solid fa-music me-2 text-muted" aria-hidden="true"></i>
-                            <strong>Music:</strong>
-                            <?php foreach ($composers as $i => $c): ?><a href="/writer/<?= htmlspecialchars(urlencode(strtolower(str_replace(' ', '-', $c)))) ?>"
-                                   class="writer-link"
-                                   data-navigate="writer"><?= htmlspecialchars($c) ?></a><?php if ($i < count($composers) - 1): ?>, <?php endif; ?><?php endforeach; ?>
-                        </p>
-                    <?php endif; ?>
+                    <?php endforeach; ?>
                 </div>
+            <?php endif; ?>
+
+            <!-- Tune name (#497). Rendered when set so the viewer sees
+                 "Tune: HYFRYDOL" — a meaningful pointer for hymnbook
+                 users. The link target `/tune/<slug>` is reserved for
+                 a future cross-reference listing (#494); until that
+                 ships we still render the label as plain text. -->
+            <?php if ($tuneName !== ''): ?>
+                <p class="song-meta-tune small text-muted mb-2">
+                    <i class="fa-solid fa-music-note-list me-2" aria-hidden="true"></i>
+                    <strong>Tune:</strong> <?= htmlspecialchars($tuneName) ?>
+                </p>
             <?php endif; ?>
 
             <!-- ============================================================
@@ -249,8 +276,8 @@ unset($_t);
                 </div>
             <?php endif; ?>
 
-            <!-- Copyright and CCLI in song header -->
-            <?php if (!empty($copyright) || !empty($ccli)): ?>
+            <!-- Copyright, CCLI Song Number, ISWC in song header (#497). -->
+            <?php if (!empty($copyright) || !empty($ccli) || $iswc !== ''): ?>
                 <div class="song-meta-copyright mb-3">
                     <?php if (!empty($copyright)): ?>
                         <p class="mb-1 small text-muted">
@@ -259,9 +286,15 @@ unset($_t);
                         </p>
                     <?php endif; ?>
                     <?php if (!empty($ccli)): ?>
-                        <p class="mb-0 small text-muted">
+                        <p class="mb-<?= $iswc !== '' ? '1' : '0' ?> small text-muted">
                             <i class="fa-solid fa-hashtag me-2" aria-hidden="true"></i>
                             CCLI Song #<?= htmlspecialchars($ccli) ?>
+                        </p>
+                    <?php endif; ?>
+                    <?php if ($iswc !== ''): ?>
+                        <p class="mb-0 small text-muted" title="International Standard Musical Work Code">
+                            <i class="fa-solid fa-barcode me-2" aria-hidden="true"></i>
+                            ISWC <?= htmlspecialchars($iswc) ?>
                         </p>
                     <?php endif; ?>
                 </div>

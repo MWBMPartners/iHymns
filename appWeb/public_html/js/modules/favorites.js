@@ -254,7 +254,17 @@ export class Favorites {
                 const container = modal.querySelector('.d-flex.flex-wrap');
                 const newBtn = document.createElement('label');
                 newBtn.className = 'btn btn-sm btn-primary rounded-pill tag-toggle-btn';
-                newBtn.innerHTML = `<input type="checkbox" class="d-none tag-checkbox" value="${escapeHtml(tag)}" checked> ${escapeHtml(tag)}`;
+                /* DOM-API construction rather than innerHTML-with-
+                   escape, so CodeQL has nothing to trace and a future
+                   edit can't accidentally drop the escapeHtml call
+                   (#504). */
+                const tagCheckbox = document.createElement('input');
+                tagCheckbox.type = 'checkbox';
+                tagCheckbox.className = 'd-none tag-checkbox';
+                tagCheckbox.value = tag;
+                tagCheckbox.checked = true;
+                newBtn.appendChild(tagCheckbox);
+                newBtn.appendChild(document.createTextNode(' ' + tag));
                 newBtn.addEventListener('click', (e) => {
                     e.preventDefault();
                     const cb = newBtn.querySelector('.tag-checkbox');
@@ -499,9 +509,21 @@ export class Favorites {
 
         if (toggle) {
             toggle.setAttribute('aria-pressed', String(this.selectMode));
-            toggle.innerHTML = this.selectMode
-                ? '<i class="fa-solid fa-xmark me-1" aria-hidden="true"></i> Cancel'
-                : '<i class="fa-solid fa-check-double me-1" aria-hidden="true"></i> Select';
+            /* Construct the button contents via DOM APIs rather than
+               innerHTML so CodeQL's "DOM text reinterpreted as HTML"
+               rule is happy, and we're immune to any future edit
+               that accidentally introduces a dynamic string into the
+               ternary (#504). */
+            toggle.replaceChildren();
+            const icon = document.createElement('i');
+            icon.className = this.selectMode
+                ? 'fa-solid fa-xmark me-1'
+                : 'fa-solid fa-check-double me-1';
+            icon.setAttribute('aria-hidden', 'true');
+            toggle.appendChild(icon);
+            toggle.appendChild(document.createTextNode(
+                ' ' + (this.selectMode ? 'Cancel' : 'Select')
+            ));
         }
 
         checkboxes.forEach(cb => {

@@ -132,6 +132,16 @@ body:has(.navbar-admin) {
     display: flex;
     align-items: stretch;
     gap: 0;
+    /* Peg the layout column to fill the viewport between the fixed
+       header and fixed footer, so both the sidebar and the main
+       pane can stretch to a visible edge on short pages instead of
+       leaving body-background whitespace below them (#499). Tall
+       pages scroll naturally because .admin-main's content grows
+       the layout. */
+    min-height: calc(100vh
+                     - var(--admin-navbar-height)
+                     - var(--footer-info-height)
+                     - 1rem);
 }
 
 .admin-sidebar {
@@ -146,11 +156,16 @@ body:has(.navbar-admin) {
        .navbar-admin (see body:has(.navbar-admin) above). */
     position: sticky;
     top: calc(var(--admin-navbar-height) + 0.5rem);
-    align-self: flex-start;
+    /* Before #499 the sidebar aligned flex-start with a max-height,
+       which left visible body background below it on tall viewports.
+       Drop align-self so the flex parent stretches us to the layout
+       column height (.admin-layout min-height above), giving a
+       WordPress-style full-height side column. max-height becomes
+       the scroll cap for long link lists. */
     max-height: calc(100vh
                      - var(--admin-navbar-height)
                      - var(--footer-info-height)
-                     - 1.5rem);
+                     - 1rem);
     overflow-y: auto;
 }
 
@@ -409,8 +424,16 @@ body:has(.navbar-admin) {
 
 .editor-wrapper {
     display: flex;
-    /* 56px navbar + 36px status bar = 92px */
-    height: calc(100vh - 56px - 36px);
+    /* Navbar (56 px) + internal status bar (36 px) + shared admin
+       footer (var(--footer-info-height), 28 px normally / 40 px
+       on narrow viewports) are all fixed-position siblings. This
+       wrapper owns the scroll region between them, so its height
+       must subtract all three or the bottom row of any tab paints
+       behind the pinned footer (#487). */
+    height: calc(100vh
+                 - var(--admin-navbar-height)
+                 - var(--footer-info-height)
+                 - 36px);
     overflow: hidden;
 }
 
@@ -625,6 +648,30 @@ body:has(.navbar-admin) {
 .status-indicator.unsaved { background-color: var(--accent-solid); }
 
 /* ==========================================================================
+   ARRANGEMENT BUILDER (#492) — pool + strip drag-and-drop chips
+   ========================================================================== */
+
+.arr-chip {
+    transition: transform 0.1s ease, box-shadow 0.1s ease;
+}
+.arr-chip:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+#arrangement-strip .arr-chip {
+    cursor: grab;
+}
+#arrangement-strip .arr-chip:active {
+    cursor: grabbing;
+}
+/* SortableJS drop placeholder */
+.arr-chip-ghost {
+    opacity: 0.35;
+    outline: 2px dashed var(--accent-solid);
+    outline-offset: 2px;
+}
+
+/* ==========================================================================
    DYNAMIC LIST INPUTS — credits rows (writer/composer)
    ========================================================================== */
 
@@ -733,7 +780,12 @@ body:has(.navbar-admin) {
 @media (max-width: 768px) {
     .editor-wrapper {
         flex-direction: column;
-        height: calc(100vh - 56px - 36px);
+        /* Match the desktop height formula so the stacked layout
+           still clears the shared admin footer (#487). */
+        height: calc(100vh
+                     - var(--admin-navbar-height)
+                     - var(--footer-info-height)
+                     - 36px);
     }
     .editor-sidebar {
         width: 100%;

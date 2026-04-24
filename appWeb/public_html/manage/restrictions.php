@@ -55,6 +55,37 @@ const RESTRICTIONS_TYPES = [
 ];
 const RESTRICTIONS_EFFECTS = ['deny', 'allow'];
 
+/* Picker vocabularies for the #498 name-first form. Hard-coded where
+   the list is small and closed (platforms, features), loaded from
+   the DB where it's admin-managed (songbooks, organisations).
+
+   * PLATFORMS — matches the set recognised by
+     includes/content_access.php::checkContentAccess().
+   * FEATURES  — mirrors APP_CONFIG['features'] in includes/config.php;
+     this is the full set a restriction rule can reference.
+   * LICENCE_TYPES — duplicated from organisations.php for now (same
+     4-row map); #459 migrates this to tblLicenceTypes, at which
+     point restrictions.php should source from there too. */
+const RESTRICTIONS_PLATFORMS = [
+    'PWA'    => 'PWA · Web app',
+    'Apple'  => 'Apple · iOS / iPadOS / tvOS',
+    'Android'=> 'Android · phone / tablet / TV',
+    'Amazon' => 'Amazon · Fire OS',
+    'Web'    => 'Web · generic browser (non-PWA)',
+];
+const RESTRICTIONS_FEATURES = [
+    'audio_playback' => 'Audio playback (MIDI)',
+    'sheet_music'    => 'Sheet music (PDF)',
+    'shuffle'        => 'Shuffle / random song',
+    'favorites'      => 'Favourites',
+];
+const RESTRICTIONS_LICENCE_TYPES = [
+    'none'         => 'None — no licence on file',
+    'ihymns_basic' => 'iHymns Basic — public-domain only',
+    'ihymns_pro'   => 'iHymns Pro — full catalogue',
+    'ccli'         => 'CCLI — licence number required',
+];
+
 /* ----- POST actions ----- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
@@ -177,6 +208,27 @@ try {
     $stmt->execute();
     $gatingEnabled = ((string)($stmt->fetchColumn() ?: '0')) === '1';
 } catch (\Throwable $e) { /* ignore */ }
+
+/* Preload songbooks + organisations for the #498 pickers. Both lists
+   are small (≈6 songbooks, tens of orgs), so server-rendering the full
+   dropdown avoids an API round-trip on page load. Song + user pickers
+   stay AJAX-driven because their cardinalities are large. */
+$picker_songbooks = [];
+try {
+    $rs = $db->query(
+        'SELECT Abbreviation, Name, SongCount FROM tblSongbooks ORDER BY Name ASC'
+    );
+    $picker_songbooks = $rs->fetchAll(PDO::FETCH_ASSOC);
+} catch (\Throwable $_e) { /* empty list is a safe default */ }
+
+$picker_organisations = [];
+try {
+    $rs = $db->query(
+        'SELECT Id, Name, Slug, LicenceType FROM tblOrganisations
+         WHERE IsActive = 1 ORDER BY Name ASC'
+    );
+    $picker_organisations = $rs->fetchAll(PDO::FETCH_ASSOC);
+} catch (\Throwable $_e) { /* empty; the picker will fall back to live-search */ }
 
 $csrf = csrfToken();
 ?>
@@ -334,34 +386,83 @@ $csrf = csrfToken();
             </div>
         </div>
 
-        <!-- Create -->
-        <form method="POST" class="card-admin p-3 mb-4">
+        <!-- Create — name-first picker form (#498). Each ID field is a
+             type-aware picker instead of raw text: selects for small-
+             cardinality (songbook / feature / platform / licence / org)
+             and live-search comboboxes for large-cardinality (song /
+             user). A hidden canonical input (`entity_id`, `target_id`)
+             mirrors the chosen value so the POST handler is unchanged. -->
+        <form method="POST" class="card-admin p-3 mb-4" id="restriction-form">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
             <input type="hidden" name="action" value="create">
             <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a restriction</h2>
+
+            <!-- Hidden canonical fields — populated by JS from whichever
+                 picker is visible. The server sees the same names as
+                 before, so the POST handler at line ~70 is unchanged. -->
+            <input type="hidden" name="entity_id"  id="rx-entity-id">
+            <input type="hidden" name="target_id"  id="rx-target-id">
+
             <div class="row g-2 mb-2">
                 <div class="col-sm-3">
                     <label class="form-label small">Entity type</label>
-                    <select name="entity_type" class="form-select form-select-sm" required>
+                    <!-- data-picker-canonical points the shared helper at
+                         the hidden canonical input this type-select feeds. -->
+                    <select name="entity_type" id="rx-entity-type"
+                            class="form-select form-select-sm"
+                            data-picker-canonical="#rx-entity-id" required>
                         <?php foreach (RESTRICTIONS_ENTITY_TYPES as $et): ?>
                             <option value="<?= htmlspecialchars($et) ?>"><?= htmlspecialchars(ucfirst($et)) ?></option>
                         <?php endforeach; ?>
                     </select>
                 </div>
-                <div class="col-sm-3">
-                    <label class="form-label small">Entity ID</label>
-                    <input type="text" name="entity_id" class="form-control form-control-sm" maxlength="50" required
-                           placeholder="e.g. CP-0001, MP, audio_playback, *">
+                <div class="col-sm-5" data-picker-group-for="#rx-entity-id">
+                    <label class="form-label small">Entity</label>
+
+                    <!-- song picker: live-search combobox -->
+                    <div class="rx-picker" data-picker-for="song">
+                        <div class="position-relative">
+                            <input type="text" class="form-control form-control-sm rx-picker-input"
+                                   data-picker-source="song" autocomplete="off"
+                                   placeholder="Type a song title or number — e.g. Amazing Grace">
+                            <div class="rx-picker-popover list-group position-absolute w-100 shadow d-none"
+                                 style="z-index: 1050; max-height: 240px; overflow-y: auto;"></div>
+                        </div>
+                        <small class="text-muted">Type <code>*</code> to target every song.</small>
+                    </div>
+
+                    <!-- songbook picker: server-rendered select -->
+                    <div class="rx-picker d-none" data-picker-for="songbook">
+                        <select class="form-select form-select-sm rx-picker-select">
+                            <option value="*">* — every songbook</option>
+                            <?php foreach ($picker_songbooks as $sb): ?>
+                                <option value="<?= htmlspecialchars($sb['Abbreviation']) ?>">
+                                    <?= htmlspecialchars($sb['Name']) ?>
+                                    (<?= htmlspecialchars($sb['Abbreviation']) ?>) — <?= (int)$sb['SongCount'] ?> songs
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <!-- feature picker: hard-coded select -->
+                    <div class="rx-picker d-none" data-picker-for="feature">
+                        <select class="form-select form-select-sm rx-picker-select">
+                            <option value="*">* — every feature</option>
+                            <?php foreach (RESTRICTIONS_FEATURES as $k => $lbl): ?>
+                                <option value="<?= htmlspecialchars($k) ?>"><?= htmlspecialchars($lbl) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
                 </div>
-                <div class="col-sm-3">
+                <div class="col-sm-2">
                     <label class="form-label small">Restriction type</label>
-                    <select name="restriction_type" class="form-select form-select-sm" required>
+                    <select name="restriction_type" id="rx-restriction-type" class="form-select form-select-sm" required>
                         <?php foreach (RESTRICTIONS_TYPES as $k => $lbl): ?>
                             <option value="<?= htmlspecialchars($k) ?>"><?= htmlspecialchars($lbl) ?></option>
                         <?php endforeach; ?>
                     </select>
                 </div>
-                <div class="col-sm-3">
+                <div class="col-sm-2">
                     <label class="form-label small">Effect</label>
                     <select name="effect" class="form-select form-select-sm">
                         <option value="deny" selected>deny</option>
@@ -369,38 +470,116 @@ $csrf = csrfToken();
                     </select>
                 </div>
             </div>
+
             <div class="row g-2 mb-2">
                 <div class="col-sm-3">
                     <label class="form-label small">Target type</label>
-                    <input type="text" name="target_type" class="form-control form-control-sm" maxlength="20"
-                           placeholder="platform / user / org / licence_type">
+                    <select name="target_type" id="rx-target-type"
+                            class="form-select form-select-sm"
+                            data-picker-canonical="#rx-target-id">
+                        <option value="">— (none)</option>
+                        <option value="platform">Platform</option>
+                        <option value="user">User</option>
+                        <option value="organisation">Organisation</option>
+                        <option value="licence_type">Licence type</option>
+                    </select>
                 </div>
-                <div class="col-sm-3">
-                    <label class="form-label small">Target ID</label>
-                    <input type="text" name="target_id" class="form-control form-control-sm" maxlength="50"
-                           placeholder="PWA / Apple / Android / user-ID / org-ID / ccli">
+                <div class="col-sm-5" data-picker-group-for="#rx-target-id">
+                    <label class="form-label small">Target</label>
+
+                    <!-- platform picker: hard-coded select -->
+                    <div class="rx-picker" data-picker-for="platform">
+                        <select class="form-select form-select-sm rx-picker-select">
+                            <option value="">— (any platform)</option>
+                            <?php foreach (RESTRICTIONS_PLATFORMS as $k => $lbl): ?>
+                                <option value="<?= htmlspecialchars($k) ?>"><?= htmlspecialchars($lbl) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <!-- user picker: live-search combobox -->
+                    <div class="rx-picker d-none" data-picker-for="user">
+                        <div class="position-relative">
+                            <input type="text" class="form-control form-control-sm rx-picker-input"
+                                   data-picker-source="user" autocomplete="off"
+                                   placeholder="Type a display name or @username">
+                            <div class="rx-picker-popover list-group position-absolute w-100 shadow d-none"
+                                 style="z-index: 1050; max-height: 240px; overflow-y: auto;"></div>
+                        </div>
+                    </div>
+
+                    <!-- organisation picker: server-rendered select + live-search fallback -->
+                    <div class="rx-picker d-none" data-picker-for="organisation">
+                        <select class="form-select form-select-sm rx-picker-select">
+                            <option value="">— (any organisation)</option>
+                            <?php foreach ($picker_organisations as $org): ?>
+                                <option value="<?= (int)$org['Id'] ?>">
+                                    <?= htmlspecialchars($org['Name']) ?>
+                                    — licence: <?= htmlspecialchars($org['LicenceType'] ?: 'none') ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <!-- licence type picker -->
+                    <div class="rx-picker d-none" data-picker-for="licence_type">
+                        <select class="form-select form-select-sm rx-picker-select">
+                            <?php foreach (RESTRICTIONS_LICENCE_TYPES as $k => $lbl): ?>
+                                <option value="<?= htmlspecialchars($k) ?>"><?= htmlspecialchars($lbl) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <!-- none picker (shown when target_type = "") -->
+                    <div class="rx-picker d-none" data-picker-for="">
+                        <div class="form-text mb-0">No target — rule applies to all users / platforms / orgs.</div>
+                    </div>
                 </div>
                 <div class="col-sm-2">
                     <label class="form-label small">Priority</label>
                     <input type="number" name="priority" class="form-control form-control-sm"
                            min="0" max="1000" value="100">
                 </div>
-                <div class="col-sm-4">
+                <div class="col-sm-2">
                     <label class="form-label small">Reason (shown to user)</label>
                     <input type="text" name="reason" class="form-control form-control-sm" maxlength="255"
-                           placeholder="e.g. Subscription required for this songbook">
+                           placeholder="e.g. Subscription required">
                 </div>
             </div>
+
             <button type="submit" class="btn btn-amber-solid btn-sm mt-2">
                 <i class="bi bi-plus me-1"></i>Add rule
             </button>
             <p class="text-muted small mt-3 mb-0">
                 <strong>Tips.</strong>
-                Entity ID <code>*</code> matches every entity of the selected type.
-                For <em>Require licence</em> set Target ID to the licence type (e.g. <code>ccli</code>).
-                For <em>Require organisation</em> leave Target ID blank to require any org, or set an org ID to require a specific one.
+                Most fields now offer pickers — the canonical IDs are saved for you automatically.
+                Use <code>*</code> in the song picker (or the "every" option elsewhere) to match everything of that type.
+                For <em>Require organisation</em>, leave the target blank to require any org.
             </p>
         </form>
+
+        <!-- Picker behaviour (#498). Previously a 150-line inline script;
+             now a shared helper at /manage/includes/renderEntityPicker.js
+             that auto-discovers every picker group inside the form via the
+             data-picker-canonical / data-picker-group-for attributes set
+             on the markup above. Other admin pages can reuse the same
+             module by loading this script and calling initEntityPickers. -->
+        <?php
+            /* Cache-bust using the helper file's mtime, so admins get
+               the latest version immediately after a deploy. */
+            $pickerPath = __DIR__ . DIRECTORY_SEPARATOR . 'includes' .
+                          DIRECTORY_SEPARATOR . 'renderEntityPicker.js';
+            $pickerVer  = @filemtime($pickerPath) ?: 0;
+        ?>
+        <script src="/manage/includes/renderEntityPicker.js?v=<?= (int)$pickerVer ?>"></script>
+        <script>
+            (function () {
+                var form = document.getElementById('restriction-form');
+                if (form && typeof window.initEntityPickers === 'function') {
+                    window.initEntityPickers(form);
+                }
+            })();
+        </script>
 
     </div>
 

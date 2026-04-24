@@ -36,6 +36,11 @@ CREATE TABLE IF NOT EXISTS tblSongbooks (
     SongCount       INT UNSIGNED    NOT NULL DEFAULT 0,
     DisplayOrder    INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'Explicit sort order for listings / filter dropdowns',
     Colour          VARCHAR(7)      NOT NULL DEFAULT '' COMMENT 'Badge colour hex #RRGGBB (empty = theme default)',
+    IsOfficial      TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = published hymnal; 0 = curated grouping / pseudo-songbook (#502)',
+    Publisher       VARCHAR(255)    NULL DEFAULT NULL COMMENT 'Publisher or originator (e.g. Praise Trust, Hope Publishing) (#502)',
+    PublicationYear VARCHAR(50)     NULL DEFAULT NULL COMMENT 'Year / edition range (free-form: 1986, 1986-2003, 2nd edition 2011) (#502)',
+    Copyright       VARCHAR(500)    NULL DEFAULT NULL COMMENT 'Copyright notice for the collection as a whole (#502)',
+    Affiliation     VARCHAR(120)    NULL DEFAULT NULL COMMENT 'Denominational / religious affiliation; free-text for now, lookup table later (#502)',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
@@ -59,7 +64,9 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     SongbookName        VARCHAR(255)    NOT NULL COMMENT 'Denormalised songbook name for convenience',
     Language            VARCHAR(10)     NOT NULL DEFAULT 'en',
     Copyright           VARCHAR(500)    NOT NULL DEFAULT '',
-    Ccli                VARCHAR(50)     NOT NULL DEFAULT '',
+    TuneName            VARCHAR(120)    NULL DEFAULT NULL COMMENT 'Traditional tune name, e.g. HYFRYDOL, OLD HUNDREDTH (#497)',
+    Ccli                VARCHAR(50)     NOT NULL DEFAULT '' COMMENT 'CCLI Song Number',
+    Iswc                VARCHAR(15)     NULL DEFAULT NULL COMMENT 'International Standard Musical Work Code, e.g. T-034.524.680-C (#497)',
     Verified            TINYINT(1)      NOT NULL DEFAULT 0,
     LyricsPublicDomain  TINYINT(1)      NOT NULL DEFAULT 0,
     MusicPublicDomain   TINYINT(1)      NOT NULL DEFAULT 0,
@@ -71,6 +78,7 @@ CREATE TABLE IF NOT EXISTS tblSongs (
 
     INDEX idx_Songbook          (SongbookAbbr),
     INDEX idx_SongbookNumber    (SongbookAbbr, Number),
+    INDEX idx_TuneName          (TuneName),
     FULLTEXT idx_TitleFt        (Title),
     FULLTEXT idx_LyricsFt       (LyricsText),
     FULLTEXT idx_TitleLyricsFt  (Title, LyricsText),
@@ -112,6 +120,63 @@ CREATE TABLE IF NOT EXISTS tblSongComposers (
     INDEX idx_Name      (Name),
 
     CONSTRAINT fk_Composers_Song
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongArrangers (#497)
+-- Many-to-one: a song can have multiple arrangers.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongArrangers (
+    Id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    SongId      VARCHAR(20)     NOT NULL,
+    Name        VARCHAR(255)    NOT NULL,
+
+    INDEX idx_SongId    (SongId),
+    INDEX idx_Name      (Name),
+
+    CONSTRAINT fk_Arrangers_Song
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongAdaptors (#497)
+-- Many-to-one: a song can have multiple adaptors.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongAdaptors (
+    Id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    SongId      VARCHAR(20)     NOT NULL,
+    Name        VARCHAR(255)    NOT NULL,
+
+    INDEX idx_SongId    (SongId),
+    INDEX idx_Name      (Name),
+
+    CONSTRAINT fk_Adaptors_Song
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongTranslators (#497)
+-- Many-to-one: a song can have multiple translators. Distinct from the
+-- tblSongTranslations link table (#352) which joins a source song to its
+-- equivalent in another language — the Translators table credits the
+-- people who produced those translations for *this* song.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongTranslators (
+    Id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    SongId      VARCHAR(20)     NOT NULL,
+    Name        VARCHAR(255)    NOT NULL,
+
+    INDEX idx_SongId    (SongId),
+    INDEX idx_Name      (Name),
+
+    CONSTRAINT fk_Translators_Song
         FOREIGN KEY (SongId) REFERENCES tblSongs(SongId)
         ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

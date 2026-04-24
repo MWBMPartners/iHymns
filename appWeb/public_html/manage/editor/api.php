@@ -77,7 +77,11 @@ switch ($action) {
 
             header('Content-Type: application/json; charset=UTF-8');
             header('X-Content-Type-Options: nosniff');
-            echo json_encode($fullData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
+            /* No JSON_PRETTY_PRINT — the editor parses the response
+               with JSON.parse, nothing reads it by eye, and the extra
+               whitespace inflates the 3,600-song payload by ~25% on
+               the wire. */
+            echo json_encode($fullData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         } catch (\Exception $e) {
             http_response_code(500);
             error_log('[iHymns Editor] Failed to load song data: ' . $e->getMessage());
@@ -124,10 +128,17 @@ switch ($action) {
             $db->query("SET FOREIGN_KEY_CHECKS = 0");
             $db->begin_transaction();
 
-            /* Clear existing data */
+            /* Clear existing data. New credit tables (#497) are TRUNCATEd
+               alongside the originals so a bulk import yields a clean
+               slate; the migration must have been run first or the query
+               will fail with a clear "Table … doesn't exist" error that
+               points the admin at /manage/setup-database. */
             $db->query("TRUNCATE TABLE tblSongComponents");
             $db->query("TRUNCATE TABLE tblSongComposers");
             $db->query("TRUNCATE TABLE tblSongWriters");
+            $db->query("TRUNCATE TABLE tblSongArrangers");
+            $db->query("TRUNCATE TABLE tblSongAdaptors");
+            $db->query("TRUNCATE TABLE tblSongTranslators");
             $db->query("TRUNCATE TABLE tblSongs");
             $db->query("TRUNCATE TABLE tblSongbooks");
 
@@ -146,20 +157,22 @@ switch ($action) {
             }
             $stmtSongbook->close();
 
-            /* Prepare song statements */
+            /* Prepare song statements. tblSongs INSERT now carries the
+               #497 TuneName + Iswc columns; both are nullable and bind
+               as the string types below (mysqli emits NULL when the
+               bound PHP value is null). */
             $stmtSong = $db->prepare(
                 "INSERT INTO tblSongs (SongId, Number, Title, SongbookAbbr, SongbookName,
-                 Language, Copyright, Ccli, Verified, LyricsPublicDomain,
+                 Language, Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
                  MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             );
-            $stmtWriter = $db->prepare(
-                "INSERT INTO tblSongWriters (SongId, Name) VALUES (?, ?)"
-            );
-            $stmtComposer = $db->prepare(
-                "INSERT INTO tblSongComposers (SongId, Name) VALUES (?, ?)"
-            );
-            $stmtComponent = $db->prepare(
+            $stmtWriter     = $db->prepare("INSERT INTO tblSongWriters     (SongId, Name) VALUES (?, ?)");
+            $stmtComposer   = $db->prepare("INSERT INTO tblSongComposers   (SongId, Name) VALUES (?, ?)");
+            $stmtArranger   = $db->prepare("INSERT INTO tblSongArrangers   (SongId, Name) VALUES (?, ?)");
+            $stmtAdaptor    = $db->prepare("INSERT INTO tblSongAdaptors    (SongId, Name) VALUES (?, ?)");
+            $stmtTranslator = $db->prepare("INSERT INTO tblSongTranslators (SongId, Name) VALUES (?, ?)");
+            $stmtComponent  = $db->prepare(
                 "INSERT INTO tblSongComponents (SongId, Type, Number, SortOrder, LinesJson)
                  VALUES (?, ?, ?, ?, ?)"
             );
@@ -180,7 +193,14 @@ switch ($action) {
                 $songbookName = $song['songbookName'] ?? '';
                 $language     = $song['language'] ?? 'en';
                 $copyright    = $song['copyright'] ?? '';
+                /* TuneName / Iswc: empty strings normalise to NULL so
+                   the indexed TuneName column groups "unknown" rows
+                   together and doesn't fragment on empty values. */
+                $tuneRaw      = trim((string)($song['tuneName'] ?? ''));
+                $tuneName     = $tuneRaw === '' ? null : $tuneRaw;
                 $ccli         = $song['ccli'] ?? '';
+                $iswcRaw      = trim((string)($song['iswc'] ?? ''));
+                $iswc         = $iswcRaw === '' ? null : $iswcRaw;
                 $verified     = (int)($song['verified'] ?? false);
                 $lyricsPD     = (int)($song['lyricsPublicDomain'] ?? false);
                 $musicPD      = (int)($song['musicPublicDomain'] ?? false);
@@ -197,24 +217,19 @@ switch ($action) {
                 $lyricsText = implode("\n", $lyricsLines);
 
                 $stmtSong->bind_param(
-                    'sissssssiiiiis',
+                    'sissssssssiiiiis',
                     $songId, $number, $title, $songbookAbbr, $songbookName,
-                    $language, $copyright, $ccli, $verified, $lyricsPD,
-                    $musicPD, $hasAudio, $hasSheet, $lyricsText
+                    $language, $copyright, $tuneName, $ccli, $iswc,
+                    $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText
                 );
                 $stmtSong->execute();
 
-                /* Writers */
-                foreach ($song['writers'] ?? [] as $writer) {
-                    $stmtWriter->bind_param('ss', $songId, $writer);
-                    $stmtWriter->execute();
-                }
-
-                /* Composers */
-                foreach ($song['composers'] ?? [] as $composer) {
-                    $stmtComposer->bind_param('ss', $songId, $composer);
-                    $stmtComposer->execute();
-                }
+                /* Credit collections — one table each. */
+                foreach ($song['writers']     ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtWriter->bind_param('ss', $songId, $v);     $stmtWriter->execute(); } }
+                foreach ($song['composers']   ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtComposer->bind_param('ss', $songId, $v);   $stmtComposer->execute(); } }
+                foreach ($song['arrangers']   ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtArranger->bind_param('ss', $songId, $v);   $stmtArranger->execute(); } }
+                foreach ($song['adaptors']    ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtAdaptor->bind_param('ss', $songId, $v);    $stmtAdaptor->execute(); } }
+                foreach ($song['translators'] ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtTranslator->bind_param('ss', $songId, $v); $stmtTranslator->execute(); } }
 
                 /* Components */
                 $sortOrder = 0;
@@ -231,6 +246,9 @@ switch ($action) {
             $stmtSong->close();
             $stmtWriter->close();
             $stmtComposer->close();
+            $stmtArranger->close();
+            $stmtAdaptor->close();
+            $stmtTranslator->close();
             $stmtComponent->close();
 
             /*
@@ -418,7 +436,14 @@ switch ($action) {
         $songbookName = (string)($song['songbookName'] ?? '');
         $language     = (string)($song['language']    ?? 'en');
         $copyright    = (string)($song['copyright']   ?? '');
+        /* TuneName + Iswc are nullable (#497). Empty/whitespace-only
+           input normalises to NULL so the indexed TuneName column
+           groups "unknown" rows together. */
+        $tuneRaw      = trim((string)($song['tuneName'] ?? ''));
+        $tuneName     = $tuneRaw === '' ? null : $tuneRaw;
         $ccli         = (string)($song['ccli']        ?? '');
+        $iswcRaw      = trim((string)($song['iswc']   ?? ''));
+        $iswc         = $iswcRaw === '' ? null : $iswcRaw;
         $verified     = (int)($song['verified']           ?? 0);
         $lyricsPD     = (int)($song['lyricsPublicDomain'] ?? 0);
         $musicPD      = (int)($song['musicPublicDomain']  ?? 0);
@@ -450,53 +475,66 @@ switch ($action) {
             }
             $action = $prevRow === null ? 'create' : 'edit';
 
-            /* UPSERT tblSongs */
+            /* UPSERT tblSongs — now carries TuneName + Iswc (#497). */
             $upsert = $db->prepare(
                 'INSERT INTO tblSongs
                     (SongId, Number, Title, SongbookAbbr, SongbookName, Language,
-                     Copyright, Ccli, Verified, LyricsPublicDomain, MusicPublicDomain,
-                     HasAudio, HasSheetMusic, LyricsText)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
+                     MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                  ON DUPLICATE KEY UPDATE
                     Number = VALUES(Number), Title = VALUES(Title),
                     SongbookAbbr = VALUES(SongbookAbbr), SongbookName = VALUES(SongbookName),
                     Language = VALUES(Language), Copyright = VALUES(Copyright),
-                    Ccli = VALUES(Ccli), Verified = VALUES(Verified),
+                    TuneName = VALUES(TuneName),
+                    Ccli = VALUES(Ccli), Iswc = VALUES(Iswc),
+                    Verified = VALUES(Verified),
                     LyricsPublicDomain = VALUES(LyricsPublicDomain),
                     MusicPublicDomain = VALUES(MusicPublicDomain),
                     HasAudio = VALUES(HasAudio), HasSheetMusic = VALUES(HasSheetMusic),
                     LyricsText = VALUES(LyricsText)'
             );
             $upsert->bind_param(
-                'sissssssiiiiis',
+                'sissssssssiiiiis',
                 $songId, $number, $title, $songbookAbbr, $songbookName,
-                $language, $copyright, $ccli, $verified, $lyricsPD,
-                $musicPD, $hasAudio, $hasSheet, $lyricsText
+                $language, $copyright, $tuneName, $ccli, $iswc,
+                $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText
             );
             $upsert->execute();
             $upsert->close();
 
             /* Child rows: DELETE then INSERT — simpler than diffing and
-               the row counts per song are small (≈1–20 each). */
-            $del = $db->prepare('DELETE FROM tblSongWriters    WHERE SongId = ?'); $del->bind_param('s', $songId); $del->execute(); $del->close();
-            $del = $db->prepare('DELETE FROM tblSongComposers  WHERE SongId = ?'); $del->bind_param('s', $songId); $del->execute(); $del->close();
-            $del = $db->prepare('DELETE FROM tblSongComponents WHERE SongId = ?'); $del->bind_param('s', $songId); $del->execute(); $del->close();
-
-            $insWriter = $db->prepare('INSERT INTO tblSongWriters (SongId, Name) VALUES (?, ?)');
-            foreach ($song['writers'] ?? [] as $w) {
-                if (!is_string($w) || $w === '') continue;
-                $insWriter->bind_param('ss', $songId, $w);
-                $insWriter->execute();
+               the row counts per song are small (≈1–20 each). New credit
+               tables from #497 are cleaned up here too. */
+            foreach ([
+                'tblSongWriters', 'tblSongComposers', 'tblSongArrangers',
+                'tblSongAdaptors', 'tblSongTranslators', 'tblSongComponents',
+            ] as $childTable) {
+                $del = $db->prepare("DELETE FROM {$childTable} WHERE SongId = ?");
+                $del->bind_param('s', $songId);
+                $del->execute();
+                $del->close();
             }
-            $insWriter->close();
 
-            $insComposer = $db->prepare('INSERT INTO tblSongComposers (SongId, Name) VALUES (?, ?)');
-            foreach ($song['composers'] ?? [] as $c) {
-                if (!is_string($c) || $c === '') continue;
-                $insComposer->bind_param('ss', $songId, $c);
-                $insComposer->execute();
+            /* Insert credit collections. Each collection is a separate
+               prepared statement to keep the field name explicit at each
+               call site. */
+            $creditInserts = [
+                'writers'     => 'INSERT INTO tblSongWriters     (SongId, Name) VALUES (?, ?)',
+                'composers'   => 'INSERT INTO tblSongComposers   (SongId, Name) VALUES (?, ?)',
+                'arrangers'   => 'INSERT INTO tblSongArrangers   (SongId, Name) VALUES (?, ?)',
+                'adaptors'    => 'INSERT INTO tblSongAdaptors    (SongId, Name) VALUES (?, ?)',
+                'translators' => 'INSERT INTO tblSongTranslators (SongId, Name) VALUES (?, ?)',
+            ];
+            foreach ($creditInserts as $key => $sql) {
+                $stmt = $db->prepare($sql);
+                foreach ($song[$key] ?? [] as $name) {
+                    if (!is_string($name) || $name === '') continue;
+                    $stmt->bind_param('ss', $songId, $name);
+                    $stmt->execute();
+                }
+                $stmt->close();
             }
-            $insComposer->close();
 
             $insComp = $db->prepare(
                 'INSERT INTO tblSongComponents
@@ -544,6 +582,111 @@ switch ($action) {
             /* Do not expose DB internals to the client — the details are
                in the server error log for admins to inspect. */
             echo json_encode(['error' => 'Failed to save song. Check server logs for details.']);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * SONG_TAGS (#496) — return the tags currently assigned to a song
+     *
+     * GET parameters:
+     *   id — song id (e.g. CP-0001)
+     *
+     * Response: { tags: [{id, name, slug, description}, ...] }
+     *
+     * Used by the editor's Tags tab to render the per-song chip list
+     * when a song is selected.
+     * ----------------------------------------------------------------- */
+    case 'song_tags':
+        $songId = trim((string)($_GET['id'] ?? ''));
+        if ($songId === '') {
+            http_response_code(400);
+            echo json_encode(['error' => 'Song id is required.']);
+            break;
+        }
+        try {
+            $db = getDbMysqli();
+            $stmt = $db->prepare(
+                'SELECT t.Id AS id, t.Name AS name, t.Slug AS slug,
+                        t.Description AS description
+                 FROM tblSongTagMap m
+                 JOIN tblSongTags t ON t.Id = m.TagId
+                 WHERE m.SongId = ?
+                 ORDER BY t.Name ASC'
+            );
+            $stmt->bind_param('s', $songId);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $tags = [];
+            while ($row = $result->fetch_assoc()) {
+                $row['id'] = (int)$row['id'];
+                $tags[] = $row;
+            }
+            $stmt->close();
+            echo json_encode(['tags' => $tags]);
+        } catch (\Throwable $e) {
+            error_log('[editor song_tags] ' . $e->getMessage());
+            echo json_encode(['tags' => []]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * TAG_SEARCH (#496) — autocomplete for existing tag names
+     *
+     * GET parameters:
+     *   q — partial name, case-insensitive substring match (optional;
+     *       if empty, returns the most-used tags — useful for the
+     *       "start typing" empty-state list)
+     *   limit — max 20 suggestions (default 10)
+     *
+     * Response: { suggestions: [{id, name, slug, usage}, ...] }
+     *   usage — number of songs currently carrying this tag, so popular
+     *           tags sort first and admins don't accidentally coin a
+     *           near-duplicate of an existing one.
+     * ----------------------------------------------------------------- */
+    case 'tag_search':
+        $q     = trim((string)($_GET['q'] ?? ''));
+        $limit = max(1, min(20, (int)($_GET['limit'] ?? 10)));
+        try {
+            $db = getDbMysqli();
+            if ($q === '') {
+                $sql = 'SELECT t.Id AS id, t.Name AS name, t.Slug AS slug,
+                               COUNT(m.TagId) AS usage
+                        FROM tblSongTags t
+                        LEFT JOIN tblSongTagMap m ON m.TagId = t.Id
+                        GROUP BY t.Id
+                        ORDER BY usage DESC, t.Name ASC
+                        LIMIT ?';
+                $stmt = $db->prepare($sql);
+                $stmt->bind_param('i', $limit);
+            } else {
+                $like = '%' . $q . '%';
+                $sql = 'SELECT t.Id AS id, t.Name AS name, t.Slug AS slug,
+                               COUNT(m.TagId) AS usage
+                        FROM tblSongTags t
+                        LEFT JOIN tblSongTagMap m ON m.TagId = t.Id
+                        WHERE t.Name LIKE ?
+                        GROUP BY t.Id
+                        ORDER BY usage DESC, t.Name ASC
+                        LIMIT ?';
+                $stmt = $db->prepare($sql);
+                $stmt->bind_param('si', $like, $limit);
+            }
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $suggestions = [];
+            while ($row = $result->fetch_assoc()) {
+                $suggestions[] = [
+                    'id'    => (int)$row['id'],
+                    'name'  => $row['name'],
+                    'slug'  => $row['slug'],
+                    'usage' => (int)$row['usage'],
+                ];
+            }
+            $stmt->close();
+            echo json_encode(['suggestions' => $suggestions]);
+        } catch (\Throwable $e) {
+            error_log('[editor tag_search] ' . $e->getMessage());
+            echo json_encode(['suggestions' => []]);
         }
         break;
 
@@ -848,10 +991,197 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
+     * CREDIT_SEARCH (#495) — live-search distinct credit names
+     *
+     * GET parameters:
+     *   q    — partial name, case-insensitive substring match
+     *   kind — writer | composer | arranger | adaptor | translator | any
+     *          (default: any; "any" unions all five tables so the same
+     *          canonical spelling is surfaced regardless of which role
+     *          the user is typing into)
+     *   limit — max 50 suggestions (default 20)
+     *
+     * Returns: { suggestions: [{name, usage, kinds:["writer",...]}, ...] }
+     *   * usage — total song-count across the chosen kind(s), so popular
+     *             spellings sort first.
+     *   * kinds — which tables the name appears in; useful for the UI
+     *             to signal "this name is already used as an arranger".
+     * ----------------------------------------------------------------- */
+    case 'credit_search':
+        $q     = trim((string)($_GET['q'] ?? ''));
+        $kind  = strtolower(trim((string)($_GET['kind'] ?? 'any')));
+        $limit = max(1, min(50, (int)($_GET['limit'] ?? 20)));
+
+        if ($q === '' || strlen($q) < 1) {
+            echo json_encode(['suggestions' => []]);
+            break;
+        }
+
+        $kindToTable = [
+            'writer'     => 'tblSongWriters',
+            'composer'   => 'tblSongComposers',
+            'arranger'   => 'tblSongArrangers',
+            'adaptor'    => 'tblSongAdaptors',
+            'translator' => 'tblSongTranslators',
+        ];
+
+        $tablesToSearch = $kind === 'any'
+            ? $kindToTable
+            : (isset($kindToTable[$kind]) ? [$kind => $kindToTable[$kind]] : []);
+
+        if (empty($tablesToSearch)) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Unknown kind. Use writer|composer|arranger|adaptor|translator|any.']);
+            break;
+        }
+
+        try {
+            $db   = getDbMysqli();
+            $like = '%' . $q . '%';
+
+            /* Build a UNION ALL across the selected tables, grouping by
+               name so the same "Fanny Crosby" from three different
+               tables collapses to a single suggestion with a combined
+               song count and the list of kinds it appears in. */
+            $unionParts = [];
+            $params     = [];
+            $types      = '';
+            foreach ($tablesToSearch as $kindLabel => $table) {
+                $unionParts[] = "SELECT Name, '{$kindLabel}' AS kindLabel, COUNT(*) AS cnt
+                                 FROM {$table}
+                                 WHERE Name LIKE ?
+                                 GROUP BY Name";
+                $params[] = $like;
+                $types   .= 's';
+            }
+            $sql = "SELECT Name, GROUP_CONCAT(DISTINCT kindLabel) AS kinds, SUM(cnt) AS usage
+                    FROM (" . implode(' UNION ALL ', $unionParts) . ") u
+                    GROUP BY Name
+                    ORDER BY usage DESC, Name ASC
+                    LIMIT ?";
+            $types   .= 'i';
+            $params[] = $limit;
+
+            $stmt = $db->prepare($sql);
+            $stmt->bind_param($types, ...$params);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $suggestions = [];
+            while ($row = $res->fetch_assoc()) {
+                $suggestions[] = [
+                    'name'  => $row['Name'],
+                    'usage' => (int)$row['usage'],
+                    'kinds' => $row['kinds'] !== null ? explode(',', $row['kinds']) : [],
+                ];
+            }
+            $stmt->close();
+            echo json_encode(['suggestions' => $suggestions]);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[editor credit_search] ' . $e->getMessage());
+            echo json_encode(['error' => 'Credit search failed.']);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * USER_SEARCH (#498) — live-search users by display name / username
+     *
+     * Used by the /manage/restrictions name-first picker to resolve a
+     * human-friendly user label ("Lance Manasse · @admin") to the
+     * canonical tblUsers.Id on save. Admin-gated like every endpoint
+     * in this file.
+     *
+     * GET parameters:
+     *   q     — partial match against DisplayName OR Username (LIKE %q%)
+     *   limit — max 20 suggestions (default 10)
+     *
+     * Response: { suggestions: [{id, label, hint}, ...] }
+     * ----------------------------------------------------------------- */
+    case 'user_search':
+        $q     = trim((string)($_GET['q'] ?? ''));
+        $limit = max(1, min(20, (int)($_GET['limit'] ?? 10)));
+        if ($q === '') {
+            echo json_encode(['suggestions' => []]);
+            break;
+        }
+        try {
+            $db = getDbMysqli();
+            $like = '%' . $q . '%';
+            $stmt = $db->prepare(
+                'SELECT Id, DisplayName, Username, Role
+                 FROM tblUsers
+                 WHERE DisplayName LIKE ? OR Username LIKE ?
+                 ORDER BY DisplayName ASC
+                 LIMIT ?'
+            );
+            $stmt->bind_param('ssi', $like, $like, $limit);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $suggestions = [];
+            while ($row = $res->fetch_assoc()) {
+                $suggestions[] = [
+                    'id'    => (int)$row['Id'],
+                    'label' => $row['DisplayName'] ?: $row['Username'],
+                    'hint'  => '@' . $row['Username'] . ' · ' . $row['Role'],
+                ];
+            }
+            $stmt->close();
+            echo json_encode(['suggestions' => $suggestions]);
+        } catch (\Throwable $e) {
+            error_log('[editor user_search] ' . $e->getMessage());
+            echo json_encode(['suggestions' => []]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * ORG_SEARCH (#498) — live-search organisations by name
+     * ----------------------------------------------------------------- */
+    case 'org_search':
+        $q     = trim((string)($_GET['q'] ?? ''));
+        $limit = max(1, min(50, (int)($_GET['limit'] ?? 20)));
+        try {
+            $db = getDbMysqli();
+            if ($q === '') {
+                $stmt = $db->prepare(
+                    'SELECT Id, Name, Slug, LicenceType FROM tblOrganisations
+                     WHERE IsActive = 1
+                     ORDER BY Name ASC
+                     LIMIT ?'
+                );
+                $stmt->bind_param('i', $limit);
+            } else {
+                $like = '%' . $q . '%';
+                $stmt = $db->prepare(
+                    'SELECT Id, Name, Slug, LicenceType FROM tblOrganisations
+                     WHERE IsActive = 1 AND (Name LIKE ? OR Slug LIKE ?)
+                     ORDER BY Name ASC
+                     LIMIT ?'
+                );
+                $stmt->bind_param('ssi', $like, $like, $limit);
+            }
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $suggestions = [];
+            while ($row = $res->fetch_assoc()) {
+                $suggestions[] = [
+                    'id'    => (int)$row['Id'],
+                    'label' => $row['Name'],
+                    'hint'  => 'licence: ' . ($row['LicenceType'] ?: 'none') . ' · slug: ' . $row['Slug'],
+                ];
+            }
+            $stmt->close();
+            echo json_encode(['suggestions' => $suggestions]);
+        } catch (\Throwable $e) {
+            error_log('[editor org_search] ' . $e->getMessage());
+            echo json_encode(['suggestions' => []]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
      * Unknown action
      * ----------------------------------------------------------------- */
     default:
         http_response_code(400);
-        echo json_encode(['error' => 'Unknown action. Use: load, save, save_song, bulk_tag, list_revisions, restore_revision, get_translations, add_translation, remove_translation']);
+        echo json_encode(['error' => 'Unknown action. Use: load, save, save_song, save_song_tags, tag_search, credit_search, bulk_tag, list_revisions, restore_revision, get_translations, add_translation, remove_translation']);
         break;
 }
