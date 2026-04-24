@@ -355,9 +355,9 @@ $csrf = csrfToken();
             <h2 class="h6 mb-3"><i class="bi bi-info-circle me-2"></i>System Info</h2>
             <table class="table table-sm table-borderless mb-0 small">
                 <tr><td class="text-muted" style="width:40%">PHP Version</td><td><?= phpversion() ?></td></tr>
-                <tr><td class="text-muted">Database Driver</td><td><?= ucfirst(DB_CONFIG['driver']) ?></td></tr>
-                <?php if (DB_CONFIG['driver'] === 'sqlite'): ?>
-                <tr><td class="text-muted">Database File</td><td><code class="small"><?= htmlspecialchars(basename(DB_CONFIG['sqlite']['path'])) ?></code></td></tr>
+                <tr><td class="text-muted">Database Driver</td><td>MySQL</td></tr>
+                <?php if (defined('DB_HOST') && defined('DB_NAME')): ?>
+                <tr><td class="text-muted">Database</td><td><code class="small"><?= htmlspecialchars(DB_NAME . '@' . DB_HOST) ?></code></td></tr>
                 <?php endif; ?>
                 <tr><td class="text-muted">Your Role</td><td><?= htmlspecialchars(roleLabel($currentUser['role'])) ?></td></tr>
                 <tr><td class="text-muted">Your Username</td><td><code><?= htmlspecialchars($currentUser['username']) ?></code></td></tr>
