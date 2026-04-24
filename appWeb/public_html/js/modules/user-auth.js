@@ -441,13 +441,12 @@ export class UserAuth {
     }
 
     /**
-     * Update the header dropdown to reflect current auth state.
+     * Update the header dropdowns to reflect current auth state.
      *
-     * Account section is visible to any signed-in user. Curator and
-     * Administration sections (each with a label header + divider)
-     * are toggled per-entitlement via userHasEntitlement(); the section
-     * label collapses with the items so a user with no curator/admin
-     * privileges sees a clean menu.
+     * The avatar menu holds only account items (always on when signed in).
+     * Curator and Administration live on the iHymns (logo) dropdown and
+     * are toggled per-entitlement; each section's label + divider collapse
+     * with its items so users without the relevant rights see nothing.
      */
     _updateHeaderState() {
         const loggedIn = this.isLoggedIn();
@@ -478,24 +477,24 @@ export class UserAuth {
             if (roleEl) roleEl.textContent = this._roleLabel(user.role || 'user');
         }
 
-        /* Per-entitlement items. Each entry: [elementId, entitlement-name].
-           When the user is signed out, every gated item is hidden. */
+        /* Per-entitlement items on the iHymns (logo) dropdown.
+           Each entry: [elementId, entitlement-name]. Signed-out hides all. */
         const entItems = {
             curator: [
-                ['header-user-editor-li',         'edit_songs'],
-                ['header-curator-requests-li',    'review_song_requests'],
-                ['header-curator-revisions-li',   'verify_songs'],
+                ['nav-curator-editor-li',     'edit_songs'],
+                ['nav-curator-requests-li',   'review_song_requests'],
+                ['nav-curator-revisions-li',  'verify_songs'],
             ],
             admin: [
-                ['header-user-dashboard-li',      'view_admin_dashboard'],
-                ['header-admin-users-li',         'view_users'],
-                ['header-admin-groups-li',        'manage_user_groups'],
-                ['header-admin-organisations-li', 'manage_organisations'],
-                ['header-admin-songbooks-li',     'manage_songbooks'],
-                ['header-admin-entitlements-li',  'manage_entitlements'],
-                ['header-admin-analytics-li',     'view_analytics'],
-                ['header-admin-db-li',            'run_db_install'],
-                ['header-admin-health-li',        'drop_legacy_tables'],
+                ['nav-admin-dashboard-li',      'view_admin_dashboard'],
+                ['nav-admin-users-li',          'view_users'],
+                ['nav-admin-groups-li',         'manage_user_groups'],
+                ['nav-admin-organisations-li',  'manage_organisations'],
+                ['nav-admin-songbooks-li',      'manage_songbooks'],
+                ['nav-admin-entitlements-li',   'manage_entitlements'],
+                ['nav-admin-analytics-li',      'view_analytics'],
+                ['nav-admin-db-li',             'run_db_install'],
+                ['nav-admin-health-li',         'drop_legacy_tables'],
             ],
         };
 
@@ -513,16 +512,8 @@ export class UserAuth {
             if (hEl) hEl.classList.toggle('d-none', !anyVisible);
         };
 
-        applySection(entItems.curator, 'header-curator-divider', 'header-curator-header');
-        applySection(entItems.admin,   'header-admin-divider',   'header-admin-header');
-
-        /* Left "app name" dropdown also surfaces Song Editor for users
-           who hold edit_songs. Same entitlement check, separate element. */
-        const navEditor = document.getElementById('nav-app-editor-li');
-        if (navEditor) {
-            const canEdit = loggedIn && userHasEntitlement('edit_songs', role);
-            navEditor.classList.toggle('d-none', !canEdit);
-        }
+        applySection(entItems.curator, 'nav-curator-divider', 'nav-curator-header');
+        applySection(entItems.admin,   'nav-admin-divider',   'nav-admin-header');
 
         /* Update icon style */
         const icon = document.getElementById('header-user-icon');
