@@ -34,6 +34,10 @@ $_activePage = $activePage ?? '';
 $_role       = $currentUser['role'] ?? null;
 $_displayName = $currentUser['display_name'] ?? $currentUser['username'] ?? 'admin';
 $_username    = $currentUser['username'] ?? '';
+/* Header shows just the first word of the display name — keeps the bar
+   compact for users with long full names. The dropdown still renders
+   the full name so identity isn't lost. */
+$_headerName  = preg_split('/\s+/', trim($_displayName), 2)[0] ?: $_displayName;
 $_roleBadge   = match($_role) {
     'global_admin' => ['bg-danger',             'Global Admin'],
     'admin'        => ['bg-warning text-dark',  'Admin'],
@@ -161,7 +165,7 @@ $_visibleAdminLinks = array_values(array_filter(
                             aria-label="Account menu"
                             id="admin-user-btn">
                         <i class="bi bi-person-circle" aria-hidden="true"></i>
-                        <span class="d-none d-sm-inline text-nowrap"><?= htmlspecialchars($_displayName) ?></span>
+                        <span class="d-none d-sm-inline text-nowrap"><?= htmlspecialchars($_headerName) ?></span>
                         <span class="badge <?= $_roleBadge[0] ?> d-none d-sm-inline"
                               style="font-size: 0.65rem;">
                             <?= htmlspecialchars($_roleBadge[1]) ?>
