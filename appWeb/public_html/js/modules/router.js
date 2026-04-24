@@ -388,6 +388,11 @@ export class Router {
      * @param {object} params Route parameters
      */
     afterPageLoad(page, params) {
+        /* Re-bind any offline-download buttons in the freshly injected
+           HTML (#453 / #454). The helper idempotently ignores nodes
+           that already have handlers. */
+        import('./offline-ui.js').then(m => m.bootOfflineUi()).catch(() => {});
+
         /* Initialise favourites state on song pages */
         if (page === 'song') {
             this.app.favorites.initSongPage();
