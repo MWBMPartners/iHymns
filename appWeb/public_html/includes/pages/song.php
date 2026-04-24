@@ -45,6 +45,89 @@ $hasAudio    = !empty($song['hasAudio']);
 $hasSheet    = !empty($song['hasSheetMusic']);
 $components  = $song['components'] ?? [];
 
+/* ===================================================================
+ * Translations (#281) — list of other-language versions of this song
+ *
+ * Looks both "outward" (translations OF this song) and "inward"
+ * (this song IS a translation of another), then unions them so the
+ * picker shows every related language version regardless of which
+ * side of the relationship the current page is on.
+ *
+ * Result shape: [{ song_id, target_language, language_name,
+ *                   native_name, text_direction, translator, verified }]
+ *
+ * Wrapped in try/catch so a missing table during early setup or a
+ * DB hiccup simply hides the picker rather than blanking the page.
+ * =================================================================== */
+$translations = [];
+try {
+    require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+    $translationsDb = getDbMysqli();
+    $sql = '
+        /* Outward — this song has translations to other languages */
+        SELECT t.TranslatedSongId  AS song_id,
+               t.TargetLanguage    AS target_language,
+               l.Name              AS language_name,
+               l.NativeName        AS native_name,
+               l.TextDirection     AS text_direction,
+               t.Translator        AS translator,
+               t.Verified          AS verified
+          FROM tblSongTranslations t
+          JOIN tblLanguages l ON l.Code = t.TargetLanguage
+         WHERE t.SourceSongId = ? AND l.IsActive = 1
+        UNION
+        /* Inward — this song IS a translation of another; surface the
+           source plus any siblings (other translations of that source). */
+        SELECT src.SongId          AS song_id,
+               srcLang.Code        AS target_language,
+               srcLang.Name        AS language_name,
+               srcLang.NativeName  AS native_name,
+               srcLang.TextDirection AS text_direction,
+               ""                  AS translator,
+               1                   AS verified
+          FROM tblSongTranslations selfT
+          JOIN tblSongs src            ON src.SongId = selfT.SourceSongId
+          JOIN tblLanguages srcLang    ON srcLang.Code = src.Language
+         WHERE selfT.TranslatedSongId = ? AND srcLang.IsActive = 1
+        UNION
+        SELECT sibling.TranslatedSongId AS song_id,
+               sibling.TargetLanguage   AS target_language,
+               l2.Name                  AS language_name,
+               l2.NativeName            AS native_name,
+               l2.TextDirection         AS text_direction,
+               sibling.Translator       AS translator,
+               sibling.Verified         AS verified
+          FROM tblSongTranslations selfT2
+          JOIN tblSongTranslations sibling
+               ON sibling.SourceSongId = selfT2.SourceSongId
+              AND sibling.TranslatedSongId <> selfT2.TranslatedSongId
+          JOIN tblLanguages l2 ON l2.Code = sibling.TargetLanguage
+         WHERE selfT2.TranslatedSongId = ? AND l2.IsActive = 1
+    ';
+    $stmt = $translationsDb->prepare($sql);
+    if ($stmt !== false) {
+        $sid = (string)($song['id'] ?? '');
+        $stmt->bind_param('sss', $sid, $sid, $sid);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        while ($row = $res->fetch_assoc()) $translations[] = $row;
+        $stmt->close();
+    }
+} catch (\Throwable $_e) {
+    /* No translations infrastructure — picker stays hidden. */
+    $translations = [];
+}
+
+/* Title each translation by its native name if present, falling back
+   to the English name — lets a Spanish reader see "Español" rather
+   than "Spanish". */
+foreach ($translations as &$_t) {
+    $_t['display_label'] = ($_t['native_name'] !== '' && $_t['native_name'] !== null)
+        ? (string)$_t['native_name']
+        : (string)$_t['language_name'];
+}
+unset($_t);
+
 ?>
 
 <!-- ================================================================
@@ -116,6 +199,53 @@ $components  = $song['components'] ?? [];
                                    data-navigate="writer"><?= htmlspecialchars($c) ?></a><?php if ($i < count($composers) - 1): ?>, <?php endif; ?><?php endforeach; ?>
                         </p>
                     <?php endif; ?>
+                </div>
+            <?php endif; ?>
+
+            <!-- ============================================================
+                 Translations picker (#281) — only rendered when at least
+                 one related-language version exists. A Bootstrap dropdown
+                 keyed on the song-id so the SPA router can navigate
+                 without a full page reload.
+                 ============================================================ -->
+            <?php if (!empty($translations)): ?>
+                <div class="song-translations mb-3">
+                    <div class="dropdown">
+                        <button type="button"
+                                class="btn btn-sm btn-outline-secondary dropdown-toggle"
+                                data-bs-toggle="dropdown"
+                                aria-expanded="false"
+                                aria-label="Available translations">
+                            <i class="fa-solid fa-language me-1" aria-hidden="true"></i>
+                            Also in
+                            <?php if (count($translations) === 1): ?>
+                                <?= htmlspecialchars($translations[0]['display_label']) ?>
+                            <?php else: ?>
+                                <?= count($translations) ?> languages
+                            <?php endif; ?>
+                        </button>
+                        <ul class="dropdown-menu">
+                            <?php foreach ($translations as $t): ?>
+                                <li>
+                                    <a class="dropdown-item"
+                                       href="/song/<?= htmlspecialchars($t['song_id']) ?>"
+                                       data-navigate="song"
+                                       hreflang="<?= htmlspecialchars($t['target_language']) ?>"
+                                       lang="<?= htmlspecialchars($t['target_language']) ?>"
+                                       dir="<?= htmlspecialchars($t['text_direction'] ?: 'ltr') ?>">
+                                        <span class="fw-semibold"><?= htmlspecialchars($t['display_label']) ?></span>
+                                        <?php if (!empty($t['translator'])): ?>
+                                            <small class="text-muted ms-1">— tr. <?= htmlspecialchars($t['translator']) ?></small>
+                                        <?php endif; ?>
+                                        <?php if (!empty($t['verified'])): ?>
+                                            <i class="fa-solid fa-circle-check text-success ms-1 small"
+                                               title="Verified translation" aria-hidden="true"></i>
+                                        <?php endif; ?>
+                                    </a>
+                                </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    </div>
                 </div>
             <?php endif; ?>
 
