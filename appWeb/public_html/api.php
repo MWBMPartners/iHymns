@@ -4563,6 +4563,55 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
+         * #462 — Effective licence set for a given user (admin-only).
+         * Returns the resolved inheritance-aware list for debugging +
+         * future admin UI. Shape matches licences.php::getUserEffectiveLicences.
+         *   GET /api?action=user_effective_licences&user_id=<int>
+         * ----------------------------------------------------------------- */
+        case 'user_effective_licences':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('view_licence_audit', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Not authorised.'], 403);
+                break;
+            }
+            $targetId = (int)($_GET['user_id'] ?? 0);
+            if ($targetId <= 0) {
+                sendJson(['error' => 'user_id required.'], 400);
+                break;
+            }
+            require_once __DIR__ . '/includes/licences.php';
+            sendJson([
+                'user_id'  => $targetId,
+                'licences' => getUserEffectiveLicences($targetId),
+            ]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * #462 — Current user's licence check. Returns { has: bool } for
+         * a given licence type, walking the org hierarchy. Any
+         * authenticated caller may ask about their own set so the
+         * frontend can show/hide features.
+         *   GET /api?action=licence_check&type=ccli
+         * ----------------------------------------------------------------- */
+        case 'licence_check':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Authentication required.'], 401);
+                break;
+            }
+            $type = trim((string)($_GET['type'] ?? ''));
+            if ($type === '') {
+                sendJson(['error' => 'type required.'], 400);
+                break;
+            }
+            require_once __DIR__ . '/includes/licences.php';
+            sendJson([
+                'type' => $type,
+                'has'  => userHasEffectiveLicence((int)$authUser['Id'], $type),
+            ]);
+            break;
+
+        /* -----------------------------------------------------------------
          * Unknown action
          * ----------------------------------------------------------------- */
         default:
