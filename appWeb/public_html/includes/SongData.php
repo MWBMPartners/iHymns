@@ -334,7 +334,8 @@ class SongData
         $whereClause = !empty($where) ? 'WHERE ' . implode(' AND ', $where) : '';
 
         $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title, s.SongbookAbbr AS songbook,
-                       s.SongbookName AS songbookName, s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
+                       s.SongbookName AS songbookName, s.Language AS language, s.Copyright AS copyright,
+                       s.TuneName AS tuneName, s.Ccli AS ccli, s.Iswc AS iswc,
                        s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
                        s.MusicPublicDomain AS musicPublicDomain,
                        s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
@@ -357,28 +358,43 @@ class SongData
             $row['musicPublicDomain'] = (bool)$row['musicPublicDomain'];
             $row['hasAudio'] = (bool)$row['hasAudio'];
             $row['hasSheetMusic'] = (bool)$row['hasSheetMusic'];
+            /* tuneName / iswc are nullable; normalise to empty string
+               in the public JSON so the editor can treat them as plain
+               text inputs without null-checking every reader. */
+            $row['tuneName'] = $row['tuneName'] ?? '';
+            $row['iswc']     = $row['iswc']     ?? '';
             $songs[] = $row;
         }
         $stmt->close();
 
-        /* Bulk-load writers, composers and components for every song in
-           one query per table instead of three per song (#EditorLoad).
-           For the full catalogue (≈3,600 songs) this cuts 10,800
-           round-trips down to 3 and is the single biggest win for
-           `exportAsJson()` (Song Editor load) and any page that calls
-           `getSongs()` without a songbook filter. The per-song private
-           helpers are still used by `_fetchSongRow()` for single-song
-           fetches where one-round-trip beats three table scans. */
+        /* Bulk-load every many-to-one collection in one query per table
+           instead of N per song (#EditorLoad). For the full catalogue
+           (≈3,600 songs) this cuts thousands of round-trips down to six
+           and is the single biggest win for `exportAsJson()` (Song
+           Editor load) and any page that calls `getSongs()` without a
+           songbook filter. The per-song private helpers are still used
+           by `_fetchSongRow()` for single-song fetches where one
+           round-trip beats three table scans.
+
+           Credit collections attached here: writers, composers,
+           arrangers (#497), adaptors (#497), translators (#497),
+           components. */
         $songIds = array_column($songs, 'id');
         if (!empty($songIds)) {
-            $writersMap    = $this->_getWritersMap($songIds);
-            $composersMap  = $this->_getComposersMap($songIds);
-            $componentsMap = $this->_getComponentsMap($songIds);
+            $writersMap     = $this->_getWritersMap($songIds);
+            $composersMap   = $this->_getComposersMap($songIds);
+            $arrangersMap   = $this->_getArrangersMap($songIds);
+            $adaptorsMap    = $this->_getAdaptorsMap($songIds);
+            $translatorsMap = $this->_getTranslatorsMap($songIds);
+            $componentsMap  = $this->_getComponentsMap($songIds);
             foreach ($songs as &$song) {
                 $sid = $song['id'];
-                $song['writers']    = $writersMap[$sid]    ?? [];
-                $song['composers']  = $composersMap[$sid]  ?? [];
-                $song['components'] = $componentsMap[$sid] ?? [];
+                $song['writers']     = $writersMap[$sid]     ?? [];
+                $song['composers']   = $composersMap[$sid]   ?? [];
+                $song['arrangers']   = $arrangersMap[$sid]   ?? [];
+                $song['adaptors']    = $adaptorsMap[$sid]    ?? [];
+                $song['translators'] = $translatorsMap[$sid] ?? [];
+                $song['components']  = $componentsMap[$sid]  ?? [];
             }
             unset($song);
         }
@@ -920,7 +936,8 @@ class SongData
     {
         $stmt = $this->db->prepare(
             "SELECT SongId AS id, Number AS number, Title AS title, SongbookAbbr AS songbook,
-                    SongbookName AS songbookName, Language AS language, Copyright AS copyright, Ccli AS ccli,
+                    SongbookName AS songbookName, Language AS language, Copyright AS copyright,
+                    TuneName AS tuneName, Ccli AS ccli, Iswc AS iswc,
                     Verified AS verified, LyricsPublicDomain AS lyricsPublicDomain,
                     MusicPublicDomain AS musicPublicDomain,
                     HasAudio AS hasAudio, HasSheetMusic AS hasSheetMusic
@@ -944,9 +961,14 @@ class SongData
         $row['musicPublicDomain'] = (bool)$row['musicPublicDomain'];
         $row['hasAudio'] = (bool)$row['hasAudio'];
         $row['hasSheetMusic'] = (bool)$row['hasSheetMusic'];
+        $row['tuneName'] = $row['tuneName'] ?? '';
+        $row['iswc']     = $row['iswc']     ?? '';
         $row['writers']      = $this->_getWriters($songId);
-        $row['composers']   = $this->_getComposers($songId);
-        $row['components']  = $this->_getComponents($songId);
+        $row['composers']    = $this->_getComposers($songId);
+        $row['arrangers']    = $this->_getArrangers($songId);
+        $row['adaptors']     = $this->_getAdaptors($songId);
+        $row['translators']  = $this->_getTranslators($songId);
+        $row['components']   = $this->_getComponents($songId);
         $translations = $this->_getTranslations($songId);
         if (!empty($translations)) {
             $row['translations'] = $translations;
@@ -1114,6 +1136,149 @@ class SongData
                 'number' => (int)$row['number'],
                 'lines'  => json_decode($row['lines_json'], true) ?? [],
             ];
+        }
+        $stmt->close();
+        return $map;
+    }
+
+    /* --------------------------------------------------------------
+     * Arrangers / Adaptors / Translators (#497)
+     *
+     * Three sibling credit collections to writers/composers, each
+     * backed by a dedicated many-to-one table (tblSongArrangers,
+     * tblSongAdaptors, tblSongTranslators). Same idioms as the
+     * writers/composers helpers above: a per-song variant for single
+     * song lookups (`_fetchSongRow`) and a bulk `*Map` variant for
+     * `getSongs()` full-catalogue loads.
+     *
+     * Note the naming gotcha: `_getTranslators` credits the *people*
+     * who produced translations for this specific song, while
+     * `_getTranslations` (below) lists the cross-song link records in
+     * tblSongTranslations (#352) that map this song to its equivalent
+     * in another language. Different tables, different concepts.
+     * -------------------------------------------------------------- */
+
+    /** @return string[] */
+    private function _getArrangers(string $songId): array
+    {
+        $stmt = $this->db->prepare(
+            "SELECT Name FROM tblSongArrangers WHERE SongId = ? ORDER BY Id"
+        );
+        $stmt->bind_param('s', $songId);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $out = [];
+        while ($row = $res->fetch_assoc()) { $out[] = $row['Name']; }
+        $stmt->close();
+        return $out;
+    }
+
+    /** @return string[] */
+    private function _getAdaptors(string $songId): array
+    {
+        $stmt = $this->db->prepare(
+            "SELECT Name FROM tblSongAdaptors WHERE SongId = ? ORDER BY Id"
+        );
+        $stmt->bind_param('s', $songId);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $out = [];
+        while ($row = $res->fetch_assoc()) { $out[] = $row['Name']; }
+        $stmt->close();
+        return $out;
+    }
+
+    /** @return string[] */
+    private function _getTranslators(string $songId): array
+    {
+        $stmt = $this->db->prepare(
+            "SELECT Name FROM tblSongTranslators WHERE SongId = ? ORDER BY Id"
+        );
+        $stmt->bind_param('s', $songId);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $out = [];
+        while ($row = $res->fetch_assoc()) { $out[] = $row['Name']; }
+        $stmt->close();
+        return $out;
+    }
+
+    /**
+     * Bulk-load arrangers keyed by SongId. See `_getWritersMap()`.
+     *
+     * @param string[] $songIds
+     * @return array<string,string[]>
+     */
+    private function _getArrangersMap(array $songIds): array
+    {
+        if (empty($songIds)) return [];
+        $placeholders = implode(',', array_fill(0, count($songIds), '?'));
+        $types = str_repeat('s', count($songIds));
+        $stmt = $this->db->prepare(
+            "SELECT SongId, Name FROM tblSongArrangers
+             WHERE SongId IN ($placeholders)
+             ORDER BY SongId, Id"
+        );
+        $stmt->bind_param($types, ...$songIds);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $map = [];
+        while ($row = $result->fetch_assoc()) {
+            $map[$row['SongId']][] = $row['Name'];
+        }
+        $stmt->close();
+        return $map;
+    }
+
+    /**
+     * Bulk-load adaptors keyed by SongId. See `_getWritersMap()`.
+     *
+     * @param string[] $songIds
+     * @return array<string,string[]>
+     */
+    private function _getAdaptorsMap(array $songIds): array
+    {
+        if (empty($songIds)) return [];
+        $placeholders = implode(',', array_fill(0, count($songIds), '?'));
+        $types = str_repeat('s', count($songIds));
+        $stmt = $this->db->prepare(
+            "SELECT SongId, Name FROM tblSongAdaptors
+             WHERE SongId IN ($placeholders)
+             ORDER BY SongId, Id"
+        );
+        $stmt->bind_param($types, ...$songIds);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $map = [];
+        while ($row = $result->fetch_assoc()) {
+            $map[$row['SongId']][] = $row['Name'];
+        }
+        $stmt->close();
+        return $map;
+    }
+
+    /**
+     * Bulk-load translators keyed by SongId. See `_getWritersMap()`.
+     *
+     * @param string[] $songIds
+     * @return array<string,string[]>
+     */
+    private function _getTranslatorsMap(array $songIds): array
+    {
+        if (empty($songIds)) return [];
+        $placeholders = implode(',', array_fill(0, count($songIds), '?'));
+        $types = str_repeat('s', count($songIds));
+        $stmt = $this->db->prepare(
+            "SELECT SongId, Name FROM tblSongTranslators
+             WHERE SongId IN ($placeholders)
+             ORDER BY SongId, Id"
+        );
+        $stmt->bind_param($types, ...$songIds);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $map = [];
+        while ($row = $result->fetch_assoc()) {
+            $map[$row['SongId']][] = $row['Name'];
         }
         $stmt->close();
         return $map;

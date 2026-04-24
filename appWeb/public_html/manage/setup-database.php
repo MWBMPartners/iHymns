@@ -193,6 +193,7 @@ if ($action !== '') {
         'migrate'     => 'migrate-json.php',
         'users'       => 'migrate-users.php',
         'account-sync'=> 'migrate-account-sync.php',
+        'credits'     => 'migrate-credit-fields.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -463,6 +464,22 @@ if ($hasCredentials && defined('DB_HOST')) {
                         </p>
                         <a href="?action=account-sync" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run Account Sync Migration
+                        </a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">3b. Credit Fields (#497)</h5>
+                        <p class="card-text text-secondary small">
+                            Adds <code>TuneName</code> and <code>Iswc</code> columns to
+                            <code>tblSongs</code>, and creates
+                            <code>tblSongArrangers</code>, <code>tblSongAdaptors</code>
+                            and <code>tblSongTranslators</code>. Idempotent — safe to re-run.
+                        </p>
+                        <a href="?action=credits" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run Credit Fields Migration
                         </a>
                     </div>
                 </div>

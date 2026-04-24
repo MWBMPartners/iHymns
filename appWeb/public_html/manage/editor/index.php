@@ -539,17 +539,47 @@ $currentUser = getCurrentUser();
                             </div>
                         </div>
 
-                        <!-- CCLI Number — Christian Copyright Licensing International identifier -->
+                        <!-- Identifiers — CCLI Song Number + ISWC (#497) -->
                         <div class="mb-3">
-                            <label for="edit-ccli" class="form-label">CCLI Number</label>
+                            <label class="form-label"><i class="bi bi-upc me-1"></i>Identifiers</label>
+                            <div class="row g-2">
+                                <div class="col-md-6">
+                                    <label for="edit-ccli" class="form-label" style="font-size:0.75rem;">CCLI Song Number</label>
+                                    <input
+                                        type="text"
+                                        class="form-control form-control-sm"
+                                        id="edit-ccli"
+                                        placeholder="e.g. 1234567"
+                                    >
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="edit-iswc" class="form-label" style="font-size:0.75rem;">ISWC</label>
+                                    <input
+                                        type="text"
+                                        class="form-control form-control-sm"
+                                        id="edit-iswc"
+                                        placeholder="e.g. T-034.524.680-C"
+                                    >
+                                </div>
+                            </div>
+                            <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                                CCLI Song Number (for licensing reports) and ISWC (International Standard Musical Work Code).
+                            </div>
+                        </div>
+
+                        <!-- Tune Name (#497) — traditional hymn tune identifier -->
+                        <div class="mb-3">
+                            <label for="edit-tune-name" class="form-label">
+                                <i class="bi bi-music-note-list me-1"></i>Tune Name
+                            </label>
                             <input
                                 type="text"
                                 class="form-control"
-                                id="edit-ccli"
-                                placeholder="e.g. 1234567"
+                                id="edit-tune-name"
+                                placeholder="e.g. HYFRYDOL, OLD HUNDREDTH"
                             >
                             <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
-                                The CCLI song number for licensing and reporting purposes.
+                                The traditional tune name, if known. Uppercase is conventional. Leave blank for songs with no named tune.
                             </div>
                         </div>
 
@@ -914,6 +944,30 @@ $currentUser = getCurrentUser();
                                 -->
                             </div>
                             <!-- Add Composer button is dynamically rendered by editor.js inside composers-container -->
+                        </div>
+
+                        <!-- Arrangers Section (#497) — who re-arranged the music for this setting -->
+                        <div class="mb-4">
+                            <label class="form-label">
+                                <i class="bi bi-sliders me-1"></i>Arrangers
+                            </label>
+                            <div id="arrangers-container"></div>
+                        </div>
+
+                        <!-- Adaptors Section (#497) — who adapted the lyrics or melody -->
+                        <div class="mb-4">
+                            <label class="form-label">
+                                <i class="bi bi-vinyl me-1"></i>Adaptors
+                            </label>
+                            <div id="adaptors-container"></div>
+                        </div>
+
+                        <!-- Translators Section (#497) — who translated the lyrics (distinct from the #352 translation-link list below) -->
+                        <div class="mb-4">
+                            <label class="form-label">
+                                <i class="bi bi-translate me-1"></i>Translators
+                            </label>
+                            <div id="translators-container"></div>
                         </div>
 
                         <!-- Translations Section — linked translations in other languages (#352) -->

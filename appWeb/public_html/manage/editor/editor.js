@@ -513,6 +513,8 @@ function selectSong(songId) {
     setVal('edit-number', song.number || '');
     setVal('edit-songbook', song.songbook || '');
     setVal('edit-ccli', song.ccli || '');
+    setVal('edit-iswc', song.iswc || '');            /* #497 */
+    setVal('edit-tune-name', song.tuneName || '');   /* #497 */
     /* Parse IETF BCP 47 tag into sub-fields (#240). */
     var ietf = parseIetfTag(song.language || 'en');
     setVal('edit-lang-language', ietf.language);
@@ -531,13 +533,16 @@ function selectSong(songId) {
     /* Render the arrangement editor (#161). */
     renderArrangement(song);
 
-    /* Render the writers list. */
+    /* Render all five credit chip lists — writers + composers are
+       long-standing; arrangers / adaptors / translators are the new
+       #497 collections. */
     renderWriters(song);
-
-    /* Render the composers list. */
     renderComposers(song);
+    renderArrangers(song);    /* #497 */
+    renderAdaptors(song);     /* #497 */
+    renderTranslators(song);  /* #497 */
 
-    /* Render the translations panel (#352). */
+    /* Render the translations (cross-song link) panel (#352). */
     renderTranslations(song);
 
     /* Render the copyright textarea. */
@@ -566,10 +571,12 @@ function selectSong(songId) {
 function bindMetadataListeners() {
     /* List of text/select field IDs mapped to their corresponding song-object keys. */
     var fields = [
-        { elId: 'edit-title',    key: 'title' },
-        { elId: 'edit-number',   key: 'number' },
-        { elId: 'edit-songbook', key: 'songbook' },
-        { elId: 'edit-ccli',     key: 'ccli' },
+        { elId: 'edit-title',     key: 'title' },
+        { elId: 'edit-number',    key: 'number' },
+        { elId: 'edit-songbook',  key: 'songbook' },
+        { elId: 'edit-ccli',      key: 'ccli' },
+        { elId: 'edit-iswc',      key: 'iswc' },        /* #497 */
+        { elId: 'edit-tune-name', key: 'tuneName' },    /* #497 */
         { elId: 'edit-copyright', key: 'copyright' }
     ];
 
@@ -1399,6 +1406,59 @@ function renderComposers(song) {
     container.appendChild(addBtn);
 }
 
+/* ----------------------------------------------------------------------
+ * Arrangers / Adaptors / Translators (#497)
+ *
+ * Three sibling credit collections that follow the same rendering
+ * pattern as writers/composers. We factor the per-collection logic
+ * through a tiny helper so adding future credit types (e.g. producers)
+ * is a one-line change.
+ *
+ * Note on naming: `renderTranslators` (here) drives the chip list of
+ * the *people* who translated this song's lyrics. `renderTranslations`
+ * (below) drives the #352 cross-song link list — different feature.
+ * ---------------------------------------------------------------------- */
+
+function renderCreditChipList(song, key, containerId, addLabel) {
+    var container = document.getElementById(containerId);
+    if (!container) return;
+    if (!Array.isArray(song[key])) song[key] = [];
+    container.innerHTML = '';
+
+    song[key].forEach(function (name, i) {
+        var row = createDynamicInputRow(
+            name,
+            function (newVal) { song[key][i] = newVal; markModified(song.id); },
+            function ()       { song[key].splice(i, 1); markModified(song.id);
+                                renderCreditChipList(song, key, containerId, addLabel); }
+        );
+        container.appendChild(row);
+    });
+
+    var addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'btn btn-sm btn-outline-primary mt-2';
+    addBtn.textContent = '+ ' + addLabel;
+    addBtn.addEventListener('click', function () {
+        song[key].push('');
+        markModified(song.id);
+        renderCreditChipList(song, key, containerId, addLabel);
+    });
+    container.appendChild(addBtn);
+}
+
+function renderArrangers(song) {
+    renderCreditChipList(song, 'arrangers',   'arrangers-container',   'Add Arranger');
+}
+
+function renderAdaptors(song) {
+    renderCreditChipList(song, 'adaptors',    'adaptors-container',    'Add Adaptor');
+}
+
+function renderTranslators(song) {
+    renderCreditChipList(song, 'translators', 'translators-container', 'Add Translator');
+}
+
 /**
  * renderTranslations(song)
  * ------------------------
@@ -2224,6 +2284,8 @@ function clearEditForm() {
     setVal('edit-number', '');
     setVal('edit-songbook', '');
     setVal('edit-ccli', '');
+    setVal('edit-iswc', '');           /* #497 */
+    setVal('edit-tune-name', '');      /* #497 */
     setVal('edit-lang-language', 'en');
     setVal('edit-lang-script', '');
     setVal('edit-lang-region', '');
@@ -2366,6 +2428,8 @@ function addNewSong() {
         songbookName: '',
         language: 'en',
         ccli: '',
+        iswc: '',           /* #497 */
+        tuneName: '',       /* #497 */
         copyright: '',
         verified: false,
         lyricsPublicDomain: false,
@@ -2374,6 +2438,9 @@ function addNewSong() {
         hasSheetMusic: false,
         writers: [],
         composers: [],
+        arrangers: [],      /* #497 */
+        adaptors: [],       /* #497 */
+        translators: [],    /* #497 */
         components: [
             {
                 type: 'verse',
