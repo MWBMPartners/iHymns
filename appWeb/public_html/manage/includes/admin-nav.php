@@ -58,6 +58,7 @@ $_adminLinks = [
     ['editor',       '/manage/editor/',         'bi-pencil-square',  'Song Editor',        'edit_songs'],
     ['requests',     '/manage/requests',        'bi-lightbulb',      'Song Requests',      'review_song_requests'],
     ['revisions',    '/manage/revisions',       'bi-clock-history',  'Revisions Audit',    'verify_songs'],
+    ['missing-numbers','/manage/missing-numbers', 'bi-binoculars',    'Missing Numbers',    'edit_songs'],
     ['users',        '/manage/users',           'bi-people',         'Users',              'view_users'],
     ['groups',       '/manage/groups',          'bi-people-fill',    'User Groups',        'manage_user_groups'],
     ['organisations','/manage/organisations',   'bi-building',       'Organisations',      'manage_organisations'],
