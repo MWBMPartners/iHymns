@@ -94,6 +94,7 @@ See `.claude/CLAUDE.md` for the full policy. Summary: don't duplicate — extrac
 - Issue BEFORE commit when possible: `feat(x): … (#NNN)`. Every PR lists the issues it closes.
 - Retrospective issues for work that shipped without one are OK — see #438-442 as precedent.
 - Every PR description explains WHY the change exists (not just WHAT) and carries a Test Plan checklist.
+- **Never open a PR unless the user explicitly asks for one.** Commit + push to the working branch and stop. If the previous PR from that branch has merged, further commits on the same branch do NOT land anywhere until a new PR opens — flag that to the user and wait for them to decide, don't auto-open a follow-up PR.
 
 ## 9. What NOT to do (recent anti-patterns to avoid)
 
