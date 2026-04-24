@@ -77,7 +77,11 @@ switch ($action) {
 
             header('Content-Type: application/json; charset=UTF-8');
             header('X-Content-Type-Options: nosniff');
-            echo json_encode($fullData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
+            /* No JSON_PRETTY_PRINT — the editor parses the response
+               with JSON.parse, nothing reads it by eye, and the extra
+               whitespace inflates the 3,600-song payload by ~25% on
+               the wire. */
+            echo json_encode($fullData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         } catch (\Exception $e) {
             http_response_code(500);
             error_log('[iHymns Editor] Failed to load song data: ' . $e->getMessage());

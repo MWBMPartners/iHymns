@@ -361,13 +361,27 @@ class SongData
         }
         $stmt->close();
 
-        /* Attach writers, composers, and components for each song */
-        foreach ($songs as &$song) {
-            $song['writers']    = $this->_getWriters($song['id']);
-            $song['composers'] = $this->_getComposers($song['id']);
-            $song['components'] = $this->_getComponents($song['id']);
+        /* Bulk-load writers, composers and components for every song in
+           one query per table instead of three per song (#EditorLoad).
+           For the full catalogue (≈3,600 songs) this cuts 10,800
+           round-trips down to 3 and is the single biggest win for
+           `exportAsJson()` (Song Editor load) and any page that calls
+           `getSongs()` without a songbook filter. The per-song private
+           helpers are still used by `_fetchSongRow()` for single-song
+           fetches where one-round-trip beats three table scans. */
+        $songIds = array_column($songs, 'id');
+        if (!empty($songIds)) {
+            $writersMap    = $this->_getWritersMap($songIds);
+            $composersMap  = $this->_getComposersMap($songIds);
+            $componentsMap = $this->_getComponentsMap($songIds);
+            foreach ($songs as &$song) {
+                $sid = $song['id'];
+                $song['writers']    = $writersMap[$sid]    ?? [];
+                $song['composers']  = $composersMap[$sid]  ?? [];
+                $song['components'] = $componentsMap[$sid] ?? [];
+            }
+            unset($song);
         }
-        unset($song);
 
         return $songs;
     }
@@ -1012,6 +1026,97 @@ class SongData
         }
         $stmt->close();
         return $components;
+    }
+
+    /**
+     * Bulk-load writers for every song in $songIds and return them as a
+     * map keyed by SongId. One query instead of N. Preserves per-song
+     * ordering by the `Id` surrogate so the listing order matches what
+     * `_getWriters()` would have returned. Used by `getSongs()`.
+     *
+     * @param string[] $songIds List of song IDs to fetch writers for
+     * @return array<string,string[]> SongId → array of writer names
+     */
+    private function _getWritersMap(array $songIds): array
+    {
+        if (empty($songIds)) return [];
+        $placeholders = implode(',', array_fill(0, count($songIds), '?'));
+        $types = str_repeat('s', count($songIds));
+        $stmt = $this->db->prepare(
+            "SELECT SongId, Name FROM tblSongWriters
+             WHERE SongId IN ($placeholders)
+             ORDER BY SongId, Id"
+        );
+        $stmt->bind_param($types, ...$songIds);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $map = [];
+        while ($row = $result->fetch_assoc()) {
+            $map[$row['SongId']][] = $row['Name'];
+        }
+        $stmt->close();
+        return $map;
+    }
+
+    /**
+     * Bulk-load composers keyed by SongId. See `_getWritersMap()`.
+     *
+     * @param string[] $songIds
+     * @return array<string,string[]>
+     */
+    private function _getComposersMap(array $songIds): array
+    {
+        if (empty($songIds)) return [];
+        $placeholders = implode(',', array_fill(0, count($songIds), '?'));
+        $types = str_repeat('s', count($songIds));
+        $stmt = $this->db->prepare(
+            "SELECT SongId, Name FROM tblSongComposers
+             WHERE SongId IN ($placeholders)
+             ORDER BY SongId, Id"
+        );
+        $stmt->bind_param($types, ...$songIds);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $map = [];
+        while ($row = $result->fetch_assoc()) {
+            $map[$row['SongId']][] = $row['Name'];
+        }
+        $stmt->close();
+        return $map;
+    }
+
+    /**
+     * Bulk-load components (verses, choruses) keyed by SongId. Same
+     * structure as `_getComponents()` but amortised across every
+     * requested song in a single query.
+     *
+     * @param string[] $songIds
+     * @return array<string,array<int,array{type:string,number:int,lines:array}>>
+     */
+    private function _getComponentsMap(array $songIds): array
+    {
+        if (empty($songIds)) return [];
+        $placeholders = implode(',', array_fill(0, count($songIds), '?'));
+        $types = str_repeat('s', count($songIds));
+        $stmt = $this->db->prepare(
+            "SELECT SongId, Type AS type, Number AS number, LinesJson AS lines_json
+             FROM tblSongComponents
+             WHERE SongId IN ($placeholders)
+             ORDER BY SongId, SortOrder"
+        );
+        $stmt->bind_param($types, ...$songIds);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $map = [];
+        while ($row = $result->fetch_assoc()) {
+            $map[$row['SongId']][] = [
+                'type'   => $row['type'],
+                'number' => (int)$row['number'],
+                'lines'  => json_decode($row['lines_json'], true) ?? [],
+            ];
+        }
+        $stmt->close();
+        return $map;
     }
 
     /**
