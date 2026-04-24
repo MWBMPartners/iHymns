@@ -196,70 +196,66 @@ function _fetchAndParseSongs(target) {
 /**
  * saveSongs()
  * -----------
- * Primary save action for the editor. Writes the current `songData` to the
- * MySQL database via the editor PHP API (POST api.php?action=save).
+ * Primary save action for the editor. Persists every song the admin has
+ * edited in this session, via POST api.php?action=save_song (one request
+ * per modified song, sequentially).
  *
- * If the server is unreachable or the DB is not configured, the editor falls
- * back to a browser download of songs.json so the admin never loses changes.
+ * Why per-song and not a single bulk write:
+ *   - `action=save` rewrites the whole corpus — TRUNCATE + re-INSERT of
+ *     every songbook, song, writer, composer and component row. That
+ *     blocks the save on validation of songs the user never touched
+ *     (a missing component on SDAH-1653 refuses to let you save a fix
+ *     on SDAH-93) and risks wiping good data if the POST body is
+ *     malformed mid-way.
+ *   - `action=save_song` UPSERTs a single song's rows inside a txn and
+ *     writes a revision to tblSongRevisions (#400). Exactly the unit
+ *     the user worked on.
  *
- * Invoked by the toolbar "Save" button (#btn-save) and by saveToJSON()
- * (legacy alias used by the validation flow).
+ * Validation is scoped to the modified set — issues on other songs are
+ * surfaced by the standalone "Validate" button (toolbar), not by Save.
+ *
+ * Invoked by the toolbar "Save" button (#btn-save).
  */
 function saveSongs() {
-    /* Run validation first; abort if the data is not valid. */
-    var errors = validateSongData();
-    if (errors.length > 0) {
-        /* Show each validation error as a toast notification. */
-        errors.forEach(function (msg) {
-            showToast(msg, 'danger');
-        });
-        return; // do not proceed with save
+    /* Nothing edited -> no-op with a friendly toast. */
+    if (modifiedSongIds.size === 0) {
+        showToast('No unsaved changes.', 'info');
+        return;
     }
 
-    /* Update the generatedAt timestamp so consumers know when data was last built. */
+    var ids = Array.from(modifiedSongIds);
+
+    /* Validate only the songs we're about to save. The user should
+       never be blocked from saving a fix on song X because song Y (that
+       they never opened) is missing a field. */
+    var errors = validateSongsByIds(ids);
+    if (errors.length > 0) {
+        errors.forEach(function (msg) { showToast(msg, 'danger'); });
+        return;
+    }
+
+    /* Refresh the generatedAt timestamp so any subsequent export
+       reflects the save time. */
     songData.meta.generatedAt = new Date().toISOString();
 
-    /* Serialise with 2-space indentation for human readability. */
-    var jsonString = JSON.stringify(songData, null, 2);
-
-    /* Primary path: save to MySQL via the editor API. */
-    fetch(EDITOR_API_URL + '?action=save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: jsonString,
-    })
-    .then(function (response) {
-        return response.json().then(function (data) {
-            if (response.ok && data.success) {
-                /* DB save succeeded */
-                lastSaveTime = new Date();
-                modifiedSongIds.clear();
-                renderSongList();
-                updateStatusBar();
-                showToast(
-                    'Saved ' + data.songs + ' songs to the database.',
-                    'success'
-                );
-            } else {
-                /* Server reachable but the DB save failed — fall back to a
-                   JSON download so the admin can recover the work manually. */
-                showToast(
-                    'Database save failed: ' + (data.error || 'Unknown error') +
-                    '. Downloading a JSON backup so you don\u2019t lose changes.',
-                    'warning'
-                );
-                downloadSongsJson(jsonString);
-            }
-        });
-    })
-    .catch(function (err) {
-        /* Network error / server unavailable — fall back to browser download. */
-        showToast(
-            'Server unavailable: ' + err.message +
-            '. Downloading a JSON backup so you don\u2019t lose changes.',
-            'warning'
-        );
-        downloadSongsJson(jsonString);
+    /* Stream each song to the per-song endpoint. */
+    autoSaveSongsPerSong(ids).then(function (summary) {
+        if (summary.saved.length > 0) {
+            lastSaveTime = new Date();
+            summary.saved.forEach(function (id) { modifiedSongIds.delete(id); });
+            renderSongList();
+            updateStatusBar();
+            showToast(
+                'Saved ' + summary.saved.length + ' song' +
+                (summary.saved.length === 1 ? '' : 's') + ' to the database.',
+                'success'
+            );
+        }
+        if (summary.failed.length > 0) {
+            summary.failed.forEach(function (f) {
+                showToast('Failed to save ' + f.id + ': ' + f.error, 'danger');
+            });
+        }
     });
 }
 
@@ -1630,6 +1626,43 @@ function validateSongData() {
     });
 
     /* Return the collected errors (empty array means everything is valid). */
+    return errors;
+}
+
+/**
+ * validateSongsByIds(ids)
+ * -----------------------
+ * Same validation rules as validateSongData(), but scoped to a specific
+ * list of song IDs. Used by the manual Save button so that missing
+ * fields on a song the admin never touched don't block a save of the
+ * song they actually edited.
+ *
+ * @param {string[]} ids Song IDs to validate
+ * @returns {string[]} Human-readable error messages; empty if all valid
+ */
+function validateSongsByIds(ids) {
+    var wanted = new Set(ids);
+    var errors = [];
+    (songData.songs || []).forEach(function (song, i) {
+        if (!wanted.has(song.id)) return;
+        var label = 'Song ' + (song.id || '[' + i + ']') +
+                    ' (' + (song.title || 'no title') + ')';
+        if (!song.id || typeof song.id !== 'string' || song.id.trim() === '') {
+            errors.push(label + ': missing or empty "id".');
+        }
+        if (!song.title || typeof song.title !== 'string' || song.title.trim() === '') {
+            errors.push(label + ': missing or empty "title".');
+        }
+        if (song.number == null || String(song.number).trim() === '') {
+            errors.push(label + ': missing "number".');
+        }
+        if (!song.songbook || typeof song.songbook !== 'string' || song.songbook.trim() === '') {
+            errors.push(label + ': missing or empty "songbook".');
+        }
+        if (!Array.isArray(song.components) || song.components.length === 0) {
+            errors.push(label + ': must have at least one component.');
+        }
+    });
     return errors;
 }
 
