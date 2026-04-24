@@ -586,6 +586,111 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
+     * SONG_TAGS (#496) — return the tags currently assigned to a song
+     *
+     * GET parameters:
+     *   id — song id (e.g. CP-0001)
+     *
+     * Response: { tags: [{id, name, slug, description}, ...] }
+     *
+     * Used by the editor's Tags tab to render the per-song chip list
+     * when a song is selected.
+     * ----------------------------------------------------------------- */
+    case 'song_tags':
+        $songId = trim((string)($_GET['id'] ?? ''));
+        if ($songId === '') {
+            http_response_code(400);
+            echo json_encode(['error' => 'Song id is required.']);
+            break;
+        }
+        try {
+            $db = getDbMysqli();
+            $stmt = $db->prepare(
+                'SELECT t.Id AS id, t.Name AS name, t.Slug AS slug,
+                        t.Description AS description
+                 FROM tblSongTagMap m
+                 JOIN tblSongTags t ON t.Id = m.TagId
+                 WHERE m.SongId = ?
+                 ORDER BY t.Name ASC'
+            );
+            $stmt->bind_param('s', $songId);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $tags = [];
+            while ($row = $result->fetch_assoc()) {
+                $row['id'] = (int)$row['id'];
+                $tags[] = $row;
+            }
+            $stmt->close();
+            echo json_encode(['tags' => $tags]);
+        } catch (\Throwable $e) {
+            error_log('[editor song_tags] ' . $e->getMessage());
+            echo json_encode(['tags' => []]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * TAG_SEARCH (#496) — autocomplete for existing tag names
+     *
+     * GET parameters:
+     *   q — partial name, case-insensitive substring match (optional;
+     *       if empty, returns the most-used tags — useful for the
+     *       "start typing" empty-state list)
+     *   limit — max 20 suggestions (default 10)
+     *
+     * Response: { suggestions: [{id, name, slug, usage}, ...] }
+     *   usage — number of songs currently carrying this tag, so popular
+     *           tags sort first and admins don't accidentally coin a
+     *           near-duplicate of an existing one.
+     * ----------------------------------------------------------------- */
+    case 'tag_search':
+        $q     = trim((string)($_GET['q'] ?? ''));
+        $limit = max(1, min(20, (int)($_GET['limit'] ?? 10)));
+        try {
+            $db = getDbMysqli();
+            if ($q === '') {
+                $sql = 'SELECT t.Id AS id, t.Name AS name, t.Slug AS slug,
+                               COUNT(m.TagId) AS usage
+                        FROM tblSongTags t
+                        LEFT JOIN tblSongTagMap m ON m.TagId = t.Id
+                        GROUP BY t.Id
+                        ORDER BY usage DESC, t.Name ASC
+                        LIMIT ?';
+                $stmt = $db->prepare($sql);
+                $stmt->bind_param('i', $limit);
+            } else {
+                $like = '%' . $q . '%';
+                $sql = 'SELECT t.Id AS id, t.Name AS name, t.Slug AS slug,
+                               COUNT(m.TagId) AS usage
+                        FROM tblSongTags t
+                        LEFT JOIN tblSongTagMap m ON m.TagId = t.Id
+                        WHERE t.Name LIKE ?
+                        GROUP BY t.Id
+                        ORDER BY usage DESC, t.Name ASC
+                        LIMIT ?';
+                $stmt = $db->prepare($sql);
+                $stmt->bind_param('si', $like, $limit);
+            }
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $suggestions = [];
+            while ($row = $result->fetch_assoc()) {
+                $suggestions[] = [
+                    'id'    => (int)$row['id'],
+                    'name'  => $row['name'],
+                    'slug'  => $row['slug'],
+                    'usage' => (int)$row['usage'],
+                ];
+            }
+            $stmt->close();
+            echo json_encode(['suggestions' => $suggestions]);
+        } catch (\Throwable $e) {
+            error_log('[editor tag_search] ' . $e->getMessage());
+            echo json_encode(['suggestions' => []]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
      * POST api.php?action=bulk_tag   (#399)
      * Add and/or remove a set of tag names across a list of songs.
      * Body: { songIds: [...], add: [tagNames], remove: [tagNames] }

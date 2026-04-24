@@ -545,6 +545,11 @@ function selectSong(songId) {
     /* Render the translations (cross-song link) panel (#352). */
     renderTranslations(song);
 
+    /* Fetch + render this song's tags (#496). Async — the chip list
+       shows "Loading…" until the fetch resolves; failures keep the
+       list empty rather than blocking the whole editor. */
+    loadSongTags(song);
+
     /* Render the copyright textarea. */
     setVal('edit-copyright', song.copyright || '');
 
@@ -1785,6 +1790,255 @@ function renderAdaptors(song) {
 
 function renderTranslators(song) {
     renderCreditChipList(song, 'translators', 'translators-container', 'Add Translator');
+}
+
+/* ----------------------------------------------------------------------
+ * Tags tab (#496)
+ *
+ * Fetches the current song's assigned tags from /api?action=song_tags,
+ * renders them as a chip list with × remove buttons, and wires up a
+ * live-search / create input via /api?action=tag_search. Adds/removes
+ * hit /api?action=bulk_tag with a single-songId payload — the same
+ * endpoint used by the bulk tagging tool elsewhere.
+ *
+ * Tag writes are immediate (no "Save" needed) because the editor save
+ * contract is per-song for tblSongs + its direct children; tag maps
+ * live in tblSongTagMap, outside the save_song flow, and should
+ * persist the moment the admin clicks.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Fetch + render tags for the given song. Idempotent.
+ */
+function loadSongTags(song) {
+    var container = document.getElementById('song-tags-container');
+    if (!container || !song || !song.id) return;
+    container.innerHTML = '<span class="text-muted small">Loading…</span>';
+
+    fetch(EDITOR_API_URL + '?action=song_tags&id=' + encodeURIComponent(song.id))
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            var tags = Array.isArray(data.tags) ? data.tags : [];
+            /* Cache on the song object so other UI (e.g. preview) can
+               read without a second fetch. */
+            song._tags = tags;
+            renderSongTagsChips(song, tags);
+        })
+        .catch(function (err) {
+            console.error('[tags] load failed', err);
+            container.innerHTML = '<span class="text-danger small">Failed to load tags.</span>';
+        });
+}
+
+function renderSongTagsChips(song, tags) {
+    var container = document.getElementById('song-tags-container');
+    if (!container) return;
+    container.innerHTML = '';
+
+    if (!tags.length) {
+        container.innerHTML = '<span class="text-muted small">No tags yet — add one below.</span>';
+        return;
+    }
+
+    tags.forEach(function (tag) {
+        var chip = document.createElement('span');
+        chip.className = 'badge rounded-pill d-inline-flex align-items-center gap-1';
+        chip.style.backgroundColor = '#6366f1';  /* accent-solid */
+        chip.style.color = '#ffffff';
+        chip.style.padding = '0.35rem 0.6rem';
+        chip.title = tag.description || tag.name;
+
+        var label = document.createElement('span');
+        label.textContent = tag.name;
+        chip.appendChild(label);
+
+        var x = document.createElement('button');
+        x.type = 'button';
+        x.className = 'btn-close btn-close-white';
+        x.setAttribute('aria-label', 'Remove tag');
+        x.style.fontSize = '0.55rem';
+        x.style.marginLeft = '0.25rem';
+        x.addEventListener('click', function (e) {
+            e.stopPropagation();
+            removeSongTag(song, tag.name);
+        });
+        chip.appendChild(x);
+
+        container.appendChild(chip);
+    });
+}
+
+/**
+ * POST bulk_tag to add a single tag to the current song.
+ */
+function addSongTag(song, tagName) {
+    if (!song || !song.id || !tagName || !tagName.trim()) return;
+    tagName = tagName.trim();
+
+    /* Optimistic update: append the chip locally so the UI feels
+       snappy, then re-fetch on completion to pick up the real row
+       (so the ×-remove later uses the canonical spelling the DB
+       ended up with, not the user's input casing). */
+    var existing = song._tags || [];
+    if (existing.some(function (t) { return t.name.toLowerCase() === tagName.toLowerCase(); })) {
+        showToast('Already tagged with "' + tagName + '".', 'info');
+        return;
+    }
+
+    fetch(EDITOR_API_URL + '?action=bulk_tag', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ songIds: [song.id], add: [tagName], remove: [] }),
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+        if (data && data.added != null) {
+            loadSongTags(song);
+            showToast('Added tag "' + tagName + '".', 'success');
+        } else {
+            showToast((data && data.error) || 'Failed to add tag.', 'danger');
+        }
+    })
+    .catch(function (err) {
+        console.error('[tags] add failed', err);
+        showToast('Failed to add tag.', 'danger');
+    });
+}
+
+function removeSongTag(song, tagName) {
+    if (!song || !song.id || !tagName) return;
+    fetch(EDITOR_API_URL + '?action=bulk_tag', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ songIds: [song.id], add: [], remove: [tagName] }),
+    })
+    .then(function (r) { return r.json(); })
+    .then(function () {
+        loadSongTags(song);
+        showToast('Removed tag "' + tagName + '".', 'info');
+    })
+    .catch(function (err) {
+        console.error('[tags] remove failed', err);
+        showToast('Failed to remove tag.', 'danger');
+    });
+}
+
+/**
+ * Wire the tag-search autocomplete input. Idempotent — safe to call
+ * multiple times; a `_tagsWired` flag on the input prevents duplicate
+ * listeners.
+ */
+function bindTagSearchInput() {
+    var input = document.getElementById('song-tag-input');
+    var panel = document.getElementById('song-tag-suggestions');
+    if (!input || !panel || input._tagsWired) return;
+    input._tagsWired = true;
+
+    var debounceTimer = null;
+    var activeIdx = -1;
+    var currentSuggestions = [];
+
+    function closePanel() {
+        panel.classList.add('d-none');
+        panel.innerHTML = '';
+        activeIdx = -1;
+        currentSuggestions = [];
+    }
+
+    function renderSuggestions(suggestions, q) {
+        panel.innerHTML = '';
+        currentSuggestions = suggestions;
+        activeIdx = -1;
+
+        /* "Create new tag" affordance when the query doesn't exactly
+           match an existing name. */
+        var exact = suggestions.some(function (s) {
+            return s.name.toLowerCase() === q.toLowerCase();
+        });
+        if (q && !exact) {
+            var createItem = document.createElement('button');
+            createItem.type = 'button';
+            createItem.className = 'list-group-item list-group-item-action d-flex align-items-center gap-2';
+            createItem.innerHTML = '<i class="bi bi-plus-circle"></i> Create new tag: <strong>' +
+                escapeHtmlSafe(q) + '</strong>';
+            createItem.addEventListener('click', function () {
+                var song = findSongById(currentSongId);
+                if (song) addSongTag(song, q);
+                input.value = '';
+                closePanel();
+            });
+            panel.appendChild(createItem);
+        }
+
+        suggestions.forEach(function (s) {
+            var item = document.createElement('button');
+            item.type = 'button';
+            item.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center';
+            item.innerHTML =
+                '<span>' + escapeHtmlSafe(s.name) + '</span>' +
+                '<span class="badge bg-secondary">' + s.usage + '</span>';
+            item.addEventListener('click', function () {
+                var song = findSongById(currentSongId);
+                if (song) addSongTag(song, s.name);
+                input.value = '';
+                closePanel();
+            });
+            panel.appendChild(item);
+        });
+
+        panel.classList.toggle('d-none', panel.children.length === 0);
+    }
+
+    function fetchSuggestions(q) {
+        fetch(EDITOR_API_URL + '?action=tag_search&q=' + encodeURIComponent(q || ''))
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                renderSuggestions(Array.isArray(data.suggestions) ? data.suggestions : [], q);
+            })
+            .catch(function (err) {
+                console.error('[tags] search failed', err);
+                closePanel();
+            });
+    }
+
+    input.addEventListener('input', function () {
+        clearTimeout(debounceTimer);
+        var q = input.value.trim();
+        debounceTimer = setTimeout(function () { fetchSuggestions(q); }, 180);
+    });
+
+    input.addEventListener('focus', function () {
+        if (!input.value) fetchSuggestions('');
+    });
+
+    input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            /* Plain Enter on a non-empty input creates/adds the tag. */
+            var q = input.value.trim();
+            if (!q) return;
+            var song = findSongById(currentSongId);
+            if (song) addSongTag(song, q);
+            input.value = '';
+            closePanel();
+        } else if (e.key === 'Escape') {
+            closePanel();
+        }
+    });
+
+    /* Click outside to dismiss. */
+    document.addEventListener('click', function (e) {
+        if (!panel.contains(e.target) && e.target !== input) {
+            closePanel();
+        }
+    });
+}
+
+/** Tiny HTML-escape helper for inline suggestion markup. */
+function escapeHtmlSafe(s) {
+    return String(s || '').replace(/[&<>"']/g, function (c) {
+        return { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c];
+    });
 }
 
 /**
@@ -3123,6 +3377,9 @@ function init() {
             fitAllComponentTextareas();
         });
     }
+
+    /* Wire the Tags tab autocomplete input (#496). Idempotent. */
+    bindTagSearchInput();
 
     /* Register the beforeunload handler for unsaved-changes protection. */
     window.addEventListener('beforeunload', warnBeforeUnload);

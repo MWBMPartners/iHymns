@@ -463,6 +463,22 @@ $currentUser = getCurrentUser();
                         </button>
                     </li>
 
+                    <!-- Tags tab trigger (#496) -->
+                    <li class="nav-item" role="presentation">
+                        <button
+                            class="nav-link"
+                            id="tab-tags"
+                            data-bs-toggle="tab"
+                            data-bs-target="#panel-tags"
+                            type="button"
+                            role="tab"
+                            aria-controls="panel-tags"
+                            aria-selected="false"
+                        >
+                            <i class="bi bi-tags me-1"></i>Tags
+                        </button>
+                    </li>
+
                     <!-- Preview tab trigger -->
                     <li class="nav-item" role="presentation">
                         <button
@@ -1089,6 +1105,63 @@ $currentUser = getCurrentUser();
                         </div>
                     </div>
                     <!-- END Credits Tab Panel -->
+
+
+                    <!-- -------------------------------------------------
+                         TAGS TAB PANEL (#496)
+                         Per-song tag assignment. Chips show current tags
+                         (× to remove). Autocomplete input searches
+                         tblSongTags; typing a brand-new name + Enter
+                         creates the tag. Writes go straight to MySQL
+                         via /api?action=bulk_tag (single-songId call).
+                         ------------------------------------------------- -->
+                    <div
+                        class="tab-pane fade"
+                        id="panel-tags"
+                        role="tabpanel"
+                        aria-labelledby="tab-tags"
+                    >
+                        <div class="form-section">
+                            <h6 class="section-title">
+                                <i class="bi bi-tags me-1"></i>Tags &amp; Themes
+                            </h6>
+                            <div class="text-muted small mb-3">
+                                Tags power the <strong>Browse by Theme</strong> section on the
+                                home page and the <code>/tag/&lt;slug&gt;</code> listing pages.
+                                Changes save immediately.
+                            </div>
+
+                            <!-- Current assignments — chip list, one per tag.
+                                 Rendered by editor.js renderSongTags(). -->
+                            <label class="form-label">Assigned tags</label>
+                            <div id="song-tags-container"
+                                 class="d-flex flex-wrap gap-1 p-2 rounded mb-3"
+                                 style="min-height: 44px; background-color: var(--ih-bg-card); border: 1px solid var(--ih-border);">
+                                <span class="text-muted small">Loading…</span>
+                            </div>
+
+                            <!-- Add-tag picker with live autocomplete. -->
+                            <label for="song-tag-input" class="form-label">Add a tag</label>
+                            <div class="position-relative">
+                                <input
+                                    type="text"
+                                    class="form-control"
+                                    id="song-tag-input"
+                                    placeholder="Type to search or create — e.g. Easter, Communion"
+                                    autocomplete="off"
+                                >
+                                <div id="song-tag-suggestions"
+                                     class="list-group position-absolute w-100 shadow d-none"
+                                     style="z-index: 1050; max-height: 240px; overflow-y: auto;">
+                                </div>
+                            </div>
+                            <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                                Select an existing tag from the dropdown, or type a new name
+                                and press Enter to create it.
+                            </div>
+                        </div>
+                    </div>
+                    <!-- END Tags Tab Panel -->
 
 
                     <!-- -------------------------------------------------
