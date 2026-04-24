@@ -89,6 +89,11 @@ const ENTITLEMENTS = [
     'manage_user_licences'  => ['admin', 'global_admin'],
     'view_licence_audit'    => ['admin', 'global_admin'],
 
+    /* Licence-compliance reporting (#317). Pulled from tblSongHistory
+       against tblSongs.Ccli, exportable as CSV for the annual CCLI
+       usage return. */
+    'view_ccli_report'     => ['admin', 'global_admin'],
+
     /* Meta */
     'manage_entitlements'  => ['global_admin'],
 ];

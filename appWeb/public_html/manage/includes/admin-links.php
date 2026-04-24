@@ -44,6 +44,7 @@ $_adminLinks = [
     ['organisations',   '/manage/organisations',   'bi-building',       'Organisations',        'manage_organisations',        'People'     ],
     ['entitlements',    '/manage/entitlements',    'bi-key',            'Entitlements',         'manage_entitlements',         'People'     ],
     ['analytics',       '/manage/analytics',       'bi-graph-up',       'Analytics',            'view_analytics',              'Operations' ],
+    ['ccli-report',     '/manage/ccli-report',     'bi-receipt',        'CCLI Usage Report',    'view_ccli_report',            'Operations' ],
     ['data-health',     '/manage/data-health',     'bi-activity',       'Data Health',          'drop_legacy_tables',          'Operations' ],
     ['setup-database',  '/manage/setup-database',  'bi-database-gear',  'Database Setup',       'run_db_install',              'Operations' ],
 ];
