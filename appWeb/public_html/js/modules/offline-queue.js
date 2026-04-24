@@ -146,6 +146,67 @@ export const offlineQueue = {
     },
 
     /**
+     * "Latest state wins" drain — for sync operations where replaying
+     * every queued payload would waste the network. Favourites /
+     * setlists / settings each POST the full local list, so multiple
+     * queued edits collapse into a single sync with the most recent
+     * state.
+     *
+     * Callers enqueue a marker (payload can be `{}` or a dedup key)
+     * via `enqueue(type, {})`; on drain `send()` is invoked ONCE with
+     * no argument — the caller reads fresh state from localStorage.
+     * If `send()` resolves truthy, every queued row of that type is
+     * deleted; otherwise they stay for the next trigger.
+     *
+     * Returns `{ ran, remaining }`.
+     */
+    async drainLatest(type, send) {
+        const pending = await this.count(type);
+        if (pending === 0) return { ran: false, remaining: 0 };
+        let ok = false;
+        try {
+            ok = !!(await send());
+        } catch (_e) {
+            ok = false;
+        }
+        if (!ok) return { ran: true, remaining: pending };
+
+        await withStore('readwrite', (store) => new Promise((resolve, reject) => {
+            const cursorReq = store.index('byType').openCursor(IDBKeyRange.only(type));
+            cursorReq.onsuccess = (ev) => {
+                const cur = ev.target.result;
+                if (cur) { cur.delete(); cur.continue(); }
+                else resolve();
+            };
+            cursorReq.onerror = () => reject(cursorReq.error);
+        }));
+        return { ran: true, remaining: 0 };
+    },
+
+    /**
+     * Like `bindAutoDrain` but for `drainLatest` semantics — wires the
+     * same triggers (`online` + SW `QUEUE_DRAIN`) to a latest-state
+     * sync rather than per-item replay.
+     */
+    bindAutoDrainLatest(type, send, onResult = () => {}) {
+        const run = async () => {
+            try {
+                onResult(await this.drainLatest(type, send));
+            } catch (_e) { /* leave queue alone */ }
+        };
+        window.addEventListener('online', run);
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.addEventListener('message', (e) => {
+                if (e.data && e.data.type === 'QUEUE_DRAIN'
+                    && e.data.tag === `ihymns-queue-${type}`) {
+                    run();
+                }
+            });
+        }
+        if (navigator.onLine) setTimeout(run, 500);
+    },
+
+    /**
      * Register the two triggers that should drain the queue:
      *   - the window coming back online
      *   - the service worker echoing a `QUEUE_DRAIN` message after a

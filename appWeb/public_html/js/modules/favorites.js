@@ -67,12 +67,13 @@ export class Favorites {
     toggle(songId, title, songbook, number) {
         let favorites = this.getAll();
         const index = favorites.findIndex(f => f.id === songId);
+        let added;
 
         if (index >= 0) {
             /* Remove from favourites */
             favorites.splice(index, 1);
             this.saveAll(favorites);
-            return false;
+            added = false;
         } else {
             /* Add to favourites */
             favorites.push({
@@ -84,8 +85,25 @@ export class Favorites {
                 addedAt: new Date().toISOString(),
             });
             this.saveAll(favorites);
-            return true;
+            added = true;
         }
+
+        /* Push to server if signed in (#338). Debounced 1.5 s so a
+           flurry of toggles (bulk-edit dialog) collapses into one
+           POST. Offline path is handled inside syncFavorites — it
+           queues and replays when connectivity returns. */
+        this._scheduleSync();
+        return added;
+    }
+
+    /** Debounced server push for signed-in users (#338). */
+    _scheduleSync() {
+        if (!this.app?.userAuth?.isLoggedIn?.()) return;
+        clearTimeout(this._syncTimer);
+        this._syncTimer = setTimeout(() => {
+            const ids = this.getAll().map(f => f.id);
+            this.app.userAuth.syncFavorites(ids);
+        }, 1500);
     }
 
     /* =====================================================================

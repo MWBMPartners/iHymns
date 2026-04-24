@@ -15,6 +15,7 @@
 
 import { escapeHtml } from '../utils/html.js';
 import { userHasEntitlement } from './entitlements.js';
+import { offlineQueue } from './offline-queue.js';
 
 /** @type {string} localStorage key for the auth token */
 const STORAGE_AUTH_TOKEN = 'ihymns_auth_token';
@@ -252,6 +253,14 @@ export class UserAuth {
     async syncSetlists(localSetlists) {
         if (!this.isLoggedIn()) return null;
 
+        /* Offline → mark a pending sync in the queue. bindOfflineDrains()
+           replays with the LATEST local state when connectivity returns,
+           so the merge reflects every edit made while offline (#338). */
+        if (!navigator.onLine) {
+            try { await offlineQueue.enqueue('setlists-sync', { ts: Date.now() }); } catch (_e) {}
+            return null;
+        }
+
         try {
             const res = await fetch(`${this.app.config.apiUrl}?action=user_setlists_sync`, {
                 method: 'POST',
@@ -270,9 +279,101 @@ export class UserAuth {
 
             const data = await res.json();
             return data.setlists || null;
-        } catch {
+        } catch (err) {
+            /* Network error mid-fetch — queue a sync marker so it runs
+               again once we're online. TypeError is the usual fetch
+               offline signal. */
+            if (err instanceof TypeError) {
+                try { await offlineQueue.enqueue('setlists-sync', { ts: Date.now() }); } catch (_e) {}
+            }
             return null;
         }
+    }
+
+    /**
+     * Sync favourites with the server. Same offline semantics as
+     * syncSetlists — marks a pending sync via offlineQueue and
+     * bindOfflineDrains replays with the latest localStorage state
+     * when connectivity returns (#338).
+     *
+     * @param {string[]} localFavoriteIds Array of "CP-0001"-style song ids
+     * @returns {Promise<string[]|null>} Merged list from server, or null on failure/queued
+     */
+    async syncFavorites(localFavoriteIds) {
+        if (!this.isLoggedIn()) return null;
+
+        if (!navigator.onLine) {
+            try { await offlineQueue.enqueue('favorites-sync', { ts: Date.now() }); } catch (_e) {}
+            return null;
+        }
+
+        try {
+            const res = await fetch(`${this.app.config.apiUrl}?action=favorites_sync`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    ...this.authHeaders(),
+                },
+                body: JSON.stringify({ favorites: localFavoriteIds }),
+            });
+
+            if (!res.ok) {
+                if (res.status === 401) this.clearCredentials();
+                return null;
+            }
+
+            const data = await res.json();
+            return data.favorites || null;
+        } catch (err) {
+            if (err instanceof TypeError) {
+                try { await offlineQueue.enqueue('favorites-sync', { ts: Date.now() }); } catch (_e) {}
+            }
+            return null;
+        }
+    }
+
+    /**
+     * Wire the offline queue to auto-replay setlist + favourite syncs
+     * when connectivity returns. The page registered a Background Sync
+     * tag on enqueue; the service worker echoes a QUEUE_DRAIN message
+     * here, and `drainLatest` pushes the CURRENT local state rather
+     * than the stale payload that was queued at failure time (#338).
+     *
+     * Called once from the module init; safe to call again on login
+     * since the queue triggers are idempotent.
+     */
+    bindOfflineDrains() {
+        if (this._offlineDrainsBound) return;
+        this._offlineDrainsBound = true;
+
+        offlineQueue.bindAutoDrainLatest('setlists-sync', async () => {
+            if (!this.isLoggedIn() || !this.app.setList) return false;
+            const merged = await this.syncSetlists(this.app.setList.getAll());
+            if (merged && Array.isArray(merged)) {
+                this.app.setList.saveAll(merged);
+                this.app.showToast?.(`Synced ${merged.length} setlist${merged.length === 1 ? '' : 's'}`, 'success', 2000);
+                return true;
+            }
+            return false;
+        });
+
+        offlineQueue.bindAutoDrainLatest('favorites-sync', async () => {
+            if (!this.isLoggedIn() || !this.app.favorites) return false;
+            const localIds = (this.app.favorites.getAll() || []).map(f => f.id);
+            const merged = await this.syncFavorites(localIds);
+            if (merged && Array.isArray(merged)) {
+                /* Favourites module stores objects {id, title, songbook, number, tags, addedAt};
+                   the server sends only ids. Union IDs preserving local metadata where we have it. */
+                const byId = new Map((this.app.favorites.getAll() || []).map(f => [f.id, f]));
+                const rebuilt = merged.map(id => byId.get(id) || {
+                    id, title: '', songbook: '', number: 0, tags: [], addedAt: new Date().toISOString(),
+                });
+                this.app.favorites.saveAll(rebuilt);
+                return true;
+            }
+            return false;
+        });
     }
 
     /**

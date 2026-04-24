@@ -242,6 +242,10 @@ class iHymnsApp {
             /* User authentication for cross-device sync */
             this.userAuth = new UserAuth(this);
             this.userAuth.initUserMenu();
+            /* Background Sync for setlists + favourites (#338). Safe to
+               call even if not signed in; the drain handlers short-
+               circuit and re-bind on next login. */
+            this.userAuth.bindOfflineDrains();
 
             /* Display preferences & presentation mode (#95) */
             this.display = new Display(this);
