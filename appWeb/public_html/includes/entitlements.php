@@ -60,6 +60,13 @@ const ENTITLEMENTS = [
     'manage_user_groups'   => ['admin', 'global_admin'],
     'manage_organisations' => ['admin', 'global_admin'],
 
+    /* Content gating for regular users — per-song / per-songbook / per-user
+       restrictions (tblContentRestrictions) and access-tier definitions
+       (tblAccessTiers) that control lyrics / audio / MIDI / PDF / offline. */
+    'manage_content_restrictions' => ['admin', 'global_admin'],
+    'manage_access_tiers'         => ['admin', 'global_admin'],
+    'assign_user_tier'            => ['admin', 'global_admin'],
+
     /* Channel access gating (#407) — controls who can reach alpha/beta
        subdomains. Applied BEFORE the page renders so pre-release builds
        are invisible to the public even when indexed. Defaults intentionally

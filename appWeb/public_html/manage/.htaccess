@@ -7,54 +7,50 @@
 # Handles routing for the /manage/ admin area. This directory is
 # excluded from the main SPA rewrite rules and has its own auth system.
 #
-# ROUTING:
-#   /manage/              → /manage/index.php (admin dashboard)
-#   /manage/login         → /manage/login.php
-#   /manage/logout        → /manage/logout.php
-#   /manage/setup         → /manage/setup.php
-#   /manage/users         → /manage/users.php
-#   /manage/editor/       → /manage/editor/index.php (DirectoryIndex)
+# ROUTING STRATEGY:
+#   Every /manage/<name> URL is resolved by checking whether a matching
+#   <name>.php (or <name>/index.php) exists on disk. This is deliberately
+#   generic — adding a new admin page is now a single-file change: drop
+#   /manage/foo.php and /manage/foo works immediately. Previously each
+#   new page also needed a per-URL rewrite rule here, and forgetting one
+#   silently broke the page (it fell through to the SPA's 404 shell,
+#   which surfaces as "Failed to load page").
 # ==========================================================================
 
-# Enable the rewrite engine
 RewriteEngine On
+RewriteBase /manage/
 
-# ---- Clean URL rewrites (hide .php extensions) ----
+# ---- DirectoryIndex for /manage/ and /manage/editor/ ----
+DirectoryIndex index.php
 
-# /manage/login → login.php
-RewriteRule ^login$ login.php [L]
+# ==========================================================================
+# Explicit rewrites that need special flags
+# ==========================================================================
 
-# /manage/logout → logout.php
-RewriteRule ^logout$ logout.php [L]
-
-# /manage/setup → setup.php
-RewriteRule ^setup$ setup.php [L]
-
-# /manage/users → users.php (admin-only user management)
-RewriteRule ^users$ users.php [L]
-
-# /manage/setup-database → setup-database.php (DB setup dashboard)
-RewriteRule ^setup-database$ setup-database.php [L]
-
-# /manage/analytics → analytics.php (admin analytics dashboard, #404)
-RewriteRule ^analytics$ analytics.php [L]
-
-# /manage/entitlements → entitlements.php (entitlements editor, #407)
-RewriteRule ^entitlements$ entitlements.php [L]
-
-# /manage/requests → requests.php (song-request triage, #403)
-RewriteRule ^requests$ requests.php [L]
-
-# /manage/editor/api → /manage/editor/api.php (editor API)
+# /manage/editor/api → /manage/editor/api.php (preserve query string)
 RewriteRule ^editor/api$ editor/api.php [QSA,L]
 
-# Block direct .php access in /manage/ (hide PHP from URLs)
+# ==========================================================================
+# Generic clean-URL rewrite:
+#   /manage/<name>       → /manage/<name>.php   (if <name>.php exists)
+#   /manage/<path>/<name> → same, at any depth
+#
+# Only fires when the request doesn't point to an existing file or
+# directory but a matching .php sibling does exist. QSA preserves query
+# strings for pages like /manage/groups?edit=3.
+# ==========================================================================
+
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteCond %{REQUEST_FILENAME}.php -f
+RewriteRule ^(.+?)/?$ $1.php [QSA,L]
+
+# ==========================================================================
+# Hide .php extensions — redirect direct /manage/foo.php to /manage/foo.
+# Uses THE_REQUEST so the check sees the original browser request, not
+# the internal rewrite produced by the rule above.
+# ==========================================================================
+
 RewriteCond %{THE_REQUEST} \.php[\s?/] [NC]
 RewriteCond %{REQUEST_URI} !^/manage/includes/ [NC]
 RewriteRule ^(.+)\.php$ /manage/$1 [R=301,L]
-
-# /manage/ root → serve dashboard (index.php via DirectoryIndex)
-# No rewrite needed — DirectoryIndex handles it
-
-# ---- Ensure DirectoryIndex works for /manage/editor/ ----
-DirectoryIndex index.php
