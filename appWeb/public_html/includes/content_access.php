@@ -25,6 +25,12 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
+/* Inheritance-aware licence resolver (#462). The `require_licence` branch
+   below calls getUserEffectiveLicenceTypes() so a rule saying
+   `require_licence: ihymns_pro` passes when the user holds that licence
+   directly OR inherits it from any ancestor organisation. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'licences.php';
+
 /**
  * Check if a user has access to a specific entity (song, songbook, or feature).
  *
@@ -52,7 +58,9 @@ function checkContentAccess(string $entityType, string $entityId, ?int $userId, 
         return ['allowed' => true, 'reason' => ''];
     }
 
-    /* Get user's organisation memberships and licences */
+    /* Org memberships — still needed for block_org / require_org rules
+       which match on direct membership, not inheritance. The licence
+       set below handles its own ancestor walk. */
     $userOrgIds = [];
     $userLicenceTypes = [];
 
@@ -61,14 +69,10 @@ function checkContentAccess(string $entityType, string $entityId, ?int $userId, 
         $stmt->execute([$userId]);
         $userOrgIds = $stmt->fetchAll(PDO::FETCH_COLUMN);
 
-        /* Get licences from user directly + from orgs */
-        $stmt = $db->prepare(
-            'SELECT DISTINCT LicenceType FROM tblContentLicences
-             WHERE IsActive = 1 AND (ExpiresAt IS NULL OR ExpiresAt > NOW())
-             AND (UserId = ? OR OrgId IN (SELECT OrgId FROM tblOrganisationMembers WHERE UserId = ?))'
-        );
-        $stmt->execute([$userId, $userId]);
-        $userLicenceTypes = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        /* Effective licence types: direct + via every org the user belongs
+           to + every ancestor org (#462). Replaces the old single-level
+           query that only looked at direct memberships. */
+        $userLicenceTypes = getUserEffectiveLicenceTypes($userId);
     }
 
     /* Evaluate rules in priority order */
