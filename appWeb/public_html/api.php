@@ -4563,52 +4563,92 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
-         * #462 — Effective licence set for a given user (admin-only).
-         * Returns the resolved inheritance-aware list for debugging +
-         * future admin UI. Shape matches licences.php::getUserEffectiveLicences.
-         *   GET /api?action=user_effective_licences&user_id=<int>
+         * #289 — List in-app notifications for the current user.
+         *   GET /api?action=notifications_list
+         *
+         * Unread rows first, then a trailing window of the most recent
+         * read rows (capped at 50), so the header dropdown has recent
+         * context without a "show all" follow-up round trip.
          * ----------------------------------------------------------------- */
-        case 'user_effective_licences':
+        case 'notifications_list':
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !userHasEntitlement('view_licence_audit', $authUser['Role'] ?? null)) {
-                sendJson(['error' => 'Not authorised.'], 403);
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
-            $targetId = (int)($_GET['user_id'] ?? 0);
-            if ($targetId <= 0) {
-                sendJson(['error' => 'user_id required.'], 400);
-                break;
+            try {
+                $db = getDb();
+                $stmt = $db->prepare(
+                    'SELECT Id AS id,
+                            Type AS type,
+                            Title AS title,
+                            Body AS body,
+                            ActionUrl AS action_url,
+                            IsRead AS is_read,
+                            CreatedAt AS created_at
+                       FROM tblNotifications
+                      WHERE UserId = ?
+                      ORDER BY IsRead ASC, CreatedAt DESC
+                      LIMIT 50'
+                );
+                $stmt->execute([(int)$authUser['Id']]);
+                $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                foreach ($rows as &$r) {
+                    $r['id']      = (int)$r['id'];
+                    $r['is_read'] = (bool)$r['is_read'];
+                }
+                unset($r);
+                sendJson(['items' => $rows]);
+            } catch (\Throwable $e) {
+                error_log('[notifications_list] ' . $e->getMessage());
+                sendJson(['items' => []]);
             }
-            require_once __DIR__ . '/includes/licences.php';
-            sendJson([
-                'user_id'  => $targetId,
-                'licences' => getUserEffectiveLicences($targetId),
-            ]);
             break;
 
         /* -----------------------------------------------------------------
-         * #462 — Current user's licence check. Returns { has: bool } for
-         * a given licence type, walking the org hierarchy. Any
-         * authenticated caller may ask about their own set so the
-         * frontend can show/hide features.
-         *   GET /api?action=licence_check&type=ccli
+         * #289 — Mark one or more notifications as read.
+         *   POST { ids: [1,2,3] }   — mark specific rows
+         *   POST { all: true }      — mark every unread row for this user
          * ----------------------------------------------------------------- */
-        case 'licence_check':
+        case 'notifications_mark_read':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
             $authUser = getAuthenticatedUser();
             if (!$authUser) {
-                sendJson(['error' => 'Authentication required.'], 401);
+                sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
-            $type = trim((string)($_GET['type'] ?? ''));
-            if ($type === '') {
-                sendJson(['error' => 'type required.'], 400);
-                break;
+            $body   = json_decode(file_get_contents('php://input'), true) ?: [];
+            $userId = (int)$authUser['Id'];
+            try {
+                $db = getDb();
+                if (!empty($body['all'])) {
+                    $stmt = $db->prepare(
+                        'UPDATE tblNotifications SET IsRead = 1
+                          WHERE UserId = ? AND IsRead = 0'
+                    );
+                    $stmt->execute([$userId]);
+                    sendJson(['ok' => true, 'affected' => $stmt->rowCount()]);
+                    break;
+                }
+                $ids = array_values(array_filter(array_map('intval', (array)($body['ids'] ?? [])), fn($i) => $i > 0));
+                if (empty($ids)) {
+                    sendJson(['error' => 'ids or all=true required.'], 400);
+                    break;
+                }
+                $placeholders = implode(',', array_fill(0, count($ids), '?'));
+                $stmt = $db->prepare(
+                    "UPDATE tblNotifications SET IsRead = 1
+                      WHERE UserId = ? AND Id IN ($placeholders)"
+                );
+                $stmt->execute(array_merge([$userId], $ids));
+                sendJson(['ok' => true, 'affected' => $stmt->rowCount()]);
+            } catch (\Throwable $e) {
+                error_log('[notifications_mark_read] ' . $e->getMessage());
+                sendJson(['error' => 'Could not mark as read.'], 500);
             }
-            require_once __DIR__ . '/includes/licences.php';
-            sendJson([
-                'type' => $type,
-                'has'  => userHasEffectiveLicence((int)$authUser['Id'], $type),
-            ]);
             break;
 
         /* -----------------------------------------------------------------

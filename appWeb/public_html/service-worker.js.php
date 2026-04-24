@@ -122,6 +122,7 @@ const PRECACHE_ASSETS = [
     '/js/modules/gestures.js',
     '/js/modules/analytics.js',
     '/js/modules/offline-queue.js',
+    '/js/modules/notifications.js',
     '/manifest.json',
     '/assets/favicon.svg',
 ];
