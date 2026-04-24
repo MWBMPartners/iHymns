@@ -29,9 +29,21 @@ if (!$currentUser || ($currentUser['role'] ?? '') !== 'global_admin') {
 }
 $activePage = 'data-health';
 
-$db      = getDb();
 $flash   = '';
 $error   = '';
+
+/* getDb() can throw if MySQL credentials are wrong or the server is
+   unreachable — previously that fatal killed the page output before a
+   single byte reached the browser, so admins saw a blank screen with
+   no clue what went wrong. Catch, record, and render the admin layout
+   anyway with the error surfaced. */
+try {
+    $db = getDb();
+} catch (\Throwable $e) {
+    error_log('[manage/data-health.php] getDb failed: ' . $e->getMessage());
+    $db = null;
+    $error = 'Database is currently unreachable. ' . $e->getMessage();
+}
 
 /* Legacy paths to inspect / optionally disable */
 $songsJsonPath    = defined('APP_DATA_FILE')          ? APP_DATA_FILE          : '';
@@ -83,6 +95,10 @@ $tableCounts = [];
 foreach (['tblSongs', 'tblSongbooks', 'tblUsers', 'tblUserSetlists',
           'tblSharedSetlists', 'tblSongRequests', 'tblSongRevisions',
           'tblUserGroups', 'tblOrganisations'] as $tbl) {
+    if ($db === null) {
+        $tableCounts[$tbl] = null;
+        continue;
+    }
     try {
         $tableCounts[$tbl] = (int)$db->query('SELECT COUNT(*) FROM ' . $tbl)->fetchColumn();
     } catch (\Throwable $_e) {

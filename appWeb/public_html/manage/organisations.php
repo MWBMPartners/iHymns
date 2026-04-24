@@ -28,7 +28,17 @@ $error   = '';
 $success = '';
 $db      = getDb();
 
-$LICENCE_TYPES  = ['none', 'ihymns_basic', 'ihymns_pro', 'ccli'];
+/* Machine key → human label + short description. The key is what the
+   DB / evaluator reference; the label is what every UI surface renders
+   so admins never see raw tokens like `ihymns_pro`. An admin-managed
+   catalogue (new schema) is the follow-up, tracked on #459. */
+$LICENCE_TYPES  = [
+    'none'         => ['label' => 'None',          'description' => 'No licence on file'],
+    'ihymns_basic' => ['label' => 'iHymns Basic',  'description' => 'Free — public-domain songs only'],
+    'ihymns_pro'   => ['label' => 'iHymns Pro',    'description' => 'Paid — full catalogue access'],
+    'ccli'         => ['label' => 'CCLI',          'description' => 'Christian Copyright Licensing International licence'],
+];
+$LICENCE_TYPE_KEYS = array_keys($LICENCE_TYPES);
 $MEMBER_ROLES   = ['member', 'admin', 'owner'];
 
 $slugify = function (string $s): string {
@@ -60,7 +70,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($name === '') { $error = 'Name is required.'; break; }
                 $slug = $slugInput !== '' ? $slugify($slugInput) : $slugify($name);
                 if ($slug === '') { $error = 'Slug could not be derived — supply one explicitly.'; break; }
-                if (!in_array($licenceType, $LICENCE_TYPES, true)) { $error = 'Unknown licence type.'; break; }
+                if (!in_array($licenceType, $LICENCE_TYPE_KEYS, true)) { $error = 'Unknown licence type.'; break; }
 
                 $stmt = $db->prepare('SELECT Id FROM tblOrganisations WHERE Slug = ?');
                 $stmt->execute([$slug]);
@@ -88,7 +98,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($id <= 0) { $error = 'Organisation id missing.'; break; }
                 if ($name === '') { $error = 'Name is required.'; break; }
                 if ($slug === '') { $error = 'Slug is required.'; break; }
-                if (!in_array($licenceType, $LICENCE_TYPES, true)) { $error = 'Unknown licence type.'; break; }
+                if (!in_array($licenceType, $LICENCE_TYPE_KEYS, true)) { $error = 'Unknown licence type.'; break; }
                 if ($parent === $id) { $error = 'An organisation cannot be its own parent.'; break; }
 
                 $stmt = $db->prepare('SELECT Id FROM tblOrganisations WHERE Slug = ? AND Id <> ?');
@@ -292,7 +302,13 @@ $csrf = csrfToken();
                                 <td><code class="small"><?= htmlspecialchars($o['Slug']) ?></code></td>
                                 <td class="text-muted small"><?= htmlspecialchars($o['ParentName'] ?? '—') ?></td>
                                 <td>
-                                    <span class="badge bg-secondary" style="font-size: 0.7rem"><?= htmlspecialchars($o['LicenceType']) ?></span>
+                                    <?php
+                                    $_ltKey = (string)$o['LicenceType'];
+                                    $_ltLabel = $LICENCE_TYPES[$_ltKey]['label'] ?? $_ltKey;
+                                    $_ltDesc  = $LICENCE_TYPES[$_ltKey]['description'] ?? '';
+                                    ?>
+                                    <span class="badge bg-secondary" style="font-size: 0.7rem"
+                                          title="<?= htmlspecialchars($_ltDesc) ?>"><?= htmlspecialchars($_ltLabel) ?></span>
                                     <?php if ($o['LicenceNumber']): ?>
                                         <small class="text-muted ms-1"><?= htmlspecialchars($o['LicenceNumber']) ?></small>
                                     <?php endif; ?>
@@ -356,8 +372,11 @@ $csrf = csrfToken();
                     <div class="col-sm-4">
                         <label class="form-label small">Licence type</label>
                         <select name="licence_type" class="form-select form-select-sm">
-                            <?php foreach ($LICENCE_TYPES as $lt): ?>
-                                <option value="<?= $lt ?>"><?= $lt ?></option>
+                            <?php foreach ($LICENCE_TYPES as $key => $info): ?>
+                                <option value="<?= htmlspecialchars($key) ?>"
+                                        title="<?= htmlspecialchars($info['description']) ?>">
+                                    <?= htmlspecialchars($info['label']) ?>
+                                </option>
                             <?php endforeach; ?>
                         </select>
                     </div>
@@ -423,8 +442,12 @@ $csrf = csrfToken();
                     <div class="col-sm-4">
                         <label class="form-label small">Licence type</label>
                         <select name="licence_type" class="form-select form-select-sm">
-                            <?php foreach ($LICENCE_TYPES as $lt): ?>
-                                <option value="<?= $lt ?>" <?= $editOrg['LicenceType'] === $lt ? 'selected' : '' ?>><?= $lt ?></option>
+                            <?php foreach ($LICENCE_TYPES as $key => $info): ?>
+                                <option value="<?= htmlspecialchars($key) ?>"
+                                        title="<?= htmlspecialchars($info['description']) ?>"
+                                        <?= $editOrg['LicenceType'] === $key ? 'selected' : '' ?>>
+                                    <?= htmlspecialchars($info['label']) ?>
+                                </option>
                             <?php endforeach; ?>
                         </select>
                     </div>

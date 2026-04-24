@@ -89,18 +89,7 @@ try {
 </head>
 <body>
 
-<nav class="navbar-admin d-flex align-items-center justify-content-between">
-    <a class="navbar-brand" href="/manage/"><i class="bi bi-clock-history me-2"></i>iHymns Revisions</a>
-    <div class="d-flex align-items-center gap-2">
-        <span class="text-muted small d-none d-md-inline"><?= htmlspecialchars($currentUser['username'] ?? '') ?></span>
-        <a href="/manage/" class="btn btn-sm btn-outline-secondary">
-            <i class="bi bi-speedometer2 me-1"></i>Dashboard
-        </a>
-        <a href="/" class="btn btn-sm btn-outline-secondary" title="Back to the iHymns app home">
-            <i class="bi bi-house me-1"></i>Home
-        </a>
-    </div>
-</nav>
+<?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>
 
 <div class="container-admin py-4">
 

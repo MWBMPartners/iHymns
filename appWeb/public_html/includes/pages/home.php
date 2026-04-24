@@ -171,8 +171,11 @@ $songbooks = $songData->getSongbooks();
                                  browsers. Always rendered so server-HTML
                                  stays stable; never rendered enabled if
                                  the browser can't act on it. -->
+                            <!-- Rendered visible; a capability-free browser
+                                 picks up `body.offline-unsupported` and the
+                                 shared CSS rule hides all download UI. -->
                             <button type="button"
-                                    class="btn btn-sm btn-outline-secondary songbook-download-btn d-none"
+                                    class="btn btn-sm btn-outline-secondary songbook-download-btn"
                                     data-songbook-download="<?= htmlspecialchars($book['id']) ?>"
                                     aria-label="Download <?= htmlspecialchars($book['name']) ?> for offline use"
                                     title="Download this songbook for offline use">
