@@ -244,7 +244,13 @@ class SongData
         }
 
         $stmt = $this->db->prepare(
-            "SELECT Abbreviation AS id, Name AS name, SongCount AS songCount
+            "SELECT Abbreviation AS id, Name AS name, SongCount AS songCount,
+                    Colour AS colour,
+                    IsOfficial      AS isOfficial,
+                    Publisher       AS publisher,
+                    PublicationYear AS publicationYear,
+                    Copyright       AS copyright,
+                    Affiliation     AS affiliation
              FROM tblSongbooks
              ORDER BY Name ASC"
         );
@@ -252,7 +258,10 @@ class SongData
         $result = $stmt->get_result();
         $books = [];
         while ($row = $result->fetch_assoc()) {
-            $row['songCount'] = (int)$row['songCount'];
+            $row['songCount']  = (int)$row['songCount'];
+            /* Cast to a strict bool so JSON consumers don't have to
+               deal with 0/1 vs true/false ambiguity (#502). */
+            $row['isOfficial'] = (bool)$row['isOfficial'];
             $books[] = $row;
         }
         $stmt->close();
@@ -275,7 +284,13 @@ class SongData
             return null;
         }
         $stmt = $this->db->prepare(
-            "SELECT Abbreviation AS id, Name AS name, SongCount AS songCount
+            "SELECT Abbreviation AS id, Name AS name, SongCount AS songCount,
+                    Colour AS colour,
+                    IsOfficial      AS isOfficial,
+                    Publisher       AS publisher,
+                    PublicationYear AS publicationYear,
+                    Copyright       AS copyright,
+                    Affiliation     AS affiliation
              FROM tblSongbooks
              WHERE Abbreviation = ?"
         );
@@ -288,7 +303,8 @@ class SongData
         if ($row === null) {
             return null;
         }
-        $row['songCount'] = (int)$row['songCount'];
+        $row['songCount']  = (int)$row['songCount'];
+        $row['isOfficial'] = (bool)$row['isOfficial'];
         return $row;
     }
 
