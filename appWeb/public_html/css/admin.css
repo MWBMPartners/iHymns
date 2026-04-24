@@ -37,7 +37,20 @@ a:not(.btn):not(.nav-link):not(.dropdown-item):hover {
 
 /* ==========================================================================
    SHARED NAVBAR — admin dashboard header & editor top bar
+   The dashboard pages pin .navbar-admin to the viewport top, matching the
+   main app's .app-header behaviour so admins don't lose navigation context
+   on long pages. The Song Editor uses .navbar-editor instead (full-height
+   flex layout with its own toolbar), so the body-padding rule is :has()-
+   scoped to .navbar-admin and doesn't affect it.
    ========================================================================== */
+
+:root {
+    /* Single source of truth for admin chrome sizes. Used by the pinned
+       navbar, the body padding that keeps content clear of it, and the
+       modal-offset tweak below. Keep in sync with the .navbar-admin
+       padding (0.5rem × 2 + content ≈ 56 px on desktop, 64 px below). */
+    --admin-navbar-height: 56px;
+}
 
 .navbar-admin,
 .navbar-editor {
@@ -45,6 +58,18 @@ a:not(.btn):not(.nav-link):not(.dropdown-item):hover {
     border-bottom: 1px solid var(--card-border);
     padding: 0.5rem 1rem;
     box-shadow: var(--card-shadow);
+}
+
+.navbar-admin {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 1030;
+    min-height: var(--admin-navbar-height);
+    backdrop-filter: blur(16px) saturate(180%);
+    -webkit-backdrop-filter: blur(16px) saturate(180%);
+    background: var(--header-bg);
 }
 
 /* Admin footer — fixed to the bottom of the viewport, mirroring the
@@ -66,11 +91,14 @@ a:not(.btn):not(.nav-link):not(.dropdown-item):hover {
     min-height: auto;
 }
 
-/* Every admin page loads admin.css, so reserve space under the final
-   row of content so it's never obscured by the fixed footer. Uses the
-   shared --footer-info-height token (28 px normal / 40 px small
-   viewports per app.css media queries). */
-body {
+/* Reserve space above and below the scroll area on admin-dashboard
+   pages so content isn't hidden under the pinned navbar or footer.
+   Scoped with :has() so the Song Editor (which uses .navbar-editor and
+   its own full-height flex layout) is unaffected. Uses the shared
+   --footer-info-height token (28 px normal / 40 px small viewports per
+   the media queries in app.css). */
+body:has(.navbar-admin) {
+    padding-top: calc(var(--admin-navbar-height) + 0.5rem);
     padding-bottom: calc(var(--footer-info-height) + 1rem);
 }
 
