@@ -14,6 +14,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
 requireAdmin();
 
 $currentUser = getCurrentUser();
@@ -149,6 +150,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 break;
 
+            /* ----- Change access tier ----- */
+            case 'change_tier':
+                $targetId = (int)($_POST['user_id']    ?? 0);
+                $newTier  = trim((string)($_POST['new_tier'] ?? ''));
+                $target   = getUserById($targetId);
+                if (!userHasEntitlement('assign_user_tier', $currentUser['role'] ?? null)) {
+                    $error = 'You do not have permission to change access tiers.';
+                } elseif (!$target) {
+                    $error = 'User not found.';
+                } elseif ($newTier === '') {
+                    $error = 'Pick a tier.';
+                } else {
+                    $db = getDb();
+                    $stmt = $db->prepare('SELECT 1 FROM tblAccessTiers WHERE Name = ?');
+                    $stmt->execute([$newTier]);
+                    if (!$stmt->fetch()) {
+                        $error = 'Unknown access tier.';
+                    } else {
+                        $stmt = $db->prepare('UPDATE tblUsers SET AccessTier = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
+                        $stmt->execute([$newTier, $targetId]);
+                        $success = 'Access tier updated for "' . htmlspecialchars($target['username']) . '".';
+                    }
+                }
+                break;
+
             /* ----- Delete user ----- */
             case 'delete':
                 $targetId = (int)($_POST['user_id'] ?? 0);
@@ -176,7 +202,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
  * ========================================================================= */
 
 $db = getDb();
-$users = $db->query('SELECT Id AS id, Username AS username, DisplayName AS display_name, Email AS email, Role AS role, IsActive AS is_active, CreatedAt AS created_at FROM tblUsers ORDER BY CreatedAt ASC')->fetchAll(PDO::FETCH_ASSOC);
+$users = $db->query('SELECT Id AS id, Username AS username, DisplayName AS display_name, Email AS email, Role AS role, IsActive AS is_active, AccessTier AS access_tier, CreatedAt AS created_at FROM tblUsers ORDER BY CreatedAt ASC')->fetchAll(PDO::FETCH_ASSOC);
+
+/* Available access tiers for the Change-tier modal. Falls back to an empty
+   list if the table is missing (e.g. pre-migration DB) — in that case the
+   Tier button is hidden rather than breaking the page. */
+$accessTiers = [];
+try {
+    $accessTiers = $db->query(
+        'SELECT Name, DisplayName, Level FROM tblAccessTiers ORDER BY Level ASC, Name ASC'
+    )->fetchAll(PDO::FETCH_ASSOC);
+} catch (\Throwable $_e) { /* tier table not installed yet — hide control */ }
+
+$canAssignTier = !empty($accessTiers) && userHasEntitlement('assign_user_tier', $currentUser['role'] ?? null);
 
 $csrf = csrfToken();
 
@@ -237,6 +275,7 @@ function canManage(array $target, array $actor): bool {
                             <th>Display Name</th>
                             <th>Email</th>
                             <th>Role</th>
+                            <th title="Access tier — controls lyrics / audio / MIDI / PDF / offline access for regular users">Tier</th>
                             <th>Status</th>
                             <th class="text-end">Actions</th>
                         </tr>
@@ -259,6 +298,11 @@ function canManage(array $target, array $actor): bool {
                                     default        => 'bg-secondary',
                                 } ?>" style="font-size: 0.7rem;">
                                     <?= htmlspecialchars(roleLabel($u['role'])) ?>
+                                </span>
+                            </td>
+                            <td>
+                                <span class="badge bg-dark border border-secondary text-light" style="font-size: 0.7rem;">
+                                    <?= htmlspecialchars((string)($u['access_tier'] ?? 'free')) ?>
                                 </span>
                             </td>
                             <td>
@@ -285,6 +329,13 @@ function canManage(array $target, array $actor): bool {
                                     <button class="btn btn-outline-warning" title="Change role"
                                             onclick="openRoleModal(<?= (int)$u['id'] ?>, '<?= htmlspecialchars($u['username'], ENT_QUOTES) ?>', '<?= $u['role'] ?>')">
                                         <i class="bi bi-shield"></i>
+                                    </button>
+                                    <?php endif; ?>
+                                    <!-- Change Access Tier -->
+                                    <?php if ($canAssignTier): ?>
+                                    <button class="btn btn-outline-info" title="Change access tier"
+                                            onclick="openTierModal(<?= (int)$u['id'] ?>, '<?= htmlspecialchars($u['username'], ENT_QUOTES) ?>', '<?= htmlspecialchars((string)($u['access_tier'] ?? ''), ENT_QUOTES) ?>')">
+                                        <i class="bi bi-stars"></i>
                                     </button>
                                     <?php endif; ?>
                                     <!-- Reset Password -->
@@ -483,6 +534,46 @@ function canManage(array $target, array $actor): bool {
         </div>
     </div>
 
+    <!-- Change Access Tier Modal -->
+    <?php if ($canAssignTier): ?>
+    <div class="modal fade" id="tierModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
+                <form method="POST">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="change_tier">
+                    <input type="hidden" name="user_id" id="tier-user-id">
+                    <div class="modal-header" style="border-color: var(--ih-border);">
+                        <h5 class="modal-title"><i class="bi bi-stars me-2"></i>Change Access Tier — <span id="tier-username"></span></h5>
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <label class="form-label small">Access tier</label>
+                        <select class="form-select" name="new_tier" id="tier-select">
+                            <?php foreach ($accessTiers as $at): ?>
+                                <option value="<?= htmlspecialchars($at['Name']) ?>">
+                                    <?= htmlspecialchars($at['DisplayName']) ?>
+                                    — <code><?= htmlspecialchars($at['Name']) ?></code>
+                                    (level <?= (int)$at['Level'] ?>)
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                        <div class="form-text" style="color: var(--ih-text-muted);">
+                            Controls whether the user can view copyrighted lyrics, play audio,
+                            download MIDI / sheet music, and save songs offline. Tiers are defined in
+                            <a href="/manage/tiers" class="text-info">Access Tiers</a>.
+                        </div>
+                    </div>
+                    <div class="modal-footer" style="border-color: var(--ih-border);">
+                        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-amber-solid">Update tier</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+
     <!-- Reset Password Modal -->
     <div class="modal fade" id="passwordModal" tabindex="-1">
         <div class="modal-dialog">
@@ -540,6 +631,18 @@ function canManage(array $target, array $actor): bool {
             document.getElementById('pw-user-id').value = userId;
             document.getElementById('pw-username').textContent = username;
             new bootstrap.Modal(document.getElementById('passwordModal')).show();
+        }
+
+        /* Open Change-tier modal */
+        function openTierModal(userId, username, currentTier) {
+            document.getElementById('tier-user-id').value = userId;
+            document.getElementById('tier-username').textContent = username;
+            const sel = document.getElementById('tier-select');
+            if (sel && currentTier) {
+                const match = Array.from(sel.options).find(o => o.value === currentTier);
+                if (match) sel.value = currentTier;
+            }
+            new bootstrap.Modal(document.getElementById('tierModal')).show();
         }
 
         /* Open Rename modal */

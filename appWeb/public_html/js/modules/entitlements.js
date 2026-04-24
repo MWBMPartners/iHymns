@@ -42,6 +42,11 @@ export const ENTITLEMENTS = {
     manage_user_groups:   ['admin', 'global_admin'],
     manage_organisations: ['admin', 'global_admin'],
 
+    /* Content gating for regular users */
+    manage_content_restrictions: ['admin', 'global_admin'],
+    manage_access_tiers:         ['admin', 'global_admin'],
+    assign_user_tier:            ['admin', 'global_admin'],
+
     /* Channel access (#407) */
     access_alpha:         ['user', 'editor', 'admin', 'global_admin'],
     access_beta:          ['user', 'editor', 'admin', 'global_admin'],

@@ -28,6 +28,7 @@ $_manageEntitlements = [
     'view_admin_dashboard', 'view_users', 'manage_user_groups',
     'manage_organisations', 'manage_songbooks',
     'manage_entitlements', 'view_analytics',
+    'manage_content_restrictions', 'manage_access_tiers',
     'run_db_install', 'drop_legacy_tables',
 ];
 $_canManage = false;
@@ -279,6 +280,28 @@ $csrf = csrfToken();
                         <i class="bi bi-book d-block mb-2"></i>
                         <strong>Songbook Management</strong>
                         <div class="small text-muted">Create, rename, reorder the songbook catalogue</div>
+                    </a>
+                </div>
+            </div>
+            <?php endif; ?>
+            <?php if (userHasEntitlement('manage_content_restrictions', $_role)): ?>
+            <div class="col-md-4">
+                <div class="card-admin">
+                    <a href="/manage/restrictions" class="quick-link">
+                        <i class="bi bi-shield-lock d-block mb-2"></i>
+                        <strong>Content Restrictions</strong>
+                        <div class="small text-muted">Gate songs, songbooks &amp; features per user, org, platform or licence</div>
+                    </a>
+                </div>
+            </div>
+            <?php endif; ?>
+            <?php if (userHasEntitlement('manage_access_tiers', $_role)): ?>
+            <div class="col-md-4">
+                <div class="card-admin">
+                    <a href="/manage/tiers" class="quick-link">
+                        <i class="bi bi-stars d-block mb-2"></i>
+                        <strong>Access Tiers</strong>
+                        <div class="small text-muted">Define tiers controlling lyrics, audio, MIDI, sheet music &amp; offline</div>
                     </a>
                 </div>
             </div>
