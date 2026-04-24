@@ -1198,13 +1198,17 @@ function autoGenerateArrangement(song) {
  */
 function renderArrangement(song) {
     var chipsContainer = document.getElementById('arrangement-chips');
-    var input = document.getElementById('arrangement-input');
-    var feedback = document.getElementById('arrangement-feedback');
+    var input          = document.getElementById('arrangement-input');
+    var feedback       = document.getElementById('arrangement-feedback');
+    var pool           = document.getElementById('arrangement-pool');
+    var strip          = document.getElementById('arrangement-strip');
 
     if (!chipsContainer || !input || !feedback) return;
 
     /* Clear previous state. */
     chipsContainer.innerHTML = '';
+    if (pool)  pool.innerHTML  = '';
+    if (strip) strip.innerHTML = '';
     feedback.style.display = 'none';
     feedback.textContent = '';
 
@@ -1213,33 +1217,203 @@ function renderArrangement(song) {
         return;
     }
 
-    /* Convert arrangement to labels and show in input. */
-    var labelsStr = arrangementToLabels(song);
-    input.value = labelsStr;
+    /* Advanced text-mode mirror (kept for paste-in / power users). */
+    input.value = arrangementToLabels(song);
 
-    if (!song.arrangement || !Array.isArray(song.arrangement) || song.arrangement.length === 0) {
-        /* Show sequential order as muted chips. */
-        chipsContainer.innerHTML = '<span class="text-muted small">Sequential order (no custom arrangement)</span>';
-        return;
+    /* Legacy summary chips row — kept for at-a-glance reading, even
+       though the builder below is the interactive surface now (#492). */
+    renderArrangementSummaryChips(song, chipsContainer);
+
+    /* Drag-drop builder (#492). */
+    if (pool && strip) {
+        renderArrangementPool(song, pool, strip);
+        renderArrangementStrip(song, strip);
     }
 
-    /* Render coloured chips for each arrangement entry. */
+    /* Re-evaluate quick-action buttons for the song's component set (#493). */
+    refreshArrangementPresetAvailability(song);
+}
+
+/**
+ * Render the read-only chip summary at the top of the Arrangement
+ * block. Matches the pre-#492 look of a coloured pill row, but is now
+ * a display surface only — the interactive builder lives below.
+ */
+function renderArrangementSummaryChips(song, chipsContainer) {
+    if (!song.arrangement || !Array.isArray(song.arrangement) || song.arrangement.length === 0) {
+        chipsContainer.classList.add('d-none');
+        return;
+    }
+    chipsContainer.classList.remove('d-none');
     song.arrangement.forEach(function (idx, pos) {
         var comp = song.components[idx];
         if (!comp) return;
-
         var chip = document.createElement('span');
         chip.className = 'badge rounded-pill';
         chip.textContent = getComponentLabel(comp);
         chip.title = getComponentLabel(comp) + ' — position ' + (pos + 1);
-
-        /* Colour chips by type with WCAG-safe text contrast. */
         var colors = COMP_COLORS[comp.type] || { bg: '#6b7280', text: '#ffffff' };
         chip.style.backgroundColor = colors.bg;
         chip.style.color = colors.text;
-
         chipsContainer.appendChild(chip);
     });
+}
+
+/**
+ * Render the component pool (source chips). Clicking a pool chip
+ * appends that component to the arrangement strip.
+ */
+function renderArrangementPool(song, pool, strip) {
+    if (!Array.isArray(song.components) || song.components.length === 0) {
+        pool.innerHTML = '<span class="text-muted small">No components defined.</span>';
+        return;
+    }
+
+    song.components.forEach(function (comp, idx) {
+        var chip = makeArrangementChip(comp, /* includeRemove */ false);
+        chip.style.cursor = 'pointer';
+        chip.title = getComponentLabel(comp) + ' — click to add';
+        chip.addEventListener('click', function () {
+            appendToArrangement(song, idx);
+        });
+        pool.appendChild(chip);
+    });
+}
+
+/**
+ * Render the sequence strip. Each chip has a remove × and the whole
+ * strip is SortableJS-reorderable. Lazy-loads SortableJS on first use.
+ */
+function renderArrangementStrip(song, strip) {
+    /* Resolve the effective arrangement: explicit or sequential fallback. */
+    var indices = effectiveArrangement(song);
+
+    if (indices.length === 0) {
+        strip.innerHTML = '<span class="text-muted small">Sequence is empty — click a component above to add.</span>';
+        return;
+    }
+
+    indices.forEach(function (idx, posIdx) {
+        var comp = song.components[idx];
+        if (!comp) return;
+        var chip = makeArrangementChip(comp, /* includeRemove */ true);
+        chip.dataset.position = String(posIdx);
+        chip.dataset.compIdx  = String(idx);
+        /* Remove handler — takes the chip's live DOM position, not the
+           closed-over posIdx, so it stays accurate after a drag. */
+        chip.querySelector('.arr-chip-remove')?.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var pos = Array.prototype.indexOf.call(strip.children, chip);
+            removeFromArrangement(song, pos);
+        });
+        strip.appendChild(chip);
+    });
+
+    /* SortableJS for drag-reorder. Lazy-loaded on first use. */
+    ensureSortable().then(function (Sortable) {
+        if (strip._sortable) return;
+        strip._sortable = Sortable.create(strip, {
+            animation: 160,
+            ghostClass: 'arr-chip-ghost',
+            onEnd: function () {
+                /* Rebuild song.arrangement from the strip's new order. */
+                var newOrder = [];
+                Array.prototype.forEach.call(strip.children, function (el) {
+                    if (el.dataset && el.dataset.compIdx != null) {
+                        newOrder.push(parseInt(el.dataset.compIdx, 10));
+                    }
+                });
+                var curSong = findSongById(currentSongId);
+                if (!curSong) return;
+                curSong.arrangement = newOrder;
+                markModified(curSong.id);
+                renderArrangement(curSong);
+                renderPreview(curSong);
+            },
+        });
+    }).catch(function (err) {
+        console.error('[arrangement] failed to load SortableJS:', err);
+    });
+}
+
+/**
+ * Build a coloured chip DOM node for a component. Optionally includes
+ * a ×-remove button in the right corner.
+ */
+function makeArrangementChip(comp, includeRemove) {
+    var chip = document.createElement('span');
+    chip.className = 'badge rounded-pill d-inline-flex align-items-center gap-1 arr-chip';
+    var colors = COMP_COLORS[comp.type] || { bg: '#6b7280', text: '#ffffff' };
+    chip.style.backgroundColor = colors.bg;
+    chip.style.color = colors.text;
+    chip.style.padding = '0.35rem 0.6rem';
+
+    var label = document.createElement('span');
+    label.textContent = getComponentLabel(comp);
+    chip.appendChild(label);
+
+    if (includeRemove) {
+        var x = document.createElement('button');
+        x.type = 'button';
+        x.className = 'btn-close btn-close-white arr-chip-remove';
+        x.setAttribute('aria-label', 'Remove from arrangement');
+        x.style.fontSize = '0.55rem';
+        x.style.marginLeft = '0.25rem';
+        chip.appendChild(x);
+    }
+
+    return chip;
+}
+
+function effectiveArrangement(song) {
+    if (Array.isArray(song.arrangement) && song.arrangement.length > 0) {
+        return song.arrangement.slice();
+    }
+    if (Array.isArray(song.components)) {
+        return song.components.map(function (_, i) { return i; });
+    }
+    return [];
+}
+
+function appendToArrangement(song, compIdx) {
+    var current = effectiveArrangement(song);
+    current.push(compIdx);
+    song.arrangement = current;
+    markModified(song.id);
+    renderArrangement(song);
+    renderPreview(song);
+}
+
+function removeFromArrangement(song, pos) {
+    var current = effectiveArrangement(song);
+    if (pos < 0 || pos >= current.length) return;
+    current.splice(pos, 1);
+    /* Empty list means "fall back to component order" — represent it
+       as `null` so the existing downstream logic keeps working. */
+    song.arrangement = current.length === 0 ? null : current;
+    markModified(song.id);
+    renderArrangement(song);
+    renderPreview(song);
+}
+
+/* ------------------------------------------------------------------
+ * SortableJS lazy loader — same pattern as /js/modules/card-layout.js,
+ * duplicated here because editor.js is a classic script and can't
+ * import the ES-module version.
+ * ------------------------------------------------------------------ */
+var _arrSortablePromise = null;
+function ensureSortable() {
+    if (window.Sortable) return Promise.resolve(window.Sortable);
+    if (_arrSortablePromise) return _arrSortablePromise;
+    _arrSortablePromise = new Promise(function (resolve, reject) {
+        var s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js';
+        s.crossOrigin = 'anonymous';
+        s.onload  = function () { resolve(window.Sortable); };
+        s.onerror = function () { reject(new Error('SortableJS load failed')); };
+        document.head.appendChild(s);
+    });
+    return _arrSortablePromise;
 }
 
 /**
@@ -1324,27 +1498,17 @@ function bindArrangementListeners() {
         });
     }
 
-    /* Auto-generate button (chorus after each verse). */
-    var btnAuto = document.getElementById('btnArrangementAuto');
-    if (btnAuto) {
-        btnAuto.addEventListener('click', function () {
+    /* Preset quick-action buttons (#493). Delegated click handler on
+       any `.arrangement-preset` so adding new presets is a markup-only
+       change — each button carries its preset name in data-preset. */
+    document.querySelectorAll('.arrangement-preset').forEach(function (btn) {
+        btn.addEventListener('click', function () {
             if (!currentSongId) return;
             var song = findSongById(currentSongId);
             if (!song) return;
-
-            var arrangement = autoGenerateArrangement(song);
-            if (arrangement === null) {
-                showToast('No chorus found to auto-arrange.', 'warning');
-                return;
-            }
-
-            song.arrangement = arrangement;
-            markModified(song.id);
-            renderArrangement(song);
-            renderPreview(song);
-            showToast('Arrangement auto-generated.', 'success');
+            applyArrangementPreset(song, btn.dataset.preset);
         });
-    }
+    });
 
     /* Sequential / clear button. */
     var btnSeq = document.getElementById('btnArrangementSequential');
@@ -1358,9 +1522,115 @@ function bindArrangementListeners() {
             markModified(song.id);
             renderArrangement(song);
             renderPreview(song);
-            showToast('Arrangement cleared — sequential order.', 'info');
+            showToast('Arrangement cleared — using component order.', 'info');
         });
     }
+}
+
+/* ========================================================================
+ *  Arrangement presets (#493)
+ *  --------------------------------------------------------------------
+ *  Each preset consumes the song's components array and returns an
+ *  index array. Presets must NEVER throw — they're responsible for
+ *  checking their own prerequisites (which also feed the UI's
+ *  enable/disable logic via the data-requires attribute). Returning
+ *  null means "can't apply — show a toast explaining why".
+ * ======================================================================== */
+function applyArrangementPreset(song, presetName) {
+    var fn = ARRANGEMENT_PRESETS[presetName];
+    if (!fn) {
+        showToast('Unknown arrangement preset: ' + presetName, 'warning');
+        return;
+    }
+    var arrangement = fn(song);
+    if (!arrangement) {
+        showToast('This song is missing a component type needed for that pattern.', 'warning');
+        return;
+    }
+    song.arrangement = arrangement;
+    markModified(song.id);
+    renderArrangement(song);
+    renderPreview(song);
+    showToast('Arrangement set: ' + presetName.replace(/-/g, ' ') + '.', 'success');
+}
+
+var ARRANGEMENT_PRESETS = {
+    'chorus-after-each-verse': function (song) {
+        return autoGenerateArrangement(song);
+    },
+
+    'verses-only': function (song) {
+        var verses = componentIdxByType(song, 'verse');
+        return verses.length > 0 ? verses : null;
+    },
+
+    'verse-prechorus-chorus': function (song) {
+        var verses  = componentIdxByType(song, 'verse');
+        var preIdx  = firstIndexOfType(song, 'pre-chorus');
+        var choIdx  = firstIndexOfType(song, 'chorus', /* alias */ 'refrain');
+        if (!verses.length || preIdx < 0 || choIdx < 0) return null;
+        var arr = [];
+        verses.forEach(function (v) { arr.push(v); arr.push(preIdx); arr.push(choIdx); });
+        return arr;
+    },
+
+    'verse-bridge-verse': function (song) {
+        var verses = componentIdxByType(song, 'verse');
+        var brIdx  = firstIndexOfType(song, 'bridge');
+        if (verses.length < 2 || brIdx < 0) return null;
+        /* Common shape: all-but-last verse · bridge · final verse. */
+        var arr = verses.slice(0, -1);
+        arr.push(brIdx);
+        arr.push(verses[verses.length - 1]);
+        return arr;
+    },
+
+    'intro-verses-outro': function (song) {
+        var intro  = firstIndexOfType(song, 'intro');
+        var outro  = firstIndexOfType(song, 'outro');
+        var verses = componentIdxByType(song, 'verse');
+        if (intro < 0 || outro < 0 || !verses.length) return null;
+        return [intro].concat(verses).concat([outro]);
+    },
+};
+
+function componentIdxByType(song, type) {
+    var out = [];
+    (song.components || []).forEach(function (c, i) { if (c.type === type) out.push(i); });
+    return out;
+}
+function firstIndexOfType(song, type, aliasType) {
+    var comps = song.components || [];
+    for (var i = 0; i < comps.length; i++) {
+        if (comps[i].type === type || (aliasType && comps[i].type === aliasType)) return i;
+    }
+    return -1;
+}
+
+/**
+ * Enable / disable each preset button based on whether its data-requires
+ * component types are all present in the current song (#493). Disabled
+ * buttons get a tooltip explaining which type is missing, so the UI
+ * never silently no-ops.
+ */
+function refreshArrangementPresetAvailability(song) {
+    var types = new Set((song.components || []).map(function (c) {
+        /* Refrain is an alias for chorus everywhere else. */
+        return c.type === 'refrain' ? 'chorus' : c.type;
+    }));
+    document.querySelectorAll('.arrangement-preset').forEach(function (btn) {
+        var req = (btn.dataset.requires || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+        var missing = req.filter(function (t) { return !types.has(t); });
+        if (missing.length === 0) {
+            btn.disabled = false;
+            btn.title = btn.dataset.origTitle || btn.title;
+            if (!btn.dataset.origTitle) btn.dataset.origTitle = btn.title;
+        } else {
+            if (!btn.dataset.origTitle) btn.dataset.origTitle = btn.title;
+            btn.disabled = true;
+            btn.title = 'Needs: ' + missing.join(', ') + ' (not in this song).';
+        }
+    });
 }
 
 /* ========================================================================

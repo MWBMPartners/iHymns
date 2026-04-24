@@ -832,50 +832,129 @@ $currentUser = getCurrentUser();
                             <small class="text-muted fw-normal ms-2">(display order)</small>
                         </h6>
 
-                        <!-- Arrangement chip display — rendered dynamically -->
-                        <div id="arrangement-chips" class="d-flex flex-wrap gap-1 mb-2" style="min-height: 32px;"></div>
-
-                        <!-- Arrangement text input for manual editing -->
-                        <div class="input-group input-group-sm mb-2">
-                            <input
-                                type="text"
-                                class="form-control"
-                                id="arrangement-input"
-                                placeholder="e.g. Verse 1, Chorus, Verse 2, Chorus, Verse 3, Chorus"
-                                aria-label="Arrangement order (comma-separated component labels)"
-                            >
-                            <button
-                                type="button"
-                                class="btn btn-outline-secondary"
-                                id="btnApplyArrangement"
-                                title="Apply arrangement"
-                            >
-                                <i class="bi bi-check-lg"></i> Apply
-                            </button>
+                        <!-- Drag-and-drop arrangement builder (#492).
+                             POOL = source chips, one per defined component; click
+                             to append to the strip.
+                             STRIP = the ordered sequence; drag to reorder, click
+                             × on a chip to remove. -->
+                        <div class="mb-2">
+                            <label class="form-label small text-muted mb-1">
+                                Components <small class="text-muted">(click to add)</small>
+                            </label>
+                            <div id="arrangement-pool"
+                                 class="d-flex flex-wrap gap-1 p-2 rounded"
+                                 style="min-height: 44px; background-color: var(--ih-bg-card); border: 1px solid var(--ih-border);"
+                                 aria-label="Component pool">
+                            </div>
                         </div>
 
-                        <!-- Validation feedback -->
+                        <div class="mb-2">
+                            <label class="form-label small text-muted mb-1">
+                                Sequence <small class="text-muted">(drag to reorder, × to remove)</small>
+                            </label>
+                            <div id="arrangement-strip"
+                                 class="d-flex flex-wrap gap-1 p-2 rounded"
+                                 style="min-height: 44px; background-color: var(--ih-bg-card); border: 1px solid var(--ih-border);"
+                                 aria-label="Arrangement sequence">
+                            </div>
+                        </div>
+
+                        <!-- Legacy chips readout — preserved as a visual summary
+                             so the whole tab keeps the pill-row look from before
+                             #492. Updated by renderArrangement() whenever the
+                             strip changes. -->
+                        <div id="arrangement-chips" class="d-flex flex-wrap gap-1 mb-2 d-none"></div>
+
+                        <!-- Validation feedback (used by the advanced text input
+                             below and for preset application errors from #493). -->
                         <div id="arrangement-feedback" class="small mb-2" style="display: none;"></div>
 
-                        <!-- Quick action buttons -->
+                        <!-- Quick action buttons (#493).
+                             Each button carries data-requires with a comma-
+                             separated list of component types that must be
+                             present before it can fire. editor.js disables any
+                             button whose requirements aren't met by the current
+                             song and swaps the title to an explanation. -->
                         <div class="d-flex flex-wrap gap-2 mb-2">
                             <button
                                 type="button"
-                                class="btn btn-sm btn-outline-secondary"
-                                id="btnArrangementAuto"
+                                class="btn btn-sm btn-outline-secondary arrangement-preset"
+                                data-preset="chorus-after-each-verse"
+                                data-requires="verse,chorus"
                                 title="Insert chorus after each verse"
                             >
-                                <i class="bi bi-magic me-1"></i>Auto: Chorus after each verse
+                                <i class="bi bi-magic me-1"></i>Chorus after each verse
                             </button>
                             <button
                                 type="button"
-                                class="btn btn-sm btn-outline-secondary"
-                                id="btnArrangementSequential"
-                                title="Use sequential order (clear arrangement)"
+                                class="btn btn-sm btn-outline-secondary arrangement-preset"
+                                data-preset="verse-prechorus-chorus"
+                                data-requires="verse,pre-chorus,chorus"
+                                title="Verse → Pre-Chorus → Chorus (for each verse)"
                             >
-                                <i class="bi bi-arrow-down me-1"></i>Sequential (clear)
+                                <i class="bi bi-magic me-1"></i>Verse · Pre-Chorus · Chorus
+                            </button>
+                            <button
+                                type="button"
+                                class="btn btn-sm btn-outline-secondary arrangement-preset"
+                                data-preset="verse-bridge-verse"
+                                data-requires="verse,bridge"
+                                title="Verses with a Bridge near the end"
+                            >
+                                <i class="bi bi-magic me-1"></i>Verses · Bridge · Final Verse
+                            </button>
+                            <button
+                                type="button"
+                                class="btn btn-sm btn-outline-secondary arrangement-preset"
+                                data-preset="intro-verses-outro"
+                                data-requires="intro,verse,outro"
+                                title="Intro → all Verses → Outro"
+                            >
+                                <i class="bi bi-magic me-1"></i>Intro · Verses · Outro
+                            </button>
+                            <button
+                                type="button"
+                                class="btn btn-sm btn-outline-secondary arrangement-preset"
+                                data-preset="verses-only"
+                                data-requires="verse"
+                                title="All verses in sequence (no chorus)"
+                            >
+                                <i class="bi bi-magic me-1"></i>Verses only
+                            </button>
+                            <button
+                                type="button"
+                                class="btn btn-sm btn-outline-warning"
+                                id="btnArrangementSequential"
+                                title="Clear the arrangement — falls back to the order defined above"
+                            >
+                                <i class="bi bi-arrow-counterclockwise me-1"></i>Reset to component order
                             </button>
                         </div>
+
+                        <!-- Advanced text input — collapsed by default, kept for
+                             power-users and clipboard paste-in. -->
+                        <details class="mb-2">
+                            <summary class="small text-muted" style="cursor: pointer;">
+                                Advanced · type arrangement as text
+                            </summary>
+                            <div class="input-group input-group-sm mt-2">
+                                <input
+                                    type="text"
+                                    class="form-control"
+                                    id="arrangement-input"
+                                    placeholder="e.g. Verse 1, Chorus, Verse 2, Chorus, Verse 3, Chorus"
+                                    aria-label="Arrangement order (comma-separated component labels)"
+                                >
+                                <button
+                                    type="button"
+                                    class="btn btn-outline-secondary"
+                                    id="btnApplyArrangement"
+                                    title="Apply arrangement"
+                                >
+                                    <i class="bi bi-check-lg"></i> Apply
+                                </button>
+                            </div>
+                        </details>
 
                         <div class="p-2 rounded" style="background-color: var(--ih-bg-card); border: 1px solid var(--ih-border);">
                             <small class="text-muted">
