@@ -132,6 +132,16 @@ body:has(.navbar-admin) {
     display: flex;
     align-items: stretch;
     gap: 0;
+    /* Peg the layout column to fill the viewport between the fixed
+       header and fixed footer, so both the sidebar and the main
+       pane can stretch to a visible edge on short pages instead of
+       leaving body-background whitespace below them (#499). Tall
+       pages scroll naturally because .admin-main's content grows
+       the layout. */
+    min-height: calc(100vh
+                     - var(--admin-navbar-height)
+                     - var(--footer-info-height)
+                     - 1rem);
 }
 
 .admin-sidebar {
@@ -146,11 +156,16 @@ body:has(.navbar-admin) {
        .navbar-admin (see body:has(.navbar-admin) above). */
     position: sticky;
     top: calc(var(--admin-navbar-height) + 0.5rem);
-    align-self: flex-start;
+    /* Before #499 the sidebar aligned flex-start with a max-height,
+       which left visible body background below it on tall viewports.
+       Drop align-self so the flex parent stretches us to the layout
+       column height (.admin-layout min-height above), giving a
+       WordPress-style full-height side column. max-height becomes
+       the scroll cap for long link lists. */
     max-height: calc(100vh
                      - var(--admin-navbar-height)
                      - var(--footer-info-height)
-                     - 1.5rem);
+                     - 1rem);
     overflow-y: auto;
 }
 
