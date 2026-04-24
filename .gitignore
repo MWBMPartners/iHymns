@@ -180,6 +180,14 @@ tmp/
 temp/
 
 # ----------------------------------------------------------------------------
+# Database Credentials (appWeb/.auth/)
+# The real credentials file is never committed; only the example template.
+# ----------------------------------------------------------------------------
+appWeb/.auth/*
+!appWeb/.auth/.htaccess
+!appWeb/.auth/db_credentials.example.php
+
+# ----------------------------------------------------------------------------
 # Secrets / Credentials (NEVER commit these)
 # ----------------------------------------------------------------------------
 .env
@@ -202,10 +210,16 @@ sftp-config.json
 # The runtime copy in data_share/ and deploy copies are excluded.
 appWeb/data_share/song_data/songs.json
 appWeb/data_share/setlist_json/*.json
-appWeb/data_share/SQLite/*.db
 appWeb/data/songs.json
 appWeb/public_html/data/songs.json
 appWeb/private_html/data/songs.json
 
 # CI/CD injected environment channel file (deploy-time only)
 appWeb/public_html/.env-channel
+
+# ----------------------------------------------------------------------------
+# Source Scraped Song data
+# ----------------------------------------------------------------------------
+.SourceSongData/_archive/*
+*_debug_*_raw.html
+*_debug_*_skipped.html

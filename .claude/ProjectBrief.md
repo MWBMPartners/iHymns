@@ -12,7 +12,9 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 - **Copyright**: © 2026– MWBM Partners Ltd
 - **License**: Proprietary (third-party components retain their own licenses)
 - **GitHub Repo**: <https://github.com/MWBMPartners/iHymns>
-- **Current Version**: 0.1.7 (pre-release, Phase 1)
+- **Current Version**: 0.10.0 (pre-release, Phase 1)
+- **Database**: MySQL 5.7+ (30+ tables, tblCamelCase naming)
+- **API**: 50+ JSON endpoints via `api.php`
 
 ---
 
@@ -21,11 +23,15 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 ### Phase ONE (Current) — v0.x.x (pre-release)
 
 - Songs sourced from local `.SourceSongData/` text files
-- Parsed into structured JSON (`data/songs.json`) — single canonical copy
+- Parsed into JSON (`data/songs.json`), then migrated into **MySQL database**
 - 6 songbooks, 3,612 songs: CP (243), JP (617), MP (1355), SDAH (695), CH (702), Misc (0)
-- Some songbooks include MIDI audio and PDF sheet music
-- Song Editor (developer tool) in `appWeb/private_html/editor/` (HTTP Basic Auth)
-- Phase 1 is a first iteration — don't over-engineer file-based data distribution
+- MySQL with MySQLi prepared statements (song data) and PDO (auth/admin)
+- Database naming: `tblCamelCase` tables, `CamelCase` columns
+- User accounts with role hierarchy (global_admin/admin/editor/user)
+- User groups with version access control (Alpha/Beta/RC/RTW channel gating)
+- Song requests, multi-language support, activity logging, favorites sync
+- Song Editor in `/manage/editor/` (session-based auth)
+- Comprehensive REST-like API for PWA and native app consumption
 
 ### Phase TWO (Future) — v2.x.x
 
@@ -142,10 +148,14 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 | `appWeb/public_html/js/modules/*.js` | ES modules (router, analytics, gestures, settings, etc.) |
 | `appWeb/public_html/js/utils/*.js` | JS utilities (html.js, text.js) |
 | `appWeb/public_html/js/constants.js` | Centralised localStorage key constants (#139) |
-| `appWeb/public_html/api.php` | Server-side API (songs, setlists, search) |
+| `appWeb/public_html/api.php` | Server-side API (songs, setlists, search, user auth, password reset) |
 | `appWeb/public_html/og-image.php` | Dynamic OG image generator (1200×630, contextual song images) |
 | `appWeb/public_html/sitemap.xml.php` | Dynamic XML sitemap from song database |
 | `appWeb/public_html/includes/config.php` | App configuration (analytics, features) |
+| `appWeb/public_html/manage/includes/auth.php` | Authentication middleware with role hierarchy |
+| `appWeb/public_html/manage/includes/db.php` | Database connection factory with SQLite migrations |
+| `appWeb/public_html/js/modules/user-auth.js` | Public user auth (register, login, sync, password reset) |
+| `appWeb/public_html/js/utils/components.js` | Shared song component tag utility (12 types) |
 | `appWeb/private_html/editor/` | Song editor (dev tool) |
 | `appApple/iHymns/iHymns/Services/AppInfo.swift` | Apple app info |
 | `appAndroid/.../AppInfo.kt` | Android app info |
@@ -166,4 +176,33 @@ See `DEV_NOTES.md` for full setup guide including Apple, Android, and Fire OS.
 
 ---
 
-Last updated: 2026-04-07
+---
+
+## User Account System
+
+### Role Hierarchy (highest to lowest)
+
+| Role | Level | Capabilities |
+| --- | --- | --- |
+| `global_admin` | 4 | All powers, auto-assigned to first user |
+| `admin` | 3 | Manage users (assign roles up to admin) |
+| `editor` | 2 | Edit songs via /manage/editor/ |
+| `user` | 1 | Save setlists centrally, cross-device sync |
+
+- Each role inherits capabilities of roles below it
+- Non-logged-in (anonymous) users: local-only setlists (localStorage)
+- Public API uses bearer tokens (64-char hex, 30-day expiry)
+- Admin panel uses PHP sessions (session-based auth)
+- Password reset via secure tokens (48-char hex, 1-hour expiry, single-use)
+- Future: SIGNula ID integration
+
+### Custom Song Arrangements
+
+- Per-song arrangement editor in setlists (ProPresenter 7-style)
+- 12 component types with short tags: V, C, R, PC, B, T, CD, I, O, IL, VP, AL
+- Drag-and-drop reordering, auto-generate, sequential reset
+- Arrangements persisted in setlist data and shared setlist links
+
+---
+
+Last updated: 2026-04-09

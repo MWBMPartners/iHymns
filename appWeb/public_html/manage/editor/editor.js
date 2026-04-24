@@ -28,14 +28,14 @@ var songData = {
  * Primary load/save endpoint — the editor's PHP API reads/writes
  * directly from/to appWeb/data_share/song_data/songs.json (#154).
  */
-var EDITOR_API_URL = 'api.php';
+var EDITOR_API_URL = 'api';
 
 /**
  * Fallback relative paths for loading songs.json when the PHP API
  * is not available (e.g., running the editor without PHP).
  */
 var SONGS_URL_CANDIDATES = [
-    'api.php?action=load',                    /* Primary: PHP API reads from data_share/ */
+    'api?action=load',                        /* Primary: PHP API reads from data_share/ */
     '../data/songs.json',                     /* Deployed server: data/ inside private_html/ */
     '../../data/songs.json',                  /* Alternative: data/ one up from private_html/ */
     '../../../data/songs.json',               /* Local dev: relative to appWeb/private_html/editor/ → appWeb/data/ */
@@ -54,6 +54,9 @@ var modifiedSongIds = new Set();
 
 /** Timestamp (Date object) of the most recent save/download action, or null. */
 var lastSaveTime = null;
+
+/** Current sort mode for the song list: 'title', 'number', or 'songbook' (#251). */
+var currentSortMode = 'title';
 
 /* ========================================================================
  *  SECTION 2 — Data Management (#53, #58)
@@ -191,14 +194,18 @@ function _fetchAndParseSongs(target) {
 }
 
 /**
- * saveSongsToFile()
- * -----------------
- * Serialises the current `songData` to a pretty-printed JSON string and saves
- * it directly to the server via the editor PHP API (#154). This writes to the
- * canonical appWeb/data_share/song_data/songs.json file. Falls back to a
- * browser download if the server save fails.
+ * saveSongs()
+ * -----------
+ * Primary save action for the editor. Writes the current `songData` to the
+ * MySQL database via the editor PHP API (POST api.php?action=save).
+ *
+ * If the server is unreachable or the DB is not configured, the editor falls
+ * back to a browser download of songs.json so the admin never loses changes.
+ *
+ * Invoked by the toolbar "Save" button (#btn-save) and by saveToJSON()
+ * (legacy alias used by the validation flow).
  */
-function saveSongsToFile() {
+function saveSongs() {
     /* Run validation first; abort if the data is not valid. */
     var errors = validateSongData();
     if (errors.length > 0) {
@@ -215,7 +222,7 @@ function saveSongsToFile() {
     /* Serialise with 2-space indentation for human readability. */
     var jsonString = JSON.stringify(songData, null, 2);
 
-    /* Try saving via the PHP API first (writes directly to data_share/) */
+    /* Primary path: save to MySQL via the editor API. */
     fetch(EDITOR_API_URL + '?action=save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -224,28 +231,40 @@ function saveSongsToFile() {
     .then(function (response) {
         return response.json().then(function (data) {
             if (response.ok && data.success) {
-                /* Server save succeeded */
+                /* DB save succeeded */
                 lastSaveTime = new Date();
                 modifiedSongIds.clear();
                 renderSongList();
                 updateStatusBar();
                 showToast(
-                    'Saved ' + data.songs + ' songs to server (' + Math.round(data.bytes / 1024) + ' KB).',
+                    'Saved ' + data.songs + ' songs to the database.',
                     'success'
                 );
             } else {
-                /* Server returned an error — fall back to download */
-                showToast('Server save failed: ' + (data.error || 'Unknown error') + '. Downloading instead.', 'warning');
+                /* Server reachable but the DB save failed — fall back to a
+                   JSON download so the admin can recover the work manually. */
+                showToast(
+                    'Database save failed: ' + (data.error || 'Unknown error') +
+                    '. Downloading a JSON backup so you don\u2019t lose changes.',
+                    'warning'
+                );
                 downloadSongsJson(jsonString);
             }
         });
     })
     .catch(function (err) {
-        /* Network error — fall back to browser download */
-        showToast('Server unavailable: ' + err.message + '. Downloading instead.', 'warning');
+        /* Network error / server unavailable — fall back to browser download. */
+        showToast(
+            'Server unavailable: ' + err.message +
+            '. Downloading a JSON backup so you don\u2019t lose changes.',
+            'warning'
+        );
         downloadSongsJson(jsonString);
     });
 }
+
+/* Backwards-compatible alias for the old function name. */
+var saveSongsToFile = saveSongs;
 
 /**
  * downloadSongsJson(jsonString)
@@ -313,8 +332,22 @@ function renderSongList(filter) {
     /* Count how many songs pass the filters (for the badge). */
     var visibleCount = 0;
 
-    /* Iterate over every song in the data set. */
-    songData.songs.forEach(function (song) {
+    /* Sort songs according to the current sort mode (#251). */
+    var sortedSongs = songData.songs.slice().sort(function (a, b) {
+        if (currentSortMode === 'title') {
+            return (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' });
+        } else if (currentSortMode === 'number') {
+            return (Number(a.number) || 0) - (Number(b.number) || 0);
+        } else if (currentSortMode === 'songbook') {
+            var sbCmp = (a.songbook || '').localeCompare(b.songbook || '', undefined, { sensitivity: 'base' });
+            if (sbCmp !== 0) return sbCmp;
+            return (Number(a.number) || 0) - (Number(b.number) || 0);
+        }
+        return 0;
+    });
+
+    /* Iterate over sorted songs. */
+    sortedSongs.forEach(function (song) {
         /* ---- Songbook filter ---- */
         if (songbookFilter && song.songbook !== songbookFilter) {
             return; // skip songs not in the selected songbook
@@ -338,22 +371,52 @@ function renderSongList(filter) {
         li.href = '#';
         li.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center';
 
+        /* Multi-select mode (#399): prepend a checkbox that mirrors
+           the selected state and clicking it toggles selection without
+           navigating to the song. */
+        if (window._selectMode) {
+            var cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.className = 'form-check-input me-2 flex-shrink-0';
+            cb.dataset.songId = song.id;
+            cb.checked = window._selectedIds && window._selectedIds.has(song.id);
+            cb.addEventListener('click', function (e) {
+                e.stopPropagation();
+            });
+            cb.addEventListener('change', function () {
+                if (!window._selectedIds) window._selectedIds = new Set();
+                if (cb.checked) window._selectedIds.add(song.id);
+                else window._selectedIds.delete(song.id);
+                updateBulkActionsBar();
+            });
+            li.appendChild(cb);
+        }
+
         /* Highlight the currently selected song. */
         if (song.id === currentSongId) {
             li.classList.add('active');
         }
 
-        /* Build the display text: "number — title". */
+        /* Build the display text: "number - Title Case Title" (#249). */
         var label = document.createElement('span');
-        label.textContent = (song.number || '?') + ' \u2014 ' + (song.title || 'Untitled');
+        label.textContent = (song.number || '?') + ' - ' + toTitleCase(song.title || 'Untitled');
 
-        /* Append a small badge if the song has been modified. */
+        /* Right-side badges: songbook abbreviation + modified indicator (#249). */
         var badges = document.createElement('span');
+        badges.className = 'd-flex align-items-center gap-1 flex-shrink-0';
         if (modifiedSongIds.has(song.id)) {
-            var badge = document.createElement('span');
-            badge.className = 'badge bg-warning text-dark ms-2';
-            badge.textContent = 'modified';
-            badges.appendChild(badge);
+            var modBadge = document.createElement('span');
+            modBadge.className = 'badge bg-warning text-dark';
+            modBadge.style.fontSize = '0.65rem';
+            modBadge.textContent = 'modified';
+            badges.appendChild(modBadge);
+        }
+        if (song.songbook) {
+            var sbBadge = document.createElement('span');
+            sbBadge.className = 'badge rounded-pill';
+            sbBadge.style.cssText = 'background-color: rgba(245,158,11,0.15); color: #f59e0b; font-size: 0.65rem; font-weight: 600;';
+            sbBadge.textContent = song.songbook;
+            badges.appendChild(sbBadge);
         }
 
         li.appendChild(label);
@@ -441,6 +504,7 @@ function selectSong(songId) {
 
     /* Store the selection globally. */
     currentSongId = songId;
+    updateHistoryButtonState();
 
     /* Show the editor form, hide the empty state (#246). */
     var editorEmpty = document.getElementById('editorEmpty');
@@ -476,6 +540,9 @@ function selectSong(songId) {
 
     /* Render the composers list. */
     renderComposers(song);
+
+    /* Render the translations panel (#352). */
+    renderTranslations(song);
 
     /* Render the copyright textarea. */
     setVal('edit-copyright', song.copyright || '');
@@ -592,14 +659,15 @@ function bindMetadataListeners() {
 var COMPONENT_TYPES = [
     'verse',
     'chorus',
-    'refrain',
     'bridge',
     'pre-chorus',
     'tag',
     'coda',
     'intro',
     'outro',
-    'interlude'
+    'interlude',
+    'vamp',
+    'ad-lib'
 ];
 
 /**
@@ -903,12 +971,33 @@ function autoResizeTextarea(el) {
  * @returns {string} Human-readable label.
  */
 function getComponentLabel(comp) {
-    var label = comp.type.charAt(0).toUpperCase() + comp.type.slice(1);
+    /* Refrain is an alias for Chorus in the UI */
+    var type = comp.type === 'refrain' ? 'chorus' : comp.type;
+    var label = type.charAt(0).toUpperCase() + type.slice(1);
     if (comp.number != null) {
         label += ' ' + comp.number;
     }
     return label;
 }
+
+/**
+ * Component type colour + text colour lookup.
+ * Mirrors COMPONENT_TYPES from components.js (which this non-module file cannot import).
+ */
+var COMP_COLORS = {
+    'verse':       { bg: '#3b82f6', text: '#ffffff' },
+    'chorus':      { bg: '#f59e0b', text: '#1a1a1a' },
+    'refrain':     { bg: '#f59e0b', text: '#1a1a1a' },
+    'pre-chorus':  { bg: '#ec4899', text: '#ffffff' },
+    'bridge':      { bg: '#8b5cf6', text: '#ffffff' },
+    'tag':         { bg: '#6b7280', text: '#ffffff' },
+    'coda':        { bg: '#6b7280', text: '#ffffff' },
+    'intro':       { bg: '#10b981', text: '#ffffff' },
+    'outro':       { bg: '#ef4444', text: '#ffffff' },
+    'interlude':   { bg: '#06b6d4', text: '#ffffff' },
+    'vamp':        { bg: '#f97316', text: '#ffffff' },
+    'ad-lib':      { bg: '#84cc16', text: '#1a1a1a' },
+};
 
 /**
  * findComponentIndex(song, label)
@@ -1081,23 +1170,12 @@ function renderArrangement(song) {
         var chip = document.createElement('span');
         chip.className = 'badge rounded-pill';
         chip.textContent = getComponentLabel(comp);
-        chip.title = 'Position ' + (pos + 1) + ' → Component index ' + idx;
+        chip.title = getComponentLabel(comp) + ' — position ' + (pos + 1);
 
-        /* Colour chips by type. */
-        var type = comp.type;
-        if (type === 'chorus' || type === 'refrain') {
-            chip.style.backgroundColor = '#f59e0b';
-            chip.style.color = '#1a1a1a';
-        } else if (type === 'verse') {
-            chip.style.backgroundColor = '#3b82f6';
-            chip.style.color = '#ffffff';
-        } else if (type === 'bridge') {
-            chip.style.backgroundColor = '#8b5cf6';
-            chip.style.color = '#ffffff';
-        } else {
-            chip.style.backgroundColor = '#6b7280';
-            chip.style.color = '#ffffff';
-        }
+        /* Colour chips by type with WCAG-safe text contrast. */
+        var colors = COMP_COLORS[comp.type] || { bg: '#6b7280', text: '#ffffff' };
+        chip.style.backgroundColor = colors.bg;
+        chip.style.color = colors.text;
 
         chipsContainer.appendChild(chip);
     });
@@ -1195,7 +1273,7 @@ function bindArrangementListeners() {
 
             var arrangement = autoGenerateArrangement(song);
             if (arrangement === null) {
-                showToast('No chorus or refrain found to auto-arrange.', 'warning');
+                showToast('No chorus found to auto-arrange.', 'warning');
                 return;
             }
 
@@ -1323,6 +1401,138 @@ function renderComposers(song) {
         renderComposers(song);       // re-render
     });
     container.appendChild(addBtn);
+}
+
+/**
+ * renderTranslations(song)
+ * ------------------------
+ * Populates the #translations-container with linked translation rows.
+ * Each row shows the translated song ID, language, and title with a remove button.
+ * Also populates the datalist for the add-translation input with all songs (#352).
+ *
+ * @param {Object} song - The song object.
+ */
+function renderTranslations(song) {
+    var container = document.getElementById('translations-container');
+    if (!container) return;
+
+    container.innerHTML = '';
+
+    /* Ensure the song has a translations array. */
+    if (!song.translations) song.translations = [];
+
+    /* Render each translation link */
+    song.translations.forEach(function (tr, i) {
+        var targetSong = songData.songs.find(function (s) { return s.id === tr.songId; });
+        var displayTitle = targetSong ? targetSong.title : '(unknown)';
+        var displayLang = tr.language || '?';
+
+        var row = document.createElement('div');
+        row.className = 'd-flex align-items-center gap-2 mb-1';
+
+        var badge = document.createElement('span');
+        badge.className = 'badge bg-secondary';
+        badge.textContent = displayLang;
+
+        var info = document.createElement('span');
+        info.className = 'flex-grow-1 small';
+        var strong = document.createElement('strong');
+        strong.textContent = tr.songId;
+        info.appendChild(strong);
+        info.appendChild(document.createTextNode(' \u2014 ' + displayTitle));
+
+        var removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'btn btn-sm btn-outline-danger';
+        removeBtn.title = 'Remove translation link';
+        removeBtn.innerHTML = '<i class="bi bi-x-lg"></i>';
+
+        row.appendChild(badge);
+        row.appendChild(info);
+        row.appendChild(removeBtn);
+
+        removeBtn.addEventListener('click', function () {
+            song.translations.splice(i, 1);
+            markModified(song.id);
+            renderTranslations(song);
+        });
+
+        container.appendChild(row);
+    });
+
+    if (song.translations.length === 0) {
+        var empty = document.createElement('div');
+        empty.className = 'text-muted small';
+        empty.textContent = 'No translations linked.';
+        container.appendChild(empty);
+    }
+
+    /* Populate the datalist with all songs for autocomplete */
+    var datalist = document.getElementById('translation-song-list');
+    if (datalist) {
+        datalist.innerHTML = '';
+        songData.songs.forEach(function (s) {
+            if (s.id === song.id) return; /* skip self */
+            var opt = document.createElement('option');
+            opt.value = s.id;
+            opt.textContent = s.title + ' (' + (s.language || 'en') + ')';
+            datalist.appendChild(opt);
+        });
+    }
+}
+
+/**
+ * Initialise the "Add Translation" button event handler (#352).
+ * Called once after DOM is ready.
+ */
+function initTranslationControls() {
+    var addBtn = document.getElementById('add-translation-btn');
+    if (!addBtn) return;
+
+    addBtn.addEventListener('click', function () {
+        if (!currentSongId) {
+            showToast('Select a song first.', 'warning');
+            return;
+        }
+        var input = document.getElementById('add-translation-songid');
+        var targetId = (input.value || '').trim();
+        if (!targetId) {
+            showToast('Enter a target Song ID.', 'warning');
+            return;
+        }
+
+        var song = songData.songs.find(function (s) { return s.id === currentSongId; });
+        if (!song) return;
+
+        /* Check target song exists */
+        var targetSong = songData.songs.find(function (s) { return s.id === targetId; });
+        if (!targetSong) {
+            showToast('Song "' + targetId + '" not found in the database.', 'danger');
+            return;
+        }
+
+        /* Check not a duplicate */
+        if (!song.translations) song.translations = [];
+        if (song.translations.some(function (t) { return t.songId === targetId; })) {
+            showToast('Translation link already exists.', 'warning');
+            return;
+        }
+
+        /* Check not self */
+        if (targetId === currentSongId) {
+            showToast('A song cannot be a translation of itself.', 'warning');
+            return;
+        }
+
+        song.translations.push({
+            songId: targetId,
+            language: targetSong.language || 'en'
+        });
+        markModified(song.id);
+        renderTranslations(song);
+        input.value = '';
+        showToast('Translation link added.', 'success');
+    });
 }
 
 /**
@@ -1624,10 +1834,11 @@ function renderPreview(song) {
 
     /* Render each component in the determined order. */
     renderOrder.forEach(function (comp) {
-        /* Component label, e.g. "Verse 1" or "Chorus". */
+        /* Component label, e.g. "Verse 1" or "Chorus". Refrain → Chorus alias. */
         var heading = document.createElement('h6');
         heading.className = 'mt-3 mb-1 fw-bold text-uppercase small';
-        var headingText = comp.type || 'Section';
+        var displayType = comp.type === 'refrain' ? 'chorus' : (comp.type || 'Section');
+        var headingText = displayType;
         if (comp.number != null) {
             headingText += ' ' + comp.number;
         }
@@ -1745,6 +1956,98 @@ function markModified(songId) {
 
     /* Refresh the status bar to reflect the new count. */
     updateStatusBar();
+
+    /* Schedule a debounced auto-save (#394). */
+    scheduleAutoSave();
+}
+
+/* ============================================================================
+ *  AUTO-SAVE (#394)
+ *  --------------------------------------------------------------------------
+ *  Debounced save: 3 s after the last edit we run saveSongs() to persist the
+ *  full songData via the existing server-side save endpoint. Manual Save is
+ *  unchanged; this is purely a safety net so an admin can't lose work by
+ *  forgetting to click the button.
+ *
+ *  TODO (follow-up): add a /api?action=save_song per-song endpoint so we're
+ *  not rewriting every row on every edit. Tracked in #394.
+ * ========================================================================== */
+
+var _autoSaveTimer   = null;
+var _autoSaveDelayMs = 3000;
+var _autoSaveRunning = false;
+
+function scheduleAutoSave() {
+    /* Drop any pending save; each edit resets the timer. */
+    if (_autoSaveTimer) clearTimeout(_autoSaveTimer);
+
+    _autoSaveTimer = setTimeout(function () {
+        _autoSaveTimer = null;
+        if (_autoSaveRunning)      return;
+        if (modifiedSongIds.size === 0) return;
+        if (validateSongData().length > 0) return;
+
+        _autoSaveRunning = true;
+        var text = document.getElementById('status-text');
+        if (text) text.textContent = 'Auto-saving…';
+
+        /* Per-song endpoint (#394). Walk the modified set and POST each
+           song individually to /api?action=save_song. Much cheaper than
+           the full-corpus `save`, and writes one row to tblSongRevisions
+           per actual edit (#400). Falls back to saveSongs() (full save)
+           if the per-song endpoint returns a non-ok status. */
+        var ids = Array.from(modifiedSongIds);
+        autoSaveSongsPerSong(ids).then(function (summary) {
+            if (summary.failed.length > 0) {
+                /* Something wasn't UPSERT-friendly — fall back to full save so
+                   the user never ends up stuck with un-persistable diffs. */
+                saveSongs();
+            } else {
+                lastSaveTime = new Date();
+                summary.saved.forEach(function (id) { modifiedSongIds.delete(id); });
+                renderSongList();
+                updateStatusBar();
+            }
+        }).finally(function () {
+            _autoSaveRunning = false;
+        });
+    }, _autoSaveDelayMs);
+}
+
+/**
+ * autoSaveSongsPerSong(ids)
+ * -------------------------
+ * POST each song in `ids` to /api?action=save_song sequentially.
+ * Returns a summary { saved: [ids], failed: [{id, error}] }.
+ *
+ * Sequential (not Promise.all) so we stay polite to the DB and can
+ * short-circuit on the first persistent error.
+ */
+function autoSaveSongsPerSong(ids) {
+    var saved  = [];
+    var failed = [];
+    var chain  = Promise.resolve();
+
+    ids.forEach(function (id) {
+        chain = chain.then(function () {
+            var song = (songData.songs || []).find(function (s) { return s.id === id; });
+            if (!song) { failed.push({ id: id, error: 'not found locally' }); return; }
+            return fetch(EDITOR_API_URL + '?action=save_song', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(song),
+            }).then(function (res) {
+                return res.json().then(function (data) {
+                    if (res.ok && data.ok) saved.push(id);
+                    else failed.push({ id: id, error: data.error || ('HTTP ' + res.status) });
+                });
+            }).catch(function (err) {
+                failed.push({ id: id, error: err.message });
+            });
+        });
+    });
+
+    return chain.then(function () { return { saved: saved, failed: failed }; });
 }
 
 /**
@@ -1845,6 +2148,29 @@ function composeIetfTag() {
 function getVal(elementId) {
     var el = document.getElementById(elementId);
     return el ? el.value : '';
+}
+
+/**
+ * toTitleCase(str)
+ * ----------------
+ * Converts a string to Title Case. Common small words (a, an, the, and,
+ * but, or, for, nor, in, on, at, to, by, of, with) stay lowercase unless
+ * they are the first or last word.
+ *
+ * @param {string} str - The input string.
+ * @returns {string} The title-cased string.
+ */
+function toTitleCase(str) {
+    var smallWords = /^(a|an|the|and|but|or|for|nor|in|on|at|to|by|of|with)$/i;
+    var words = str.replace(/\s+/g, ' ').trim().split(' ');
+
+    return words.map(function (word, i, arr) {
+        /* Always capitalise first and last word */
+        if (i === 0 || i === arr.length - 1 || !smallWords.test(word)) {
+            return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+        }
+        return word.toLowerCase();
+    }).join(' ');
 }
 
 /**
@@ -2102,6 +2428,15 @@ function bindGlobalEventListeners() {
         });
     }
 
+    /* ---- Sort order dropdown (#251) ---- */
+    var sortEl = document.getElementById('song-sort');
+    if (sortEl) {
+        sortEl.addEventListener('change', function () {
+            currentSortMode = sortEl.value;
+            renderSongList();
+        });
+    }
+
     /* ---- Songbook filter dropdown ---- */
     var filterEl = document.getElementById('songbook-filter');
     if (filterEl) {
@@ -2139,11 +2474,19 @@ function bindGlobalEventListeners() {
         });
     }
 
-    /* ---- Save / Export JSON button ---- */
+    /* ---- Save button — writes to MySQL, falls back to JSON download ---- */
     var saveBtn = document.getElementById('btn-save');
     if (saveBtn) {
         saveBtn.addEventListener('click', function () {
-            saveSongsToFile();
+            saveSongs();
+        });
+    }
+
+    /* ---- Export JSON button (#235) ---- */
+    var jsonExportBtn = document.getElementById('btn-export-json');
+    if (jsonExportBtn) {
+        jsonExportBtn.addEventListener('click', function () {
+            exportJSON();
         });
     }
 
@@ -2238,6 +2581,9 @@ function init() {
     /* Bind arrangement editor listeners (#161). */
     bindArrangementListeners();
 
+    /* Bind translation controls (#352). */
+    initTranslationControls();
+
     /* Register the beforeunload handler for unsaved-changes protection. */
     window.addEventListener('beforeunload', warnBeforeUnload);
 
@@ -2255,8 +2601,392 @@ function init() {
     loadSongsFromURL(DEFAULT_SONGS_URL).then(function () {
         /* After successful load, populate the songbook dropdown with real data. */
         populateSongbookFilterDropdown();
+
+        /* Deep-link support (#407): /manage/editor/?song=<SongId> opens
+           directly on that song when it exists in songData. Used by the
+           Edit button on the public song view. */
+        try {
+            var sid = new URLSearchParams(window.location.search).get('song');
+            if (sid && Array.isArray(songData.songs)
+                && songData.songs.some(function (s) { return s.id === sid; })) {
+                selectSong(sid);
+            }
+        } catch (_e) { /* malformed URL — ignore */ }
+    });
+}
+
+/* ============================================================================
+ *  MULTI-SELECT MODE (#399)
+ *  --------------------------------------------------------------------------
+ *  Lightweight multi-select in the sidebar for bulk-delete. Not as rich as
+ *  the originally-scoped "bulk tag / move / export" toolbar — the delete
+ *  path alone covers the most-requested curator need; richer actions can
+ *  be added later without the sidebar surgery needed for multi-select.
+ * ========================================================================== */
+
+function updateBulkActionsBar() {
+    var bar = document.getElementById('bulk-actions-bar');
+    var countEl = document.getElementById('bulk-selected-count');
+    if (!bar || !countEl) return;
+    var count = (window._selectedIds && window._selectedIds.size) || 0;
+    countEl.textContent = count;
+    /* All bulk-action buttons enable only when something is selected. */
+    ['btn-bulk-delete', 'btn-bulk-verify', 'btn-bulk-tag',
+     'btn-bulk-move', 'btn-bulk-export'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) el.disabled = count === 0;
+    });
+}
+
+function toggleSelectMode(on) {
+    window._selectMode = !!on;
+    window._selectedIds = window._selectedIds || new Set();
+    if (!on) window._selectedIds.clear();
+
+    var bar    = document.getElementById('bulk-actions-bar');
+    var toggle = document.getElementById('btn-select-mode');
+    if (bar) bar.classList.toggle('d-none', !on);
+    if (toggle) {
+        toggle.setAttribute('aria-pressed', on ? 'true' : 'false');
+        toggle.classList.toggle('btn-amber-solid', on);
+        toggle.classList.toggle('btn-outline-secondary', !on);
+    }
+    renderSongList();
+    updateBulkActionsBar();
+}
+
+function bindMultiSelectListeners() {
+    var toggle = document.getElementById('btn-select-mode');
+    if (toggle) toggle.addEventListener('click', function () {
+        toggleSelectMode(!window._selectMode);
+    });
+
+    var all = document.getElementById('btn-bulk-select-all');
+    if (all) all.addEventListener('click', function () {
+        window._selectedIds = new Set(
+            (songData.songs || []).map(function (s) { return s.id; })
+        );
+        renderSongList();
+        updateBulkActionsBar();
+    });
+
+    var none = document.getElementById('btn-bulk-select-none');
+    if (none) none.addEventListener('click', function () {
+        window._selectedIds = new Set();
+        renderSongList();
+        updateBulkActionsBar();
+    });
+
+    var del = document.getElementById('btn-bulk-delete');
+    if (del) del.addEventListener('click', function () {
+        var ids = Array.from(window._selectedIds || []);
+        if (!ids.length) return;
+        var threshold = 10;
+        if (ids.length >= threshold) {
+            var typed = prompt(
+                'About to delete ' + ids.length + ' songs. Type DELETE to confirm.'
+            );
+            if (typed !== 'DELETE') return;
+        } else if (!confirm('Delete ' + ids.length + ' selected song(s)? This cannot be undone until you Save.')) {
+            return;
+        }
+
+        var idSet = new Set(ids);
+        songData.songs = (songData.songs || []).filter(function (s) { return !idSet.has(s.id); });
+        ids.forEach(function (id) { modifiedSongIds.delete(id); });
+        if (currentSongId && idSet.has(currentSongId)) {
+            currentSongId = null;
+            clearEditForm();
+        }
+        window._selectedIds = new Set();
+        renderSongList();
+        updateStatusBar();
+        updateBulkActionsBar();
+        showToast('Deleted ' + ids.length + ' songs. Click Save to persist.', 'warning');
+    });
+
+    /* Bulk Verify (#399) — sets verified = true on every selected song
+       and marks each as modified so the existing Save flow persists it. */
+    var verify = document.getElementById('btn-bulk-verify');
+    if (verify) verify.addEventListener('click', function () {
+        var ids = Array.from(window._selectedIds || []);
+        if (!ids.length) return;
+        var idSet = new Set(ids);
+        var changed = 0;
+        (songData.songs || []).forEach(function (s) {
+            if (!idSet.has(s.id)) return;
+            if (!s.verified) {
+                s.verified = true;
+                modifiedSongIds.add(s.id);
+                changed++;
+            }
+        });
+        renderSongList();
+        updateStatusBar();
+        updateBulkActionsBar();
+        showToast(
+            changed > 0
+                ? 'Marked ' + changed + ' song(s) verified. Click Save to persist.'
+                : 'Nothing to change — all selected songs were already verified.',
+            changed > 0 ? 'success' : 'info'
+        );
+    });
+
+    /* Bulk Move (#399) — relocates every selected song to a different
+       songbook. Clears Number on each (set to NULL) because re-numbering
+       to avoid collisions is per-book and needs a proper UI. The user
+       can renumber per-song afterwards. */
+    var move = document.getElementById('btn-bulk-move');
+    if (move) move.addEventListener('click', function () {
+        var ids = Array.from(window._selectedIds || []);
+        if (!ids.length) return;
+        var choices = (songData.songbooks || []).map(function (sb) { return sb.id; }).join(', ');
+        var target = prompt(
+            'Move ' + ids.length + ' selected song(s) to which songbook?\n\n' +
+            'Available: ' + choices + '\n\n' +
+            'Number will be cleared (NULL) — renumber individually afterwards.'
+        );
+        if (!target) return;
+        var targetId = target.trim();
+        var sb = (songData.songbooks || []).find(function (s) { return s.id === targetId; });
+        if (!sb) { showToast('No songbook "' + targetId + '".', 'warning'); return; }
+
+        var idSet = new Set(ids);
+        (songData.songs || []).forEach(function (s) {
+            if (!idSet.has(s.id)) return;
+            s.songbook = sb.id;
+            s.songbookName = sb.name;
+            s.number = null;
+            modifiedSongIds.add(s.id);
+        });
+        renderSongList();
+        updateStatusBar();
+        updateBulkActionsBar();
+        showToast('Moved ' + ids.length + ' song(s) to ' + sb.id + '. Click Save to persist.', 'success');
+    });
+
+    /* Bulk Export (#399) — downloads the selected songs as JSON. */
+    var exp = document.getElementById('btn-bulk-export');
+    if (exp) exp.addEventListener('click', function () {
+        var ids = Array.from(window._selectedIds || []);
+        if (!ids.length) return;
+        var idSet = new Set(ids);
+        var subset = (songData.songs || []).filter(function (s) { return idSet.has(s.id); });
+        downloadBlob(
+            JSON.stringify({ songs: subset }, null, 2),
+            'songs-export-' + new Date().toISOString().slice(0, 10) + '.json',
+            'application/json'
+        );
+        showToast('Exported ' + subset.length + ' song(s) to JSON.', 'success');
+    });
+
+    /* Bulk Tag (#399) — adds and/or removes tags on every selected song.
+       Posts to /api?action=bulk_tag; tag membership lives server-side
+       in tblSongTagMap, outside the save_song flow. */
+    var tag = document.getElementById('btn-bulk-tag');
+    if (tag) tag.addEventListener('click', function () {
+        var ids = Array.from(window._selectedIds || []);
+        if (!ids.length) return;
+        var toAdd = prompt(
+            'Tags to ADD on ' + ids.length + ' selected song(s)?\n' +
+            'Comma-separated (e.g. "Easter, Communion"). Leave blank to skip.'
+        );
+        if (toAdd === null) return; /* user cancelled */
+        var toRemove = prompt(
+            'Tags to REMOVE on ' + ids.length + ' selected song(s)?\n' +
+            'Comma-separated. Leave blank to skip.'
+        );
+        if (toRemove === null) return;
+
+        var add = toAdd.split(',').map(function (t) { return t.trim(); }).filter(Boolean);
+        var rem = toRemove.split(',').map(function (t) { return t.trim(); }).filter(Boolean);
+        if (!add.length && !rem.length) {
+            showToast('No tag changes specified.', 'info');
+            return;
+        }
+
+        fetch(EDITOR_API_URL + '?action=bulk_tag', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ songIds: ids, add: add, remove: rem })
+        })
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, data: j }; }); })
+            .then(function (res) {
+                if (!res.ok) {
+                    showToast('Bulk tag failed: ' + (res.data.error || 'Unknown error.'), 'danger');
+                    return;
+                }
+                showToast(
+                    'Tagged ' + res.data.songsAffected + ' song(s) ' +
+                    '(+' + res.data.added + ', -' + res.data.removed + ').',
+                    'success'
+                );
+            })
+            .catch(function (err) {
+                showToast('Bulk tag request failed: ' + err.message, 'danger');
+            });
+    });
+}
+
+/* ============================================================================
+ *  REVISION HISTORY (#400)
+ *  --------------------------------------------------------------------------
+ *  Toolbar "History" button opens a modal that lists revisions for the
+ *  currently-selected song (newest first), with a Restore button per row
+ *  and a side-by-side JSON diff on click.
+ * ========================================================================== */
+
+function bindHistoryListener() {
+    var btn = document.getElementById('btn-history');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+        if (!currentSongId) {
+            showToast('Select a song first.', 'warning');
+            return;
+        }
+        openHistoryModal(currentSongId);
+    });
+}
+
+function updateHistoryButtonState() {
+    var btn = document.getElementById('btn-history');
+    if (btn) btn.disabled = !currentSongId;
+}
+
+function openHistoryModal(songId) {
+    var listEl = document.getElementById('history-list');
+    var detailEl = document.getElementById('history-detail');
+    var titleEl = document.getElementById('history-modal-title');
+    if (!listEl || !detailEl) return;
+
+    if (titleEl) titleEl.innerHTML = '<i class="bi bi-clock-history me-2"></i>Revision history — ' + songId;
+    listEl.innerHTML = '<div class="text-center p-3"><i class="bi bi-hourglass-split me-1"></i>Loading…</div>';
+    detailEl.innerHTML = '';
+
+    var modalEl = document.getElementById('history-modal');
+    if (modalEl && window.bootstrap) {
+        var modal = window.bootstrap.Modal.getOrCreateInstance(modalEl);
+        modal.show();
+    }
+
+    fetch(EDITOR_API_URL + '?action=list_revisions&songId=' + encodeURIComponent(songId), {
+        credentials: 'same-origin',
+    })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, data: j }; }); })
+        .then(function (res) {
+            if (!res.ok) {
+                listEl.innerHTML = '<div class="text-danger p-3">Failed to load revisions: ' +
+                    (res.data.error || 'unknown error') + '</div>';
+                return;
+            }
+            renderHistoryList(res.data.revisions || [], listEl, detailEl);
+        })
+        .catch(function (err) {
+            listEl.innerHTML = '<div class="text-danger p-3">Request failed: ' + err.message + '</div>';
+        });
+}
+
+function renderHistoryList(revisions, listEl, detailEl) {
+    if (!revisions.length) {
+        listEl.innerHTML = '<div class="text-muted p-3">No revisions recorded for this song yet.</div>';
+        return;
+    }
+    listEl.innerHTML = '';
+    revisions.forEach(function (rev) {
+        var item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'list-group-item list-group-item-action bg-dark text-light border-secondary d-flex justify-content-between align-items-center';
+        var badgeClass = rev.action === 'create' ? 'bg-success'
+            : rev.action === 'restore' ? 'bg-info'
+            : 'bg-secondary';
+        item.innerHTML =
+            '<div>' +
+                '<span class="badge ' + badgeClass + ' me-2">' + rev.action + '</span>' +
+                '<span class="small text-muted">' + rev.createdAt + '</span>' +
+                '<span class="ms-2">by ' + (rev.username || '—') + '</span>' +
+            '</div>' +
+            '<div class="d-flex gap-2">' +
+                '<button class="btn btn-sm btn-outline-info" data-rev-id="' + rev.id + '">View diff</button>' +
+                (rev.previousData
+                    ? '<button class="btn btn-sm btn-outline-warning btn-restore-rev" data-rev-id="' + rev.id + '">Restore</button>'
+                    : '') +
+            '</div>';
+        item.querySelector('[data-rev-id]').addEventListener('click', function (ev) {
+            ev.stopPropagation();
+            renderRevisionDiff(rev, detailEl);
+        });
+        var restore = item.querySelector('.btn-restore-rev');
+        if (restore) {
+            restore.addEventListener('click', function (ev) {
+                ev.stopPropagation();
+                triggerRevisionRestore(rev);
+            });
+        }
+        listEl.appendChild(item);
+    });
+    /* Show the first diff by default so the modal never looks empty. */
+    renderRevisionDiff(revisions[0], detailEl);
+}
+
+function renderRevisionDiff(rev, detailEl) {
+    var beforeJson = rev.previousData ? JSON.stringify(rev.previousData, null, 2) : '(none — initial create)';
+    var afterJson  = rev.newData      ? JSON.stringify(rev.newData,      null, 2) : '(none)';
+    detailEl.innerHTML =
+        '<div class="row g-2 small">' +
+            '<div class="col-md-6">' +
+                '<h6 class="text-muted">Before</h6>' +
+                '<pre class="bg-black p-2 rounded" style="max-height:400px;overflow:auto;">' +
+                    escapeHtml(beforeJson) +
+                '</pre>' +
+            '</div>' +
+            '<div class="col-md-6">' +
+                '<h6 class="text-muted">After</h6>' +
+                '<pre class="bg-black p-2 rounded" style="max-height:400px;overflow:auto;">' +
+                    escapeHtml(afterJson) +
+                '</pre>' +
+            '</div>' +
+        '</div>';
+}
+
+function triggerRevisionRestore(rev) {
+    if (!confirm('Restore the song to the state BEFORE revision #' + rev.id + '? ' +
+                 'This will create a new "restore" revision row and overwrite the current tblSongs row.')) {
+        return;
+    }
+    fetch(EDITOR_API_URL + '?action=restore_revision', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ revisionId: rev.id }),
+    })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, data: j }; }); })
+        .then(function (res) {
+            if (!res.ok) {
+                showToast('Restore failed: ' + (res.data.error || 'unknown error'), 'danger');
+                return;
+            }
+            showToast('Restored. Reload the editor to see the current state.', 'success');
+            /* Close the modal; the user can manually reload to see results. */
+            var modalEl = document.getElementById('history-modal');
+            if (modalEl && window.bootstrap) {
+                window.bootstrap.Modal.getOrCreateInstance(modalEl).hide();
+            }
+        })
+        .catch(function (err) {
+            showToast('Restore request failed: ' + err.message, 'danger');
+        });
+}
+
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
 }
 
 /* ---- Kick everything off once the DOM is ready ---- */
-document.addEventListener('DOMContentLoaded', init);
+document.addEventListener('DOMContentLoaded', function () {
+    init();
+    bindMultiSelectListeners();
+    bindHistoryListener();
+});

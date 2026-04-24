@@ -29,6 +29,7 @@ import { Audio } from './modules/audio.js';
 import { SheetMusic } from './modules/sheet-music.js';
 import { History } from './modules/history.js';
 import { SetList } from './modules/setlist.js';
+import { UserAuth } from './modules/user-auth.js';
 import { Display } from './modules/display.js';
 import { Compare } from './modules/compare.js';
 import { Shortcuts } from './modules/shortcuts.js';
@@ -98,6 +99,9 @@ class iHymnsApp {
 
         /** @type {SetList} Worship set list / playlist (#94) */
         this.setList = null;
+
+        /** @type {UserAuth} Public user authentication for cross-device sync */
+        this.userAuth = null;
 
         /** @type {Display} Display preferences & presentation mode (#95) */
         this.display = null;
@@ -234,6 +238,10 @@ class iHymnsApp {
             this.setList = new SetList(this);
             this.setList.init();
 
+            /* User authentication for cross-device sync */
+            this.userAuth = new UserAuth(this);
+            this.userAuth.initUserMenu();
+
             /* Display preferences & presentation mode (#95) */
             this.display = new Display(this);
             this.display.init();
@@ -324,6 +332,11 @@ class iHymnsApp {
             /* Don't trigger shortcuts when typing in inputs */
             const tag = (e.target.tagName || '').toLowerCase();
             if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+
+            /* Honour the user's "Enable keyboard shortcuts" setting (#406).
+               Off by default means all shortcuts — including the `?` help
+               overlay — are disabled. Users can toggle in Settings → Input. */
+            if (this.settings && this.settings.get('keyboardShortcuts') === false) return;
 
             /* Quick-jump: capture digit keys (#96) */
             if (e.key >= '0' && e.key <= '9') {
@@ -737,6 +750,20 @@ class iHymnsApp {
      */
     registerServiceWorker() {
         if (!('serviceWorker' in navigator)) return;
+
+        /*
+         * Reload when a new service worker takes control.
+         * The SW now calls skipWaiting() during install, so it activates
+         * immediately. This listener ensures the page reloads to pick up
+         * fresh HTML and newly cached CDN resources. The { once: true }
+         * flag prevents infinite reload loops.
+         */
+        let refreshing = false;
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+            if (refreshing) return;
+            refreshing = true;
+            window.location.reload();
+        });
 
         navigator.serviceWorker.register('/service-worker.js', {
             scope: '/'

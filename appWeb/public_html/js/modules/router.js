@@ -15,12 +15,14 @@
 
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
+import { userHasEntitlement } from './entitlements.js';
 import {
     STORAGE_FAVORITES,
     STORAGE_SETLISTS,
     STORAGE_HISTORY,
     STORAGE_SEARCH_HISTORY,
     STORAGE_RECENT_SONGBOOKS,
+    songbookLabel,
 } from '../constants.js';
 
 export class Router {
@@ -45,6 +47,9 @@ export class Router {
      * Initialise the router — listen for popstate (back/forward) events.
      */
     init() {
+        /* Handle magic link login before any routing (#magic-link) */
+        this._handleMagicLink();
+
         /* Handle browser back/forward navigation */
         window.addEventListener('popstate', () => {
             this.handleCurrentRoute();
@@ -94,6 +99,23 @@ export class Router {
                 window.history.replaceState({ path: canonicalPath }, '', canonicalPath);
                 this.currentPath = canonicalPath;
             }
+        }
+
+        /* Login route: show auth modal instead of loading a page from API */
+        if (page === 'login') {
+            const token = new URLSearchParams(window.location.search).get('token');
+            if (token) {
+                /* Magic link with token — handled by _handleMagicLink() on init.
+                 * If we reach here via navigate(), handle it now. */
+                this._verifyMagicLinkToken(token);
+            } else {
+                /* No token — show the auth modal and go home */
+                this.app.userAuth?.showAuthModal('login');
+                window.history.replaceState({ path: '/' }, '', '/');
+                this.currentPath = '/';
+                await this.handleCurrentRoute();
+            }
+            return;
         }
 
         /* Update the active footer nav item */
@@ -168,6 +190,10 @@ export class Router {
                 return { page: 'terms', params: {} };
             case 'privacy':
                 return { page: 'privacy', params: {} };
+            case 'request-a-song':
+                return { page: 'request-a-song', params: {} };
+            case 'login':
+                return { page: 'login', params: {} };
             default:
                 return { page: 'not-found', params: {} };
         }
@@ -313,6 +339,7 @@ export class Router {
             'help': 'Help — ' + appName,
             'terms': 'Terms of Use — ' + appName,
             'privacy': 'Privacy Policy — ' + appName,
+            'request-a-song': 'Request a Song — ' + appName,
         };
         document.title = titles[page] || appName;
     }
@@ -335,6 +362,18 @@ export class Router {
             this.app.compare.initSongPage();
             this.app.transpose.initSongPage();
             this.app.readingProgress.initSongPage();
+
+            /* Edit button — show only to users whose role carries the
+               `edit_songs` entitlement (#407). The PHP editor API
+               re-checks the same map server-side, so hiding the button
+               is purely a UX affordance. */
+            const editBtn = document.getElementById('btn-edit-song');
+            if (editBtn) {
+                const role = this.app.userAuth?.getUser()?.role;
+                if (userHasEntitlement('edit_songs', role)) {
+                    editBtn.classList.remove('d-none');
+                }
+            }
 
             /* Save Offline button — check cache state and bind click */
             const saveOfflineBtn = document.querySelector('.btn-save-offline');
@@ -366,7 +405,17 @@ export class Router {
                 if (songId) {
                     this.app.history.recordView(songId, title, songbook, number);
                     if (songbook) this.trackRecentSongbook(songbook);
+
+                    /* Record song view on server for history/popular tracking (#287) */
+                    fetch(`${this.apiUrl}?action=song_view`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ song_id: songId })
+                    }).catch(() => {}); // fire-and-forget
                 }
+
+                /* Load song translations (#352) — async, non-blocking */
+                this.loadTranslations(songId);
 
                 /* Load related songs (#118) — async, non-blocking */
                 this.loadRelatedSongs(songId);
@@ -389,6 +438,18 @@ export class Router {
         if (page === 'settings') {
             this.app.settings.initSettingsPage();
         }
+
+        /* After the new page HTML is in the DOM, broadcast the current auth
+           state so any just-injected markup (Account card, sync bars, etc.)
+           lands in the correct logged-in/logged-out state. */
+        try {
+            document.dispatchEvent(new CustomEvent('ihymns:auth-changed', {
+                detail: {
+                    loggedIn: !!this.app.userAuth?.isLoggedIn(),
+                    user: this.app.userAuth?.getUser() ?? null,
+                },
+            }));
+        } catch { /* legacy browsers — ignore */ }
 
         /* Initialise set list page controls (#94) */
         if (page === 'setlist') {
@@ -419,6 +480,82 @@ export class Router {
 
         /* Auto-fix badge text contrast for all songbook badges (#152) */
         this.fixBadgeContrast();
+    }
+
+    /* =====================================================================
+     * MAGIC LINK LOGIN
+     * ===================================================================== */
+
+    /**
+     * Check for a magic link token in the URL on page load.
+     * If `?token=` is present (typically on /login?token=...), verify
+     * the token with the API, store credentials, and redirect home.
+     * Called once during init() before any routing occurs.
+     */
+    _handleMagicLink() {
+        const params = new URLSearchParams(window.location.search);
+        const token = params.get('token');
+        if (!token) return;
+
+        /* Clear the token from the URL immediately to prevent re-triggering
+         * on refresh or back/forward navigation */
+        const cleanPath = window.location.pathname || '/';
+        window.history.replaceState({ path: cleanPath }, '', cleanPath);
+
+        /* Verify the token asynchronously */
+        this._verifyMagicLinkToken(token);
+    }
+
+    /**
+     * Verify a magic link token with the API and handle the result.
+     *
+     * On success: stores bearer token + user info, shows success toast,
+     * updates header state, triggers setlist sync, and navigates home.
+     *
+     * On error: shows error toast and navigates home.
+     *
+     * @param {string} token The magic link token from the URL
+     */
+    async _verifyMagicLinkToken(token) {
+        try {
+            const res = await fetch(`${this.apiUrl}?action=auth_email_login_verify`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                },
+                body: JSON.stringify({ token }),
+            });
+
+            const data = await res.json();
+
+            if (res.ok && data.token && data.user) {
+                /* Store credentials */
+                this.app.userAuth?.saveCredentials(data.token, data.user);
+
+                /* Update header to reflect logged-in state */
+                this.app.userAuth?._updateHeaderState();
+
+                /* Show success toast */
+                this.app.showToast('Signed in successfully!', 'success', 3000);
+
+                /* Trigger setlist sync in background */
+                this.app.userAuth?.triggerSetlistSync();
+            } else {
+                /* Token invalid or expired */
+                const message = data.error || 'Login link expired. Please request a new one.';
+                this.app.showToast(message, 'danger', 5000);
+            }
+        } catch {
+            this.app.showToast('Login link expired. Please request a new one.', 'danger', 5000);
+        }
+
+        /* Navigate to home (clear /login from URL if still there) */
+        if (window.location.pathname !== '/') {
+            window.history.replaceState({ path: '/' }, '', '/');
+            this.currentPath = null; /* Reset so handleCurrentRoute proceeds */
+            this.handleCurrentRoute();
+        }
     }
 
     /**
@@ -520,7 +657,7 @@ export class Router {
                     <div class="d-flex align-items-center gap-2 mb-2">
                         <a href="/song/${escapeHtml(s.id)}" class="text-decoration-none flex-grow-1 text-truncate"
                            data-navigate="song" data-song-id="${escapeHtml(s.id)}">
-                            <span class="song-number-badge song-number-badge-sm" data-songbook="${escapeHtml(s.songbook)}">${s.number || '?'}</span>
+                            <span class="song-number-badge song-number-badge-sm" data-songbook="${escapeHtml(s.songbook)}">${s.number ?? ''}</span>
                             <span class="ms-1">${escapeHtml(toTitleCase(s.title))}</span>
                         </a>
                         <div class="stats-bar-wrap">
@@ -591,6 +728,50 @@ export class Router {
         if (el('stats-views-today')) el('stats-views-today').textContent = today;
         if (el('stats-views-week')) el('stats-views-week').textContent = week;
         if (el('stats-views-month')) el('stats-views-month').textContent = month;
+    }
+
+    /**
+     * Fetch and render translation links for the current song (#352).
+     * Queries the API for songs linked as translations in other languages.
+     * Also checks the reverse direction (if this song is itself a translation).
+     *
+     * @param {string} songId The current song's ID
+     */
+    async loadTranslations(songId) {
+        const container = document.getElementById('song-translations');
+        const itemsEl = document.getElementById('song-translations-items');
+        if (!container || !itemsEl) return;
+
+        try {
+            const resp = await fetch(`${this.apiUrl}?action=song_translations&id=${encodeURIComponent(songId)}`);
+            if (!resp.ok) return;
+            const data = await resp.json();
+
+            const translations = data.translations || [];
+            if (translations.length === 0) return;
+
+            itemsEl.innerHTML = translations.map(tr => `
+                <a href="/song/${escapeHtml(tr.songId)}"
+                   class="list-group-item list-group-item-action song-list-item"
+                   data-navigate="song"
+                   data-song-id="${escapeHtml(tr.songId)}"
+                   role="listitem">
+                    <span class="song-number-badge">${tr.number || '?'}</span>
+                    <div class="song-info flex-grow-1">
+                        <span class="song-title">${escapeHtml(toTitleCase(tr.title))}${tr.verified ? ' <i class="fa-solid fa-circle-check text-success small" aria-hidden="true" title="Verified"></i>' : ''}</span>
+                        <small class="text-muted d-block">
+                            <i class="fa-solid fa-language me-1" aria-hidden="true"></i>${escapeHtml(tr.languageNativeName || tr.languageName || tr.language)}${tr.translator ? ` — ${escapeHtml(tr.translator)}` : ''}
+                        </small>
+                    </div>
+                    <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>
+                </a>
+            `).join('');
+
+            container.classList.remove('d-none');
+            this.fixBadgeContrast();
+        } catch (err) {
+            console.warn('[Router] Failed to load translations:', err.message);
+        }
     }
 
     /**
@@ -683,10 +864,10 @@ export class Router {
                    data-navigate="song"
                    data-song-id="${escapeHtml(song.id)}"
                    role="listitem">
-                    <span class="song-number-badge" data-songbook="${escapeHtml(song.songbook)}">${song.number || '?'}</span>
+                    <span class="song-number-badge" data-songbook="${escapeHtml(song.songbook)}">${song.number ?? ''}</span>
                     <div class="song-info flex-grow-1">
                         <span class="song-title">${escapeHtml(toTitleCase(song.title))}${verifiedBadge(song)}</span>
-                        <small class="text-muted d-block">${escapeHtml(song.songbookName || song.songbook)}</small>
+                        <small class="text-muted d-block">${songbookLabel(song.songbook, song.songbookName)}</small>
                     </div>
                     <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>
                 </a>

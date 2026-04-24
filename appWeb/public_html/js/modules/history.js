@@ -14,7 +14,8 @@
  *   Ordered by most recent first.
  */
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
-import { STORAGE_HISTORY } from '../constants.js';
+import { toTitleCase } from '../utils/text.js';
+import { STORAGE_HISTORY, songbookLabel } from '../constants.js';
 
 export class History {
     /**
@@ -131,10 +132,10 @@ export class History {
                        class="list-group-item list-group-item-action song-list-item"
                        data-navigate="song"
                        data-song-id="${escapeHtml(h.id)}">
-                        <span class="song-number-badge" data-songbook="${escapeHtml(h.songbook)}">${h.number || '?'}</span>
+                        <span class="song-number-badge" data-songbook="${escapeHtml(h.songbook)}">${h.number ?? ''}</span>
                         <div class="song-info flex-grow-1">
-                            <span class="song-title">${escapeHtml(h.title)}${verifiedBadge(h)}</span>
-                            <small class="text-muted d-block">${escapeHtml(h.songbook)}</small>
+                            <span class="song-title">${escapeHtml(toTitleCase(h.title))}${verifiedBadge(h)}</span>
+                            <small class="text-muted d-block">${songbookLabel(h.songbook)}</small>
                         </div>
                         <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>
                     </a>

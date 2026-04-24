@@ -37,13 +37,8 @@
     "prefer_related_applications": false,
     "related_applications": [
         {
-            "platform": "play",
-            "id": "ltd.mwbmpartners.ihymns",
-            "url": "https://play.google.com/store/apps/details?id=ltd.mwbmpartners.ihymns"
-        },
-        {
-            "platform": "itunes",
-            "url": "https://apps.apple.com/app/ihymns/id0000000000"
+            "platform": "webapp",
+            "url": "https://ihymns.app/manifest.json"
         }
     ],
 

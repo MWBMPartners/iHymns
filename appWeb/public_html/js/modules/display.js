@@ -21,8 +21,8 @@ export class Display {
         /** @type {string} localStorage key */
         this.storageKey = STORAGE_DISPLAY;
 
-        /** @type {number|null} Auto-scroll interval ID */
-        this.autoScrollInterval = null;
+        /** @type {number|null} requestAnimationFrame ID for auto-scroll */
+        this.autoScrollRAF = null;
 
         /** @type {boolean} Whether auto-scroll is active */
         this.autoScrollActive = false;
@@ -88,8 +88,56 @@ export class Display {
         this.applyVerseNumbers(lyricsEl);
         this.applyChorusHighlight(lyricsEl);
 
+        /* Practice / memorisation mode (#402) */
+        this.initPracticeMode(lyricsEl);
+
         /* Protect lyrics content — prevent copy/paste and right-click */
         this.protectLyrics(lyricsEl);
+    }
+
+    /**
+     * Practice / memorisation mode (#402).
+     * Cycles the song-lyrics data-practice-level attribute through
+     * 0 (full) → 1 (dimmed) → 2 (hidden) → 0. Dimmed lets users read
+     * while blurring context; hidden masks every line and reveals
+     * individual lines on tap/hover — handy for memorisation.
+     *
+     * State is per-song (fresh on every navigation); users can bind
+     * this to a keyboard shortcut later if desired.
+     */
+    initPracticeMode(lyricsEl) {
+        const btn   = document.getElementById('btn-practice-mode');
+        const label = document.getElementById('btn-practice-label');
+        if (!btn) return;
+
+        const labels = ['Practice', 'Dimmed', 'Hidden'];
+        let level = 0;
+
+        const apply = () => {
+            lyricsEl.dataset.practiceLevel = String(level);
+            btn.dataset.practiceLevel = String(level);
+            btn.classList.toggle('active', level > 0);
+            btn.setAttribute('aria-pressed', level > 0 ? 'true' : 'false');
+            if (label) label.textContent = labels[level];
+            /* Clear any stale reveal state when leaving a mode */
+            lyricsEl.querySelectorAll('.lyric-line.revealed')
+                .forEach(el => el.classList.remove('revealed'));
+        };
+
+        btn.addEventListener('click', () => {
+            level = (level + 1) % labels.length;
+            apply();
+        });
+
+        /* Tap a hidden line to reveal it as a hint (level 2 only). */
+        lyricsEl.addEventListener('click', (e) => {
+            if (lyricsEl.dataset.practiceLevel !== '2') return;
+            const line = e.target.closest('.lyric-line');
+            if (!line) return;
+            line.classList.toggle('revealed');
+        });
+
+        apply();
     }
 
     /**
@@ -345,37 +393,97 @@ export class Display {
         }
     }
 
-    /** Start auto-scrolling */
+    /**
+     * Start auto-scrolling using requestAnimationFrame.
+     * Uses rAF instead of setInterval for reliable scrolling on all
+     * platforms including iOS Safari, which throttles setInterval.
+     * Delta-time based so scroll speed is consistent regardless of
+     * frame rate (e.g. 60fps, 120fps ProMotion, or throttled).
+     */
     startAutoScroll() {
         this.autoScrollActive = true;
         const speed = this.get('autoScrollSpeed');
-        const pxPerFrame = speed / 60; /* 60fps */
 
         const btn = document.getElementById('display-autoscroll-btn');
         if (btn) btn.classList.add('active', 'btn-primary');
         btn?.classList.remove('btn-outline-secondary');
 
-        this.autoScrollInterval = setInterval(() => {
-            window.scrollBy({ top: pxPerFrame, behavior: 'auto' });
+        this._showFloatingStop();
 
-            /* Stop at bottom */
-            if ((window.innerHeight + window.scrollY) >= document.body.scrollHeight) {
-                this.stopAutoScroll();
+        let lastTime = null;
+        let remainder = 0;
+
+        const tick = (timestamp) => {
+            if (!this.autoScrollActive) return;
+
+            if (lastTime !== null) {
+                const delta = (timestamp - lastTime) / 1000; /* seconds */
+                remainder += speed * delta;
+
+                /*
+                 * Accumulate fractional pixels and only scroll whole pixels.
+                 * iOS Safari ignores sub-pixel scrollBy values (e.g. 0.5px
+                 * at 60fps or 0.25px at 120fps ProMotion), causing auto-scroll
+                 * to appear completely broken. By accumulating and flushing
+                 * whole pixels we ensure visible movement on every platform.
+                 *
+                 * Use document.scrollingElement (W3C standard) to get the
+                 * correct scrollable element — iOS Safari in standalone PWA
+                 * mode may use document.body instead of documentElement (#353).
+                 */
+                const px = Math.floor(remainder);
+                if (px >= 1) {
+                    const scrollEl = document.scrollingElement || document.documentElement;
+                    scrollEl.scrollTop += px;
+                    remainder -= px;
+                }
             }
-        }, 1000 / 60);
+            lastTime = timestamp;
+
+            /* Stop at bottom of page */
+            const scrollEl = document.scrollingElement || document.documentElement;
+            const scrollTop = scrollEl.scrollTop;
+            if ((window.innerHeight + scrollTop) >= document.body.scrollHeight - 2) {
+                this.stopAutoScroll();
+                return;
+            }
+
+            this.autoScrollRAF = requestAnimationFrame(tick);
+        };
+
+        this.autoScrollRAF = requestAnimationFrame(tick);
     }
 
     /** Stop auto-scrolling */
     stopAutoScroll() {
         this.autoScrollActive = false;
-        if (this.autoScrollInterval) {
-            clearInterval(this.autoScrollInterval);
-            this.autoScrollInterval = null;
+        if (this.autoScrollRAF) {
+            cancelAnimationFrame(this.autoScrollRAF);
+            this.autoScrollRAF = null;
         }
 
         const btn = document.getElementById('display-autoscroll-btn');
         if (btn) btn.classList.remove('active', 'btn-primary');
         btn?.classList.add('btn-outline-secondary');
+
+        this._hideFloatingStop();
+    }
+
+    _showFloatingStop() {
+        if (document.getElementById('autoscroll-fab')) return;
+        const fab = document.createElement('button');
+        fab.id = 'autoscroll-fab';
+        fab.type = 'button';
+        fab.className = 'btn btn-primary btn-autoscroll-fab';
+        fab.setAttribute('aria-label', 'Stop auto-scroll');
+        fab.title = 'Stop auto-scroll';
+        fab.innerHTML = '<i class="fa-solid fa-stop me-1" aria-hidden="true"></i> Stop';
+        fab.addEventListener('click', () => this.stopAutoScroll());
+        document.body.appendChild(fab);
+    }
+
+    _hideFloatingStop() {
+        document.getElementById('autoscroll-fab')?.remove();
     }
 
     /* =====================================================================

@@ -7,12 +7,17 @@
  * The .htaccess rule rewrites /service-worker.js → service-worker.js.php.
  *
  * Content-Type is set to JavaScript so the browser treats it correctly.
+ *
+ * IMPORTANT: This file must ONLY include infoAppVer.php. Including
+ * config.php or other files risks PHP errors/warnings that would
+ * corrupt the JavaScript output and break service worker registration.
+ * CDN URLs are hardcoded here — update them when library versions change.
  */
 header('Content-Type: application/javascript; charset=UTF-8');
 header('Cache-Control: no-cache, no-store, must-revalidate');
 header('Service-Worker-Allowed: /');
 
-require_once __DIR__ . '/includes/infoAppVer.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
 $swVersion = $app['Application']['Version']['Number'] ?? '0.0.0';
 ?>
 /**
@@ -28,7 +33,8 @@ $swVersion = $app['Application']['Version']['Number'] ?? '0.0.0';
  *   - Always try to load content from the host (network) first
  *   - Only fall back to cached content when the network is unreachable
  *   - Pre-caches essential app shell assets for instant offline access
- *   - CDN resources are NOT cached to avoid cache poisoning
+ *   - Trusted CDN resources (Bootstrap, Font Awesome, jQuery, etc.) are
+ *     cached for offline use — these CDNs serve CORS headers so SRI still works
  *
  * CACHE MANAGEMENT:
  *   - Cache version is derived from infoAppVer.php automatically
@@ -62,13 +68,18 @@ const RECENT_CACHE_LIMIT = 2000;
 /**
  * Assets to pre-cache during service worker installation.
  * These are the essential app shell files needed for offline access.
- * Only local files — CDN resources are never cached.
  */
 const PRECACHE_ASSETS = [
     '/',
     '/css/app.css',
+    '/css/accessibility.css',
     '/css/print.css',
     '/js/app.js',
+    '/js/constants.js',
+    '/js/utils/html.js',
+    '/js/utils/components.js',
+    '/js/utils/text.js',
+    '/js/utils/transpose.js',
     '/js/modules/router.js',
     '/js/modules/transitions.js',
     '/js/modules/settings.js',
@@ -89,8 +100,53 @@ const PRECACHE_ASSETS = [
     '/js/modules/offline-indicator.js',
     '/js/modules/storage-bridge.js',
     '/js/modules/subdomain-sync.js',
+    '/js/modules/display.js',
+    '/js/modules/audio.js',
+    '/js/modules/sheet-music.js',
+    '/js/modules/history.js',
+    '/js/modules/setlist.js',
+    '/js/modules/user-auth.js',
+    '/js/modules/gestures.js',
+    '/js/modules/analytics.js',
     '/manifest.json',
     '/assets/favicon.svg',
+];
+
+/**
+ * Trusted CDN origins whose resources are cached for offline use.
+ * These CDNs serve CORS headers (Access-Control-Allow-Origin: *)
+ * so responses can be cached and later served with SRI verification.
+ */
+const TRUSTED_CDN_ORIGINS = [
+    'https://cdn.jsdelivr.net',
+    'https://cdnjs.cloudflare.com',
+];
+
+/**
+ * Critical CDN assets to pre-cache during install for offline app shell.
+ * Hardcoded here (not injected from config.php) to avoid any risk of PHP
+ * errors corrupting the JS output and breaking SW registration.
+ * UPDATE THESE when library versions change in config.php.
+ */
+const PRECACHE_CDN_ASSETS = [
+    'https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/css/bootstrap.min.css',
+    'https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/js/bootstrap.bundle.min.js',
+    'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css',
+    'https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js',
+    'https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css',
+];
+
+/**
+ * Local vendor fallback paths — pre-cached best-effort.
+ * These files are served when CDN resources are unavailable and the
+ * CDN cache is also empty (e.g., first offline launch after install).
+ */
+const PRECACHE_VENDOR_ASSETS = [
+    '/vendor/bootstrap/bootstrap.min.css',
+    '/vendor/bootstrap/bootstrap.bundle.min.js',
+    '/vendor/fontawesome/css/all.min.css',
+    '/vendor/jquery/jquery.min.js',
+    '/vendor/animate/animate.min.css',
 ];
 
 /**
@@ -130,15 +186,60 @@ self.addEventListener('install', (event) => {
         caches.open(CACHE_VERSION)
             .then(cache => {
                 console.log('[SW] Pre-caching app shell assets');
-                return cache.addAll(PRECACHE_ASSETS);
+
+                /* Local assets — must all succeed for install to complete */
+                const localPromise = cache.addAll(PRECACHE_ASSETS);
+
+                /*
+                 * CDN assets — best effort. Failures are silently ignored so
+                 * a CDN outage doesn't block service worker installation.
+                 * These will be cached at runtime on the next page load anyway.
+                 */
+                const cdnPromise = Promise.allSettled(
+                    PRECACHE_CDN_ASSETS.map(url =>
+                        fetch(url, { mode: 'cors' })
+                            .then(resp => {
+                                if (resp.ok) return cache.put(url, resp);
+                            })
+                            .catch(() => console.warn('[SW] CDN precache skipped:', url))
+                    )
+                );
+
+                /*
+                 * Local vendor fallback files — best effort.
+                 * These may not exist if the download-vendor script hasn't run.
+                 */
+                const vendorPromise = Promise.allSettled(
+                    PRECACHE_VENDOR_ASSETS.map(path =>
+                        fetch(path)
+                            .then(resp => {
+                                if (resp.ok) return cache.put(path, resp);
+                            })
+                            .catch(() => {})
+                    )
+                );
+
+                return Promise.all([localPromise, cdnPromise, vendorPromise]);
             })
-            /*
-             * NOTE (#83): We intentionally do NOT call self.skipWaiting() here.
-             * The new service worker waits in the "installed" state until the user
-             * clicks the "Refresh" button in the update notification, which sends
-             * a SKIP_WAITING message (handled below). This gives users control
-             * over when the update activates, preventing mid-session disruption.
-             */
+            .then(() => {
+                /*
+                 * Let the new SW enter the "waiting" state instead of
+                 * skipWaiting immediately (#396). app.js picks up the
+                 * `updatefound` → statechange === 'installed' transition
+                 * and shows a "New version available — Refresh" toast.
+                 * The user clicks Refresh → client posts SKIP_WAITING
+                 * below → SW activates → controllerchange → page reloads.
+                 *
+                 * This gives users agency over reloads mid-session (they
+                 * don't lose unsaved setlist edits to an abrupt reload)
+                 * while still being able to roll out critical fixes fast.
+                 *
+                 * If the user dismisses the toast without refreshing,
+                 * the new SW stays "waiting" until every tab of the app
+                 * is closed, at which point it activates naturally.
+                 */
+                console.log('[SW] Installed; awaiting user confirmation to activate');
+            })
     );
 });
 
@@ -173,18 +274,29 @@ self.addEventListener('activate', (event) => {
  * FETCH EVENT — Network-first strategy with offline fallback
  *
  * Strategy per resource type:
- *   1. CDN resources → Network-only (never cache third-party)
- *   2. API requests  → Network-first, no caching (dynamic data)
- *   3. Local assets  → Network-first, cache on success, serve cache if offline
- *   4. Navigation    → Network-first, fall back to cached '/' for offline shell
+ *   1. Trusted CDNs  → Network-first, cache for offline (Bootstrap, FA, jQuery)
+ *   2. Other CDNs    → Network-only (analytics, third-party scripts)
+ *   3. API requests  → Network-first, cache song pages for offline (#105)
+ *   4. Local assets  → Network-first, cache on success, serve cache if offline
+ *   5. Navigation    → Network-first, fall back to cached '/' for offline shell
  * ========================================================================= */
 
 self.addEventListener('fetch', (event) => {
     const url = new URL(event.request.url);
 
-    /* --- CDN / Third-party resources: network-only, never cache --- */
+    /* --- CDN / Third-party resources --- */
     if (url.origin !== self.location.origin) {
-        /* Let the browser handle CDN requests normally */
+        /*
+         * Trusted CDN resources (Bootstrap, Font Awesome, jQuery, etc.)
+         * are cached with network-first strategy so the app shell renders
+         * offline. These CDNs serve CORS headers, so cached responses
+         * remain readable for SRI verification.
+         */
+        if (TRUSTED_CDN_ORIGINS.some(origin => url.origin === origin)) {
+            event.respondWith(networkFirstWithCache(event.request));
+            return;
+        }
+        /* Other third-party resources: let the browser handle normally */
         return;
     }
 
@@ -288,9 +400,10 @@ self.addEventListener('fetch', (event) => {
                 return response;
             })
             .catch(() => {
-                /* Offline — serve cached version or the app shell */
+                /* Offline — serve cached version, app shell, or branded fallback */
                 return caches.match(event.request)
-                    .then(cached => cached || caches.match('/'));
+                    .then(cached => cached || caches.match('/'))
+                    .then(resp => resp || offlineFallbackResponse());
             })
             .finally(() => {
                 inflightNavigations.delete(navKey);
@@ -301,6 +414,31 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
+    /* --- Audio / sheet-music: cache-first (#401) ---
+       On-demand caching: once a user plays or views a song, the underlying
+       audio or PDF is cached. Subsequent plays — including offline — hit
+       the cache immediately with no network round-trip. Separate cache
+       bucket so it can be cleared independently of the app shell. */
+    if (event.request.method === 'GET'
+        && (url.pathname.startsWith('/data/audio/') || url.pathname.startsWith('/data/music/'))) {
+        event.respondWith(
+            caches.open('iHymns-media-v1').then(async (cache) => {
+                const hit = await cache.match(event.request);
+                if (hit) return hit;
+                try {
+                    const res = await fetch(event.request);
+                    if (res.ok) cache.put(event.request, res.clone());
+                    return res;
+                } catch {
+                    /* Offline + not cached — let the media element show its
+                       own error UI rather than injecting a PNG/JSON. */
+                    return new Response('', { status: 504, statusText: 'Offline' });
+                }
+            })
+        );
+        return;
+    }
+
     /* --- All other local assets: network-first with cache fallback --- */
     event.respondWith(networkFirstWithCache(event.request));
 });
@@ -308,6 +446,116 @@ self.addEventListener('fetch', (event) => {
 /* =========================================================================
  * HELPER FUNCTIONS
  * ========================================================================= */
+
+/**
+ * Self-contained offline fallback page.
+ * Shown when the user is offline AND no cached version of the page exists
+ * (e.g., first launch of a freshly installed PWA with no network).
+ * All styles and assets are inlined so no external requests are needed.
+ */
+const OFFLINE_FALLBACK_HTML = `<!DOCTYPE html>
+<html lang="en" data-bs-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>iHymns — Offline</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --accent:#6366f1;--accent-end:#8b5cf6;
+  --bg:#f8fafc;--card:#fff;--text:#1e293b;--text-sec:#64748b;--text-muted:#94a3b8;
+  --radius:16px;--shadow:0 4px 24px rgba(0,0,0,.08);
+}
+@media(prefers-color-scheme:dark){:root{
+  --accent:#818cf8;--accent-end:#a78bfa;
+  --bg:#0f172a;--card:#1e293b;--text:#f1f5f9;--text-sec:#94a3b8;--text-muted:#64748b;
+  --shadow:0 4px 24px rgba(0,0,0,.3);
+}}
+html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;background:var(--bg);color:var(--text)}
+body{display:flex;align-items:center;justify-content:center;padding:24px;
+  padding-top:env(safe-area-inset-top,0);padding-bottom:env(safe-area-inset-bottom,0)}
+.offline-wrap{text-align:center;max-width:420px;width:100%}
+.offline-icon{margin:0 auto 28px;width:88px;height:88px;border-radius:50%;
+  background:linear-gradient(135deg,var(--accent),var(--accent-end));
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 8px 32px rgba(99,102,241,.25);animation:pulse-glow 3s ease-in-out infinite}
+.offline-icon svg{width:44px;height:44px;opacity:.95}
+@keyframes pulse-glow{0%,100%{box-shadow:0 8px 32px rgba(99,102,241,.25)}
+  50%{box-shadow:0 8px 48px rgba(99,102,241,.4)}}
+.offline-card{background:var(--card);border-radius:var(--radius);padding:32px 28px;
+  box-shadow:var(--shadow)}
+h1{font-size:1.5rem;font-weight:700;margin-bottom:8px;
+  background:linear-gradient(135deg,var(--accent),var(--accent-end));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  background-clip:text}
+.subtitle{font-size:.95rem;color:var(--text-sec);margin-bottom:24px;line-height:1.5}
+.divider{width:48px;height:3px;border-radius:2px;margin:0 auto 24px;
+  background:linear-gradient(90deg,var(--accent),var(--accent-end))}
+.help-text{font-size:.875rem;color:var(--text-muted);line-height:1.6;margin-bottom:24px}
+.help-text p{margin-bottom:12px}
+.retry-btn{display:inline-flex;align-items:center;gap:8px;padding:12px 28px;
+  border:none;border-radius:50px;font-size:.95rem;font-weight:600;cursor:pointer;
+  background:linear-gradient(135deg,var(--accent),var(--accent-end));color:#fff;
+  box-shadow:0 4px 16px rgba(99,102,241,.3);transition:transform .15s ease,box-shadow .15s ease}
+.retry-btn:hover{transform:translateY(-1px);box-shadow:0 6px 24px rgba(99,102,241,.4)}
+.retry-btn:active{transform:translateY(0);box-shadow:0 2px 8px rgba(99,102,241,.3)}
+.retry-icon{display:inline-block;width:18px;height:18px;transition:transform .3s ease}
+.retry-btn:hover .retry-icon{transform:rotate(180deg)}
+.brand{margin-top:28px;font-size:.8rem;color:var(--text-muted);letter-spacing:.02em}
+@media(prefers-reduced-motion:reduce){
+  .offline-icon{animation:none}
+  .retry-icon{transition:none}
+}
+</style>
+</head>
+<body>
+<div class="offline-wrap">
+  <div class="offline-icon">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+         stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="1" y1="1" x2="23" y2="23"/>
+      <path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/>
+      <path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/>
+      <path d="M10.71 5.05A16 16 0 0 1 22.56 9"/>
+      <path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/>
+      <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
+      <line x1="12" y1="20" x2="12.01" y2="20"/>
+    </svg>
+  </div>
+  <div class="offline-card">
+    <h1>You're Offline</h1>
+    <p class="subtitle">iHymns needs an internet connection to load for the first time.</p>
+    <div class="divider"></div>
+    <div class="help-text">
+      <p>Once you've opened iHymns with a connection, it will cache everything you need for offline use.</p>
+      <p>You can also download entire songbooks for offline access from Settings.</p>
+    </div>
+    <button class="retry-btn" onclick="window.location.reload()">
+      <svg class="retry-icon" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="23 4 23 10 17 10"/>
+        <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+      </svg>
+      Try Again
+    </button>
+  </div>
+  <p class="brand">iHymns — Christian Hymns &amp; Worship Songs</p>
+</div>
+</body>
+</html>`;
+
+/**
+ * Return the offline fallback page as a Response.
+ * @returns {Response}
+ */
+function offlineFallbackResponse() {
+    return new Response(OFFLINE_FALLBACK_HTML, {
+        status: 503,
+        statusText: 'Service Unavailable',
+        headers: { 'Content-Type': 'text/html; charset=UTF-8' }
+    });
+}
 
 /**
  * Network-first caching strategy.
@@ -337,12 +585,8 @@ async function networkFirstWithCache(request) {
             return cachedResponse;
         }
 
-        /* Nothing in cache either — return a generic offline response */
-        return new Response('Offline — content not available', {
-            status: 503,
-            statusText: 'Service Unavailable',
-            headers: { 'Content-Type': 'text/plain' }
-        });
+        /* Nothing in cache either — show the branded offline page */
+        return offlineFallbackResponse();
     }
 }
 
@@ -363,48 +607,110 @@ self.addEventListener('message', (event) => {
         self.skipWaiting();
     }
 
-    /* Download all songs for offline use */
-    if (event.data.type === 'CACHE_ALL_SONGS' && Array.isArray(event.data.songIds)) {
-        const songIds = event.data.songIds;
-        const total = songIds.length;
-        let completed = 0;
-        let failed = 0;
+    /*
+     * Download songs for offline use via bulk API (#359 rewrite).
+     *
+     * Instead of fetching each song individually (3,612 requests!),
+     * we fetch entire songbooks in bulk via /api?action=bulk_songs.
+     * Each bulk response contains all rendered HTML for a songbook,
+     * which we split into individual cache entries. This reduces
+     * thousands of requests to ~6, making the download near-instant
+     * on any decent connection.
+     *
+     * Message format:
+     *   { type: 'CACHE_ALL_SONGS', songbooks: ['CP','JP',...] }
+     *   OR legacy: { type: 'CACHE_ALL_SONGS', songIds: [...] }
+     */
+    if (event.data.type === 'CACHE_ALL_SONGS') {
+        const songbooks = event.data.songbooks;
+        const totalSongs = event.data.totalSongs || 0;
+
+        /* Legacy fallback: if songIds array sent, use old per-song method */
+        if (!songbooks && Array.isArray(event.data.songIds)) {
+            _downloadSongsLegacy(event.data.songIds);
+            return;
+        }
+
+        if (!Array.isArray(songbooks) || songbooks.length === 0) return;
 
         caches.open(RECENT_CACHE).then(async (cache) => {
-            /* Process in batches of 5 to avoid overwhelming the server */
-            const BATCH_SIZE = 5;
-            for (let i = 0; i < songIds.length; i += BATCH_SIZE) {
-                const batch = songIds.slice(i, i + BATCH_SIZE);
-                const results = await Promise.allSettled(
-                    batch.map(async (id) => {
-                        const url = `/api?page=song&id=${encodeURIComponent(id)}`;
-                        /* Skip if already cached */
-                        const existing = await cache.match(url);
-                        if (existing) { completed++; return; }
-                        const response = await fetch(url);
-                        if (response.ok) {
-                            await cache.put(url, response);
+            let completed = 0;
+            let failed = 0;
+            const total = totalSongs;
+
+            for (const songbook of songbooks) {
+                try {
+                    notifyClients({
+                        type: 'CACHE_ALL_SONGS_PROGRESS',
+                        completed, failed, total,
+                        status: `Downloading ${songbook}...`,
+                    });
+
+                    const resp = await fetch(`/api?action=bulk_songs&songbook=${encodeURIComponent(songbook)}`);
+                    if (!resp.ok) {
+                        failed++;
+                        continue;
+                    }
+
+                    const data = await resp.json();
+                    const songs = data.songs || {};
+                    const ids = Object.keys(songs);
+
+                    /* Store each song's HTML as an individual cache entry */
+                    for (const id of ids) {
+                        try {
+                            const url = `/api?page=song&id=${encodeURIComponent(id)}`;
+                            const html = songs[id];
+                            const fakeResponse = new Response(html, {
+                                status: 200,
+                                headers: {
+                                    'Content-Type': 'text/html; charset=UTF-8',
+                                    'X-Bulk-Cached': 'true',
+                                },
+                            });
+                            await cache.put(url, fakeResponse);
                             completed++;
-                        } else {
+                        } catch {
                             failed++;
                         }
-                    })
-                );
+                    }
+                } catch {
+                    /* Network error for this songbook */
+                    failed++;
+                }
 
-                /* Report progress back to client */
-                const clients = await self.clients.matchAll();
-                clients.forEach(client => {
-                    client.postMessage({
-                        type: 'CACHE_ALL_SONGS_PROGRESS',
-                        completed,
-                        failed,
-                        total,
-                    });
+                notifyClients({
+                    type: 'CACHE_ALL_SONGS_PROGRESS',
+                    completed, failed, total,
                 });
             }
 
-            /* Remove the LRU limit for bulk downloads — keep all songs */
+            /* Final report */
+            notifyClients({
+                type: 'CACHE_ALL_SONGS_PROGRESS',
+                completed, failed, total,
+            });
         });
+    }
+
+    /* Legacy per-song download (fallback if bulk not available) */
+    async function _downloadSongsLegacy(songIds) {
+        const total = songIds.length;
+        let completed = 0, failed = 0;
+        const cache = await caches.open(RECENT_CACHE);
+        const BATCH = 20;
+        for (let i = 0; i < songIds.length; i += BATCH) {
+            const batch = songIds.slice(i, i + BATCH);
+            await Promise.allSettled(batch.map(async (id) => {
+                try {
+                    const url = `/api?page=song&id=${encodeURIComponent(id)}`;
+                    const r = await fetch(url);
+                    if (r.ok) { await cache.put(url, r); completed++; } else { failed++; }
+                } catch { failed++; }
+            }));
+            notifyClients({ type: 'CACHE_ALL_SONGS_PROGRESS', completed, failed, total });
+        }
+        notifyClients({ type: 'CACHE_ALL_SONGS_PROGRESS', completed, failed, total });
     }
 
     /* Set auto-update preference (#132) */
@@ -435,6 +741,124 @@ self.addEventListener('message', (event) => {
                 console.warn('[SW] Failed to update cached song:', error.message);
             }
         });
+    }
+
+    /* Pre-cache a batch of audio URLs into iHymns-media-v1 (#401).
+     * Settings page sends this when the "Include audio in offline
+     * downloads" toggle is on — once per songbook covered by the
+     * current download, after CACHE_ALL_SONGS has been dispatched.
+     * Message: { type: 'CACHE_AUDIO_URLS', urls: [...], songbook: 'XX' }
+     */
+    if (event.data.type === 'CACHE_AUDIO_URLS' && Array.isArray(event.data.urls)) {
+        const urls = event.data.urls;
+        const songbook = event.data.songbook || '';
+
+        caches.open('iHymns-media-v1').then(async (cache) => {
+            let completed = 0, failed = 0;
+            const total = urls.length;
+            const BATCH = 6;
+
+            for (let i = 0; i < urls.length; i += BATCH) {
+                const batch = urls.slice(i, i + BATCH);
+                await Promise.allSettled(batch.map(async (u) => {
+                    try {
+                        const cacheUrl = new URL(u, self.location.origin);
+                        if (cacheUrl.origin !== self.location.origin) { failed++; return; }
+                        const existing = await cache.match(u);
+                        if (existing) { completed++; return; }
+                        const r = await fetch(u);
+                        if (r.ok) { await cache.put(u, r); completed++; }
+                        else { failed++; }
+                    } catch { failed++; }
+                }));
+                notifyClients({
+                    type: 'CACHE_AUDIO_PROGRESS',
+                    songbook, completed, failed, total,
+                });
+            }
+            notifyClients({
+                type: 'CACHE_AUDIO_PROGRESS',
+                songbook, completed, failed, total, done: true,
+            });
+        });
+    }
+
+    /* Evict every cached entry belonging to one songbook (#401).
+     * Removes matching entries from RECENT_CACHE (song HTML pages
+     * whose id starts with <songbook>-) and iHymns-media-v1 (audio +
+     * sheet music under /data/audio/<songbook>/ and /data/music/<songbook>/).
+     * Message: { type: 'EVICT_SONGBOOK', songbook: 'XX' }
+     */
+    if (event.data.type === 'EVICT_SONGBOOK' && typeof event.data.songbook === 'string') {
+        const songbook = event.data.songbook;
+        if (!/^[A-Za-z0-9_-]{1,16}$/.test(songbook)) return;
+        const prefix = songbook.toUpperCase() + '-';
+        (async () => {
+            let removed = 0;
+            try {
+                const recent = await caches.open(RECENT_CACHE);
+                const keys = await recent.keys();
+                for (const req of keys) {
+                    const id = new URL(req.url).searchParams.get('id') || '';
+                    if (id.toUpperCase().startsWith(prefix)) {
+                        if (await recent.delete(req)) removed++;
+                    }
+                }
+            } catch {}
+            try {
+                const media = await caches.open('iHymns-media-v1');
+                const keys = await media.keys();
+                const lcSongbook = songbook.toLowerCase();
+                for (const req of keys) {
+                    const path = new URL(req.url).pathname.toLowerCase();
+                    if (path.includes(`/data/audio/${lcSongbook}/`)
+                        || path.includes(`/data/music/${lcSongbook}/`)) {
+                        if (await media.delete(req)) removed++;
+                    }
+                }
+            } catch {}
+            notifyClients({ type: 'SONGBOOK_EVICTED', songbook, removed });
+        })();
+    }
+
+    /* Report total bytes cached per songbook across both caches (#401).
+     * Returns { type: 'CACHE_SIZES', sizes: { 'CP': 1234567, ... } } to the
+     * requesting client. Sizes are summed from Content-Length headers (when
+     * present) plus a per-entry fallback estimate for entries without them.
+     * Message: { type: 'GET_CACHE_SIZES' }
+     */
+    if (event.data.type === 'GET_CACHE_SIZES') {
+        const client = event.source;
+        (async () => {
+            const sizes = {};
+            const addFor = (songbook, bytes) => {
+                sizes[songbook] = (sizes[songbook] || 0) + bytes;
+            };
+            try {
+                const recent = await caches.open(RECENT_CACHE);
+                for (const req of await recent.keys()) {
+                    const id = new URL(req.url).searchParams.get('id') || '';
+                    const dash = id.indexOf('-');
+                    if (dash <= 0) continue;
+                    const songbook = id.slice(0, dash).toUpperCase();
+                    const resp = await recent.match(req);
+                    const len = Number(resp?.headers.get('content-length')) || 4096;
+                    addFor(songbook, len);
+                }
+            } catch {}
+            try {
+                const media = await caches.open('iHymns-media-v1');
+                for (const req of await media.keys()) {
+                    const m = new URL(req.url).pathname.match(/^\/data\/(?:audio|music)\/([^\/]+)\//i);
+                    if (!m) continue;
+                    const songbook = m[1].toUpperCase();
+                    const resp = await media.match(req);
+                    const len = Number(resp?.headers.get('content-length')) || 262144;
+                    addFor(songbook, len);
+                }
+            } catch {}
+            client?.postMessage({ type: 'CACHE_SIZES', sizes });
+        })();
     }
 
     /* Proactively cache a recently viewed song page (#105) */

@@ -31,8 +31,9 @@ if ($song === null) {
     return;
 }
 
-/* Extract metadata for convenience */
-$songNumber  = (int)$song['number'];
+/* Extract metadata for convenience — Number is null for Misc songs (#392) */
+$rawSongNumber = $song['number'] ?? null;
+$songNumber    = ($rawSongNumber === null || $rawSongNumber === '') ? null : (int)$rawSongNumber;
 $songTitle   = toTitleCase($song['title'] ?? 'Untitled');
 $songbook    = $song['songbook'] ?? '';
 $bookName    = $song['songbookName'] ?? '';
@@ -81,8 +82,9 @@ $components  = $song['components'] ?? [];
         <div class="card-body">
             <!-- Song number and title -->
             <div class="d-flex align-items-start gap-3 mb-3">
-                <span class="song-number-badge-lg" data-songbook="<?= htmlspecialchars($songbook) ?>" aria-label="Song number <?= $songNumber ?>">
-                    <?= $songNumber ?>
+                <span class="song-number-badge-lg" data-songbook="<?= htmlspecialchars($songbook) ?>"
+                      aria-label="<?= $songNumber === null ? 'Unnumbered song' : 'Song number ' . (int)$songNumber ?>">
+                    <?= $songNumber === null ? '' : (int)$songNumber ?>
                 </span>
                 <div class="flex-grow-1">
                     <h1 class="h4 mb-1"><?= htmlspecialchars($songTitle) ?><?php if (!empty($song['verified'])): ?><span class="verified-badge" title="Verified lyrics" aria-label="Verified lyrics"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.15"/><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M7.5 12.5L10.5 15.5L16.5 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><?php endif; ?></h1>
@@ -116,6 +118,38 @@ $components  = $song['components'] ?? [];
                     <?php endif; ?>
                 </div>
             <?php endif; ?>
+
+            <!-- Copyright and CCLI in song header -->
+            <?php if (!empty($copyright) || !empty($ccli)): ?>
+                <div class="song-meta-copyright mb-3">
+                    <?php if (!empty($copyright)): ?>
+                        <p class="mb-1 small text-muted">
+                            <i class="fa-regular fa-copyright me-2" aria-hidden="true"></i>
+                            <?= htmlspecialchars($copyright) ?>
+                        </p>
+                    <?php endif; ?>
+                    <?php if (!empty($ccli)): ?>
+                        <p class="mb-0 small text-muted">
+                            <i class="fa-solid fa-hashtag me-2" aria-hidden="true"></i>
+                            CCLI Song #<?= htmlspecialchars($ccli) ?>
+                        </p>
+                    <?php endif; ?>
+                </div>
+            <?php endif; ?>
+
+            <!-- Song key display and transpose buttons (#298) -->
+            <div id="song-key-container" class="d-inline-flex align-items-center gap-2 mb-2" style="display:none !important">
+                <span class="badge bg-secondary" id="song-key-badge" title="Song key"></span>
+                <div class="btn-group btn-group-sm">
+                    <button class="btn btn-outline-secondary" id="btn-transpose-down" title="Transpose down">
+                        <i class="fa-solid fa-minus"></i>
+                    </button>
+                    <button class="btn btn-outline-secondary" id="btn-transpose-up" title="Transpose up">
+                        <i class="fa-solid fa-plus"></i>
+                    </button>
+                </div>
+                <small class="text-muted" id="song-key-info"></small>
+            </div>
 
             <!-- Action buttons row -->
             <div class="d-flex flex-wrap gap-2">
@@ -187,6 +221,16 @@ $components  = $song['components'] ?? [];
                     <span>Save Offline</span>
                 </button>
 
+                <!-- Presentation mode (#297) -->
+                <button type="button"
+                        class="btn btn-outline-secondary btn-sm"
+                        id="btn-present"
+                        title="Presentation mode"
+                        aria-label="Enter presentation mode">
+                    <i class="fa-solid fa-display me-1" aria-hidden="true"></i>
+                    Present
+                </button>
+
                 <!-- Print button -->
                 <button type="button"
                         class="btn btn-outline-secondary btn-sm btn-print"
@@ -195,6 +239,38 @@ $components  = $song['components'] ?? [];
                     <i class="fa-solid fa-print me-1" aria-hidden="true"></i>
                     Print
                 </button>
+
+                <!-- Chord charts toggle (#299) -->
+                <button class="btn btn-sm btn-outline-secondary" id="btn-toggle-chords" style="display:none" title="Show/hide chord charts">
+                    <i class="fa-solid fa-guitar me-1" aria-hidden="true"></i>Chords
+                </button>
+
+                <!-- Edit in Song Editor (#407). Hidden by default; revealed
+                     by JS when the signed-in user has the `edit_songs`
+                     entitlement (editor / admin / global_admin). -->
+                <a class="btn btn-sm btn-outline-primary d-none"
+                   id="btn-edit-song"
+                   href="/manage/editor/?song=<?= urlencode($song['id'] ?? '') ?>"
+                   title="Edit this song in the Song Editor">
+                    <i class="fa-solid fa-pen-to-square me-1" aria-hidden="true"></i>
+                    Edit
+                </a>
+
+                <!-- Practice / memorisation mode (#402). Cycles through
+                     Full → Dimmed → Hidden; tap an individual hidden line
+                     to reveal it as a hint. -->
+                <button class="btn btn-sm btn-outline-secondary" id="btn-practice-mode"
+                        data-practice-level="0"
+                        title="Practice mode — hide lyrics progressively for memorisation">
+                    <i class="fa-solid fa-graduation-cap me-1" aria-hidden="true"></i>
+                    <span id="btn-practice-label">Practice</span>
+                </button>
+            </div>
+
+            <!-- Song tags display (#288) -->
+            <div id="song-tags-container" class="mt-2 mb-3" style="display:none">
+                <small class="text-muted"><i class="fa-solid fa-tags me-1"></i>Tags:</small>
+                <span id="song-tags-list"></span>
             </div>
         </div>
     </div>
@@ -215,8 +291,10 @@ $components  = $song['components'] ?? [];
                 $number = $component['number'] ?? null;
                 $lines  = $component['lines'] ?? [];
 
-                /* Build a human-readable label for the component */
-                $label = ucfirst($type);
+                /* Build a human-readable label for the component.
+                   "refrain" is an alias for "chorus" — display as Chorus. */
+                $displayType = ($type === 'refrain') ? 'chorus' : $type;
+                $label = ucfirst($displayType);
                 if ($number !== null) {
                     $label .= ' ' . $number;
                 }
@@ -250,11 +328,34 @@ $components  = $song['components'] ?? [];
             <?php endif; ?>
             <?php if (!empty($ccli)): ?>
                 <p class="text-muted small mb-0">
-                    CCLI: <?= htmlspecialchars($ccli) ?>
+                    <i class="fa-solid fa-hashtag me-1" aria-hidden="true"></i>
+                    CCLI Song #<?= htmlspecialchars($ccli) ?>
                 </p>
             <?php endif; ?>
         </div>
     <?php endif; ?>
+
+    <!-- Report missing song link -->
+    <div class="mt-3">
+        <a href="/help" data-navigate="help" class="text-muted small text-decoration-none">
+            <i class="fa-solid fa-flag me-1" aria-hidden="true"></i>
+            Report a missing song or suggest a correction
+        </a>
+    </div>
+
+    <!-- Song translations (#352) — populated client-side from API -->
+    <section id="song-translations" class="song-translations mt-4 pt-3 border-top d-none" aria-label="Translations">
+        <h2 class="h6 mb-3 d-flex align-items-center gap-2" role="button" data-bs-toggle="collapse" data-bs-target="#song-translations-list" aria-expanded="true" aria-controls="song-translations-list">
+            <i class="fa-solid fa-language me-1 text-muted" aria-hidden="true"></i>
+            Translations
+            <i class="fa-solid fa-chevron-down ms-auto small text-muted" aria-hidden="true"></i>
+        </h2>
+        <div class="collapse show" id="song-translations-list">
+            <div class="list-group list-group-flush" id="song-translations-items" role="list">
+                <!-- Rendered by JS -->
+            </div>
+        </div>
+    </section>
 
     <!-- Related songs (#118) — populated client-side from songs.json -->
     <section id="related-songs" class="related-songs mt-4 pt-3 border-top d-none" aria-label="Related songs">
@@ -291,7 +392,7 @@ $components  = $song['components'] ?? [];
                    class="btn btn-outline-secondary btn-sm"
                    data-navigate="song"
                    data-song-id="<?= htmlspecialchars($prevSong['id']) ?>"
-                   aria-label="Previous song: <?= htmlspecialchars($prevSong['title']) ?>">
+                   aria-label="Previous song: <?= htmlspecialchars(toTitleCase($prevSong['title'])) ?>">
                     <i class="fa-solid fa-chevron-left me-1" aria-hidden="true"></i>
                     #<?= (int)$prevSong['number'] ?>
                 </a>
@@ -304,7 +405,7 @@ $components  = $song['components'] ?? [];
                    class="btn btn-outline-secondary btn-sm"
                    data-navigate="song"
                    data-song-id="<?= htmlspecialchars($nextSong['id']) ?>"
-                   aria-label="Next song: <?= htmlspecialchars($nextSong['title']) ?>">
+                   aria-label="Next song: <?= htmlspecialchars(toTitleCase($nextSong['title'])) ?>">
                     #<?= (int)$nextSong['number'] ?>
                     <i class="fa-solid fa-chevron-right ms-1" aria-hidden="true"></i>
                 </a>
@@ -313,3 +414,103 @@ $components  = $song['components'] ?? [];
     </nav>
 
 </article>
+
+<!-- Presentation mode JS (#297) -->
+<script>
+(function() {
+    const btnPresent = document.getElementById('btn-present');
+    if (!btnPresent) return;
+
+    btnPresent.addEventListener('click', () => {
+        /* Collect all song components from the rendered page */
+        const comps = document.querySelectorAll('.lyric-component');
+        if (comps.length === 0) return;
+
+        const slides = [];
+        comps.forEach(comp => {
+            const label = comp.querySelector('.lyric-label')?.textContent?.trim() || '';
+            const lines = Array.from(comp.querySelectorAll('.lyric-line')).map(l => l.textContent);
+            slides.push({ label, text: lines.join('\n') });
+        });
+
+        let current = 0;
+
+        /* Create overlay */
+        const overlay = document.createElement('div');
+        overlay.className = 'presentation-overlay';
+        overlay.innerHTML = `
+            <button class="present-close" aria-label="Close presentation">&times;</button>
+            <div class="present-label"></div>
+            <div class="present-lyrics"></div>
+            <div class="present-nav">
+                <button class="present-prev" aria-label="Previous"><i class="fa-solid fa-chevron-left me-1"></i>Prev</button>
+                <button class="present-counter"></button>
+                <button class="present-next" aria-label="Next">Next<i class="fa-solid fa-chevron-right ms-1"></i></button>
+            </div>
+        `;
+
+        const labelEl = overlay.querySelector('.present-label');
+        const lyricsEl = overlay.querySelector('.present-lyrics');
+        const counterEl = overlay.querySelector('.present-counter');
+        const prevBtn = overlay.querySelector('.present-prev');
+        const nextBtn = overlay.querySelector('.present-next');
+
+        function render() {
+            const slide = slides[current];
+            labelEl.textContent = slide.label;
+            lyricsEl.textContent = slide.text;
+            counterEl.textContent = (current + 1) + ' / ' + slides.length;
+            prevBtn.disabled = current === 0;
+            nextBtn.disabled = current === slides.length - 1;
+        }
+
+        function close() {
+            if (document.fullscreenElement) {
+                document.exitFullscreen().catch(() => {});
+            }
+            overlay.remove();
+        }
+
+        function next() { if (current < slides.length - 1) { current++; render(); } }
+        function prev() { if (current > 0) { current--; render(); } }
+
+        /* Navigation events */
+        overlay.querySelector('.present-close').addEventListener('click', close);
+        prevBtn.addEventListener('click', (e) => { e.stopPropagation(); prev(); });
+        nextBtn.addEventListener('click', (e) => { e.stopPropagation(); next(); });
+        counterEl.addEventListener('click', (e) => e.stopPropagation());
+
+        /* Click on lyrics area advances */
+        lyricsEl.addEventListener('click', next);
+
+        /* Keyboard navigation */
+        function onKey(e) {
+            if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); }
+            else if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); next(); }
+            else if (e.key === 'ArrowLeft') { e.preventDefault(); prev(); }
+        }
+        document.addEventListener('keydown', onKey);
+
+        /* Touch swipe support */
+        let touchStartX = 0;
+        overlay.addEventListener('touchstart', (e) => { touchStartX = e.changedTouches[0].screenX; }, { passive: true });
+        overlay.addEventListener('touchend', (e) => {
+            const diff = e.changedTouches[0].screenX - touchStartX;
+            if (Math.abs(diff) > 50) {
+                if (diff < 0) next(); else prev();
+            }
+        }, { passive: true });
+
+        /* Cleanup on removal */
+        overlay.addEventListener('remove', () => document.removeEventListener('keydown', onKey));
+
+        render();
+        document.body.appendChild(overlay);
+
+        /* Enter fullscreen if available */
+        if (overlay.requestFullscreen) {
+            overlay.requestFullscreen().catch(() => {});
+        }
+    });
+})();
+</script>

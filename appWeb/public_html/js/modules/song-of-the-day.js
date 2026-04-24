@@ -11,6 +11,7 @@
  * by keyword matching instead.
  */
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
+import { toTitleCase } from '../utils/text.js';
 
 export class SongOfTheDay {
     /**
@@ -150,7 +151,7 @@ export class SongOfTheDay {
                                class="text-decoration-none"
                                data-navigate="song"
                                data-song-id="${escapeHtml(song.id)}">
-                                <h5 class="card-title mb-1">${escapeHtml(song.title)}${verifiedBadge(song)}</h5>
+                                <h5 class="card-title mb-1">${escapeHtml(toTitleCase(song.title))}${verifiedBadge(song)}</h5>
                             </a>
                             <p class="text-muted small mb-1">
                                 <span class="badge bg-body-secondary" data-songbook="${escapeHtml(song.songbook || '')}">${escapeHtml(song.songbook || '')}</span>

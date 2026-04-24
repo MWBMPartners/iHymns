@@ -162,6 +162,13 @@
             "$ref": "#/$defs/component"
           }
         },
+        "translations": {
+          "description": "Optional array of linked translations of this song in other languages. Each entry references another song in the database.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/translationLink"
+          }
+        },
         "arrangement": {
           "description": "Optional playback order as indices into the components array. When present, the renderer uses this order instead of sequential. Auto-generated for songs with a chorus or refrain.",
           "type": "array",
@@ -172,6 +179,24 @@
         }
       }
     },
+    "translationLink": {
+      "description": "A reference to a translated version of this song in another language.",
+      "type": "object",
+      "required": ["songId", "language"],
+      "additionalProperties": false,
+      "properties": {
+        "songId": {
+          "description": "Song ID of the translated version (e.g. 'CP-0001-FR').",
+          "type": "string",
+          "minLength": 1
+        },
+        "language": {
+          "description": "IETF BCP 47 language tag of the translation (e.g. 'fr', 'de').",
+          "type": "string",
+          "minLength": 2
+        }
+      }
+    },
     "component": {
       "description": "A structural part of a song (verse, chorus, refrain, bridge, etc.).",
       "type": "object",
@@ -179,16 +204,16 @@
       "additionalProperties": false,
       "properties": {
         "type": {
-          "description": "Component type identifier.",
+          "description": "Component type identifier. 'refrain' is an alias for 'chorus' (accepted for import compatibility, displayed as Chorus).",
           "type": "string",
           "enum": [
             "verse", "chorus", "refrain", "bridge",
             "pre-chorus", "tag", "coda", "intro",
-            "outro", "interlude"
+            "outro", "interlude", "vamp", "ad-lib"
           ]
         },
         "number": {
-          "description": "Component number within its type (e.g. verse 1, verse 2). 1-based. Null for unnumbered components like a single chorus or refrain.",
+          "description": "Component number within its type (e.g. verse 1, verse 2). 1-based. Null for unnumbered components like a single chorus.",
           "type": ["integer", "null"],
           "minimum": 1
         },

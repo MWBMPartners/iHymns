@@ -20,8 +20,8 @@ declare(strict_types=1);
  * ============================================================================
  */
 
-require_once __DIR__ . '/../includes/auth.php';
-requireAuth();
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+requireEditor();
 
 $currentUser = getCurrentUser();
 ?>
@@ -53,420 +53,17 @@ $currentUser = getCurrentUser();
         crossorigin="anonymous"
     >
 
+    <!-- Shared iHymns palette (public site) + admin/editor styles -->
+    <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__, 2) . '/css/app.css') ?>">
+    <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime(dirname(__DIR__, 2) . '/css/admin.css') ?>">
+
     <!-- =================================================================
-         INLINE STYLES — Editor-specific theming and layout overrides
-         Dark/warm theme with amber accent colours matching the main iHymns app.
-         All styles are inline so there is no external CSS dependency.
+         INLINE STYLES — reserved for genuinely editor-specific tweaks only.
+         Shared layout, colours, buttons, cards are in /css/admin.css.
          ================================================================= -->
     <style>
-        /* ---------------------------------------------------------------
-           ROOT VARIABLES — Amber/warm palette tokens used throughout.
-           These mirror the warm tones of the main iHymns application.
-           --------------------------------------------------------------- */
-        :root {
-            --ih-amber:          #f59e0b;   /* Primary amber accent           */
-            --ih-amber-light:    #fbbf24;   /* Lighter amber for hover states */
-            --ih-amber-dark:     #d97706;   /* Darker amber for active states */
-            --ih-amber-subtle:   #78350f;   /* Very dark amber for backgrounds*/
-            --ih-bg-body:        #1a1a1a;   /* Page background                */
-            --ih-bg-sidebar:     #141414;   /* Left sidebar background        */
-            --ih-bg-card:        #222222;   /* Card / panel backgrounds       */
-            --ih-bg-input:       #2a2a2a;   /* Form input backgrounds         */
-            --ih-border:         #333333;   /* Default border colour          */
-            --ih-text-primary:   #f5f5f5;   /* Primary text (near-white)      */
-            --ih-text-muted:     #9ca3af;   /* Muted / secondary text         */
-        }
-
-        /* ---------------------------------------------------------------
-           GLOBAL BODY — Dark background, warm-tinted text
-           --------------------------------------------------------------- */
-        body {
-            background-color: var(--ih-bg-body);
-            color: var(--ih-text-primary);
-            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-            /* Prevent body scroll — the sidebar and main panel scroll independently */
-            overflow: hidden;
-            height: 100vh;
-        }
-
-        /* ---------------------------------------------------------------
-           TOP NAVBAR — Fixed dark bar with amber branding
-           --------------------------------------------------------------- */
-        .navbar-editor {
-            background-color: #111111;
-            border-bottom: 1px solid var(--ih-border);
-            padding: 0.5rem 1rem;
-        }
-
-        /* Brand text styled in amber */
-        .navbar-editor .navbar-brand {
-            color: var(--ih-amber);
-            font-weight: 700;
-            font-size: 1.15rem;
-        }
-        .navbar-editor .navbar-brand:hover {
-            color: var(--ih-amber-light);
-        }
-
-        /* Amber-outline buttons used throughout the navbar */
-        .btn-amber {
-            color: var(--ih-amber);
-            border-color: var(--ih-amber);
-            background-color: transparent;
-        }
-        .btn-amber:hover,
-        .btn-amber:focus {
-            color: #000;
-            background-color: var(--ih-amber);
-            border-color: var(--ih-amber);
-        }
-        .btn-amber:active {
-            color: #000;
-            background-color: var(--ih-amber-dark);
-            border-color: var(--ih-amber-dark);
-        }
-
-        /* Solid amber button variant */
-        .btn-amber-solid {
-            color: #000;
-            background-color: var(--ih-amber);
-            border-color: var(--ih-amber);
-            font-weight: 600;
-        }
-        .btn-amber-solid:hover {
-            background-color: var(--ih-amber-light);
-            border-color: var(--ih-amber-light);
-            color: #000;
-        }
-
-        /* ---------------------------------------------------------------
-           LAYOUT CONTAINER — Full-height flex layout beneath the navbar
-           --------------------------------------------------------------- */
-        .editor-wrapper {
-            display: flex;
-            /* Fill remaining viewport height below navbar and above status bar */
-            height: calc(100vh - 56px - 36px);
-            overflow: hidden;
-        }
-
-        /* ---------------------------------------------------------------
-           LEFT SIDEBAR — Songbook filter, search, and song list
-           --------------------------------------------------------------- */
-        .editor-sidebar {
-            background-color: var(--ih-bg-sidebar);
-            border-right: 1px solid var(--ih-border);
-            width: 25%;
-            min-width: 260px;
-            max-width: 380px;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
-
-        /* Sidebar header area (filter + search) */
-        .sidebar-header {
-            padding: 0.75rem;
-            border-bottom: 1px solid var(--ih-border);
-            flex-shrink: 0;
-        }
-
-        /* Sidebar song list — scrollable list of songs */
-        .song-list-container {
-            flex: 1;
-            overflow-y: auto;
-            padding: 0;
-        }
-
-        /* Individual song entry in the sidebar list */
-        .song-list-item {
-            padding: 0.5rem 0.75rem;
-            border-bottom: 1px solid var(--ih-border);
-            cursor: pointer;
-            transition: background-color 0.15s ease;
-        }
-        .song-list-item:hover {
-            background-color: var(--ih-bg-card);
-        }
-        /* Currently selected / active song highlighted with amber accent */
-        .song-list-item.active {
-            background-color: var(--ih-amber-subtle);
-            border-left: 3px solid var(--ih-amber);
-        }
-
-        /* Song title within the list item */
-        .song-list-item .song-title {
-            font-size: 0.9rem;
-            font-weight: 500;
-            color: var(--ih-text-primary);
-            margin-bottom: 0;
-        }
-        /* Song metadata line (number, songbook) beneath the title */
-        .song-list-item .song-meta {
-            font-size: 0.75rem;
-            color: var(--ih-text-muted);
-        }
-
-        /* Sidebar footer showing song count */
-        .sidebar-footer {
-            padding: 0.5rem 0.75rem;
-            border-top: 1px solid var(--ih-border);
-            font-size: 0.8rem;
-            color: var(--ih-text-muted);
-            flex-shrink: 0;
-            text-align: center;
-        }
-
-        /* ---------------------------------------------------------------
-           MAIN EDIT PANEL — Tabs and form area (right side)
-           --------------------------------------------------------------- */
-        .editor-main {
-            flex: 1;
-            overflow-y: auto;
-            padding: 1rem 1.25rem;
-            background-color: var(--ih-bg-body);
-        }
-
-        /* Tab navigation styling — amber active indicator */
-        .nav-tabs .nav-link {
-            color: var(--ih-text-muted);
-            border: none;
-            border-bottom: 2px solid transparent;
-            padding: 0.6rem 1rem;
-        }
-        .nav-tabs .nav-link:hover {
-            color: var(--ih-text-primary);
-            border-bottom-color: var(--ih-border);
-        }
-        .nav-tabs .nav-link.active {
-            color: var(--ih-amber);
-            background-color: transparent;
-            border-bottom: 2px solid var(--ih-amber);
-        }
-
-        /* ---------------------------------------------------------------
-           FORM CONTROLS — Dark-themed inputs, selects, and textareas
-           --------------------------------------------------------------- */
-        .form-control,
-        .form-select {
-            background-color: var(--ih-bg-input);
-            border-color: var(--ih-border);
-            color: var(--ih-text-primary);
-        }
-        .form-control:focus,
-        .form-select:focus {
-            background-color: var(--ih-bg-input);
-            border-color: var(--ih-amber);
-            color: var(--ih-text-primary);
-            box-shadow: 0 0 0 0.2rem rgba(245, 158, 11, 0.25);
-        }
-        .form-label {
-            color: var(--ih-text-muted);
-            font-size: 0.85rem;
-            font-weight: 500;
-            margin-bottom: 0.3rem;
-        }
-
-        /* ---------------------------------------------------------------
-           SONG COMPONENT CARDS — Individual verse/chorus/bridge blocks
-           in the Structure tab. Each has a drag handle on the left.
-           --------------------------------------------------------------- */
-        .component-card {
-            background-color: var(--ih-bg-card);
-            border: 1px solid var(--ih-border);
-            border-radius: 0.5rem;
-            padding: 0.75rem;
-            margin-bottom: 0.75rem;
-            position: relative;
-        }
-
-        /* Drag handle icon on the left edge of each component card */
-        .drag-handle {
-            cursor: grab;
-            color: var(--ih-text-muted);
-            font-size: 1.2rem;
-            padding: 0.25rem;
-            user-select: none;
-            transition: color 0.15s ease;
-        }
-        .drag-handle:hover {
-            color: var(--ih-amber);
-        }
-        /* Visual feedback while actively dragging */
-        .drag-handle:active {
-            cursor: grabbing;
-        }
-
-        /* Component number badge */
-        .component-number {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 28px;
-            height: 28px;
-            border-radius: 50%;
-            background-color: var(--ih-amber-subtle);
-            color: var(--ih-amber);
-            font-weight: 600;
-            font-size: 0.8rem;
-        }
-
-        /* ---------------------------------------------------------------
-           PREVIEW TAB — Read-only song preview styled similarly to app
-           --------------------------------------------------------------- */
-        .preview-container {
-            background-color: var(--ih-bg-card);
-            border: 1px solid var(--ih-border);
-            border-radius: 0.5rem;
-            padding: 1.5rem;
-            min-height: 300px;
-        }
-
-        /* Song title in the preview pane */
-        .preview-title {
-            font-size: 1.5rem;
-            font-weight: 700;
-            color: var(--ih-amber);
-            margin-bottom: 0.25rem;
-        }
-
-        /* Component type labels in preview (e.g., "Verse 1", "Chorus") */
-        .preview-component-label {
-            font-size: 0.8rem;
-            font-weight: 600;
-            color: var(--ih-amber-dark);
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            margin-top: 1rem;
-            margin-bottom: 0.25rem;
-        }
-
-        /* Lyrics text block in preview */
-        .preview-lyrics {
-            white-space: pre-wrap;
-            font-size: 1rem;
-            line-height: 1.6;
-            color: var(--ih-text-primary);
-        }
-
-        /* Credits section at the bottom of the preview */
-        .preview-credits {
-            margin-top: 1.5rem;
-            padding-top: 1rem;
-            border-top: 1px solid var(--ih-border);
-            font-size: 0.85rem;
-            color: var(--ih-text-muted);
-        }
-
-        /* ---------------------------------------------------------------
-           BOTTOM STATUS BAR — Fixed bar showing save state and stats
-           --------------------------------------------------------------- */
-        .status-bar {
-            background-color: #111111;
-            border-top: 1px solid var(--ih-border);
-            height: 36px;
-            display: flex;
-            align-items: center;
-            padding: 0 1rem;
-            font-size: 0.8rem;
-            color: var(--ih-text-muted);
-        }
-
-        /* Unsaved changes indicator dot */
-        .status-indicator {
-            display: inline-block;
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            margin-right: 0.4rem;
-        }
-        /* Green = saved / no pending changes */
-        .status-indicator.saved {
-            background-color: #22c55e;
-        }
-        /* Amber = unsaved changes present */
-        .status-indicator.unsaved {
-            background-color: var(--ih-amber);
-        }
-
-        /* ---------------------------------------------------------------
-           UTILITY — Scrollbar styling for webkit browsers
-           --------------------------------------------------------------- */
-        ::-webkit-scrollbar {
-            width: 8px;
-        }
-        ::-webkit-scrollbar-track {
-            background: var(--ih-bg-sidebar);
-        }
-        ::-webkit-scrollbar-thumb {
-            background: var(--ih-border);
-            border-radius: 4px;
-        }
-        ::-webkit-scrollbar-thumb:hover {
-            background: #555;
-        }
-
-        /* ---------------------------------------------------------------
-           EMPTY STATE — Shown when no song is selected or loaded
-           --------------------------------------------------------------- */
-        .empty-state {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100%;
-            color: var(--ih-text-muted);
-        }
-        .empty-state i {
-            font-size: 3rem;
-            margin-bottom: 1rem;
-            color: var(--ih-border);
-        }
-
-        /* ---------------------------------------------------------------
-           DYNAMIC LIST INPUTS — Writer / composer add/remove rows
-           in the Credits tab
-           --------------------------------------------------------------- */
-        .dynamic-list-row {
-            display: flex;
-            gap: 0.5rem;
-            margin-bottom: 0.5rem;
-            align-items: center;
-        }
-        .dynamic-list-row .form-control {
-            flex: 1;
-        }
-
-        /* Small remove button on dynamic list rows */
-        .btn-remove-row {
-            color: #ef4444;
-            background: transparent;
-            border: 1px solid #ef4444;
-            border-radius: 0.375rem;
-            padding: 0.25rem 0.5rem;
-            font-size: 0.8rem;
-            line-height: 1;
-            cursor: pointer;
-            transition: all 0.15s ease;
-        }
-        .btn-remove-row:hover {
-            background-color: #ef4444;
-            color: #fff;
-        }
-
-        /* ---------------------------------------------------------------
-           RESPONSIVE OVERRIDE — Stack sidebar below main on small screens
-           --------------------------------------------------------------- */
-        @media (max-width: 768px) {
-            .editor-wrapper {
-                flex-direction: column;
-                height: calc(100vh - 56px - 36px);
-            }
-            .editor-sidebar {
-                width: 100%;
-                max-width: none;
-                max-height: 40vh;
-            }
-        }
+        /* Shared layout, colours, buttons, cards → /css/admin.css
+           Add editor-only tweaks here if truly needed. */
     </style>
 </head>
 <body>
@@ -524,14 +121,48 @@ $currentUser = getCurrentUser();
                 <i class="bi bi-folder2-open me-1"></i>Load JSON
             </button>
 
-            <!-- SAVE JSON — Saves the current state back to a downloadable JSON file -->
+            <!-- LOAD FROM URL — Load songs.json from a remote URL (#235) -->
+            <button
+                type="button"
+                class="btn btn-sm btn-outline-amber"
+                id="btn-load-url"
+                title="Load songs.json from a URL"
+            >
+                <i class="bi bi-link-45deg me-1"></i>Load URL
+            </button>
+
+            <!-- SAVE — Writes all songs to MySQL (primary path). If the DB
+                 is unavailable, the editor falls back to a JSON download so
+                 you never lose changes. -->
             <button
                 type="button"
                 class="btn btn-sm btn-amber-solid"
                 id="btn-save"
-                title="Download the current songs as a JSON file"
+                title="Save all changes to the database"
             >
-                <i class="bi bi-download me-1"></i>Save JSON
+                <i class="bi bi-floppy me-1"></i>Save
+            </button>
+
+            <!-- VALIDATE — Check all songs for data quality issues (#235) -->
+            <button
+                type="button"
+                class="btn btn-sm btn-outline-success"
+                id="btn-validate"
+                title="Validate all song data for errors"
+            >
+                <i class="bi bi-check-circle me-1"></i>Validate
+            </button>
+
+            <!-- HISTORY — Show revision history for the currently-selected
+                 song, with a restore action per revision (#400). -->
+            <button
+                type="button"
+                class="btn btn-sm btn-outline-info"
+                id="btn-history"
+                title="Show revision history for the selected song"
+                disabled
+            >
+                <i class="bi bi-clock-history me-1"></i>History
             </button>
 
             <!-- EXPORT DROPDOWN — Provides JSON and CSV export options -->
@@ -626,7 +257,7 @@ $currentUser = getCurrentUser();
                 </div>
 
                 <!-- Search input — live text search across song titles -->
-                <div class="input-group input-group-sm">
+                <div class="input-group input-group-sm mb-2">
                     <span class="input-group-text" style="background-color: var(--ih-bg-input); border-color: var(--ih-border); color: var(--ih-text-muted);">
                         <i class="bi bi-search"></i>
                     </span>
@@ -638,6 +269,19 @@ $currentUser = getCurrentUser();
                         aria-label="Search songs by title"
                     >
                 </div>
+
+                <!-- Sort order toggle (#251) -->
+                <select
+                    class="form-select form-select-sm"
+                    id="song-sort"
+                    aria-label="Sort songs by"
+                    title="Sort order"
+                    style="font-size: 0.75rem;"
+                >
+                    <option value="title" selected>Sort by Title (A–Z)</option>
+                    <option value="number">Sort by Number</option>
+                    <option value="songbook">Sort by Songbook, then Number</option>
+                </select>
             </div>
 
             <!-- Song list — scrollable container; each song is a clickable row -->
@@ -666,12 +310,48 @@ $currentUser = getCurrentUser();
                     <span id="song-count">0 songs</span>
                     <span id="songCountFiltered" style="display: none;"> (showing <span id="filteredCount">0</span>)</span>
                 </span>
-                <span>
-                    <button type="button" class="btn btn-sm btn-amber py-0 px-1" id="btn-add-song" title="Add new song">
-                        <i class="bi bi-plus-lg"></i>
+                <span class="d-flex gap-1">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-select-mode"
+                            title="Multi-select mode (#399)" aria-pressed="false">
+                        <i class="bi bi-check2-square me-1"></i>Select
                     </button>
-                    <button type="button" class="btn btn-sm btn-outline-danger py-0 px-1" id="btn-delete-song" title="Delete selected song">
-                        <i class="bi bi-trash"></i>
+                    <button type="button" class="btn btn-sm btn-amber" id="btn-add-song" title="Add new song">
+                        <i class="bi bi-plus-lg me-1"></i>Add
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-danger" id="btn-delete-song" title="Delete selected song">
+                        <i class="bi bi-trash me-1"></i>Delete
+                    </button>
+                </span>
+            </div>
+
+            <!-- Bulk-actions toolbar — shown only in multi-select mode (#399). -->
+            <div class="bulk-actions-bar d-none align-items-center justify-content-between px-3 py-2"
+                 id="bulk-actions-bar"
+                 style="background-color: rgba(129,140,248,0.1); border-top: 1px solid var(--card-border);">
+                <span class="small">
+                    <span id="bulk-selected-count">0</span> selected
+                </span>
+                <span class="d-flex gap-1 flex-wrap">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-bulk-select-all">All</button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-bulk-select-none">None</button>
+                    <button type="button" class="btn btn-sm btn-outline-success" id="btn-bulk-verify" disabled
+                            title="Mark selected songs as verified">
+                        <i class="bi bi-patch-check me-1"></i>Verify
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-primary" id="btn-bulk-tag" disabled
+                            title="Add or remove tags on selected songs">
+                        <i class="bi bi-tags me-1"></i>Tag
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-warning" id="btn-bulk-move" disabled
+                            title="Move selected songs to another songbook">
+                        <i class="bi bi-arrow-right-circle me-1"></i>Move
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-bulk-export" disabled
+                            title="Export selected songs as JSON">
+                        <i class="bi bi-download me-1"></i>Export
+                    </button>
+                    <button type="button" class="btn btn-sm btn-danger" id="btn-bulk-delete" disabled>
+                        <i class="bi bi-trash me-1"></i>Delete
                     </button>
                 </span>
             </div>
@@ -1121,7 +801,7 @@ $currentUser = getCurrentUser();
                                 type="button"
                                 class="btn btn-sm btn-outline-secondary"
                                 id="btnArrangementAuto"
-                                title="Insert chorus/refrain after each verse"
+                                title="Insert chorus after each verse"
                             >
                                 <i class="bi bi-magic me-1"></i>Auto: Chorus after each verse
                             </button>
@@ -1200,6 +880,31 @@ $currentUser = getCurrentUser();
                                 -->
                             </div>
                             <!-- Add Composer button is dynamically rendered by editor.js inside composers-container -->
+                        </div>
+
+                        <!-- Translations Section — linked translations in other languages (#352) -->
+                        <div class="mb-4">
+                            <label class="form-label">
+                                <i class="bi bi-translate me-1"></i>Translations
+                            </label>
+                            <div class="form-text mb-2" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                                Link this song to its translations in other languages. Linked songs appear on each other's page.
+                            </div>
+
+                            <!-- Dynamic list of translation rows -->
+                            <div id="translations-container">
+                                <!-- Rendered by editor.js -->
+                            </div>
+
+                            <!-- Add Translation form -->
+                            <div class="input-group input-group-sm mt-2">
+                                <input type="text" class="form-control" id="add-translation-songid"
+                                       placeholder="Target Song ID (e.g. CP-0001)" list="translation-song-list">
+                                <datalist id="translation-song-list"></datalist>
+                                <button type="button" class="btn btn-outline-primary" id="add-translation-btn">
+                                    <i class="bi bi-plus-lg me-1"></i>Link
+                                </button>
+                            </div>
                         </div>
 
                         <!-- Copyright Text — free-text copyright notice -->
@@ -1337,7 +1042,6 @@ $currentUser = getCurrentUser();
                             <select class="form-select form-select-sm component-type" aria-label="Component type">
                                 <option value="verse">Verse</option>
                                 <option value="chorus">Chorus</option>
-                                <option value="refrain">Refrain</option>
                                 <option value="bridge">Bridge</option>
                                 <option value="pre-chorus">Pre-Chorus</option>
                                 <option value="tag">Tag</option>
@@ -1455,6 +1159,26 @@ $currentUser = getCurrentUser();
         integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
         crossorigin="anonymous"
     ></script>
+
+    <!-- Revision history modal (#400). Populated on demand when the
+         History button is clicked; shows the timeline + side-by-side
+         JSON for each revision + a Restore button per row. -->
+    <div class="modal fade" id="history-modal" tabindex="-1" aria-labelledby="history-modal-title" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content bg-dark text-light border-info">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title" id="history-modal-title">
+                        <i class="bi bi-clock-history me-2"></i>Revision history
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="history-list" class="list-group list-group-flush"></div>
+                    <div id="history-detail" class="mt-3"></div>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <!-- Editor JavaScript — all interactive logic (loading, saving, editing, previewing)
          is handled in this separate file to keep concerns separated -->

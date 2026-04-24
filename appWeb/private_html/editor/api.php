@@ -36,13 +36,13 @@ declare(strict_types=1);
  * ========================================================================= */
 
 /** Resolve the absolute path to the data_share directory */
-$dataShareDir = realpath(__DIR__ . '/../../data_share/song_data');
+$dataShareDir = realpath(dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'data_share' . DIRECTORY_SEPARATOR . 'song_data');
 
 /* Fallback paths for different server configurations and local development */
 $candidatePaths = [
-    __DIR__ . '/../../data_share/song_data/songs.json',   /* Deployed: standard location */
-    __DIR__ . '/../data/songs.json',                       /* Legacy: private_html/data/ */
-    __DIR__ . '/../../../data/songs.json',                 /* Local dev: project root data/ */
+    dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'data_share' . DIRECTORY_SEPARATOR . 'song_data' . DIRECTORY_SEPARATOR . 'songs.json',   /* Deployed: standard location */
+    dirname(__DIR__) . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR . 'songs.json',                       /* Legacy: private_html/data/ */
+    dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR . 'songs.json',                 /* Local dev: project root data/ */
 ];
 
 /**

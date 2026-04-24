@@ -21,12 +21,17 @@
 RewriteEngine On
 
 # ==========================================================================
-# ADMIN AREA PASSTHROUGH (/manage/)
+# ADMIN AREA PASSTHROUGH (/manage/) + /admin/ alias (#407)
 #
 # The /manage/ directory has its own PHP authentication system and does
 # not use the SPA router. All requests to /manage/ are served directly
 # by PHP — they must bypass the .php blocking rule and the SPA catch-all.
+#
+# /admin/ is a permanent alias for /manage/ — same portal, friendlier URL.
 # ==========================================================================
+
+# /admin/<path> → /manage/<path> (301, preserves query string)
+RewriteRule ^admin(/.*)?$ /manage$1 [R=301,L,QSA]
 
 RewriteRule ^manage/ - [L]
 
@@ -60,6 +65,9 @@ RewriteRule (^|/)\.(?!well-known) - [F,L]
 # ==========================================================================
 
 RewriteRule ^api$ api.php [QSA,L]
+
+# /og-image → og-image.php (hides PHP extension from OG meta tags)
+RewriteRule ^og-image$ og-image.php [QSA,L]
 
 # ==========================================================================
 # SERVICE WORKER ROUTING (#81)

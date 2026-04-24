@@ -1,10 +1,13 @@
 - [User Profile](user_profile.md) — Lance at MWBM Partners Ltd, wants detailed annotations, modular architecture
-- [iHymns Project](project_ihymns.md) — Multiplatform Christian lyrics app, 6 songbooks, 3,612 songs
+- [iHymns Project](project_ihymns.md) — Multiplatform Christian lyrics app, MySQL (30+ tables), 106 public API endpoints + 5 editor-API endpoints, v0.10.1 (PR #407 April 2026 alpha batch)
 - [Never touch SourceSongData](feedback_source_data.md) — .SourceSongData/ must never be deleted or modified
 - [Use appX/ directories](feedback_app_dirs.md) — appWeb/, appApple/, appAndroid/ naming convention
-- [Web app can use PHP](feedback_php_web.md) — PHP 8.5+ on shared hosting (DreamHost)
-- [Phase 1 is first iteration](feedback_phase1_simplicity.md) — Don't over-engineer JSON file distribution, Phase 2 API fixes it
-- [Clean neutral colours](feedback_colours.md) — Slate/grey neutral scheme, no bright/vivid colours on songbook cards
-- [Web app directory structure](feedback_appweb_dir.md) — appWeb/ with public_html (single source), data_share, private_html
-- [Phase 1 PWA enhancements](feedback_phase1_pwa_enhancements.md) — Analytics, gestures, writer pages, TF-IDF related songs, WCAG contrast, PWA icons
-- [Phase 1 SEO/PWA/Social](feedback_phase1_seo_pwa_social.md) — OG images, PWA install banners, editor arrangement, Song of the Day expansion, CI/CD lftp regex fix, sitemap
+- [Web app can use PHP](feedback_php_web.md) — PHP 8.5+ on shared hosting (DreamHost, no CLI access)
+- [Phase 1 is first iteration](feedback_phase1_simplicity.md) — Don't over-engineer, Phase 2 API fixes it
+- [Clean neutral colours](feedback_colours.md) — Slate/grey neutral scheme, no bright/vivid colours
+- [Web app directory structure](feedback_appweb_dir.md) — appWeb/ with public_html, data_share, .auth/, .sql/
+- [Phase 1 PWA enhancements](feedback_phase1_pwa_enhancements.md) — Analytics, gestures, writer pages, TF-IDF, WCAG, PWA icons
+- [Phase 1 SEO/PWA/Social](feedback_phase1_seo_pwa_social.md) — OG images (song/songbook/setlist), PWA banners, sitemap
+- [User Accounts](feedback_user_accounts.md) — 3 auth methods, roles, orgs, email login, groups, version access, hashed tokens
+- [DB naming](feedback_db_naming.md) — tblCamelCase tables, CamelCase columns, AS aliases for API compat
+- [Do NOT edit .claude/ProjectBrief.md](feedback_claude_brief.md) — user-owned file; update project_ihymns.md / MEMORY.md instead

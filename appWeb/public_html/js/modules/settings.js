@@ -17,6 +17,7 @@ import {
     STORAGE_TRANSITION,
     STORAGE_DEFAULT_SONGBOOK,
     STORAGE_AUTO_UPDATE_SONGS,
+    STORAGE_NUMPAD_LIVE_SEARCH,
     STORAGE_ANALYTICS_CONSENT,
     STORAGE_SEARCH_HISTORY,
 } from '../constants.js';
@@ -37,7 +38,17 @@ export class Settings {
             reduceMotion: false,      /* Animations enabled by default */
             reduceTransparency: false,
             fontSize: 18,
+            keyboardShortcuts: true,  /* '?' opens help, '/' focuses search, etc. (#406) */
+            includeAudioOffline: false, /* Include audio files in offline download (#401) */
         };
+
+        /**
+         * Active download state (#358). Tracked on the instance so it
+         * survives SPA page navigation (settings page DOM is destroyed
+         * but this object persists).
+         * @type {{ active: boolean, completed: number, failed: number, total: number }}
+         */
+        this._downloadState = { active: false, completed: 0, failed: 0, total: 0 };
     }
 
     /**
@@ -73,6 +84,59 @@ export class Settings {
 
         /* Analytics consent banner */
         this.initConsentBanner();
+
+        /*
+         * Listen for offline download progress from service worker (#358).
+         * Registered here in init() (called once at app startup) rather
+         * than in initSettingsPage() so downloads continue to be tracked
+         * when the user navigates away from Settings.
+         */
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.addEventListener('message', (event) => {
+                if (event.data?.type === 'CACHE_ALL_SONGS_PROGRESS') {
+                    this._handleDownloadProgress(event.data);
+                }
+                /* Audio pre-cache progress (#401). Surfaced as a status
+                   line under the existing progress bar so users can see
+                   the slower audio job catching up after the lyrics are
+                   already done. */
+                if (event.data?.type === 'CACHE_AUDIO_PROGRESS') {
+                    this._handleAudioProgress(event.data);
+                }
+            });
+        }
+
+        /* Re-apply the Account section whenever auth state changes, even if
+           the user is on the Settings page (no navigation triggered). */
+        document.addEventListener('ihymns:auth-changed', () => {
+            this.refreshAccountSection();
+        });
+    }
+
+    /**
+     * Refresh the Account section visibility based on current auth state.
+     * Safe to call at any time; no-ops if the Settings page markup is not
+     * currently in the DOM. Idempotent — only the class toggles run; click
+     * handlers are (re)bound inside _initAccountSection.
+     */
+    refreshAccountSection() {
+        const loggedOutEl = document.getElementById('auth-logged-out');
+        const loggedInEl  = document.getElementById('auth-logged-in');
+        if (!loggedOutEl && !loggedInEl) return;
+
+        const auth = this.app.userAuth;
+        const loggedIn = !!auth?.isLoggedIn();
+
+        loggedOutEl?.classList.toggle('d-none', loggedIn);
+        loggedInEl?.classList.toggle('d-none', !loggedIn);
+
+        if (loggedIn) {
+            const user = auth.getUser();
+            const nameEl = document.getElementById('auth-display-name-text');
+            const userEl = document.getElementById('auth-username-text');
+            if (nameEl) nameEl.textContent = user?.display_name || user?.username || '';
+            if (userEl) userEl.textContent = '@' + (user?.username || '');
+        }
     }
 
     /* =====================================================================
@@ -238,6 +302,21 @@ export class Settings {
         html.setAttribute('data-bs-theme', bsTheme);
         html.setAttribute('data-ihymns-theme', ihymnsTheme);
 
+        /* Apply high contrast mode (#319) */
+        if (ihymnsTheme === 'high-contrast') {
+            html.setAttribute('data-ihymns-contrast', 'high');
+        } else {
+            html.removeAttribute('data-ihymns-contrast');
+        }
+
+        /* Apply CVD colour vision mode (#319) */
+        const cvdMode = localStorage.getItem('ihymns_cvd_mode');
+        if (cvdMode) {
+            html.setAttribute('data-ihymns-cvd', cvdMode);
+        } else {
+            html.removeAttribute('data-ihymns-cvd');
+        }
+
         /* Update theme-color meta tags */
         const themeColor = bsTheme === 'dark' ? '#1e1b4b' : '#4f46e5';
         document.querySelectorAll('meta[name="theme-color"]').forEach(meta => {
@@ -295,6 +374,9 @@ export class Settings {
      * Initialise the settings page controls (called after page loads).
      */
     initSettingsPage() {
+        /* Account section — user auth buttons */
+        this._initAccountSection();
+
         /* Theme buttons */
         document.querySelectorAll('[data-setting-theme]').forEach(btn => {
             const theme = btn.dataset.settingTheme;
@@ -344,6 +426,27 @@ export class Settings {
             });
         }
 
+        /* Keyboard shortcuts toggle (#406). Takes effect on next keydown —
+           app.js reads the setting at event time, no rebind needed. */
+        const shortcutsToggle = document.getElementById('setting-keyboard-shortcuts');
+        if (shortcutsToggle) {
+            shortcutsToggle.checked = this.get('keyboardShortcuts') !== false;
+            shortcutsToggle.addEventListener('change', () => {
+                this.set('keyboardShortcuts', shortcutsToggle.checked);
+            });
+        }
+
+        /* Include-audio-offline toggle (#401). Read by the offline download
+           flow; when true, each songbook download fetches /api?action=bulk_audio
+           and asks the SW to cache every listed audio URL. */
+        const audioOfflineToggle = document.getElementById('setting-include-audio-offline');
+        if (audioOfflineToggle) {
+            audioOfflineToggle.checked = !!this.get('includeAudioOffline');
+            audioOfflineToggle.addEventListener('change', () => {
+                this.set('includeAudioOffline', audioOfflineToggle.checked);
+            });
+        }
+
         /* Font size slider */
         const fontSlider = document.getElementById('setting-font-size');
         const fontValue = document.getElementById('font-size-value');
@@ -371,6 +474,33 @@ export class Settings {
                     localStorage.removeItem(STORAGE_DEFAULT_SONGBOOK);
                 }
                 this.app.syncStorage(STORAGE_DEFAULT_SONGBOOK);
+            });
+        }
+
+        /* Numpad live search toggle */
+        const liveSearchToggle = document.getElementById('setting-numpad-live-search');
+        if (liveSearchToggle) {
+            liveSearchToggle.checked = localStorage.getItem(STORAGE_NUMPAD_LIVE_SEARCH) === 'true';
+            liveSearchToggle.addEventListener('change', () => {
+                const enabled = liveSearchToggle.checked;
+                localStorage.setItem(STORAGE_NUMPAD_LIVE_SEARCH, String(enabled));
+                this.app.syncStorage(STORAGE_NUMPAD_LIVE_SEARCH);
+            });
+        }
+
+        /* Colour vision deficiency mode (#319) */
+        const cvdSelect = document.getElementById('setting-cvd-mode');
+        if (cvdSelect) {
+            cvdSelect.value = localStorage.getItem('ihymns_cvd_mode') || '';
+            cvdSelect.addEventListener('change', () => {
+                const mode = cvdSelect.value;
+                if (mode) {
+                    localStorage.setItem('ihymns_cvd_mode', mode);
+                    document.documentElement.setAttribute('data-ihymns-cvd', mode);
+                } else {
+                    localStorage.removeItem('ihymns_cvd_mode');
+                    document.documentElement.removeAttribute('data-ihymns-cvd');
+                }
             });
         }
 
@@ -441,6 +571,14 @@ export class Settings {
             });
         });
 
+        /* Per-songbook eviction buttons (#401) */
+        document.querySelectorAll('.btn-evict-songbook').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const songbookId = btn.dataset.songbookId;
+                if (songbookId) this.evictSongbook(songbookId, btn);
+            });
+        });
+
         /* Auto-update offline songs toggle (#132) */
         const autoUpdateToggle = document.getElementById('setting-auto-update-songs');
         if (autoUpdateToggle) {
@@ -459,17 +597,13 @@ export class Settings {
             });
         }
 
-        /* Listen for progress messages from service worker */
-        if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.addEventListener('message', (event) => {
-                if (event.data?.type === 'CACHE_ALL_SONGS_PROGRESS') {
-                    this.updateDownloadProgress(event.data);
-                }
-            });
-        }
-
         /* Check which songbooks are already cached */
         this.updateSongbookCacheStatus();
+
+        /* Re-hydrate download UI if a download is in progress (#358) */
+        if (this._downloadState.active) {
+            this.updateDownloadProgress(this._downloadState);
+        }
 
         /* Reset settings button */
         const resetBtn = document.getElementById('reset-settings-btn');
@@ -622,9 +756,9 @@ export class Settings {
     }
 
     /**
-     * Download all songs for offline use.
-     * Fetches songs.json to get the full song list, then sends all IDs
-     * to the service worker for background caching.
+     * Download ALL songs for offline use via bulk API.
+     * Sends songbook IDs to the service worker which fetches entire
+     * songbooks in single requests (~6 requests instead of 3,612).
      */
     async downloadAllSongs() {
         const btn = document.getElementById('download-all-songs-btn');
@@ -651,16 +785,30 @@ export class Settings {
                 return;
             }
 
-            const songIds = songs.map(s => s.id);
-            if (statusEl) statusEl.textContent = `Downloading 0 / ${songIds.length} songs...`;
+            /* Build list of unique songbook IDs for bulk download */
+            const songbookSet = new Set(songs.map(s => s.songbook));
+            const songbooks = [...songbookSet].filter(Boolean);
+
+            if (statusEl) statusEl.textContent = `Downloading 0 / ${songs.length} songs...`;
+
+            /* Track download state so progress survives page navigation (#358) */
+            this._downloadState = { active: true, completed: 0, failed: 0, total: songs.length };
 
             /* Disable all songbook buttons during bulk download */
             document.querySelectorAll('.btn-download-songbook').forEach(b => b.disabled = true);
 
             navigator.serviceWorker.controller.postMessage({
                 type: 'CACHE_ALL_SONGS',
-                songIds: songIds,
+                songbooks: songbooks,
+                totalSongs: songs.length,
             });
+
+            /* If audio-offline is on, dispatch per-songbook audio pre-cache
+               jobs in parallel with the lyric pre-cache. The SW handles them
+               independently — completion is reported via CACHE_AUDIO_PROGRESS. */
+            if (this.get('includeAudioOffline')) {
+                this._queueAudioCacheForSongbooks(songbooks);
+            }
 
         } catch (error) {
             console.error('[Settings] Download all songs error:', error);
@@ -701,13 +849,20 @@ export class Settings {
                 return;
             }
 
-            const songIds = songbookSongs.map(s => s.id);
-            if (statusEl) statusEl.textContent = `Downloading ${songbookId}: 0 / ${songIds.length}...`;
+            if (statusEl) statusEl.textContent = `Downloading ${songbookId}...`;
+
+            /* Track download state so progress survives page navigation (#358) */
+            this._downloadState = { active: true, completed: 0, failed: 0, total: songbookSongs.length };
 
             navigator.serviceWorker.controller.postMessage({
                 type: 'CACHE_ALL_SONGS',
-                songIds: songIds,
+                songbooks: [songbookId],
+                totalSongs: songbookSongs.length,
             });
+
+            if (this.get('includeAudioOffline')) {
+                this._queueAudioCacheForSongbooks([songbookId]);
+            }
 
         } catch (error) {
             console.error(`[Settings] Download songbook ${songbookId} error:`, error);
@@ -719,7 +874,47 @@ export class Settings {
     }
 
     /**
+     * Global handler for SW download progress messages (#358).
+     * Updates persistent state and routes to the settings page UI
+     * updater if available, otherwise shows a completion toast.
+     * @param {object} data Progress data: { completed, failed, total }
+     */
+    _handleDownloadProgress(data) {
+        this._downloadState = {
+            active: (data.completed + data.failed) < data.total,
+            completed: data.completed,
+            failed: data.failed,
+            total: data.total,
+        };
+        /* Try to update the settings page UI (may not exist) */
+        this.updateDownloadProgress(data);
+    }
+
+    /**
+     * Handle audio pre-cache progress messages from the SW (#401).
+     * @param {{songbook:string, completed:number, failed:number, total:number, done?:boolean}} data
+     */
+    _handleAudioProgress(data) {
+        const statusEl = document.getElementById('download-audio-status');
+        if (!statusEl) return;
+        const { songbook, completed, failed, total, done } = data;
+        if (done) {
+            statusEl.textContent = failed > 0
+                ? `${songbook} audio: ${completed} cached, ${failed} failed`
+                : `${songbook} audio: ${completed} cached`;
+            if (failed === 0) {
+                setTimeout(() => { statusEl.textContent = ''; }, 4000);
+            }
+            this._refreshSongbookCacheSizes();
+        } else {
+            statusEl.textContent = `${songbook} audio: ${completed + failed} / ${total}…`;
+        }
+    }
+
+    /**
      * Update the download progress UI from service worker messages.
+     * Safe to call when the settings page is not visible — DOM lookups
+     * will return null and updates are silently skipped.
      * @param {object} data Progress data: { completed, failed, total }
      */
     updateDownloadProgress(data) {
@@ -731,7 +926,9 @@ export class Settings {
         const { completed, failed, total } = data;
         const percent = Math.round(((completed + failed) / total) * 100);
 
-        if (statusEl) statusEl.textContent = `Downloading ${completed + failed} / ${total} songs...`;
+        const statusMsg = data.status || `Downloading ${completed + failed} / ${total} songs...`;
+        if (statusEl) statusEl.textContent = statusMsg;
+        if (progressWrap) progressWrap.classList.remove('d-none');
         if (progressBar) {
             progressBar.style.width = percent + '%';
             progressBar.setAttribute('aria-valuenow', String(percent));
@@ -739,6 +936,8 @@ export class Settings {
 
         /* Download complete */
         if (completed + failed >= total) {
+            this._downloadState.active = false;
+
             if (btn) {
                 btn.disabled = false;
                 btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down me-1" aria-hidden="true"></i> Download All Songbooks';
@@ -815,10 +1014,122 @@ export class Settings {
                     btn.innerHTML = '<i class="fa-solid fa-check" aria-hidden="true"></i>';
                     btn.title = `${id} — all songs saved offline`;
                 }
+                /* Show the matching "Remove from offline" button only when
+                   the songbook actually has cached content. */
+                const evictBtn = document.querySelector(
+                    `.btn-evict-songbook[data-songbook-id="${id}"]`
+                );
+                if (evictBtn) {
+                    evictBtn.classList.toggle('d-none', !info || info.cached === 0);
+                }
             });
+
+            /* Replace the server-side estimate with the real cached size. */
+            this._refreshSongbookCacheSizes();
         } catch {
             /* Ignore — non-critical */
         }
+    }
+
+    /**
+     * Ask the SW for per-songbook cached byte totals (#401).
+     * Updates each `.offline-songbook-size` span with a real size when
+     * the songbook has cached content.
+     */
+    _refreshSongbookCacheSizes() {
+        if (!('serviceWorker' in navigator) || !navigator.serviceWorker.controller) return;
+
+        const handler = (event) => {
+            if (event.data?.type !== 'CACHE_SIZES') return;
+            navigator.serviceWorker.removeEventListener('message', handler);
+            const sizes = event.data.sizes || {};
+            document.querySelectorAll('.offline-songbook-size').forEach(el => {
+                const row = el.closest('.offline-songbook-row');
+                const id = row?.querySelector('[data-songbook-id]')?.dataset.songbookId;
+                if (!id) return;
+                const bytes = sizes[id] || sizes[id?.toUpperCase()] || 0;
+                if (bytes > 0) {
+                    el.textContent = bytes >= 1048576
+                        ? (bytes / 1048576).toFixed(1) + ' MB'
+                        : Math.round(bytes / 1024) + ' KB';
+                    el.classList.remove('text-muted');
+                }
+            });
+        };
+        navigator.serviceWorker.addEventListener('message', handler);
+        navigator.serviceWorker.controller.postMessage({ type: 'GET_CACHE_SIZES' });
+    }
+
+    /**
+     * Fetch the bulk_audio manifest for each songbook and dispatch
+     * one CACHE_AUDIO_URLS message per songbook to the SW (#401).
+     * Failures are logged but do not block the lyric download.
+     * @param {string[]} songbooks
+     */
+    async _queueAudioCacheForSongbooks(songbooks) {
+        if (!navigator.serviceWorker?.controller) return;
+        for (const songbook of songbooks) {
+            try {
+                const r = await fetch(`/api?action=bulk_audio&songbook=${encodeURIComponent(songbook)}`);
+                if (!r.ok) continue;
+                const data = await r.json();
+                const urls = (data.audio || []).map(a => a.url).filter(Boolean);
+                if (urls.length === 0) continue;
+                navigator.serviceWorker.controller.postMessage({
+                    type: 'CACHE_AUDIO_URLS',
+                    urls,
+                    songbook,
+                });
+            } catch (err) {
+                console.warn(`[Settings] Audio manifest fetch failed for ${songbook}:`, err.message);
+            }
+        }
+    }
+
+    /**
+     * Remove every cached entry for a songbook (#401). Asks the SW to
+     * purge both the song-page cache and the audio/sheet-music cache.
+     * @param {string} songbookId
+     * @param {HTMLElement} btn
+     */
+    async evictSongbook(songbookId, btn) {
+        if (!navigator.serviceWorker?.controller) {
+            this.app.showToast('Service worker not available.', 'warning');
+            return;
+        }
+        const ok = await this.app.showConfirm(
+            `Remove all cached content for ${songbookId}? You can re-download at any time.`,
+            { title: 'Remove from offline', okText: 'Remove', okClass: 'btn-warning' }
+        );
+        if (!ok) return;
+
+        const handler = (event) => {
+            if (event.data?.type !== 'SONGBOOK_EVICTED' || event.data.songbook !== songbookId) return;
+            navigator.serviceWorker.removeEventListener('message', handler);
+            this.app.showToast(
+                event.data.removed > 0
+                    ? `${songbookId} removed from offline (${event.data.removed} entries)`
+                    : `${songbookId} had no cached entries`,
+                'success'
+            );
+            /* Reset the corresponding download button to its starting state */
+            const dlBtn = document.querySelector(
+                `.btn-download-songbook[data-songbook-id="${songbookId}"]`
+            );
+            if (dlBtn) {
+                dlBtn.classList.remove('btn-success');
+                dlBtn.classList.add('btn-outline-success');
+                dlBtn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down" aria-hidden="true"></i>';
+                dlBtn.title = '';
+            }
+            this.updateSongbookCacheStatus();
+            this.updateCacheStatus();
+        };
+        navigator.serviceWorker.addEventListener('message', handler);
+        navigator.serviceWorker.controller.postMessage({
+            type: 'EVICT_SONGBOOK',
+            songbook: songbookId,
+        });
     }
 
     /**
@@ -901,5 +1212,47 @@ export class Settings {
             statusEl.textContent = 'Not supported';
             statusEl.className = 'badge bg-warning';
         }
+    }
+
+    /* =====================================================================
+     * ACCOUNT SECTION — User auth integration
+     * ===================================================================== */
+
+    /**
+     * Initialise the account section in settings.
+     * Shows logged-in or logged-out state and binds button handlers.
+     */
+    _initAccountSection() {
+        const auth = this.app.userAuth;
+        if (!auth) return;
+
+        /* Apply current auth state to the card */
+        this.refreshAccountSection();
+
+        /* Sign In button */
+        document.getElementById('btn-auth-login')?.addEventListener('click', () => {
+            auth.showAuthModal('login');
+        });
+
+        /* Create Account button */
+        document.getElementById('btn-auth-register')?.addEventListener('click', () => {
+            auth.showAuthModal('register');
+        });
+
+        /* Sync button */
+        document.getElementById('btn-auth-sync')?.addEventListener('click', async () => {
+            this.app.showToast('Syncing set lists...', 'info', 2000);
+            await auth.triggerSetlistSync();
+            /* Refresh account section display */
+            this._initAccountSection();
+        });
+
+        /* Sign Out button */
+        document.getElementById('btn-auth-logout')?.addEventListener('click', async () => {
+            await auth.logout();
+            this.app.showToast('Signed out', 'info', 2000);
+            /* Refresh account section display */
+            this._initAccountSection();
+        });
     }
 }

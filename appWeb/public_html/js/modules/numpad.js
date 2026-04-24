@@ -9,6 +9,8 @@
  * Performs live search-as-you-type against the API.
  */
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
+import { toTitleCase } from '../utils/text.js';
+import { STORAGE_DEFAULT_SONGBOOK, STORAGE_NUMPAD_LIVE_SEARCH } from '../constants.js';
 
 export class Numpad {
     constructor(app) {
@@ -21,11 +23,16 @@ export class Numpad {
         this.debounceTimer = null;
     }
 
+    /** Whether live search-as-you-type is enabled (off by default). */
+    get liveSearchEnabled() {
+        return localStorage.getItem(STORAGE_NUMPAD_LIVE_SEARCH) === 'true';
+    }
+
     /**
      * Initialise — bind events for the modal numpad.
      */
     init() {
-        /* Populate songbook dropdown in modal */
+        /* Populate songbook dropdown in modal and pre-select default */
         this.populateSongbookDropdown('numpad-songbook');
 
         /* Modal numpad button clicks */
@@ -45,10 +52,11 @@ export class Numpad {
         this.currentNumber = '';
         this.updateModalDisplay();
 
-        /* Pre-select songbook if provided */
-        if (songbookId) {
+        /* Pre-select songbook: explicit param > default setting */
+        const bookId = songbookId || localStorage.getItem(STORAGE_DEFAULT_SONGBOOK) || '';
+        if (bookId) {
             const select = document.getElementById('numpad-songbook');
-            if (select) select.value = songbookId;
+            if (select) select.value = bookId;
         }
 
         /* Clear previous results */
@@ -58,8 +66,54 @@ export class Numpad {
         /* Show the Bootstrap modal */
         const modal = document.getElementById('numpad-modal');
         if (modal) {
-            new bootstrap.Modal(modal).show();
+            const bsModal = new bootstrap.Modal(modal);
+            bsModal.show();
+
+            /* Bind physical keyboard input while modal is open */
+            this._modalKeyHandler = (e) => this._handlePhysicalKey(e, 'modal');
+            document.addEventListener('keydown', this._modalKeyHandler);
+
+            /* Unbind when modal closes */
+            modal.addEventListener('hidden.bs.modal', () => {
+                document.removeEventListener('keydown', this._modalKeyHandler);
+                this._modalKeyHandler = null;
+            }, { once: true });
         }
+    }
+
+    /**
+     * Handle physical keyboard input for numpad (modal or search page).
+     * Maps digit keys, Backspace, Enter, and Escape to numpad actions.
+     * @param {KeyboardEvent} e
+     * @param {string} context 'modal' or 'page'
+     */
+    _handlePhysicalKey(e, context) {
+        /* Ignore if user is typing in the songbook dropdown */
+        if (e.target.tagName === 'SELECT') return;
+
+        if (e.key >= '0' && e.key <= '9') {
+            e.preventDefault();
+            if (context === 'modal') {
+                this.handleModalKey(e.key);
+            } else {
+                this.handlePageKey(e.key);
+            }
+        } else if (e.key === 'Backspace') {
+            e.preventDefault();
+            if (context === 'modal') {
+                this.handleModalKey('clear');
+            } else {
+                this.handlePageKey('clear');
+            }
+        } else if (e.key === 'Enter') {
+            e.preventDefault();
+            if (context === 'modal') {
+                this.handleModalKey('go');
+            } else {
+                this.handlePageKey('go');
+            }
+        }
+        /* Escape is handled by Bootstrap modal dismiss */
     }
 
     /**
@@ -83,7 +137,9 @@ export class Numpad {
         }
 
         this.updateModalDisplay();
-        this.searchByNumber('numpad-songbook', this.currentNumber, 'numpad-results');
+        if (this.liveSearchEnabled) {
+            this.searchByNumber('numpad-songbook', this.currentNumber, 'numpad-results');
+        }
     }
 
     /**
@@ -99,6 +155,7 @@ export class Numpad {
      */
     initSearchPageNumpad() {
         this.pageNumber = '';
+        /* Populate and pre-select default songbook */
         this.populateSongbookDropdown('page-numpad-songbook');
 
         /* Page numpad button clicks */
@@ -107,6 +164,19 @@ export class Numpad {
                 this.handlePageKey(btn.dataset.pageNum);
             });
         });
+
+        /*
+         * Physical keyboard support for the search page numpad.
+         * Only active when the number search panel is visible and
+         * no text input has focus (to avoid capturing search bar typing).
+         */
+        this._pageKeyHandler = (e) => {
+            const panel = document.getElementById('panel-number-search');
+            if (!panel || panel.classList.contains('d-none')) return;
+            if (e.target.matches('input[type="text"], input[type="search"], textarea')) return;
+            this._handlePhysicalKey(e, 'page');
+        };
+        document.addEventListener('keydown', this._pageKeyHandler);
     }
 
     /**
@@ -127,7 +197,9 @@ export class Numpad {
         const display = document.getElementById('page-numpad-display');
         if (display) display.value = this.pageNumber;
 
-        this.searchByNumber('page-numpad-songbook', this.pageNumber, 'page-numpad-results');
+        if (this.liveSearchEnabled) {
+            this.searchByNumber('page-numpad-songbook', this.pageNumber, 'page-numpad-results');
+        }
     }
 
     /**
@@ -172,7 +244,7 @@ export class Numpad {
                             <a href="/song/${song.id}"
                                class="list-group-item list-group-item-action py-2"
                                data-navigate="song" data-song-id="${song.id}">
-                                <strong>#${song.number}</strong> — ${escapeHtml(song.title)}${verifiedBadge(song)}
+                                <strong>#${song.number}</strong> — ${escapeHtml(toTitleCase(song.title))}${verifiedBadge(song)}
                             </a>
                         `).join('') + '</div>';
 
@@ -231,10 +303,16 @@ export class Numpad {
             const data = await response.json();
 
             if (data.songbooks) {
+                /* Exclude Misc — songs in that collection have no songbook
+                   number, so "jump by number" makes no sense there (#392). */
                 select.innerHTML = data.songbooks
-                    .filter(b => b.songCount > 0)
+                    .filter(b => b.songCount > 0 && b.id !== 'Misc')
                     .map(b => `<option value="${escapeHtml(b.id)}">${escapeHtml(b.name)} (${escapeHtml(b.id)})</option>`)
                     .join('');
+
+                /* Pre-select default songbook if set */
+                const defaultBook = localStorage.getItem(STORAGE_DEFAULT_SONGBOOK);
+                if (defaultBook) select.value = defaultBook;
             }
         } catch (error) {
             console.error('[Numpad] Failed to load songbooks:', error);

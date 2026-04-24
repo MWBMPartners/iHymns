@@ -31,6 +31,90 @@ declare(strict_types=1);
     </h1>
 
     <!-- ============================================================
+         ACCOUNT SECTION — User authentication for cross-device sync
+         ============================================================ -->
+    <div class="card card-settings mb-3">
+        <div class="card-body">
+            <h2 class="h6 mb-3">
+                <i class="fa-solid fa-user me-2" aria-hidden="true"></i>
+                Account
+            </h2>
+
+            <!--
+                Both states default to d-none so that if JS fails to toggle
+                (e.g. module load error, service worker cache stale),
+                we show nothing rather than the wrong thing. settings.js
+                reveals the correct one via refreshAccountSection(), and
+                re-applies whenever ihymns:auth-changed fires.
+            -->
+            <!-- Logged-out state -->
+            <div id="auth-logged-out" class="d-none">
+                <p class="text-muted small mb-3">
+                    Sign in to sync your set lists across devices. Your favourites
+                    and settings stay on this device.
+                </p>
+                <div class="d-flex gap-2">
+                    <button type="button" class="btn btn-primary btn-sm" id="btn-auth-login">
+                        <i class="fa-solid fa-right-to-bracket me-1" aria-hidden="true"></i>
+                        Sign In
+                    </button>
+                    <button type="button" class="btn btn-outline-primary btn-sm" id="btn-auth-register">
+                        <i class="fa-solid fa-user-plus me-1" aria-hidden="true"></i>
+                        Create Account
+                    </button>
+                </div>
+            </div>
+
+            <!-- Logged-in state -->
+            <div id="auth-logged-in" class="d-none">
+                <div class="d-flex align-items-center justify-content-between mb-2">
+                    <div>
+                        <strong id="auth-display-name-text"></strong>
+                        <small class="text-muted d-block" id="auth-username-text"></small>
+                    </div>
+                    <span class="badge bg-success"><i class="fa-solid fa-check me-1" aria-hidden="true"></i>Signed In</span>
+                </div>
+                <div class="d-flex gap-2">
+                    <button type="button" class="btn btn-outline-primary btn-sm" id="btn-auth-sync">
+                        <i class="fa-solid fa-arrows-rotate me-1" aria-hidden="true"></i>
+                        Sync Set Lists
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="btn-auth-logout">
+                        <i class="fa-solid fa-right-from-bracket me-1" aria-hidden="true"></i>
+                        Sign Out
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================================================
+         SYNC SECTION — Cross-device sync preferences (#284)
+         ============================================================ -->
+    <div class="card card-settings mb-3" id="settings-sync-card">
+        <div class="card-body">
+            <h2 class="h6 mb-3">
+                <i class="fa-solid fa-arrows-rotate me-2" aria-hidden="true"></i>
+                Sync
+            </h2>
+            <div class="form-check form-switch mb-2">
+                <input class="form-check-input"
+                       type="checkbox"
+                       id="setting-sync-favorites"
+                       role="switch"
+                       checked
+                       aria-label="Sync favourites across devices">
+                <label class="form-check-label" for="setting-sync-favorites">
+                    <strong>Sync favourites across devices</strong>
+                    <small class="form-text text-muted d-block">
+                        When signed in, your favourites will be synced to the server.
+                    </small>
+                </label>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================================================
          APPEARANCE SECTION
          ============================================================ -->
     <div class="card card-settings mb-3">
@@ -62,6 +146,23 @@ declare(strict_types=1);
                 </small>
             </div>
 
+            <!-- Colour vision mode (#319) -->
+            <div class="mb-3">
+                <label for="setting-cvd-mode" class="form-label fw-semibold">
+                    Colour Vision Mode
+                </label>
+                <select class="form-select" id="setting-cvd-mode" aria-label="Colour vision deficiency correction">
+                    <option value="">None (default colours)</option>
+                    <option value="protanopia">Protanopia (red-blind)</option>
+                    <option value="deuteranopia">Deuteranopia (green-blind)</option>
+                    <option value="tritanopia">Tritanopia (blue-blind)</option>
+                    <option value="achromatopsia">Achromatopsia (monochrome)</option>
+                </select>
+                <small class="text-muted mt-1 d-block">
+                    Adjusts the colour palette for users with colour vision deficiencies.
+                </small>
+            </div>
+
             <!-- Default songbook (#96) -->
             <div class="mb-3">
                 <label for="setting-default-songbook" class="form-label fw-semibold">
@@ -83,8 +184,25 @@ declare(strict_types=1);
                     ?>
                 </select>
                 <small class="text-muted mt-1 d-block">
-                    Used for keyboard quick-jump: type a song number from any page to navigate directly.
+                    Used for keyboard quick-jump, number search, and shuffle mode.
                 </small>
+            </div>
+
+            <!-- Numpad live search toggle -->
+            <div class="mb-3">
+                <div class="form-check form-switch">
+                    <input class="form-check-input"
+                           type="checkbox"
+                           id="setting-numpad-live-search"
+                           role="switch"
+                           aria-label="Enable live search in number search">
+                    <label class="form-check-label" for="setting-numpad-live-search">
+                        <strong>Live number search</strong>
+                        <small class="text-muted d-block">
+                            Show matching songs as you type numbers. When off, press the Go button to navigate.
+                        </small>
+                    </label>
+                </div>
             </div>
 
             <!-- Font size -->
@@ -154,7 +272,7 @@ declare(strict_types=1);
             </div>
 
             <!-- Reduce transparency toggle -->
-            <div class="form-check form-switch mb-0">
+            <div class="form-check form-switch mb-3">
                 <input class="form-check-input"
                        type="checkbox"
                        id="setting-reduce-transparency"
@@ -164,6 +282,22 @@ declare(strict_types=1);
                     <strong>Reduce Transparency</strong>
                     <small class="text-muted d-block">
                         Removes glass-like blur effects for improved readability.
+                    </small>
+                </label>
+            </div>
+
+            <!-- Keyboard shortcuts toggle (#406) -->
+            <div class="form-check form-switch mb-0">
+                <input class="form-check-input"
+                       type="checkbox"
+                       id="setting-keyboard-shortcuts"
+                       role="switch"
+                       aria-label="Enable keyboard shortcuts">
+                <label class="form-check-label" for="setting-keyboard-shortcuts">
+                    <strong>Keyboard Shortcuts</strong>
+                    <small class="text-muted d-block">
+                        Press <kbd>?</kbd> to view all shortcuts, <kbd>/</kbd> to focus search,
+                        arrow keys to navigate songs, and more.
                     </small>
                 </label>
             </div>
@@ -204,34 +338,59 @@ declare(strict_types=1);
             <div class="mb-3">
                 <label class="form-label fw-semibold">Offline Songs</label>
 
-                <!-- Per-songbook download options -->
+                <!-- Per-songbook download options (#356, #357) -->
                 <div class="mb-2" id="offline-songbook-list">
                     <?php
                         $offlineSongbooks = $songData->getSongbooks();
+                        $avgBytesPerSong = 4096; /* ~4 KB per cached song page */
+                        $totalSongs = 0;
+                        $totalEstBytes = 0;
                         foreach ($offlineSongbooks as $book):
-                            if (($book['songCount'] ?? 0) > 0):
+                            $count = (int)($book['songCount'] ?? 0);
+                            if ($count > 0):
+                                $estBytes = $count * $avgBytesPerSong;
+                                $totalSongs += $count;
+                                $totalEstBytes += $estBytes;
+                                if ($estBytes >= 1048576) {
+                                    $estSize = round($estBytes / 1048576, 1) . ' MB';
+                                } else {
+                                    $estSize = round($estBytes / 1024) . ' KB';
+                                }
                     ?>
-                    <div class="d-flex align-items-center justify-content-between py-1 border-bottom">
-                        <div class="d-flex align-items-center gap-2">
-                            <span class="badge songbook-badge" data-songbook="<?= htmlspecialchars($book['id']) ?>">
-                                <?= htmlspecialchars($book['id']) ?>
-                            </span>
+                    <div class="offline-songbook-row">
+                        <span class="badge songbook-badge" data-songbook="<?= htmlspecialchars($book['id']) ?>">
+                            <?= htmlspecialchars($book['id']) ?>
+                        </span>
+                        <div class="offline-songbook-info">
                             <span class="small"><?= htmlspecialchars($book['name']) ?></span>
-                            <span class="text-muted small">(<?= (int)$book['songCount'] ?> songs)</span>
+                            <span class="text-muted small">(<?= $count ?> songs)</span>
                         </div>
-                        <div class="d-flex align-items-center gap-2">
-                            <span class="small text-muted offline-songbook-status" data-songbook="<?= htmlspecialchars($book['id']) ?>"></span>
-                            <button type="button"
-                                    class="btn btn-outline-success btn-sm btn-download-songbook"
-                                    data-songbook-id="<?= htmlspecialchars($book['id']) ?>"
-                                    aria-label="Download <?= htmlspecialchars($book['name']) ?> for offline use">
-                                <i class="fa-solid fa-cloud-arrow-down" aria-hidden="true"></i>
-                            </button>
-                        </div>
+                        <span class="text-muted small offline-songbook-size">~<?= $estSize ?></span>
+                        <span class="small text-muted offline-songbook-status" data-songbook="<?= htmlspecialchars($book['id']) ?>"></span>
+                        <button type="button"
+                                class="btn btn-outline-success btn-sm btn-download-songbook"
+                                data-songbook-id="<?= htmlspecialchars($book['id']) ?>"
+                                aria-label="Download <?= htmlspecialchars($book['name']) ?> for offline use">
+                            <i class="fa-solid fa-cloud-arrow-down" aria-hidden="true"></i>
+                        </button>
+                        <!-- Per-songbook eviction button (#401). Hidden until
+                             updateSongbookCacheStatus() detects cached entries. -->
+                        <button type="button"
+                                class="btn btn-outline-warning btn-sm btn-evict-songbook d-none"
+                                data-songbook-id="<?= htmlspecialchars($book['id']) ?>"
+                                aria-label="Remove <?= htmlspecialchars($book['name']) ?> from offline cache">
+                            <i class="fa-solid fa-trash" aria-hidden="true"></i>
+                        </button>
                     </div>
                     <?php
                             endif;
                         endforeach;
+                        /* Format total estimate */
+                        if ($totalEstBytes >= 1048576) {
+                            $totalEstSize = round($totalEstBytes / 1048576, 1) . ' MB';
+                        } else {
+                            $totalEstSize = round($totalEstBytes / 1024) . ' KB';
+                        }
                     ?>
                 </div>
 
@@ -242,6 +401,7 @@ declare(strict_types=1);
                         <i class="fa-solid fa-cloud-arrow-down me-1" aria-hidden="true"></i>
                         Download All Songbooks
                     </button>
+                    <span class="text-muted small">~<?= $totalEstSize ?></span>
                     <span id="download-songs-status" class="small text-muted"></span>
                 </div>
 
@@ -251,9 +411,29 @@ declare(strict_types=1);
                          id="download-songs-bar" role="progressbar"
                          aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
                 </div>
+                <!-- Audio pre-cache progress line (#401) -->
+                <small class="text-muted d-block mt-1" id="download-audio-status"></small>
                 <small class="text-muted mt-1 d-block">
                     Save songs to your device for offline access. Download individual songbooks or all at once.
                 </small>
+
+                <!-- Offline audio bulk download (#401).
+                     Enabled by default; pulls /api?action=bulk_audio&songbook=<id>
+                     and asks the service worker to pre-cache every audio URL so
+                     playback works offline without first needing to play online. -->
+                <div class="form-check form-switch mt-2">
+                    <input class="form-check-input" type="checkbox"
+                           id="setting-include-audio-offline" role="switch"
+                           aria-label="Include audio in offline downloads">
+                    <label class="form-check-label" for="setting-include-audio-offline">
+                        <strong>Include audio in offline downloads</strong>
+                        <small class="text-muted d-block">
+                            When downloading a songbook, also pre-cache every available
+                            audio file. Significantly larger but means audio plays
+                            offline without needing to play once online first.
+                        </small>
+                    </label>
+                </div>
 
                 <!-- Auto-update toggle (#132) -->
                 <div class="form-check form-switch mt-2">

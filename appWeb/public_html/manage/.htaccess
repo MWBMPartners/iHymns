@@ -8,10 +8,11 @@
 # excluded from the main SPA rewrite rules and has its own auth system.
 #
 # ROUTING:
-#   /manage/              → /manage/editor/ (default redirect)
+#   /manage/              → /manage/index.php (admin dashboard)
 #   /manage/login         → /manage/login.php
 #   /manage/logout        → /manage/logout.php
 #   /manage/setup         → /manage/setup.php
+#   /manage/users         → /manage/users.php
 #   /manage/editor/       → /manage/editor/index.php (DirectoryIndex)
 # ==========================================================================
 
@@ -32,8 +33,28 @@ RewriteRule ^setup$ setup.php [L]
 # /manage/users → users.php (admin-only user management)
 RewriteRule ^users$ users.php [L]
 
-# /manage/ root → redirect to editor
-RewriteRule ^$ editor/ [R=302,L]
+# /manage/setup-database → setup-database.php (DB setup dashboard)
+RewriteRule ^setup-database$ setup-database.php [L]
+
+# /manage/analytics → analytics.php (admin analytics dashboard, #404)
+RewriteRule ^analytics$ analytics.php [L]
+
+# /manage/entitlements → entitlements.php (entitlements editor, #407)
+RewriteRule ^entitlements$ entitlements.php [L]
+
+# /manage/requests → requests.php (song-request triage, #403)
+RewriteRule ^requests$ requests.php [L]
+
+# /manage/editor/api → /manage/editor/api.php (editor API)
+RewriteRule ^editor/api$ editor/api.php [QSA,L]
+
+# Block direct .php access in /manage/ (hide PHP from URLs)
+RewriteCond %{THE_REQUEST} \.php[\s?/] [NC]
+RewriteCond %{REQUEST_URI} !^/manage/includes/ [NC]
+RewriteRule ^(.+)\.php$ /manage/$1 [R=301,L]
+
+# /manage/ root → serve dashboard (index.php via DirectoryIndex)
+# No rewrite needed — DirectoryIndex handles it
 
 # ---- Ensure DirectoryIndex works for /manage/editor/ ----
 DirectoryIndex index.php

@@ -107,6 +107,28 @@ $songbooks = $songData->getSongbooks();
     <!-- Song of the Day (#108) — populated by JS -->
     <div id="song-of-the-day"></div>
 
+    <!-- Recently Viewed Songs (#304) — shown for authenticated users -->
+    <div class="mb-4" id="recent-songs-section" style="display:none">
+        <h5><i class="fa-solid fa-clock-rotate-left me-2"></i>Recently Viewed</h5>
+        <div id="recent-songs-list" class="list-group list-group-flush"></div>
+    </div>
+
+    <!-- Popular Songs (#303) -->
+    <div class="mb-4" id="popular-songs-section">
+        <h5><i class="fa-solid fa-fire me-2 text-warning"></i>Popular Songs</h5>
+        <div id="popular-songs-list" class="list-group list-group-flush">
+            <div class="text-muted small p-2">Loading...</div>
+        </div>
+    </div>
+
+    <!-- Browse by Theme (#305) -->
+    <div class="mb-4" id="tags-section">
+        <h5><i class="fa-solid fa-tags me-2"></i>Browse by Theme</h5>
+        <div id="tags-list" class="d-flex flex-wrap gap-2">
+            <span class="text-muted small">Loading...</span>
+        </div>
+    </div>
+
     <!-- Songbook Cards Grid (#151 — section ID for sitelink eligibility) -->
     <section id="songbooks" aria-label="Songbooks">
         <h2 class="h5 mb-3">
@@ -144,5 +166,96 @@ $songbooks = $songData->getSongbooks();
             <?php endforeach; ?>
         </div>
     </section>
+
+    <!-- Inline JS for dynamic home page sections (#303, #304, #305) -->
+    <script>
+    (function() {
+        var esc = function(s) { return (s||'').replace(/[&<>"']/g, function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]}); };
+        var SONGBOOK_NAMES = {CP:'Carol Praise',JP:'Junior Praise',MP:'Mission Praise',SDAH:'Seventh-day Adventist Hymnal',CH:'The Church Hymnal',Misc:'Miscellaneous'};
+        /* Minimal title-case for this inline script — mirrors utils/text.js toTitleCase. */
+        var MINOR = {a:1,an:1,and:1,as:1,at:1,but:1,by:1,for:1,in:1,nor:1,of:1,on:1,or:1,so:1,the:1,to:1,up:1,yet:1};
+        var titleCase = function(s) {
+            if (!s) return s || '';
+            var w = String(s).toLowerCase().split(/\s+/), last = w.length - 1;
+            return w.map(function(word, i) {
+                var prev = i > 0 ? w[i - 1] : '';
+                var newClause = i > 0 && /[.!?:\u2014\u2013]$/.test(prev);
+                var bare = word.replace(/[^\p{L}\p{N}']/gu, '');
+                if (i === 0 || i === last || newClause || !MINOR[bare]) {
+                    word = word.replace(/^([^\p{L}]*)(\p{L})/u, function(_, p, c){ return p + c.toUpperCase(); });
+                }
+                return word.replace(/-\w/g, function(m){ return m.toUpperCase(); });
+            }).join(' ');
+        };
+
+        // #303 — Popular Songs (server or client-side fallback)
+        fetch('/api?action=popular_songs&period=month&limit=10')
+            .then(function(r){return r.json()})
+            .then(function(data) {
+                var el = document.getElementById('popular-songs-list');
+                if (!el) return;
+
+                var songs = data.songs || [];
+
+                /* If server returned empty (JSON fallback mode), build from localStorage history */
+                if (!songs.length) {
+                    try {
+                        var hist = JSON.parse(localStorage.getItem('ihymns_history') || '[]');
+                        /* Count song occurrences to estimate popularity */
+                        var counts = {};
+                        hist.forEach(function(h) {
+                            if (!counts[h.id]) counts[h.id] = { songId: h.id, title: h.title, songbook: h.songbook, number: h.number, views: 0 };
+                            counts[h.id].views++;
+                        });
+                        songs = Object.values(counts).sort(function(a,b){return b.views-a.views}).slice(0, 10);
+                    } catch(e) { songs = []; }
+                }
+
+                if (!songs.length) { el.closest('#popular-songs-section')?.remove(); return; }
+
+                el.innerHTML = songs.map(function(s) {
+                    var id = s.songId || s.id || '';
+                    var title = titleCase(s.title || id);
+                    var book = s.songbook || id.split('-')[0] || '';
+                    var bookName = SONGBOOK_NAMES[book] || book;
+                    return '<a href="/song/' + esc(id) + '" data-navigate="song" data-song-id="' + esc(id) + '" class="list-group-item list-group-item-action song-list-item">' +
+                        '<span class="song-number-badge" data-songbook="' + esc(book) + '">' + (s.number ?? '') + '</span>' +
+                        '<div class="song-info flex-grow-1">' +
+                            '<span class="song-title">' + esc(title) + '</span>' +
+                            '<small class="text-muted d-block"><span class="songbook-name-full">' + esc(bookName) + '</span><span class="songbook-name-abbr">' + esc(book) + '</span></small>' +
+                        '</div>' +
+                        '<span class="badge bg-secondary">' + s.views + '</span>' +
+                    '</a>';
+                }).join('');
+            }).catch(function() { document.getElementById('popular-songs-section')?.remove(); });
+
+        // #304 — Recently Viewed (authenticated users only)
+        var token = localStorage.getItem('ihymns_auth_token');
+        if (token) {
+            fetch('/api?action=song_history&limit=8', {
+                headers: { 'Authorization': 'Bearer ' + token }
+            }).then(function(r){return r.json()}).then(function(data) {
+                var section = document.getElementById('recent-songs-section');
+                var el = document.getElementById('recent-songs-list');
+                if (!data.history?.length) return;
+                section.style.display = '';
+                el.innerHTML = data.history.map(function(h) {
+                    return '<a href="/song/' + esc(h.songId) + '" data-navigate="song" class="list-group-item list-group-item-action">' + esc(h.songId) + '</a>';
+                }).join('');
+            }).catch(function(){});
+        }
+
+        // #305 — Browse by Theme
+        fetch('/api?action=tags')
+            .then(function(r){return r.json()})
+            .then(function(data) {
+                var el = document.getElementById('tags-list');
+                if (!data.tags?.length) { el?.closest('#tags-section')?.remove(); return; }
+                el.innerHTML = data.tags.map(function(t) {
+                    return '<a href="/tag/' + esc(t.slug) + '" data-navigate="tag" class="btn btn-sm btn-outline-secondary">' + esc(t.name) + '</a>';
+                }).join('');
+            }).catch(function() { document.getElementById('tags-section')?.remove(); });
+    })();
+    </script>
 
 </section>
