@@ -38,12 +38,14 @@ import { Transpose } from './modules/transpose.js';
 import { ReadingProgress } from './modules/reading-progress.js';
 import { SongbookIndex } from './modules/songbook-index.js';
 import { SearchHistory } from './modules/search-history.js';
+import { bootOfflineUi } from './modules/offline-ui.js';
 import { SongOfTheDay } from './modules/song-of-the-day.js';
 import { OfflineIndicator } from './modules/offline-indicator.js';
 import { StorageBridge } from './modules/storage-bridge.js';
 import { SubdomainSync } from './modules/subdomain-sync.js';
 import { Gestures } from './modules/gestures.js';
 import { Analytics } from './modules/analytics.js';
+import { Notifications } from './modules/notifications.js';
 import { escapeHtml } from './utils/html.js';
 import {
     STORAGE_DEFAULT_SONGBOOK,
@@ -241,6 +243,16 @@ class iHymnsApp {
             /* User authentication for cross-device sync */
             this.userAuth = new UserAuth(this);
             this.userAuth.initUserMenu();
+            /* Background Sync for setlists + favourites (#338). Safe to
+               call even if not signed in; the drain handlers short-
+               circuit and re-bind on next login. */
+            this.userAuth.bindOfflineDrains();
+
+            /* In-app notifications bell (#289). Shows unread count from
+               tblNotifications for the signed-in user; hidden when
+               signed out. */
+            this.notifications = new Notifications(this);
+            this.notifications.init();
 
             /* Display preferences & presentation mode (#95) */
             this.display = new Display(this);
@@ -304,6 +316,11 @@ class iHymnsApp {
 
             /* --- Load initial page based on current URL --- */
             await this.router.handleCurrentRoute();
+
+            /* Wire offline-download buttons in whatever page just
+               rendered. Safe to call every route change because the
+               helper only binds fresh nodes. */
+            bootOfflineUi();
 
             /* --- Hide the loading spinner --- */
             this.hideLoader();

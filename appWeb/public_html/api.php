@@ -46,6 +46,8 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_access.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'card_layout.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db.php';
 
 /* =========================================================================
@@ -80,6 +82,24 @@ try {
 if ($page !== null) {
     /* Set content type for HTML fragments */
     header('Content-Type: text/html; charset=UTF-8');
+
+    /* Cache SPA fragments so bouncing between pages doesn't re-hit the
+       server for content that hasn't changed. Uses ETag + 304 so the
+       body isn't re-sent when the content is unchanged — the service
+       worker can treat fragment responses as cacheable. Logged-in
+       content would need a per-user ETag; this currently covers the
+       same-for-everyone pages (home, songbooks, song, songbook,
+       writer, help, terms, privacy) which make up most navigation.
+       Content-sensitive pages (favorites, setlist, settings, stats)
+       still skip this path because they include user-specific data. */
+    $_cacheablePages = [
+        'home', 'songbooks', 'songbook', 'song', 'search',
+        'writer', 'help', 'terms', 'privacy', 'request-a-song',
+    ];
+    $_shouldCachePage = in_array($page, $_cacheablePages, true);
+    if ($_shouldCachePage) {
+        ob_start();
+    }
 
     /* Route to the appropriate page template */
     switch ($page) {
@@ -168,6 +188,21 @@ if ($page !== null) {
             http_response_code(404);
             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'not-found.php';
             break;
+    }
+
+    if ($_shouldCachePage) {
+        $body = (string)ob_get_clean();
+        /* Include the query string so /api?page=song&id=CP-0001 and
+           /api?page=song&id=CP-0002 hash to different ETags. */
+        $etag = '"' . hash('xxh64', $page . '|' . ($_SERVER['QUERY_STRING'] ?? '') . '|' . $body) . '"';
+        header('ETag: ' . $etag);
+        header('Cache-Control: private, max-age=300, must-revalidate');
+        header('Vary: Cookie, Authorization');
+        if (($_SERVER['HTTP_IF_NONE_MATCH'] ?? '') === $etag) {
+            http_response_code(304);
+            exit;
+        }
+        echo $body;
     }
 
     exit;
@@ -349,11 +384,18 @@ if ($action !== null) {
             }
 
             $rendered = [];
+            /* getSongs() already returns every field song.php reads from
+               $song at bulk-cache time (id, title, number, songbook,
+               songbookName, copyright, ccli, verified, has*, writers,
+               composers, components). The only fields it leaves off —
+               arrangement / capo / key — are optional and rendered with
+               `!empty($song[...])`, so a missing value degrades
+               gracefully. Skipping getSongById() inside this loop drops
+               the per-songbook work from O(2N) to O(N) and eliminates
+               the 800+ extra queries per Church Hymnal bulk fetch. */
             foreach ($bulkSongs as $bulkSong) {
                 $songId = $bulkSong['id'];
-                /* Render the song page HTML into a buffer */
-                $song = $songData->getSongById($songId);
-                if ($song === null) continue;
+                $song = $bulkSong;
 
                 ob_start();
                 require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'song.php';
@@ -481,23 +523,20 @@ if ($action !== null) {
                 break;
             }
 
-            $shareDir = APP_SETLIST_SHARE_DIR;
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';
 
             /* Determine ID: use existing if updating, generate new otherwise */
-            $shareId = null;
+            $shareId  = null;
+            $existing = null;
             if (!empty($body['id'])) {
-                /* Updating an existing shared setlist */
                 $candidateId = preg_replace('/[^a-f0-9]/', '', strtolower(trim($body['id'])));
-                $existingFile = $shareDir . '/' . $candidateId . '.json';
-
                 if ($candidateId !== '') {
-                    if (!file_exists($existingFile)) {
+                    $existing = sharedSetlistGet($candidateId);
+                    if ($existing === null) {
                         sendJson(['error' => 'Shared set list not found.'], 404);
                         break;
                     }
-                    /* Verify ownership */
-                    $existing = json_decode(file_get_contents($existingFile), true);
-                    if (!is_array($existing) || ($existing['owner'] ?? '') !== $ownerId) {
+                    if (($existing['owner'] ?? '') !== $ownerId) {
                         sendJson(['error' => 'You do not own this shared set list.'], 403);
                         break;
                     }
@@ -509,7 +548,6 @@ if ($action !== null) {
             $arrangements = [];
             if (isset($body['arrangements']) && is_array($body['arrangements'])) {
                 foreach ($body['arrangements'] as $sid => $arr) {
-                    /* Only accept valid song IDs and arrays of non-negative integers */
                     if (!is_string($sid) || !preg_match('/^[A-Za-z]+-\d+$/', $sid)) continue;
                     if (!is_array($arr)) continue;
                     $validArr = array_values(array_filter($arr, fn($v) => is_int($v) && $v >= 0));
@@ -520,7 +558,7 @@ if ($action !== null) {
             }
 
             /* Build the shared setlist object */
-            $now = gmdate('c');
+            $now      = gmdate('c');
             $isUpdate = ($shareId !== null);
             $shareData = [
                 'name'    => $setlistName,
@@ -530,50 +568,31 @@ if ($action !== null) {
                 'updated' => $now,
                 'version' => 2,
             ];
-
-            /* Include arrangements only if any songs have custom arrangements */
             if (!empty($arrangements)) {
                 $shareData['arrangements'] = $arrangements;
             }
 
             if ($isUpdate) {
-                /* Updating existing — write directly */
                 $shareData['id'] = $shareId;
-                $filePath = $shareDir . '/' . $shareId . '.json';
-                $written = file_put_contents(
-                    $filePath,
-                    json_encode($shareData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT),
-                    LOCK_EX
-                );
-            } else {
-                /* Generate new ID with atomic file creation to prevent TOCTOU race */
-                $written = false;
-                $attempts = 0;
-                do {
-                    $shareId = bin2hex(random_bytes(4)); /* 8 hex chars */
-                    $filePath = $shareDir . '/' . $shareId . '.json';
-                    $shareData['id'] = $shareId;
-                    $jsonEncoded = json_encode($shareData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
-                    $attempts++;
-
-                    /* fopen 'x' mode fails if file already exists — atomic create */
-                    $fp = @fopen($filePath, 'x');
-                    if ($fp !== false) {
-                        $written = fwrite($fp, $jsonEncoded);
-                        fclose($fp);
-                        break;
-                    }
-                } while ($attempts < 10);
-
-                if ($written === false) {
-                    sendJson(['error' => 'Unable to generate unique ID. Try again.'], 500);
+                if (!sharedSetlistUpdate($shareId, $shareData)) {
+                    sendJson(['error' => 'Failed to save shared set list.'], 500);
                     break;
                 }
-            }
-
-            if ($written === false) {
-                sendJson(['error' => 'Failed to save shared set list.'], 500);
-                break;
+            } else {
+                /* Generate a fresh 8-char hex ID with retry on collision */
+                $created = false;
+                for ($i = 0; $i < 10; $i++) {
+                    $shareId         = bin2hex(random_bytes(4));
+                    $shareData['id'] = $shareId;
+                    $result = sharedSetlistInsert($shareId, $shareData);
+                    if ($result === true)  { $created = true;  break; }
+                    if ($result === null)  { /* hard failure */ break; }
+                    /* false = collision; try a new ID */
+                }
+                if (!$created) {
+                    sendJson(['error' => 'Unable to save shared set list. Try again.'], 500);
+                    break;
+                }
             }
 
             sendJson([
@@ -593,17 +612,14 @@ if ($action !== null) {
                 break;
             }
 
-            $filePath = APP_SETLIST_SHARE_DIR . '/' . $shareId . '.json';
-            if (!file_exists($filePath)) {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';
+
+            $data = sharedSetlistGet($shareId);
+            if ($data === null) {
                 sendJson(['error' => 'Shared set list not found.'], 404);
                 break;
             }
-
-            $data = json_decode(file_get_contents($filePath), true);
-            if (!is_array($data)) {
-                sendJson(['error' => 'Invalid set list data.'], 500);
-                break;
-            }
+            sharedSetlistMarkViewed($shareId);
 
             /* Return public-safe fields only (exclude owner UUID) */
             $response = [
@@ -613,8 +629,6 @@ if ($action !== null) {
                 'created' => $data['created'] ?? null,
                 'updated' => $data['updated'] ?? null,
             ];
-
-            /* Include per-song arrangements if present */
             if (!empty($data['arrangements'])) {
                 $response['arrangements'] = $data['arrangements'];
             }
@@ -1036,6 +1050,67 @@ if ($action !== null) {
             }, $mergedRows);
 
             sendJson(['setlists' => $mergedSetlists]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * User app settings — synced across the user's signed-in devices
+         *
+         * GET   /api?action=user_settings
+         *   → { ok: true, settings: { … }, updated_at: '…' }
+         * POST  /api?action=user_settings
+         *   body: { settings: { theme: 'dark', fontSize: 18, … } }
+         *   → { ok: true }
+         *
+         * Stored as a JSON blob in tblUsers.Settings; the client decides
+         * which keys are syncable (a strict whitelist in settings.js) so
+         * we never mirror device-local prefs (analytics consent, install
+         * banner state, etc.) onto the server.
+         * ----------------------------------------------------------------- */
+        case 'user_settings':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            $db = getDb();
+
+            if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+                $stmt = $db->prepare('SELECT Settings, UpdatedAt FROM tblUsers WHERE Id = ?');
+                $stmt->execute([$authUser['Id']]);
+                $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+                $settingsRaw = $row['Settings'] ?? null;
+                $settings = is_string($settingsRaw) && $settingsRaw !== ''
+                    ? (json_decode($settingsRaw, true) ?: new \stdClass())
+                    : new \stdClass();
+                sendJson([
+                    'ok'         => true,
+                    'settings'   => $settings,
+                    'updated_at' => $row['UpdatedAt'] ?? null,
+                ]);
+                break;
+            }
+
+            if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+                $rawBody = file_get_contents('php://input');
+                $body = json_decode($rawBody, true);
+                $settings = $body['settings'] ?? null;
+                if (!is_array($settings)) {
+                    sendJson(['error' => 'Settings object required.'], 400);
+                    break;
+                }
+                /* Cap payload size — prefs are small; this guards against abuse. */
+                $json = json_encode($settings, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+                if (strlen($json) > 16384) {
+                    sendJson(['error' => 'Settings payload too large.'], 413);
+                    break;
+                }
+                $stmt = $db->prepare('UPDATE tblUsers SET Settings = ?, UpdatedAt = NOW() WHERE Id = ?');
+                $stmt->execute([$json, $authUser['Id']]);
+                sendJson(['ok' => true]);
+                break;
+            }
+
+            sendJson(['error' => 'GET or POST method required.'], 405);
             break;
 
         /* =================================================================
@@ -1801,6 +1876,78 @@ if ($action !== null) {
             sendJson(['ok' => true, 'message' => 'Password changed successfully.']);
             break;
 
+        /* -----------------------------------------------------------------
+         * Change authenticated user's username (self-service)
+         *
+         * POST body (JSON):
+         *   { "new_username": "...", "current_password": "..." }
+         * Requires: Authorization: Bearer <token> + correct current password.
+         * Validation mirrors auth_register: lowercase, [a-z0-9_.\-], 3–100 chars.
+         * Username is UNIQUE; a 409 is returned if taken.
+         * ----------------------------------------------------------------- */
+        case 'auth_change_username':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            $newUsername = mb_strtolower(trim($body['new_username'] ?? ''));
+            $currentPw   = $body['current_password'] ?? '';
+
+            if (strlen($newUsername) < 3
+                || strlen($newUsername) > 100
+                || !preg_match('/^[a-z0-9_.\-]+$/', $newUsername)) {
+                sendJson(['error' => 'Username must be 3–100 characters (letters, numbers, _, -, . only).'], 400);
+                break;
+            }
+            if ($newUsername === mb_strtolower($authUser['Username'])) {
+                sendJson(['error' => 'New username matches your current username.'], 400);
+                break;
+            }
+
+            $db = getDb();
+
+            /* Verify current password before allowing rename */
+            $stmt = $db->prepare('SELECT PasswordHash, Email, DisplayName FROM tblUsers WHERE Id = ?');
+            $stmt->execute([$authUser['Id']]);
+            $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+            if (!$row || !password_verify($currentPw, $row['PasswordHash'])) {
+                sendJson(['error' => 'Current password is incorrect.'], 401);
+                break;
+            }
+
+            /* Uniqueness check (case-insensitive via lowercased compare) */
+            $stmt = $db->prepare('SELECT Id FROM tblUsers WHERE Username = ? AND Id <> ?');
+            $stmt->execute([$newUsername, $authUser['Id']]);
+            if ($stmt->fetch()) {
+                sendJson(['error' => 'Username is already taken.'], 409);
+                break;
+            }
+
+            $stmt = $db->prepare('UPDATE tblUsers SET Username = ?, UpdatedAt = NOW() WHERE Id = ?');
+            $stmt->execute([$newUsername, $authUser['Id']]);
+
+            sendJson([
+                'ok'   => true,
+                'user' => [
+                    'id'           => $authUser['Id'],
+                    'username'     => $newUsername,
+                    'display_name' => $row['DisplayName'],
+                    'email'        => $row['Email'] ?? '',
+                    'role'         => $authUser['Role'],
+                ],
+            ]);
+            break;
+
         /* =================================================================
          * ADMIN USER MANAGEMENT — API endpoints for /manage/ panel
          * Requires: admin+ role via Bearer token
@@ -2281,6 +2428,111 @@ if ($action !== null) {
 
             sendJson(['ok' => true]);
             break;
+
+        /* =================================================================
+         * CARD LAYOUT PERSONALISATION (#448)
+         *
+         * Surfaces covered: "dashboard" (= /manage/) and "home" (= /).
+         * Read is public; save endpoints require auth + the appropriate
+         * entitlement. Group-level veto (tblUserGroups.AllowCardReorder)
+         * is enforced inside cardLayoutUserCanCustomise().
+         * ================================================================= */
+
+        case 'card_layout_get': {
+            $surface = (string)($_GET['surface'] ?? '');
+            if (!in_array($surface, CARD_LAYOUT_SURFACES, true)) {
+                sendJson(['error' => 'Invalid surface.'], 400);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            $user = $authUser ? [
+                'id'       => $authUser['Id'] ?? null,
+                'role'     => $authUser['Role'] ?? null,
+                'group_id' => $authUser['GroupId'] ?? null,
+            ] : null;
+            $default = cardLayoutDefault($surface);
+            $override = $user ? cardLayoutUserOverride((int)($user['id'] ?? 0), $surface) : ['order' => [], 'hidden' => []];
+            sendJson([
+                'surface'   => $surface,
+                'default'   => $default,
+                'override'  => $override,
+                'canCustomiseOwn' => cardLayoutUserCanCustomise($user),
+                'canSetDefault'   => $user && userHasEntitlement('manage_default_card_layout', $user['role'] ?? null),
+            ]);
+            break;
+        }
+
+        case 'card_layout_save_user': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Auth required.'], 401); break; }
+            $user = [
+                'id'       => $authUser['Id'] ?? null,
+                'role'     => $authUser['Role'] ?? null,
+                'group_id' => $authUser['GroupId'] ?? null,
+            ];
+            if (!cardLayoutUserCanCustomise($user)) {
+                sendJson(['error' => 'Customisation not permitted for this account.'], 403);
+                break;
+            }
+            $body    = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $surface = (string)($body['surface'] ?? '');
+            if (!in_array($surface, CARD_LAYOUT_SURFACES, true)) {
+                sendJson(['error' => 'Invalid surface.'], 400);
+                break;
+            }
+            $ok = cardLayoutSaveUserOverride((int)$user['id'], $surface, [
+                'order'  => $body['order']  ?? [],
+                'hidden' => $body['hidden'] ?? [],
+            ]);
+            sendJson(['ok' => $ok]);
+            break;
+        }
+
+        case 'card_layout_reset_user': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Auth required.'], 401); break; }
+            $body    = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $surface = (string)($body['surface'] ?? '');
+            if (!in_array($surface, CARD_LAYOUT_SURFACES, true)) {
+                sendJson(['error' => 'Invalid surface.'], 400);
+                break;
+            }
+            $ok = cardLayoutClearUserOverride((int)$authUser['Id'], $surface);
+            sendJson(['ok' => $ok]);
+            break;
+        }
+
+        case 'card_layout_save_default': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_default_card_layout', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+            $body    = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $surface = (string)($body['surface'] ?? '');
+            if (!in_array($surface, CARD_LAYOUT_SURFACES, true)) {
+                sendJson(['error' => 'Invalid surface.'], 400);
+                break;
+            }
+            $ok = cardLayoutSaveDefault($surface, [
+                'order'  => $body['order']  ?? [],
+                'hidden' => $body['hidden'] ?? [],
+            ]);
+            sendJson(['ok' => $ok]);
+            break;
+        }
 
         /* =================================================================
          * SONG KEY & TRANSPOSITION (#298)
@@ -4307,6 +4559,165 @@ if ($action !== null) {
             } catch (\Throwable $e) {
                 error_log('[song_request_submit] ' . $e->getMessage());
                 sendJson(['error' => 'Could not save your request. Please try again.'], 500);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
+         * #289 — List in-app notifications for the current user.
+         *   GET /api?action=notifications_list
+         *
+         * Unread rows first, then a trailing window of the most recent
+         * read rows (capped at 50), so the header dropdown has recent
+         * context without a "show all" follow-up round trip.
+         * ----------------------------------------------------------------- */
+        case 'notifications_list':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            try {
+                $db = getDb();
+                $stmt = $db->prepare(
+                    'SELECT Id AS id,
+                            Type AS type,
+                            Title AS title,
+                            Body AS body,
+                            ActionUrl AS action_url,
+                            IsRead AS is_read,
+                            CreatedAt AS created_at
+                       FROM tblNotifications
+                      WHERE UserId = ?
+                      ORDER BY IsRead ASC, CreatedAt DESC
+                      LIMIT 50'
+                );
+                $stmt->execute([(int)$authUser['Id']]);
+                $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                foreach ($rows as &$r) {
+                    $r['id']      = (int)$r['id'];
+                    $r['is_read'] = (bool)$r['is_read'];
+                }
+                unset($r);
+                sendJson(['items' => $rows]);
+            } catch (\Throwable $e) {
+                error_log('[notifications_list] ' . $e->getMessage());
+                sendJson(['items' => []]);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
+         * #289 — Mark one or more notifications as read.
+         *   POST { ids: [1,2,3] }   — mark specific rows
+         *   POST { all: true }      — mark every unread row for this user
+         * ----------------------------------------------------------------- */
+        case 'notifications_mark_read':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            $body   = json_decode(file_get_contents('php://input'), true) ?: [];
+            $userId = (int)$authUser['Id'];
+            try {
+                $db = getDb();
+                if (!empty($body['all'])) {
+                    $stmt = $db->prepare(
+                        'UPDATE tblNotifications SET IsRead = 1
+                          WHERE UserId = ? AND IsRead = 0'
+                    );
+                    $stmt->execute([$userId]);
+                    sendJson(['ok' => true, 'affected' => $stmt->rowCount()]);
+                    break;
+                }
+                $ids = array_values(array_filter(array_map('intval', (array)($body['ids'] ?? [])), fn($i) => $i > 0));
+                if (empty($ids)) {
+                    sendJson(['error' => 'ids or all=true required.'], 400);
+                    break;
+                }
+                $placeholders = implode(',', array_fill(0, count($ids), '?'));
+                $stmt = $db->prepare(
+                    "UPDATE tblNotifications SET IsRead = 1
+                      WHERE UserId = ? AND Id IN ($placeholders)"
+                );
+                $stmt->execute(array_merge([$userId], $ids));
+                sendJson(['ok' => true, 'affected' => $stmt->rowCount()]);
+            } catch (\Throwable $e) {
+                error_log('[notifications_mark_read] ' . $e->getMessage());
+                sendJson(['error' => 'Could not mark as read.'], 500);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
+         * #281 — Song translations list. Returns every related-language
+         * version of the given song (outward + inward + siblings).
+         *   GET /api?action=song_translations&song_id=<id>
+         * ----------------------------------------------------------------- */
+        case 'song_translations':
+            $sid = trim((string)($_GET['song_id'] ?? ''));
+            if ($sid === '') {
+                sendJson(['error' => 'song_id required.'], 400);
+                break;
+            }
+            try {
+                require_once __DIR__ . '/includes/db_mysql.php';
+                $mysqli = getDbMysqli();
+                $sql = '
+                    SELECT t.TranslatedSongId AS song_id,
+                           t.TargetLanguage   AS language,
+                           l.Name             AS language_name,
+                           l.NativeName       AS native_name,
+                           l.TextDirection    AS dir,
+                           t.Translator       AS translator,
+                           t.Verified         AS verified
+                      FROM tblSongTranslations t
+                      JOIN tblLanguages l ON l.Code = t.TargetLanguage
+                     WHERE t.SourceSongId = ? AND l.IsActive = 1
+                    UNION
+                    SELECT src.SongId         AS song_id,
+                           srcLang.Code       AS language,
+                           srcLang.Name       AS language_name,
+                           srcLang.NativeName AS native_name,
+                           srcLang.TextDirection AS dir,
+                           ""                 AS translator,
+                           1                  AS verified
+                      FROM tblSongTranslations selfT
+                      JOIN tblSongs src         ON src.SongId = selfT.SourceSongId
+                      JOIN tblLanguages srcLang ON srcLang.Code = src.Language
+                     WHERE selfT.TranslatedSongId = ? AND srcLang.IsActive = 1
+                    UNION
+                    SELECT sibling.TranslatedSongId AS song_id,
+                           sibling.TargetLanguage   AS language,
+                           l2.Name                  AS language_name,
+                           l2.NativeName            AS native_name,
+                           l2.TextDirection         AS dir,
+                           sibling.Translator       AS translator,
+                           sibling.Verified         AS verified
+                      FROM tblSongTranslations selfT2
+                      JOIN tblSongTranslations sibling
+                           ON sibling.SourceSongId = selfT2.SourceSongId
+                          AND sibling.TranslatedSongId <> selfT2.TranslatedSongId
+                      JOIN tblLanguages l2 ON l2.Code = sibling.TargetLanguage
+                     WHERE selfT2.TranslatedSongId = ? AND l2.IsActive = 1
+                ';
+                $stmt = $mysqli->prepare($sql);
+                if ($stmt === false) {
+                    sendJson(['song_id' => $sid, 'translations' => []]);
+                    break;
+                }
+                $stmt->bind_param('sss', $sid, $sid, $sid);
+                $stmt->execute();
+                $res  = $stmt->get_result();
+                $rows = [];
+                while ($row = $res->fetch_assoc()) $rows[] = $row;
+                $stmt->close();
+                sendJson(['song_id' => $sid, 'translations' => $rows]);
+            } catch (\Throwable $e) {
+                error_log('[song_translations] ' . $e->getMessage());
+                sendJson(['song_id' => $sid, 'translations' => []]);
             }
             break;
 

@@ -65,6 +65,7 @@ $currentUser = getCurrentUser();
         /* Shared layout, colours, buttons, cards → /css/admin.css
            Add editor-only tweaks here if truly needed. */
     </style>
+    <?php require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
 <body>
 
@@ -101,12 +102,29 @@ $currentUser = getCurrentUser();
          ================================================================= -->
     <nav class="navbar navbar-editor d-flex align-items-center">
 
-        <!-- Brand / logo area -->
-        <a class="navbar-brand d-flex align-items-center gap-2 me-auto" href="#">
-            <!-- Music note icon representing the iHymns brand -->
+        <!-- Brand / logo area. Clicking returns to the admin dashboard —
+             important in PWA mode where there's no browser chrome. -->
+        <a class="navbar-brand d-flex align-items-center gap-2" href="/manage/"
+           title="Back to Admin Dashboard">
             <i class="bi bi-music-note-beamed"></i>
             iHymns Song Editor
         </a>
+
+        <!-- Quick navigation links. `/manage/` returns to the admin dashboard;
+             `/` returns to the public iHymns app (important in PWA mode
+             where there's no browser Back button). -->
+        <div class="d-flex align-items-center gap-2 me-auto ms-2">
+            <a href="/manage/"
+               class="btn btn-sm btn-outline-secondary"
+               title="Back to Admin Dashboard">
+                <i class="bi bi-speedometer2 me-1"></i>Dashboard
+            </a>
+            <a href="/"
+               class="btn btn-sm btn-outline-secondary"
+               title="Back to the iHymns app home">
+                <i class="bi bi-house me-1"></i>Home
+            </a>
+        </div>
 
         <!-- Action buttons group — aligned to the right -->
         <div class="d-flex align-items-center gap-2">
@@ -282,6 +300,22 @@ $currentUser = getCurrentUser();
                     <option value="number">Sort by Number</option>
                     <option value="songbook">Sort by Songbook, then Number</option>
                 </select>
+
+                <!-- Find missing song numbers (#285). Only enabled when a
+                     specific songbook is selected — "All Songbooks" has
+                     no single numbering to gap-check. -->
+                <button
+                    type="button"
+                    class="btn btn-sm btn-outline-secondary w-100 mt-2"
+                    id="find-missing-numbers-btn"
+                    data-bs-toggle="modal"
+                    data-bs-target="#missing-numbers-modal"
+                    disabled
+                    title="Shows gaps in the numbering of the currently filtered songbook"
+                >
+                    <i class="bi bi-binoculars me-1" aria-hidden="true"></i>
+                    Find missing numbers
+                </button>
             </div>
 
             <!-- Song list — scrollable container; each song is a clickable row -->
@@ -1184,5 +1218,178 @@ $currentUser = getCurrentUser();
          is handled in this separate file to keep concerns separated -->
     <script src="editor.js"></script>
 
+    <!-- ============================================================
+         Find Missing Numbers modal (#285)
+         Shows the gaps in a songbook's numbering plus an at-a-glance
+         count of present / expected / missing songs. A dedicated
+         "Log a request" link on each missing number jumps straight to
+         the public request form with the number prefilled.
+         ============================================================ -->
+    <div class="modal fade" id="missing-numbers-modal" tabindex="-1"
+         aria-labelledby="missing-numbers-modal-label" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-scrollable modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="missing-numbers-modal-label">
+                        <i class="bi bi-binoculars me-2" aria-hidden="true"></i>
+                        Missing Song Numbers
+                        <span class="text-muted small ms-2" id="missing-numbers-scope"></span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="missing-numbers-loading" class="text-center text-muted py-4">
+                        <div class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></div>
+                        Scanning the songbook&hellip;
+                    </div>
+                    <div id="missing-numbers-error" class="alert alert-danger d-none" role="alert"></div>
+                    <div id="missing-numbers-summary" class="row g-3 mb-3 d-none">
+                        <div class="col-sm-4">
+                            <div class="card-admin text-center">
+                                <div class="text-muted text-uppercase small">Present</div>
+                                <div class="h5 mb-0" id="missing-numbers-present">0</div>
+                            </div>
+                        </div>
+                        <div class="col-sm-4">
+                            <div class="card-admin text-center">
+                                <div class="text-muted text-uppercase small">Expected</div>
+                                <div class="h5 mb-0" id="missing-numbers-expected">0</div>
+                            </div>
+                        </div>
+                        <div class="col-sm-4">
+                            <div class="card-admin text-center">
+                                <div class="text-muted text-uppercase small">Missing</div>
+                                <div class="h5 mb-0 text-warning" id="missing-numbers-count">0</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="missing-numbers-list" class="d-none"></div>
+                    <div id="missing-numbers-empty" class="alert alert-success d-none" role="status">
+                        <i class="bi bi-check-circle me-1" aria-hidden="true"></i>
+                        No gaps in this songbook — every number from 1 to the maximum is present.
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    /* Wiring for #285 — Find Missing Numbers. Kept inline here to avoid
+       a second editor.js round-trip; the endpoint + modal are
+       self-contained. */
+    (function () {
+        const btn      = document.getElementById('find-missing-numbers-btn');
+        const filterEl = document.getElementById('songbook-filter');
+        const modalEl  = document.getElementById('missing-numbers-modal');
+        if (!btn || !filterEl || !modalEl) return;
+
+        /* Toggle the button's disabled state as the songbook filter
+           changes — "All Songbooks" has no single numbering to gap. */
+        const syncEnabled = () => { btn.disabled = !filterEl.value; };
+        filterEl.addEventListener('change', syncEnabled);
+        syncEnabled();
+
+        const scopeEl    = document.getElementById('missing-numbers-scope');
+        const loadingEl  = document.getElementById('missing-numbers-loading');
+        const errorEl    = document.getElementById('missing-numbers-error');
+        const summaryEl  = document.getElementById('missing-numbers-summary');
+        const listEl     = document.getElementById('missing-numbers-list');
+        const emptyEl    = document.getElementById('missing-numbers-empty');
+        const presentEl  = document.getElementById('missing-numbers-present');
+        const expectedEl = document.getElementById('missing-numbers-expected');
+        const countEl    = document.getElementById('missing-numbers-count');
+
+        const resetView = () => {
+            loadingEl.classList.remove('d-none');
+            errorEl.classList.add('d-none');
+            summaryEl.classList.add('d-none');
+            listEl.classList.add('d-none');
+            emptyEl.classList.add('d-none');
+            listEl.innerHTML = '';
+        };
+
+        /* Group consecutive missing numbers into ranges so a songbook
+           with a big trailing gap doesn't produce a wall of badges. */
+        const groupRuns = (nums) => {
+            const out = [];
+            let run = [];
+            for (const n of nums) {
+                if (run.length === 0 || n === run[run.length - 1] + 1) run.push(n);
+                else { out.push(run); run = [n]; }
+            }
+            if (run.length) out.push(run);
+            return out;
+        };
+
+        const authHeader = () => {
+            /* Editor page already has a session cookie, but if an admin
+               opens the editor from a native shell the bearer token is
+               in localStorage. Mirror both in case. */
+            const t = localStorage.getItem('ihymns_auth_token');
+            return t ? { 'Authorization': 'Bearer ' + t } : {};
+        };
+
+        modalEl.addEventListener('shown.bs.modal', async () => {
+            const bookId = filterEl.value;
+            scopeEl.textContent = bookId ? `— ${bookId}` : '';
+            resetView();
+            if (!bookId) {
+                errorEl.textContent = 'Select a specific songbook first.';
+                errorEl.classList.remove('d-none');
+                loadingEl.classList.add('d-none');
+                return;
+            }
+            try {
+                const res = await fetch(`/api?action=missing_songs&songbook=${encodeURIComponent(bookId)}`, {
+                    headers: { 'X-Requested-With': 'XMLHttpRequest', ...authHeader() },
+                    credentials: 'same-origin',
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Could not load missing numbers.');
+
+                /* API shape (#285): { missing: int[], maxNumber, totalExisting, songbook } */
+                const missing  = Array.isArray(data.missing)      ? data.missing         : [];
+                const present  = Number.isFinite(data.totalExisting) ? data.totalExisting : 0;
+                const expected = Number.isFinite(data.maxNumber)     ? data.maxNumber     : (present + missing.length);
+
+                presentEl.textContent  = present.toLocaleString();
+                expectedEl.textContent = expected.toLocaleString();
+                countEl.textContent    = missing.length.toLocaleString();
+                summaryEl.classList.remove('d-none');
+
+                if (missing.length === 0) {
+                    emptyEl.classList.remove('d-none');
+                } else {
+                    const runs = groupRuns(missing);
+                    const html = runs.map((run) => {
+                        const label = run.length === 1 ? `#${run[0]}` : `#${run[0]}–${run[run.length - 1]}`;
+                        const count = run.length === 1 ? '1 song' : `${run.length} songs`;
+                        return `
+                            <div class="d-flex align-items-center gap-2 border-bottom py-2 missing-range">
+                                <span class="badge bg-warning text-dark" style="min-width:7rem;">${label}</span>
+                                <span class="text-muted small flex-grow-1">${count} missing</span>
+                                <a class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener"
+                                   href="/request-a-song?songbook=${encodeURIComponent(bookId)}&number=${run[0]}">
+                                    <i class="bi bi-lightbulb me-1" aria-hidden="true"></i>Log request
+                                </a>
+                            </div>`;
+                    }).join('');
+                    listEl.innerHTML = html;
+                    listEl.classList.remove('d-none');
+                }
+            } catch (err) {
+                errorEl.textContent = err.message || 'Could not load missing numbers.';
+                errorEl.classList.remove('d-none');
+            } finally {
+                loadingEl.classList.add('d-none');
+            }
+        });
+    })();
+    </script>
+
+    <?php require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>
 </html>

@@ -55,12 +55,44 @@ const ENTITLEMENTS = [
     /* Content moderation */
     'review_song_requests' => ['editor', 'admin', 'global_admin'],
 
+    /* Content structure — songbook/group/organisation admin surfaces */
+    'manage_songbooks'     => ['admin', 'global_admin'],
+    'manage_user_groups'   => ['admin', 'global_admin'],
+    'manage_organisations' => ['admin', 'global_admin'],
+
+    /* Content gating for regular users — per-song / per-songbook / per-user
+       restrictions (tblContentRestrictions) and access-tier definitions
+       (tblAccessTiers) that control lyrics / audio / MIDI / PDF / offline. */
+    'manage_content_restrictions' => ['admin', 'global_admin'],
+    'manage_access_tiers'         => ['admin', 'global_admin'],
+    'assign_user_tier'            => ['admin', 'global_admin'],
+
+    /* Card-layout personalisation (#448). Default site layout is set by
+       admins; every role is allowed to customise their own by default,
+       but an admin can revoke `customise_own_card_layout` to lock a site
+       down. Group-level veto via tblUserGroups.AllowCardReorder layers
+       on top. */
+    'manage_default_card_layout' => ['admin', 'global_admin'],
+    'customise_own_card_layout'  => ['user', 'editor', 'admin', 'global_admin'],
+
     /* Channel access gating (#407) — controls who can reach alpha/beta
        subdomains. Applied BEFORE the page renders so pre-release builds
        are invisible to the public even when indexed. Defaults intentionally
        include `user` so that internal testers + curators can both access. */
     'access_alpha'         => ['user', 'editor', 'admin', 'global_admin'],
     'access_beta'          => ['user', 'editor', 'admin', 'global_admin'],
+
+    /* Licences — multi-licence + inheritance (#462). Separate from the
+       generic `manage_organisations` entitlement so licence edits can
+       be delegated without granting full org admin. */
+    'manage_org_licences'   => ['admin', 'global_admin'],
+    'manage_user_licences'  => ['admin', 'global_admin'],
+    'view_licence_audit'    => ['admin', 'global_admin'],
+
+    /* Licence-compliance reporting (#317). Pulled from tblSongHistory
+       against tblSongs.Ccli, exportable as CSV for the annual CCLI
+       usage return. */
+    'view_ccli_report'     => ['admin', 'global_admin'],
 
     /* Meta */
     'manage_entitlements'  => ['global_admin'],
@@ -169,6 +201,52 @@ function userHasEntitlement(string $entitlement, ?string $role): bool
         return false;
     }
     return in_array($role, $allowed, true);
+}
+
+/**
+ * Is invite-only channel gating currently enforced?
+ *
+ * Lives in tblAppSettings under `channel_gate_enabled`. Absent / "0" /
+ * empty → gate is open (bootstrap mode) so the first admin can sign in
+ * and configure role-based access without locking themselves out. An
+ * admin flips this on from /manage/entitlements once entitlements are
+ * set to taste.
+ */
+function isChannelGateEnabled(): bool
+{
+    if (!function_exists('getDb')) return false;
+    try {
+        $db = getDb();
+        $stmt = $db->prepare(
+            'SELECT SettingValue FROM tblAppSettings WHERE SettingKey = ?'
+        );
+        $stmt->execute(['channel_gate_enabled']);
+        $raw = (string)($stmt->fetchColumn() ?: '');
+        return $raw === '1';
+    } catch (\Throwable $_e) {
+        /* DB unreachable — fail open so admins can still sign in. */
+        return false;
+    }
+}
+
+/**
+ * Persist the gate-enabled flag. Called from /manage/entitlements.php.
+ */
+function setChannelGateEnabled(bool $enabled): bool
+{
+    if (!function_exists('getDb')) return false;
+    try {
+        $db = getDb();
+        $stmt = $db->prepare(
+            'INSERT INTO tblAppSettings (SettingKey, SettingValue)
+             VALUES (?, ?)
+             ON DUPLICATE KEY UPDATE SettingValue = VALUES(SettingValue)'
+        );
+        $stmt->execute(['channel_gate_enabled', $enabled ? '1' : '0']);
+        return true;
+    } catch (\Throwable $_e) {
+        return false;
+    }
 }
 
 /**

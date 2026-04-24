@@ -41,7 +41,7 @@ if (!$isInitialSetup) {
         exit;
     }
     $currentUser = getCurrentUser();
-    if (!$currentUser || $currentUser['Role'] !== 'global_admin') {
+    if (!$currentUser || $currentUser['role'] !== 'global_admin') {
         http_response_code(403);
         echo '<!DOCTYPE html><html><body><h1>403 — Global Admin access required</h1></body></html>';
         exit;
@@ -192,6 +192,7 @@ if ($action !== '') {
         'install'     => 'install.php',
         'migrate'     => 'migrate-json.php',
         'users'       => 'migrate-users.php',
+        'account-sync'=> 'migrate-account-sync.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -277,9 +278,15 @@ if ($hasCredentials && defined('DB_HOST')) {
     <!-- Shared iHymns palette + admin styles -->
     <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__) . "/css/app.css") ?>">
     <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime(dirname(__DIR__) . "/css/admin.css") ?>">
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
 <body>
-<div class="container py-4" style="max-width: 900px;">
+
+<?php if (!$isInitialSetup): ?>
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>
+<?php endif; ?>
+
+<div class="container-admin py-4">
 
     <h1 class="mb-1">Database Setup</h1>
     <p class="text-secondary mb-4">iHymns Admin &mdash; Installation, migration, and maintenance</p>
@@ -447,6 +454,22 @@ if ($hasCredentials && defined('DB_HOST')) {
             <div class="col-md-6">
                 <div class="card bg-dark border-secondary h-100">
                     <div class="card-body">
+                        <h5 class="card-title">3a. Account Sync &amp; Shared Setlists</h5>
+                        <p class="card-text text-secondary small">
+                            Adds the <code>Settings</code> column to <code>tblUsers</code>
+                            (per-device prefs sync) and creates <code>tblSharedSetlists</code>,
+                            then imports any legacy share-link JSON files into the new table.
+                            Idempotent — safe to re-run.
+                        </p>
+                        <a href="?action=account-sync" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run Account Sync Migration
+                        </a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
                         <h5 class="card-title">4. Cleanup Expired Tokens</h5>
                         <p class="card-text text-secondary small">
                             Delete expired API tokens, email login codes, password reset
@@ -510,7 +533,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                                absent or the activity log helper isn't available. */
                             try {
                                 $auditDb = getDbMysqli();
-                                $auditUser = $currentUser['Username'] ?? 'unknown';
+                                $auditUser = $currentUser['username'] ?? 'unknown';
                                 $auditSql = sprintf(
                                     'backup upload by %s: %s (%d bytes)',
                                     $auditUser, $safeName, (int)$f['size']
@@ -519,7 +542,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                                     'INSERT INTO tblActivityLog (UserId, ActionType, Details) VALUES (?, ?, ?)'
                                 );
                                 if ($stmt) {
-                                    $uid = isset($currentUser['Id']) ? (int)$currentUser['Id'] : 0;
+                                    $uid = isset($currentUser['id']) ? (int)$currentUser['id'] : 0;
                                     $action = 'backup_upload';
                                     $stmt->bind_param('iss', $uid, $action, $auditSql);
                                     @$stmt->execute();
@@ -672,10 +695,12 @@ if ($hasCredentials && defined('DB_HOST')) {
     <p class="text-secondary text-center small">
         iHymns Database Administration &middot; v0.10.0
         <?php if (!$isInitialSetup && isset($currentUser)): ?>
-            &middot; Logged in as <strong><?= htmlspecialchars($currentUser['Username'] ?? '') ?></strong>
+            &middot; Logged in as <strong><?= htmlspecialchars($currentUser['username'] ?? '') ?></strong>
         <?php endif; ?>
     </p>
 </div>
+
+<?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>
 </html>
 <?php

@@ -62,6 +62,28 @@ function enforceChannelGate(?string $devStatus): void
         return; /* Production — never gated. */
     }
 
+    /* ----------------------------------------------------------------
+     * TEMPORARILY DISABLED
+     * ----------------------------------------------------------------
+     * The gate is off while admin accounts and role/entitlement
+     * mappings are being set up properly (the first admin account was
+     * created as `admin` rather than an email address, and nobody can
+     * sign in through the gate until that's fixed).
+     *
+     * To re-enable invite-only gating once setup is complete:
+     *   1. Delete this early return.
+     *   2. Visit /manage/entitlements and flick the "Enforce
+     *      invite-only access" switch on.
+     * ---------------------------------------------------------------- */
+    return;
+
+    /* Bootstrap mode: the gate stays open until an admin explicitly
+       turns it on, so the first admin in can sign in and configure
+       role-based access without locking themselves out. */
+    if (!isChannelGateEnabled()) {
+        return;
+    }
+
     $entitlement = ($devStatus === 'Alpha') ? 'access_alpha' : 'access_beta';
     $role        = _channelGateCurrentRole();
 
@@ -70,25 +92,24 @@ function enforceChannelGate(?string $devStatus): void
     }
 
     /* Render the gate page and short-circuit index.php. */
-    _renderChannelGate($devStatus);
+    _renderChannelGate();
     exit;
 }
 
-function _renderChannelGate(string $channel): void
+function _renderChannelGate(): void
 {
     http_response_code(401);
     header('Content-Type: text/html; charset=UTF-8');
     header('Cache-Control: no-store');
     header('X-Robots-Tag: noindex, nofollow');
 
-    $label = htmlspecialchars($channel);
     ?>
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>iHymns <?= $label ?> — Early Access</title>
+    <title>iHymns — Sign in</title>
     <meta name="robots" content="noindex, nofollow">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="/css/app.css">
@@ -104,56 +125,28 @@ function _renderChannelGate(string $channel): void
             padding: 2rem;
             text-align: center;
         }
-        .gate-badge {
-            display: inline-block;
-            background: linear-gradient(135deg, var(--accent-start), var(--accent-end));
-            color: #fff;
-            font-weight: 700;
-            letter-spacing: 0.05em;
-            text-transform: uppercase;
-            font-size: 0.75rem;
-            padding: 0.2em 0.8em;
-            border-radius: 999px;
-        }
         h1 { font-size: 1.5rem; margin: 1rem 0 0.5rem; }
     </style>
 </head>
 <body>
     <div class="gate-card">
-        <span class="gate-badge"><?= $label ?> · Early Access</span>
-        <h1>iHymns <?= $label ?> is invite-only</h1>
+        <h1>Restricted access</h1>
         <p class="text-muted">
-            This build is a pre-release preview. Sign in with an account
-            that has <code><?= $channel === 'Alpha' ? 'access_alpha' : 'access_beta' ?></code>
-            privileges to continue.
-        </p>
-        <p class="text-muted small">
-            Don't have an account yet? You can sign up below, and an admin
-            can grant you early-access on the
-            <code>/manage/entitlements</code> page.
+            Please sign in to continue.
         </p>
         <div id="gate-msg" class="alert d-none py-2" role="alert"></div>
 
-        <!-- Step 1 — request magic link / code -->
-        <form id="gate-email-form" class="d-grid gap-2 text-start">
-            <label for="gate-email" class="form-label small mb-0">Email address</label>
-            <input type="email" id="gate-email" class="form-control" required autocomplete="email"
-                   placeholder="you@example.com">
-            <button type="submit" class="btn btn-primary">
-                <i class="fa-solid fa-paper-plane me-1"></i>
-                Send login code
-            </button>
-        </form>
+        <form id="gate-login-form" class="d-grid gap-2 text-start">
+            <label for="gate-username" class="form-label small mb-0">Username</label>
+            <input type="text" id="gate-username" class="form-control" required
+                   autocomplete="username" autocapitalize="none" spellcheck="false">
 
-        <!-- Step 2 — verify 6-digit code (hidden until we've sent the email) -->
-        <form id="gate-code-form" class="d-grid gap-2 text-start d-none mt-2">
-            <label for="gate-code" class="form-label small mb-0">6-digit code</label>
-            <input type="text" id="gate-code" class="form-control text-center" maxlength="6"
-                   pattern="[0-9]{6}" inputmode="numeric" autocomplete="one-time-code" required
-                   placeholder="000000">
-            <button type="submit" class="btn btn-success">
-                <i class="fa-solid fa-check me-1"></i>
-                Verify &amp; continue
+            <label for="gate-password" class="form-label small mb-0 mt-1">Password</label>
+            <input type="password" id="gate-password" class="form-control" required
+                   autocomplete="current-password">
+
+            <button type="submit" class="btn btn-primary mt-2">
+                Sign in
             </button>
         </form>
 
@@ -162,54 +155,32 @@ function _renderChannelGate(string $channel): void
 
 <script>
 (function () {
-    const msg   = document.getElementById('gate-msg');
-    const show  = (text, kind) => {
+    const msg  = document.getElementById('gate-msg');
+    const show = (text, kind) => {
         msg.className = 'alert py-2 alert-' + kind;
         msg.textContent = text;
         msg.classList.remove('d-none');
     };
-    const emailForm = document.getElementById('gate-email-form');
-    const codeForm  = document.getElementById('gate-code-form');
-    let rememberedEmail = '';
+    const form = document.getElementById('gate-login-form');
 
-    emailForm.addEventListener('submit', async (e) => {
+    form.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const email = document.getElementById('gate-email').value.trim();
-        if (!email) return;
-        rememberedEmail = email;
+        const username = document.getElementById('gate-username').value.trim();
+        const password = document.getElementById('gate-password').value;
+        if (!username || !password) return;
         try {
-            const res = await fetch('/api?action=auth_email_login_request', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-                body: JSON.stringify({ email }),
-            });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || 'Could not send code.');
-            show('Code sent. Check your inbox and enter the 6-digit code.', 'info');
-            codeForm.classList.remove('d-none');
-            document.getElementById('gate-code').focus();
-        } catch (err) {
-            show(err.message, 'danger');
-        }
-    });
-
-    codeForm.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const code = document.getElementById('gate-code').value.trim();
-        if (!code || !rememberedEmail) return;
-        try {
-            const res = await fetch('/api?action=auth_email_login_verify', {
+            const res = await fetch('/api?action=auth_login', {
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-                body: JSON.stringify({ email: rememberedEmail, code }),
+                body: JSON.stringify({ username, password }),
             });
             const data = await res.json();
-            if (!res.ok || !data.token) throw new Error(data.error || 'Invalid code.');
-            /* Server has set the HttpOnly cookie; a reload will pass the
-               gate if the user has the relevant access entitlement. */
-            show('Verified. Redirecting…', 'success');
-            setTimeout(() => window.location.reload(), 600);
+            if (!res.ok) throw new Error(data.error || 'Sign-in failed.');
+            /* Server has set the HttpOnly auth cookie; reload and the
+               gate will re-evaluate against the new session. */
+            show('Signed in. Redirecting…', 'success');
+            setTimeout(() => window.location.reload(), 400);
         } catch (err) {
             show(err.message, 'danger');
         }

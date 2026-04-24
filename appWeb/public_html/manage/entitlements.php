@@ -58,7 +58,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    if (saveEntitlementOverrides($newMap)) {
+    $gateEnabled = !empty($_POST['channel_gate_enabled']);
+
+    if (saveEntitlementOverrides($newMap) && setChannelGateEnabled($gateEnabled)) {
         $saved = true;
     } else {
         $error = 'Could not save — database write failed.';
@@ -75,6 +77,7 @@ $groups = [
     'User management' => ['view_users', 'edit_users', 'change_user_roles', 'assign_global_admin', 'delete_users'],
     'Database & operations' => ['view_admin_dashboard', 'view_analytics', 'run_db_install', 'run_db_migrate', 'run_db_backup', 'run_db_restore', 'drop_legacy_tables'],
     'Content moderation' => ['review_song_requests'],
+    'Content structure'  => ['manage_songbooks', 'manage_user_groups', 'manage_organisations'],
     'Channel access'     => ['access_alpha', 'access_beta'],
     'Meta' => ['manage_entitlements'],
 ];
@@ -88,6 +91,48 @@ foreach ($groups as $g => $names) {
 foreach (ENTITLEMENTS as $n => $_) {
     if (empty($seen[$n])) { $grouped['Other'][] = $n; }
 }
+
+/* Human-readable labels per entitlement. Missing entries fall back to
+   a humanised version of the machine key so shipping a new entitlement
+   is non-fatal — but every existing one should have a label here. */
+$ENTITLEMENT_LABELS = [
+    'edit_songs'                => ['Edit songs',                    'Create + edit songs, metadata, arrangements'],
+    'delete_songs'              => ['Delete songs',                  'Permanently remove a song'],
+    'bulk_edit_songs'           => ['Bulk-edit songs',               'Multi-select → tag / move / verify / export'],
+    'verify_songs'              => ['Verify songs',                  'Mark a song as editorially reviewed'],
+    'view_users'                => ['View users',                    'Open the Users page'],
+    'edit_users'                => ['Edit users',                    'Change profile / display name / email'],
+    'change_user_roles'         => ['Change user roles',             'Promote or demote another user (below own level)'],
+    'assign_global_admin'       => ['Assign Global Admin',           'Grant the highest role — Global Admin only'],
+    'delete_users'              => ['Delete users',                  'Permanently remove a user account'],
+    'view_admin_dashboard'      => ['Reach the Admin dashboard',     'Land on /manage/ and see any admin card'],
+    'view_analytics'            => ['View analytics',                'Open the analytics dashboard'],
+    'run_db_install'            => ['Install / migrate database',    'Create or upgrade schema — Global Admin only'],
+    'run_db_migrate'            => ['Run database migrations',       'Apply schema migrations'],
+    'run_db_backup'             => ['Back up database',              'Download a SQL snapshot'],
+    'run_db_restore'            => ['Restore database from backup',  'Overwrite the live DB from a snapshot'],
+    'drop_legacy_tables'        => ['Drop legacy tables',            'Retire obsolete tables — Global Admin only'],
+    'review_song_requests'      => ['Review song requests',          'Triage submissions from the public queue'],
+    'manage_songbooks'          => ['Manage songbooks',              'CRUD over the songbook catalogue'],
+    'manage_user_groups'        => ['Manage user groups',            'CRUD over groups + channel-access toggles'],
+    'manage_organisations'      => ['Manage organisations',          'CRUD over orgs + licence metadata + members'],
+    'manage_content_restrictions' => ['Manage content restrictions', 'Per-song / per-songbook gating rules'],
+    'manage_access_tiers'       => ['Manage access tiers',           'Define tiers that gate audio / MIDI / PDF / offline'],
+    'assign_user_tier'          => ['Assign a user\'s access tier',  'Move users between tiers'],
+    'manage_default_card_layout'=> ['Manage default card layout',    'Set the site-wide dashboard / home layout'],
+    'customise_own_card_layout' => ['Customise own layout',          'Personalise your own dashboard / home order'],
+    'access_alpha'              => ['Reach the Alpha channel',       'Sign in on alpha.ihymns.app when gate is on'],
+    'access_beta'               => ['Reach the Beta channel',        'Sign in on beta.ihymns.app when gate is on'],
+    'manage_entitlements'       => ['Manage entitlements',           'Edit this map itself — Global Admin only'],
+];
+
+$entLabel = static function (string $key) use ($ENTITLEMENT_LABELS): array {
+    if (isset($ENTITLEMENT_LABELS[$key])) return $ENTITLEMENT_LABELS[$key];
+    /* Fallback: humanise the snake_case key. */
+    return [ucfirst(str_replace('_', ' ', $key)), ''];
+};
+
+$isGlobalAdmin = ($currentUser['role'] ?? '') === 'global_admin';
 
 ?>
 <!DOCTYPE html>
@@ -107,25 +152,36 @@ foreach (ENTITLEMENTS as $n => $_) {
         .ent-grid td.role-col { text-align: center; }
         .ent-name { font-family: 'Menlo','Consolas',monospace; font-size: 0.85em; }
     </style>
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
 <body>
 
-<nav class="navbar-admin d-flex align-items-center justify-content-between">
-    <a class="navbar-brand" href="/manage/"><i class="bi bi-key me-2"></i>Entitlements</a>
-    <a href="/manage/" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
-</nav>
+<?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>
 
-<div class="container py-4" style="max-width: 1100px;">
+<div class="container-admin py-4">
 
     <h1 class="h4 mb-3">Role → Entitlement map</h1>
     <p class="text-secondary small mb-4">
-        Toggle the checkbox where you want a role to hold a capability.
-        Server-side checks always re-evaluate this map, so changes take
-        effect on the next request. The client-side mirror in
-        <code>js/modules/entitlements.js</code> keeps the defaults for
-        UI affordance — it won't reflect admin overrides until the page
-        is next loaded by the user.
+        Decide which roles hold which capabilities. A tick in a cell
+        means users with that role can perform the named action; an
+        unticked cell revokes it. Changes take effect on the next
+        request — no sign-out required.
     </p>
+
+    <?php if ($isGlobalAdmin): ?>
+    <details class="mb-4">
+        <summary class="text-muted small" style="cursor:pointer;">
+            <i class="bi bi-wrench me-1" aria-hidden="true"></i>Technical notes (Global Admin)
+        </summary>
+        <div class="small text-muted mt-2 ps-3 border-start">
+            Server-side checks always re-evaluate this map, so every
+            request reads the current state. A client-side mirror lives
+            in <code>js/modules/entitlements.js</code> (defaults only;
+            admin overrides apply only after the user's next page
+            load). Full help lives in the developer documentation.
+        </div>
+    </details>
+    <?php endif; ?>
 
     <?php if ($saved): ?>
         <div class="alert alert-success py-2">Entitlement map saved.</div>
@@ -136,6 +192,29 @@ foreach (ENTITLEMENTS as $n => $_) {
 
     <form method="post" action="">
         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(csrfToken()) ?>">
+
+        <div class="card-admin p-3 mb-3">
+            <h2 class="h6 mb-2">Invite-only gating</h2>
+            <div class="form-check form-switch">
+                <input type="checkbox"
+                       class="form-check-input"
+                       id="channel_gate_enabled"
+                       name="channel_gate_enabled"
+                       value="1"
+                       <?= isChannelGateEnabled() ? 'checked' : '' ?>>
+                <label class="form-check-label" for="channel_gate_enabled">
+                    Enforce invite-only access on alpha / beta channels
+                </label>
+            </div>
+            <p class="text-secondary small mb-0 mt-2">
+                Off = anyone can reach the site (bootstrap / setup mode).
+                On = only users whose role carries the channel-access
+                entitlement below may enter. Leave off until you've set
+                the role mapping to your liking, otherwise you'll lock
+                yourself out.
+            </p>
+        </div>
+
         <?php foreach ($grouped as $groupName => $ents): ?>
             <div class="card-admin p-3 mb-3">
                 <h2 class="h6 mb-3"><?= htmlspecialchars($groupName) ?></h2>
@@ -143,17 +222,28 @@ foreach (ENTITLEMENTS as $n => $_) {
                     <table class="table table-sm ent-grid mb-0">
                         <thead>
                             <tr class="text-muted small">
-                                <th>Entitlement</th>
+                                <th>Capability</th>
                                 <?php foreach ($ROLES as $r): ?>
-                                    <th class="role-col"><?= htmlspecialchars($r) ?></th>
+                                    <th class="role-col"><?= htmlspecialchars(roleLabel($r)) ?></th>
                                 <?php endforeach; ?>
                             </tr>
                         </thead>
                         <tbody>
                         <?php foreach ($ents as $ent): ?>
-                            <?php $current = $effective[$ent] ?? ENTITLEMENTS[$ent]; ?>
+                            <?php
+                                $current = $effective[$ent] ?? ENTITLEMENTS[$ent];
+                                [$entLbl, $entDesc] = $entLabel($ent);
+                            ?>
                             <tr>
-                                <td class="ent-name"><?= htmlspecialchars($ent) ?></td>
+                                <td>
+                                    <div class="fw-semibold"><?= htmlspecialchars($entLbl) ?></div>
+                                    <?php if ($entDesc !== ''): ?>
+                                        <div class="small text-muted"><?= htmlspecialchars($entDesc) ?></div>
+                                    <?php endif; ?>
+                                    <?php if ($isGlobalAdmin): ?>
+                                        <code class="small text-muted"><?= htmlspecialchars($ent) ?></code>
+                                    <?php endif; ?>
+                                </td>
                                 <?php foreach ($ROLES as $r): ?>
                                     <?php $checked = in_array($r, $current, true) ? 'checked' : ''; ?>
                                     <td class="role-col">
@@ -162,7 +252,7 @@ foreach (ENTITLEMENTS as $n => $_) {
                                                name="ent[<?= htmlspecialchars($ent) ?>][]"
                                                value="<?= htmlspecialchars($r) ?>"
                                                <?= $checked ?>
-                                               aria-label="<?= htmlspecialchars("$r can $ent") ?>">
+                                               aria-label="<?= htmlspecialchars(roleLabel($r) . ' — ' . $entLbl) ?>">
                                     </td>
                                 <?php endforeach; ?>
                             </tr>
@@ -196,5 +286,7 @@ foreach (ENTITLEMENTS as $n => $_) {
     </p>
 
 </div>
+
+<?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>
 </html>

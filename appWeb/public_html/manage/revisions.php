@@ -12,9 +12,14 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
-requireAdmin();
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
 
+requireAuth();
 $currentUser = getCurrentUser();
+if (!$currentUser || !userHasEntitlement('verify_songs', $currentUser['role'] ?? null)) {
+    http_response_code(403);
+    exit('Access denied. The verify_songs entitlement is required.');
+}
 $db = getDb();
 
 $filterUser   = trim((string)($_GET['user']   ?? ''));
@@ -80,18 +85,13 @@ try {
           integrity="sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+" crossorigin="anonymous">
     <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__) . '/css/app.css') ?>">
     <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime(dirname(__DIR__) . '/css/admin.css') ?>">
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
 <body>
 
-<nav class="navbar-admin d-flex align-items-center justify-content-between">
-    <a class="navbar-brand" href="/manage/"><i class="bi bi-clock-history me-2"></i>iHymns Revisions</a>
-    <div class="d-flex align-items-center gap-2">
-        <span class="text-muted small"><?= htmlspecialchars($currentUser['username'] ?? '') ?></span>
-        <a href="/manage/" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
-    </div>
-</nav>
+<?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>
 
-<div class="container py-4" style="max-width: 1200px;">
+<div class="container-admin py-4">
 
     <div class="d-flex flex-wrap align-items-end justify-content-between mb-3 gap-2">
         <h1 class="h4 mb-0">Song edit revisions</h1>
@@ -193,6 +193,8 @@ try {
     </p>
 
 </div>
+
+<?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 
 </body>
 </html>

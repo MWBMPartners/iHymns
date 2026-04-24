@@ -37,6 +37,20 @@ export const ENTITLEMENTS = {
     /* Content moderation */
     review_song_requests: ['editor', 'admin', 'global_admin'],
 
+    /* Content structure — songbook/group/organisation admin surfaces */
+    manage_songbooks:     ['admin', 'global_admin'],
+    manage_user_groups:   ['admin', 'global_admin'],
+    manage_organisations: ['admin', 'global_admin'],
+
+    /* Content gating for regular users */
+    manage_content_restrictions: ['admin', 'global_admin'],
+    manage_access_tiers:         ['admin', 'global_admin'],
+    assign_user_tier:            ['admin', 'global_admin'],
+
+    /* Card-layout personalisation (#448) */
+    manage_default_card_layout: ['admin', 'global_admin'],
+    customise_own_card_layout:  ['user', 'editor', 'admin', 'global_admin'],
+
     /* Channel access (#407) */
     access_alpha:         ['user', 'editor', 'admin', 'global_admin'],
     access_beta:          ['user', 'editor', 'admin', 'global_admin'],

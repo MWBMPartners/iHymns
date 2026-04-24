@@ -281,6 +281,15 @@ export class Router {
             /* Inject the new content */
             content.innerHTML = html;
 
+            /* Browsers intentionally do NOT run <script> tags inserted via
+               innerHTML, so any inline JS in the injected page template
+               (e.g. home.php's Popular Songs / Browse by Theme / Recently
+               Viewed fetches) silently no-ops. Replace each script node
+               with a freshly-created one so the browser parses and runs
+               it as if it had been in the original document. Preserves
+               type, src, async/defer and other attributes. */
+            this._executeInlineScripts(content);
+
             /* Complete loading bar and start enter transition */
             this.app.transitions.completeLoading();
             await this.app.transitions.pageIn(content);
@@ -299,6 +308,33 @@ export class Router {
                     Failed to load page. Please check your connection and try again.
                 </div>`;
             this.app.transitions.pageIn(content);
+        }
+    }
+
+    /**
+     * Re-create every <script> descendant of `root` so the browser actually
+     * executes it. `innerHTML` parses script tags but skips their execution
+     * by design — any JS in an injected page template would otherwise no-op
+     * silently. Re-created nodes preserve the original attributes (src,
+     * type, async, defer, nomodule, integrity, crossorigin) and replace
+     * the original in-place so document order is kept for side-effectful
+     * scripts that depend on it.
+     *
+     * @param {HTMLElement} root Container whose script descendants to run
+     * @private
+     */
+    _executeInlineScripts(root) {
+        if (!root) return;
+        const scripts = root.querySelectorAll('script');
+        for (const oldScript of scripts) {
+            const newScript = document.createElement('script');
+            for (const attr of oldScript.attributes) {
+                newScript.setAttribute(attr.name, attr.value);
+            }
+            if (!oldScript.src) {
+                newScript.textContent = oldScript.textContent;
+            }
+            oldScript.replaceWith(newScript);
         }
     }
 
@@ -352,6 +388,11 @@ export class Router {
      * @param {object} params Route parameters
      */
     afterPageLoad(page, params) {
+        /* Re-bind any offline-download buttons in the freshly injected
+           HTML (#453 / #454). The helper idempotently ignores nodes
+           that already have handlers. */
+        import('./offline-ui.js').then(m => m.bootOfflineUi()).catch(() => {});
+
         /* Initialise favourites state on song pages */
         if (page === 'song') {
             this.app.favorites.initSongPage();

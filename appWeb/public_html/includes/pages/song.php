@@ -45,6 +45,89 @@ $hasAudio    = !empty($song['hasAudio']);
 $hasSheet    = !empty($song['hasSheetMusic']);
 $components  = $song['components'] ?? [];
 
+/* ===================================================================
+ * Translations (#281) — list of other-language versions of this song
+ *
+ * Looks both "outward" (translations OF this song) and "inward"
+ * (this song IS a translation of another), then unions them so the
+ * picker shows every related language version regardless of which
+ * side of the relationship the current page is on.
+ *
+ * Result shape: [{ song_id, target_language, language_name,
+ *                   native_name, text_direction, translator, verified }]
+ *
+ * Wrapped in try/catch so a missing table during early setup or a
+ * DB hiccup simply hides the picker rather than blanking the page.
+ * =================================================================== */
+$translations = [];
+try {
+    require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+    $translationsDb = getDbMysqli();
+    $sql = '
+        /* Outward — this song has translations to other languages */
+        SELECT t.TranslatedSongId  AS song_id,
+               t.TargetLanguage    AS target_language,
+               l.Name              AS language_name,
+               l.NativeName        AS native_name,
+               l.TextDirection     AS text_direction,
+               t.Translator        AS translator,
+               t.Verified          AS verified
+          FROM tblSongTranslations t
+          JOIN tblLanguages l ON l.Code = t.TargetLanguage
+         WHERE t.SourceSongId = ? AND l.IsActive = 1
+        UNION
+        /* Inward — this song IS a translation of another; surface the
+           source plus any siblings (other translations of that source). */
+        SELECT src.SongId          AS song_id,
+               srcLang.Code        AS target_language,
+               srcLang.Name        AS language_name,
+               srcLang.NativeName  AS native_name,
+               srcLang.TextDirection AS text_direction,
+               ""                  AS translator,
+               1                   AS verified
+          FROM tblSongTranslations selfT
+          JOIN tblSongs src            ON src.SongId = selfT.SourceSongId
+          JOIN tblLanguages srcLang    ON srcLang.Code = src.Language
+         WHERE selfT.TranslatedSongId = ? AND srcLang.IsActive = 1
+        UNION
+        SELECT sibling.TranslatedSongId AS song_id,
+               sibling.TargetLanguage   AS target_language,
+               l2.Name                  AS language_name,
+               l2.NativeName            AS native_name,
+               l2.TextDirection         AS text_direction,
+               sibling.Translator       AS translator,
+               sibling.Verified         AS verified
+          FROM tblSongTranslations selfT2
+          JOIN tblSongTranslations sibling
+               ON sibling.SourceSongId = selfT2.SourceSongId
+              AND sibling.TranslatedSongId <> selfT2.TranslatedSongId
+          JOIN tblLanguages l2 ON l2.Code = sibling.TargetLanguage
+         WHERE selfT2.TranslatedSongId = ? AND l2.IsActive = 1
+    ';
+    $stmt = $translationsDb->prepare($sql);
+    if ($stmt !== false) {
+        $sid = (string)($song['id'] ?? '');
+        $stmt->bind_param('sss', $sid, $sid, $sid);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        while ($row = $res->fetch_assoc()) $translations[] = $row;
+        $stmt->close();
+    }
+} catch (\Throwable $_e) {
+    /* No translations infrastructure — picker stays hidden. */
+    $translations = [];
+}
+
+/* Title each translation by its native name if present, falling back
+   to the English name — lets a Spanish reader see "Español" rather
+   than "Spanish". */
+foreach ($translations as &$_t) {
+    $_t['display_label'] = ($_t['native_name'] !== '' && $_t['native_name'] !== null)
+        ? (string)$_t['native_name']
+        : (string)$_t['language_name'];
+}
+unset($_t);
+
 ?>
 
 <!-- ================================================================
@@ -119,6 +202,53 @@ $components  = $song['components'] ?? [];
                 </div>
             <?php endif; ?>
 
+            <!-- ============================================================
+                 Translations picker (#281) — only rendered when at least
+                 one related-language version exists. A Bootstrap dropdown
+                 keyed on the song-id so the SPA router can navigate
+                 without a full page reload.
+                 ============================================================ -->
+            <?php if (!empty($translations)): ?>
+                <div class="song-translations mb-3">
+                    <div class="dropdown">
+                        <button type="button"
+                                class="btn btn-sm btn-outline-secondary dropdown-toggle"
+                                data-bs-toggle="dropdown"
+                                aria-expanded="false"
+                                aria-label="Available translations">
+                            <i class="fa-solid fa-language me-1" aria-hidden="true"></i>
+                            Also in
+                            <?php if (count($translations) === 1): ?>
+                                <?= htmlspecialchars($translations[0]['display_label']) ?>
+                            <?php else: ?>
+                                <?= count($translations) ?> languages
+                            <?php endif; ?>
+                        </button>
+                        <ul class="dropdown-menu">
+                            <?php foreach ($translations as $t): ?>
+                                <li>
+                                    <a class="dropdown-item"
+                                       href="/song/<?= htmlspecialchars($t['song_id']) ?>"
+                                       data-navigate="song"
+                                       hreflang="<?= htmlspecialchars($t['target_language']) ?>"
+                                       lang="<?= htmlspecialchars($t['target_language']) ?>"
+                                       dir="<?= htmlspecialchars($t['text_direction'] ?: 'ltr') ?>">
+                                        <span class="fw-semibold"><?= htmlspecialchars($t['display_label']) ?></span>
+                                        <?php if (!empty($t['translator'])): ?>
+                                            <small class="text-muted ms-1">— tr. <?= htmlspecialchars($t['translator']) ?></small>
+                                        <?php endif; ?>
+                                        <?php if (!empty($t['verified'])): ?>
+                                            <i class="fa-solid fa-circle-check text-success ms-1 small"
+                                               title="Verified translation" aria-hidden="true"></i>
+                                        <?php endif; ?>
+                                    </a>
+                                </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    </div>
+                </div>
+            <?php endif; ?>
+
             <!-- Copyright and CCLI in song header -->
             <?php if (!empty($copyright) || !empty($ccli)): ?>
                 <div class="song-meta-copyright mb-3">
@@ -155,7 +285,7 @@ $components  = $song['components'] ?? [];
             <div class="d-flex flex-wrap gap-2">
                 <!-- Favourite toggle -->
                 <button type="button"
-                        class="btn btn-outline-danger btn-sm btn-favourite"
+                        class="btn btn-outline-secondary btn-sm song-toolbar-btn btn-favourite"
                         data-song-id="<?= htmlspecialchars($song['id']) ?>"
                         data-song-title="<?= htmlspecialchars($songTitle) ?>"
                         aria-label="Add to favourites"
@@ -166,7 +296,7 @@ $components  = $song['components'] ?? [];
 
                 <!-- Share button -->
                 <button type="button"
-                        class="btn btn-outline-primary btn-sm btn-share"
+                        class="btn btn-outline-secondary btn-sm song-toolbar-btn btn-share"
                         data-song-id="<?= htmlspecialchars($song['id']) ?>"
                         data-song-title="<?= htmlspecialchars($songTitle) ?>"
                         aria-label="Share this song">
@@ -177,7 +307,7 @@ $components  = $song['components'] ?? [];
                 <!-- Audio button (if available) -->
                 <?php if ($hasAudio): ?>
                     <button type="button"
-                            class="btn btn-outline-secondary btn-sm btn-audio"
+                            class="btn btn-outline-secondary btn-sm song-toolbar-btn btn-audio"
                             data-song-id="<?= htmlspecialchars($song['id']) ?>"
                             aria-label="Play audio">
                         <i class="fa-solid fa-headphones me-1" aria-hidden="true"></i>
@@ -188,7 +318,7 @@ $components  = $song['components'] ?? [];
                 <!-- Sheet music button (if available) -->
                 <?php if ($hasSheet): ?>
                     <button type="button"
-                            class="btn btn-outline-secondary btn-sm btn-sheet-music"
+                            class="btn btn-outline-secondary btn-sm song-toolbar-btn btn-sheet-music"
                             data-song-id="<?= htmlspecialchars($song['id']) ?>"
                             aria-label="View sheet music">
                         <i class="fa-solid fa-file-pdf me-1" aria-hidden="true"></i>
@@ -198,7 +328,7 @@ $components  = $song['components'] ?? [];
 
                 <!-- Add to set list (#94) -->
                 <button type="button"
-                        class="btn btn-outline-secondary btn-sm btn-add-to-setlist"
+                        class="btn btn-outline-secondary btn-sm song-toolbar-btn btn-add-to-setlist"
                         aria-label="Add to set list">
                     <i class="fa-solid fa-list-ol me-1" aria-hidden="true"></i>
                     Set List
@@ -206,24 +336,30 @@ $components  = $song['components'] ?? [];
 
                 <!-- Compare with another song (#102) -->
                 <button type="button"
-                        class="btn btn-outline-secondary btn-sm btn-compare"
+                        class="btn btn-outline-secondary btn-sm song-toolbar-btn btn-compare"
                         aria-label="Compare with another song">
                     <i class="fa-solid fa-columns me-1" aria-hidden="true"></i>
                     Compare
                 </button>
 
-                <!-- Save offline button -->
+                <!-- Save offline — consolidated into the harmonised cloud
+                     button (#453, #454, #456). The offline-ui module
+                     handles feature detection, cached-state, disabled
+                     tooltip, and click; the legacy .btn-save-offline
+                     handler still runs too, so either wire path works. -->
                 <button type="button"
-                        class="btn btn-outline-secondary btn-sm btn-save-offline"
+                        class="btn btn-outline-secondary btn-sm song-toolbar-btn btn-save-offline"
                         data-song-id="<?= htmlspecialchars($song['id']) ?>"
-                        aria-label="Save this song for offline use">
-                    <i class="fa-solid fa-download me-1" aria-hidden="true"></i>
+                        data-song-download="<?= htmlspecialchars($song['id']) ?>"
+                        aria-label="Save this song for offline use"
+                        title="Save this song for offline use">
+                    <i class="fa-solid fa-cloud-arrow-down me-1" aria-hidden="true"></i>
                     <span>Save Offline</span>
                 </button>
 
                 <!-- Presentation mode (#297) -->
                 <button type="button"
-                        class="btn btn-outline-secondary btn-sm"
+                        class="btn btn-outline-secondary btn-sm song-toolbar-btn"
                         id="btn-present"
                         title="Presentation mode"
                         aria-label="Enter presentation mode">
@@ -233,7 +369,7 @@ $components  = $song['components'] ?? [];
 
                 <!-- Print button -->
                 <button type="button"
-                        class="btn btn-outline-secondary btn-sm btn-print"
+                        class="btn btn-outline-secondary btn-sm song-toolbar-btn btn-print"
                         aria-label="Print this song"
                         data-action="print">
                     <i class="fa-solid fa-print me-1" aria-hidden="true"></i>
@@ -248,7 +384,7 @@ $components  = $song['components'] ?? [];
                 <!-- Edit in Song Editor (#407). Hidden by default; revealed
                      by JS when the signed-in user has the `edit_songs`
                      entitlement (editor / admin / global_admin). -->
-                <a class="btn btn-sm btn-outline-primary d-none"
+                <a class="btn btn-sm btn-outline-secondary song-toolbar-btn d-none"
                    id="btn-edit-song"
                    href="/manage/editor/?song=<?= urlencode($song['id'] ?? '') ?>"
                    title="Edit this song in the Song Editor">
@@ -389,7 +525,7 @@ $components  = $song['components'] ?? [];
         <div class="d-flex justify-content-between">
             <?php if ($prevSong): ?>
                 <a href="/song/<?= htmlspecialchars($prevSong['id']) ?>"
-                   class="btn btn-outline-secondary btn-sm"
+                   class="btn btn-outline-secondary btn-sm song-toolbar-btn"
                    data-navigate="song"
                    data-song-id="<?= htmlspecialchars($prevSong['id']) ?>"
                    aria-label="Previous song: <?= htmlspecialchars(toTitleCase($prevSong['title'])) ?>">
@@ -402,7 +538,7 @@ $components  = $song['components'] ?? [];
 
             <?php if ($nextSong): ?>
                 <a href="/song/<?= htmlspecialchars($nextSong['id']) ?>"
-                   class="btn btn-outline-secondary btn-sm"
+                   class="btn btn-outline-secondary btn-sm song-toolbar-btn"
                    data-navigate="song"
                    data-song-id="<?= htmlspecialchars($nextSong['id']) ?>"
                    aria-label="Next song: <?= htmlspecialchars(toTitleCase($nextSong['title'])) ?>">

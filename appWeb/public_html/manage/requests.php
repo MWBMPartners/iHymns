@@ -116,15 +116,13 @@ try {
           integrity="sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+" crossorigin="anonymous">
     <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__) . '/css/app.css') ?>">
     <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime(dirname(__DIR__) . '/css/admin.css') ?>">
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
 <body>
 
-<nav class="navbar-admin d-flex align-items-center justify-content-between">
-    <a class="navbar-brand" href="/manage/"><i class="bi bi-lightbulb me-2"></i>Song Requests</a>
-    <a href="/manage/" class="btn btn-sm btn-outline-secondary">Back to Dashboard</a>
-</nav>
+<?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>
 
-<div class="container py-4" style="max-width: 1100px;">
+<div class="container-admin py-4">
 
     <?php if ($flash): ?>
         <div class="alert alert-success py-2"><?= htmlspecialchars($flash) ?></div>
@@ -250,5 +248,6 @@ try {
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
         integrity="sha384-zKzgIZcXU99qF1nNW9g+x1znB5NhCPs9qZeGzUnnFOaHJF9jCCKySBjq3vIKabk/"
         crossorigin="anonymous"></script>
+<?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>
 </html>

@@ -19,6 +19,17 @@ header('Service-Worker-Allowed: /');
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
 $swVersion = $app['Application']['Version']['Number'] ?? '0.0.0';
+/* Fold the commit date (deploy-injected by the GH Actions pipeline) into
+   the cache key. Without it every build inside a single semver shares the
+   same key and clients stay pinned to the first-installed bundle. Falls
+   back to NULL (stripped) during local dev where Commit.Date is unset. */
+$swCommitStamp = preg_replace(
+    '/[^0-9]/', '',
+    (string)($app['Application']['Version']['Repo']['Commit']['Date'] ?? '')
+);
+$swCacheKey = $swCommitStamp !== ''
+    ? $swVersion . '-' . $swCommitStamp
+    : $swVersion;
 ?>
 /**
  * iHymns — Service Worker
@@ -51,11 +62,13 @@ $swVersion = $app['Application']['Version']['Number'] ?? '0.0.0';
  * ========================================================================= */
 
 /**
- * Cache version — derived from the application version in infoAppVer.php.
- * When the version is bumped by CI/CD, the service worker automatically
- * gets a new cache key, triggering a full cache purge on next load.
+ * Cache version — derived from the application version AND the deploy-time
+ * commit date in infoAppVer.php. The commit date component means every
+ * deploy (not just every semver bump) produces a new cache key, so clients
+ * pick up fresh module scripts instead of being pinned to the bundle their
+ * SW first installed. Old caches are purged on activation (#81).
  */
-const CACHE_VERSION = 'ihymns-v<?= $swVersion ?>';
+const CACHE_VERSION = 'ihymns-v<?= $swCacheKey ?>';
 
 /**
  * Songs cache (#105).
@@ -108,6 +121,8 @@ const PRECACHE_ASSETS = [
     '/js/modules/user-auth.js',
     '/js/modules/gestures.js',
     '/js/modules/analytics.js',
+    '/js/modules/offline-queue.js',
+    '/js/modules/notifications.js',
     '/manifest.json',
     '/assets/favicon.svg',
 ];
@@ -599,6 +614,35 @@ async function networkFirstWithCache(request) {
  * The client then receives a 'controllerchange' event and reloads.
  * ========================================================================= */
 
+/* =========================================================================
+ * BACKGROUND SYNC — offline queue drain (#337, #338)
+ *
+ * `js/modules/offline-queue.js` registers a Sync tag of the form
+ * `ihymns-queue-<type>` whenever the user performs an action while
+ * offline (song-request submission, favourite toggle, setlist save).
+ * The OS then wakes this SW up on reconnect and dispatches a `sync`
+ * event carrying that tag.
+ *
+ * We don't replay the HTTP request from inside the SW (the payload
+ * needs session cookies + may need CSRF tokens that the queue doesn't
+ * carry). Instead, we echo a `QUEUE_DRAIN` message to every open
+ * client; the page's drain handler owns the real POST. If no client
+ * is open, the drain happens next time a page loads via the
+ * `navigator.onLine` fallback in offline-queue.js.
+ * ========================================================================= */
+self.addEventListener('sync', (event) => {
+    if (!event.tag || !event.tag.startsWith('ihymns-queue-')) return;
+    event.waitUntil((async () => {
+        const clients = await self.clients.matchAll({
+            includeUncontrolled: true,
+            type: 'window',
+        });
+        for (const c of clients) {
+            c.postMessage({ type: 'QUEUE_DRAIN', tag: event.tag });
+        }
+    })());
+});
+
 self.addEventListener('message', (event) => {
     if (!event.data) return;
 
@@ -633,64 +677,93 @@ self.addEventListener('message', (event) => {
 
         if (!Array.isArray(songbooks) || songbooks.length === 0) return;
 
-        caches.open(RECENT_CACHE).then(async (cache) => {
+        /* Self-invoking async wrapper so a rejection from caches.open(),
+           fetch() or cache.put() surfaces as a progress message with an
+           error string rather than silently stalling the UI at
+           "Downloading <book>…" indefinitely (#452). */
+        (async () => {
             let completed = 0;
             let failed = 0;
             const total = totalSongs;
 
-            for (const songbook of songbooks) {
-                try {
+            try {
+                const cache = await caches.open(RECENT_CACHE);
+
+                for (const songbook of songbooks) {
                     notifyClients({
                         type: 'CACHE_ALL_SONGS_PROGRESS',
                         completed, failed, total,
                         status: `Downloading ${songbook}...`,
                     });
 
-                    const resp = await fetch(`/api?action=bulk_songs&songbook=${encodeURIComponent(songbook)}`);
-                    if (!resp.ok) {
-                        failed++;
-                        continue;
-                    }
-
-                    const data = await resp.json();
-                    const songs = data.songs || {};
-                    const ids = Object.keys(songs);
-
-                    /* Store each song's HTML as an individual cache entry */
-                    for (const id of ids) {
-                        try {
-                            const url = `/api?page=song&id=${encodeURIComponent(id)}`;
-                            const html = songs[id];
-                            const fakeResponse = new Response(html, {
-                                status: 200,
-                                headers: {
-                                    'Content-Type': 'text/html; charset=UTF-8',
-                                    'X-Bulk-Cached': 'true',
-                                },
-                            });
-                            await cache.put(url, fakeResponse);
-                            completed++;
-                        } catch {
+                    try {
+                        const resp = await fetch(`/api?action=bulk_songs&songbook=${encodeURIComponent(songbook)}`);
+                        if (!resp.ok) {
                             failed++;
+                            notifyClients({
+                                type: 'CACHE_ALL_SONGS_PROGRESS',
+                                completed, failed, total,
+                                warning: `Skipped ${songbook}: HTTP ${resp.status}`,
+                            });
+                            continue;
                         }
-                    }
-                } catch {
-                    /* Network error for this songbook */
-                    failed++;
-                }
 
+                        const data = await resp.json();
+                        const songs = data.songs || {};
+                        const ids = Object.keys(songs);
+
+                        for (const id of ids) {
+                            try {
+                                const url = `/api?page=song&id=${encodeURIComponent(id)}`;
+                                const html = songs[id];
+                                const fakeResponse = new Response(html, {
+                                    status: 200,
+                                    headers: {
+                                        'Content-Type': 'text/html; charset=UTF-8',
+                                        'X-Bulk-Cached': 'true',
+                                    },
+                                });
+                                await cache.put(url, fakeResponse);
+                                completed++;
+                            } catch (e) {
+                                failed++;
+                            }
+                        }
+                    } catch (e) {
+                        /* Network error for this songbook — surface it so
+                           the UI moves on rather than hanging silently. */
+                        failed++;
+                        notifyClients({
+                            type: 'CACHE_ALL_SONGS_PROGRESS',
+                            completed, failed, total,
+                            warning: `Network error on ${songbook}: ${e && e.message ? e.message : 'unknown'}`,
+                        });
+                    }
+
+                    notifyClients({
+                        type: 'CACHE_ALL_SONGS_PROGRESS',
+                        completed, failed, total,
+                    });
+                }
+            } catch (e) {
+                /* caches.open() failed (storage quota, private-mode,
+                   Safari ITP etc.) — let the UI know instead of
+                   pretending to be mid-download forever. */
                 notifyClients({
                     type: 'CACHE_ALL_SONGS_PROGRESS',
                     completed, failed, total,
+                    error: (e && e.message) ? e.message : 'Cache unavailable',
                 });
+                return;
             }
 
             /* Final report */
             notifyClients({
                 type: 'CACHE_ALL_SONGS_PROGRESS',
                 completed, failed, total,
+                done: true,
             });
-        });
+        })();
     }
 
     /* Legacy per-song download (fallback if bulk not available) */

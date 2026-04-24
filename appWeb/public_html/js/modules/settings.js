@@ -22,6 +22,32 @@ import {
     STORAGE_SEARCH_HISTORY,
 } from '../constants.js';
 
+/**
+ * Strict whitelist of localStorage keys that sync to the user's
+ * profile when signed in (and the sync toggle is on). Anything not
+ * listed here stays device-local — that includes analytics consent,
+ * the install banner state, the disclaimer flag, the per-device
+ * owner ID, and the offline-downloads toggles which are tied to
+ * device storage choices rather than UI preferences.
+ */
+const SYNC_PREF_KEYS = Object.freeze([
+    'ihymns_theme',
+    'ihymns_fontSize',
+    'ihymns_reduceMotion',
+    'ihymns_reduceTransparency',
+    'ihymns_transition',
+    'ihymns_default_songbook',
+    'ihymns_auto_update_songs',
+    'ihymns_numpad_live_search',
+    'ihymns_search_lyrics',
+    'ihymns_display',
+    'ihymns_cvd_mode',
+    'ihymns_keyboardShortcuts',
+]);
+
+/** localStorage key for the user's opt-in toggle. Default = on. */
+const SYNC_TOGGLE_KEY = 'ihymns_sync_app_settings';
+
 export class Settings {
     /**
      * @param {object} app Reference to the main iHymnsApp instance
@@ -107,10 +133,105 @@ export class Settings {
         }
 
         /* Re-apply the Account section whenever auth state changes, even if
-           the user is on the Settings page (no navigation triggered). */
-        document.addEventListener('ihymns:auth-changed', () => {
+           the user is on the Settings page (no navigation triggered).
+           When signing in, also pull any synced prefs from the server so
+           the UI reflects choices made on other devices. */
+        document.addEventListener('ihymns:auth-changed', (e) => {
             this.refreshAccountSection();
+            const loggedIn = !!e?.detail?.loggedIn;
+            if (loggedIn && this._isSyncEnabled()) {
+                this._pullSyncedSettings().catch(() => { /* non-fatal */ });
+            }
         });
+    }
+
+    /* =====================================================================
+     * APP-SETTINGS SYNC — push/pull a whitelisted subset of prefs
+     * ===================================================================== */
+
+    /** Is per-user settings sync currently active? */
+    _isSyncEnabled() {
+        if (!this.app.userAuth?.isLoggedIn?.()) return false;
+        /* Default = on; only off when the user has explicitly opted out. */
+        return localStorage.getItem(SYNC_TOGGLE_KEY) !== 'false';
+    }
+
+    /** Snapshot of the syncable prefs currently in localStorage. */
+    _collectSyncableSettings() {
+        const out = {};
+        SYNC_PREF_KEYS.forEach((k) => {
+            const v = localStorage.getItem(k);
+            if (v !== null) out[k] = v;
+        });
+        return out;
+    }
+
+    /**
+     * Schedule a push of synced prefs to the server. Debounced 1.5s
+     * so a flurry of changes (e.g. dragging the font-size slider)
+     * collapses into one POST.
+     */
+    _maybePushSync(fullKey) {
+        if (fullKey && !SYNC_PREF_KEYS.includes(fullKey)) return;
+        if (!this._isSyncEnabled()) return;
+        clearTimeout(this._syncPushTimer);
+        this._syncPushTimer = setTimeout(() => this._pushSyncedSettings(), 1500);
+    }
+
+    async _pushSyncedSettings() {
+        if (!this._isSyncEnabled()) return;
+        try {
+            await fetch(`${this.app.config.apiUrl}?action=user_settings`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    ...this.app.userAuth.authHeaders(),
+                },
+                body: JSON.stringify({ settings: this._collectSyncableSettings() }),
+            });
+        } catch { /* offline / network error — non-fatal */ }
+    }
+
+    /**
+     * Fetch synced prefs from the server and apply them to localStorage,
+     * then re-apply visual settings so the UI updates without a reload.
+     */
+    async _pullSyncedSettings() {
+        if (!this.app.userAuth?.isLoggedIn?.()) return;
+        let payload;
+        try {
+            const res = await fetch(`${this.app.config.apiUrl}?action=user_settings`, {
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    ...this.app.userAuth.authHeaders(),
+                },
+            });
+            if (!res.ok) return;
+            payload = await res.json();
+        } catch { return; }
+
+        const remote = payload?.settings;
+        if (!remote || typeof remote !== 'object') return;
+
+        let appliedTheme = false;
+        SYNC_PREF_KEYS.forEach((k) => {
+            if (Object.prototype.hasOwnProperty.call(remote, k)) {
+                const v = String(remote[k] ?? '');
+                if (v === '') {
+                    localStorage.removeItem(k);
+                } else {
+                    localStorage.setItem(k, v);
+                }
+                if (k === 'ihymns_theme') appliedTheme = true;
+            }
+        });
+
+        /* Re-apply the visual settings so the change is immediate. */
+        if (appliedTheme) this.applyTheme(this.get('theme'));
+        this.applyReduceMotion(this.get('reduceMotion'));
+        this.applyReduceTransparency(this.get('reduceTransparency'));
+        this.applyFontSize(this.get('fontSize'));
     }
 
     /**
@@ -136,6 +257,14 @@ export class Settings {
             const userEl = document.getElementById('auth-username-text');
             if (nameEl) nameEl.textContent = user?.display_name || user?.username || '';
             if (userEl) userEl.textContent = '@' + (user?.username || '');
+
+            /* Populate the profile edit form with current values. */
+            const profUsername = document.getElementById('profile-username');
+            const profDisplay  = document.getElementById('profile-display-name');
+            const profEmail    = document.getElementById('profile-email');
+            if (profUsername) profUsername.value = user?.username || '';
+            if (profDisplay)  profDisplay.value  = user?.display_name || '';
+            if (profEmail)    profEmail.value    = user?.email || '';
         }
     }
 
@@ -276,6 +405,8 @@ export class Settings {
         localStorage.setItem(fullKey, String(value));
         /* Sync to subdomain cookie + iframe bridge (#133) */
         this.app.syncStorage(fullKey);
+        /* Per-user profile sync (whitelisted keys only — no-ops otherwise) */
+        this._maybePushSync(fullKey);
     }
 
     /**
@@ -377,6 +508,13 @@ export class Settings {
         /* Account section — user auth buttons */
         this._initAccountSection();
 
+        /* Tab activation:
+             • #tab-profile or #tab-app in the URL → that tab wins
+             • otherwise → Profile if signed in, App if signed out
+           The static markup defaults to App active, so we only need to
+           switch when one of the above conditions wants Profile. */
+        this._activateInitialSettingsTab();
+
         /* Theme buttons */
         document.querySelectorAll('[data-setting-theme]').forEach(btn => {
             const theme = btn.dataset.settingTheme;
@@ -413,6 +551,7 @@ export class Settings {
             transitionSelect.addEventListener('change', () => {
                 localStorage.setItem(STORAGE_TRANSITION, transitionSelect.value);
                 this.app.syncStorage(STORAGE_TRANSITION);
+                this._maybePushSync(STORAGE_TRANSITION);
             });
         }
 
@@ -474,6 +613,7 @@ export class Settings {
                     localStorage.removeItem(STORAGE_DEFAULT_SONGBOOK);
                 }
                 this.app.syncStorage(STORAGE_DEFAULT_SONGBOOK);
+                this._maybePushSync(STORAGE_DEFAULT_SONGBOOK);
             });
         }
 
@@ -485,6 +625,7 @@ export class Settings {
                 const enabled = liveSearchToggle.checked;
                 localStorage.setItem(STORAGE_NUMPAD_LIVE_SEARCH, String(enabled));
                 this.app.syncStorage(STORAGE_NUMPAD_LIVE_SEARCH);
+                this._maybePushSync(STORAGE_NUMPAD_LIVE_SEARCH);
             });
         }
 
@@ -501,6 +642,7 @@ export class Settings {
                     localStorage.removeItem('ihymns_cvd_mode');
                     document.documentElement.removeAttribute('data-ihymns-cvd');
                 }
+                this._maybePushSync('ihymns_cvd_mode');
             });
         }
 
@@ -587,6 +729,7 @@ export class Settings {
                 const enabled = autoUpdateToggle.checked;
                 localStorage.setItem(STORAGE_AUTO_UPDATE_SONGS, String(enabled));
                 this.app.syncStorage(STORAGE_AUTO_UPDATE_SONGS);
+                this._maybePushSync(STORAGE_AUTO_UPDATE_SONGS);
                 /* Inform the service worker of the new preference */
                 if (navigator.serviceWorker?.controller) {
                     navigator.serviceWorker.controller.postMessage({
@@ -1219,6 +1362,44 @@ export class Settings {
      * ===================================================================== */
 
     /**
+     * Pick which tab is active on a fresh load of the settings page.
+     * Hash wins; otherwise Profile when signed in, App otherwise.
+     */
+    _activateInitialSettingsTab() {
+        const profileBtn = document.getElementById('tab-profile-btn');
+        const appBtn     = document.getElementById('tab-app-btn');
+        if (!profileBtn || !appBtn) return;
+
+        const hash = (window.location.hash || '').toLowerCase();
+        let target = null;
+        if (hash === '#tab-profile') target = profileBtn;
+        else if (hash === '#tab-app') target = appBtn;
+        else if (this.app.userAuth?.isLoggedIn?.()) target = profileBtn;
+
+        if (!target) return; /* leave default (App) active */
+
+        /* Use Bootstrap's Tab API if available; fall back to manual class
+           toggling so the page still renders correctly without bootstrap.bundle. */
+        const Bs = window.bootstrap;
+        if (Bs?.Tab) {
+            Bs.Tab.getOrCreateInstance(target).show();
+            return;
+        }
+        document.querySelectorAll('#settings-tabs .nav-link').forEach(b => {
+            b.classList.remove('active');
+            b.setAttribute('aria-selected', 'false');
+        });
+        document.querySelectorAll('.tab-content > .tab-pane').forEach(p => {
+            p.classList.remove('active', 'show');
+        });
+        target.classList.add('active');
+        target.setAttribute('aria-selected', 'true');
+        const paneId = target.dataset.bsTarget?.replace('#', '');
+        const pane = paneId && document.getElementById(paneId);
+        pane?.classList.add('active', 'show');
+    }
+
+    /**
      * Initialise the account section in settings.
      * Shows logged-in or logged-out state and binds button handlers.
      */
@@ -1254,5 +1435,113 @@ export class Settings {
             /* Refresh account section display */
             this._initAccountSection();
         });
+
+        /* App-settings sync toggle. Default = on; storing 'false' opts out. */
+        const syncToggle = document.getElementById('setting-sync-app-settings');
+        if (syncToggle) {
+            syncToggle.checked = localStorage.getItem(SYNC_TOGGLE_KEY) !== 'false';
+            syncToggle.addEventListener('change', () => {
+                if (syncToggle.checked) {
+                    localStorage.removeItem(SYNC_TOGGLE_KEY);
+                    /* Push current local prefs immediately so the server
+                       reflects this device's state once sync is on. */
+                    this._pushSyncedSettings();
+                } else {
+                    localStorage.setItem(SYNC_TOGGLE_KEY, 'false');
+                }
+            });
+        }
+
+        /* Profile save — update display name + email */
+        const profileForm = document.getElementById('profile-form');
+        if (profileForm && !profileForm.dataset.bound) {
+            profileForm.dataset.bound = '1';
+            profileForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const displayName = document.getElementById('profile-display-name').value.trim();
+                const email       = document.getElementById('profile-email').value.trim();
+                const msg = document.getElementById('profile-msg');
+                const show = (text, kind) => {
+                    if (!msg) return;
+                    msg.className = 'alert py-2 small alert-' + kind;
+                    msg.textContent = text;
+                    msg.classList.remove('d-none');
+                };
+                const result = await auth.updateProfile({ displayName, email });
+                if (result.success) {
+                    show('Profile saved.', 'success');
+                } else {
+                    show(result.error || 'Could not save profile.', 'danger');
+                }
+            });
+        }
+
+        /* Change username — separate form, requires current password */
+        const usernameForm = document.getElementById('username-form');
+        if (usernameForm && !usernameForm.dataset.bound) {
+            usernameForm.dataset.bound = '1';
+            usernameForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const newUsername     = document.getElementById('username-new').value.trim().toLowerCase();
+                const currentPassword = document.getElementById('username-current-password').value;
+                const msg = document.getElementById('username-msg');
+                const show = (text, kind) => {
+                    if (!msg) return;
+                    msg.className = 'alert py-2 small alert-' + kind;
+                    msg.textContent = text;
+                    msg.classList.remove('d-none');
+                };
+                if (!/^[a-z0-9_.\-]{3,100}$/.test(newUsername)) {
+                    show('Username must be 3–100 characters (letters, numbers, _, -, . only).', 'danger');
+                    return;
+                }
+                const result = await auth.changeUsername({ newUsername, currentPassword });
+                if (result.success) {
+                    show('Username changed.', 'success');
+                    document.getElementById('username-current-password').value = '';
+                    /* Re-populate the username field visible in the profile form */
+                    this.refreshAccountSection();
+                } else {
+                    show(result.error || 'Could not change username.', 'danger');
+                }
+            });
+        }
+
+        /* Change password */
+        const passwordForm = document.getElementById('password-form');
+        if (passwordForm && !passwordForm.dataset.bound) {
+            passwordForm.dataset.bound = '1';
+            passwordForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const cur  = document.getElementById('password-current').value;
+                const next = document.getElementById('password-new').value;
+                const conf = document.getElementById('password-confirm').value;
+                const msg  = document.getElementById('password-msg');
+                const show = (text, kind) => {
+                    if (!msg) return;
+                    msg.className = 'alert py-2 small alert-' + kind;
+                    msg.textContent = text;
+                    msg.classList.remove('d-none');
+                };
+                if (next.length < 8) {
+                    show('New password must be at least 8 characters.', 'danger');
+                    return;
+                }
+                if (next !== conf) {
+                    show('New password and confirmation do not match.', 'danger');
+                    return;
+                }
+                const result = await auth.changePassword({
+                    currentPassword: cur,
+                    newPassword: next,
+                });
+                if (result.success) {
+                    show('Password changed.', 'success');
+                    passwordForm.reset();
+                } else {
+                    show(result.error || 'Could not change password.', 'danger');
+                }
+            });
+        }
     }
 }

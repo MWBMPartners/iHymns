@@ -83,7 +83,21 @@ function getCurrentUser(): ?array
     }
 
     $db = getDb();
-    $stmt = $db->prepare('SELECT Id, Username, DisplayName, Role FROM tblUsers WHERE Id = ? AND IsActive = 1');
+    /* Aliased to lowercase keys so the rest of /manage/ (index.php,
+       users.php, entitlements.php, admin-nav.php, …) can use the
+       $currentUser['role'] / ['username'] / ['display_name'] shape
+       consistently. Passing a null key to the typed hasRole()
+       parameter previously fatal-errored the admin dashboard mid-
+       render. */
+    $stmt = $db->prepare(
+        'SELECT Id AS id,
+                Username AS username,
+                DisplayName AS display_name,
+                Role AS role,
+                Email AS email
+         FROM tblUsers
+         WHERE Id = ? AND IsActive = 1'
+    );
     $stmt->execute([$_SESSION['user_id']]);
     return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
 }
@@ -193,7 +207,7 @@ function requireAdmin(): void
 {
     requireAuth();
     $user = getCurrentUser();
-    if ($user === null || !hasRole($user['Role'], 'admin')) {
+    if ($user === null || !hasRole($user['role'], 'admin')) {
         http_response_code(403);
         exit('Access denied. Admin role required.');
     }
@@ -206,7 +220,7 @@ function requireEditor(): void
 {
     requireAuth();
     $user = getCurrentUser();
-    if ($user === null || !hasRole($user['Role'], 'editor')) {
+    if ($user === null || !hasRole($user['role'], 'editor')) {
         http_response_code(403);
         exit('Access denied. Curator/Editor role required.');
     }
@@ -219,7 +233,7 @@ function requireGlobalAdmin(): void
 {
     requireAuth();
     $user = getCurrentUser();
-    if ($user === null || $user['Role'] !== 'global_admin') {
+    if ($user === null || $user['role'] !== 'global_admin') {
         http_response_code(403);
         exit('Access denied. Global Admin role required.');
     }
@@ -302,7 +316,10 @@ function needsSetup(): bool
 function createUser(string $username, string $password, string $displayName, string $role = 'editor', string $email = ''): int
 {
     $db = getDb();
-    $username = strtolower(trim($username));
+    /* Preserve the case the user chose — the `Username` column is
+       utf8mb4_unicode_ci, so uniqueness + login lookups remain
+       case-insensitive without us lowercasing. */
+    $username = trim($username);
 
     /* Validate role */
     if (!isset(ROLE_LEVELS[$role])) {
@@ -347,13 +364,15 @@ function updateUserRole(int $userId, string $newRole, array $actingUser): bool
     }
 
     $db = getDb();
-    $stmt = $db->prepare('SELECT Id, Role FROM tblUsers WHERE Id = ?');
+    /* $actingUser comes from getCurrentUser() which is lowercase-
+       aliased; match that shape when reading role. */
+    $stmt = $db->prepare('SELECT Role AS role FROM tblUsers WHERE Id = ?');
     $stmt->execute([$userId]);
     $target = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$target) throw new \RuntimeException('User not found.');
 
-    $actingLevel = roleLevel($actingUser['Role']);
-    $targetLevel = roleLevel($target['Role']);
+    $actingLevel = roleLevel($actingUser['role']);
+    $targetLevel = roleLevel($target['role']);
     $newLevel    = roleLevel($newRole);
 
     /* Cannot promote above your own level */
@@ -362,12 +381,12 @@ function updateUserRole(int $userId, string $newRole, array $actingUser): bool
     }
 
     /* Cannot demote someone at or above your level (unless you are global_admin) */
-    if ($targetLevel >= $actingLevel && $actingUser['Role'] !== 'global_admin') {
+    if ($targetLevel >= $actingLevel && $actingUser['role'] !== 'global_admin') {
         throw new \RuntimeException('Cannot modify a user at or above your role level.');
     }
 
     /* Only global_admin can assign global_admin */
-    if ($newRole === 'global_admin' && $actingUser['Role'] !== 'global_admin') {
+    if ($newRole === 'global_admin' && $actingUser['role'] !== 'global_admin') {
         throw new \RuntimeException('Only Global Admin can assign Global Admin role.');
     }
 
@@ -540,6 +559,44 @@ function updateUserProfile(int $userId, string $displayName, string $email): boo
 }
 
 /**
+ * Rename a user (admin path — no password verification, since the
+ * caller has already been authorised by the surrounding admin check).
+ * Validation mirrors auth_register: lowercased, [a-z0-9_.\-], 3–100
+ * chars. Returns false on validation failure or uniqueness collision;
+ * caller should surface a friendly message.
+ *
+ * @param int    $userId      Target user ID
+ * @param string $newUsername Desired username
+ * @param string &$error      Set to a human-readable message on failure
+ * @return bool
+ */
+function renameUser(int $userId, string $newUsername, ?string &$error = null): bool
+{
+    /* Preserve case the user picked. Validation allows upper + lower
+       letters; the `ci` collation on Username still enforces unique-
+       across-case, so nobody can create "Alice" if "alice" exists. */
+    $newUsername = trim($newUsername);
+    if (strlen($newUsername) < 3
+        || strlen($newUsername) > 100
+        || !preg_match('/^[A-Za-z0-9_.\-]+$/', $newUsername)) {
+        $error = 'Username must be 3–100 characters (letters, numbers, _, -, . only).';
+        return false;
+    }
+
+    $db = getDb();
+    $stmt = $db->prepare('SELECT Id FROM tblUsers WHERE Username = ? AND Id <> ?');
+    $stmt->execute([$newUsername, $userId]);
+    if ($stmt->fetch()) {
+        $error = 'Username is already taken.';
+        return false;
+    }
+
+    $stmt = $db->prepare('UPDATE tblUsers SET Username = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
+    $stmt->execute([$newUsername, $userId]);
+    return true;
+}
+
+/**
  * Activate or deactivate a user account.
  *
  * @param int  $userId   Target user ID
@@ -585,8 +642,19 @@ function deleteUser(int $userId): bool
 function getUserById(int $userId): ?array
 {
     $db = getDb();
+    /* Aliased to lowercase keys so callers in manage/users.php can read
+       $target['role'] / ['username'] / ['is_active'] consistently with
+       getCurrentUser() and the main user listing query. */
     $stmt = $db->prepare(
-        'SELECT Id, Username, DisplayName, Email, Role, GroupId, IsActive, CreatedAt, UpdatedAt
+        'SELECT Id AS id,
+                Username AS username,
+                DisplayName AS display_name,
+                Email AS email,
+                Role AS role,
+                GroupId AS group_id,
+                IsActive AS is_active,
+                CreatedAt AS created_at,
+                UpdatedAt AS updated_at
          FROM tblUsers WHERE Id = ?'
     );
     $stmt->execute([$userId]);

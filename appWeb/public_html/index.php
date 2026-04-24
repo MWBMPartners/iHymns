@@ -231,19 +231,17 @@ try {
     elseif (preg_match('#^/setlist/shared/([a-f0-9]+)$#', $requestPath, $matches)) {
         $pageType = 'other';
         $shareId = $matches[1];
-        $shareFile = APP_SETLIST_SHARE_DIR . '/' . $shareId . '.json';
-        if (file_exists($shareFile)) {
-            $shareData = json_decode(file_get_contents($shareFile), true);
-            if (is_array($shareData)) {
-                $setlistName = $shareData['name'] ?? 'Shared Set List';
-                $setlistSongCount = count($shareData['songs'] ?? []);
-                $ogTitle = htmlspecialchars($setlistName) . ' — Shared Set List — ' . $app["Application"]["Name"];
-                $ogDescription = 'A curated set list with ' . $setlistSongCount
-                               . ' ' . ($setlistSongCount === 1 ? 'song' : 'songs')
-                               . ' on ' . $app["Application"]["Name"];
-                $ogImage = getCanonicalUrl('/og-image?setlist=' . urlencode($shareId));
-                $ogImageAlt = 'Set list "' . $setlistName . '" on ' . $app["Application"]["Name"];
-            }
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';
+        $shareData = sharedSetlistGet($shareId);
+        if (is_array($shareData)) {
+            $setlistName = $shareData['name'] ?? 'Shared Set List';
+            $setlistSongCount = count($shareData['songs'] ?? []);
+            $ogTitle = htmlspecialchars($setlistName) . ' — Shared Set List — ' . $app["Application"]["Name"];
+            $ogDescription = 'A curated set list with ' . $setlistSongCount
+                           . ' ' . ($setlistSongCount === 1 ? 'song' : 'songs')
+                           . ' on ' . $app["Application"]["Name"];
+            $ogImage = getCanonicalUrl('/og-image?setlist=' . urlencode($shareId));
+            $ogImageAlt = 'Set list "' . $setlistName . '" on ' . $app["Application"]["Name"];
         }
 
         /* Breadcrumb: Home > Set Lists > Shared */
@@ -596,12 +594,22 @@ if (!empty($breadcrumbItems)) {
                         <li><a class="dropdown-item" href="/stats" data-navigate="stats">
                             <i class="fa-solid fa-chart-simple me-2" aria-hidden="true"></i> Statistics
                         </a></li>
-                        <li><a class="dropdown-item" href="/settings" data-navigate="settings">
-                            <i class="fa-solid fa-gear me-2" aria-hidden="true"></i> Settings
-                        </a></li>
                         <li><a class="dropdown-item" href="/help" data-navigate="help">
                             <i class="fa-solid fa-circle-question me-2" aria-hidden="true"></i> Help
                         </a></li>
+
+                        <!-- Single "Manage" entry — opens /manage/ which
+                             shows per-entitlement cards for every
+                             curator and administration surface. Visible
+                             to any signed-in user with at least one
+                             management entitlement (toggled by
+                             user-auth.js). -->
+                        <li id="nav-manage-divider" class="d-none"><hr class="dropdown-divider"></li>
+                        <li id="nav-manage-li" class="d-none">
+                            <a class="dropdown-item" href="/manage/">
+                                <i class="fa-solid fa-gears me-2" aria-hidden="true"></i> Manage
+                            </a>
+                        </li>
                     </ul>
                 </div>
 
@@ -661,6 +669,47 @@ if (!empty($breadcrumbItems)) {
                         </ul>
                     </div>
 
+                    <!-- In-app notifications bell (#289). Hidden until the
+                         user signs in; the notifications module reveals it
+                         and populates the unread-count badge + dropdown
+                         body from /api?action=notifications_list. -->
+                    <div class="dropdown d-none" id="header-notifications-dropdown">
+                        <button type="button"
+                                class="btn btn-header-icon position-relative"
+                                data-bs-toggle="dropdown"
+                                aria-expanded="false"
+                                aria-label="Notifications"
+                                id="header-notifications-btn"
+                                title="Notifications">
+                            <i class="fa-solid fa-bell" aria-hidden="true"></i>
+                            <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none"
+                                  id="header-notifications-badge"
+                                  aria-live="polite">
+                                0
+                                <span class="visually-hidden">unread notifications</span>
+                            </span>
+                        </button>
+                        <div class="dropdown-menu dropdown-menu-end p-0"
+                             id="header-notifications-panel"
+                             aria-labelledby="header-notifications-btn"
+                             style="width: 320px; max-width: 90vw;">
+                            <div class="d-flex align-items-center justify-content-between px-3 py-2 border-bottom">
+                                <strong class="small">Notifications</strong>
+                                <button type="button"
+                                        class="btn btn-sm btn-link text-decoration-none p-0 small"
+                                        id="header-notifications-mark-all">
+                                    Mark all read
+                                </button>
+                            </div>
+                            <div id="header-notifications-list"
+                                 style="max-height: 60vh; overflow-y: auto;">
+                                <div class="text-center text-muted small py-4" id="header-notifications-empty">
+                                    No notifications.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- User account button — shows sign-in or user menu -->
                     <div class="dropdown" id="header-user-dropdown">
                         <button type="button"
@@ -684,14 +733,31 @@ if (!empty($breadcrumbItems)) {
                                     <i class="fa-solid fa-user-plus me-2" aria-hidden="true"></i> Create Account
                                 </button>
                             </li>
-                            <!-- Logged-in state (hidden by default, shown by JS) -->
+                            <!-- ============================================
+                                 Logged-in state (hidden by default; visibility
+                                 toggled by user-auth.js). This menu now holds
+                                 only items that relate to the signed-in
+                                 person; app-wide Curator + Administration
+                                 sections live in the iHymns (logo) dropdown.
+                                 ============================================ -->
+                            <!-- Display name + role are clickable shortcuts that
+                                 deep-link to the Account & Profile tab on /settings. -->
                             <li id="header-user-name" class="d-none">
-                                <span class="dropdown-item-text fw-semibold" id="header-user-display-name"></span>
+                                <a class="dropdown-item fw-semibold" href="/settings#tab-profile"
+                                   data-navigate="settings" id="header-user-display-name"></a>
                             </li>
                             <li id="header-user-role-li" class="d-none">
-                                <span class="dropdown-item-text small text-muted" id="header-user-role-text"></span>
+                                <a class="dropdown-item small text-muted py-1" href="/settings#tab-profile"
+                                   data-navigate="settings" id="header-user-role-text"></a>
                             </li>
+
+                            <!-- ── Account ── -->
                             <li id="header-user-divider" class="d-none"><hr class="dropdown-divider"></li>
+                            <li id="header-user-settings-li" class="d-none">
+                                <a class="dropdown-item" href="/settings#tab-profile" data-navigate="settings">
+                                    <i class="fa-solid fa-gear me-2" aria-hidden="true"></i> Settings
+                                </a>
+                            </li>
                             <li id="header-user-setlists-li" class="d-none">
                                 <a class="dropdown-item" href="/setlist" data-navigate="setlist">
                                     <i class="fa-solid fa-list-ol me-2" aria-hidden="true"></i> My Set Lists
@@ -702,23 +768,8 @@ if (!empty($breadcrumbItems)) {
                                     <i class="fa-solid fa-arrows-rotate me-2" aria-hidden="true"></i> Sync Set Lists
                                 </button>
                             </li>
-                            <li id="header-user-settings-li" class="d-none">
-                                <a class="dropdown-item" href="/settings" data-navigate="settings">
-                                    <i class="fa-solid fa-gear me-2" aria-hidden="true"></i> Account Settings
-                                </a>
-                            </li>
-                            <!-- Admin/Editor links (shown by JS based on role) -->
-                            <li id="header-user-admin-divider" class="d-none"><hr class="dropdown-divider"></li>
-                            <li id="header-user-editor-li" class="d-none">
-                                <a class="dropdown-item" href="/manage/editor/">
-                                    <i class="fa-solid fa-pen-to-square me-2" aria-hidden="true"></i> Song Editor
-                                </a>
-                            </li>
-                            <li id="header-user-dashboard-li" class="d-none">
-                                <a class="dropdown-item" href="/manage/">
-                                    <i class="fa-solid fa-gauge-high me-2" aria-hidden="true"></i> Dashboard
-                                </a>
-                            </li>
+
+                            <!-- ── Sign out ── -->
                             <li id="header-user-divider2" class="d-none"><hr class="dropdown-divider"></li>
                             <li id="header-user-signout-li" class="d-none">
                                 <button class="dropdown-item" type="button" id="header-signout-btn">
@@ -1189,8 +1240,20 @@ if (!empty($breadcrumbItems)) {
         };
     </script>
 
-    <!-- iHymns Application Scripts (ES Modules) -->
-    <script src="/js/app.js?v=<?= urlencode($app["Application"]["Version"]["Number"]) ?>" type="module"></script>
+    <!-- iHymns Application Scripts (ES Modules)
+
+         Cache-buster combines the semver with the deploy-time commit-date
+         stamp (injected by the GH Actions pipeline into infoAppVer.php)
+         so every deploy produces a new URL even when the semver hasn't
+         bumped. Without the commit stamp, .htaccess' max-age=3600 holds
+         onto user-auth.js and peers for up to an hour after a deploy. -->
+    <?php
+        $_appJsStamp = preg_replace('/[^0-9]/', '',
+            (string)($app['Application']['Version']['Repo']['Commit']['Date'] ?? ''));
+        $_appJsVersion = $app['Application']['Version']['Number']
+            . ($_appJsStamp !== '' ? '-' . $_appJsStamp : '');
+    ?>
+    <script src="/js/app.js?v=<?= urlencode($_appJsVersion) ?>" type="module"></script>
 
     <!-- Colour Vision Deficiency (CVD) SVG correction filters (#319) -->
     <?php readfile(__DIR__ . DIRECTORY_SEPARATOR . 'assets' . DIRECTORY_SEPARATOR . 'cvd-filters.svg'); ?>
