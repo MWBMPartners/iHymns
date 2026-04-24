@@ -121,6 +121,7 @@ const PRECACHE_ASSETS = [
     '/js/modules/user-auth.js',
     '/js/modules/gestures.js',
     '/js/modules/analytics.js',
+    '/js/modules/offline-queue.js',
     '/manifest.json',
     '/assets/favicon.svg',
 ];
@@ -611,6 +612,35 @@ async function networkFirstWithCache(request) {
  * waiting service worker to activate immediately, replacing the old one.
  * The client then receives a 'controllerchange' event and reloads.
  * ========================================================================= */
+
+/* =========================================================================
+ * BACKGROUND SYNC — offline queue drain (#337, #338)
+ *
+ * `js/modules/offline-queue.js` registers a Sync tag of the form
+ * `ihymns-queue-<type>` whenever the user performs an action while
+ * offline (song-request submission, favourite toggle, setlist save).
+ * The OS then wakes this SW up on reconnect and dispatches a `sync`
+ * event carrying that tag.
+ *
+ * We don't replay the HTTP request from inside the SW (the payload
+ * needs session cookies + may need CSRF tokens that the queue doesn't
+ * carry). Instead, we echo a `QUEUE_DRAIN` message to every open
+ * client; the page's drain handler owns the real POST. If no client
+ * is open, the drain happens next time a page loads via the
+ * `navigator.onLine` fallback in offline-queue.js.
+ * ========================================================================= */
+self.addEventListener('sync', (event) => {
+    if (!event.tag || !event.tag.startsWith('ihymns-queue-')) return;
+    event.waitUntil((async () => {
+        const clients = await self.clients.matchAll({
+            includeUncontrolled: true,
+            type: 'window',
+        });
+        for (const c of clients) {
+            c.postMessage({ type: 'QUEUE_DRAIN', tag: event.tag });
+        }
+    })());
+});
 
 self.addEventListener('message', (event) => {
     if (!event.data) return;

@@ -28,6 +28,11 @@ declare(strict_types=1);
         Thank you — your request has been received.
         <span id="request-tracking-id" class="text-muted small"></span>
     </div>
+    <div id="request-queued" class="alert alert-info d-none" role="status">
+        <i class="fa-solid fa-cloud-arrow-up me-1" aria-hidden="true"></i>
+        Saved offline — we'll send this request as soon as you're back online.
+        <span id="request-queued-count" class="text-muted small ms-1"></span>
+    </div>
     <div id="request-error" class="alert alert-danger d-none" role="alert"></div>
 
     <form id="request-form" novalidate>
@@ -68,19 +73,52 @@ declare(strict_types=1);
         </div>
     </form>
 
-    <script>
-    (function () {
-        const form = document.getElementById('request-form');
-        if (!form) return;
+    <script type="module">
+    /* Offline queue wiring (#337). The queue module is lazy-loaded so
+       a network hiccup during module fetch doesn't break the page —
+       if the import fails we fall back to plain online-only submission. */
+    import { offlineQueue } from '/js/modules/offline-queue.js?v=<?= filemtime(dirname(__DIR__, 2) . '/public_html/js/modules/offline-queue.js') ?>';
+
+    const form = document.getElementById('request-form');
+    if (form) {
+        const okEl     = document.getElementById('request-success');
+        const queuedEl = document.getElementById('request-queued');
+        const errEl    = document.getElementById('request-error');
+        const btn      = document.getElementById('request-submit-btn');
+        const countEl  = document.getElementById('request-queued-count');
+
+        const hideAll = () => {
+            okEl.classList.add('d-none');
+            queuedEl.classList.add('d-none');
+            errEl.classList.add('d-none');
+        };
+
+        /* Single send function — reused by live submit AND by the
+           drain handler once connectivity returns. Returns the
+           fetch Response so the caller can inspect status. */
+        const send = async (payload) => {
+            const res = await fetch('/api?action=song_request_submit', {
+                method:  'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                body:    JSON.stringify(payload),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data.ok) {
+                throw new Error(data.error || 'Request failed.');
+            }
+            return data;
+        };
+
+        /* Drain handler used by bindAutoDrain. Returns truthy so the
+           queue deletes the row on success, throws to keep it for retry. */
+        const drainSend = async (payload) => {
+            await send(payload);
+            return true;
+        };
 
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
-
-            const okEl  = document.getElementById('request-success');
-            const errEl = document.getElementById('request-error');
-            const btn   = document.getElementById('request-submit-btn');
-            okEl.classList.add('d-none');
-            errEl.classList.add('d-none');
+            hideAll();
             btn.disabled = true;
 
             const payload = {
@@ -91,27 +129,63 @@ declare(strict_types=1);
                 website:  form.elements['website'].value, /* honeypot */
             };
 
-            try {
-                const res = await fetch('/api?action=song_request_submit', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-                    body: JSON.stringify(payload),
-                });
-                const data = await res.json();
-                if (!res.ok || !data.ok) {
-                    throw new Error(data.error || 'Something went wrong.');
+            /* Offline → enqueue directly, don't even try the network.
+               The `navigator.onLine` signal is advisory (some browsers
+               lie), so we also catch fetch TypeErrors below as a
+               secondary offline signal. */
+            if (!navigator.onLine) {
+                try {
+                    const id = await offlineQueue.enqueue('song-requests', payload);
+                    countEl.textContent = `Reference: offline-#${id}`;
+                    queuedEl.classList.remove('d-none');
+                    form.reset();
+                } catch (err) {
+                    errEl.textContent = 'Could not save your request offline. Please try again when connected.';
+                    errEl.classList.remove('d-none');
                 }
-                okEl.querySelector('#request-tracking-id').textContent = data.trackingId ? `Reference: #${data.trackingId}` : '';
+                btn.disabled = false;
+                return;
+            }
+
+            try {
+                const data = await send(payload);
+                okEl.querySelector('#request-tracking-id').textContent =
+                    data.trackingId ? `Reference: #${data.trackingId}` : '';
                 okEl.classList.remove('d-none');
                 form.reset();
             } catch (err) {
-                errEl.textContent = err.message || 'Could not submit — please try again later.';
-                errEl.classList.remove('d-none');
+                /* TypeError from fetch usually means the request never
+                   left the device (DNS fail, offline between the
+                   navigator.onLine check and the socket). Queue it. */
+                if (err instanceof TypeError) {
+                    try {
+                        const id = await offlineQueue.enqueue('song-requests', payload);
+                        countEl.textContent = `Reference: offline-#${id}`;
+                        queuedEl.classList.remove('d-none');
+                        form.reset();
+                    } catch (_qerr) {
+                        errEl.textContent = 'Could not reach the server and could not save offline.';
+                        errEl.classList.remove('d-none');
+                    }
+                } else {
+                    errEl.textContent = err.message || 'Could not submit — please try again later.';
+                    errEl.classList.remove('d-none');
+                }
             } finally {
                 btn.disabled = false;
             }
         });
-    })();
+
+        /* Replay any queued requests from a prior offline visit. The
+           queue module handles the online + SW sync triggers; we just
+           tell it what to do with each payload. */
+        offlineQueue.bindAutoDrain('song-requests', drainSend, (r) => {
+            if (r && r.sent > 0) {
+                countEl.textContent = `Flushed ${r.sent} offline request${r.sent === 1 ? '' : 's'}.`;
+                queuedEl.classList.remove('d-none');
+            }
+        });
+    }
     </script>
 
 </section>
