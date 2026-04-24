@@ -176,6 +176,8 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Commit changelogs
         if: steps.generate.outputs.has_changes == 'true'
+        env:
+          BRANCH: ${{ github.ref_name }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -185,57 +187,115 @@ jobs:
 
           if git diff --cached --quiet; then
             echo "No changelog changes to commit."
-          else
-            git commit -m "chore: update changelogs for ${{ steps.version.outputs.version }} [skip ci]"
-            git push
+            exit 0
           fi
 
+          git commit -m "chore: update changelogs for ${{ steps.version.outputs.version }} [skip ci]"
+
+          # Retry on non-fast-forward rejection — the version-bump workflow runs
+          # in parallel and may push to the same branch first.
+          for attempt in 1 2 3 4 5; do
+            if git push origin "HEAD:${BRANCH}"; then
+              echo "Pushed on attempt $attempt"
+              exit 0
+            fi
+            echo "Push rejected on attempt $attempt — rebasing on origin/${BRANCH} and retrying"
+            git fetch origin "${BRANCH}"
+            git rebase "origin/${BRANCH}"
+            sleep $((attempt * 2))
+          done
+
+          echo "::error::Failed to push changelog after 5 attempts"
+          exit 1
+
       # -----------------------------------------------------------------------
-      # Step 6: (Optional) Upload web changelog to server via SFTP
+      # Step 6: (Optional) Resolve SFTP target + auth method
       # Only runs if SFTP_ENABLED is 'true'
       # -----------------------------------------------------------------------
-      - name: Upload changelog via SFTP
+      - name: Resolve SFTP upload settings
         if: >-
           steps.generate.outputs.has_changes == 'true'
           && vars.SFTP_ENABLED == 'true'
+        id: sftp
         env:
-          SFTP_HOST: ${{ secrets.SFTP_HOST }}
-          SFTP_USER: ${{ secrets.SFTP_USER }}
           SFTP_KEY: ${{ secrets.SFTP_KEY }}
           SFTP_PASSWORD: ${{ secrets.SFTP_PASSWORD }}
           SFTP_BETA_PATH: ${{ secrets.SFTP_BETA_PATH }}
           SFTP_LIVE_PATH: ${{ secrets.SFTP_LIVE_PATH }}
+          RAW_PORT: ${{ secrets.SFTP_PORT }}
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq lftp
-
-          # Determine target path based on branch
+          # Target path based on branch
           if [ "${{ github.ref_name }}" = "main" ]; then
-            TARGET_PATH="$SFTP_LIVE_PATH"
+            echo "target=$SFTP_LIVE_PATH" >> "$GITHUB_OUTPUT"
           else
-            TARGET_PATH="$SFTP_BETA_PATH"
+            echo "target=$SFTP_BETA_PATH" >> "$GITHUB_OUTPUT"
           fi
 
-          # Build lftp authentication
+          # Resolve port (default 22 if missing/non-numeric)
+          TRIMMED_PORT=$(echo "$RAW_PORT" | tr -d '[:space:]')
+          if [[ "$TRIMMED_PORT" =~ ^[0-9]+$ ]] && [ "$TRIMMED_PORT" -ge 1 ] && [ "$TRIMMED_PORT" -le 65535 ]; then
+            echo "port=$TRIMMED_PORT" >> "$GITHUB_OUTPUT"
+          else
+            echo "port=22" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Auth method: prefer SSH key, fall back to password
           if [ -n "$SFTP_KEY" ]; then
-            mkdir -p ~/.ssh && chmod 700 ~/.ssh
-            echo "$SFTP_KEY" > ~/.ssh/deploy_key
-            chmod 600 ~/.ssh/deploy_key
-            LFTP_AUTH="set sftp:connect-program 'ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key';"
+            echo "auth=key" >> "$GITHUB_OUTPUT"
           elif [ -n "$SFTP_PASSWORD" ]; then
-            LFTP_AUTH="set ftp:password '$SFTP_PASSWORD';"
+            echo "auth=password" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::No SFTP credentials. Skipping changelog upload."
-            exit 0
+            echo "auth=none" >> "$GITHUB_OUTPUT"
+            echo "::warning::No SFTP credentials configured — changelog upload will be skipped."
           fi
 
-          # Upload the web changelog
-          lftp -c "
-            $LFTP_AUTH
-            set ssl:verify-certificate no;
-            open sftp://$SFTP_USER@$SFTP_HOST;
-            put -O $TARGET_PATH appWeb/CHANGELOG.md;
-            quit;
-          "
+      - name: Install lftp
+        if: >-
+          steps.generate.outputs.has_changes == 'true'
+          && vars.SFTP_ENABLED == 'true'
+          && steps.sftp.outputs.auth != 'none'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq lftp
 
-          echo "Web changelog uploaded to $TARGET_PATH"
+      - name: Upload changelog via SFTP (SSH key)
+        if: >-
+          steps.generate.outputs.has_changes == 'true'
+          && vars.SFTP_ENABLED == 'true'
+          && steps.sftp.outputs.auth == 'key'
+        env:
+          SFTP_HOST: ${{ secrets.SFTP_HOST }}
+          SFTP_USER: ${{ secrets.SFTP_USER }}
+          SFTP_KEY: ${{ secrets.SFTP_KEY }}
+          SFTP_PORT: ${{ steps.sftp.outputs.port }}
+          TARGET_PATH: ${{ steps.sftp.outputs.target }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          echo "$SFTP_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          cat > /tmp/lftp_changelog.txt <<LFTP_EOF
+          set sftp:connect-program "ssh -o StrictHostKeyChecking=no -i $HOME/.ssh/deploy_key -p ${SFTP_PORT}"
+          set ssl:verify-certificate no
+          open sftp://${SFTP_USER}@${SFTP_HOST}:${SFTP_PORT}
+          put -O ${TARGET_PATH} appWeb/CHANGELOG.md
+          bye
+          LFTP_EOF
+          lftp -f /tmp/lftp_changelog.txt
           rm -f ~/.ssh/deploy_key
+          echo "Web changelog uploaded to ${TARGET_PATH}"
+
+      - name: Upload changelog via SFTP (password)
+        if: >-
+          steps.generate.outputs.has_changes == 'true'
+          && vars.SFTP_ENABLED == 'true'
+          && steps.sftp.outputs.auth == 'password'
+        env:
+          SFTP_HOST: ${{ secrets.SFTP_HOST }}
+          SFTP_USER: ${{ secrets.SFTP_USER }}
+          SFTP_PASS: ${{ secrets.SFTP_PASSWORD }}
+          SFTP_PORT: ${{ steps.sftp.outputs.port }}
+          TARGET_PATH: ${{ steps.sftp.outputs.target }}
+        run: |
+          lftp -u "${SFTP_USER},${SFTP_PASS}" \
+            -e "set sftp:auto-confirm yes; set ssl:verify-certificate no; \
+                put -O ${TARGET_PATH} appWeb/CHANGELOG.md; bye" \
+            "sftp://${SFTP_HOST}:${SFTP_PORT}"
+          echo "Web changelog uploaded to ${TARGET_PATH}"
