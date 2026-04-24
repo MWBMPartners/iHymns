@@ -387,6 +387,12 @@ class SongData
             $adaptorsMap    = $this->_getAdaptorsMap($songIds);
             $translatorsMap = $this->_getTranslatorsMap($songIds);
             $componentsMap  = $this->_getComponentsMap($songIds);
+            /* Tags included in the bulk load (#496 follow-up) so the
+               Song Editor's full-catalogue load + any client that
+               calls getSongs() has tag assignments available without
+               a second per-song round-trip. Same bulk-loader pattern
+               as writers / composers / etc. */
+            $tagsMap = $this->_getTagsMap($songIds);
             foreach ($songs as &$song) {
                 $sid = $song['id'];
                 $song['writers']     = $writersMap[$sid]     ?? [];
@@ -395,6 +401,7 @@ class SongData
                 $song['adaptors']    = $adaptorsMap[$sid]    ?? [];
                 $song['translators'] = $translatorsMap[$sid] ?? [];
                 $song['components']  = $componentsMap[$sid]  ?? [];
+                $song['tags']        = $tagsMap[$sid]        ?? [];
             }
             unset($song);
         }
@@ -969,6 +976,11 @@ class SongData
         $row['adaptors']     = $this->_getAdaptors($songId);
         $row['translators']  = $this->_getTranslators($songId);
         $row['components']   = $this->_getComponents($songId);
+        /* Tags attached here too so the single-song read path matches
+           the bulk getSongs() shape (#496 follow-up). Uses the same
+           SongId-keyed helper — collapsed to the one-song slice. */
+        $tagsMap = $this->_getTagsMap([$songId]);
+        $row['tags'] = $tagsMap[$songId] ?? [];
         $translations = $this->_getTranslations($songId);
         if (!empty($translations)) {
             $row['translations'] = $translations;
@@ -1279,6 +1291,42 @@ class SongData
         $map = [];
         while ($row = $result->fetch_assoc()) {
             $map[$row['SongId']][] = $row['Name'];
+        }
+        $stmt->close();
+        return $map;
+    }
+
+    /**
+     * Bulk-load tag assignments keyed by SongId (#496 follow-up).
+     * Joins tblSongTagMap → tblSongTags so the returned rows carry
+     * both the tag name and slug — callers that render chips can use
+     * the name, callers that build /tag/<slug> links can use the slug.
+     *
+     * @param string[] $songIds
+     * @return array<string,array<int,array{id:int,name:string,slug:string}>>
+     */
+    private function _getTagsMap(array $songIds): array
+    {
+        if (empty($songIds)) return [];
+        $placeholders = implode(',', array_fill(0, count($songIds), '?'));
+        $types = str_repeat('s', count($songIds));
+        $stmt = $this->db->prepare(
+            "SELECT m.SongId, t.Id AS id, t.Name AS name, t.Slug AS slug
+             FROM tblSongTagMap m
+             JOIN tblSongTags t ON t.Id = m.TagId
+             WHERE m.SongId IN ($placeholders)
+             ORDER BY m.SongId, t.Name ASC"
+        );
+        $stmt->bind_param($types, ...$songIds);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $map = [];
+        while ($row = $result->fetch_assoc()) {
+            $map[$row['SongId']][] = [
+                'id'   => (int)$row['id'],
+                'name' => $row['name'],
+                'slug' => $row['slug'],
+            ];
         }
         $stmt->close();
         return $map;

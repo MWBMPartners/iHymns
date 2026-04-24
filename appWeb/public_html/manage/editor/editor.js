@@ -1746,19 +1746,29 @@ function renderTranslators(song) {
  * ---------------------------------------------------------------------- */
 
 /**
- * Fetch + render tags for the given song. Idempotent.
+ * Fetch + render tags for the given song. Idempotent. Prefers the
+ * song.tags array already attached by the bulk ?action=load (#496
+ * follow-up); only round-trips when the bulk load didn't include
+ * them (e.g. older servers, or after a tag mutation that invalidated
+ * the local copy).
  */
 function loadSongTags(song) {
     var container = document.getElementById('song-tags-container');
     if (!container || !song || !song.id) return;
-    container.innerHTML = '<span class="text-muted small">Loading…</span>';
 
+    /* Fast path — the bulk load already attached tags. */
+    if (Array.isArray(song.tags)) {
+        song._tags = song.tags;
+        renderSongTagsChips(song, song.tags);
+        return;
+    }
+
+    container.innerHTML = '<span class="text-muted small">Loading…</span>';
     fetch(EDITOR_API_URL + '?action=song_tags&id=' + encodeURIComponent(song.id))
         .then(function (r) { return r.json(); })
         .then(function (data) {
             var tags = Array.isArray(data.tags) ? data.tags : [];
-            /* Cache on the song object so other UI (e.g. preview) can
-               read without a second fetch. */
+            song.tags = tags;
             song._tags = tags;
             renderSongTagsChips(song, tags);
         })
@@ -1831,6 +1841,9 @@ function addSongTag(song, tagName) {
     .then(function (r) { return r.json(); })
     .then(function (data) {
         if (data && data.added != null) {
+            /* Invalidate the bulk-load cache so loadSongTags re-fetches
+               with the authoritative row set (#496 follow-up). */
+            delete song.tags;
             loadSongTags(song);
             showToast('Added tag "' + tagName + '".', 'success');
         } else {
@@ -1852,6 +1865,8 @@ function removeSongTag(song, tagName) {
     })
     .then(function (r) { return r.json(); })
     .then(function () {
+        /* Invalidate the cached bulk-load copy — see addSongTag. */
+        delete song.tags;
         loadSongTags(song);
         showToast('Removed tag "' + tagName + '".', 'info');
     })
