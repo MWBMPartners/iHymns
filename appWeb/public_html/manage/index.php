@@ -112,7 +112,7 @@ $csrf = csrfToken();
 <body>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>
 
-    <div class="container py-4" style="max-width: 960px;">
+    <div class="container-admin py-4">
 
         <h1 class="h4 mb-1"><i class="bi bi-speedometer2 me-2"></i>Admin Portal</h1>
         <p class="text-secondary small mb-4">

@@ -247,7 +247,7 @@ function canManage(array $target, array $actor): bool {
 <body>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>
 
-    <div class="container py-4" style="max-width: 960px;">
+    <div class="container-admin py-4">
 
         <h1 class="h4 mb-4"><i class="bi bi-people me-2"></i>User Management</h1>
 

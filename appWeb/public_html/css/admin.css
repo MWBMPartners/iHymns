@@ -35,6 +35,20 @@ a:not(.btn):not(.nav-link):not(.dropdown-item):hover {
     color: var(--accent-end);
 }
 
+/* Shared admin page container. Replaces the inline per-page
+   `style="max-width: NNNNpx"` pattern — the hard caps meant every
+   admin dashboard left 300–700 px of dead space on 1440–1920 desktops.
+   Uses the available viewport width with a generous gutter, capped
+   only at ultra-wide widths so long lists don't become unreadable. */
+.container-admin {
+    width: 100%;
+    max-width: min(100%, 1800px);
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 1.5rem;
+    padding-right: 1.5rem;
+}
+
 /* ==========================================================================
    SHARED NAVBAR — admin dashboard header & editor top bar
    The dashboard pages pin .navbar-admin to the viewport top, matching the
@@ -125,6 +139,51 @@ body:has(.navbar-admin) {
 .navbar-admin .nav-link:hover,
 .navbar-admin .nav-link.active {
     color: var(--accent-solid);
+}
+
+/* Username + role button next to the avatar dropdown. Compact, low
+   visual weight, and only visible from sm up — xs screens get the
+   avatar alone to keep the bar uncluttered. */
+.admin-identity-btn {
+    background-color: transparent;
+    border: 1px solid transparent;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    padding: 0.25rem 0.6rem;
+}
+.admin-identity-btn:hover,
+.admin-identity-btn:focus {
+    color: var(--text-primary);
+    border-color: var(--card-border);
+    background-color: rgba(255, 255, 255, 0.03);
+}
+
+/* Offcanvas surface nav — slide-out list launched by the hamburger.
+   Styled to match the dark admin palette rather than Bootstrap's
+   default card-on-white look. */
+#admin-nav-offcanvas {
+    background-color: var(--surface-card);
+    color: var(--text-primary);
+    border-left: 1px solid var(--card-border);
+}
+#admin-nav-offcanvas .list-group-item {
+    background-color: transparent;
+    color: var(--text-secondary);
+    border-color: var(--card-border);
+}
+#admin-nav-offcanvas .list-group-item:hover,
+#admin-nav-offcanvas .list-group-item:focus {
+    color: var(--text-primary);
+    background-color: rgba(255, 255, 255, 0.03);
+}
+#admin-nav-offcanvas .list-group-item.active {
+    background-color: rgba(99, 102, 241, 0.12);
+    color: var(--accent-solid);
+    border-color: transparent;
+}
+#admin-nav-offcanvas .offcanvas-header,
+#admin-nav-offcanvas .offcanvas-footer {
+    border-color: var(--card-border);
 }
 
 /* ==========================================================================

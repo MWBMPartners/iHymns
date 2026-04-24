@@ -102,7 +102,7 @@ try {
     </div>
 </nav>
 
-<div class="container py-4" style="max-width: 1200px;">
+<div class="container-admin py-4">
 
     <div class="d-flex flex-wrap align-items-end justify-content-between mb-3 gap-2">
         <h1 class="h4 mb-0">Song edit revisions</h1>

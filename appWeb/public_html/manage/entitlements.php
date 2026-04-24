@@ -126,7 +126,7 @@ foreach (ENTITLEMENTS as $n => $_) {
     </div>
 </nav>
 
-<div class="container py-4" style="max-width: 1100px;">
+<div class="container-admin py-4">
 
     <h1 class="h4 mb-3">Role → Entitlement map</h1>
     <p class="text-secondary small mb-4">
