@@ -14,6 +14,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'card_layout.php';
 
 /* Dashboard is now the single landing page for every management
    surface, so admit any signed-in user who holds at least one
@@ -200,165 +201,107 @@ $csrf = csrfToken();
         </div>
         <?php endif; ?>
 
-        <!-- Quick Links — every card is gated by the same entitlement
-             that controls visibility of the corresponding menu item, so
-             the dashboard surfaces exactly the areas the user can act
-             on. Gate helper: userHasEntitlement($ent, $role). -->
-        <div class="row g-3 mb-4">
-            <?php if (userHasEntitlement('edit_songs', $_role)): ?>
-            <div class="col-md-4">
-                <div class="card-admin">
-                    <a href="/manage/editor/" class="quick-link">
-                        <i class="bi bi-pencil-square d-block mb-2"></i>
-                        <strong>Song Editor</strong>
-                        <div class="small text-muted">Edit songs, metadata, and arrangements</div>
-                    </a>
-                </div>
-            </div>
+        <?php
+        /* Every card is gated by the same entitlement that controls
+           visibility of the corresponding menu item, so the dashboard
+           surfaces exactly the areas the user can act on. A single
+           $cards array drives rendering so reorder / hide (#448) is a
+           matter of sorting + filtering this list. */
+        $pendingReqsLabel = $pendingReqs . ' pending · triage &amp; resolve';
+        $dashboardCards = [
+            ['editor',       'edit_songs',                  '/manage/editor/',       'bi-pencil-square', 'Song Editor',          'Edit songs, metadata, and arrangements',                                  true],
+            ['requests',     'review_song_requests',        '/manage/requests',      'bi-lightbulb',     'Song Requests',        $pendingReqsLabel,                                                         false],
+            ['revisions',    'verify_songs',                '/manage/revisions',     'bi-clock-history', 'Revisions Audit',      'Audit song edits; open any row in the editor to diff / restore',           true],
+            ['users',        'view_users',                  '/manage/users',         'bi-people',        'User Management',      'Manage accounts, roles, and permissions',                                 true],
+            ['groups',       'manage_user_groups',          '/manage/groups',        'bi-people-fill',   'User Groups',          'Group users for shared access settings',                                  true],
+            ['organisations','manage_organisations',        '/manage/organisations', 'bi-building',      'Organisations',        'Manage organisations &amp; their members',                                 true],
+            ['songbooks',    'manage_songbooks',            '/manage/songbooks',     'bi-book',          'Songbook Management',  'Create, rename, reorder the songbook catalogue',                          true],
+            ['restrictions', 'manage_content_restrictions', '/manage/restrictions',  'bi-shield-lock',   'Content Restrictions', 'Gate songs, songbooks &amp; features per user, org, platform or licence', true],
+            ['tiers',        'manage_access_tiers',         '/manage/tiers',         'bi-stars',         'Access Tiers',         'Define tiers controlling lyrics, audio, MIDI, sheet music &amp; offline', true],
+            ['entitlements', 'manage_entitlements',         '/manage/entitlements',  'bi-key',           'Entitlements &amp; Gating','Assign capabilities to roles',                                          true],
+            ['analytics',    'view_analytics',              '/manage/analytics',     'bi-graph-up',      'Analytics',            'Top songs, searches, and user activity',                                  true],
+            ['data-health',  'drop_legacy_tables',          '/manage/data-health',   'bi-activity',      'Data Health',          'Confirm MySQL is authoritative; disconnect legacy fallbacks',             true],
+            ['setup-db',     'run_db_install',              '/manage/setup-database','bi-database-gear', 'Database Setup',       'Install, migrate, backup, restore, cleanup',                              true],
+            ['view-site',    null,                          '/',                     'bi-globe',         'View Website',         'Open iHymns in a new tab',                                                true],
+        ];
+
+        /* Filter out cards the viewer can't see, then apply the layout
+           resolver (system default merged with per-user override). */
+        $dashboardCards = array_values(array_filter(
+            $dashboardCards,
+            static fn(array $c): bool => $c[1] === null || userHasEntitlement($c[1], $_role)
+        ));
+        $dashboardBaseline = array_map(static fn(array $c) => $c[0], $dashboardCards);
+        $dashboardLayout   = cardLayoutResolve($dashboardBaseline, 'dashboard', [
+            'id'       => $currentUser['id'] ?? null,
+            'role'     => $_role,
+            'group_id' => $currentUser['group_id'] ?? null,
+        ]);
+        $dashboardById = [];
+        foreach ($dashboardCards as $c) { $dashboardById[$c[0]] = $c; }
+
+        $canCustomiseOwn = cardLayoutUserCanCustomise([
+            'id'       => $currentUser['id'] ?? null,
+            'role'     => $_role,
+            'group_id' => $currentUser['group_id'] ?? null,
+        ]);
+        $canSetDefault = userHasEntitlement('manage_default_card_layout', $_role);
+        $hiddenSet = array_flip($dashboardLayout['hidden']);
+        ?>
+
+        <!-- Customise toolbar — only rendered if the viewer has at
+             least one relevant entitlement. -->
+        <?php if ($canCustomiseOwn || $canSetDefault): ?>
+        <div class="d-flex align-items-center gap-2 mb-3" id="card-layout-toolbar">
+            <button type="button" class="btn btn-sm btn-outline-info" id="btn-card-layout-edit">
+                <i class="bi bi-grid-3x3-gap me-1" aria-hidden="true"></i>Customise layout
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-secondary d-none" id="btn-card-layout-done">
+                <i class="bi bi-check2 me-1" aria-hidden="true"></i>Done
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-warning d-none" id="btn-card-layout-reset">
+                <i class="bi bi-arrow-counterclockwise me-1" aria-hidden="true"></i>Reset to default
+            </button>
+            <?php if ($canSetDefault): ?>
+            <button type="button" class="btn btn-sm btn-outline-danger d-none" id="btn-card-layout-save-default"
+                    title="Save the current order as the system-wide default for all users">
+                <i class="bi bi-save me-1" aria-hidden="true"></i>Save as site default
+            </button>
             <?php endif; ?>
-            <?php if (userHasEntitlement('review_song_requests', $_role)): ?>
-            <div class="col-md-4">
-                <div class="card-admin">
-                    <a href="/manage/requests" class="quick-link">
-                        <i class="bi bi-lightbulb d-block mb-2"></i>
-                        <strong>Song Requests</strong>
-                        <div class="small text-muted">
-                            <?= $pendingReqs ?> pending · triage &amp; resolve
-                        </div>
-                    </a>
+            <span class="small text-muted d-none" id="card-layout-help">
+                Drag the handle to reorder; click × to hide a card. Hidden cards reappear from
+                <a href="/settings#tab-profile" class="text-info">Settings → Profile</a>.
+            </span>
+        </div>
+        <?php endif; ?>
+
+        <!-- Quick Links — rendered from $dashboardLayout. data-card-id
+             keys each card so the client-side reorder module can move
+             them around without touching the DOM beyond the grid. -->
+        <div class="row g-3 mb-4"
+             id="dashboard-card-grid"
+             data-layout-surface="dashboard"
+             data-can-customise="<?= $canCustomiseOwn ? '1' : '0' ?>"
+             data-can-set-default="<?= $canSetDefault ? '1' : '0' ?>">
+            <?php foreach ($dashboardLayout['order'] as $cardId): ?>
+                <?php
+                if (!isset($dashboardById[$cardId])) continue;
+                [$id, , $href, $icon, $title, $sub, $sameTab] = $dashboardById[$cardId];
+                $isHidden = isset($hiddenSet[$id]);
+                $target = $sameTab ? '' : 'target="_blank" rel="noopener"';
+                ?>
+                <div class="col-md-4 card-layout-item<?= $isHidden ? ' d-none' : '' ?>"
+                     data-card-id="<?= htmlspecialchars($id) ?>"
+                     data-hidden="<?= $isHidden ? '1' : '0' ?>">
+                    <div class="card-admin position-relative">
+                        <a href="<?= htmlspecialchars($href) ?>" class="quick-link" <?= $target ?>>
+                            <i class="bi <?= htmlspecialchars($icon) ?> d-block mb-2" aria-hidden="true"></i>
+                            <strong><?= $title /* some titles contain &amp; entity */ ?></strong>
+                            <div class="small text-muted"><?= $sub /* same */ ?></div>
+                        </a>
+                    </div>
                 </div>
-            </div>
-            <?php endif; ?>
-            <?php if (userHasEntitlement('verify_songs', $_role)): ?>
-            <div class="col-md-4">
-                <div class="card-admin">
-                    <a href="/manage/revisions" class="quick-link">
-                        <i class="bi bi-clock-history d-block mb-2"></i>
-                        <strong>Revisions Audit</strong>
-                        <div class="small text-muted">Audit song edits; open any row in the editor to diff / restore</div>
-                    </a>
-                </div>
-            </div>
-            <?php endif; ?>
-            <?php if (userHasEntitlement('view_users', $_role)): ?>
-            <div class="col-md-4">
-                <div class="card-admin">
-                    <a href="/manage/users" class="quick-link">
-                        <i class="bi bi-people d-block mb-2"></i>
-                        <strong>User Management</strong>
-                        <div class="small text-muted">Manage accounts, roles, and permissions</div>
-                    </a>
-                </div>
-            </div>
-            <?php endif; ?>
-            <?php if (userHasEntitlement('manage_user_groups', $_role)): ?>
-            <div class="col-md-4">
-                <div class="card-admin">
-                    <a href="/manage/groups" class="quick-link">
-                        <i class="bi bi-people-fill d-block mb-2"></i>
-                        <strong>User Groups</strong>
-                        <div class="small text-muted">Group users for shared access settings</div>
-                    </a>
-                </div>
-            </div>
-            <?php endif; ?>
-            <?php if (userHasEntitlement('manage_organisations', $_role)): ?>
-            <div class="col-md-4">
-                <div class="card-admin">
-                    <a href="/manage/organisations" class="quick-link">
-                        <i class="bi bi-building d-block mb-2"></i>
-                        <strong>Organisations</strong>
-                        <div class="small text-muted">Manage organisations &amp; their members</div>
-                    </a>
-                </div>
-            </div>
-            <?php endif; ?>
-            <?php if (userHasEntitlement('manage_songbooks', $_role)): ?>
-            <div class="col-md-4">
-                <div class="card-admin">
-                    <a href="/manage/songbooks" class="quick-link">
-                        <i class="bi bi-book d-block mb-2"></i>
-                        <strong>Songbook Management</strong>
-                        <div class="small text-muted">Create, rename, reorder the songbook catalogue</div>
-                    </a>
-                </div>
-            </div>
-            <?php endif; ?>
-            <?php if (userHasEntitlement('manage_content_restrictions', $_role)): ?>
-            <div class="col-md-4">
-                <div class="card-admin">
-                    <a href="/manage/restrictions" class="quick-link">
-                        <i class="bi bi-shield-lock d-block mb-2"></i>
-                        <strong>Content Restrictions</strong>
-                        <div class="small text-muted">Gate songs, songbooks &amp; features per user, org, platform or licence</div>
-                    </a>
-                </div>
-            </div>
-            <?php endif; ?>
-            <?php if (userHasEntitlement('manage_access_tiers', $_role)): ?>
-            <div class="col-md-4">
-                <div class="card-admin">
-                    <a href="/manage/tiers" class="quick-link">
-                        <i class="bi bi-stars d-block mb-2"></i>
-                        <strong>Access Tiers</strong>
-                        <div class="small text-muted">Define tiers controlling lyrics, audio, MIDI, sheet music &amp; offline</div>
-                    </a>
-                </div>
-            </div>
-            <?php endif; ?>
-            <?php if (userHasEntitlement('manage_entitlements', $_role)): ?>
-            <div class="col-md-4">
-                <div class="card-admin">
-                    <a href="/manage/entitlements" class="quick-link">
-                        <i class="bi bi-key d-block mb-2"></i>
-                        <strong>Entitlements &amp; Gating</strong>
-                        <div class="small text-muted">Assign capabilities to roles</div>
-                    </a>
-                </div>
-            </div>
-            <?php endif; ?>
-            <?php if (userHasEntitlement('view_analytics', $_role)): ?>
-            <div class="col-md-4">
-                <div class="card-admin">
-                    <a href="/manage/analytics" class="quick-link">
-                        <i class="bi bi-graph-up d-block mb-2"></i>
-                        <strong>Analytics</strong>
-                        <div class="small text-muted">Top songs, searches, and user activity</div>
-                    </a>
-                </div>
-            </div>
-            <?php endif; ?>
-            <?php if (userHasEntitlement('drop_legacy_tables', $_role)): ?>
-            <div class="col-md-4">
-                <div class="card-admin">
-                    <a href="/manage/data-health" class="quick-link">
-                        <i class="bi bi-activity d-block mb-2"></i>
-                        <strong>Data Health</strong>
-                        <div class="small text-muted">Confirm MySQL is authoritative; disconnect legacy fallbacks</div>
-                    </a>
-                </div>
-            </div>
-            <?php endif; ?>
-            <?php if (userHasEntitlement('run_db_install', $_role)): ?>
-            <div class="col-md-4">
-                <div class="card-admin">
-                    <a href="/manage/setup-database" class="quick-link">
-                        <i class="bi bi-database-gear d-block mb-2"></i>
-                        <strong>Database Setup</strong>
-                        <div class="small text-muted">Install, migrate, backup, restore, cleanup</div>
-                    </a>
-                </div>
-            </div>
-            <?php endif; ?>
-            <div class="col-md-4">
-                <div class="card-admin">
-                    <a href="/" class="quick-link" target="_blank" rel="noopener">
-                        <i class="bi bi-globe d-block mb-2"></i>
-                        <strong>View Website</strong>
-                        <div class="small text-muted">Open iHymns in a new tab</div>
-                    </a>
-                </div>
-            </div>
+            <?php endforeach; ?>
         </div>
 
         <!-- Recent Users (admin+ only) -->
@@ -419,6 +362,15 @@ $csrf = csrfToken();
         </div>
 
     </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
+            integrity="sha384-zKzgIZcXU99qF1nNW9g+x1znB5NhCPs9qZeGzUnnFOaHJF9jCCKySBjq3vIKabk/"
+            crossorigin="anonymous"></script>
+
+    <script type="module">
+        import { bootCardLayout } from '/js/modules/card-layout.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/card-layout.js') ?>';
+        bootCardLayout();
+    </script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>

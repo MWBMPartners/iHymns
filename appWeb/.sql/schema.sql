@@ -160,6 +160,7 @@ CREATE TABLE IF NOT EXISTS tblUserGroups (
     AccessBeta      TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Can access Beta builds',
     AccessRc        TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Can access RC (Release Candidate) builds',
     AccessRtw       TINYINT(1)      NOT NULL DEFAULT 1 COMMENT 'Can access RTW (Release to Web / production)',
+    AllowCardReorder TINYINT(1)     NOT NULL DEFAULT 1 COMMENT 'Group members may customise dashboard / home card layout (#448)',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
