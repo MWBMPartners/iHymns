@@ -254,7 +254,7 @@ $csrf = csrfToken();
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>
 
-    <div class="container py-4" style="max-width: 1100px;">
+    <div class="container-admin py-4">
 
         <h1 class="h4 mb-3"><i class="bi bi-building me-2"></i>Organisations</h1>
         <p class="text-secondary small mb-4">

@@ -247,7 +247,7 @@ function canManage(array $target, array $actor): bool {
 <body>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>
 
-    <div class="container py-4" style="max-width: 960px;">
+    <div class="container-admin py-4">
 
         <h1 class="h4 mb-4"><i class="bi bi-people me-2"></i>User Management</h1>
 
@@ -513,11 +513,11 @@ function canManage(array $target, array $actor): bool {
                         <div class="mb-3">
                             <label class="form-label">New username</label>
                             <input type="text" class="form-control" name="new_username" id="rename-new-username"
-                                   minlength="3" maxlength="100" pattern="[a-z0-9_.\-]+"
+                                   minlength="3" maxlength="100" pattern="[A-Za-z0-9_.\-]+"
                                    autocomplete="off" autocapitalize="none" spellcheck="false" required>
                             <div class="form-text" style="color: var(--ih-text-muted);">
-                                Lowercase letters, numbers, dots, dashes and underscores only. 3–100 characters.
-                                Usernames must be unique.
+                                Letters (any case), numbers, dots, dashes and underscores. 3–100 characters.
+                                Usernames are unique case-insensitively — "Alice" and "alice" cannot coexist.
                             </div>
                         </div>
                         <div class="alert alert-info py-2 small mb-0">

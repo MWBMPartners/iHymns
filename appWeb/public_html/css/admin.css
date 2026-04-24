@@ -35,9 +35,36 @@ a:not(.btn):not(.nav-link):not(.dropdown-item):hover {
     color: var(--accent-end);
 }
 
+/* Shared admin page container. Replaces the inline per-page
+   `style="max-width: NNNNpx"` pattern — the hard caps meant every
+   admin dashboard left 300–700 px of dead space on 1440–1920 desktops.
+   Uses the available viewport width with a generous gutter, capped
+   only at ultra-wide widths so long lists don't become unreadable. */
+.container-admin {
+    width: 100%;
+    max-width: min(100%, 1800px);
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 1.5rem;
+    padding-right: 1.5rem;
+}
+
 /* ==========================================================================
    SHARED NAVBAR — admin dashboard header & editor top bar
+   The dashboard pages pin .navbar-admin to the viewport top, matching the
+   main app's .app-header behaviour so admins don't lose navigation context
+   on long pages. The Song Editor uses .navbar-editor instead (full-height
+   flex layout with its own toolbar), so the body-padding rule is :has()-
+   scoped to .navbar-admin and doesn't affect it.
    ========================================================================== */
+
+:root {
+    /* Single source of truth for admin chrome sizes. Used by the pinned
+       navbar, the body padding that keeps content clear of it, and the
+       modal-offset tweak below. Keep in sync with the .navbar-admin
+       padding (0.5rem × 2 + content ≈ 56 px on desktop, 64 px below). */
+    --admin-navbar-height: 56px;
+}
 
 .navbar-admin,
 .navbar-editor {
@@ -47,9 +74,28 @@ a:not(.btn):not(.nav-link):not(.dropdown-item):hover {
     box-shadow: var(--card-shadow);
 }
 
-/* Admin footer — fixed to the bottom of the viewport, mirroring the
-   main app's .app-footer treatment minus the tab-nav. Shares the same
-   blur / shadow / border tokens so both surfaces feel identical. */
+.navbar-admin {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 1030;
+    min-height: var(--admin-navbar-height);
+    /* Keep the solid --surface-card background from the shared rule
+       above. The main app's .app-header uses a translucent glass token
+       because the content scrolling under it provides visual context,
+       but the admin navbar sits above tightly-packed dashboard cards
+       at the same slate-900 tone and disappears when translucent. */
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+}
+
+/* Admin footer — fixed to the bottom of the viewport. Uses the card
+   surface colour (not the translucent --footer-bg glass token) because
+   the admin footer is a thin info strip with no tab-nav beneath it —
+   at 88% opacity over slate-900 body it's indistinguishable from the
+   background. --surface-card (#1e293b dark / #fff light) gives it the
+   same visual weight as the navbar it mirrors, and a stronger top
+   border pulls it away from the content above. */
 .admin-footer-static {
     position: fixed;
     bottom: 0;
@@ -58,19 +104,20 @@ a:not(.btn):not(.nav-link):not(.dropdown-item):hover {
     z-index: 1030;
     padding-top: 0.4rem;
     padding-bottom: 0.4rem;
-    background: var(--footer-bg);
-    backdrop-filter: blur(16px) saturate(180%);
-    -webkit-backdrop-filter: blur(16px) saturate(180%);
-    box-shadow: var(--footer-shadow);
+    background-color: var(--surface-card);
     border-top: 1px solid var(--card-border);
-    min-height: auto;
+    box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.35);
+    min-height: calc(var(--footer-info-height) + 0.2rem);
 }
 
-/* Every admin page loads admin.css, so reserve space under the final
-   row of content so it's never obscured by the fixed footer. Uses the
-   shared --footer-info-height token (28 px normal / 40 px small
-   viewports per app.css media queries). */
-body {
+/* Reserve space above and below the scroll area on admin-dashboard
+   pages so content isn't hidden under the pinned navbar or footer.
+   Scoped with :has() so the Song Editor (which uses .navbar-editor and
+   its own full-height flex layout) is unaffected. Uses the shared
+   --footer-info-height token (28 px normal / 40 px small viewports per
+   the media queries in app.css). */
+body:has(.navbar-admin) {
+    padding-top: calc(var(--admin-navbar-height) + 0.5rem);
     padding-bottom: calc(var(--footer-info-height) + 1rem);
 }
 
@@ -92,6 +139,75 @@ body {
 .navbar-admin .nav-link:hover,
 .navbar-admin .nav-link.active {
     color: var(--accent-solid);
+}
+
+/* Username + role button next to the avatar dropdown. Compact, low
+   visual weight, and only visible from sm up — xs screens get the
+   avatar alone to keep the bar uncluttered. */
+.admin-identity-btn {
+    background-color: transparent;
+    border: 1px solid transparent;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    padding: 0.25rem 0.6rem;
+}
+.admin-identity-btn:hover,
+.admin-identity-btn:focus {
+    color: var(--text-primary);
+    border-color: var(--card-border);
+    background-color: rgba(255, 255, 255, 0.03);
+}
+
+/* Offcanvas surface nav — slide-out list launched by the hamburger.
+   Styled to match the dark admin palette rather than Bootstrap's
+   default card-on-white look. */
+#admin-nav-offcanvas {
+    background-color: var(--surface-card);
+    color: var(--text-primary);
+    border-left: 1px solid var(--card-border);
+}
+#admin-nav-offcanvas .list-group-item {
+    background-color: transparent;
+    color: var(--text-secondary);
+    border-color: var(--card-border);
+}
+#admin-nav-offcanvas .list-group-item:hover,
+#admin-nav-offcanvas .list-group-item:focus {
+    color: var(--text-primary);
+    background-color: rgba(255, 255, 255, 0.03);
+}
+#admin-nav-offcanvas .list-group-item.active {
+    background-color: rgba(99, 102, 241, 0.12);
+    color: var(--accent-solid);
+    border-color: transparent;
+}
+#admin-nav-offcanvas .offcanvas-header,
+#admin-nav-offcanvas .offcanvas-footer {
+    border-color: var(--card-border);
+}
+
+/* ==========================================================================
+   CARD LAYOUT — edit-mode visuals (#448)
+   ========================================================================== */
+
+.card-layout-editing .card-layout-item .card-admin {
+    cursor: grab;
+    outline: 1px dashed var(--card-border);
+    outline-offset: -2px;
+}
+.card-layout-editing .card-layout-item .card-admin:active {
+    cursor: grabbing;
+}
+.card-layout-ghost {
+    opacity: 0.4;
+}
+.card-layout-hide-btn {
+    position: absolute;
+    top: 0.35rem;
+    right: 0.35rem;
+    padding: 0 0.4rem;
+    line-height: 1.4;
+    z-index: 2;
 }
 
 /* ==========================================================================

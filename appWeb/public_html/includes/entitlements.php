@@ -67,6 +67,14 @@ const ENTITLEMENTS = [
     'manage_access_tiers'         => ['admin', 'global_admin'],
     'assign_user_tier'            => ['admin', 'global_admin'],
 
+    /* Card-layout personalisation (#448). Default site layout is set by
+       admins; every role is allowed to customise their own by default,
+       but an admin can revoke `customise_own_card_layout` to lock a site
+       down. Group-level veto via tblUserGroups.AllowCardReorder layers
+       on top. */
+    'manage_default_card_layout' => ['admin', 'global_admin'],
+    'customise_own_card_layout'  => ['user', 'editor', 'admin', 'global_admin'],
+
     /* Channel access gating (#407) — controls who can reach alpha/beta
        subdomains. Applied BEFORE the page renders so pre-release builds
        are invisible to the public even when indexed. Defaults intentionally

@@ -316,7 +316,10 @@ function needsSetup(): bool
 function createUser(string $username, string $password, string $displayName, string $role = 'editor', string $email = ''): int
 {
     $db = getDb();
-    $username = strtolower(trim($username));
+    /* Preserve the case the user chose — the `Username` column is
+       utf8mb4_unicode_ci, so uniqueness + login lookups remain
+       case-insensitive without us lowercasing. */
+    $username = trim($username);
 
     /* Validate role */
     if (!isset(ROLE_LEVELS[$role])) {
@@ -569,10 +572,13 @@ function updateUserProfile(int $userId, string $displayName, string $email): boo
  */
 function renameUser(int $userId, string $newUsername, ?string &$error = null): bool
 {
-    $newUsername = mb_strtolower(trim($newUsername));
+    /* Preserve case the user picked. Validation allows upper + lower
+       letters; the `ci` collation on Username still enforces unique-
+       across-case, so nobody can create "Alice" if "alice" exists. */
+    $newUsername = trim($newUsername);
     if (strlen($newUsername) < 3
         || strlen($newUsername) > 100
-        || !preg_match('/^[a-z0-9_.\-]+$/', $newUsername)) {
+        || !preg_match('/^[A-Za-z0-9_.\-]+$/', $newUsername)) {
         $error = 'Username must be 3–100 characters (letters, numbers, _, -, . only).';
         return false;
     }

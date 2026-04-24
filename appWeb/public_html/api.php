@@ -46,6 +46,8 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_access.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'card_layout.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db.php';
 
 /* =========================================================================
@@ -2386,6 +2388,111 @@ if ($action !== null) {
 
             sendJson(['ok' => true]);
             break;
+
+        /* =================================================================
+         * CARD LAYOUT PERSONALISATION (#448)
+         *
+         * Surfaces covered: "dashboard" (= /manage/) and "home" (= /).
+         * Read is public; save endpoints require auth + the appropriate
+         * entitlement. Group-level veto (tblUserGroups.AllowCardReorder)
+         * is enforced inside cardLayoutUserCanCustomise().
+         * ================================================================= */
+
+        case 'card_layout_get': {
+            $surface = (string)($_GET['surface'] ?? '');
+            if (!in_array($surface, CARD_LAYOUT_SURFACES, true)) {
+                sendJson(['error' => 'Invalid surface.'], 400);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            $user = $authUser ? [
+                'id'       => $authUser['Id'] ?? null,
+                'role'     => $authUser['Role'] ?? null,
+                'group_id' => $authUser['GroupId'] ?? null,
+            ] : null;
+            $default = cardLayoutDefault($surface);
+            $override = $user ? cardLayoutUserOverride((int)($user['id'] ?? 0), $surface) : ['order' => [], 'hidden' => []];
+            sendJson([
+                'surface'   => $surface,
+                'default'   => $default,
+                'override'  => $override,
+                'canCustomiseOwn' => cardLayoutUserCanCustomise($user),
+                'canSetDefault'   => $user && userHasEntitlement('manage_default_card_layout', $user['role'] ?? null),
+            ]);
+            break;
+        }
+
+        case 'card_layout_save_user': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Auth required.'], 401); break; }
+            $user = [
+                'id'       => $authUser['Id'] ?? null,
+                'role'     => $authUser['Role'] ?? null,
+                'group_id' => $authUser['GroupId'] ?? null,
+            ];
+            if (!cardLayoutUserCanCustomise($user)) {
+                sendJson(['error' => 'Customisation not permitted for this account.'], 403);
+                break;
+            }
+            $body    = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $surface = (string)($body['surface'] ?? '');
+            if (!in_array($surface, CARD_LAYOUT_SURFACES, true)) {
+                sendJson(['error' => 'Invalid surface.'], 400);
+                break;
+            }
+            $ok = cardLayoutSaveUserOverride((int)$user['id'], $surface, [
+                'order'  => $body['order']  ?? [],
+                'hidden' => $body['hidden'] ?? [],
+            ]);
+            sendJson(['ok' => $ok]);
+            break;
+        }
+
+        case 'card_layout_reset_user': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Auth required.'], 401); break; }
+            $body    = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $surface = (string)($body['surface'] ?? '');
+            if (!in_array($surface, CARD_LAYOUT_SURFACES, true)) {
+                sendJson(['error' => 'Invalid surface.'], 400);
+                break;
+            }
+            $ok = cardLayoutClearUserOverride((int)$authUser['Id'], $surface);
+            sendJson(['ok' => $ok]);
+            break;
+        }
+
+        case 'card_layout_save_default': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_default_card_layout', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+            $body    = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $surface = (string)($body['surface'] ?? '');
+            if (!in_array($surface, CARD_LAYOUT_SURFACES, true)) {
+                sendJson(['error' => 'Invalid surface.'], 400);
+                break;
+            }
+            $ok = cardLayoutSaveDefault($surface, [
+                'order'  => $body['order']  ?? [],
+                'hidden' => $body['hidden'] ?? [],
+            ]);
+            sendJson(['ok' => $ok]);
+            break;
+        }
 
         /* =================================================================
          * SONG KEY & TRANSPOSITION (#298)

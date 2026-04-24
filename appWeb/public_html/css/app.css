@@ -1459,18 +1459,18 @@ body.reduce-transparency .pwa-install-banner {
     }
 }
 
-/* Medium screens and up */
+/* Medium screens and up — use the available viewport width with a
+   generous gutter and a soft cap only at ultra-wide widths so text
+   doesn't span an uncomfortably long line on 2560 px+ displays. The
+   cap is intentionally high (1800 px) so 1440/1920 desktops get the
+   full width and reading-specific pages (song lyrics) apply their
+   own tighter cap where needed. */
 @media (min-width: 768px) {
     .page-content {
-        max-width: 960px;
+        max-width: min(100%, 1800px);
         margin: 0 auto;
-    }
-}
-
-/* Large screens */
-@media (min-width: 1200px) {
-    .page-content {
-        max-width: 1140px;
+        padding-left: 1.5rem;
+        padding-right: 1.5rem;
     }
 }
 

@@ -296,7 +296,7 @@ if ($hasCredentials && defined('DB_HOST')) {
 </nav>
 <?php endif; ?>
 
-<div class="container py-4" style="max-width: 900px;">
+<div class="container-admin py-4">
 
     <h1 class="mb-1">Database Setup</h1>
     <p class="text-secondary mb-4">iHymns Admin &mdash; Installation, migration, and maintenance</p>

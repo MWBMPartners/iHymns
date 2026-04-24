@@ -132,7 +132,7 @@ try {
     </div>
 </nav>
 
-<div class="container py-4" style="max-width: 1100px;">
+<div class="container-admin py-4">
 
     <?php if ($flash): ?>
         <div class="alert alert-success py-2"><?= htmlspecialchars($flash) ?></div>
