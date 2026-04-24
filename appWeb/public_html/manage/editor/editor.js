@@ -1650,93 +1650,16 @@ function refreshArrangementPresetAvailability(song) {
  *
  * @param {Object} song - The song object.
  */
+/* Writers + Composers collapsed onto the shared chip-list helper
+   that also drives Arrangers/Adaptors/Translators (#497). All five
+   credit collections now get the #495 cross-collection autocomplete
+   for free — createDynamicInputRow() attaches a live-search popover
+   whenever a `creditKind` is passed through. */
 function renderWriters(song) {
-    /* Grab the container. */
-    var container = document.getElementById('writers-container');
-    if (!container) return;
-
-    /* Clear previous content. */
-    container.innerHTML = '';
-
-    /* Ensure the song has a writers array. */
-    if (!song.writers) song.writers = [];
-
-    /* Render one input per writer. */
-    song.writers.forEach(function (writer, i) {
-        var row = createDynamicInputRow(
-            writer,                              // current value
-            function (newVal) {                   // on change callback
-                song.writers[i] = newVal;
-                markModified(song.id);
-            },
-            function () {                         // on remove callback
-                song.writers.splice(i, 1);
-                markModified(song.id);
-                renderWriters(song);              // re-render the list
-            }
-        );
-        container.appendChild(row);
-    });
-
-    /* "Add Writer" button. */
-    var addBtn = document.createElement('button');
-    addBtn.type = 'button';
-    addBtn.className = 'btn btn-sm btn-outline-primary mt-2';
-    addBtn.textContent = '+ Add Writer';
-    addBtn.addEventListener('click', function () {
-        song.writers.push('');       // add an empty entry
-        markModified(song.id);
-        renderWriters(song);         // re-render
-    });
-    container.appendChild(addBtn);
+    renderCreditChipList(song, 'writers',   'writers-container',   'Add Writer');
 }
-
-/**
- * renderComposers(song)
- * ---------------------
- * Same pattern as renderWriters but for the composers array.
- *
- * @param {Object} song - The song object.
- */
 function renderComposers(song) {
-    /* Grab the container. */
-    var container = document.getElementById('composers-container');
-    if (!container) return;
-
-    /* Clear previous content. */
-    container.innerHTML = '';
-
-    /* Ensure the song has a composers array. */
-    if (!song.composers) song.composers = [];
-
-    /* Render one input per composer. */
-    song.composers.forEach(function (composer, i) {
-        var row = createDynamicInputRow(
-            composer,                             // current value
-            function (newVal) {                   // on change callback
-                song.composers[i] = newVal;
-                markModified(song.id);
-            },
-            function () {                         // on remove callback
-                song.composers.splice(i, 1);
-                markModified(song.id);
-                renderComposers(song);            // re-render
-            }
-        );
-        container.appendChild(row);
-    });
-
-    /* "Add Composer" button. */
-    var addBtn = document.createElement('button');
-    addBtn.type = 'button';
-    addBtn.className = 'btn btn-sm btn-outline-primary mt-2';
-    addBtn.textContent = '+ Add Composer';
-    addBtn.addEventListener('click', function () {
-        song.composers.push('');     // add an empty entry
-        markModified(song.id);
-        renderComposers(song);       // re-render
-    });
-    container.appendChild(addBtn);
+    renderCreditChipList(song, 'composers', 'composers-container', 'Add Composer');
 }
 
 /* ----------------------------------------------------------------------
@@ -1752,18 +1675,33 @@ function renderComposers(song) {
  * (below) drives the #352 cross-song link list — different feature.
  * ---------------------------------------------------------------------- */
 
+/* Map the song-object key to the credit_search `kind` (#495). Used
+   by renderCreditChipList to decorate chip inputs with the right
+   live-search popover — the endpoint unions across all five tables
+   and uses the kind only as the primary sort bias. */
+var CREDIT_KIND_FOR_KEY = {
+    writers:     'writer',
+    composers:   'composer',
+    arrangers:   'arranger',
+    adaptors:    'adaptor',
+    translators: 'translator',
+};
+
 function renderCreditChipList(song, key, containerId, addLabel) {
     var container = document.getElementById(containerId);
     if (!container) return;
     if (!Array.isArray(song[key])) song[key] = [];
     container.innerHTML = '';
 
+    var kind = CREDIT_KIND_FOR_KEY[key] || null;
+
     song[key].forEach(function (name, i) {
         var row = createDynamicInputRow(
             name,
             function (newVal) { song[key][i] = newVal; markModified(song.id); },
             function ()       { song[key].splice(i, 1); markModified(song.id);
-                                renderCreditChipList(song, key, containerId, addLabel); }
+                                renderCreditChipList(song, key, containerId, addLabel); },
+            kind
         );
         container.appendChild(row);
     });
@@ -2184,16 +2122,17 @@ function initTranslationControls() {
  * @param {Function} onRemove - Called when the remove button is clicked.
  * @returns {HTMLElement} The assembled input-group div.
  */
-function createDynamicInputRow(value, onChange, onRemove) {
+function createDynamicInputRow(value, onChange, onRemove, creditKind) {
     /* Wrapper div styled as a Bootstrap input group. */
     var row = document.createElement('div');
-    row.className = 'input-group input-group-sm mb-1';
+    row.className = 'input-group input-group-sm mb-1 position-relative credit-chip-row';
 
     /* Text input. */
     var input = document.createElement('input');
     input.type = 'text';
     input.className = 'form-control';
     input.value = value;
+    input.autocomplete = 'off';
     /* Live-bind every keystroke back to the data. */
     input.addEventListener('input', function () {
         onChange(input.value);
@@ -2213,7 +2152,104 @@ function createDynamicInputRow(value, onChange, onRemove) {
     row.appendChild(input);
     row.appendChild(removeBtn);
 
+    /* Attach the live-search popover (#495) when a credit kind is
+       passed. The popover queries /api?action=credit_search which
+       unions across all five credit tables so a "Fanny Crosby"
+       already used as a Writer surfaces when typing in Composers,
+       avoiding the dedupe drift problem described in the issue.
+
+       No-op when called without a kind (e.g. for non-credit dynamic
+       list uses), so the helper stays general. */
+    if (creditKind) {
+        attachCreditAutocomplete(input, row, creditKind, onChange);
+    }
+
     return row;
+}
+
+/**
+ * attachCreditAutocomplete(input, row, kind, onChange)
+ * ----------------------------------------------------
+ * Wire a chip input to the /api?action=credit_search endpoint so
+ * typing surfaces a popover of matching stored-canonical spellings.
+ * Clicking one rewrites the input to the exact stored form and fires
+ * onChange so the song object picks it up. Escape / click-outside
+ * dismiss; popover is constrained within the input-group row via
+ * absolute positioning so long credit lists stay readable.
+ */
+function attachCreditAutocomplete(input, row, kind, onChange) {
+    var popover = document.createElement('div');
+    popover.className = 'list-group position-absolute w-100 shadow d-none credit-suggestions-popover';
+    popover.style.zIndex = '1050';
+    popover.style.top = '100%';
+    popover.style.left = '0';
+    popover.style.maxHeight = '220px';
+    popover.style.overflowY = 'auto';
+    row.appendChild(popover);
+
+    var debounceTimer = null;
+
+    function close() {
+        popover.classList.add('d-none');
+        popover.innerHTML = '';
+    }
+
+    function render(suggestions) {
+        popover.innerHTML = '';
+        if (!suggestions.length) { close(); return; }
+        suggestions.forEach(function (s) {
+            var item = document.createElement('button');
+            item.type = 'button';
+            item.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center py-1';
+            var kindsBadge = (s.kinds && s.kinds.length)
+                ? '<small class="text-muted">' + escapeHtmlSafe(s.kinds.join(' · ')) + '</small>'
+                : '';
+            item.innerHTML =
+                '<span><strong>' + escapeHtmlSafe(s.name) + '</strong> ' + kindsBadge + '</span>' +
+                '<span class="badge bg-secondary">' + (s.usage || 0) + '</span>';
+            item.addEventListener('click', function (e) {
+                e.preventDefault();
+                input.value = s.name;
+                onChange(s.name);
+                close();
+                input.focus();
+            });
+            popover.appendChild(item);
+        });
+        popover.classList.remove('d-none');
+    }
+
+    function fetchSuggestions(q) {
+        /* `kind=any` unions all five tables so the same spelling
+           surfaces no matter which chip list the admin is editing. */
+        var url = EDITOR_API_URL + '?action=credit_search' +
+                  '&q='    + encodeURIComponent(q) +
+                  '&kind=any&limit=12';
+        fetch(url, { credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                render(Array.isArray(data.suggestions) ? data.suggestions : []);
+            })
+            .catch(function () { close(); });
+    }
+
+    input.addEventListener('input', function () {
+        clearTimeout(debounceTimer);
+        var q = input.value.trim();
+        if (q.length < 1) { close(); return; }
+        debounceTimer = setTimeout(function () { fetchSuggestions(q); }, 180);
+    });
+
+    input.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') close();
+    });
+
+    /* Dismiss on click outside this specific row. We register a
+       delegated handler only once per row — listener is cleaned up
+       implicitly when the row is removed from the DOM. */
+    document.addEventListener('click', function (e) {
+        if (!row.contains(e.target)) close();
+    });
 }
 
 /* ========================================================================
