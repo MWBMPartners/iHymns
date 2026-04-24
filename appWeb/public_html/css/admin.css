@@ -67,14 +67,21 @@ a:not(.btn):not(.nav-link):not(.dropdown-item):hover {
     right: 0;
     z-index: 1030;
     min-height: var(--admin-navbar-height);
-    backdrop-filter: blur(16px) saturate(180%);
-    -webkit-backdrop-filter: blur(16px) saturate(180%);
-    background: var(--header-bg);
+    /* Keep the solid --surface-card background from the shared rule
+       above. The main app's .app-header uses a translucent glass token
+       because the content scrolling under it provides visual context,
+       but the admin navbar sits above tightly-packed dashboard cards
+       at the same slate-900 tone and disappears when translucent. */
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
 }
 
-/* Admin footer — fixed to the bottom of the viewport, mirroring the
-   main app's .app-footer treatment minus the tab-nav. Shares the same
-   blur / shadow / border tokens so both surfaces feel identical. */
+/* Admin footer — fixed to the bottom of the viewport. Uses the card
+   surface colour (not the translucent --footer-bg glass token) because
+   the admin footer is a thin info strip with no tab-nav beneath it —
+   at 88% opacity over slate-900 body it's indistinguishable from the
+   background. --surface-card (#1e293b dark / #fff light) gives it the
+   same visual weight as the navbar it mirrors, and a stronger top
+   border pulls it away from the content above. */
 .admin-footer-static {
     position: fixed;
     bottom: 0;
@@ -83,12 +90,10 @@ a:not(.btn):not(.nav-link):not(.dropdown-item):hover {
     z-index: 1030;
     padding-top: 0.4rem;
     padding-bottom: 0.4rem;
-    background: var(--footer-bg);
-    backdrop-filter: blur(16px) saturate(180%);
-    -webkit-backdrop-filter: blur(16px) saturate(180%);
-    box-shadow: var(--footer-shadow);
+    background-color: var(--surface-card);
     border-top: 1px solid var(--card-border);
-    min-height: auto;
+    box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.35);
+    min-height: calc(var(--footer-info-height) + 0.2rem);
 }
 
 /* Reserve space above and below the scroll area on admin-dashboard
