@@ -161,7 +161,7 @@ $_visibleAdminLinks = array_values(array_filter(
                             aria-label="Account menu"
                             id="admin-user-btn">
                         <i class="bi bi-person-circle" aria-hidden="true"></i>
-                        <span class="d-none d-sm-inline"><?= htmlspecialchars($_displayName) ?></span>
+                        <span class="d-none d-sm-inline text-nowrap"><?= htmlspecialchars($_displayName) ?></span>
                         <span class="badge <?= $_roleBadge[0] ?> d-none d-sm-inline"
                               style="font-size: 0.65rem;">
                             <?= htmlspecialchars($_roleBadge[1]) ?>
