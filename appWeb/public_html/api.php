@@ -4652,6 +4652,76 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
+         * #281 — Song translations list. Returns every related-language
+         * version of the given song (outward + inward + siblings).
+         *   GET /api?action=song_translations&song_id=<id>
+         * ----------------------------------------------------------------- */
+        case 'song_translations':
+            $sid = trim((string)($_GET['song_id'] ?? ''));
+            if ($sid === '') {
+                sendJson(['error' => 'song_id required.'], 400);
+                break;
+            }
+            try {
+                require_once __DIR__ . '/includes/db_mysql.php';
+                $mysqli = getDbMysqli();
+                $sql = '
+                    SELECT t.TranslatedSongId AS song_id,
+                           t.TargetLanguage   AS language,
+                           l.Name             AS language_name,
+                           l.NativeName       AS native_name,
+                           l.TextDirection    AS dir,
+                           t.Translator       AS translator,
+                           t.Verified         AS verified
+                      FROM tblSongTranslations t
+                      JOIN tblLanguages l ON l.Code = t.TargetLanguage
+                     WHERE t.SourceSongId = ? AND l.IsActive = 1
+                    UNION
+                    SELECT src.SongId         AS song_id,
+                           srcLang.Code       AS language,
+                           srcLang.Name       AS language_name,
+                           srcLang.NativeName AS native_name,
+                           srcLang.TextDirection AS dir,
+                           ""                 AS translator,
+                           1                  AS verified
+                      FROM tblSongTranslations selfT
+                      JOIN tblSongs src         ON src.SongId = selfT.SourceSongId
+                      JOIN tblLanguages srcLang ON srcLang.Code = src.Language
+                     WHERE selfT.TranslatedSongId = ? AND srcLang.IsActive = 1
+                    UNION
+                    SELECT sibling.TranslatedSongId AS song_id,
+                           sibling.TargetLanguage   AS language,
+                           l2.Name                  AS language_name,
+                           l2.NativeName            AS native_name,
+                           l2.TextDirection         AS dir,
+                           sibling.Translator       AS translator,
+                           sibling.Verified         AS verified
+                      FROM tblSongTranslations selfT2
+                      JOIN tblSongTranslations sibling
+                           ON sibling.SourceSongId = selfT2.SourceSongId
+                          AND sibling.TranslatedSongId <> selfT2.TranslatedSongId
+                      JOIN tblLanguages l2 ON l2.Code = sibling.TargetLanguage
+                     WHERE selfT2.TranslatedSongId = ? AND l2.IsActive = 1
+                ';
+                $stmt = $mysqli->prepare($sql);
+                if ($stmt === false) {
+                    sendJson(['song_id' => $sid, 'translations' => []]);
+                    break;
+                }
+                $stmt->bind_param('sss', $sid, $sid, $sid);
+                $stmt->execute();
+                $res  = $stmt->get_result();
+                $rows = [];
+                while ($row = $res->fetch_assoc()) $rows[] = $row;
+                $stmt->close();
+                sendJson(['song_id' => $sid, 'translations' => $rows]);
+            } catch (\Throwable $e) {
+                error_log('[song_translations] ' . $e->getMessage());
+                sendJson(['song_id' => $sid, 'translations' => []]);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
          * Unknown action
          * ----------------------------------------------------------------- */
         default:
