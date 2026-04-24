@@ -83,6 +83,24 @@ if ($page !== null) {
     /* Set content type for HTML fragments */
     header('Content-Type: text/html; charset=UTF-8');
 
+    /* Cache SPA fragments so bouncing between pages doesn't re-hit the
+       server for content that hasn't changed. Uses ETag + 304 so the
+       body isn't re-sent when the content is unchanged — the service
+       worker can treat fragment responses as cacheable. Logged-in
+       content would need a per-user ETag; this currently covers the
+       same-for-everyone pages (home, songbooks, song, songbook,
+       writer, help, terms, privacy) which make up most navigation.
+       Content-sensitive pages (favorites, setlist, settings, stats)
+       still skip this path because they include user-specific data. */
+    $_cacheablePages = [
+        'home', 'songbooks', 'songbook', 'song', 'search',
+        'writer', 'help', 'terms', 'privacy', 'request-a-song',
+    ];
+    $_shouldCachePage = in_array($page, $_cacheablePages, true);
+    if ($_shouldCachePage) {
+        ob_start();
+    }
+
     /* Route to the appropriate page template */
     switch ($page) {
         case 'home':
@@ -170,6 +188,21 @@ if ($page !== null) {
             http_response_code(404);
             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'not-found.php';
             break;
+    }
+
+    if ($_shouldCachePage) {
+        $body = (string)ob_get_clean();
+        /* Include the query string so /api?page=song&id=CP-0001 and
+           /api?page=song&id=CP-0002 hash to different ETags. */
+        $etag = '"' . hash('xxh64', $page . '|' . ($_SERVER['QUERY_STRING'] ?? '') . '|' . $body) . '"';
+        header('ETag: ' . $etag);
+        header('Cache-Control: private, max-age=300, must-revalidate');
+        header('Vary: Cookie, Authorization');
+        if (($_SERVER['HTTP_IF_NONE_MATCH'] ?? '') === $etag) {
+            http_response_code(304);
+            exit;
+        }
+        echo $body;
     }
 
     exit;
@@ -351,11 +384,18 @@ if ($action !== null) {
             }
 
             $rendered = [];
+            /* getSongs() already returns every field song.php reads from
+               $song at bulk-cache time (id, title, number, songbook,
+               songbookName, copyright, ccli, verified, has*, writers,
+               composers, components). The only fields it leaves off —
+               arrangement / capo / key — are optional and rendered with
+               `!empty($song[...])`, so a missing value degrades
+               gracefully. Skipping getSongById() inside this loop drops
+               the per-songbook work from O(2N) to O(N) and eliminates
+               the 800+ extra queries per Church Hymnal bulk fetch. */
             foreach ($bulkSongs as $bulkSong) {
                 $songId = $bulkSong['id'];
-                /* Render the song page HTML into a buffer */
-                $song = $songData->getSongById($songId);
-                if ($song === null) continue;
+                $song = $bulkSong;
 
                 ob_start();
                 require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'song.php';

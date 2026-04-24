@@ -646,64 +646,93 @@ self.addEventListener('message', (event) => {
 
         if (!Array.isArray(songbooks) || songbooks.length === 0) return;
 
-        caches.open(RECENT_CACHE).then(async (cache) => {
+        /* Self-invoking async wrapper so a rejection from caches.open(),
+           fetch() or cache.put() surfaces as a progress message with an
+           error string rather than silently stalling the UI at
+           "Downloading <book>…" indefinitely (#452). */
+        (async () => {
             let completed = 0;
             let failed = 0;
             const total = totalSongs;
 
-            for (const songbook of songbooks) {
-                try {
+            try {
+                const cache = await caches.open(RECENT_CACHE);
+
+                for (const songbook of songbooks) {
                     notifyClients({
                         type: 'CACHE_ALL_SONGS_PROGRESS',
                         completed, failed, total,
                         status: `Downloading ${songbook}...`,
                     });
 
-                    const resp = await fetch(`/api?action=bulk_songs&songbook=${encodeURIComponent(songbook)}`);
-                    if (!resp.ok) {
-                        failed++;
-                        continue;
-                    }
-
-                    const data = await resp.json();
-                    const songs = data.songs || {};
-                    const ids = Object.keys(songs);
-
-                    /* Store each song's HTML as an individual cache entry */
-                    for (const id of ids) {
-                        try {
-                            const url = `/api?page=song&id=${encodeURIComponent(id)}`;
-                            const html = songs[id];
-                            const fakeResponse = new Response(html, {
-                                status: 200,
-                                headers: {
-                                    'Content-Type': 'text/html; charset=UTF-8',
-                                    'X-Bulk-Cached': 'true',
-                                },
-                            });
-                            await cache.put(url, fakeResponse);
-                            completed++;
-                        } catch {
+                    try {
+                        const resp = await fetch(`/api?action=bulk_songs&songbook=${encodeURIComponent(songbook)}`);
+                        if (!resp.ok) {
                             failed++;
+                            notifyClients({
+                                type: 'CACHE_ALL_SONGS_PROGRESS',
+                                completed, failed, total,
+                                warning: `Skipped ${songbook}: HTTP ${resp.status}`,
+                            });
+                            continue;
                         }
-                    }
-                } catch {
-                    /* Network error for this songbook */
-                    failed++;
-                }
 
+                        const data = await resp.json();
+                        const songs = data.songs || {};
+                        const ids = Object.keys(songs);
+
+                        for (const id of ids) {
+                            try {
+                                const url = `/api?page=song&id=${encodeURIComponent(id)}`;
+                                const html = songs[id];
+                                const fakeResponse = new Response(html, {
+                                    status: 200,
+                                    headers: {
+                                        'Content-Type': 'text/html; charset=UTF-8',
+                                        'X-Bulk-Cached': 'true',
+                                    },
+                                });
+                                await cache.put(url, fakeResponse);
+                                completed++;
+                            } catch (e) {
+                                failed++;
+                            }
+                        }
+                    } catch (e) {
+                        /* Network error for this songbook — surface it so
+                           the UI moves on rather than hanging silently. */
+                        failed++;
+                        notifyClients({
+                            type: 'CACHE_ALL_SONGS_PROGRESS',
+                            completed, failed, total,
+                            warning: `Network error on ${songbook}: ${e && e.message ? e.message : 'unknown'}`,
+                        });
+                    }
+
+                    notifyClients({
+                        type: 'CACHE_ALL_SONGS_PROGRESS',
+                        completed, failed, total,
+                    });
+                }
+            } catch (e) {
+                /* caches.open() failed (storage quota, private-mode,
+                   Safari ITP etc.) — let the UI know instead of
+                   pretending to be mid-download forever. */
                 notifyClients({
                     type: 'CACHE_ALL_SONGS_PROGRESS',
                     completed, failed, total,
+                    error: (e && e.message) ? e.message : 'Cache unavailable',
                 });
+                return;
             }
 
             /* Final report */
             notifyClients({
                 type: 'CACHE_ALL_SONGS_PROGRESS',
                 completed, failed, total,
+                done: true,
             });
-        });
+        })();
     }
 
     /* Legacy per-song download (fallback if bulk not available) */

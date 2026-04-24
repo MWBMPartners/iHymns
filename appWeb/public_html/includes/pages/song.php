@@ -155,7 +155,7 @@ $components  = $song['components'] ?? [];
             <div class="d-flex flex-wrap gap-2">
                 <!-- Favourite toggle -->
                 <button type="button"
-                        class="btn btn-outline-danger btn-sm btn-favourite"
+                        class="btn btn-outline-secondary btn-sm song-toolbar-btn btn-favourite"
                         data-song-id="<?= htmlspecialchars($song['id']) ?>"
                         data-song-title="<?= htmlspecialchars($songTitle) ?>"
                         aria-label="Add to favourites"
@@ -166,7 +166,7 @@ $components  = $song['components'] ?? [];
 
                 <!-- Share button -->
                 <button type="button"
-                        class="btn btn-outline-primary btn-sm btn-share"
+                        class="btn btn-outline-secondary btn-sm song-toolbar-btn btn-share"
                         data-song-id="<?= htmlspecialchars($song['id']) ?>"
                         data-song-title="<?= htmlspecialchars($songTitle) ?>"
                         aria-label="Share this song">
@@ -177,7 +177,7 @@ $components  = $song['components'] ?? [];
                 <!-- Audio button (if available) -->
                 <?php if ($hasAudio): ?>
                     <button type="button"
-                            class="btn btn-outline-secondary btn-sm btn-audio"
+                            class="btn btn-outline-secondary btn-sm song-toolbar-btn btn-audio"
                             data-song-id="<?= htmlspecialchars($song['id']) ?>"
                             aria-label="Play audio">
                         <i class="fa-solid fa-headphones me-1" aria-hidden="true"></i>
@@ -188,7 +188,7 @@ $components  = $song['components'] ?? [];
                 <!-- Sheet music button (if available) -->
                 <?php if ($hasSheet): ?>
                     <button type="button"
-                            class="btn btn-outline-secondary btn-sm btn-sheet-music"
+                            class="btn btn-outline-secondary btn-sm song-toolbar-btn btn-sheet-music"
                             data-song-id="<?= htmlspecialchars($song['id']) ?>"
                             aria-label="View sheet music">
                         <i class="fa-solid fa-file-pdf me-1" aria-hidden="true"></i>
@@ -198,7 +198,7 @@ $components  = $song['components'] ?? [];
 
                 <!-- Add to set list (#94) -->
                 <button type="button"
-                        class="btn btn-outline-secondary btn-sm btn-add-to-setlist"
+                        class="btn btn-outline-secondary btn-sm song-toolbar-btn btn-add-to-setlist"
                         aria-label="Add to set list">
                     <i class="fa-solid fa-list-ol me-1" aria-hidden="true"></i>
                     Set List
@@ -206,24 +206,30 @@ $components  = $song['components'] ?? [];
 
                 <!-- Compare with another song (#102) -->
                 <button type="button"
-                        class="btn btn-outline-secondary btn-sm btn-compare"
+                        class="btn btn-outline-secondary btn-sm song-toolbar-btn btn-compare"
                         aria-label="Compare with another song">
                     <i class="fa-solid fa-columns me-1" aria-hidden="true"></i>
                     Compare
                 </button>
 
-                <!-- Save offline button -->
+                <!-- Save offline — consolidated into the harmonised cloud
+                     button (#453, #454, #456). The offline-ui module
+                     handles feature detection, cached-state, disabled
+                     tooltip, and click; the legacy .btn-save-offline
+                     handler still runs too, so either wire path works. -->
                 <button type="button"
-                        class="btn btn-outline-secondary btn-sm btn-save-offline"
+                        class="btn btn-outline-secondary btn-sm song-toolbar-btn btn-save-offline song-toolbar-btn d-none"
                         data-song-id="<?= htmlspecialchars($song['id']) ?>"
-                        aria-label="Save this song for offline use">
-                    <i class="fa-solid fa-download me-1" aria-hidden="true"></i>
+                        data-song-download="<?= htmlspecialchars($song['id']) ?>"
+                        aria-label="Save this song for offline use"
+                        title="Save this song for offline use">
+                    <i class="fa-solid fa-cloud-arrow-down me-1" aria-hidden="true"></i>
                     <span>Save Offline</span>
                 </button>
 
                 <!-- Presentation mode (#297) -->
                 <button type="button"
-                        class="btn btn-outline-secondary btn-sm"
+                        class="btn btn-outline-secondary btn-sm song-toolbar-btn"
                         id="btn-present"
                         title="Presentation mode"
                         aria-label="Enter presentation mode">
@@ -233,7 +239,7 @@ $components  = $song['components'] ?? [];
 
                 <!-- Print button -->
                 <button type="button"
-                        class="btn btn-outline-secondary btn-sm btn-print"
+                        class="btn btn-outline-secondary btn-sm song-toolbar-btn btn-print"
                         aria-label="Print this song"
                         data-action="print">
                     <i class="fa-solid fa-print me-1" aria-hidden="true"></i>
@@ -248,7 +254,7 @@ $components  = $song['components'] ?? [];
                 <!-- Edit in Song Editor (#407). Hidden by default; revealed
                      by JS when the signed-in user has the `edit_songs`
                      entitlement (editor / admin / global_admin). -->
-                <a class="btn btn-sm btn-outline-primary d-none"
+                <a class="btn btn-sm btn-outline-secondary song-toolbar-btn d-none"
                    id="btn-edit-song"
                    href="/manage/editor/?song=<?= urlencode($song['id'] ?? '') ?>"
                    title="Edit this song in the Song Editor">
@@ -389,7 +395,7 @@ $components  = $song['components'] ?? [];
         <div class="d-flex justify-content-between">
             <?php if ($prevSong): ?>
                 <a href="/song/<?= htmlspecialchars($prevSong['id']) ?>"
-                   class="btn btn-outline-secondary btn-sm"
+                   class="btn btn-outline-secondary btn-sm song-toolbar-btn"
                    data-navigate="song"
                    data-song-id="<?= htmlspecialchars($prevSong['id']) ?>"
                    aria-label="Previous song: <?= htmlspecialchars(toTitleCase($prevSong['title'])) ?>">
@@ -402,7 +408,7 @@ $components  = $song['components'] ?? [];
 
             <?php if ($nextSong): ?>
                 <a href="/song/<?= htmlspecialchars($nextSong['id']) ?>"
-                   class="btn btn-outline-secondary btn-sm"
+                   class="btn btn-outline-secondary btn-sm song-toolbar-btn"
                    data-navigate="song"
                    data-song-id="<?= htmlspecialchars($nextSong['id']) ?>"
                    aria-label="Next song: <?= htmlspecialchars(toTitleCase($nextSong['title'])) ?>">

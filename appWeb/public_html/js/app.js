@@ -38,6 +38,7 @@ import { Transpose } from './modules/transpose.js';
 import { ReadingProgress } from './modules/reading-progress.js';
 import { SongbookIndex } from './modules/songbook-index.js';
 import { SearchHistory } from './modules/search-history.js';
+import { bootOfflineUi } from './modules/offline-ui.js';
 import { SongOfTheDay } from './modules/song-of-the-day.js';
 import { OfflineIndicator } from './modules/offline-indicator.js';
 import { StorageBridge } from './modules/storage-bridge.js';
@@ -304,6 +305,11 @@ class iHymnsApp {
 
             /* --- Load initial page based on current URL --- */
             await this.router.handleCurrentRoute();
+
+            /* Wire offline-download buttons in whatever page just
+               rendered. Safe to call every route change because the
+               helper only binds fresh nodes. */
+            bootOfflineUi();
 
             /* --- Hide the loading spinner --- */
             this.hideLoader();

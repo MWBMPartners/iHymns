@@ -140,13 +140,18 @@ $songbooks = $songData->getSongbooks();
             <?php foreach ($songbooks as $index => $book): ?>
                 <?php if (($book['songCount'] ?? 0) > 0): ?>
                     <div class="col-6 col-md-4 col-lg-3" id="songbook-<?= htmlspecialchars($book['id']) ?>">
-                        <a href="/songbook/<?= htmlspecialchars($book['id']) ?>"
-                           class="card card-songbook h-100 text-decoration-none"
-                           data-navigate="songbook"
-                           data-songbook-id="<?= htmlspecialchars($book['id']) ?>"
-                           aria-label="<?= htmlspecialchars($book['name']) ?> — <?= $book['songCount'] ?> songs">
+                        <div class="card card-songbook h-100 position-relative"
+                             data-songbook-id="<?= htmlspecialchars($book['id']) ?>"
+                             data-songbook-songs="<?= (int)$book['songCount'] ?>">
+                            <!-- Stretched link covers the whole card body,
+                                 keeping the download button clickable because
+                                 the button's stacking context is raised by
+                                 position: relative + z-index on the button. -->
+                            <a href="/songbook/<?= htmlspecialchars($book['id']) ?>"
+                               class="stretched-link text-decoration-none text-reset"
+                               data-navigate="songbook"
+                               aria-label="<?= htmlspecialchars($book['name']) ?> — <?= $book['songCount'] ?> songs"></a>
                             <div class="card-body text-center">
-                                <!-- Songbook icon with colour variation -->
                                 <div class="songbook-icon songbook-icon-<?= htmlspecialchars($book['id']) ?> mb-2">
                                     <i class="fa-solid fa-book" aria-hidden="true"></i>
                                 </div>
@@ -160,7 +165,20 @@ $songbooks = $songData->getSongbooks();
                                     <?= number_format($book['songCount']) ?> songs
                                 </p>
                             </div>
-                        </a>
+                            <!-- Offline-download button (#453). Hidden by
+                                 default; the offline-support check in
+                                 js/modules/offline.js reveals it on capable
+                                 browsers. Always rendered so server-HTML
+                                 stays stable; never rendered enabled if
+                                 the browser can't act on it. -->
+                            <button type="button"
+                                    class="btn btn-sm btn-outline-secondary songbook-download-btn d-none"
+                                    data-songbook-download="<?= htmlspecialchars($book['id']) ?>"
+                                    aria-label="Download <?= htmlspecialchars($book['name']) ?> for offline use"
+                                    title="Download this songbook for offline use">
+                                <i class="fa-solid fa-cloud-arrow-down" aria-hidden="true"></i>
+                            </button>
+                        </div>
                     </div>
                 <?php endif; ?>
             <?php endforeach; ?>

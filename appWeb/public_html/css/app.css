@@ -2742,3 +2742,64 @@ body.reduce-motion .related-songs-chevron {
 .song-lyrics[data-practice-level="2"] .lyric-line:hover::before {
     display: none;
 }
+
+/* ==========================================================================
+   10. HARMONISED TOOLBAR BUTTONS (#456) + OFFLINE DOWNLOAD (#453, #454)
+   ========================================================================== */
+
+/* Song-view toolbar — every button below the song title shares this
+   class so sizing, hover, and disabled treatment are identical across
+   the row. Colour distinctions communicate STATE (active/cached/
+   favourited), not importance. */
+.song-toolbar-btn {
+    min-width: 2.5rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+.song-toolbar-btn:disabled,
+.song-toolbar-btn[aria-disabled="true"] {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+/* Active-state accents — applied via aria-pressed / data-state so the
+   base colour stays neutral. */
+.song-toolbar-btn.btn-favourite[aria-pressed="true"] {
+    color: var(--accent-solid);
+    border-color: var(--accent-solid);
+}
+.song-toolbar-btn[data-song-download][data-state="cached"] {
+    color: var(--accent-solid);
+    border-color: var(--accent-solid);
+}
+
+/* Songbook-card download button (#453) — sits in the top-right corner
+   of each card. Raised stacking context keeps it clickable above the
+   stretched link that covers the rest of the card. */
+.songbook-download-btn {
+    position: absolute;
+    top: 0.35rem;
+    right: 0.35rem;
+    z-index: 2;
+    padding: 0.2rem 0.45rem;
+    line-height: 1.3;
+}
+.songbook-download-btn:disabled,
+.songbook-download-btn[aria-disabled="true"] {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+.songbook-download-btn[data-state="cached"] {
+    color: var(--accent-solid);
+    border-color: var(--accent-solid);
+}
+
+/* Feature-detect class driven by js/modules/offline-ui.js. When
+   .offline-unsupported is on the body, every download control hides
+   (rather than showing a permanently-disabled UI that can't recover). */
+body.offline-unsupported [data-songbook-download],
+body.offline-unsupported [data-song-download],
+body.offline-unsupported .btn-save-offline,
+body.offline-unsupported .offline-only {
+    display: none !important;
+}
