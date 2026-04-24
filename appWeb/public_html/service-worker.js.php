@@ -19,6 +19,17 @@ header('Service-Worker-Allowed: /');
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
 $swVersion = $app['Application']['Version']['Number'] ?? '0.0.0';
+/* Fold the commit date (deploy-injected by the GH Actions pipeline) into
+   the cache key. Without it every build inside a single semver shares the
+   same key and clients stay pinned to the first-installed bundle. Falls
+   back to NULL (stripped) during local dev where Commit.Date is unset. */
+$swCommitStamp = preg_replace(
+    '/[^0-9]/', '',
+    (string)($app['Application']['Version']['Repo']['Commit']['Date'] ?? '')
+);
+$swCacheKey = $swCommitStamp !== ''
+    ? $swVersion . '-' . $swCommitStamp
+    : $swVersion;
 ?>
 /**
  * iHymns — Service Worker
@@ -51,11 +62,13 @@ $swVersion = $app['Application']['Version']['Number'] ?? '0.0.0';
  * ========================================================================= */
 
 /**
- * Cache version — derived from the application version in infoAppVer.php.
- * When the version is bumped by CI/CD, the service worker automatically
- * gets a new cache key, triggering a full cache purge on next load.
+ * Cache version — derived from the application version AND the deploy-time
+ * commit date in infoAppVer.php. The commit date component means every
+ * deploy (not just every semver bump) produces a new cache key, so clients
+ * pick up fresh module scripts instead of being pinned to the bundle their
+ * SW first installed. Old caches are purged on activation (#81).
  */
-const CACHE_VERSION = 'ihymns-v<?= $swVersion ?>';
+const CACHE_VERSION = 'ihymns-v<?= $swCacheKey ?>';
 
 /**
  * Songs cache (#105).

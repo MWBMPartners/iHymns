@@ -1199,8 +1199,20 @@ if (!empty($breadcrumbItems)) {
         };
     </script>
 
-    <!-- iHymns Application Scripts (ES Modules) -->
-    <script src="/js/app.js?v=<?= urlencode($app["Application"]["Version"]["Number"]) ?>" type="module"></script>
+    <!-- iHymns Application Scripts (ES Modules)
+
+         Cache-buster combines the semver with the deploy-time commit-date
+         stamp (injected by the GH Actions pipeline into infoAppVer.php)
+         so every deploy produces a new URL even when the semver hasn't
+         bumped. Without the commit stamp, .htaccess' max-age=3600 holds
+         onto user-auth.js and peers for up to an hour after a deploy. -->
+    <?php
+        $_appJsStamp = preg_replace('/[^0-9]/', '',
+            (string)($app['Application']['Version']['Repo']['Commit']['Date'] ?? ''));
+        $_appJsVersion = $app['Application']['Version']['Number']
+            . ($_appJsStamp !== '' ? '-' . $_appJsStamp : '');
+    ?>
+    <script src="/js/app.js?v=<?= urlencode($_appJsVersion) ?>" type="module"></script>
 
     <!-- Colour Vision Deficiency (CVD) SVG correction filters (#319) -->
     <?php readfile(__DIR__ . DIRECTORY_SEPARATOR . 'assets' . DIRECTORY_SEPARATOR . 'cvd-filters.svg'); ?>
