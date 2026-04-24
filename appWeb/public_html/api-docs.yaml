@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: iHymns API
-  version: "0.10.1"
+  version: "0.25.0"
   description: |
     The iHymns API provides programmatic access to the iHymns hymn and song
     database. It powers the iHymns Progressive Web App (PWA), enabling song
@@ -582,10 +582,21 @@ paths:
     get:
       operationId: getSongTranslations
       tags: [Languages]
-      summary: Get translations for a song
+      summary: Get every related-language version of a song (#281)
       description: |
-        Retrieve all available translations for a specific source song,
-        including the target language, translator, and verification status.
+        Resolves the full set of language versions related to the given
+        song, unioning three relationship directions:
+
+          1. **Outward** — translations whose `SourceSongId` is this song.
+          2. **Inward** — if this song IS a translation, the original
+             it was translated from.
+          3. **Sibling** — other translations of that same original,
+             so readers can hop between languages without going via
+             the source.
+
+        Each entry carries the target language, the translator credit
+        (if recorded), a verified flag for curated rows, and the text
+        direction for RTL-aware rendering.
       parameters:
         - name: action
           in: query
@@ -593,10 +604,11 @@ paths:
           schema:
             type: string
             enum: [song_translations]
-        - name: id
+        - name: song_id
           in: query
           required: true
-          description: Source song ID
+          description: Source song ID (unchanged for outward, the
+            translation's ID for inward/sibling resolution).
           schema:
             type: string
             example: CP-0202
@@ -608,16 +620,16 @@ paths:
               schema:
                 type: object
                 properties:
+                  song_id:
+                    type: string
+                    description: The song ID that was queried
+                    example: CP-0202
                   translations:
                     type: array
                     items:
                       $ref: "#/components/schemas/SongTranslation"
-                  sourceId:
-                    type: string
-                    description: The source song ID that was queried
-                    example: CP-0202
         "400":
-          description: Missing song ID
+          description: Missing song_id query parameter
           content:
             application/json:
               schema:
@@ -4159,6 +4171,207 @@ paths:
           description: VideoPsalm JSON
           content: { application/json: { schema: { type: object } } }
 
+  # ===========================================================================
+  # LICENCES (#462) — multi-licence, inheritance-aware resolution
+  # ===========================================================================
+
+  /api.php?action=user_effective_licences:
+    get:
+      operationId: getUserEffectiveLicences
+      tags: [Licences]
+      summary: Resolve a user's effective licence set (admin-only)
+      description: |
+        Returns every licence the given user holds, either directly on
+        their own row, via their CCLI number on `tblUsers`, or inherited
+        from any ancestor organisation in the `tblOrganisations.ParentOrgId`
+        chain (bounded at 10 levels to defend against cycles).
+
+        Intended for admin debugging — the same resolver also drives the
+        evaluator inside `content_access.php::checkContentAccess()`, so
+        this endpoint lets a curator understand why a given user is
+        passing or failing a `require_licence` rule.
+
+        Requires the `view_licence_audit` entitlement (default:
+        `admin`, `global_admin`).
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [user_effective_licences] }
+        - name: user_id
+          in: query
+          required: true
+          description: Target user's numeric ID
+          schema: { type: integer, minimum: 1, example: 42 }
+      responses:
+        "200":
+          description: Resolved licence set
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user_id: { type: integer, example: 42 }
+                  licences:
+                    type: array
+                    items: { $ref: "#/components/schemas/EffectiveLicence" }
+        "400":
+          description: Missing or invalid user_id
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: Caller lacks `view_licence_audit` entitlement
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=licence_check:
+    get:
+      operationId: checkOwnLicence
+      tags: [Licences]
+      summary: Does the caller hold a licence of the given type?
+      description: |
+        Convenience boolean check against the caller's own effective
+        licence set. Same resolver as `user_effective_licences` but
+        scoped to the authenticated user, so any logged-in client can
+        ask "do I hold a `ccli` licence?" without being an admin.
+
+        Use this from the frontend to show/hide copyrighted-content
+        features without hard-coding role strings.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [licence_check] }
+        - name: type
+          in: query
+          required: true
+          description: Licence type key to check (e.g. `ccli`, `ihymns_pro`).
+          schema: { type: string, example: ccli }
+      responses:
+        "200":
+          description: Result of the check
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  type: { type: string, example: ccli }
+                  has:  { type: boolean, example: true }
+        "400":
+          description: Missing type query parameter
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  # ===========================================================================
+  # NOTIFICATIONS (#289) — in-app delivery surface for tblNotifications
+  # ===========================================================================
+
+  /api.php?action=notifications_list:
+    get:
+      operationId: listNotifications
+      tags: [Notifications]
+      summary: List notifications for the authenticated user
+      description: |
+        Returns up to 50 notifications for the caller, ordered unread
+        first and then newest-first. Used by the header bell in the
+        PWA shell to populate the dropdown panel and the unread-count
+        badge.
+
+        Each row carries `action_url` when a notification deep-links
+        somewhere specific (e.g. `/song/CP-0001` after a song-request
+        resolution). The UI marks rows as read via
+        `notifications_mark_read`.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [notifications_list] }
+      responses:
+        "200":
+          description: Notification list (empty array when no rows)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Notification" }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=notifications_mark_read:
+    post:
+      operationId: markNotificationsRead
+      tags: [Notifications]
+      summary: Mark one or more notifications as read
+      description: |
+        Accepts either a list of specific IDs or a flag to clear the
+        entire unread queue. Scoped to the authenticated user — a
+        caller cannot modify another user's notifications even if
+        they supply IDs from elsewhere.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [notifications_mark_read] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [ids]
+                  properties:
+                    ids:
+                      type: array
+                      description: Notification IDs to mark as read.
+                      items: { type: integer, minimum: 1 }
+                      example: [101, 102]
+                - type: object
+                  required: [all]
+                  properties:
+                    all:
+                      type: boolean
+                      description: When true, marks every unread row for the caller.
+                      example: true
+      responses:
+        "200":
+          description: Mark-read result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:       { type: boolean, example: true }
+                  affected:
+                    type: integer
+                    description: Number of rows that changed from unread to read.
+                    example: 3
+        "400":
+          description: "Neither `ids` nor `all: true` supplied"
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: Wrong HTTP method (POST required)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
 # =============================================================================
 # COMPONENTS
 # =============================================================================
@@ -4169,8 +4382,21 @@ components:
       type: http
       scheme: bearer
       description: |
-        64-character hex token obtained from `auth_register` or `auth_login`.
-        Tokens expire after 30 days.
+        64-character hex token obtained from `auth_register`, `auth_login`,
+        or `auth_email_login_verify`. Tokens expire after 30 days with a
+        sliding renewal (every authenticated request bumps the expiry by
+        one day, at most once per 24h).
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: ihymns_auth
+      description: |
+        Cross-subdomain session cookie (`Domain=.ihymns.app; HttpOnly;
+        SameSite=Lax; Secure`) carrying the same token as the Bearer
+        header. Set on successful login; consumed by
+        `getAuthenticatedUser()` when no `Authorization` header is
+        present. Either scheme is accepted wherever security is
+        declared with both entries.
 
   schemas:
     # -------------------------------------------------------------------------
@@ -4357,38 +4583,40 @@ components:
 
     SongTranslation:
       type: object
+      description: |
+        One related-language version of a song, as returned by
+        `song_translations` (#281). Unions outward, inward, and sibling
+        relationships, so `song_id` may point at the original, a
+        translation, or another-language sibling depending on which
+        direction it was reached from.
       properties:
-        songId:
+        song_id:
           type: string
-          description: Translated song ID
+          description: Related song's ID
           example: FR-0202
         language:
           type: string
-          description: Target language code
+          description: ISO 639-1 code of the related language
           example: fr
-        languageName:
+        language_name:
           type: string
-          description: Target language name in English
+          description: English name of the language
           example: French
-        languageNativeName:
+        native_name:
           type: string
-          description: Target language native name
+          description: Native name of the language
           example: "Fran\u00E7ais"
-        title:
+        dir:
           type: string
-          description: Translated song title
-          example: "Gr\u00E2ce infinie"
-        number:
-          type: integer
-          description: Song number in the translated songbook
-          example: 202
+          enum: [ltr, rtl]
+          description: Text direction (from `tblLanguages.TextDirection`)
+          example: ltr
         translator:
           type: string
-          nullable: true
-          description: Translator name
+          description: Translator credit; empty for the inward link back to the source.
         verified:
           type: boolean
-          description: Whether the translation has been verified
+          description: Whether the translation has been curator-verified
 
     # -------------------------------------------------------------------------
     # Setlist models
@@ -4744,3 +4972,85 @@ components:
         ok:
           type: boolean
           example: true
+
+    # -------------------------------------------------------------------------
+    # Licences (#462) — inheritance-aware resolution
+    # -------------------------------------------------------------------------
+
+    EffectiveLicence:
+      type: object
+      description: |
+        One row in a user's effective licence set. Produced by
+        `getUserEffectiveLicences()` in `includes/licences.php`.
+        Same shape whether the licence was held directly, inherited
+        from a direct org membership, or inherited via an ancestor
+        org walked through `tblOrganisations.ParentOrgId`.
+      properties:
+        type:
+          type: string
+          description: Licence type key (e.g. `ccli`, `ihymns_pro`).
+          example: ccli
+        key:
+          type: string
+          description: Licence number / key on the licence row (CCLI
+            number, iHymns subscription key, or empty when the legacy
+            column didn't record one).
+          example: "1234567"
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Expiry timestamp in UTC; null = evergreen.
+        source:
+          type: string
+          enum: [user, org]
+          description: Which table the row came from.
+        source_id:
+          type: integer
+          description: User ID or org ID the row belongs to.
+          example: 17
+        inherited:
+          type: boolean
+          description: True if reached via the ancestor-org walk
+            rather than a direct membership / user row.
+
+    # -------------------------------------------------------------------------
+    # Notifications (#289)
+    # -------------------------------------------------------------------------
+
+    Notification:
+      type: object
+      description: |
+        In-app notification for the authenticated user. Rendered in
+        the header bell + dropdown by `js/modules/notifications.js`.
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 101
+        type:
+          type: string
+          description: Free-form category (e.g. `song_added`,
+            `request_update`, `announcement`) set by whichever
+            server-side trigger created the row.
+          example: request_update
+        title:
+          type: string
+          example: Your song request has been added
+        body:
+          type: string
+          description: Optional longer text; may be empty.
+          example: '"Great Is Thy Faithfulness" is now in Mission Praise.'
+        action_url:
+          type: string
+          description: Deep link to open when the row is clicked.
+            Empty string means "no navigation".
+          example: /song/MP-0100
+        is_read:
+          type: boolean
+          example: false
+        created_at:
+          type: string
+          format: date-time
+          example: 2026-04-24T14:37:49Z
+
