@@ -886,10 +886,103 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
+     * CREDIT_SEARCH (#495) — live-search distinct credit names
+     *
+     * GET parameters:
+     *   q    — partial name, case-insensitive substring match
+     *   kind — writer | composer | arranger | adaptor | translator | any
+     *          (default: any; "any" unions all five tables so the same
+     *          canonical spelling is surfaced regardless of which role
+     *          the user is typing into)
+     *   limit — max 50 suggestions (default 20)
+     *
+     * Returns: { suggestions: [{name, usage, kinds:["writer",...]}, ...] }
+     *   * usage — total song-count across the chosen kind(s), so popular
+     *             spellings sort first.
+     *   * kinds — which tables the name appears in; useful for the UI
+     *             to signal "this name is already used as an arranger".
+     * ----------------------------------------------------------------- */
+    case 'credit_search':
+        $q     = trim((string)($_GET['q'] ?? ''));
+        $kind  = strtolower(trim((string)($_GET['kind'] ?? 'any')));
+        $limit = max(1, min(50, (int)($_GET['limit'] ?? 20)));
+
+        if ($q === '' || strlen($q) < 1) {
+            echo json_encode(['suggestions' => []]);
+            break;
+        }
+
+        $kindToTable = [
+            'writer'     => 'tblSongWriters',
+            'composer'   => 'tblSongComposers',
+            'arranger'   => 'tblSongArrangers',
+            'adaptor'    => 'tblSongAdaptors',
+            'translator' => 'tblSongTranslators',
+        ];
+
+        $tablesToSearch = $kind === 'any'
+            ? $kindToTable
+            : (isset($kindToTable[$kind]) ? [$kind => $kindToTable[$kind]] : []);
+
+        if (empty($tablesToSearch)) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Unknown kind. Use writer|composer|arranger|adaptor|translator|any.']);
+            break;
+        }
+
+        try {
+            $db   = getDbMysqli();
+            $like = '%' . $q . '%';
+
+            /* Build a UNION ALL across the selected tables, grouping by
+               name so the same "Fanny Crosby" from three different
+               tables collapses to a single suggestion with a combined
+               song count and the list of kinds it appears in. */
+            $unionParts = [];
+            $params     = [];
+            $types      = '';
+            foreach ($tablesToSearch as $kindLabel => $table) {
+                $unionParts[] = "SELECT Name, '{$kindLabel}' AS kindLabel, COUNT(*) AS cnt
+                                 FROM {$table}
+                                 WHERE Name LIKE ?
+                                 GROUP BY Name";
+                $params[] = $like;
+                $types   .= 's';
+            }
+            $sql = "SELECT Name, GROUP_CONCAT(DISTINCT kindLabel) AS kinds, SUM(cnt) AS usage
+                    FROM (" . implode(' UNION ALL ', $unionParts) . ") u
+                    GROUP BY Name
+                    ORDER BY usage DESC, Name ASC
+                    LIMIT ?";
+            $types   .= 'i';
+            $params[] = $limit;
+
+            $stmt = $db->prepare($sql);
+            $stmt->bind_param($types, ...$params);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $suggestions = [];
+            while ($row = $res->fetch_assoc()) {
+                $suggestions[] = [
+                    'name'  => $row['Name'],
+                    'usage' => (int)$row['usage'],
+                    'kinds' => $row['kinds'] !== null ? explode(',', $row['kinds']) : [],
+                ];
+            }
+            $stmt->close();
+            echo json_encode(['suggestions' => $suggestions]);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[editor credit_search] ' . $e->getMessage());
+            echo json_encode(['error' => 'Credit search failed.']);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
      * Unknown action
      * ----------------------------------------------------------------- */
     default:
         http_response_code(400);
-        echo json_encode(['error' => 'Unknown action. Use: load, save, save_song, bulk_tag, list_revisions, restore_revision, get_translations, add_translation, remove_translation']);
+        echo json_encode(['error' => 'Unknown action. Use: load, save, save_song, save_song_tags, tag_search, credit_search, bulk_tag, list_revisions, restore_revision, get_translations, add_translation, remove_translation']);
         break;
 }
