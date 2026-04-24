@@ -59,7 +59,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } else {
                     try {
                         createUser($username, $password, $displayName ?: $username, $role);
-                        $success = 'User "' . htmlspecialchars($username) . '" created successfully.';
+                        $success = 'User "' . $username . '" created successfully.';
                     } catch (\RuntimeException $e) {
                         $error = $e->getMessage();
                     }
@@ -108,7 +108,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $error = 'Cannot reset password for a user at or above your role level.';
                 } else {
                     changeUserPassword($targetId, $newPassword);
-                    $success = 'Password reset successfully for "' . htmlspecialchars($target['username']) . '".';
+                    $success = 'Password reset successfully for "' . $target['username'] . '".';
                 }
                 break;
 
@@ -126,7 +126,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $error = 'Display name cannot be empty.';
                 } else {
                     updateUserProfile($targetId, $displayName, $email);
-                    $success = 'Profile updated for "' . htmlspecialchars($target['username']) . '".';
+                    $success = 'Profile updated for "' . $target['username'] . '".';
                 }
                 break;
 
@@ -142,8 +142,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } else {
                     $renameError = null;
                     if (renameUser($targetId, $newUsername, $renameError)) {
-                        $success = 'User "' . htmlspecialchars($target['username'])
-                                 . '" renamed to "' . htmlspecialchars(mb_strtolower(trim($newUsername))) . '".';
+                        $success = 'User "' . $target['username']
+                                 . '" renamed to "' . mb_strtolower(trim($newUsername)) . '".';
                     } else {
                         $error = $renameError ?? 'Could not rename user.';
                     }
@@ -170,7 +170,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     } else {
                         $stmt = $db->prepare('UPDATE tblUsers SET AccessTier = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
                         $stmt->execute([$newTier, $targetId]);
-                        $success = 'Access tier updated for "' . htmlspecialchars($target['username']) . '".';
+                        $success = 'Access tier updated for "' . $target['username'] . '".';
                     }
                 }
                 break;
@@ -187,7 +187,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $error = 'Cannot delete a user at or above your role level.';
                 } else {
                     deleteUser($targetId);
-                    $success = 'User "' . htmlspecialchars($target['username']) . '" deleted permanently.';
+                    $success = 'User "' . $target['username'] . '" deleted permanently.';
                 }
                 break;
         }
@@ -253,7 +253,7 @@ function canManage(array $target, array $actor): bool {
 
         <?php if ($success): ?>
             <div class="alert alert-success py-2 alert-dismissible fade show">
-                <i class="bi bi-check-circle me-1"></i><?= $success ?>
+                <i class="bi bi-check-circle me-1"></i><?= htmlspecialchars($success) ?>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="alert"></button>
             </div>
         <?php endif; ?>
@@ -327,15 +327,17 @@ function canManage(array $target, array $actor): bool {
                                     <!-- Change Role (not for self) -->
                                     <?php if (!$isSelf): ?>
                                     <button class="btn btn-outline-warning" title="Change role"
-                                            onclick="openRoleModal(<?= (int)$u['id'] ?>, '<?= htmlspecialchars($u['username'], ENT_QUOTES) ?>', '<?= $u['role'] ?>')">
+                                            onclick="openRoleModal(<?= (int)$u['id'] ?>, '<?= htmlspecialchars($u['username'], ENT_QUOTES) ?>', '<?= htmlspecialchars((string)$u['role'], ENT_QUOTES) ?>')">
                                         <i class="bi bi-shield"></i>
                                     </button>
                                     <?php endif; ?>
                                     <!-- Change Access Tier -->
                                     <?php if ($canAssignTier): ?>
-                                    <button class="btn btn-outline-info" title="Change access tier"
+                                    <button type="button" class="btn btn-outline-info"
+                                            title="Change access tier"
+                                            aria-label="Change access tier for <?= htmlspecialchars($u['username'], ENT_QUOTES) ?>"
                                             onclick="openTierModal(<?= (int)$u['id'] ?>, '<?= htmlspecialchars($u['username'], ENT_QUOTES) ?>', '<?= htmlspecialchars((string)($u['access_tier'] ?? ''), ENT_QUOTES) ?>')">
-                                        <i class="bi bi-stars"></i>
+                                        <i class="bi bi-stars" aria-hidden="true"></i>
                                     </button>
                                     <?php endif; ?>
                                     <!-- Reset Password -->
@@ -536,7 +538,7 @@ function canManage(array $target, array $actor): bool {
 
     <!-- Change Access Tier Modal -->
     <?php if ($canAssignTier): ?>
-    <div class="modal fade" id="tierModal" tabindex="-1">
+    <div class="modal fade" id="tierModal" tabindex="-1" aria-labelledby="tierModalLabel" aria-hidden="true">
         <div class="modal-dialog">
             <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                 <form method="POST">
@@ -544,7 +546,7 @@ function canManage(array $target, array $actor): bool {
                     <input type="hidden" name="action" value="change_tier">
                     <input type="hidden" name="user_id" id="tier-user-id">
                     <div class="modal-header" style="border-color: var(--ih-border);">
-                        <h5 class="modal-title"><i class="bi bi-stars me-2"></i>Change Access Tier — <span id="tier-username"></span></h5>
+                        <h5 class="modal-title" id="tierModalLabel"><i class="bi bi-stars me-2" aria-hidden="true"></i>Change Access Tier — <span id="tier-username"></span></h5>
                         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">

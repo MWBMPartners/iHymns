@@ -175,6 +175,11 @@ try {
 }
 
 $csrf = csrfToken();
+
+/* Total column count for the tier matrix table — used for colspans on
+   the description row and empty-state row. Static columns:
+     Name, Display, Level, ...TIER_CAPS..., Users, Actions */
+$tierTableCols = 3 + count(TIER_CAPS) + 2;
 ?>
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
@@ -243,9 +248,11 @@ $csrf = csrfToken();
                                 <?php endforeach; ?>
                                 <td class="text-center"><?= (int)$t['UserCount'] ?></td>
                                 <td class="text-end">
-                                    <button type="button" class="btn btn-sm btn-outline-info" title="Edit"
-                                            onclick='openEditTier(<?= json_encode($t, JSON_HEX_APOS | JSON_HEX_QUOT) ?>)'>
-                                        <i class="bi bi-pencil"></i>
+                                    <button type="button" class="btn btn-sm btn-outline-info"
+                                            title="Edit tier"
+                                            aria-label="Edit tier <?= htmlspecialchars($t['Name'], ENT_QUOTES) ?>"
+                                            onclick='openEditTier(<?= json_encode($t, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP) ?>)'>
+                                        <i class="bi bi-pencil" aria-hidden="true"></i>
                                     </button>
                                     <?php if ((int)$t['UserCount'] === 0): ?>
                                         <form method="POST" class="d-inline"
@@ -253,26 +260,29 @@ $csrf = csrfToken();
                                             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                                             <input type="hidden" name="action" value="delete">
                                             <input type="hidden" name="id" value="<?= (int)$t['Id'] ?>">
-                                            <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete (no users)">
-                                                <i class="bi bi-trash"></i>
+                                            <button type="submit" class="btn btn-sm btn-outline-danger"
+                                                    title="Delete tier"
+                                                    aria-label="Delete tier <?= htmlspecialchars($t['Name'], ENT_QUOTES) ?>">
+                                                <i class="bi bi-trash" aria-hidden="true"></i>
                                             </button>
                                         </form>
                                     <?php else: ?>
                                         <button type="button" class="btn btn-sm btn-outline-secondary" disabled
-                                                title="In use — reassign users first">
-                                            <i class="bi bi-trash"></i>
+                                                title="In use — reassign users first"
+                                                aria-label="Delete tier <?= htmlspecialchars($t['Name'], ENT_QUOTES) ?> (disabled: users still on this tier)">
+                                            <i class="bi bi-trash" aria-hidden="true"></i>
                                         </button>
                                     <?php endif; ?>
                                 </td>
                             </tr>
                             <?php if (!empty($t['Description'])): ?>
-                                <tr><td colspan="<?= 4 + count(TIER_CAPS) + 2 ?>" class="small text-muted pt-0">
+                                <tr><td colspan="<?= $tierTableCols ?>" class="small text-muted pt-0">
                                     <?= htmlspecialchars($t['Description']) ?>
                                 </td></tr>
                             <?php endif; ?>
                         <?php endforeach; ?>
                         <?php if (!$tiers): ?>
-                            <tr><td colspan="<?= 4 + count(TIER_CAPS) + 2 ?>" class="text-muted text-center py-4">
+                            <tr><td colspan="<?= $tierTableCols ?>" class="text-muted text-center py-4">
                                 No tiers defined. Run the DB installer or add one below.
                             </td></tr>
                         <?php endif; ?>
@@ -323,7 +333,7 @@ $csrf = csrfToken();
     </div>
 
     <!-- Edit Tier Modal -->
-    <div class="modal fade" id="editTierModal" tabindex="-1">
+    <div class="modal fade" id="editTierModal" tabindex="-1" aria-labelledby="editTierModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-lg">
             <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                 <form method="POST">
@@ -331,8 +341,8 @@ $csrf = csrfToken();
                     <input type="hidden" name="action" value="update">
                     <input type="hidden" name="id" id="edit-tier-id">
                     <div class="modal-header" style="border-color: var(--ih-border);">
-                        <h5 class="modal-title">
-                            <i class="bi bi-pencil me-2"></i>Edit tier — <code id="edit-tier-name"></code>
+                        <h5 class="modal-title" id="editTierModalLabel">
+                            <i class="bi bi-pencil me-2" aria-hidden="true"></i>Edit tier — <code id="edit-tier-name"></code>
                         </h5>
                         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                     </div>
