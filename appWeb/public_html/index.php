@@ -669,6 +669,47 @@ if (!empty($breadcrumbItems)) {
                         </ul>
                     </div>
 
+                    <!-- In-app notifications bell (#289). Hidden until the
+                         user signs in; the notifications module reveals it
+                         and populates the unread-count badge + dropdown
+                         body from /api?action=notifications_list. -->
+                    <div class="dropdown d-none" id="header-notifications-dropdown">
+                        <button type="button"
+                                class="btn btn-header-icon position-relative"
+                                data-bs-toggle="dropdown"
+                                aria-expanded="false"
+                                aria-label="Notifications"
+                                id="header-notifications-btn"
+                                title="Notifications">
+                            <i class="fa-solid fa-bell" aria-hidden="true"></i>
+                            <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none"
+                                  id="header-notifications-badge"
+                                  aria-live="polite">
+                                0
+                                <span class="visually-hidden">unread notifications</span>
+                            </span>
+                        </button>
+                        <div class="dropdown-menu dropdown-menu-end p-0"
+                             id="header-notifications-panel"
+                             aria-labelledby="header-notifications-btn"
+                             style="width: 320px; max-width: 90vw;">
+                            <div class="d-flex align-items-center justify-content-between px-3 py-2 border-bottom">
+                                <strong class="small">Notifications</strong>
+                                <button type="button"
+                                        class="btn btn-sm btn-link text-decoration-none p-0 small"
+                                        id="header-notifications-mark-all">
+                                    Mark all read
+                                </button>
+                            </div>
+                            <div id="header-notifications-list"
+                                 style="max-height: 60vh; overflow-y: auto;">
+                                <div class="text-center text-muted small py-4" id="header-notifications-empty">
+                                    No notifications.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- User account button — shows sign-in or user menu -->
                     <div class="dropdown" id="header-user-dropdown">
                         <button type="button"
