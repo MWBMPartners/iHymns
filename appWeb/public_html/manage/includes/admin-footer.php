@@ -37,6 +37,16 @@ if (($app['Application']['Version']['Development']['Status'] ?? null) === 'Alpha
     }
 }
 ?>
+<?php
+/* Close the admin-layout flex wrapper opened by admin-nav.php (#460).
+   Guarded: login.php / setup.php / editor/index.php call this footer
+   without going through admin-nav.php, so the flag prevents closing
+   containers that were never opened. */
+if (!empty($GLOBALS['_adminLayoutOpen'])):
+?>
+    </main>
+</div> <!-- /.admin-layout -->
+<?php endif; ?>
 <footer class="footer-info admin-footer-static" role="contentinfo">
     <small>
         <?= $app['Application']['Copyright']['Full'] ?? '' ?>

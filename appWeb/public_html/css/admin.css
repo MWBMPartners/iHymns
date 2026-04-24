@@ -121,6 +121,70 @@ body:has(.navbar-admin) {
     padding-bottom: calc(var(--footer-info-height) + 1rem);
 }
 
+/* ==========================================================================
+   ADMIN LAYOUT — top bar + sidebar (#460)
+   The sidebar pins to the left at lg+; below lg it's hidden (d-none/d-lg-flex
+   in the markup) and the top bar's hamburger opens an offcanvas with the
+   same link registry (admin-links.php).
+   ========================================================================== */
+
+.admin-layout {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+}
+
+.admin-sidebar {
+    flex: 0 0 240px;
+    width: 240px;
+    background-color: var(--surface-card);
+    border-right: 1px solid var(--card-border);
+    padding-block: 0.75rem;
+    /* Sticky under the fixed top bar, bounded by the fixed footer, so
+       the sidebar stays visible while the main column scrolls. The
+       `top` offset matches the body's padding-top that clears
+       .navbar-admin (see body:has(.navbar-admin) above). */
+    position: sticky;
+    top: calc(var(--admin-navbar-height) + 0.5rem);
+    align-self: flex-start;
+    max-height: calc(100vh
+                     - var(--admin-navbar-height)
+                     - var(--footer-info-height)
+                     - 1.5rem);
+    overflow-y: auto;
+}
+
+.admin-sidebar-group-label {
+    letter-spacing: 0.04em;
+    font-weight: 600;
+}
+
+.admin-sidebar-link {
+    color: var(--text-secondary);
+    text-decoration: none;
+    border-left: 3px solid transparent;
+    font-size: 0.9rem;
+    transition: color var(--transition-fast),
+                background-color var(--transition-fast),
+                border-color var(--transition-fast);
+}
+.admin-sidebar-link:hover,
+.admin-sidebar-link:focus {
+    color: var(--text-primary);
+    background-color: rgba(255, 255, 255, 0.03);
+}
+.admin-sidebar-link.active {
+    color: var(--accent-solid);
+    border-left-color: var(--accent-solid);
+    background-color: rgba(129, 140, 248, 0.08);
+    font-weight: 600;
+}
+
+.admin-main {
+    flex: 1 1 auto;
+    min-width: 0;   /* allow flex shrink so inner `.container` can still center */
+}
+
 .navbar-admin .navbar-brand,
 .navbar-editor .navbar-brand {
     background: linear-gradient(135deg, var(--accent-start), var(--accent-end));
