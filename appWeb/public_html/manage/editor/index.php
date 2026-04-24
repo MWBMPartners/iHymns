@@ -511,10 +511,12 @@ $currentUser = getCurrentUser();
                             >
                         </div>
 
-                        <!-- Song Number and Songbook — displayed side by side -->
-                        <div class="row mb-3">
-                            <!-- Song Number — the numeric identifier within a songbook -->
-                            <div class="col-md-4">
+                        <!-- Song Number · Songbook · CCLI Song Number — one row (#488).
+                             Song numbers never exceed 4 digits; the compact col-2
+                             frees room for the CCLI field that used to sit on its
+                             own full-width line. -->
+                        <div class="row g-2 mb-3">
+                            <div class="col-md-2">
                                 <label for="edit-number" class="form-label">Song Number</label>
                                 <input
                                     type="number"
@@ -522,64 +524,58 @@ $currentUser = getCurrentUser();
                                     id="edit-number"
                                     placeholder="e.g. 42"
                                     min="1"
+                                    max="9999"
                                 >
                             </div>
-
-                            <!-- Songbook — the collection this song belongs to -->
-                            <div class="col-md-8">
+                            <div class="col-md-5">
                                 <label for="edit-songbook" class="form-label">Songbook</label>
                                 <select class="form-select" id="edit-songbook">
                                     <option value="">Select songbook...</option>
-                                    <!--
-                                         Songbook options are populated dynamically
-                                         by editor.js from the loaded dataset.
-                                         Users can also type a new songbook name.
-                                    -->
+                                    <!-- Options are populated dynamically by editor.js. -->
                                 </select>
                             </div>
-                        </div>
-
-                        <!-- Identifiers — CCLI Song Number + ISWC (#497) -->
-                        <div class="mb-3">
-                            <label class="form-label"><i class="bi bi-upc me-1"></i>Identifiers</label>
-                            <div class="row g-2">
-                                <div class="col-md-6">
-                                    <label for="edit-ccli" class="form-label" style="font-size:0.75rem;">CCLI Song Number</label>
-                                    <input
-                                        type="text"
-                                        class="form-control form-control-sm"
-                                        id="edit-ccli"
-                                        placeholder="e.g. 1234567"
-                                    >
-                                </div>
-                                <div class="col-md-6">
-                                    <label for="edit-iswc" class="form-label" style="font-size:0.75rem;">ISWC</label>
-                                    <input
-                                        type="text"
-                                        class="form-control form-control-sm"
-                                        id="edit-iswc"
-                                        placeholder="e.g. T-034.524.680-C"
-                                    >
-                                </div>
-                            </div>
-                            <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
-                                CCLI Song Number (for licensing reports) and ISWC (International Standard Musical Work Code).
+                            <div class="col-md-5">
+                                <label for="edit-ccli" class="form-label">CCLI Song Number</label>
+                                <input
+                                    type="text"
+                                    class="form-control"
+                                    id="edit-ccli"
+                                    placeholder="e.g. 1234567"
+                                >
                             </div>
                         </div>
 
-                        <!-- Tune Name (#497) — traditional hymn tune identifier -->
-                        <div class="mb-3">
-                            <label for="edit-tune-name" class="form-label">
-                                <i class="bi bi-music-note-list me-1"></i>Tune Name
-                            </label>
-                            <input
-                                type="text"
-                                class="form-control"
-                                id="edit-tune-name"
-                                placeholder="e.g. HYFRYDOL, OLD HUNDREDTH"
-                            >
-                            <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
-                                The traditional tune name, if known. Uppercase is conventional. Leave blank for songs with no named tune.
+                        <!-- Tune Name + ISWC pair (#497, #488). Two identifiers that
+                             are typically set together for traditionally-tuned hymns
+                             (HYFRYDOL + T-xxx). -->
+                        <div class="row g-2 mb-3">
+                            <div class="col-md-6">
+                                <label for="edit-tune-name" class="form-label">
+                                    <i class="bi bi-music-note-list me-1"></i>Tune Name
+                                </label>
+                                <input
+                                    type="text"
+                                    class="form-control"
+                                    id="edit-tune-name"
+                                    placeholder="e.g. HYFRYDOL, OLD HUNDREDTH"
+                                >
+                                <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                                    Traditional tune name, if known. Uppercase by convention.
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="edit-iswc" class="form-label">
+                                    <i class="bi bi-upc me-1"></i>ISWC
+                                </label>
+                                <input
+                                    type="text"
+                                    class="form-control"
+                                    id="edit-iswc"
+                                    placeholder="e.g. T-034.524.680-C"
+                                >
+                                <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                                    International Standard Musical Work Code.
+                                </div>
                             </div>
                         </div>
 
@@ -587,106 +583,108 @@ $currentUser = getCurrentUser();
                         <div class="mb-3">
                             <label class="form-label"><i class="bi bi-translate me-1"></i>Language (IETF BCP 47)</label>
                             <div class="row g-2">
-                                <!-- Language (required) — ISO 639 -->
+                                <!-- Language (required) — shows full names (#489).
+                                     Datalist values are full names; editor.js resolves
+                                     them to ISO 639 codes when composing the IETF tag. -->
                                 <div class="col-4">
                                     <label for="edit-lang-language" class="form-label" style="font-size:0.75rem;">Language</label>
                                     <input type="text" class="form-control form-control-sm" id="edit-lang-language"
-                                        placeholder="e.g. en" list="lang-language-list" required>
+                                        placeholder="e.g. English" list="lang-language-list" required>
                                     <datalist id="lang-language-list">
-                                        <option value="en">English</option>
-                                        <option value="fr">French</option>
-                                        <option value="de">German</option>
-                                        <option value="es">Spanish</option>
-                                        <option value="it">Italian</option>
-                                        <option value="pt">Portuguese</option>
-                                        <option value="la">Latin</option>
-                                        <option value="cy">Welsh</option>
-                                        <option value="gd">Scottish Gaelic</option>
-                                        <option value="ga">Irish</option>
-                                        <option value="nl">Dutch</option>
-                                        <option value="sv">Swedish</option>
-                                        <option value="no">Norwegian</option>
-                                        <option value="da">Danish</option>
-                                        <option value="fi">Finnish</option>
-                                        <option value="pl">Polish</option>
-                                        <option value="cs">Czech</option>
-                                        <option value="hu">Hungarian</option>
-                                        <option value="ro">Romanian</option>
-                                        <option value="ko">Korean</option>
-                                        <option value="ja">Japanese</option>
-                                        <option value="zh">Chinese</option>
-                                        <option value="ar">Arabic</option>
-                                        <option value="he">Hebrew</option>
-                                        <option value="hi">Hindi</option>
-                                        <option value="sw">Swahili</option>
-                                        <option value="zu">Zulu</option>
-                                        <option value="xh">Xhosa</option>
-                                        <option value="af">Afrikaans</option>
-                                        <option value="tl">Tagalog</option>
+                                        <option value="English">en</option>
+                                        <option value="French">fr</option>
+                                        <option value="German">de</option>
+                                        <option value="Spanish">es</option>
+                                        <option value="Italian">it</option>
+                                        <option value="Portuguese">pt</option>
+                                        <option value="Latin">la</option>
+                                        <option value="Welsh">cy</option>
+                                        <option value="Scottish Gaelic">gd</option>
+                                        <option value="Irish">ga</option>
+                                        <option value="Dutch">nl</option>
+                                        <option value="Swedish">sv</option>
+                                        <option value="Norwegian">no</option>
+                                        <option value="Danish">da</option>
+                                        <option value="Finnish">fi</option>
+                                        <option value="Polish">pl</option>
+                                        <option value="Czech">cs</option>
+                                        <option value="Hungarian">hu</option>
+                                        <option value="Romanian">ro</option>
+                                        <option value="Korean">ko</option>
+                                        <option value="Japanese">ja</option>
+                                        <option value="Chinese">zh</option>
+                                        <option value="Arabic">ar</option>
+                                        <option value="Hebrew">he</option>
+                                        <option value="Hindi">hi</option>
+                                        <option value="Swahili">sw</option>
+                                        <option value="Zulu">zu</option>
+                                        <option value="Xhosa">xh</option>
+                                        <option value="Afrikaans">af</option>
+                                        <option value="Tagalog">tl</option>
                                     </datalist>
                                 </div>
-                                <!-- Script (optional) — ISO 15924 -->
+                                <!-- Script (optional) — full names (#489) -->
                                 <div class="col-4">
                                     <label for="edit-lang-script" class="form-label" style="font-size:0.75rem;">Script</label>
                                     <input type="text" class="form-control form-control-sm" id="edit-lang-script"
-                                        placeholder="e.g. Latn" list="lang-script-list">
+                                        placeholder="e.g. Latin" list="lang-script-list">
                                     <datalist id="lang-script-list">
-                                        <option value="Latn">Latin</option>
-                                        <option value="Cyrl">Cyrillic</option>
-                                        <option value="Arab">Arabic</option>
-                                        <option value="Hebr">Hebrew</option>
-                                        <option value="Deva">Devanagari</option>
-                                        <option value="Hans">Simplified Chinese</option>
-                                        <option value="Hant">Traditional Chinese</option>
-                                        <option value="Hang">Hangul</option>
-                                        <option value="Kana">Katakana</option>
-                                        <option value="Grek">Greek</option>
-                                        <option value="Geor">Georgian</option>
-                                        <option value="Armn">Armenian</option>
+                                        <option value="Latin">Latn</option>
+                                        <option value="Cyrillic">Cyrl</option>
+                                        <option value="Arabic">Arab</option>
+                                        <option value="Hebrew">Hebr</option>
+                                        <option value="Devanagari">Deva</option>
+                                        <option value="Simplified Chinese">Hans</option>
+                                        <option value="Traditional Chinese">Hant</option>
+                                        <option value="Hangul">Hang</option>
+                                        <option value="Katakana">Kana</option>
+                                        <option value="Greek">Grek</option>
+                                        <option value="Georgian">Geor</option>
+                                        <option value="Armenian">Armn</option>
                                         <option value="Thai">Thai</option>
-                                        <option value="Ethi">Ethiopic</option>
+                                        <option value="Ethiopic">Ethi</option>
                                     </datalist>
                                 </div>
-                                <!-- Region (optional) — ISO 3166-1 alpha-2 -->
+                                <!-- Region (optional) — full names (#489) -->
                                 <div class="col-4">
                                     <label for="edit-lang-region" class="form-label" style="font-size:0.75rem;">Region</label>
                                     <input type="text" class="form-control form-control-sm" id="edit-lang-region"
-                                        placeholder="e.g. GB" list="lang-region-list">
+                                        placeholder="e.g. United Kingdom" list="lang-region-list">
                                     <datalist id="lang-region-list">
-                                        <option value="GB">United Kingdom</option>
-                                        <option value="US">United States</option>
-                                        <option value="AU">Australia</option>
-                                        <option value="NZ">New Zealand</option>
-                                        <option value="CA">Canada</option>
-                                        <option value="IE">Ireland</option>
-                                        <option value="ZA">South Africa</option>
-                                        <option value="FR">France</option>
-                                        <option value="DE">Germany</option>
-                                        <option value="AT">Austria</option>
-                                        <option value="CH">Switzerland</option>
-                                        <option value="ES">Spain</option>
-                                        <option value="MX">Mexico</option>
-                                        <option value="IT">Italy</option>
-                                        <option value="PT">Portugal</option>
-                                        <option value="BR">Brazil</option>
-                                        <option value="NL">Netherlands</option>
-                                        <option value="SE">Sweden</option>
-                                        <option value="NO">Norway</option>
-                                        <option value="DK">Denmark</option>
-                                        <option value="FI">Finland</option>
-                                        <option value="PL">Poland</option>
-                                        <option value="CZ">Czechia</option>
-                                        <option value="HU">Hungary</option>
-                                        <option value="RO">Romania</option>
-                                        <option value="KR">South Korea</option>
-                                        <option value="JP">Japan</option>
-                                        <option value="CN">China</option>
-                                        <option value="TW">Taiwan</option>
-                                        <option value="IN">India</option>
-                                        <option value="PH">Philippines</option>
-                                        <option value="KE">Kenya</option>
-                                        <option value="NG">Nigeria</option>
-                                        <option value="GH">Ghana</option>
+                                        <option value="United Kingdom">GB</option>
+                                        <option value="United States">US</option>
+                                        <option value="Australia">AU</option>
+                                        <option value="New Zealand">NZ</option>
+                                        <option value="Canada">CA</option>
+                                        <option value="Ireland">IE</option>
+                                        <option value="South Africa">ZA</option>
+                                        <option value="France">FR</option>
+                                        <option value="Germany">DE</option>
+                                        <option value="Austria">AT</option>
+                                        <option value="Switzerland">CH</option>
+                                        <option value="Spain">ES</option>
+                                        <option value="Mexico">MX</option>
+                                        <option value="Italy">IT</option>
+                                        <option value="Portugal">PT</option>
+                                        <option value="Brazil">BR</option>
+                                        <option value="Netherlands">NL</option>
+                                        <option value="Sweden">SE</option>
+                                        <option value="Norway">NO</option>
+                                        <option value="Denmark">DK</option>
+                                        <option value="Finland">FI</option>
+                                        <option value="Poland">PL</option>
+                                        <option value="Czechia">CZ</option>
+                                        <option value="Hungary">HU</option>
+                                        <option value="Romania">RO</option>
+                                        <option value="South Korea">KR</option>
+                                        <option value="Japan">JP</option>
+                                        <option value="China">CN</option>
+                                        <option value="Taiwan">TW</option>
+                                        <option value="India">IN</option>
+                                        <option value="Philippines">PH</option>
+                                        <option value="Kenya">KE</option>
+                                        <option value="Nigeria">NG</option>
+                                        <option value="Ghana">GH</option>
                                     </datalist>
                                 </div>
                             </div>

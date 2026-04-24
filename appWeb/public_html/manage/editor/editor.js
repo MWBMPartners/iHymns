@@ -730,25 +730,36 @@ function renderComponents(song) {
             renderPreview(song); // refresh preview
         });
 
-        /* Number input (e.g. verse 1, verse 2). */
+        /* Number input — optional (#491). Empty / 0 stores as null so
+           a single-instance component reads as "Chorus" (no number). */
         var numInput = document.createElement('input');
         numInput.type = 'number';
         numInput.className = 'form-control form-control-sm';
-        numInput.style.width = '80px';
-        numInput.placeholder = '#';
-        numInput.value = comp.number != null ? comp.number : '';
+        numInput.style.width = '110px';
+        numInput.placeholder = '(optional)';
+        numInput.min = '0';
+        numInput.value = (comp.number != null && comp.number > 0) ? comp.number : '';
         /* Live-bind number changes. */
         numInput.addEventListener('input', function () {
             comp.number = numInput.value ? parseInt(numInput.value, 10) : null;
             markModified(song.id);
+            /* Update the header label in place so the user sees the
+               effect of their edit without re-rendering every card. */
+            typeLabel.textContent = componentHeaderLabel(comp);
             renderArrangement(song); // refresh arrangement chips (#161)
             renderPreview(song);
         });
 
-        /* Label for clarity. */
+        /* Header label — type + optional number, not the generic
+           "Component N" position we used to show (#491). */
         var typeLabel = document.createElement('span');
         typeLabel.className = 'fw-semibold me-auto';
-        typeLabel.textContent = 'Component ' + (index + 1);
+        typeLabel.textContent = componentHeaderLabel(comp);
+
+        /* Keep label in sync when the user changes the type dropdown. */
+        typeSelect.addEventListener('change', function () {
+            typeLabel.textContent = componentHeaderLabel(comp);
+        });
 
         /* ---- Action buttons (move up, move down, remove) ---- */
         var btnGroup = document.createElement('div');
@@ -803,12 +814,10 @@ function renderComponents(song) {
 
         var textarea = document.createElement('textarea');
         textarea.className = 'form-control component-lyrics';
-        textarea.rows = 4;
+        textarea.rows = 1;  /* Seed at minimum; autoResizeTextarea grows it to content (#490). */
         textarea.placeholder = 'Enter lyrics here...';
         /* Convert lines array to newline-separated string for editing (#244). */
         textarea.value = Array.isArray(comp.lines) ? comp.lines.join('\n') : '';
-        /* Auto-resize: adjust height to content. */
-        autoResizeTextarea(textarea);
         /* Live-bind lyrics changes — split back into lines array on every edit. */
         textarea.addEventListener('input', function () {
             comp.lines = textarea.value.split('\n');
@@ -825,6 +834,55 @@ function renderComponents(song) {
 
         /* Add the card to the container. */
         container.appendChild(card);
+    });
+
+    /* Auto-size every textarea we just inserted (#490).
+       Must be called AFTER the cards are in the DOM — `scrollHeight`
+       on a detached or `display:none` textarea returns 0, which left
+       the boxes stuck at one line on initial load even when they held
+       several lines of lyrics. The tab-shown hook installed once at
+       boot (see below) re-fits them when the Structure tab is opened
+       from a hidden state. */
+    fitAllComponentTextareas(container);
+}
+
+/**
+ * componentHeaderLabel(comp)
+ * --------------------------
+ * Render the human-friendly heading for a component card (#491):
+ *   { type: "chorus", number: 0|null }   → "Chorus"
+ *   { type: "verse",  number: 2 }        → "Verse 2"
+ *   { type: "bridge", number: 1 }        → "Bridge 1"   (kept — author explicitly set it)
+ *
+ * A null / empty / non-positive number is treated as "no number" and
+ * suppressed. We no longer prefix every card with "Component N"
+ * where N was just the row position — the type already names the
+ * row, and the row's vertical order already encodes the position.
+ *
+ * @param {{type:string, number:(number|null|string)}} comp
+ * @returns {string}
+ */
+function componentHeaderLabel(comp) {
+    var type = (comp && comp.type) ? String(comp.type) : 'verse';
+    var cap = type.charAt(0).toUpperCase() + type.slice(1);
+    var n = comp && comp.number;
+    var num = (n != null && n !== '' && !isNaN(n) && parseInt(n, 10) > 0)
+        ? parseInt(n, 10)
+        : null;
+    return num != null ? (cap + ' ' + num) : cap;
+}
+
+/**
+ * fitAllComponentTextareas(scope)
+ * -------------------------------
+ * Run autoResizeTextarea() on every `.component-lyrics` textarea
+ * inside `scope` (defaults to the document). Safe to call at any
+ * time — no-op on nodes whose computed size reports 0 (still hidden).
+ */
+function fitAllComponentTextareas(scope) {
+    var root = scope || document;
+    root.querySelectorAll('.component-lyrics').forEach(function (ta) {
+        autoResizeTextarea(ta);
     });
 }
 
@@ -974,13 +1032,13 @@ function autoResizeTextarea(el) {
  * @returns {string} Human-readable label.
  */
 function getComponentLabel(comp) {
-    /* Refrain is an alias for Chorus in the UI */
-    var type = comp.type === 'refrain' ? 'chorus' : comp.type;
-    var label = type.charAt(0).toUpperCase() + type.slice(1);
-    if (comp.number != null) {
-        label += ' ' + comp.number;
-    }
-    return label;
+    /* Refrain is an alias for Chorus in the UI; otherwise delegate
+       to the shared componentHeaderLabel helper so every chip /
+       card / preview heading says the same thing (#491). */
+    var normalised = Object.assign({}, comp, {
+        type: comp.type === 'refrain' ? 'chorus' : comp.type,
+    });
+    return componentHeaderLabel(normalised);
 }
 
 /**
@@ -1930,11 +1988,14 @@ function renderPreview(song) {
         /* Component label, e.g. "Verse 1" or "Chorus". Refrain → Chorus alias. */
         var heading = document.createElement('h6');
         heading.className = 'mt-3 mb-1 fw-bold text-uppercase small';
-        var displayType = comp.type === 'refrain' ? 'chorus' : (comp.type || 'Section');
-        var headingText = displayType;
-        if (comp.number != null) {
-            headingText += ' ' + comp.number;
-        }
+        /* Use the shared labelling helper so the Preview heading
+           matches the Structure-tab card heading exactly (#491):
+           no generic "Component N"; number is suppressed when
+           unset or zero. */
+        var previewComp = Object.assign({}, comp, {
+            type: comp.type === 'refrain' ? 'chorus' : comp.type,
+        });
+        var headingText = componentHeaderLabel(previewComp);
         heading.textContent = headingText;
 
         /* Lyrics block. */
@@ -2173,57 +2234,154 @@ function setChecked(elementId, checked) {
     }
 }
 
+/* ----------------------------------------------------------------------
+ * Language / Script / Region lookup tables (#489)
+ *
+ * The editor's three language inputs now display **full names** by
+ * default — the average admin doesn't know that "Latn" is Latin or
+ * that "cy" is Welsh. Each table is keyed by ISO code (which is what
+ * MySQL actually stores, as part of the composed IETF BCP 47 tag) and
+ * maps to the human-friendly name shown in the input.
+ *
+ * Keep in lock-step with the <datalist> options in index.php — an
+ * option in the markup but absent from this table would resolve back
+ * to its code on save (harmless but uglier).
+ * ---------------------------------------------------------------------- */
+var LANG_CODE_TO_NAME = {
+    en:'English', fr:'French', de:'German', es:'Spanish', it:'Italian',
+    pt:'Portuguese', la:'Latin', cy:'Welsh', gd:'Scottish Gaelic',
+    ga:'Irish', nl:'Dutch', sv:'Swedish', no:'Norwegian', da:'Danish',
+    fi:'Finnish', pl:'Polish', cs:'Czech', hu:'Hungarian', ro:'Romanian',
+    ko:'Korean', ja:'Japanese', zh:'Chinese', ar:'Arabic', he:'Hebrew',
+    hi:'Hindi', sw:'Swahili', zu:'Zulu', xh:'Xhosa', af:'Afrikaans',
+    tl:'Tagalog',
+};
+var SCRIPT_CODE_TO_NAME = {
+    Latn:'Latin', Cyrl:'Cyrillic', Arab:'Arabic', Hebr:'Hebrew',
+    Deva:'Devanagari', Hans:'Simplified Chinese', Hant:'Traditional Chinese',
+    Hang:'Hangul', Kana:'Katakana', Grek:'Greek', Geor:'Georgian',
+    Armn:'Armenian', Thai:'Thai', Ethi:'Ethiopic',
+};
+var REGION_CODE_TO_NAME = {
+    GB:'United Kingdom', US:'United States', AU:'Australia', NZ:'New Zealand',
+    CA:'Canada', IE:'Ireland', ZA:'South Africa', FR:'France', DE:'Germany',
+    AT:'Austria', CH:'Switzerland', ES:'Spain', MX:'Mexico', IT:'Italy',
+    PT:'Portugal', BR:'Brazil', NL:'Netherlands', SE:'Sweden', NO:'Norway',
+    DK:'Denmark', FI:'Finland', PL:'Poland', CZ:'Czechia', HU:'Hungary',
+    RO:'Romania', KR:'South Korea', JP:'Japan', CN:'China', TW:'Taiwan',
+    IN:'India', PH:'Philippines', KE:'Kenya', NG:'Nigeria', GH:'Ghana',
+};
+
+/* Pre-compute reverse maps (lowercased name → code) for lookup. */
+var _LANG_NAME_TO_CODE = _flipLangMap(LANG_CODE_TO_NAME);
+var _SCRIPT_NAME_TO_CODE = _flipLangMap(SCRIPT_CODE_TO_NAME);
+var _REGION_NAME_TO_CODE = _flipLangMap(REGION_CODE_TO_NAME);
+
+function _flipLangMap(src) {
+    var out = {};
+    Object.keys(src).forEach(function (code) {
+        out[src[code].toLowerCase()] = code;
+    });
+    return out;
+}
+
+/**
+ * Resolve a free-text input value to its canonical ISO code.
+ * Accepts either the full name ("English", case-insensitive) or the
+ * bare code ("en"). Returns the input unchanged if it can't be
+ * resolved — we don't want to silently discard a value the admin
+ * deliberately typed for a language we don't yet list.
+ *
+ * @param {string} value   Raw value from a language/script/region input
+ * @param {"language"|"script"|"region"} dim
+ * @returns {string} ISO code (or original value if not recognised)
+ */
+function resolveLangCode(value, dim) {
+    var v = (value || '').trim();
+    if (!v) return '';
+    var lower = v.toLowerCase();
+    var nameMap = dim === 'language' ? _LANG_NAME_TO_CODE
+                : dim === 'script'   ? _SCRIPT_NAME_TO_CODE
+                : dim === 'region'   ? _REGION_NAME_TO_CODE
+                : {};
+    if (nameMap[lower] != null) return nameMap[lower];
+
+    /* Fall through to code-normalisation. The datalist no longer
+       offers raw codes, but power users may still type them. */
+    if (dim === 'language') return lower.toLowerCase();
+    if (dim === 'region')   return v.toUpperCase();
+    if (dim === 'script') {
+        return v.length > 0
+            ? v.charAt(0).toUpperCase() + v.slice(1).toLowerCase()
+            : '';
+    }
+    return v;
+}
+
+/**
+ * Convert an ISO code back to its full display name, falling back to
+ * the code itself (useful for inputs populated from existing songs
+ * with codes the lookup table doesn't yet know).
+ */
+function resolveLangName(code, dim) {
+    var map = dim === 'language' ? LANG_CODE_TO_NAME
+            : dim === 'script'   ? SCRIPT_CODE_TO_NAME
+            : dim === 'region'   ? REGION_CODE_TO_NAME
+            : {};
+    return map[code] != null ? map[code] : (code || '');
+}
+
 /**
  * parseIetfTag(tag)
  * -----------------
- * Splits an IETF BCP 47 language tag into its constituent parts.
- * Format: language[-Script][-REGION]
- *   - language: 2-3 lowercase letters (ISO 639)
- *   - Script:   4 letters, title-case (ISO 15924) — optional
- *   - REGION:   2 uppercase letters (ISO 3166-1) — optional
+ * Splits an IETF BCP 47 language tag into its constituent parts,
+ * mapping each code to its human-friendly display name (#489). The
+ * returned values are what the three editor inputs should show.
  *
  * @param {string} tag - e.g. "en", "en-GB", "zh-Hant-TW"
  * @returns {{ language: string, script: string, region: string }}
+ *          display names (e.g. "English", "Latin", "United Kingdom")
  */
 function parseIetfTag(tag) {
     var parts = (tag || 'en').split('-');
-    var result = { language: parts[0] || 'en', script: '', region: '' };
+    var langCode = parts[0] || 'en';
+    var scriptCode = '';
+    var regionCode = '';
 
     for (var i = 1; i < parts.length; i++) {
         var p = parts[i];
-        /* Script: exactly 4 chars, first uppercase (e.g. Latn, Cyrl) */
         if (p.length === 4 && /^[A-Z][a-z]{3}$/.test(p)) {
-            result.script = p;
-        /* Region: exactly 2 uppercase chars (e.g. GB, US) */
+            scriptCode = p;
         } else if (p.length === 2 && /^[A-Z]{2}$/.test(p)) {
-            result.region = p;
+            regionCode = p;
         }
     }
-    return result;
+
+    return {
+        language: resolveLangName(langCode,  'language'),
+        script:   resolveLangName(scriptCode,'script'),
+        region:   resolveLangName(regionCode,'region'),
+    };
 }
 
 /**
  * composeIetfTag()
  * ----------------
- * Reads the three language sub-fields from the DOM and composes
- * the IETF BCP 47 tag. Updates the hidden edit-language field
- * and the preview element.
+ * Reads the three language sub-fields from the DOM (which carry full
+ * names after #489), resolves each back to an ISO code, and composes
+ * the IETF BCP 47 tag. Updates the hidden edit-language field and
+ * the preview element.
  *
  * @returns {string} The composed IETF tag (e.g. "en-Latn-GB")
  */
 function composeIetfTag() {
-    var lang   = (getVal('edit-lang-language') || 'en').trim().toLowerCase();
-    var script = (getVal('edit-lang-script') || '').trim();
-    var region = (getVal('edit-lang-region') || '').trim().toUpperCase();
+    var langCode   = resolveLangCode(getVal('edit-lang-language'), 'language') || 'en';
+    var scriptCode = resolveLangCode(getVal('edit-lang-script'),   'script');
+    var regionCode = resolveLangCode(getVal('edit-lang-region'),   'region');
 
-    /* Normalise script to title case (e.g. "latn" → "Latn") */
-    if (script.length > 0) {
-        script = script.charAt(0).toUpperCase() + script.slice(1).toLowerCase();
-    }
-
-    var tag = lang;
-    if (script) tag += '-' + script;
-    if (region) tag += '-' + region;
+    var tag = langCode;
+    if (scriptCode) tag += '-' + scriptCode;
+    if (regionCode) tag += '-' + regionCode;
 
     /* Update the hidden field and preview. */
     setVal('edit-language', tag);
@@ -2286,7 +2444,8 @@ function clearEditForm() {
     setVal('edit-ccli', '');
     setVal('edit-iswc', '');           /* #497 */
     setVal('edit-tune-name', '');      /* #497 */
-    setVal('edit-lang-language', 'en');
+    /* Default to the display name not the raw code (#489). */
+    setVal('edit-lang-language', resolveLangName('en', 'language'));
     setVal('edit-lang-script', '');
     setVal('edit-lang-region', '');
     composeIetfTag();
@@ -2683,6 +2842,17 @@ function init() {
 
     /* Bind translation controls (#352). */
     initTranslationControls();
+
+    /* Structure tab is display:none until its Bootstrap tab is opened,
+       so scrollHeight reads 0 on any component textarea fitted while
+       the tab is hidden. Listen for shown.bs.tab and re-fit once the
+       browser actually lays the panel out (#490). */
+    var structureTab = document.getElementById('tab-structure');
+    if (structureTab) {
+        structureTab.addEventListener('shown.bs.tab', function () {
+            fitAllComponentTextareas();
+        });
+    }
 
     /* Register the beforeunload handler for unsaved-changes protection. */
     window.addEventListener('beforeunload', warnBeforeUnload);
