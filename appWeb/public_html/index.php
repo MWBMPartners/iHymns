@@ -101,7 +101,7 @@ $cspDirectives = [
     "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
     "img-src 'self' data: https:",
     "font-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
-    "connect-src 'self' https://www.google-analytics.com https://plausible.io https://www.clarity.ms https://*.usefathom.com{$cspMatomoUrl}",
+    "connect-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://www.google-analytics.com https://plausible.io https://www.clarity.ms https://*.usefathom.com{$cspMatomoUrl}",
     "frame-src 'self' https://sync.ihymns.app https://*.ihymns.app",
     "worker-src 'self' https://cdn.jsdelivr.net blob:",
     "manifest-src 'self'",

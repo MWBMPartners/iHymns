@@ -200,6 +200,7 @@
     "share_target": {
         "action": "/search",
         "method": "GET",
+        "enctype": "application/x-www-form-urlencoded",
         "params": {
             "text": "q",
             "title": "q",
@@ -236,9 +237,11 @@
 
     "scope_extensions": [
         {
+            "type": "origin",
             "origin": "https://ihymns.app"
         },
         {
+            "type": "origin",
             "origin": "https://www.ihymns.app"
         }
     ],
