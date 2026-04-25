@@ -20,6 +20,16 @@ declare(strict_types=1);
  * Idempotent — re-running is safe; columns/tables that already exist
  * are skipped, and rows already imported are not duplicated.
  *
+ * @migration-adds tblSongbooks.DisplayOrder
+ * @migration-adds tblSongbooks.Colour
+ *
+ * (The other columns this migration adds — tblUsers.Settings and
+ * everything inside tblSharedSetlists — are picked up automatically
+ * by the schema-audit scanner via its literal ALTER and CREATE TABLE
+ * regexes. The two @migration-adds doctags above cover Step 1b's
+ * dynamically-built ALTER statements where the column name is a PHP
+ * variable interpolation a literal regex can't see.)
+ *
  * USAGE:
  *   CLI:  php appWeb/.sql/migrate-account-sync.php
  *   Web:  /manage/setup-database → "Account Sync Migration" button
