@@ -195,6 +195,7 @@ if ($action !== '') {
         'account-sync'=> 'migrate-account-sync.php',
         'credits'     => 'migrate-credit-fields.php',
         'songbook-meta' => 'migrate-songbook-meta.php',
+        'user-features-catchup' => 'migrate-user-features-catchup.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -500,6 +501,25 @@ if ($hasCredentials && defined('DB_HOST')) {
                         </p>
                         <a href="?action=songbook-meta" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run Songbook Metadata Migration
+                        </a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">3d. User Features Catch-Up (#517)</h5>
+                        <p class="card-text text-secondary small">
+                            Catches up three pieces of user-feature schema that
+                            landed in <code>schema.sql</code> without forward-
+                            migrations and were surfaced by the Schema Audit page:
+                            <code>tblUserGroups.AllowCardReorder</code>,
+                            <code>tblUserSetlists</code> table, and
+                            <code>tblSearchQueries</code> table.
+                            Idempotent — safe to re-run.
+                        </p>
+                        <a href="?action=user-features-catchup" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run User Features Catch-Up Migration
                         </a>
                     </div>
                 </div>
