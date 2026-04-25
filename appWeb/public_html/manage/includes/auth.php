@@ -38,6 +38,18 @@ enableDebugModeIfRequested();
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'db.php';
 
+/* Entitlement helpers — paired with this file as the canonical /manage/
+   bootstrap per the modularity rule in .claude/CLAUDE.md ("Auth + CSRF
+   + role + entitlement checks → manage/includes/auth.php + includes/
+   entitlements.php"). Loading it here means shared partials such as
+   admin-nav.php / admin-links.php — which call userHasEntitlement()
+   transitively — work everywhere this bootstrap runs, instead of each
+   admin page having to remember its own entitlements.php require. The
+   helper file is just const definitions + pure functions, so it's
+   side-effect-free apart from a direct-access guard. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+          . DIRECTORY_SEPARATOR . 'entitlements.php';
+
 /* =========================================================================
  * SESSION CONFIGURATION
  * ========================================================================= */
