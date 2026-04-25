@@ -41,6 +41,13 @@ declare(strict_types=1);
  * BOOTSTRAP — Load configuration and dependencies
  * ========================================================================= */
 
+/* On-demand debug mode (#TBD) — must come first so it catches errors
+   anywhere downstream. Honoured only on Alpha/Beta when the request
+   carries both `?_debug=1` and `?_dev=1` (or the cookie set by either
+   from a recent index.php hit); production ignores. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'debug_mode.php';
+enableDebugModeIfRequested();
+
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
