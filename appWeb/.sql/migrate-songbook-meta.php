@@ -3,19 +3,26 @@
 declare(strict_types=1);
 
 /**
- * iHymns — Songbook Metadata Migration (#502)
+ * iHymns — Songbook Schema Catch-Up Migration (#502 + Colour catch-up)
  *
  * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
- * Brings an existing deployment up to the #502 schema:
- *   1. Adds five nullable metadata columns to tblSongbooks:
+ * Brings an existing deployment's tblSongbooks up to the current
+ * schema:
+ *   1. Adds the `Colour` column if it's missing. The column was
+ *      introduced in the "Admin surface phases 1-4" change but no
+ *      forward-migration was shipped at the time, so older databases
+ *      (notably alpha/dev) still don't have it. SongData::getSongbooks()
+ *      now SELECTs `Colour`, so its absence kills the home page.
+ *      Added `AFTER DisplayOrder` to match schema.sql.
+ *   2. Adds five nullable metadata columns (#502):
  *        - IsOfficial      (TINYINT(1) NOT NULL DEFAULT 0)
  *        - Publisher       (VARCHAR(255))
  *        - PublicationYear (VARCHAR(50))
  *        - Copyright       (VARCHAR(500))
  *        - Affiliation     (VARCHAR(120))
- *   2. Marks every existing seed songbook whose Abbreviation is NOT
+ *   3. Marks every existing seed songbook whose Abbreviation is NOT
  *      "Misc" as IsOfficial = 1, matching the real-world state
  *      (the project shipped with five published hymnals + one
  *      unstructured Misc collection). Admins can untick any row
@@ -103,6 +110,13 @@ if (!_migSongbookMeta_tableExists($mysqli, 'tblSongbooks')) {
 /* Each step: column name → ALTER statement. Keeping them in a list
    means adding a new column in the future is a one-line edit. */
 $steps = [
+    /* Colour was added to schema.sql in the "Admin surface phases 1-4"
+       change without a forward-migration. Catching it up here, first,
+       so the AFTER Colour clauses on the #502 columns below resolve. */
+    ['col' => 'Colour', 'sql' => "ALTER TABLE tblSongbooks
+        ADD COLUMN Colour VARCHAR(7) NOT NULL DEFAULT ''
+        COMMENT 'Badge colour hex #RRGGBB (empty = theme default)'
+        AFTER DisplayOrder"],
     ['col' => 'IsOfficial', 'sql' => "ALTER TABLE tblSongbooks
         ADD COLUMN IsOfficial TINYINT(1) NOT NULL DEFAULT 0
         COMMENT '1 = published hymnal; 0 = curated grouping / pseudo-songbook (#502)'

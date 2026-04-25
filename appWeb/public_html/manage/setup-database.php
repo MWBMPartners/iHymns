@@ -490,7 +490,9 @@ if ($hasCredentials && defined('DB_HOST')) {
                     <div class="card-body">
                         <h5 class="card-title">3c. Songbook Metadata (#502)</h5>
                         <p class="card-text text-secondary small">
-                            Adds <code>IsOfficial</code>, <code>Publisher</code>,
+                            Adds <code>Colour</code> (catch-up — missed
+                            forward-migration on older databases),
+                            <code>IsOfficial</code>, <code>Publisher</code>,
                             <code>PublicationYear</code>, <code>Copyright</code> and
                             <code>Affiliation</code> columns to <code>tblSongbooks</code>,
                             and flags existing non-Misc songbooks as official.
