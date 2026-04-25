@@ -38,6 +38,12 @@ declare(strict_types=1);
  * BOOTSTRAP — Load configuration and application metadata
  * ========================================================================= */
 
+/* On-demand debug mode (#TBD) — must come first so it catches errors
+   anywhere downstream. Honoured only on Alpha/Beta when the page is
+   loaded with both `?_debug=1` and `?_dev=1`; production ignores. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'debug_mode.php';
+enableDebugModeIfRequested();
+
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
@@ -101,7 +107,7 @@ $cspDirectives = [
     "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
     "img-src 'self' data: https:",
     "font-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
-    "connect-src 'self' https://www.google-analytics.com https://plausible.io https://www.clarity.ms https://*.usefathom.com{$cspMatomoUrl}",
+    "connect-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://www.google-analytics.com https://plausible.io https://www.clarity.ms https://*.usefathom.com{$cspMatomoUrl}",
     "frame-src 'self' https://sync.ihymns.app https://*.ihymns.app",
     "worker-src 'self' https://cdn.jsdelivr.net blob:",
     "manifest-src 'self'",
