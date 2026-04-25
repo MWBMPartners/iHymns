@@ -22,6 +22,24 @@ declare(strict_types=1);
  * Idempotent — re-running is safe. Columns/indexes/tables that already
  * exist are skipped with a "skipped" note.
  *
+ * The Step 3 CREATE TABLE statements iterate over a [tableName => fkName]
+ * array and build the SQL with `CREATE TABLE {$table} (...)`, where
+ * `$table` is a PHP variable interpolation. The schema-audit scanner's
+ * literal-CREATE-TABLE regex can't see those bindings, so we declare
+ * the columns explicitly via @migration-adds doctags below to keep the
+ * audit's coverage map accurate. Any future addition to $creditTables
+ * needs a corresponding doctag here.
+ *
+ * @migration-adds tblSongArrangers.Id
+ * @migration-adds tblSongArrangers.SongId
+ * @migration-adds tblSongArrangers.Name
+ * @migration-adds tblSongAdaptors.Id
+ * @migration-adds tblSongAdaptors.SongId
+ * @migration-adds tblSongAdaptors.Name
+ * @migration-adds tblSongTranslators.Id
+ * @migration-adds tblSongTranslators.SongId
+ * @migration-adds tblSongTranslators.Name
+ *
  * USAGE:
  *   CLI:  php appWeb/.sql/migrate-credit-fields.php
  *   Web:  /manage/setup-database → "Credit Fields Migration" button
