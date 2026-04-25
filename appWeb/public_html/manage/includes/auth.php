@@ -26,6 +26,16 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
+/* On-demand debug mode (#507 / #509) — wire as early as possible so a
+   fatal in db.php, the auth bootstrap, or the page itself surfaces in
+   the response instead of producing a silent blank page. Every manage
+   page requires this file first, so this hook covers the whole admin
+   surface in one place. Honoured only on Alpha/Beta with both
+   `?_debug=1` and `?_dev=1` (or the cookie set by either). */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+          . DIRECTORY_SEPARATOR . 'debug_mode.php';
+enableDebugModeIfRequested();
+
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'db.php';
 
 /* =========================================================================
