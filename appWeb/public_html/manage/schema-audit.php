@@ -85,8 +85,21 @@ function _schemaAudit_parseSchema(string $schemaSql): array
             if ($line === '' || str_starts_with($line, '--') || str_starts_with($line, '/*')) {
                 continue;
             }
-            /* Skip table-level constraints. */
-            if (preg_match('/^(PRIMARY\s+KEY|INDEX|UNIQUE|KEY|CONSTRAINT|FOREIGN\s+KEY)\b/i', $line)) {
+            /* Skip table-level constraints AND constraint-continuation lines.
+               Catches:
+                 - PRIMARY KEY / KEY / UNIQUE / INDEX / FULLTEXT / SPATIAL
+                 - CONSTRAINT … FOREIGN KEY … REFERENCES …
+                 - The continuation line of a multi-line FOREIGN KEY:
+                       …REFERENCES tblX(Id)
+                           ON DELETE SET NULL ON UPDATE CASCADE
+                   — the second line starts with `ON`, which a naïve column
+                   parser would otherwise read as a column literally named
+                   "ON". Same for the FULLTEXT / SPATIAL index forms which
+                   start with their own keyword (not INDEX). */
+            if (preg_match(
+                '/^(PRIMARY\s+KEY|INDEX|UNIQUE|KEY|CONSTRAINT|FOREIGN\s+KEY|FULLTEXT|SPATIAL|ON\s+(DELETE|UPDATE))\b/i',
+                $line
+            )) {
                 continue;
             }
             /* Column line: starts with `Name` or `\`Name\`` followed by a type. */
