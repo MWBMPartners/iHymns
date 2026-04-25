@@ -1,0 +1,54 @@
+# =============================================================================
+# iHymns — Auto-Merge Alpha PRs Workflow
+#
+# Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+# This software is proprietary. Unauthorized copying, modification, or
+# distribution is strictly prohibited.
+#
+# PURPOSE:
+# Automatically enables GitHub's native "auto-merge" feature on any pull
+# request whose base branch is `alpha`. Once enabled, GitHub will merge the
+# PR as soon as all required status checks pass and any required reviews
+# are satisfied. If checks fail, the PR stays open and is NOT merged.
+#
+# This workflow ONLY targets PRs whose base is `alpha`. PRs targeting any
+# other branch (main, beta, etc.) are unaffected.
+#
+# REQUIREMENTS (one-time repo configuration — see notes at the bottom):
+#   1. Repo Settings → General → "Allow auto-merge" must be enabled.
+#   2. Branch protection rule on `alpha` SHOULD require status checks
+#      (otherwise auto-merge will merge the PR immediately with no gate).
+#
+# MERGE METHOD:
+# Uses squash merge by default. Change `--squash` below to `--merge` or
+# `--rebase` if you prefer a different strategy.
+# =============================================================================
+
+name: Auto-Merge Alpha PRs
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+    branches:
+      - alpha
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable-auto-merge:
+    name: Enable auto-merge on alpha PRs
+    runs-on: ubuntu-latest
+    # Skip drafts — auto-merge cannot be enabled on draft PRs.
+    if: github.event.pull_request.draft == false
+    steps:
+      - name: Enable auto-merge (squash)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"
