@@ -75,15 +75,22 @@ if ($mysqli->connect_errno) {
 }
 $mysqli->set_charset('utf8mb4');
 
-/* Relax SQL strict mode for this session — schema.sql declares
-   `SongsJson MEDIUMTEXT NOT NULL DEFAULT '[]'` which MySQL refuses
-   under STRICT_TRANS_TABLES (the default since 5.7) with:
-       "BLOB, TEXT, GEOMETRY or JSON column 'X' can't have a default"
-   install.php gets away with it because the deployed server's mode
-   has historically been permissive; this migration may run on a
-   stricter server, so we explicitly drop strict mode for the
-   connection only. NO_ENGINE_SUBSTITUTION is the conservative
-   replacement (just guards against silently switching engines). */
+/* MySQL 8.0+ enforces — independent of sql_mode — that BLOB / TEXT /
+   JSON / GEOMETRY columns cannot carry a literal default value. The
+   parenthesised "expression default" form has been valid since 8.0.13
+   and is what we use below for SongsJson:
+
+       SongsJson MEDIUMTEXT NOT NULL DEFAULT ('[]')
+
+   schema.sql still uses the literal form, which is on a list of
+   schema cleanups for a separate PR — for now this migration uses
+   the expression form so the CREATE succeeds on 8.0+ servers. The
+   resulting column behaves identically: NOT NULL with default '[]'
+   inserted on rows that don't supply the value.
+
+   The SET SESSION sql_mode line below is kept as defence-in-depth
+   for any other strictness issues we might trip on later (cheap
+   insurance — session-scoped, doesn't affect other connections). */
 $mysqli->query("SET SESSION sql_mode = 'NO_ENGINE_SUBSTITUTION'");
 
 _migUserFeatures_out('=== iHymns User Features Catch-Up Migration (#517) ===');
@@ -149,7 +156,7 @@ if (_migUserFeatures_tableExists($mysqli, 'tblUserSetlists')) {
         UserId          INT UNSIGNED    NOT NULL,
         SetlistId       VARCHAR(100)    NOT NULL COMMENT 'Client-generated unique ID',
         Name            VARCHAR(200)    NOT NULL,
-        SongsJson       MEDIUMTEXT      NOT NULL DEFAULT '[]' COMMENT 'JSON array of song objects',
+        SongsJson       MEDIUMTEXT      NOT NULL DEFAULT ('[]') COMMENT 'JSON array of song objects',
         CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
         UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
