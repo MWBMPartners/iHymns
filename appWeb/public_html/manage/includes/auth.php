@@ -26,6 +26,18 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
+/* App configuration constants — defines APP_CONFIG used by head-libs.php
+   and other shared partials. Loaded FIRST in the admin bootstrap so
+   every /manage/* page has APP_CONFIG available transitively without
+   each page (or each shared partial) having to require it itself.
+   Without this, head-libs.php's `APP_CONFIG['libraries']['bootstrap']`
+   read fatals on PHP 8+ (undefined constant), halting output mid-stream
+   right after `<title>` and producing a near-blank /manage/login page —
+   the symptom that surfaced once #531's idle timeout started kicking
+   users back to the login form. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+          . DIRECTORY_SEPARATOR . 'config.php';
+
 /* On-demand debug mode (#507 / #509) — wire as early as possible so a
    fatal in db.php, the auth bootstrap, or the page itself surfaces in
    the response instead of producing a silent blank page. Every manage
