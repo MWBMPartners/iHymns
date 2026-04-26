@@ -2303,6 +2303,16 @@ if ($action !== null) {
             $where = [];
             $params = [];
 
+            /* Filters (#535) — extended to cover the new columns:
+                 action_filter   exact-match Action
+                 user_id         numeric UserId
+                 result          'success' / 'failure' / 'error'
+                 entity_type     'song' / 'user' / 'songbook' / etc
+                 entity_id       exact entity primary key
+                 request_id      pull every row from one HTTP request
+                 since           UTC ISO-8601 — rows newer than this
+                 q               substring match against Action OR EntityId
+            */
             if (!empty($_GET['action_filter'])) {
                 $where[] = 'a.Action = ?';
                 $params[] = trim($_GET['action_filter']);
@@ -2311,6 +2321,33 @@ if ($action !== null) {
                 $where[] = 'a.UserId = ?';
                 $params[] = (int)$_GET['user_id'];
             }
+            if (!empty($_GET['result'])
+                && in_array($_GET['result'], ['success', 'failure', 'error'], true)) {
+                $where[] = 'a.Result = ?';
+                $params[] = $_GET['result'];
+            }
+            if (!empty($_GET['entity_type'])) {
+                $where[] = 'a.EntityType = ?';
+                $params[] = trim($_GET['entity_type']);
+            }
+            if (!empty($_GET['entity_id'])) {
+                $where[] = 'a.EntityId = ?';
+                $params[] = trim($_GET['entity_id']);
+            }
+            if (!empty($_GET['request_id'])) {
+                $where[] = 'a.RequestId = ?';
+                $params[] = trim($_GET['request_id']);
+            }
+            if (!empty($_GET['since'])) {
+                $where[] = 'a.CreatedAt >= ?';
+                $params[] = trim($_GET['since']);
+            }
+            if (!empty($_GET['q'])) {
+                $like = '%' . trim($_GET['q']) . '%';
+                $where[] = '(a.Action LIKE ? OR a.EntityId LIKE ?)';
+                $params[] = $like;
+                $params[] = $like;
+            }
 
             $whereClause = !empty($where) ? 'WHERE ' . implode(' AND ', $where) : '';
             $params[] = $logLimit;
@@ -2318,8 +2355,10 @@ if ($action !== null) {
 
             $stmt = $db->prepare(
                 "SELECT a.Id AS id, a.Action AS action, a.EntityType AS entityType,
-                        a.EntityId AS entityId, a.Details AS details,
-                        a.IpAddress AS ipAddress, a.CreatedAt AS createdAt,
+                        a.EntityId AS entityId, a.Result AS result, a.Details AS details,
+                        a.IpAddress AS ipAddress, a.UserAgent AS userAgent,
+                        a.RequestId AS requestId, a.Method AS method,
+                        a.DurationMs AS durationMs, a.CreatedAt AS createdAt,
                         u.Username AS username
                  FROM tblActivityLog a
                  LEFT JOIN tblUsers u ON u.Id = a.UserId
@@ -2332,6 +2371,7 @@ if ($action !== null) {
 
             foreach ($entries as &$e) {
                 $e['id'] = (int)$e['id'];
+                $e['durationMs'] = $e['durationMs'] !== null ? (int)$e['durationMs'] : null;
                 if ($e['details'] !== null) {
                     $e['details'] = json_decode($e['details'], true);
                 }

@@ -124,6 +124,7 @@ $ENTITLEMENT_LABELS = [
     'customise_own_card_layout' => ['Customise own layout',          'Personalise your own dashboard / home order'],
     'access_alpha'              => ['Reach the Alpha channel',       'Sign in on alpha.ihymns.app when gate is on'],
     'access_beta'               => ['Reach the Beta channel',        'Sign in on beta.ihymns.app when gate is on'],
+    'view_activity_log'         => ['View activity log',             'Open the audit-trail viewer (#535)'],
     'manage_entitlements'       => ['Manage entitlements',           'Edit this map itself — Global Admin only'],
 ];
 

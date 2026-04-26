@@ -94,6 +94,11 @@ const ENTITLEMENTS = [
        usage return. */
     'view_ccli_report'     => ['admin', 'global_admin'],
 
+    /* Activity log viewer (#535). Reads tblActivityLog — every
+       meaningful auth, CRUD, user-action, API, and system event.
+       Default is admin+ since rows expose IP, UA, and email columns. */
+    'view_activity_log'    => ['admin', 'global_admin'],
+
     /* Meta */
     'manage_entitlements'  => ['global_admin'],
 ];
