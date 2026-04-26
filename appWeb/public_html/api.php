@@ -4429,6 +4429,15 @@ if ($action !== null) {
             }
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+
+            /* Per-user rate limit (#321) — caps invite-spam at 20 per
+               hour per signed-in user. checkRateLimit() returns true
+               on DB error so a counter-table blip doesn't stop a
+               legitimate inviter dead. */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'rate_limit.php';
+            $clientIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            checkRateLimit('setlist_collab_invite', $clientIp, 20, 3600, true, (int)$authUser['Id']);
+
             $body = json_decode((string)file_get_contents('php://input'), true) ?? [];
             $setlistId  = trim((string)($body['setlistId']        ?? ''));
             $collabEml  = trim((string)($body['collaboratorEmail'] ?? ''));
@@ -4468,6 +4477,12 @@ if ($action !== null) {
                      ON DUPLICATE KEY UPDATE Permission = VALUES(Permission)'
                 );
                 $ins->execute([(int)$authUser['Id'], $setlistId, (int)$collab['Id'], $permission]);
+
+                /* Record the invite into the rate-limit counter so the
+                   per-user/hour cap can actually trip. Bucket key
+                   matches the checkRateLimit() call above. */
+                recordRateLimitHit('setlist_collab_invite', 'user:' . (int)$authUser['Id']);
+
                 sendJson([
                     'ok' => true,
                     'collaborator' => [
