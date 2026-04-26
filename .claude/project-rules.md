@@ -105,6 +105,7 @@ See `.claude/CLAUDE.md` for the full policy. Summary: don't duplicate — extrac
 - **Don't expose backend keys to end users.** `ihymns_pro` is a DB value, not a label; surface the label via the central map.
 - **Don't scatter auth checks.** One helper call; never `$u['role'] === 'admin'` in business logic.
 - **Don't commit stacked PRs that re-implement work already in a parallel branch.** Rebase and reuse.
+- **Don't write literal `<?=` / `<?php` / `<?` inside HTML comments or backticks in `.php` files.** PHP doesn't respect HTML-comment boundaries — it parses every `<?` open-tag it finds, regardless of surrounding `<!-- ... -->`. On PHP 8.1+, `func(...)` is first-class callable syntax, so a comment that says `<?= json_encode(...) ?>` evaluates `json_encode(...)` (returns a Closure), then `<?=` tries to echo it → runtime fatal `Object of class Closure could not be converted to string` → output halts mid-stream → browser receives a truncated HTML response → the SPA shell renders but `app.js` is never reached and the loading spinner hangs forever. This took down alpha in PR #536 (commit `96cd14a`). If you need to reference PHP code in a comment, omit the open tag (`echo json_encode() call` not `<?= json_encode() ?>`). CI now greps for this pattern in `.github/workflows/test.yml`.
 
 ## 10. Activity logging — what NEVER goes in `tblActivityLog.Details` (#535)
 
