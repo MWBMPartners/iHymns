@@ -105,3 +105,28 @@ See `.claude/CLAUDE.md` for the full policy. Summary: don't duplicate — extrac
 - **Don't expose backend keys to end users.** `ihymns_pro` is a DB value, not a label; surface the label via the central map.
 - **Don't scatter auth checks.** One helper call; never `$u['role'] === 'admin'` in business logic.
 - **Don't commit stacked PRs that re-implement work already in a parallel branch.** Rebase and reuse.
+
+## 10. Activity logging — what NEVER goes in `tblActivityLog.Details` (#535)
+
+Every meaningful action writes a row to `tblActivityLog` via
+`includes/activity_log.php::logActivity()`. The `Details` JSON column
+is free-form, which makes it tempting to dump request bodies wholesale.
+**Don't.**
+
+**NEVER log:**
+- Password hashes (bcrypt/argon2 strings)
+- Plaintext passwords in any form, even temporarily
+- Bearer tokens, magic-link tokens, password-reset tokens, CSRF tokens
+- Email subject lines or bodies for magic-link emails (log only `sent: true|false`)
+- Plaintext personal details that aren't already in the entity's row
+
+**OK to log:**
+- User ID + username (already on `tblUsers`)
+- Email address on auth events (already on `tblUsers`)
+- IP address + truncated User-Agent (already columns on `tblActivityLog`)
+- For edits: the list of fields that changed + before/after values for those fields specifically
+- Error messages and class names for `Result='error'` rows — these aid debugging and don't leak user data
+
+When in doubt, log the field NAME but not the field VALUE. A row that
+says `{ "fields": ["PasswordHash"] }` is fine; one that includes the
+hash itself is a bug.
