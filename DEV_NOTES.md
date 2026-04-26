@@ -12,6 +12,7 @@
 - [Deployment Architecture](#-deployment-architecture)
 - [Development Environment](#-development-environment)
 - [Commit Message Conventions](#-commit-message-conventions)
+- [Auto-Merge for Alpha PRs](#-auto-merge-for-alpha-prs)
 
 ---
 
@@ -824,4 +825,50 @@ The most restrictive rule wins when multiple systems overlap.
 
 ---
 
-Last updated: 2026-04-16
+## 🤖 Auto-Merge for Alpha PRs
+
+PRs whose **base branch is `alpha`** are automatically merged once all required status checks (and reviews, if configured) pass. PRs targeting `main`, `beta`, or any other branch are **not** affected.
+
+### How it works
+
+The workflow `.github/workflows/auto-merge-alpha.yml` triggers on `pull_request` events scoped to `branches: [alpha]`. It runs a single command:
+
+```bash
+gh pr merge --auto --squash "$PR_URL"
+```
+
+This flips on GitHub's native **auto-merge** flag for the PR. GitHub itself then watches the PR and merges it the moment all gates are green. If checks fail, the PR stays open — nothing is merged.
+
+Drafts are skipped (`if: github.event.pull_request.draft == false`) because GitHub refuses to enable auto-merge on draft PRs.
+
+### One-time repo configuration (required)
+
+The workflow alone is not enough — auto-merge is a repo-level feature:
+
+1. **Settings → General → Pull Requests → "Allow auto-merge"** must be ticked. Without this, the `gh pr merge --auto` call errors out.
+2. **Settings → Branches → Branch protection rule for `alpha`** should require at least one status check (e.g. the `CI Lint & Validation` job from `test.yml`). Without required checks, auto-merge has nothing to wait on and would merge instantly.
+3. (Optional) Add **"Require pull request reviews"** to the same `alpha` branch protection rule if you want a human approval gate. Auto-merge respects it.
+
+### Knobs to tweak
+
+| What | Where | How |
+| --- | --- | --- |
+| Merge strategy | `run:` line in `auto-merge-alpha.yml` | `--squash` → `--merge` (merge commit) or `--rebase` |
+| Add more target branches | `on.pull_request.branches` | Add entries, e.g. `- beta` |
+| Restrict to specific authors | Add `if:` to the job | e.g. `github.event.pull_request.user.login == 'dependabot[bot]'` |
+| Disable for a single PR | Anywhere with write access | `gh pr merge --disable-auto <PR>` |
+
+### How to verify it works
+
+Open a test PR from any branch into `alpha`. Within ~30s the workflow runs, and the PR's merge box will show **"Auto-merge enabled"**. Push a failing commit → it stays unmerged. Fix it → it merges itself.
+
+### Troubleshooting
+
+- **Workflow fails with "auto-merge is not allowed"** → Repo setting #1 above is off.
+- **PR merges immediately with no checks** → No required status checks on `alpha` branch protection.
+- **Workflow doesn't run** → PR is a draft, or its base isn't `alpha`. Both are intentional.
+- **PR has merge conflicts** → Auto-merge waits silently until conflicts are resolved.
+
+---
+
+Last updated: 2026-04-26
