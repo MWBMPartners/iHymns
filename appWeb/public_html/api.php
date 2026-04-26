@@ -58,6 +58,48 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db.php';
 
 /* =========================================================================
+ * CSRF DEFENCE POLICY (#293 / B15)
+ *
+ * The iHymns API is a same-origin AJAX surface — every legitimate
+ * caller is the SPA running on the same domain, talking to /api via
+ * `fetch()` with `credentials: 'same-origin'`. There are no third-
+ * party clients, no embedded forms posting cross-site, no public
+ * API consumers.
+ *
+ * The defence stack is therefore:
+ *   1. SameSite=Strict on the auth cookie — browsers refuse to send
+ *      it on cross-site POST requests, so a CSRF attempt has no
+ *      authenticated identity. (Set in the auth-cookie issuance.)
+ *   2. Bearer token in `Authorization: Bearer <token>` header —
+ *      cross-origin attackers can't read it (it's in localStorage of
+ *      the legitimate origin, blocked from cross-origin reads by the
+ *      Same-Origin Policy).
+ *   3. THIS guard: every POST must carry `X-Requested-With:
+ *      XMLHttpRequest`. The header is a "forbidden header name" that
+ *      cross-origin POST forms cannot set without triggering a CORS
+ *      preflight (which we don't honour). Blocks classic <form>-based
+ *      CSRF as a belt-and-braces measure.
+ *
+ * Per-form CSRF tokens are deliberately NOT used. They'd be a
+ * heavier solution than this codebase's same-origin SPA needs, and
+ * the three layers above already eliminate the CSRF attack surface.
+ *
+ * If a future external integration (webhook, third-party caller)
+ * ever needs to POST to /api, give it its own endpoint outside this
+ * guard rather than weakening the policy.
+ * ========================================================================= */
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $xrw = $_SERVER['HTTP_X_REQUESTED_WITH'] ?? '';
+    if ($xrw !== 'XMLHttpRequest') {
+        sendJson([
+            'error' => 'Cross-site POST blocked: missing or invalid X-Requested-With header.',
+        ], 403);
+        exit;
+    }
+}
+
+/* =========================================================================
  * REQUEST HANDLING
  * ========================================================================= */
 
