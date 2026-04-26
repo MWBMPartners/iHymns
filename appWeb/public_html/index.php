@@ -1204,7 +1204,7 @@ if (!empty($breadcrumbItems)) {
          iHymns Application Configuration — PHP to JavaScript bridge
 
          Hardened (#526) — previously every field was its own inline
-         `<?= json_encode(...) ?>`, which meant any throw inside one
+         echo json_encode() call, which meant any throw inside one
          corrupted the JS literal mid-output and killed SPA boot (the
          exact root cause of #509). Now the entire config is built
          server-side as a single PHP array, the only DB-touching call
