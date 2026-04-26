@@ -17,16 +17,38 @@ header('Content-Type: application/javascript; charset=UTF-8');
 header('Cache-Control: no-cache, no-store, must-revalidate');
 header('Service-Worker-Allowed: /');
 
-require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
-$swVersion = $app['Application']['Version']['Number'] ?? '0.0.0';
-/* Fold the commit date (deploy-injected by the GH Actions pipeline) into
-   the cache key. Without it every build inside a single semver shares the
-   same key and clients stay pinned to the first-installed bundle. Falls
-   back to NULL (stripped) during local dev where Commit.Date is unset. */
-$swCommitStamp = preg_replace(
-    '/[^0-9]/', '',
-    (string)($app['Application']['Version']['Repo']['Commit']['Date'] ?? '')
-);
+/* Hardening (#526) — the file's docblock above warns that PHP errors /
+   warnings would corrupt the JS output and break SW registration, but
+   previously had no actual handler. If `infoAppVer.php` ever emits a
+   notice or a require throws, the SW JS becomes invalid and the
+   browser silently fails to register the worker, which silently breaks
+   offline mode for every user. Belt-and-braces: trap any error
+   *before* it reaches the response, log it, and fall back to a safe
+   constant cache key so the SW at least registers (even if the cache
+   bucket name is generic). */
+$swVersion     = '0.0.0';
+$swCommitStamp = '';
+$_swPriorErrorHandler = set_error_handler(static function ($severity, $message, $file, $line): bool {
+    error_log("[service-worker.php] PHP error during bootstrap: {$message} at {$file}:{$line}");
+    return true; /* Suppress — don't allow the warning to leak into the JS body. */
+});
+try {
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
+    $swVersion = $app['Application']['Version']['Number'] ?? '0.0.0';
+    /* Fold the commit date (deploy-injected by the GH Actions pipeline) into
+       the cache key. Without it every build inside a single semver shares the
+       same key and clients stay pinned to the first-installed bundle. Falls
+       back to NULL (stripped) during local dev where Commit.Date is unset. */
+    $swCommitStamp = preg_replace(
+        '/[^0-9]/', '',
+        (string)($app['Application']['Version']['Repo']['Commit']['Date'] ?? '')
+    );
+} catch (\Throwable $e) {
+    error_log('[service-worker.php] bootstrap failed; serving SW with generic cache key: ' . $e->getMessage());
+} finally {
+    /* Restore prior handler (if any) so we don't leak our suppression. */
+    restore_error_handler();
+}
 $swCacheKey = $swCommitStamp !== ''
     ? $swVersion . '-' . $swCommitStamp
     : $swVersion;

@@ -1202,48 +1202,90 @@ if (!empty($breadcrumbItems)) {
 
     <!-- ================================================================
          iHymns Application Configuration — PHP to JavaScript bridge
+
+         Hardened (#526) — previously every field was its own inline
+         `<?= json_encode(...) ?>`, which meant any throw inside one
+         corrupted the JS literal mid-output and killed SPA boot (the
+         exact root cause of #509). Now the entire config is built
+         server-side as a single PHP array, the only DB-touching call
+         (getSongbooks) is wrapped in try/catch with a [] fallback,
+         and the whole thing is encoded in one json_encode() call.
+         A transient DB failure now leaves the SPA bootable in a
+         degraded state (empty songbooks list) instead of dying.
          ================================================================ -->
-    <script nonce="<?= $cspNonce ?>">
-        /**
-         * Global application configuration object.
-         * Passes server-side PHP configuration to the client-side JavaScript.
-         */
-        window.iHymnsConfig = {
-            appName:        <?= json_encode($app["Application"]["Name"]) ?>,
-            version:        <?= json_encode($app["Application"]["Version"]["Number"]) ?>,
-            versionDisplay: <?= json_encode($versionDisplay) ?>,
-            devStatus:      <?= json_encode($app["Application"]["Version"]["Development"]["Status"]) ?>,
-            appUrl:         <?= json_encode($app["Application"]["Website"]["URL"]) ?>,
-            apiUrl:         '/api',
-            dataUrl:        '/api?action=songs_json',
-            nativeApps:     <?= json_encode([
+    <?php
+        try {
+            $iHymnsConfigSongbooks = $songData->getSongbooks();
+        } catch (\Throwable $e) {
+            error_log('[index.php] iHymnsConfig.songbooks fallback to [] — '
+                . $e->getMessage());
+            $iHymnsConfigSongbooks = [];
+        }
+
+        $iHymnsConfig = [
+            'appName'         => $app["Application"]["Name"],
+            'version'         => $app["Application"]["Version"]["Number"],
+            'versionDisplay'  => $versionDisplay,
+            'devStatus'       => $app["Application"]["Version"]["Development"]["Status"],
+            'appUrl'          => $app["Application"]["Website"]["URL"],
+            'apiUrl'          => '/api',
+            'dataUrl'         => '/api?action=songs_json',
+            'nativeApps'      => [
                 'ios'             => $iosApp['verified'] ? ($iosApp['storeUrl'] ?? $nativeApps['ios']) : null,
                 'iosVerified'     => $iosApp['verified'],
                 'android'         => $androidApp['verified'] ? ($androidApp['storeUrl'] ?? $nativeApps['android']) : null,
                 'androidVerified' => $androidApp['verified'],
-            ]) ?>,
-            features:       <?= json_encode(APP_CONFIG['features']) ?>,
-            fuseJsCdn:      <?= json_encode($libs['fusejs']['js_cdn']) ?>,
-            fuseJsLocal:    <?= json_encode($libs['fusejs']['js_local']) ?>,
-            toneJsCdn:      <?= json_encode($libs['tonejs']['js_cdn']) ?>,
-            toneJsLocal:    <?= json_encode($libs['tonejs']['js_local']) ?>,
-            pdfjsCdn:       <?= json_encode($libs['pdfjs']['js_cdn']) ?>,
-            pdfjsWorkerCdn: <?= json_encode($libs['pdfjs']['worker_cdn']) ?>,
-            pdfjsLocal:     <?= json_encode($libs['pdfjs']['js_local']) ?>,
-            pdfjsWorkerLocal: <?= json_encode($libs['pdfjs']['worker_local']) ?>,
-            audioBasePath:  '/data/audio/',
-            musicBasePath:  '/data/music/',
-            dnt:            <?= json_encode(USER_DNT) ?>,
-            locale:         <?= json_encode($locale) ?>,
-            initialPath:    <?= json_encode($requestPath) ?>,
-            songbooks:      <?= json_encode($songData->getSongbooks()) ?>,
-            storageBridgeUrl: 'https://sync.ihymns.app/bridge.html',
-            analytics: {
-                hasGa4:       <?= json_encode(!empty(APP_CONFIG['analytics']['google_analytics_id'])) ?>,
-                hasClarity:   <?= json_encode(!empty(APP_CONFIG['analytics']['clarity_id'])) ?>,
-                hasPlausible: <?= json_encode(!empty(APP_CONFIG['analytics']['plausible_domain'])) ?>,
-            },
-        };
+            ],
+            'features'        => APP_CONFIG['features'],
+            'fuseJsCdn'       => $libs['fusejs']['js_cdn'],
+            'fuseJsLocal'     => $libs['fusejs']['js_local'],
+            'toneJsCdn'       => $libs['tonejs']['js_cdn'],
+            'toneJsLocal'     => $libs['tonejs']['js_local'],
+            'pdfjsCdn'        => $libs['pdfjs']['js_cdn'],
+            'pdfjsWorkerCdn'  => $libs['pdfjs']['worker_cdn'],
+            'pdfjsLocal'      => $libs['pdfjs']['js_local'],
+            'pdfjsWorkerLocal'=> $libs['pdfjs']['worker_local'],
+            'audioBasePath'   => '/data/audio/',
+            'musicBasePath'   => '/data/music/',
+            'dnt'             => USER_DNT,
+            'locale'          => $locale,
+            'initialPath'     => $requestPath,
+            'songbooks'       => $iHymnsConfigSongbooks,
+            'storageBridgeUrl'=> 'https://sync.ihymns.app/bridge.html',
+            'analytics'       => [
+                'hasGa4'       => !empty(APP_CONFIG['analytics']['google_analytics_id']),
+                'hasClarity'   => !empty(APP_CONFIG['analytics']['clarity_id']),
+                'hasPlausible' => !empty(APP_CONFIG['analytics']['plausible_domain']),
+            ],
+        ];
+
+        /* Encode once. If encoding itself fails (e.g. invalid UTF-8 in a
+           songbook name), fall back to a minimal stub so the SPA still
+           boots — better than emitting `window.iHymnsConfig = ;` which
+           is invalid JS and would reproduce #509. */
+        $iHymnsConfigJson = json_encode($iHymnsConfig, JSON_UNESCAPED_SLASHES);
+        if ($iHymnsConfigJson === false) {
+            error_log('[index.php] json_encode($iHymnsConfig) failed: '
+                . json_last_error_msg());
+            $iHymnsConfigJson = json_encode([
+                'appName'    => 'iHymns',
+                'apiUrl'     => '/api',
+                'dataUrl'    => '/api?action=songs_json',
+                'songbooks'  => [],
+                'features'   => [],
+                'analytics'  => ['hasGa4' => false, 'hasClarity' => false, 'hasPlausible' => false],
+                'devStatus'  => null,
+                'dnt'        => false,
+                'locale'     => 'en',
+                'initialPath'=> '/',
+                /* Minimal stub — SPA boots in a degraded state. */
+            ]);
+        }
+    ?>
+    <script nonce="<?= $cspNonce ?>">
+        /* Single throw-site server-side; single json_encode boundary.
+           See the PHP block above for the hardening rationale. */
+        window.iHymnsConfig = <?= $iHymnsConfigJson ?>;
     </script>
 
     <!-- iHymns Application Scripts (ES Modules)

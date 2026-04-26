@@ -25,9 +25,24 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
  * CONFIGURATION
  * ========================================================================= */
 
-/** Base URL — derived from request or fallback to production domain */
+/** Base URL — validated against a whitelist (#526).
+ *
+ *  $_SERVER['HTTP_HOST'] is attacker-controllable: a poisoned Host
+ *  header would otherwise be rendered into <loc> URLs, allowing
+ *  search-engine cache poisoning / SEO-poisoning attacks. Whitelist
+ *  is the four canonical channels (production + www + dev + beta).
+ *  Anything else falls back to the production domain. */
 $scheme  = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-$host    = $_SERVER['HTTP_HOST'] ?? 'ihymns.app';
+$_allowedSitemapHosts = [
+    'ihymns.app',
+    'www.ihymns.app',
+    'dev.ihymns.app',
+    'beta.ihymns.app',
+];
+$_requestHost = $_SERVER['HTTP_HOST'] ?? '';
+$host = in_array($_requestHost, $_allowedSitemapHosts, true)
+    ? $_requestHost
+    : 'ihymns.app';
 $baseUrl = $scheme . '://' . $host;
 
 /** Today's date in W3C format for lastmod */

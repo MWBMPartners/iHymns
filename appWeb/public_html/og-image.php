@@ -100,7 +100,11 @@ try {
         }
     }
 } catch (\Throwable $e) {
-    /* Fall through to generic image */
+    /* Fall through to generic image. Logged so admins notice when
+       share-preview generation is silently degraded — previously this
+       catch swallowed every DB / SongData / SharedSetlist failure with
+       no signal. (#526) */
+    error_log('[og-image] fallback to generic — ' . $e->getMessage());
 }
 
 /* =========================================================================

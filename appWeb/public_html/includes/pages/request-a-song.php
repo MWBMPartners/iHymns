@@ -73,11 +73,24 @@ declare(strict_types=1);
         </div>
     </form>
 
+    <?php
+        /* Cache-buster for the offline-queue module import below.
+           filemtime() returns false if the file is missing/unreadable;
+           in that case render `?v=false` would still parse but break
+           cache-busting — fall back to the app version stamp instead
+           so a deploy still busts the cache. (#526) */
+        $_offlineQueuePath = dirname(__DIR__, 2) . '/public_html/js/modules/offline-queue.js';
+        $_offlineQueueVer  = @filemtime($_offlineQueuePath);
+        if ($_offlineQueueVer === false) {
+            $_offlineQueueVer = $app['Application']['Version']['Number'] ?? '0';
+            error_log('[request-a-song] filemtime fallback for offline-queue.js — file missing or unreadable at ' . $_offlineQueuePath);
+        }
+    ?>
     <script type="module">
     /* Offline queue wiring (#337). The queue module is lazy-loaded so
        a network hiccup during module fetch doesn't break the page —
        if the import fails we fall back to plain online-only submission. */
-    import { offlineQueue } from '/js/modules/offline-queue.js?v=<?= filemtime(dirname(__DIR__, 2) . '/public_html/js/modules/offline-queue.js') ?>';
+    import { offlineQueue } from '/js/modules/offline-queue.js?v=<?= urlencode((string)$_offlineQueueVer) ?>';
 
     const form = document.getElementById('request-form');
     if (form) {
