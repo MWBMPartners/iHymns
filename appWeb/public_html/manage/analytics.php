@@ -16,6 +16,7 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 requireAdmin();
 
+$activePage  = 'analytics';
 $currentUser = getCurrentUser();
 
 $range = (int)($_GET['range'] ?? 30);

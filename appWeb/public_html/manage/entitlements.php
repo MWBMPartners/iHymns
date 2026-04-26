@@ -15,7 +15,6 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
-require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -27,6 +26,8 @@ if (!$currentUser || !userHasEntitlement('manage_entitlements', $currentUser['ro
     echo '<!DOCTYPE html><html><body><h1>403 — manage_entitlements required</h1></body></html>';
     exit;
 }
+
+$activePage = 'entitlements';
 
 $ROLES = ['user', 'editor', 'admin', 'global_admin'];
 $saved = false;

@@ -12,7 +12,6 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
-require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
 
 requireAuth();
 $currentUser = getCurrentUser();
@@ -20,6 +19,8 @@ if (!$currentUser || !userHasEntitlement('verify_songs', $currentUser['role'] ??
     http_response_code(403);
     exit('Access denied. The verify_songs entitlement is required.');
 }
+
+$activePage = 'revisions';
 $db = getDb();
 
 $filterUser   = trim((string)($_GET['user']   ?? ''));

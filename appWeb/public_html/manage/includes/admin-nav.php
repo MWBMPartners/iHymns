@@ -18,10 +18,14 @@ declare(strict_types=1);
  *
  * Expected caller state:
  *   require_once __DIR__ . '/includes/auth.php';
- *   require_once dirname(__DIR__) . '/includes/entitlements.php';
  *   $currentUser = getCurrentUser();
  *   $activePage  = 'dashboard'; // or 'users', 'groups', ...
  *   require __DIR__ . '/includes/admin-nav.php';
+ *
+ * Note: as of #512, the auth.php bootstrap loads /includes/entitlements.php
+ * automatically, so callers no longer need to require it separately. The
+ * userHasEntitlement() function used by admin-links.php's closure is
+ * available globally once auth.php is included.
  */
 
 /* Prevent direct access */

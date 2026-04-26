@@ -15,7 +15,6 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
-require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -27,6 +26,8 @@ if (!$currentUser || !userHasEntitlement('review_song_requests', $currentUser['r
     echo '<!DOCTYPE html><html><body><h1>403 — review_song_requests required</h1></body></html>';
     exit;
 }
+
+$activePage = 'requests';
 
 $statuses = ['pending', 'reviewed', 'added', 'declined'];
 $filter   = (string)($_GET['status'] ?? 'pending');

@@ -32,17 +32,9 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 
-if (!isAuthenticated()) {
-    header('Location: /manage/login');
-    exit;
-}
+requireGlobalAdmin();
 $currentUser = getCurrentUser();
-if (!$currentUser || ($currentUser['role'] ?? '') !== 'global_admin') {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — Global Admin access required</h1></body></html>';
-    exit;
-}
-$activePage = 'schema-audit';
+$activePage  = 'schema-audit';
 
 /* =========================================================================
  * AUDIT HELPERS
