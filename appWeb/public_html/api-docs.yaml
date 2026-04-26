@@ -595,8 +595,8 @@ paths:
              the source.
 
         Each entry carries the target language, the translator credit
-        (if recorded), a verified flag for curated rows, and the text
-        direction for RTL-aware rendering.
+        (if recorded), a verified flag for curated rows, and the song
+        title and number for direct rendering.
       parameters:
         - name: action
           in: query
@@ -604,7 +604,7 @@ paths:
           schema:
             type: string
             enum: [song_translations]
-        - name: song_id
+        - name: id
           in: query
           required: true
           description: Source song ID (unchanged for outward, the
@@ -620,7 +620,7 @@ paths:
               schema:
                 type: object
                 properties:
-                  song_id:
+                  sourceId:
                     type: string
                     description: The song ID that was queried
                     example: CP-0202
@@ -629,7 +629,7 @@ paths:
                     items:
                       $ref: "#/components/schemas/SongTranslation"
         "400":
-          description: Missing song_id query parameter
+          description: Missing `id` query parameter
           content:
             application/json:
               schema:
@@ -4586,31 +4586,34 @@ components:
       description: |
         One related-language version of a song, as returned by
         `song_translations` (#281). Unions outward, inward, and sibling
-        relationships, so `song_id` may point at the original, a
+        relationships, so `songId` may point at the original, a
         translation, or another-language sibling depending on which
         direction it was reached from.
       properties:
-        song_id:
+        songId:
           type: string
           description: Related song's ID
           example: FR-0202
+        title:
+          type: string
+          description: Title of the related song
+          example: "Comme la rosée"
+        number:
+          type: integer
+          description: Song number within its songbook
+          example: 202
         language:
           type: string
           description: ISO 639-1 code of the related language
           example: fr
-        language_name:
+        languageName:
           type: string
           description: English name of the language
           example: French
-        native_name:
+        languageNativeName:
           type: string
           description: Native name of the language
           example: "Fran\u00E7ais"
-        dir:
-          type: string
-          enum: [ltr, rtl]
-          description: Text direction (from `tblLanguages.TextDirection`)
-          example: ltr
         translator:
           type: string
           description: Translator credit; empty for the inward link back to the source.
