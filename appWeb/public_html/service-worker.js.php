@@ -364,6 +364,19 @@ self.addEventListener('activate', (event) => {
  * ========================================================================= */
 
 self.addEventListener('fetch', (event) => {
+    /* The Cache API only supports GET responses — `cache.put()` on a
+     * HEAD / POST / PUT / DELETE / PATCH response throws
+     *   TypeError: Failed to execute 'put' on 'Cache':
+     *               Request method 'HEAD' is unsupported.
+     * Every branch below assumes GET (network-first-with-cache, etc.),
+     * so pass non-GET requests straight through to the network without
+     * SW interception. The offline-indicator's HEAD probe to
+     * /manifest.json (#354 B24, commit 6cfd3c6) is the specific
+     * request that surfaced this; any future non-GET probe is now
+     * also covered. Background Sync queueing for write requests is
+     * handled by the separate 'sync' event handler below, not here. */
+    if (event.request.method !== 'GET') return;
+
     const url = new URL(event.request.url);
 
     /* --- CDN / Third-party resources --- */
