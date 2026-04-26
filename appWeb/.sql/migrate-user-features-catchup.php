@@ -75,6 +75,17 @@ if ($mysqli->connect_errno) {
 }
 $mysqli->set_charset('utf8mb4');
 
+/* Relax SQL strict mode for this session — schema.sql declares
+   `SongsJson MEDIUMTEXT NOT NULL DEFAULT '[]'` which MySQL refuses
+   under STRICT_TRANS_TABLES (the default since 5.7) with:
+       "BLOB, TEXT, GEOMETRY or JSON column 'X' can't have a default"
+   install.php gets away with it because the deployed server's mode
+   has historically been permissive; this migration may run on a
+   stricter server, so we explicitly drop strict mode for the
+   connection only. NO_ENGINE_SUBSTITUTION is the conservative
+   replacement (just guards against silently switching engines). */
+$mysqli->query("SET SESSION sql_mode = 'NO_ENGINE_SUBSTITUTION'");
+
 _migUserFeatures_out('=== iHymns User Features Catch-Up Migration (#517) ===');
 _migUserFeatures_out('Database: ' . DB_NAME . ' @ ' . DB_HOST);
 _migUserFeatures_out('');
