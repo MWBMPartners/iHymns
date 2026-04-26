@@ -221,9 +221,12 @@ $buildQuery = function (array $overrides = []) {
         <p class="text-secondary small mb-4">
             Audit trail (#535) of every meaningful action — auth events,
             admin CRUD, user activity, API requests, system events.
-            Retention is configurable via <code>tblAppSettings.activity_log_retention_days</code>
-            (default 90 days); older rows are pruned by the daily
-            cleanup job.
+            Rows are kept indefinitely by default — the daily cleanup
+            job only prunes if an admin sets
+            <code>tblAppSettings.activity_log_retention_days</code> to
+            a positive integer (1..3650). Useful for storage-pressure
+            relief or GDPR-style compliance windows; left unset, the
+            full history is preserved.
         </p>
 
         <form method="GET" class="row g-2 mb-3 small">

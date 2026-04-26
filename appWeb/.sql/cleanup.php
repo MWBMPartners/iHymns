@@ -16,9 +16,14 @@ declare(strict_types=1);
  *   - tblEmailLoginTokens:   expired or used tokens
  *   - tblPasswordResetTokens: expired or used tokens
  *   - tblLoginAttempts:      entries older than 30 days
- *   - tblActivityLog:        entries older than the retention window
- *                            (configurable via tblAppSettings key
- *                            `activity_log_retention_days`, default 90)
+ *   - tblActivityLog:        only if pruning has been explicitly opted
+ *                            into via tblAppSettings.activity_log_retention_days
+ *                            (positive integer = retention window in days,
+ *                            1..3650). Default is 0 / unset = never prune,
+ *                            so the comprehensive audit trail (#535) is
+ *                            preserved indefinitely. Admins facing storage
+ *                            pressure or compliance-driven deletion (GDPR
+ *                            etc.) flip the switch in tblAppSettings.
  *
  * USAGE:
  *   CLI:  php appWeb/.sql/cleanup.php
@@ -132,18 +137,26 @@ try {
 }
 
 /* 5. tblActivityLog retention prune (#535).
-   Retention window is read from tblAppSettings::activity_log_retention_days
-   (default 90 days). Set to 0 to disable pruning entirely — useful
-   for forensics-heavy deployments that route long-term to a separate
-   archive table. Capped at sensible bounds (1..3650) so a fat-fingered
-   value can't either no-op or wipe years of history in one go. */
+   Retention is OPT-IN. The comprehensive audit trail is most useful
+   when complete — analytics, debugging, support, edit history, and
+   forensics all benefit from retention measured in years rather than
+   weeks. So the default behaviour is to never prune.
+
+   Admins who need pruning (storage pressure, GDPR-driven deletion of
+   personal data after a defined window, etc.) opt in by setting
+   `tblAppSettings.activity_log_retention_days` to a positive integer
+   number of days. Capped at 1..3650 so a fat-fingered value cannot
+   silently wipe years of history in one cron tick.
+
+   Setting it to 0 explicitly is equivalent to leaving it unset —
+   pruning skipped, every row preserved. */
 try {
     $stmt = $db->prepare("SELECT SettingValue FROM tblAppSettings WHERE SettingKey = 'activity_log_retention_days'");
     $stmt->execute();
     $raw = (string)($stmt->fetchColumn() ?: '');
-    $retentionDays = $raw !== '' ? (int)$raw : 90;
-    if ($retentionDays === 0) {
-        echo "tblActivityLog:        skipped (retention = 0, pruning disabled)\n";
+    $retentionDays = $raw !== '' ? (int)$raw : 0; /* 0 / unset = never prune */
+    if ($retentionDays <= 0) {
+        echo "tblActivityLog:        skipped — pruning disabled (default; full audit trail preserved)\n";
     } else {
         $retentionDays = max(1, min(3650, $retentionDays));
         $stmt = $db->prepare('DELETE FROM tblActivityLog WHERE CreatedAt < DATE_SUB(NOW(), INTERVAL ? DAY)');
