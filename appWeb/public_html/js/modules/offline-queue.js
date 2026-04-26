@@ -203,7 +203,14 @@ export const offlineQueue = {
                 }
             });
         }
-        if (navigator.onLine) setTimeout(run, 500);
+        /* One-shot nudge: page may have loaded after the most recent
+           offline→online transition, so we won't get an `online` event
+           to trigger drain. Just try — the run() drain itself fail-
+           softs on network errors (items stay queued until the next
+           successful drain attempt), so this is safe to call
+           unconditionally regardless of navigator.onLine state (which
+           is unreliable per #524). (#354) */
+        setTimeout(run, 500);
     },
 
     /**
@@ -234,6 +241,13 @@ export const offlineQueue = {
         /* Might have come online between page load and bindAutoDrain.
            A one-shot nudge covers that without waiting for the next
            offline→online transition. */
-        if (navigator.onLine) setTimeout(run, 500);
+        /* One-shot nudge: page may have loaded after the most recent
+           offline→online transition, so we won't get an `online` event
+           to trigger drain. Just try — the run() drain itself fail-
+           softs on network errors (items stay queued until the next
+           successful drain attempt), so this is safe to call
+           unconditionally regardless of navigator.onLine state (which
+           is unreliable per #524). (#354) */
+        setTimeout(run, 500);
     },
 };
