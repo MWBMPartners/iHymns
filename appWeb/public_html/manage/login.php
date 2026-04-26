@@ -24,6 +24,14 @@ if (isAuthenticated()) {
     exit;
 }
 
+/* Idle-timeout banner: requireAuth() drops a `login_notice` into
+   $_SESSION when it kicks an idle session out (#531). Surface it
+   above the form once, then clear so a refresh doesn't re-show. */
+$notice = $_SESSION['login_notice'] ?? '';
+if ($notice !== '') {
+    unset($_SESSION['login_notice']);
+}
+
 /* Handle login form submission */
 $error = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -71,6 +79,10 @@ $csrf = csrfToken();
         <?php if ($error): ?>
             <div class="alert alert-danger py-2" role="alert">
                 <i class="bi bi-exclamation-triangle me-1"></i><?= htmlspecialchars($error) ?>
+            </div>
+        <?php elseif ($notice !== ''): ?>
+            <div class="alert alert-warning py-2" role="status">
+                <i class="bi bi-clock-history me-1"></i><?= htmlspecialchars($notice) ?>
             </div>
         <?php endif; ?>
 

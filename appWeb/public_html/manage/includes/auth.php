@@ -60,6 +60,23 @@ define('SESSION_LIFETIME', 86400);
 /** Cookie name for the session */
 define('SESSION_COOKIE', 'ihymns_manage_session');
 
+/**
+ * Idle-timeout window for /manage/ sessions (#531).
+ *
+ * The session cookie itself lives for SESSION_LIFETIME (24 h) so that
+ * the cookie isn't dropped mid-Sunday-morning, but if no protected
+ * page has been hit for IDLE_TIMEOUT_SECONDS we treat the session as
+ * stale and re-prompt for credentials. Defends against the
+ * "admin walked away from the laptop and someone else opened a
+ * browser tab" scenario without making the active-use experience
+ * frustrating.
+ *
+ * 30 minutes — long enough to write a long edit-song note + grab a
+ * coffee, short enough that an unattended workstation doesn't stay
+ * authenticated all afternoon.
+ */
+define('IDLE_TIMEOUT_SECONDS', 30 * 60);
+
 /* =========================================================================
  * AUTHENTICATION FUNCTIONS
  * ========================================================================= */
@@ -143,6 +160,23 @@ function requireAuth(): void
         header('Location: /manage/login');
         exit;
     }
+
+    /* Idle timeout (#531) — auto-logout after IDLE_TIMEOUT_SECONDS of
+       inactivity. last_activity is bumped on every protected-page hit
+       below, so an active session glides forward indefinitely while
+       an abandoned one expires within half an hour. */
+    $now = time();
+    $lastActive = (int)($_SESSION['last_activity'] ?? 0);
+    if ($lastActive > 0 && ($now - $lastActive) > IDLE_TIMEOUT_SECONDS) {
+        logout();
+        $_SESSION = [];
+        initSession();
+        $_SESSION['redirect_after_login'] = $_SERVER['REQUEST_URI'] ?? '/manage/';
+        $_SESSION['login_notice'] = 'Your session timed out. Please sign in again.';
+        header('Location: /manage/login');
+        exit;
+    }
+    $_SESSION['last_activity'] = $now;
 
     /* Verify the user still exists and is active */
     $user = getCurrentUser();
@@ -414,6 +448,18 @@ function updateUserRole(int $userId, string $newRole, array $actingUser): bool
 
     $stmt = $db->prepare('UPDATE tblUsers SET Role = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
     $stmt->execute([$newRole, $userId]);
+
+    /* Session-fixation defence (#531) — if the role change applies to
+       the currently-signed-in user (e.g. self-demotion before
+       handover, rare but possible), rotate the PHP session ID so
+       any pre-change session token is invalidated. Other users'
+       sessions are unaffected; their next requireAuth() picks up
+       the new role from the DB regardless. */
+    if (isset($_SESSION['user_id']) && (int)$_SESSION['user_id'] === $userId) {
+        initSession();
+        session_regenerate_id(true);
+    }
+
     return true;
 }
 
@@ -560,6 +606,15 @@ function changeUserPassword(int $userId, string $newPassword): bool
     /* Invalidate all API tokens (force re-login) */
     $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ?');
     $stmt->execute([$userId]);
+
+    /* Session-fixation defence (#531) — if the password change applies
+       to the current /manage/ session, rotate the PHP session ID
+       alongside the bearer-token wipe above so a stolen pre-change
+       session can't continue to act as the user. */
+    if (isset($_SESSION['user_id']) && (int)$_SESSION['user_id'] === $userId) {
+        initSession();
+        session_regenerate_id(true);
+    }
 
     return true;
 }
