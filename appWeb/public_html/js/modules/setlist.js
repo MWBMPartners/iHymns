@@ -20,7 +20,7 @@
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { shortTag, fullLabel, typeColor, typeTextColor, COMPONENT_TYPES } from '../utils/components.js';
-import { STORAGE_SETLISTS, STORAGE_OWNER_ID, songbookLabel, SONGBOOK_NAMES } from '../constants.js';
+import { STORAGE_SETLISTS, STORAGE_OWNER_ID, STORAGE_AUTH_TOKEN, songbookLabel, SONGBOOK_NAMES } from '../constants.js';
 
 export class SetList {
     /**
@@ -211,7 +211,7 @@ export class SetList {
            fall back to checking localStorage directly (#262) */
         const hasToken = auth
             ? auth.isLoggedIn()
-            : !!localStorage.getItem('ihymns_auth_token');
+            : !!localStorage.getItem(STORAGE_AUTH_TOKEN);
 
         if (hasToken) {
             const user = auth ? auth.getUser() : null;

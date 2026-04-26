@@ -15,6 +15,8 @@
  * messages to the SW and listens for progress events back.
  */
 
+import { STORAGE_OFFLINE_INCLUDE_AUDIO } from '../constants.js';
+
 /** Is this browser capable of offline caching? */
 export function isOfflineSupported() {
     return (typeof navigator !== 'undefined')
@@ -65,7 +67,7 @@ async function cacheSong(songId) {
 /** Read the user's "include audio" preference from Settings. */
 function includeAudioPref() {
     try {
-        return localStorage.getItem('ihymns_offline_include_audio') === '1';
+        return localStorage.getItem(STORAGE_OFFLINE_INCLUDE_AUDIO) === '1';
     } catch { return false; }
 }
 

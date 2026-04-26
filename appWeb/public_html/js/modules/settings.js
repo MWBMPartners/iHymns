@@ -20,6 +20,7 @@ import {
     STORAGE_NUMPAD_LIVE_SEARCH,
     STORAGE_ANALYTICS_CONSENT,
     STORAGE_SEARCH_HISTORY,
+    STORAGE_CVD_MODE,
 } from '../constants.js';
 
 /**
@@ -41,7 +42,7 @@ const SYNC_PREF_KEYS = Object.freeze([
     'ihymns_numpad_live_search',
     'ihymns_search_lyrics',
     'ihymns_display',
-    'ihymns_cvd_mode',
+    STORAGE_CVD_MODE,
     'ihymns_keyboardShortcuts',
 ]);
 
@@ -441,7 +442,7 @@ export class Settings {
         }
 
         /* Apply CVD colour vision mode (#319) */
-        const cvdMode = localStorage.getItem('ihymns_cvd_mode');
+        const cvdMode = localStorage.getItem(STORAGE_CVD_MODE);
         if (cvdMode) {
             html.setAttribute('data-ihymns-cvd', cvdMode);
         } else {
@@ -632,17 +633,17 @@ export class Settings {
         /* Colour vision deficiency mode (#319) */
         const cvdSelect = document.getElementById('setting-cvd-mode');
         if (cvdSelect) {
-            cvdSelect.value = localStorage.getItem('ihymns_cvd_mode') || '';
+            cvdSelect.value = localStorage.getItem(STORAGE_CVD_MODE) || '';
             cvdSelect.addEventListener('change', () => {
                 const mode = cvdSelect.value;
                 if (mode) {
-                    localStorage.setItem('ihymns_cvd_mode', mode);
+                    localStorage.setItem(STORAGE_CVD_MODE, mode);
                     document.documentElement.setAttribute('data-ihymns-cvd', mode);
                 } else {
-                    localStorage.removeItem('ihymns_cvd_mode');
+                    localStorage.removeItem(STORAGE_CVD_MODE);
                     document.documentElement.removeAttribute('data-ihymns-cvd');
                 }
-                this._maybePushSync('ihymns_cvd_mode');
+                this._maybePushSync(STORAGE_CVD_MODE);
             });
         }
 
