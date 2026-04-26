@@ -31,13 +31,47 @@ function idb(req) {
 }
 
 /**
+ * IndexedDB availability cache. Some contexts advertise the API
+ * (`'indexedDB' in window` is true) but reject open() — Firefox
+ * private browsing historically returned an "InvalidStateError",
+ * Safari occasionally aborts inside cross-origin iframes, and a
+ * handful of locked-down browser extensions block open() at the
+ * permission layer (#354). The first openDb() call probes; cached
+ * thereafter so we don't reissue a failing request on every drain.
+ *
+ *   null     — not yet probed
+ *   false    — IDB confirmed unusable; helpers all fail-soft
+ *   true     — confirmed usable on this page
+ */
+let _idbWorking = null;
+
+/**
  * Open (and upgrade if needed) the offline-queue database. Safari
  * has historically mis-fired `onupgradeneeded` during the same tick
  * as `onsuccess`, so the upgrade branch is idempotent.
+ *
+ * Rejects with the original DOMException — callers should catch
+ * and bail rather than crash so a private-mode visitor still gets
+ * a usable (though non-persisting) UI. (#354)
  */
 function openDb() {
+    if (_idbWorking === false) {
+        return Promise.reject(new Error('IndexedDB unavailable in this context'));
+    }
     return new Promise((resolve, reject) => {
-        const req = indexedDB.open(DB_NAME, DB_VERSION);
+        if (typeof indexedDB === 'undefined' || indexedDB === null) {
+            _idbWorking = false;
+            reject(new Error('IndexedDB API not present'));
+            return;
+        }
+        let req;
+        try {
+            req = indexedDB.open(DB_NAME, DB_VERSION);
+        } catch (e) {
+            _idbWorking = false;
+            reject(e);
+            return;
+        }
         req.onupgradeneeded = () => {
             const db = req.result;
             if (!db.objectStoreNames.contains(STORE_NAME)) {
@@ -45,8 +79,9 @@ function openDb() {
                 store.createIndex('byType', 'type', { unique: false });
             }
         };
-        req.onsuccess = () => resolve(req.result);
-        req.onerror   = () => reject(req.error);
+        req.onsuccess = () => { _idbWorking = true; resolve(req.result); };
+        req.onerror   = () => { _idbWorking = false; reject(req.error); };
+        req.onblocked = () => { _idbWorking = false; reject(new Error('IndexedDB open blocked')); };
     });
 }
 
@@ -76,14 +111,37 @@ function syncSupported() {
 
 export const offlineQueue = {
     /**
+     * Public-shaped feature test for IndexedDB so consumers can decide
+     * whether to surface "saved offline, will send when reconnected"
+     * messaging. Resolves true if a real open() succeeds, false in
+     * private-mode / blocked-extension contexts (#354).
+     */
+    async isAvailable() {
+        if (_idbWorking !== null) return _idbWorking;
+        try { (await openDb()).close(); return true; }
+        catch (_e) { return false; }
+    },
+
+    /**
      * Persist `{type, payload}` to IndexedDB. Returns the numeric id
      * of the stored row so UIs can show "Saved as request #42 — will
      * send when you're back online".
+     *
+     * In private-mode or blocked-IDB contexts, returns null and the
+     * caller should fall back to a one-shot "could not save offline,
+     * please try again when reconnected" hint rather than letting
+     * the rejection bubble up. (#354)
      */
     async enqueue(type, payload) {
-        const id = await withStore('readwrite', (store) => idb(
-            store.add({ type, payload, createdAt: Date.now() })
-        ));
+        let id;
+        try {
+            id = await withStore('readwrite', (store) => idb(
+                store.add({ type, payload, createdAt: Date.now() })
+            ));
+        } catch (e) {
+            console.warn('[offlineQueue] enqueue failed (IDB unavailable?):', e);
+            return null;
+        }
 
         if (syncSupported()) {
             try {
@@ -99,9 +157,13 @@ export const offlineQueue = {
 
     /** Count pending items of a given type — for badge displays. */
     async count(type) {
-        return withStore('readonly', (store) => idb(
-            store.index('byType').count(IDBKeyRange.only(type))
-        ));
+        try {
+            return await withStore('readonly', (store) => idb(
+                store.index('byType').count(IDBKeyRange.only(type))
+            ));
+        } catch (_e) {
+            return 0; /* IDB blocked/private-mode → no pending rows visible */
+        }
     },
 
     /**
@@ -116,16 +178,21 @@ export const offlineQueue = {
      * progress in the UI.
      */
     async drain(type, send) {
-        const items = await withStore('readonly', (store) => new Promise((resolve, reject) => {
-            const acc = [];
-            const cursorReq = store.index('byType').openCursor(IDBKeyRange.only(type));
-            cursorReq.onsuccess = (ev) => {
-                const cur = ev.target.result;
-                if (cur) { acc.push({ id: cur.primaryKey, row: cur.value }); cur.continue(); }
-                else resolve(acc);
-            };
-            cursorReq.onerror = () => reject(cursorReq.error);
-        }));
+        let items;
+        try {
+            items = await withStore('readonly', (store) => new Promise((resolve, reject) => {
+                const acc = [];
+                const cursorReq = store.index('byType').openCursor(IDBKeyRange.only(type));
+                cursorReq.onsuccess = (ev) => {
+                    const cur = ev.target.result;
+                    if (cur) { acc.push({ id: cur.primaryKey, row: cur.value }); cur.continue(); }
+                    else resolve(acc);
+                };
+                cursorReq.onerror = () => reject(cursorReq.error);
+            }));
+        } catch (_e) {
+            return { sent: 0, failed: 0, remaining: 0 }; /* IDB unavailable */
+        }
 
         let sent = 0, failed = 0;
         for (const { id, row } of items) {
@@ -203,7 +270,14 @@ export const offlineQueue = {
                 }
             });
         }
-        if (navigator.onLine) setTimeout(run, 500);
+        /* One-shot nudge: page may have loaded after the most recent
+           offline→online transition, so we won't get an `online` event
+           to trigger drain. Just try — the run() drain itself fail-
+           softs on network errors (items stay queued until the next
+           successful drain attempt), so this is safe to call
+           unconditionally regardless of navigator.onLine state (which
+           is unreliable per #524). (#354) */
+        setTimeout(run, 500);
     },
 
     /**
@@ -234,6 +308,13 @@ export const offlineQueue = {
         /* Might have come online between page load and bindAutoDrain.
            A one-shot nudge covers that without waiting for the next
            offline→online transition. */
-        if (navigator.onLine) setTimeout(run, 500);
+        /* One-shot nudge: page may have loaded after the most recent
+           offline→online transition, so we won't get an `online` event
+           to trigger drain. Just try — the run() drain itself fail-
+           softs on network errors (items stay queued until the next
+           successful drain attempt), so this is safe to call
+           unconditionally regardless of navigator.onLine state (which
+           is unreliable per #524). (#354) */
+        setTimeout(run, 500);
     },
 };

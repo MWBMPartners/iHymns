@@ -161,7 +161,12 @@ class SongData
         try {
             $this->db = getDbMysqli();
         } catch (\Throwable $e) {
-            /* MySQL not available — fall back to JSON file */
+            /* MySQL not available — fall back to JSON file. Logged
+               (#534) so admins notice when the live DB is unreachable;
+               otherwise the app degrades to read-only JSON without
+               any signal. Fresh-install case is handled by the broader
+               install-detection logic in includes/db_mysql.php. */
+            error_log('[SongData] MySQL unavailable, using JSON fallback: ' . $e->getMessage());
             $this->jsonMode = true;
             $this->_loadJsonFallback();
         }
@@ -635,12 +640,13 @@ class SongData
             $row['musicPublicDomain'] = (bool)$row['musicPublicDomain'];
             $row['hasAudio'] = (bool)$row['hasAudio'];
             $row['hasSheetMusic'] = (bool)$row['hasSheetMusic'];
-            $row['writers']    = $this->_getWriters($row['id']);
-            $row['composers'] = $this->_getComposers($row['id']);
-            $row['components'] = $this->_getComponents($row['id']);
             $results[] = $row;
         }
         $stmt->close();
+
+        /* Bulk-attach writers / composers / components — was 3 queries
+           per matched row, now one per side table (#533). */
+        $this->_attachSearchResultCredits($results);
 
         /* If FULLTEXT returned no results, fall back to LIKE search on writers/composers */
         if (empty($results) && mb_strlen($query) >= 3) {
@@ -727,6 +733,10 @@ class SongData
             $stmt->close();
             return $out;
         } catch (\Throwable $_e) {
+            /* Search continues with regular text matches even if the
+               scripture-tag JOIN fails; logged so admins notice DDL
+               drift on tblSongTags / tblSongTagMap. */
+            error_log('[SongData::_searchByScriptureTag] ' . $_e->getMessage());
             return [];
         }
     }
@@ -783,12 +793,11 @@ class SongData
             $row['musicPublicDomain'] = (bool)$row['musicPublicDomain'];
             $row['hasAudio'] = (bool)$row['hasAudio'];
             $row['hasSheetMusic'] = (bool)$row['hasSheetMusic'];
-            $row['writers']    = $this->_getWriters($row['id']);
-            $row['composers'] = $this->_getComposers($row['id']);
-            $row['components'] = $this->_getComponents($row['id']);
             $songs[] = $row;
         }
         $stmt->close();
+
+        $this->_attachSearchResultCredits($songs); /* #533 */
 
         return $songs;
     }
@@ -1003,6 +1012,41 @@ class SongData
         }
 
         return $row;
+    }
+
+    /**
+     * Attach writers/composers/components in bulk to a list of song
+     * rows, replacing the per-row N+1 calls that searchSongs(),
+     * searchByNumber() and _searchByWriterComposer() previously made
+     * (#533). Mirrors the bulk-loader pattern already used by
+     * getSongs() — one query per side table instead of three per
+     * matched row.
+     *
+     * Stays minimal (writers / composers / components only) to
+     * preserve the current shape returned by these search methods.
+     * Single-song reads via _fetchSongRow() still attach the full
+     * credit shape (arrangers / adaptors / translators / tags).
+     *
+     * @param array<int,array> $songs Reference — each row gains
+     *                                writers / composers / components keys.
+     */
+    private function _attachSearchResultCredits(array &$songs): void
+    {
+        if (empty($songs)) return;
+        $songIds = array_column($songs, 'id');
+        if (empty($songIds)) return;
+
+        $writersMap    = $this->_getWritersMap($songIds);
+        $composersMap  = $this->_getComposersMap($songIds);
+        $componentsMap = $this->_getComponentsMap($songIds);
+
+        foreach ($songs as &$song) {
+            $sid = $song['id'];
+            $song['writers']    = $writersMap[$sid]    ?? [];
+            $song['composers']  = $composersMap[$sid]  ?? [];
+            $song['components'] = $componentsMap[$sid] ?? [];
+        }
+        unset($song);
     }
 
     /**
@@ -1430,12 +1474,11 @@ class SongData
             $row['musicPublicDomain'] = (bool)$row['musicPublicDomain'];
             $row['hasAudio'] = (bool)$row['hasAudio'];
             $row['hasSheetMusic'] = (bool)$row['hasSheetMusic'];
-            $row['writers']    = $this->_getWriters($row['id']);
-            $row['composers'] = $this->_getComposers($row['id']);
-            $row['components'] = $this->_getComponents($row['id']);
             $songs[] = $row;
         }
         $stmt->close();
+
+        $this->_attachSearchResultCredits($songs); /* #533 */
 
         return $songs;
     }

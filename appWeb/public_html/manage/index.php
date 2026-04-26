@@ -13,7 +13,6 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
-require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'card_layout.php';
 
 /* Dashboard is now the single landing page for every management
@@ -97,14 +96,7 @@ $csrf = csrfToken();
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard — iHymns Admin</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
-          rel="stylesheet"
-          integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
-          crossorigin="anonymous">
-    <link rel="stylesheet"
-          href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
-          integrity="sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+"
-          crossorigin="anonymous">
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <!-- Shared iHymns palette + admin styles -->
     <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__) . "/css/app.css") ?>">
     <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime(dirname(__DIR__) . "/css/admin.css") ?>">
@@ -220,9 +212,11 @@ $csrf = csrfToken();
             ['tiers',        'manage_access_tiers',         '/manage/tiers',         'bi-stars',         'Access Tiers',         'Define tiers controlling lyrics, audio, MIDI, sheet music &amp; offline', true],
             ['entitlements', 'manage_entitlements',         '/manage/entitlements',  'bi-key',           'Entitlements &amp; Gating','Assign capabilities to roles',                                          true],
             ['analytics',    'view_analytics',              '/manage/analytics',     'bi-graph-up',      'Analytics',            'Top songs, searches, and user activity',                                  true],
+            ['ccli-report',  'view_ccli_report',            '/manage/ccli-report',   'bi-receipt',       'CCLI Usage Report',    'Per-song view counts + CSV export for the annual CCLI usage return',      true],
+            ['missing-numbers','edit_songs',                '/manage/missing-numbers','bi-binoculars',   'Missing Numbers',      'Catalogue-wide report of songbook number gaps',                           true],
             ['data-health',  'drop_legacy_tables',          '/manage/data-health',   'bi-activity',      'Data Health',          'Confirm MySQL is authoritative; disconnect legacy fallbacks',             true],
             ['schema-audit', 'drop_legacy_tables',          '/manage/schema-audit',  'bi-clipboard2-data','Schema Audit',        'Diff schema.sql vs live DB vs migrations; spot drift before it bites',    true],
-            ['setup-db',     'run_db_install',              '/manage/setup-database','bi-database-gear', 'Database Setup',       'Install, migrate, backup, restore, cleanup',                              true],
+            ['setup-database','run_db_install',             '/manage/setup-database','bi-database-gear', 'Database Setup',       'Install, migrate, backup, restore, cleanup',                              true],
             ['view-site',    null,                          '/',                     'bi-globe',         'View Website',         'Open iHymns in a new tab',                                                true],
         ];
 

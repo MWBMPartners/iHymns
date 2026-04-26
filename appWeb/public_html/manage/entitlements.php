@@ -15,7 +15,6 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
-require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -27,6 +26,8 @@ if (!$currentUser || !userHasEntitlement('manage_entitlements', $currentUser['ro
     echo '<!DOCTYPE html><html><body><h1>403 — manage_entitlements required</h1></body></html>';
     exit;
 }
+
+$activePage = 'entitlements';
 
 $ROLES = ['user', 'editor', 'admin', 'global_admin'];
 $saved = false;
@@ -123,6 +124,7 @@ $ENTITLEMENT_LABELS = [
     'customise_own_card_layout' => ['Customise own layout',          'Personalise your own dashboard / home order'],
     'access_alpha'              => ['Reach the Alpha channel',       'Sign in on alpha.ihymns.app when gate is on'],
     'access_beta'               => ['Reach the Beta channel',        'Sign in on beta.ihymns.app when gate is on'],
+    'view_activity_log'         => ['View activity log',             'Open the audit-trail viewer (#535)'],
     'manage_entitlements'       => ['Manage entitlements',           'Edit this map itself — Global Admin only'],
 ];
 
@@ -141,12 +143,7 @@ $isGlobalAdmin = ($currentUser['role'] ?? '') === 'global_admin';
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Entitlements — iHymns Admin</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"
-          integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
-          integrity="sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+" crossorigin="anonymous">
-    <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__) . '/css/app.css') ?>">
-    <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime(dirname(__DIR__) . '/css/admin.css') ?>">
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <style>
         .ent-grid th, .ent-grid td { vertical-align: middle; }
         .ent-grid td.role-col { text-align: center; }

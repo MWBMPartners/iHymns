@@ -25,15 +25,50 @@ export class OfflineIndicator {
 
     /**
      * Initialise — bind online/offline events and show initial state.
+     *
+     * `navigator.onLine` is unreliable: it returns true for any active
+     * network interface, including captive portals and broken networks
+     * where actual fetches fail (#354 / #524). The `online` / `offline`
+     * window events are still reliable for STATE CHANGES (browsers fire
+     * them when the network adapter changes), so we keep listening to
+     * those — but for the INITIAL state we probe with a real fetch
+     * against an endpoint we know is cheap + same-origin (manifest.json
+     * — small, cached, always present).
+     *
+     * If the probe fails (network-level error, not HTTP error), show
+     * the banner. If it succeeds, don't. If it takes longer than the
+     * timeout, assume online (the banner will appear via `offline`
+     * event if it really is offline).
      */
     init() {
         window.addEventListener('online', () => this.onOnline());
         window.addEventListener('offline', () => this.onOffline());
 
-        /* Show banner immediately if already offline */
-        if (!navigator.onLine) {
-            this.onOffline();
-        }
+        /* Modules elsewhere (e.g. router) can dispatch this when an
+           actual fetch fails with a network-level error, giving a more
+           reliable signal than navigator.onLine for captive-portal /
+           dead-network scenarios. */
+        window.addEventListener('ihymns:fetch-failed', () => this.onOffline());
+        window.addEventListener('ihymns:fetch-succeeded', () => this.onOnline());
+
+        /* Initial-state probe — see docblock above. */
+        this._probeConnectivity();
+    }
+
+    /**
+     * Real-fetch probe to set the initial banner state.
+     * Replaces the unreliable `navigator.onLine` check.
+     */
+    _probeConnectivity() {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 2500);
+        fetch('/manifest.json', { method: 'HEAD', cache: 'no-cache', signal: controller.signal })
+            .then(() => { clearTimeout(timer); /* online — no banner */ })
+            .catch(err => {
+                clearTimeout(timer);
+                if (err && err.name === 'AbortError') return; /* slow network — assume online */
+                this.onOffline();
+            });
     }
 
     /** Handle going offline */

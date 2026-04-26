@@ -56,6 +56,49 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'card_layout.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+
+/* =========================================================================
+ * CSRF DEFENCE POLICY (#293 / B15)
+ *
+ * The iHymns API is a same-origin AJAX surface — every legitimate
+ * caller is the SPA running on the same domain, talking to /api via
+ * `fetch()` with `credentials: 'same-origin'`. There are no third-
+ * party clients, no embedded forms posting cross-site, no public
+ * API consumers.
+ *
+ * The defence stack is therefore:
+ *   1. SameSite=Strict on the auth cookie — browsers refuse to send
+ *      it on cross-site POST requests, so a CSRF attempt has no
+ *      authenticated identity. (Set in the auth-cookie issuance.)
+ *   2. Bearer token in `Authorization: Bearer <token>` header —
+ *      cross-origin attackers can't read it (it's in localStorage of
+ *      the legitimate origin, blocked from cross-origin reads by the
+ *      Same-Origin Policy).
+ *   3. THIS guard: every POST must carry `X-Requested-With:
+ *      XMLHttpRequest`. The header is a "forbidden header name" that
+ *      cross-origin POST forms cannot set without triggering a CORS
+ *      preflight (which we don't honour). Blocks classic <form>-based
+ *      CSRF as a belt-and-braces measure.
+ *
+ * Per-form CSRF tokens are deliberately NOT used. They'd be a
+ * heavier solution than this codebase's same-origin SPA needs, and
+ * the three layers above already eliminate the CSRF attack surface.
+ *
+ * If a future external integration (webhook, third-party caller)
+ * ever needs to POST to /api, give it its own endpoint outside this
+ * guard rather than weakening the policy.
+ * ========================================================================= */
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $xrw = $_SERVER['HTTP_X_REQUESTED_WITH'] ?? '';
+    if ($xrw !== 'XMLHttpRequest') {
+        sendJson([
+            'error' => 'Cross-site POST blocked: missing or invalid X-Requested-With header.',
+        ], 403);
+        exit;
+    }
+}
 
 /* =========================================================================
  * REQUEST HANDLING
@@ -220,6 +263,16 @@ if ($page !== null) {
  * ========================================================================= */
 
 if ($action !== null) {
+    /* Top-level try/catch wraps the whole switch (#535 Phase 4) so
+       any uncaught Throwable from a case clause writes ONE
+       activity-log row tagged Result='error' and the exception's
+       message/class/file:line in Details. The current behaviour
+       (sendJson 500 + error_log) is preserved — the activity-log
+       row is purely additive. Specific case clauses that catch
+       their own exceptions still do, so we don't double-log; this
+       net only catches what isn't already caught. */
+    $_apiSwitchStart = microtime(true);
+    try {
     switch ($action) {
 
         /* -----------------------------------------------------------------
@@ -250,7 +303,12 @@ if ($action !== null) {
                     'INSERT INTO tblSearchQueries (Query, ResultCount, UserId) VALUES (?, ?, ?)'
                 );
                 $logStmt->execute([$query, count($results), $uid]);
-            } catch (\Throwable $_e) { /* best-effort */ }
+            } catch (\Throwable $_e) {
+                /* Best-effort — search-query analytics is non-critical.
+                   Logged so admins notice if the INSERT is failing
+                   systematically (e.g., tblSearchQueries DDL drift). */
+                error_log('[api/search log] ' . $_e->getMessage());
+            }
 
             sendJson([
                 'results' => array_map('songToSummary', $results),
@@ -602,6 +660,20 @@ if ($action !== null) {
                 }
             }
 
+            /* Audit (#535) — distinct rows for create vs update so the
+               timeline reads correctly. song_count helps spot the
+               "shared an empty list by accident" cases. */
+            logActivity(
+                $isUpdate ? 'setlist.share_update' : 'setlist.share_create',
+                'setlist',
+                $shareId,
+                [
+                    'name'        => $setlistName,
+                    'song_count'  => count($setlistSongs),
+                    'has_arrangements' => !empty($arrangements),
+                ]
+            );
+
             sendJson([
                 'id'  => $shareId,
                 'url' => '/setlist/shared/' . $shareId,
@@ -761,6 +833,23 @@ if ($action !== null) {
                script-accessible storage (#390). */
             setAuthTokenCookie($token, $expiresAtTs);
 
+            /* Audit (#535). The bearer token is NOT logged per the
+               privacy policy; only its sha256 prefix as a debugging
+               handle. PasswordHash is also kept out of Details. */
+            logActivity(
+                'auth.register',
+                'user',
+                (string)$userId,
+                [
+                    'username'     => $username,
+                    'display_name' => $displayName,
+                    'role'         => $role,
+                    'token_prefix' => substr(hash('sha256', $token), 0, 12),
+                ],
+                'success',
+                $userId
+            );
+
             sendJson([
                 'token' => $token,
                 'user'  => [
@@ -808,6 +897,13 @@ if ($action !== null) {
             $recentFailures = (int)$stmt->fetchColumn();
 
             if ($recentFailures >= 10) {
+                logActivity(
+                    'auth.login',
+                    'user',
+                    $username,
+                    ['reason' => 'rate_limited', 'recent_failures' => $recentFailures],
+                    'failure'
+                );
                 sendJson(['error' => 'Too many failed login attempts. Please try again later.'], 429);
                 break;
             }
@@ -817,17 +913,43 @@ if ($action !== null) {
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if (!$user || !password_verify($password, $user['PasswordHash'])) {
-                /* Log failed attempt */
+                /* Log failed attempt to tblLoginAttempts (used by the
+                   brute-force counter above) AND to tblActivityLog
+                   (#535). The two stay in sync because they record
+                   slightly different things — tblLoginAttempts is
+                   tight, indexed for fast brute-force lookup;
+                   tblActivityLog carries richer context (RequestId,
+                   UA, reason). */
                 $stmt = $db->prepare(
                     'INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, ?, 0)'
                 );
                 $stmt->execute([$clientIp, $username]);
+
+                logActivity(
+                    'auth.login',
+                    'user',
+                    $username,
+                    [
+                        'reason'   => $user ? 'wrong_password' : 'unknown_user',
+                        'username' => $username,
+                    ],
+                    'failure',
+                    $user ? (int)$user['Id'] : null
+                );
 
                 sendJson(['error' => 'Invalid username or password.'], 401);
                 break;
             }
 
             if (!$user['IsActive']) {
+                logActivity(
+                    'auth.login',
+                    'user',
+                    (string)$user['Id'],
+                    ['reason' => 'account_disabled', 'username' => $user['Username']],
+                    'failure',
+                    (int)$user['Id']
+                );
                 sendJson(['error' => 'Account is disabled.'], 403);
                 break;
             }
@@ -854,6 +976,21 @@ if ($action !== null) {
             /* Cross-subdomain cookie (#390) */
             setAuthTokenCookie($token, $expiresAtTs);
 
+            /* Audit (#535) — bearer token never enters Details, only
+               its sha256 prefix as a debug handle. */
+            logActivity(
+                'auth.login',
+                'user',
+                (string)$user['Id'],
+                [
+                    'username'     => $user['Username'],
+                    'role'         => $user['Role'],
+                    'token_prefix' => substr(hash('sha256', $token), 0, 12),
+                ],
+                'success',
+                (int)$user['Id']
+            );
+
             sendJson([
                 'token' => $token,
                 'user'  => [
@@ -876,6 +1013,7 @@ if ($action !== null) {
             }
 
             $token = getAuthBearerToken();
+            $authedUser = $token ? getAuthenticatedUser() : null;
             if ($token) {
                 $db = getDb();
                 $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE Token = ?');
@@ -885,6 +1023,22 @@ if ($action !== null) {
             /* Also clear the auth cookie (#390) so a subsequent page load
                on any iHymns subdomain is properly signed-out. */
             clearAuthTokenCookie();
+
+            /* Audit (#535) — only when we actually had a token; an
+               unauthenticated logout is a no-op and not worth a row. */
+            if ($authedUser) {
+                logActivity(
+                    'auth.logout',
+                    'user',
+                    (string)$authedUser['Id'],
+                    [
+                        'username'     => $authedUser['Username'] ?? null,
+                        'token_prefix' => substr(hash('sha256', $token), 0, 12),
+                    ],
+                    'success',
+                    (int)$authedUser['Id']
+                );
+            }
 
             sendJson(['ok' => true]);
             break;
@@ -1251,7 +1405,19 @@ if ($action !== null) {
             $result = generateEmailLoginToken($requestEmail, $clientIp);
 
             if ($result === null) {
-                /* Rate limited — still return 200 to prevent enumeration */
+                /* Rate limited or no-such-account — still return 200 to
+                   prevent enumeration. The audit row records the
+                   rate-limit reason WITHOUT leaking which case it
+                   actually was; the resolver inside
+                   generateEmailLoginToken() already differentiates
+                   in its own log row. (#535) */
+                logActivity(
+                    'auth.login_email_request',
+                    '',
+                    '',
+                    ['email' => $requestEmail, 'reason' => 'rate_limited_or_no_account'],
+                    'failure'
+                );
                 sendJson([
                     'ok'      => true,
                     'message' => 'If an account exists with that email, a login code has been sent.',
@@ -1267,6 +1433,22 @@ if ($action !== null) {
                 '[iHymns] Email login requested for %s — Code: %s (expires in 10 min)',
                 $requestEmail, $result['code']
             ));
+
+            /* Audit (#535). Token + code are NOT logged per privacy
+               policy; only their hash prefix as a debug handle and
+               the email so admins can correlate "did the email
+               actually go out". */
+            logActivity(
+                'auth.login_email_request',
+                'user',
+                (string)($result['userId'] ?? ''),
+                [
+                    'email'        => $requestEmail,
+                    'token_prefix' => isset($result['token']) ? substr(hash('sha256', (string)$result['token']), 0, 12) : null,
+                ],
+                'success',
+                isset($result['userId']) ? (int)$result['userId'] : null
+            );
 
             sendJson([
                 'ok'      => true,
@@ -1313,6 +1495,17 @@ if ($action !== null) {
             }
 
             if ($verified === null) {
+                logActivity(
+                    'auth.login_email_verify',
+                    '',
+                    '',
+                    [
+                        'mode'   => $verifyToken !== '' ? 'magic_link' : 'code',
+                        'email'  => $verifyEmail,
+                        'reason' => 'invalid_or_expired',
+                    ],
+                    'failure'
+                );
                 sendJson(['error' => 'Invalid or expired login code. Please request a new one.'], 401);
                 break;
             }
@@ -1334,6 +1527,24 @@ if ($action !== null) {
                 'INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, ?, 1)'
             );
             $stmt->execute([$clientIp, $loginResult['user']['username']]);
+
+            /* Audit (#535). Mode + email captured so admins can answer
+               "is the magic-link path being used at all?" Token never
+               leaves the response. */
+            $loginUserId = isset($loginResult['user']['id']) ? (int)$loginResult['user']['id'] : null;
+            logActivity(
+                'auth.login_email_verify',
+                'user',
+                (string)($loginUserId ?? ''),
+                [
+                    'mode'         => $verifyToken !== '' ? 'magic_link' : 'code',
+                    'email'        => $verified['email'],
+                    'username'     => $loginResult['user']['username'] ?? null,
+                    'token_prefix' => isset($loginResult['token']) ? substr(hash('sha256', (string)$loginResult['token']), 0, 12) : null,
+                ],
+                'success',
+                $loginUserId
+            );
 
             sendJson($loginResult);
             break;
@@ -1414,8 +1625,10 @@ if ($action !== null) {
             $insert = $db->prepare(
                 'INSERT IGNORE INTO tblUserFavorites (UserId, SongId) VALUES (?, ?)'
             );
+            $newlyAdded = 0;
             foreach ($localFavs as $songId) {
                 $insert->execute([$userId, $songId]);
+                $newlyAdded += $insert->rowCount();
             }
 
             /* Return merged list */
@@ -1424,6 +1637,15 @@ if ($action !== null) {
             );
             $stmt->execute([$userId]);
             $finalFavs = $stmt->fetchAll(PDO::FETCH_COLUMN);
+
+            /* Audit (#535) — only one row per sync, not per favourite,
+               since the sync is the meaningful user action. */
+            if ($newlyAdded > 0) {
+                logActivity('favorites.sync', 'user', (string)$userId, [
+                    'newly_added' => $newlyAdded,
+                    'total'       => count($finalFavs),
+                ]);
+            }
 
             sendJson(['favorites' => $finalFavs]);
             break;
@@ -1458,6 +1680,9 @@ if ($action !== null) {
             $db = getDb();
             $stmt = $db->prepare('DELETE FROM tblUserFavorites WHERE UserId = ? AND SongId = ?');
             $stmt->execute([$authUser['Id'], $removeSongId]);
+            if ($stmt->rowCount() > 0) {
+                logActivity('favorites.remove', 'song', $removeSongId, [], 'success', (int)$authUser['Id']);
+            }
 
             sendJson(['ok' => true]);
             break;
@@ -1913,6 +2138,14 @@ if ($action !== null) {
             if (strlen($newUsername) < 3
                 || strlen($newUsername) > 100
                 || !preg_match('/^[a-z0-9_.\-]+$/', $newUsername)) {
+                logActivity(
+                    'auth.username_change',
+                    'user',
+                    (string)$authUser['Id'],
+                    ['reason' => 'invalid_format', 'attempted' => $newUsername],
+                    'failure',
+                    (int)$authUser['Id']
+                );
                 sendJson(['error' => 'Username must be 3–100 characters (letters, numbers, _, -, . only).'], 400);
                 break;
             }
@@ -1928,6 +2161,14 @@ if ($action !== null) {
             $stmt->execute([$authUser['Id']]);
             $row = $stmt->fetch(\PDO::FETCH_ASSOC);
             if (!$row || !password_verify($currentPw, $row['PasswordHash'])) {
+                logActivity(
+                    'auth.username_change',
+                    'user',
+                    (string)$authUser['Id'],
+                    ['reason' => 'wrong_password'],
+                    'failure',
+                    (int)$authUser['Id']
+                );
                 sendJson(['error' => 'Current password is incorrect.'], 401);
                 break;
             }
@@ -1936,12 +2177,34 @@ if ($action !== null) {
             $stmt = $db->prepare('SELECT Id FROM tblUsers WHERE Username = ? AND Id <> ?');
             $stmt->execute([$newUsername, $authUser['Id']]);
             if ($stmt->fetch()) {
+                logActivity(
+                    'auth.username_change',
+                    'user',
+                    (string)$authUser['Id'],
+                    ['reason' => 'taken', 'attempted' => $newUsername],
+                    'failure',
+                    (int)$authUser['Id']
+                );
                 sendJson(['error' => 'Username is already taken.'], 409);
                 break;
             }
 
             $stmt = $db->prepare('UPDATE tblUsers SET Username = ?, UpdatedAt = NOW() WHERE Id = ?');
             $stmt->execute([$newUsername, $authUser['Id']]);
+
+            /* Audit (#535). before/after gives the timeline both halves
+               of the rename without joining anything. */
+            logActivity(
+                'auth.username_change',
+                'user',
+                (string)$authUser['Id'],
+                [
+                    'before' => ['username' => $authUser['Username']],
+                    'after'  => ['username' => $newUsername],
+                ],
+                'success',
+                (int)$authUser['Id']
+            );
 
             sendJson([
                 'ok'   => true,
@@ -2040,6 +2303,16 @@ if ($action !== null) {
             $where = [];
             $params = [];
 
+            /* Filters (#535) — extended to cover the new columns:
+                 action_filter   exact-match Action
+                 user_id         numeric UserId
+                 result          'success' / 'failure' / 'error'
+                 entity_type     'song' / 'user' / 'songbook' / etc
+                 entity_id       exact entity primary key
+                 request_id      pull every row from one HTTP request
+                 since           UTC ISO-8601 — rows newer than this
+                 q               substring match against Action OR EntityId
+            */
             if (!empty($_GET['action_filter'])) {
                 $where[] = 'a.Action = ?';
                 $params[] = trim($_GET['action_filter']);
@@ -2048,6 +2321,33 @@ if ($action !== null) {
                 $where[] = 'a.UserId = ?';
                 $params[] = (int)$_GET['user_id'];
             }
+            if (!empty($_GET['result'])
+                && in_array($_GET['result'], ['success', 'failure', 'error'], true)) {
+                $where[] = 'a.Result = ?';
+                $params[] = $_GET['result'];
+            }
+            if (!empty($_GET['entity_type'])) {
+                $where[] = 'a.EntityType = ?';
+                $params[] = trim($_GET['entity_type']);
+            }
+            if (!empty($_GET['entity_id'])) {
+                $where[] = 'a.EntityId = ?';
+                $params[] = trim($_GET['entity_id']);
+            }
+            if (!empty($_GET['request_id'])) {
+                $where[] = 'a.RequestId = ?';
+                $params[] = trim($_GET['request_id']);
+            }
+            if (!empty($_GET['since'])) {
+                $where[] = 'a.CreatedAt >= ?';
+                $params[] = trim($_GET['since']);
+            }
+            if (!empty($_GET['q'])) {
+                $like = '%' . trim($_GET['q']) . '%';
+                $where[] = '(a.Action LIKE ? OR a.EntityId LIKE ?)';
+                $params[] = $like;
+                $params[] = $like;
+            }
 
             $whereClause = !empty($where) ? 'WHERE ' . implode(' AND ', $where) : '';
             $params[] = $logLimit;
@@ -2055,8 +2355,10 @@ if ($action !== null) {
 
             $stmt = $db->prepare(
                 "SELECT a.Id AS id, a.Action AS action, a.EntityType AS entityType,
-                        a.EntityId AS entityId, a.Details AS details,
-                        a.IpAddress AS ipAddress, a.CreatedAt AS createdAt,
+                        a.EntityId AS entityId, a.Result AS result, a.Details AS details,
+                        a.IpAddress AS ipAddress, a.UserAgent AS userAgent,
+                        a.RequestId AS requestId, a.Method AS method,
+                        a.DurationMs AS durationMs, a.CreatedAt AS createdAt,
                         u.Username AS username
                  FROM tblActivityLog a
                  LEFT JOIN tblUsers u ON u.Id = a.UserId
@@ -2069,6 +2371,7 @@ if ($action !== null) {
 
             foreach ($entries as &$e) {
                 $e['id'] = (int)$e['id'];
+                $e['durationMs'] = $e['durationMs'] !== null ? (int)$e['durationMs'] : null;
                 if ($e['details'] !== null) {
                     $e['details'] = json_decode($e['details'], true);
                 }
@@ -2878,7 +3181,10 @@ if ($action !== null) {
 
                 sendJson(['songs' => $songs, 'period' => $period]);
             } catch (\Throwable $e) {
-                /* DB unavailable (JSON fallback mode) — return empty gracefully */
+                /* DB unavailable (JSON fallback mode) — return empty
+                   gracefully. Logged so admins notice if this is hit
+                   for non-DB-down reasons (DDL drift, query syntax). */
+                error_log('[api/popular_songs] ' . $e->getMessage());
                 sendJson(['songs' => [], 'period' => $period, 'fallback' => true]);
             }
             break;
@@ -2912,6 +3218,7 @@ if ($action !== null) {
                 $history = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 sendJson(['history' => $history]);
             } catch (\Throwable $e) {
+                error_log('[api/song_history] ' . $e->getMessage());
                 sendJson(['history' => [], 'fallback' => true]);
             }
             break;
@@ -2948,7 +3255,9 @@ if ($action !== null) {
                 $stmt->execute([$viewSongId, $viewUserId]);
                 sendJson(['ok' => true]);
             } catch (\Throwable $e) {
-                /* DB unavailable — silently skip view tracking */
+                /* DB unavailable — skip view tracking. Logged so
+                   admins notice if this is hit for non-DB-down reasons. */
+                error_log('[api/song_view] ' . $e->getMessage());
                 sendJson(['ok' => false, 'fallback' => true]);
             }
             break;
@@ -2978,7 +3287,7 @@ if ($action !== null) {
 
                 sendJson(['tags' => $tags]);
             } catch (\Throwable $e) {
-                /* DB unavailable — return empty gracefully */
+                error_log('[api/tags] ' . $e->getMessage());
                 sendJson(['tags' => [], 'fallback' => true]);
             }
             break;
@@ -3032,6 +3341,7 @@ if ($action !== null) {
 
                 sendJson(['songs' => $tagSongs, 'tag' => $tagInfo]);
             } catch (\Throwable $e) {
+                error_log('[api/songs_by_tag] ' . $e->getMessage());
                 sendJson(['songs' => [], 'tag' => null, 'fallback' => true]);
             }
             break;
@@ -4283,9 +4593,14 @@ if ($action !== null) {
                      VALUES (?, ?, ?, ?)'
                 );
                 $ins->execute([$setlistId, (int)$authUser['Id'], $dateStr, $notes]);
+                logActivity('setlist.schedule_set', 'setlist', $setlistId, [
+                    'date'      => $dateStr,
+                    'has_notes' => $notes !== '',
+                ]);
                 sendJson(['ok' => true]);
             } catch (\Throwable $e) {
                 error_log('[setlist_schedule_set] ' . $e->getMessage());
+                logActivityError('setlist.schedule_set', 'setlist', $setlistId, $e);
                 sendJson(['error' => 'Could not schedule the setlist.'], 500);
             }
             break;
@@ -4305,9 +4620,13 @@ if ($action !== null) {
                 $db = getDb();
                 $stmt = $db->prepare('DELETE FROM tblSetlistSchedule WHERE UserId = ? AND SetlistId = ?');
                 $stmt->execute([(int)$authUser['Id'], $setlistId]);
+                if ($stmt->rowCount() > 0) {
+                    logActivity('setlist.schedule_clear', 'setlist', $setlistId);
+                }
                 sendJson(['ok' => true]);
             } catch (\Throwable $e) {
                 error_log('[setlist_schedule_clear] ' . $e->getMessage());
+                logActivityError('setlist.schedule_clear', 'setlist', $setlistId, $e);
                 sendJson(['error' => 'Could not clear schedule.'], 500);
             }
             break;
@@ -4375,6 +4694,15 @@ if ($action !== null) {
             }
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+
+            /* Per-user rate limit (#321) — caps invite-spam at 20 per
+               hour per signed-in user. checkRateLimit() returns true
+               on DB error so a counter-table blip doesn't stop a
+               legitimate inviter dead. */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'rate_limit.php';
+            $clientIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            checkRateLimit('setlist_collab_invite', $clientIp, 20, 3600, true, (int)$authUser['Id']);
+
             $body = json_decode((string)file_get_contents('php://input'), true) ?? [];
             $setlistId  = trim((string)($body['setlistId']        ?? ''));
             $collabEml  = trim((string)($body['collaboratorEmail'] ?? ''));
@@ -4414,6 +4742,20 @@ if ($action !== null) {
                      ON DUPLICATE KEY UPDATE Permission = VALUES(Permission)'
                 );
                 $ins->execute([(int)$authUser['Id'], $setlistId, (int)$collab['Id'], $permission]);
+
+                /* Record the invite into the rate-limit counter so the
+                   per-user/hour cap can actually trip. Bucket key
+                   matches the checkRateLimit() call above. */
+                recordRateLimitHit('setlist_collab_invite', 'user:' . (int)$authUser['Id']);
+
+                /* Audit (#535) — collaborator id + permission lets
+                   admins see who invited whom on what setlist. */
+                logActivity('setlist.collab_invite', 'setlist', $setlistId, [
+                    'collaborator_id'       => (int)$collab['Id'],
+                    'collaborator_username' => $collab['Username'],
+                    'permission'            => $permission,
+                ]);
+
                 sendJson([
                     'ok' => true,
                     'collaborator' => [
@@ -4424,6 +4766,7 @@ if ($action !== null) {
                 ]);
             } catch (\Throwable $e) {
                 error_log('[setlist_collab_invite] ' . $e->getMessage());
+                logActivityError('setlist.collab_invite', 'setlist', $setlistId, $e);
                 sendJson(['error' => 'Could not invite collaborator.'], 500);
             }
             break;
@@ -4473,9 +4816,15 @@ if ($action !== null) {
                       WHERE SetlistOwnerId = ? AND SetlistId = ? AND CollaboratorId = ?'
                 );
                 $stmt->execute([(int)$authUser['Id'], $setlistId, $collabId]);
+                if ($stmt->rowCount() > 0) {
+                    logActivity('setlist.collab_remove', 'setlist', $setlistId, [
+                        'collaborator_id' => $collabId,
+                    ]);
+                }
                 sendJson(['ok' => true, 'removed' => $stmt->rowCount()]);
             } catch (\Throwable $e) {
                 error_log('[setlist_collab_remove] ' . $e->getMessage());
+                logActivityError('setlist.collab_remove', 'setlist', $setlistId, $e);
                 sendJson(['error' => 'Could not remove collaborator.'], 500);
             }
             break;
@@ -4561,12 +4910,78 @@ if ($action !== null) {
                      VALUES (?, ?, ?, ?, ?, ?, "pending")'
                 );
                 $stmt->execute([$title, $book, $details, $email, $userId, $ip]);
+                $trackingId = (int)$db->lastInsertId();
 
-                sendJson(['ok' => true, 'trackingId' => (int)$db->lastInsertId()]);
+                /* Audit (#535). Public endpoint — userId may be null
+                   for anonymous submissions; logActivityResolveUserId()
+                   will then leave UserId NULL on the row. */
+                logActivity('song.request_submit', 'song_request', (string)$trackingId, [
+                    'title'        => $title,
+                    'songbook'     => $book,
+                    'has_email'    => $email !== '',
+                    'has_details'  => $details !== '',
+                    'authenticated'=> $userId !== null,
+                ]);
+
+                sendJson(['ok' => true, 'trackingId' => $trackingId]);
             } catch (\Throwable $e) {
                 error_log('[song_request_submit] ' . $e->getMessage());
+                logActivityError('song.request_submit', 'song_request', '', $e);
                 sendJson(['error' => 'Could not save your request. Please try again.'], 500);
             }
+            break;
+
+        /* -----------------------------------------------------------------
+         * #462 — Effective licence set for a given user (admin-only).
+         * Returns the resolved inheritance-aware list for debugging +
+         * future admin UI. Shape matches licences.php::getUserEffectiveLicences.
+         *
+         * Restored after a Friday-night merge accidentally replaced
+         * this case with notifications_list (#291 follow-up).
+         *
+         *   GET /api?action=user_effective_licences&user_id=<int>
+         * ----------------------------------------------------------------- */
+        case 'user_effective_licences':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('view_licence_audit', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Not authorised.'], 403);
+                break;
+            }
+            $targetId = (int)($_GET['user_id'] ?? 0);
+            if ($targetId <= 0) {
+                sendJson(['error' => 'user_id required.'], 400);
+                break;
+            }
+            require_once __DIR__ . '/includes/licences.php';
+            sendJson([
+                'user_id'  => $targetId,
+                'licences' => getUserEffectiveLicences($targetId),
+            ]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * #462 — Current user's licence check. Returns { has: bool } for
+         * a given licence type, walking the org hierarchy. Any
+         * authenticated caller may ask about their own set so the
+         * frontend can show/hide features.
+         *   GET /api?action=licence_check&type=ccli
+         * ----------------------------------------------------------------- */
+        case 'licence_check':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Authentication required.'], 401);
+                break;
+            }
+            $type = trim((string)($_GET['type'] ?? ''));
+            if ($type === '') {
+                sendJson(['error' => 'type required.'], 400);
+                break;
+            }
+            require_once __DIR__ . '/includes/licences.php';
+            sendJson([
+                'type' => $type,
+                'has'  => userHasEffectiveLicence((int)$authUser['Id'], $type),
+            ]);
             break;
 
         /* -----------------------------------------------------------------
@@ -4659,81 +5074,37 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
-         * #281 — Song translations list. Returns every related-language
-         * version of the given song (outward + inward + siblings).
-         *   GET /api?action=song_translations&song_id=<id>
-         * ----------------------------------------------------------------- */
-        case 'song_translations':
-            $sid = trim((string)($_GET['song_id'] ?? ''));
-            if ($sid === '') {
-                sendJson(['error' => 'song_id required.'], 400);
-                break;
-            }
-            try {
-                require_once __DIR__ . '/includes/db_mysql.php';
-                $mysqli = getDbMysqli();
-                $sql = '
-                    SELECT t.TranslatedSongId AS song_id,
-                           t.TargetLanguage   AS language,
-                           l.Name             AS language_name,
-                           l.NativeName       AS native_name,
-                           l.TextDirection    AS dir,
-                           t.Translator       AS translator,
-                           t.Verified         AS verified
-                      FROM tblSongTranslations t
-                      JOIN tblLanguages l ON l.Code = t.TargetLanguage
-                     WHERE t.SourceSongId = ? AND l.IsActive = 1
-                    UNION
-                    SELECT src.SongId         AS song_id,
-                           srcLang.Code       AS language,
-                           srcLang.Name       AS language_name,
-                           srcLang.NativeName AS native_name,
-                           srcLang.TextDirection AS dir,
-                           ""                 AS translator,
-                           1                  AS verified
-                      FROM tblSongTranslations selfT
-                      JOIN tblSongs src         ON src.SongId = selfT.SourceSongId
-                      JOIN tblLanguages srcLang ON srcLang.Code = src.Language
-                     WHERE selfT.TranslatedSongId = ? AND srcLang.IsActive = 1
-                    UNION
-                    SELECT sibling.TranslatedSongId AS song_id,
-                           sibling.TargetLanguage   AS language,
-                           l2.Name                  AS language_name,
-                           l2.NativeName            AS native_name,
-                           l2.TextDirection         AS dir,
-                           sibling.Translator       AS translator,
-                           sibling.Verified         AS verified
-                      FROM tblSongTranslations selfT2
-                      JOIN tblSongTranslations sibling
-                           ON sibling.SourceSongId = selfT2.SourceSongId
-                          AND sibling.TranslatedSongId <> selfT2.TranslatedSongId
-                      JOIN tblLanguages l2 ON l2.Code = sibling.TargetLanguage
-                     WHERE selfT2.TranslatedSongId = ? AND l2.IsActive = 1
-                ';
-                $stmt = $mysqli->prepare($sql);
-                if ($stmt === false) {
-                    sendJson(['song_id' => $sid, 'translations' => []]);
-                    break;
-                }
-                $stmt->bind_param('sss', $sid, $sid, $sid);
-                $stmt->execute();
-                $res  = $stmt->get_result();
-                $rows = [];
-                while ($row = $res->fetch_assoc()) $rows[] = $row;
-                $stmt->close();
-                sendJson(['song_id' => $sid, 'translations' => $rows]);
-            } catch (\Throwable $e) {
-                error_log('[song_translations] ' . $e->getMessage());
-                sendJson(['song_id' => $sid, 'translations' => []]);
-            }
-            break;
-
-        /* -----------------------------------------------------------------
          * Unknown action
          * ----------------------------------------------------------------- */
         default:
+            /* (#535) Record unknown-action attempts so admins can
+               spot mis-typed action names from clients (often a
+               sign of a forgotten case clause regressing). */
+            logActivity(
+                'api.unknown_action',
+                'api',
+                substr((string)$action, 0, 50),
+                ['method' => $_SERVER['REQUEST_METHOD'] ?? ''],
+                'failure'
+            );
             sendJson(['error' => 'Unknown action: ' . htmlspecialchars($action)], 400);
             break;
+    }
+    } catch (\Throwable $_apiSwitchErr) {
+        /* Catch-all for exceptions that escaped a case clause.
+           One activity-log row tagged Result='error'; the existing
+           500-response behaviour is preserved by re-throwing. */
+        logActivityError(
+            'api.' . substr((string)$action, 0, 40),
+            'api',
+            substr((string)$action, 0, 50),
+            $_apiSwitchErr,
+            ['duration_ms' => (int)((microtime(true) - $_apiSwitchStart) * 1000)]
+        );
+        /* Re-throw so the existing fatal-handler / 500 response path
+           runs as it always has. We are observing, not changing the
+           failure semantics. */
+        throw $_apiSwitchErr;
     }
 
     exit;
@@ -4863,8 +5234,11 @@ function slideAuthTokenExpiry(string $rawToken): void
         if ($stmt->rowCount() > 0) {
             setAuthTokenCookie($rawToken, $newExpiresTs);
         }
-    } catch (\Throwable) {
-        /* Non-fatal: sliding expiry is best-effort. */
+    } catch (\Throwable $e) {
+        /* Non-fatal: sliding expiry is best-effort. Logged so admins
+           notice if the UPDATE is failing systematically (e.g.,
+           tblApiTokens DDL drift). */
+        error_log('[api/slideAuthTokenExpiry] ' . $e->getMessage());
     }
 }
 

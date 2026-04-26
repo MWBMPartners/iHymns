@@ -48,6 +48,8 @@ if (!$isInitialSetup) {
     }
 }
 
+$activePage = 'setup-database';
+
 /* =========================================================================
  * LOAD DATABASE CREDENTIALS
  * ========================================================================= */
@@ -196,6 +198,7 @@ if ($action !== '') {
         'credits'     => 'migrate-credit-fields.php',
         'songbook-meta' => 'migrate-songbook-meta.php',
         'user-features-catchup' => 'migrate-user-features-catchup.php',
+        'activity-log-expand' => 'migrate-activity-log-expand.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -277,7 +280,7 @@ if ($hasCredentials && defined('DB_HOST')) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Database Setup — iHymns Admin</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/css/bootstrap.min.css" rel="stylesheet">
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <!-- Shared iHymns palette + admin styles -->
     <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__) . "/css/app.css") ?>">
     <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime(dirname(__DIR__) . "/css/admin.css") ?>">
@@ -527,6 +530,26 @@ if ($hasCredentials && defined('DB_HOST')) {
             <div class="col-md-6">
                 <div class="card bg-dark border-secondary h-100">
                     <div class="card-body">
+                        <h5 class="card-title">3e. Activity Log Expansion (#535)</h5>
+                        <p class="card-text text-secondary small">
+                            Extends <code>tblActivityLog</code> with the columns
+                            required by the comprehensive instrumentation
+                            pass: <code>Result</code>, <code>UserAgent</code>,
+                            <code>RequestId</code>, <code>Method</code>,
+                            <code>DurationMs</code>, plus indexes on
+                            <code>Result</code> and <code>RequestId</code>
+                            for the common debug-query patterns.
+                            Idempotent — safe to re-run.
+                        </p>
+                        <a href="?action=activity-log-expand" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run Activity Log Expansion Migration
+                        </a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
                         <h5 class="card-title">4. Cleanup Expired Tokens</h5>
                         <p class="card-text text-secondary small">
                             Delete expired API tokens, email login codes, password reset
@@ -590,18 +613,32 @@ if ($hasCredentials && defined('DB_HOST')) {
                                absent or the activity log helper isn't available. */
                             try {
                                 $auditDb = getDbMysqli();
+                                /* Column was previously named ActionType which
+                                   never existed on the schema (#535) — the
+                                   real column is `Action`, and we now also
+                                   pass EntityType + EntityId so the row
+                                   shows up correctly in the activity-log
+                                   viewer. Details is JSON-typed so we encode
+                                   the metadata structurally rather than as
+                                   a free-form string. */
                                 $auditUser = $currentUser['username'] ?? 'unknown';
-                                $auditSql = sprintf(
-                                    'backup upload by %s: %s (%d bytes)',
-                                    $auditUser, $safeName, (int)$f['size']
-                                );
+                                $auditDetails = json_encode([
+                                    'filename'   => $safeName,
+                                    'size_bytes' => (int)$f['size'],
+                                    'uploaded_by' => $auditUser,
+                                ], JSON_UNESCAPED_SLASHES);
                                 $stmt = $auditDb->prepare(
-                                    'INSERT INTO tblActivityLog (UserId, ActionType, Details) VALUES (?, ?, ?)'
+                                    'INSERT INTO tblActivityLog
+                                        (UserId, Action, EntityType, EntityId, Details, IpAddress)
+                                     VALUES (?, ?, ?, ?, ?, ?)'
                                 );
                                 if ($stmt) {
-                                    $uid = isset($currentUser['id']) ? (int)$currentUser['id'] : 0;
-                                    $action = 'backup_upload';
-                                    $stmt->bind_param('iss', $uid, $action, $auditSql);
+                                    $uid    = isset($currentUser['id']) ? (int)$currentUser['id'] : null;
+                                    $action = 'backup.upload';
+                                    $entityType = 'backup';
+                                    $entityId   = $safeName;
+                                    $ip = $_SERVER['REMOTE_ADDR'] ?? '';
+                                    $stmt->bind_param('isssss', $uid, $action, $entityType, $entityId, $auditDetails, $ip);
                                     @$stmt->execute();
                                     $stmt->close();
                                 }

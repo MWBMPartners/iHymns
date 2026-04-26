@@ -177,14 +177,20 @@ if (file_exists($sqliteFile)) {
                     $stmtFind->close();
                     if (!$newUserId) continue;
 
-                    $escapedSetlistId = $mysql->real_escape_string($setlistId);
-                    $escapedName = $mysql->real_escape_string($name);
-                    $escapedSongs = $mysql->real_escape_string($songsJson);
-
-                    $mysql->query(
-                        "INSERT IGNORE INTO tblUserSetlists (UserId, SetlistId, Name, SongsJson)
-                         VALUES ({$newUserId}, '{$escapedSetlistId}', '{$escapedName}', '{$escapedSongs}')"
+                    /* Prepared statement (#525). Was real_escape_string +
+                       string interpolation, which is functional but the
+                       only place in the migration scripts not using the
+                       codebase's prepared-statement convention. JSON
+                       values like SongsJson are particularly easy to get
+                       wrong with hand-rolled escaping. */
+                    $insStmt = $mysql->prepare(
+                        'INSERT IGNORE INTO tblUserSetlists
+                            (UserId, SetlistId, Name, SongsJson)
+                         VALUES (?, ?, ?, ?)'
                     );
+                    $insStmt->bind_param('isss', $newUserId, $setlistId, $name, $songsJson);
+                    $insStmt->execute();
+                    $insStmt->close();
                     $migratedSetlists++;
                 }
                 output("  Migrated {$migratedSetlists} setlists");

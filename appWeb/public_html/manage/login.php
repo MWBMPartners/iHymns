@@ -24,6 +24,14 @@ if (isAuthenticated()) {
     exit;
 }
 
+/* Idle-timeout banner: requireAuth() drops a `login_notice` into
+   $_SESSION when it kicks an idle session out (#531). Surface it
+   above the form once, then clear so a refresh doesn't re-show. */
+$notice = $_SESSION['login_notice'] ?? '';
+if ($notice !== '') {
+    unset($_SESSION['login_notice']);
+}
+
 /* Handle login form submission */
 $error = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -55,14 +63,7 @@ $csrf = csrfToken();
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login — iHymns Admin</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
-          rel="stylesheet"
-          integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
-          crossorigin="anonymous">
-    <link rel="stylesheet"
-          href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
-          integrity="sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+"
-          crossorigin="anonymous">
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <!-- Shared iHymns palette + admin styles -->
     <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__) . "/css/app.css") ?>">
     <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime(dirname(__DIR__) . "/css/admin.css") ?>">
@@ -78,6 +79,10 @@ $csrf = csrfToken();
         <?php if ($error): ?>
             <div class="alert alert-danger py-2" role="alert">
                 <i class="bi bi-exclamation-triangle me-1"></i><?= htmlspecialchars($error) ?>
+            </div>
+        <?php elseif ($notice !== ''): ?>
+            <div class="alert alert-warning py-2" role="status">
+                <i class="bi bi-clock-history me-1"></i><?= htmlspecialchars($notice) ?>
             </div>
         <?php endif; ?>
 

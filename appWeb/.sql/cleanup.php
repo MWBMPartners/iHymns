@@ -16,6 +16,9 @@ declare(strict_types=1);
  *   - tblEmailLoginTokens:   expired or used tokens
  *   - tblPasswordResetTokens: expired or used tokens
  *   - tblLoginAttempts:      entries older than 30 days
+ *   - tblActivityLog:        entries older than the retention window
+ *                            (configurable via tblAppSettings key
+ *                            `activity_log_retention_days`, default 90)
  *
  * USAGE:
  *   CLI:  php appWeb/.sql/cleanup.php
@@ -126,6 +129,31 @@ try {
     $totalDeleted += $count;
 } catch (PDOException $e) {
     echo "tblLoginAttempts:      ERROR — " . $e->getMessage() . "\n";
+}
+
+/* 5. tblActivityLog retention prune (#535).
+   Retention window is read from tblAppSettings::activity_log_retention_days
+   (default 90 days). Set to 0 to disable pruning entirely — useful
+   for forensics-heavy deployments that route long-term to a separate
+   archive table. Capped at sensible bounds (1..3650) so a fat-fingered
+   value can't either no-op or wipe years of history in one go. */
+try {
+    $stmt = $db->prepare("SELECT SettingValue FROM tblAppSettings WHERE SettingKey = 'activity_log_retention_days'");
+    $stmt->execute();
+    $raw = (string)($stmt->fetchColumn() ?: '');
+    $retentionDays = $raw !== '' ? (int)$raw : 90;
+    if ($retentionDays === 0) {
+        echo "tblActivityLog:        skipped (retention = 0, pruning disabled)\n";
+    } else {
+        $retentionDays = max(1, min(3650, $retentionDays));
+        $stmt = $db->prepare('DELETE FROM tblActivityLog WHERE CreatedAt < DATE_SUB(NOW(), INTERVAL ? DAY)');
+        $stmt->execute([$retentionDays]);
+        $count = $stmt->rowCount();
+        echo "tblActivityLog:        $count row(s) older than {$retentionDays} day(s) deleted\n";
+        $totalDeleted += $count;
+    }
+} catch (PDOException $e) {
+    echo "tblActivityLog:        ERROR — " . $e->getMessage() . "\n";
 }
 
 echo str_repeat('-', 50) . "\n";

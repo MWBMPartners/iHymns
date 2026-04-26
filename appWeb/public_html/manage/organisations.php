@@ -10,7 +10,6 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
-require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -82,6 +81,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                      VALUES (?, ?, ?, ?, ?, ?, ?)'
                 );
                 $stmt->execute([$name, $slug, $parent ?: null, $desc, $licenceType, $licenceNum, $active]);
+                $newOrgId = (int)$db->lastInsertId();
+                logActivity('org.create', 'organisation', (string)$newOrgId, [
+                    'name'           => $name,
+                    'slug'           => $slug,
+                    'parent_org_id'  => $parent ?: null,
+                    'licence_type'   => $licenceType,
+                    'is_active'      => (bool)$active,
+                ]);
                 $success = "Organisation '{$name}' created.";
                 break;
             }
@@ -105,6 +112,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute([$slug, $id]);
                 if ($stmt->fetch()) { $error = 'That slug is already in use.'; break; }
 
+                /* Capture before-row for the audit diff (#535). */
+                $beforeStmt = $db->prepare(
+                    'SELECT Name, Slug, ParentOrgId, Description, LicenceType, LicenceNumber, IsActive
+                       FROM tblOrganisations WHERE Id = ?'
+                );
+                $beforeStmt->execute([$id]);
+                $beforeOrg = $beforeStmt->fetch(PDO::FETCH_ASSOC) ?: null;
+
                 $stmt = $db->prepare(
                     'UPDATE tblOrganisations
                         SET Name = ?, Slug = ?, ParentOrgId = ?, Description = ?,
@@ -112,6 +127,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                       WHERE Id = ?'
                 );
                 $stmt->execute([$name, $slug, $parent ?: null, $desc, $licenceType, $licenceNum, $active, $id]);
+
+                if ($beforeOrg !== null) {
+                    $afterOrg = [
+                        'Name' => $name, 'Slug' => $slug,
+                        'ParentOrgId' => $parent ?: null, 'Description' => $desc,
+                        'LicenceType' => $licenceType, 'LicenceNumber' => $licenceNum,
+                        'IsActive' => $active,
+                    ];
+                    $changed = [];
+                    foreach ($afterOrg as $k => $v) {
+                        if ((string)($beforeOrg[$k] ?? '') !== (string)$v) $changed[] = $k;
+                    }
+                    logActivity('org.edit', 'organisation', (string)$id, [
+                        'fields' => $changed,
+                        'before' => array_intersect_key($beforeOrg, array_flip($changed)),
+                        'after'  => array_intersect_key($afterOrg,  array_flip($changed)),
+                    ]);
+                }
+
                 $success = "Organisation updated.";
                 break;
             }
@@ -136,6 +170,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $stmt = $db->prepare('DELETE FROM tblOrganisations WHERE Id = ?');
                 $stmt->execute([$id]);
+                logActivity('org.delete', 'organisation', (string)$id, ['name' => $name]);
                 $success = "Organisation '{$name}' deleted.";
                 break;
             }
@@ -153,6 +188,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                      ON DUPLICATE KEY UPDATE Role = VALUES(Role)'
                 );
                 $stmt->execute([$userId, $orgId, $role]);
+                logActivity('org.member_add', 'organisation', (string)$orgId, [
+                    'user_id' => $userId,
+                    'role'    => $role,
+                ]);
                 $success = 'Member added / updated.';
                 break;
             }
@@ -166,6 +205,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $stmt = $db->prepare('UPDATE tblOrganisationMembers SET Role = ? WHERE OrgId = ? AND UserId = ?');
                 $stmt->execute([$role, $orgId, $userId]);
+                logActivity('org.member_role_change', 'organisation', (string)$orgId, [
+                    'user_id' => $userId,
+                    'role'    => $role,
+                ]);
                 $success = 'Member role updated.';
                 break;
             }
@@ -176,6 +219,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($orgId <= 0 || $userId <= 0) { $error = 'Invalid request.'; break; }
                 $stmt = $db->prepare('DELETE FROM tblOrganisationMembers WHERE OrgId = ? AND UserId = ?');
                 $stmt->execute([$orgId, $userId]);
+                logActivity('org.member_remove', 'organisation', (string)$orgId, [
+                    'user_id' => $userId,
+                ]);
                 $success = 'Member removed.';
                 break;
             }
@@ -252,12 +298,7 @@ $csrf = csrfToken();
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Organisations — iHymns Admin</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"
-          integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
-          integrity="sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+" crossorigin="anonymous">
-    <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__) . '/css/app.css') ?>">
-    <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime(dirname(__DIR__) . '/css/admin.css') ?>">
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
 <body>
@@ -558,9 +599,6 @@ $csrf = csrfToken();
 
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
-            integrity="sha384-zKzgIZcXU99qF1nNW9g+x1znB5NhCPs9qZeGzUnnFOaHJF9jCCKySBjq3vIKabk/"
-            crossorigin="anonymous"></script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>

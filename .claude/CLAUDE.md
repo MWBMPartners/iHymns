@@ -55,9 +55,10 @@ tools/           — Build + data-prep scripts
 
 ## 🛠 Commit / PR expectations
 
+- **One PR per piece of work, multiple commits inside it.** Group related work into a single PR with logical, well-scoped commits rather than splitting across several smaller PRs. One review session, one deploy to alpha, one verify pass. Each commit stays atomic and individually revertable (`git revert <sha>` works per-commit). Avoids the inter-PR race conditions and multi-deploy churn that bit the 2026-04-25 audit-cleanup work, where a chain of small PRs each triggered its own deploy + verify cycle and one mis-diagnosis cascaded through all of them. Multiple PRs only for genuinely independent pieces of work that happen to be in flight at the same time (e.g. unrelated bugfix + unrelated feature).
 - Commits have descriptive first-line summaries; wrapped body explaining the WHY, not just the WHAT.
 - Every user-reported bug or feature gets a tracking GitHub issue **before** the commit that closes it, so the timeline reads sensibly.
-- PRs target `alpha`. Stacked PRs are fine; note the base branch in the description.
+- PRs target `alpha`. Stacked PRs (PR-B depends on PR-A landing first) are an exception, reserved for genuinely sequential dependencies — most work should land as a single PR per the rule above. Note the base branch in the description.
 - Never skip pre-commit hooks (`--no-verify`), never force-push main/alpha, never amend merged commits.
 - Audit before opening a PR: PHP syntax (`find appWeb -name '*.php' -exec php -l {} \;`), JS syntax (`find appWeb -name '*.js' -exec node --check {} \;`), security + accessibility + structure per the pattern established on PR #445.
 

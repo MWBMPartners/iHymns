@@ -24,9 +24,7 @@
 
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml } from '../utils/html.js';
-import { SONGBOOK_NAMES, STORAGE_HISTORY } from '../constants.js';
-
-const STORAGE_AUTH_TOKEN = 'ihymns_auth_token';
+import { SONGBOOK_NAMES, STORAGE_HISTORY, STORAGE_AUTH_TOKEN } from '../constants.js';
 
 /**
  * Entry point — call after the home page HTML has been injected into

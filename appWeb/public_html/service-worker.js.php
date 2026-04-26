@@ -17,16 +17,38 @@ header('Content-Type: application/javascript; charset=UTF-8');
 header('Cache-Control: no-cache, no-store, must-revalidate');
 header('Service-Worker-Allowed: /');
 
-require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
-$swVersion = $app['Application']['Version']['Number'] ?? '0.0.0';
-/* Fold the commit date (deploy-injected by the GH Actions pipeline) into
-   the cache key. Without it every build inside a single semver shares the
-   same key and clients stay pinned to the first-installed bundle. Falls
-   back to NULL (stripped) during local dev where Commit.Date is unset. */
-$swCommitStamp = preg_replace(
-    '/[^0-9]/', '',
-    (string)($app['Application']['Version']['Repo']['Commit']['Date'] ?? '')
-);
+/* Hardening (#526) — the file's docblock above warns that PHP errors /
+   warnings would corrupt the JS output and break SW registration, but
+   previously had no actual handler. If `infoAppVer.php` ever emits a
+   notice or a require throws, the SW JS becomes invalid and the
+   browser silently fails to register the worker, which silently breaks
+   offline mode for every user. Belt-and-braces: trap any error
+   *before* it reaches the response, log it, and fall back to a safe
+   constant cache key so the SW at least registers (even if the cache
+   bucket name is generic). */
+$swVersion     = '0.0.0';
+$swCommitStamp = '';
+$_swPriorErrorHandler = set_error_handler(static function ($severity, $message, $file, $line): bool {
+    error_log("[service-worker.php] PHP error during bootstrap: {$message} at {$file}:{$line}");
+    return true; /* Suppress — don't allow the warning to leak into the JS body. */
+});
+try {
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
+    $swVersion = $app['Application']['Version']['Number'] ?? '0.0.0';
+    /* Fold the commit date (deploy-injected by the GH Actions pipeline) into
+       the cache key. Without it every build inside a single semver shares the
+       same key and clients stay pinned to the first-installed bundle. Falls
+       back to NULL (stripped) during local dev where Commit.Date is unset. */
+    $swCommitStamp = preg_replace(
+        '/[^0-9]/', '',
+        (string)($app['Application']['Version']['Repo']['Commit']['Date'] ?? '')
+    );
+} catch (\Throwable $e) {
+    error_log('[service-worker.php] bootstrap failed; serving SW with generic cache key: ' . $e->getMessage());
+} finally {
+    /* Restore prior handler (if any) so we don't leak our suppression. */
+    restore_error_handler();
+}
 $swCacheKey = $swCommitStamp !== ''
     ? $swVersion . '-' . $swCommitStamp
     : $swVersion;
@@ -124,8 +146,27 @@ const PRECACHE_ASSETS = [
     '/js/modules/offline-queue.js',
     '/js/modules/notifications.js',
     '/js/modules/home-page.js',
+    '/js/modules/offline-ui.js',
+    '/js/modules/entitlements.js',
     '/manifest.json',
     '/assets/favicon.svg',
+];
+
+/**
+ * Best-effort precache list (#354). Items here are fetched at install
+ * time but failures don't block SW activation. Used for URLs that may
+ * be slow or unreliable but are valuable to have warm-cached:
+ *   - /api?action=songs_json — the entire songs corpus (~5 MB), needed
+ *     by the search module to build its in-memory index. Without this
+ *     warm-cached, a user who installs the PWA, browses only the home
+ *     page, then goes offline cannot search — a major UX gap.
+ *
+ * We intentionally do NOT put this in PRECACHE_ASSETS (which is strict)
+ * because it would fail the entire SW install if the endpoint is slow
+ * on the install-tab's network.
+ */
+const PRECACHE_BEST_EFFORT_ASSETS = [
+    '/api?action=songs_json',
 ];
 
 /**
@@ -235,26 +276,51 @@ self.addEventListener('install', (event) => {
                     )
                 );
 
-                return Promise.all([localPromise, cdnPromise, vendorPromise]);
+                /*
+                 * Best-effort large-payload precache (#354) — songs_json
+                 * etc. Failures here MUST NOT block SW install (otherwise
+                 * a flaky network at install-time prevents offline support
+                 * forever). Cached opportunistically.
+                 */
+                const bestEffortPromise = Promise.allSettled(
+                    PRECACHE_BEST_EFFORT_ASSETS.map(path =>
+                        fetch(path)
+                            .then(resp => {
+                                if (resp.ok) return cache.put(path, resp);
+                            })
+                            .catch(() => console.warn('[SW] Best-effort precache skipped:', path))
+                    )
+                );
+
+                return Promise.all([localPromise, cdnPromise, vendorPromise, bestEffortPromise]);
             })
             .then(() => {
                 /*
-                 * Let the new SW enter the "waiting" state instead of
-                 * skipWaiting immediately (#396). app.js picks up the
-                 * `updatefound` → statechange === 'installed' transition
-                 * and shows a "New version available — Refresh" toast.
-                 * The user clicks Refresh → client posts SKIP_WAITING
-                 * below → SW activates → controllerchange → page reloads.
+                 * skipWaiting() policy (#354):
                  *
-                 * This gives users agency over reloads mid-session (they
-                 * don't lose unsaved setlist edits to an abrupt reload)
-                 * while still being able to roll out critical fixes fast.
+                 *   - FIRST install (no existing controller) → call
+                 *     skipWaiting() immediately so the SW intercepts
+                 *     the very first navigation. Without this, a user
+                 *     who installs the PWA and reopens it offline
+                 *     before any second navigation gets a "no SW + no
+                 *     cached fallback" page-load failure.
                  *
-                 * If the user dismisses the toast without refreshing,
-                 * the new SW stays "waiting" until every tab of the app
-                 * is closed, at which point it activates naturally.
+                 *   - UPDATE (controller already exists) → stay in the
+                 *     "waiting" state and let app.js show its
+                 *     "New version available — Refresh" toast. This
+                 *     preserves user agency over reloads mid-session
+                 *     (no abrupt reload eating unsaved setlist edits)
+                 *     while critical fixes still roll out fast on next
+                 *     navigation or tab close.
+                 *
+                 * Detection: self.registration.active === null on
+                 * first install, populated on updates.
                  */
-                console.log('[SW] Installed; awaiting user confirmation to activate');
+                if (self.registration.active === null) {
+                    console.log('[SW] First install; calling skipWaiting() to activate immediately');
+                    return self.skipWaiting();
+                }
+                console.log('[SW] Update installed; awaiting user confirmation to activate');
             })
     );
 });

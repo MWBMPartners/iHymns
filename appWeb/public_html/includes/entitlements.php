@@ -94,6 +94,11 @@ const ENTITLEMENTS = [
        usage return. */
     'view_ccli_report'     => ['admin', 'global_admin'],
 
+    /* Activity log viewer (#535). Reads tblActivityLog — every
+       meaningful auth, CRUD, user-action, API, and system event.
+       Default is admin+ since rows expose IP, UA, and email columns. */
+    'view_activity_log'    => ['admin', 'global_admin'],
+
     /* Meta */
     'manage_entitlements'  => ['global_admin'],
 ];
@@ -176,6 +181,11 @@ function saveEntitlementOverrides(array $overrides): bool
         );
         $stmt->execute(['entitlements_overrides', (string)$json]);
         $_ihymns_effective_entitlements = null; /* bust cache */
+        if (function_exists('logActivity')) {
+            logActivity('settings.entitlements_change', 'app_setting', 'entitlements_overrides', [
+                'after_keys' => array_keys($overrides),
+            ]);
+        }
         return true;
     } catch (\Throwable $_e) {
         return false;
@@ -243,6 +253,11 @@ function setChannelGateEnabled(bool $enabled): bool
              ON DUPLICATE KEY UPDATE SettingValue = VALUES(SettingValue)'
         );
         $stmt->execute(['channel_gate_enabled', $enabled ? '1' : '0']);
+        if (function_exists('logActivity')) {
+            logActivity('settings.channel_gate_change', 'app_setting', 'channel_gate_enabled', [
+                'enabled' => $enabled,
+            ]);
+        }
         return true;
     } catch (\Throwable $_e) {
         return false;

@@ -55,6 +55,18 @@ export const ENTITLEMENTS = {
     access_alpha:         ['user', 'editor', 'admin', 'global_admin'],
     access_beta:          ['user', 'editor', 'admin', 'global_admin'],
 
+    /* Licences — multi-licence + inheritance (#462). Separate from the
+     * generic `manage_organisations` entitlement so licence edits can
+     * be delegated without granting full org admin. */
+    manage_org_licences:  ['admin', 'global_admin'],
+    manage_user_licences: ['admin', 'global_admin'],
+    view_licence_audit:   ['admin', 'global_admin'],
+
+    /* Licence-compliance reporting (#317). Pulled from tblSongHistory
+     * against tblSongs.Ccli, exportable as CSV for the annual CCLI
+     * usage return. */
+    view_ccli_report:     ['admin', 'global_admin'],
+
     /* Meta */
     manage_entitlements:  ['global_admin'],
 };

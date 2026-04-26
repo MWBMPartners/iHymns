@@ -595,8 +595,8 @@ paths:
              the source.
 
         Each entry carries the target language, the translator credit
-        (if recorded), a verified flag for curated rows, and the text
-        direction for RTL-aware rendering.
+        (if recorded), a verified flag for curated rows, and the song
+        title and number for direct rendering.
       parameters:
         - name: action
           in: query
@@ -604,7 +604,7 @@ paths:
           schema:
             type: string
             enum: [song_translations]
-        - name: song_id
+        - name: id
           in: query
           required: true
           description: Source song ID (unchanged for outward, the
@@ -620,7 +620,7 @@ paths:
               schema:
                 type: object
                 properties:
-                  song_id:
+                  sourceId:
                     type: string
                     description: The song ID that was queried
                     example: CP-0202
@@ -629,7 +629,7 @@ paths:
                     items:
                       $ref: "#/components/schemas/SongTranslation"
         "400":
-          description: Missing song_id query parameter
+          description: Missing `id` query parameter
           content:
             application/json:
               schema:
@@ -4372,6 +4372,263 @@ paths:
           description: Wrong HTTP method (POST required)
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
+  # ===========================================================================
+  # USER PREFERENCES + ACCOUNT
+  # ===========================================================================
+
+  /api.php?action=user_settings:
+    get:
+      operationId: getUserSettings
+      tags: [Preferences]
+      summary: Get the authenticated user's stored settings blob
+      description: |
+        Returns the JSON settings object stored on `tblUsers.Settings`
+        for the caller — used by the PWA to sync per-user banner state,
+        theme preferences, and other client-side flags across devices.
+        Empty object when nothing has been stored yet.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [user_settings] }
+      responses:
+        "200":
+          description: Settings blob
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:         { type: boolean, example: true }
+                  settings:   { type: object, description: Free-form preference object }
+                  updated_at: { type: string, format: date-time, nullable: true }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    post:
+      operationId: setUserSettings
+      tags: [Preferences]
+      summary: Replace the authenticated user's stored settings blob
+      description: |
+        Persists the supplied JSON object to `tblUsers.Settings`. The
+        PWA writes the whole object on every change (small payload,
+        no diff), so subsequent GETs return what was last POSTed.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [user_settings] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [settings]
+              properties:
+                settings:
+                  type: object
+                  description: Free-form preference object to persist.
+      responses:
+        "200":
+          description: Saved
+          content: { application/json: { schema: { $ref: "#/components/schemas/SuccessResponse" } } }
+        "400":
+          description: settings object missing or not an object
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=auth_change_username:
+    post:
+      operationId: changeUsername
+      tags: [Authentication]
+      summary: Change the authenticated user's username
+      description: |
+        Self-service username change. Requires the caller's current
+        password as a re-confirmation step so a stolen session can't
+        silently rename the account. Username constraints match
+        registration: 3-100 characters, lowercase, `[a-z0-9_.-]` only.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [auth_change_username] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_username, current_password]
+              properties:
+                new_username:
+                  type: string
+                  description: Desired new username (3-100 chars, lowercase).
+                  example: alice2
+                current_password:
+                  type: string
+                  format: password
+                  description: Caller's current password (re-auth).
+      responses:
+        "200":
+          description: Username changed
+          content: { application/json: { schema: { $ref: "#/components/schemas/SuccessResponse" } } }
+        "400":
+          description: Invalid new username or already in use
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated, or current password wrong
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  # ===========================================================================
+  # CARD LAYOUT (#516) — admin / user reorder + hide on dashboard surfaces
+  # ===========================================================================
+
+  /api.php?action=card_layout_get:
+    get:
+      operationId: getCardLayout
+      tags: [Preferences]
+      summary: Resolve card-layout for a dashboard surface
+      description: |
+        Returns the default card order for a named surface (the system
+        baseline), the caller's per-user override (if any), and two
+        capability flags the UI consults to decide what to enable:
+        `canCustomiseOwn` for personal reorder/hide, `canSetDefault`
+        for the admin "save as default" action.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [card_layout_get] }
+        - name: surface
+          in: query
+          required: true
+          description: Layout surface key (e.g. `home_admin`, `home_user`).
+          schema: { type: string }
+      responses:
+        "200":
+          description: Layout state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  surface:  { type: string }
+                  default:  { type: object, description: Baseline layout (order + hidden array). }
+                  override: { type: object, description: Per-user layout if any (order + hidden array). }
+                  canCustomiseOwn: { type: boolean }
+                  canSetDefault:   { type: boolean }
+        "400":
+          description: Invalid surface
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=card_layout_save_user:
+    post:
+      operationId: saveUserCardLayout
+      tags: [Preferences]
+      summary: Save the caller's per-user card-layout override
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [card_layout_save_user] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [surface]
+              properties:
+                surface: { type: string }
+                order:   { type: array, items: { type: string } }
+                hidden:  { type: array, items: { type: string } }
+      responses:
+        "200":
+          description: Saved
+          content: { application/json: { schema: { $ref: "#/components/schemas/SuccessResponse" } } }
+        "400": { description: Invalid surface, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "401": { description: Not authenticated, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "403": { description: Customisation not permitted for this account, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api.php?action=card_layout_reset_user:
+    post:
+      operationId: resetUserCardLayout
+      tags: [Preferences]
+      summary: Discard the caller's per-user card-layout override
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [card_layout_reset_user] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [surface]
+              properties:
+                surface: { type: string }
+      responses:
+        "200":
+          description: Override cleared
+          content: { application/json: { schema: { $ref: "#/components/schemas/SuccessResponse" } } }
+        "400": { description: Invalid surface, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "401": { description: Not authenticated, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api.php?action=card_layout_save_default:
+    post:
+      operationId: saveDefaultCardLayout
+      tags: [Admin]
+      summary: Save the system default card layout for a surface (admin)
+      description: |
+        Updates the baseline `order` + `hidden` arrays for a surface
+        so every user without a personal override sees the new layout.
+        Requires the `manage_default_card_layout` entitlement.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [card_layout_save_default] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [surface]
+              properties:
+                surface: { type: string }
+                order:   { type: array, items: { type: string } }
+                hidden:  { type: array, items: { type: string } }
+      responses:
+        "200":
+          description: Default updated
+          content: { application/json: { schema: { $ref: "#/components/schemas/SuccessResponse" } } }
+        "400": { description: Invalid surface, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "403": { description: Caller lacks `manage_default_card_layout` entitlement, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
 # =============================================================================
 # COMPONENTS
 # =============================================================================
@@ -4586,31 +4843,34 @@ components:
       description: |
         One related-language version of a song, as returned by
         `song_translations` (#281). Unions outward, inward, and sibling
-        relationships, so `song_id` may point at the original, a
+        relationships, so `songId` may point at the original, a
         translation, or another-language sibling depending on which
         direction it was reached from.
       properties:
-        song_id:
+        songId:
           type: string
           description: Related song's ID
           example: FR-0202
+        title:
+          type: string
+          description: Title of the related song
+          example: "Comme la rosée"
+        number:
+          type: integer
+          description: Song number within its songbook
+          example: 202
         language:
           type: string
           description: ISO 639-1 code of the related language
           example: fr
-        language_name:
+        languageName:
           type: string
           description: English name of the language
           example: French
-        native_name:
+        languageNativeName:
           type: string
           description: Native name of the language
           example: "Fran\u00E7ais"
-        dir:
-          type: string
-          enum: [ltr, rtl]
-          description: Text direction (from `tblLanguages.TextDirection`)
-          example: ltr
         translator:
           type: string
           description: Translator credit; empty for the inward link back to the source.
