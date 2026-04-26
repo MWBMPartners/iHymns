@@ -448,6 +448,11 @@ elseif ($mode === 'setlist') {
                     $previewTitle = ($i + 1) . '. ' . $sid;
                 }
             } catch (\Throwable $e) {
+                /* Per-song resolution failure → fall back to the song
+                   ID. Logged so a systemic outage (DB lost mid-loop)
+                   leaves a trail rather than silently producing
+                   ID-only previews. */
+                error_log('[og-image] setlist preview getSongById(' . $sid . '): ' . $e->getMessage());
                 $previewTitle = ($i + 1) . '. ' . $sid;
             }
 

@@ -161,7 +161,12 @@ class SongData
         try {
             $this->db = getDbMysqli();
         } catch (\Throwable $e) {
-            /* MySQL not available — fall back to JSON file */
+            /* MySQL not available — fall back to JSON file. Logged
+               (#534) so admins notice when the live DB is unreachable;
+               otherwise the app degrades to read-only JSON without
+               any signal. Fresh-install case is handled by the broader
+               install-detection logic in includes/db_mysql.php. */
+            error_log('[SongData] MySQL unavailable, using JSON fallback: ' . $e->getMessage());
             $this->jsonMode = true;
             $this->_loadJsonFallback();
         }
@@ -727,6 +732,10 @@ class SongData
             $stmt->close();
             return $out;
         } catch (\Throwable $_e) {
+            /* Search continues with regular text matches even if the
+               scripture-tag JOIN fails; logged so admins notice DDL
+               drift on tblSongTags / tblSongTagMap. */
+            error_log('[SongData::_searchByScriptureTag] ' . $_e->getMessage());
             return [];
         }
     }

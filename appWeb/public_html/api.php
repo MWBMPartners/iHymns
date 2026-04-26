@@ -292,7 +292,12 @@ if ($action !== null) {
                     'INSERT INTO tblSearchQueries (Query, ResultCount, UserId) VALUES (?, ?, ?)'
                 );
                 $logStmt->execute([$query, count($results), $uid]);
-            } catch (\Throwable $_e) { /* best-effort */ }
+            } catch (\Throwable $_e) {
+                /* Best-effort — search-query analytics is non-critical.
+                   Logged so admins notice if the INSERT is failing
+                   systematically (e.g., tblSearchQueries DDL drift). */
+                error_log('[api/search log] ' . $_e->getMessage());
+            }
 
             sendJson([
                 'results' => array_map('songToSummary', $results),
@@ -2920,7 +2925,10 @@ if ($action !== null) {
 
                 sendJson(['songs' => $songs, 'period' => $period]);
             } catch (\Throwable $e) {
-                /* DB unavailable (JSON fallback mode) — return empty gracefully */
+                /* DB unavailable (JSON fallback mode) — return empty
+                   gracefully. Logged so admins notice if this is hit
+                   for non-DB-down reasons (DDL drift, query syntax). */
+                error_log('[api/popular_songs] ' . $e->getMessage());
                 sendJson(['songs' => [], 'period' => $period, 'fallback' => true]);
             }
             break;
@@ -2954,6 +2962,7 @@ if ($action !== null) {
                 $history = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 sendJson(['history' => $history]);
             } catch (\Throwable $e) {
+                error_log('[api/song_history] ' . $e->getMessage());
                 sendJson(['history' => [], 'fallback' => true]);
             }
             break;
@@ -2990,7 +2999,9 @@ if ($action !== null) {
                 $stmt->execute([$viewSongId, $viewUserId]);
                 sendJson(['ok' => true]);
             } catch (\Throwable $e) {
-                /* DB unavailable — silently skip view tracking */
+                /* DB unavailable — skip view tracking. Logged so
+                   admins notice if this is hit for non-DB-down reasons. */
+                error_log('[api/song_view] ' . $e->getMessage());
                 sendJson(['ok' => false, 'fallback' => true]);
             }
             break;
@@ -3020,7 +3031,7 @@ if ($action !== null) {
 
                 sendJson(['tags' => $tags]);
             } catch (\Throwable $e) {
-                /* DB unavailable — return empty gracefully */
+                error_log('[api/tags] ' . $e->getMessage());
                 sendJson(['tags' => [], 'fallback' => true]);
             }
             break;
@@ -3074,6 +3085,7 @@ if ($action !== null) {
 
                 sendJson(['songs' => $tagSongs, 'tag' => $tagInfo]);
             } catch (\Throwable $e) {
+                error_log('[api/songs_by_tag] ' . $e->getMessage());
                 sendJson(['songs' => [], 'tag' => null, 'fallback' => true]);
             }
             break;
@@ -4905,8 +4917,11 @@ function slideAuthTokenExpiry(string $rawToken): void
         if ($stmt->rowCount() > 0) {
             setAuthTokenCookie($rawToken, $newExpiresTs);
         }
-    } catch (\Throwable) {
-        /* Non-fatal: sliding expiry is best-effort. */
+    } catch (\Throwable $e) {
+        /* Non-fatal: sliding expiry is best-effort. Logged so admins
+           notice if the UPDATE is failing systematically (e.g.,
+           tblApiTokens DDL drift). */
+        error_log('[api/slideAuthTokenExpiry] ' . $e->getMessage());
     }
 }
 

@@ -94,7 +94,11 @@ foreach (['tblSongs', 'tblSongbooks', 'tblUsers', 'tblUserSetlists',
     try {
         $tableCounts[$tbl] = (int)$db->query('SELECT COUNT(*) FROM ' . $tbl)->fetchColumn();
     } catch (\Throwable $_e) {
-        $tableCounts[$tbl] = null; /* missing */
+        /* "Table missing" is the expected reason on a fresh deploy —
+           the UI surfaces it as null. Log anyway so non-missing
+           failures (permission, syntax) leave a trail. */
+        error_log("[manage/data-health.php] COUNT({$tbl}) failed: " . $_e->getMessage());
+        $tableCounts[$tbl] = null;
     }
 }
 
@@ -127,7 +131,12 @@ if ($shareDirPath && is_dir($shareDirPath)) {
             foreach ($idsOnDisk as $id) {
                 if (!isset($inDb[$id])) $unimportedShareIds[] = $id;
             }
-        } catch (\Throwable $_e) { /* ignore — table absent */ }
+        } catch (\Throwable $_e) {
+            /* Table absent on fresh deploy is expected; log so any
+               other failure mode (permissions, schema drift) is
+               visible to admins. */
+            error_log('[manage/data-health.php] tblSharedSetlists scan: ' . $_e->getMessage());
+        }
     }
 }
 $sqliteExists = $sqliteDbPath && file_exists($sqliteDbPath);
