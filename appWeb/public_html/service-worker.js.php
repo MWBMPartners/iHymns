@@ -146,8 +146,27 @@ const PRECACHE_ASSETS = [
     '/js/modules/offline-queue.js',
     '/js/modules/notifications.js',
     '/js/modules/home-page.js',
+    '/js/modules/offline-ui.js',
+    '/js/modules/entitlements.js',
     '/manifest.json',
     '/assets/favicon.svg',
+];
+
+/**
+ * Best-effort precache list (#354). Items here are fetched at install
+ * time but failures don't block SW activation. Used for URLs that may
+ * be slow or unreliable but are valuable to have warm-cached:
+ *   - /api?action=songs_json — the entire songs corpus (~5 MB), needed
+ *     by the search module to build its in-memory index. Without this
+ *     warm-cached, a user who installs the PWA, browses only the home
+ *     page, then goes offline cannot search — a major UX gap.
+ *
+ * We intentionally do NOT put this in PRECACHE_ASSETS (which is strict)
+ * because it would fail the entire SW install if the endpoint is slow
+ * on the install-tab's network.
+ */
+const PRECACHE_BEST_EFFORT_ASSETS = [
+    '/api?action=songs_json',
 ];
 
 /**
@@ -257,26 +276,51 @@ self.addEventListener('install', (event) => {
                     )
                 );
 
-                return Promise.all([localPromise, cdnPromise, vendorPromise]);
+                /*
+                 * Best-effort large-payload precache (#354) — songs_json
+                 * etc. Failures here MUST NOT block SW install (otherwise
+                 * a flaky network at install-time prevents offline support
+                 * forever). Cached opportunistically.
+                 */
+                const bestEffortPromise = Promise.allSettled(
+                    PRECACHE_BEST_EFFORT_ASSETS.map(path =>
+                        fetch(path)
+                            .then(resp => {
+                                if (resp.ok) return cache.put(path, resp);
+                            })
+                            .catch(() => console.warn('[SW] Best-effort precache skipped:', path))
+                    )
+                );
+
+                return Promise.all([localPromise, cdnPromise, vendorPromise, bestEffortPromise]);
             })
             .then(() => {
                 /*
-                 * Let the new SW enter the "waiting" state instead of
-                 * skipWaiting immediately (#396). app.js picks up the
-                 * `updatefound` → statechange === 'installed' transition
-                 * and shows a "New version available — Refresh" toast.
-                 * The user clicks Refresh → client posts SKIP_WAITING
-                 * below → SW activates → controllerchange → page reloads.
+                 * skipWaiting() policy (#354):
                  *
-                 * This gives users agency over reloads mid-session (they
-                 * don't lose unsaved setlist edits to an abrupt reload)
-                 * while still being able to roll out critical fixes fast.
+                 *   - FIRST install (no existing controller) → call
+                 *     skipWaiting() immediately so the SW intercepts
+                 *     the very first navigation. Without this, a user
+                 *     who installs the PWA and reopens it offline
+                 *     before any second navigation gets a "no SW + no
+                 *     cached fallback" page-load failure.
                  *
-                 * If the user dismisses the toast without refreshing,
-                 * the new SW stays "waiting" until every tab of the app
-                 * is closed, at which point it activates naturally.
+                 *   - UPDATE (controller already exists) → stay in the
+                 *     "waiting" state and let app.js show its
+                 *     "New version available — Refresh" toast. This
+                 *     preserves user agency over reloads mid-session
+                 *     (no abrupt reload eating unsaved setlist edits)
+                 *     while critical fixes still roll out fast on next
+                 *     navigation or tab close.
+                 *
+                 * Detection: self.registration.active === null on
+                 * first install, populated on updates.
                  */
-                console.log('[SW] Installed; awaiting user confirmation to activate');
+                if (self.registration.active === null) {
+                    console.log('[SW] First install; calling skipWaiting() to activate immediately');
+                    return self.skipWaiting();
+                }
+                console.log('[SW] Update installed; awaiting user confirmation to activate');
             })
     );
 });

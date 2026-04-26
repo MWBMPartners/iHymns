@@ -170,6 +170,18 @@ jobs:
           echo "${{ steps.target.outputs.channel }}" > appWeb/public_html/.env-channel
           echo "Injected .env-channel: ${{ steps.target.outputs.channel }}"
 
+      # -- Populate vendor/ for PWA offline-fallback (#354 / #526) --
+      # The local vendor/ files are referenced by the onerror fallback
+      # handlers in index.php for every CDN-loaded library (Bootstrap,
+      # FontAwesome, jQuery, Animate.css). If a CDN fails (or the user
+      # is offline before the CDN ever cached), the SW serves these
+      # local copies. The directory is generated, not committed —
+      # tools/download-vendor.sh is the source of truth.
+      - name: Populate vendor libraries for offline fallback
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          bash tools/download-vendor.sh
+
       - name: Install minification tools
         if: steps.changes.outputs.has_changes == 'true'
         run: |
