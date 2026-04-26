@@ -26,6 +26,53 @@ export function isOfflineSupported() {
         && ('indexedDB' in window);
 }
 
+/**
+ * Quota-aware pre-flight check for bulk caching operations (#354).
+ *
+ * Reads navigator.storage.estimate() and returns a snapshot:
+ *
+ *   {
+ *     supported: boolean,   // false on engines without StorageManager
+ *     usage:     number,    // bytes already used (0 if unknown)
+ *     quota:     number,    // bytes the origin is allowed (0 if unknown)
+ *     freeBytes: number,    // quota - usage (0 if unknown)
+ *     freeRatio: number,    // freeBytes / quota (0..1, NaN if unknown)
+ *   }
+ *
+ * Callers (cacheAllSongs, cacheSongbook) should consult this BEFORE
+ * kicking off a multi-megabyte fetch sequence — better to surface a
+ * "not enough free storage to download" warning than to let the
+ * service worker silently fail mid-write when the browser eventually
+ * evicts the cache. The threshold for warning is up to the caller;
+ * 50 MB free + 5 % free-ratio is a reasonable baseline for the
+ * offline-songbook flows.
+ *
+ * Resolves with `supported: false` when navigator.storage isn't
+ * available — caller should treat that as "go ahead, we don't
+ * know" rather than blocking the operation outright.
+ */
+export async function getStorageEstimate() {
+    const blank = { supported: false, usage: 0, quota: 0, freeBytes: 0, freeRatio: NaN };
+    if (typeof navigator === 'undefined' || !navigator.storage || !navigator.storage.estimate) {
+        return blank;
+    }
+    try {
+        const e = await navigator.storage.estimate();
+        const usage = Number(e.usage) || 0;
+        const quota = Number(e.quota) || 0;
+        const freeBytes = Math.max(quota - usage, 0);
+        return {
+            supported: true,
+            usage,
+            quota,
+            freeBytes,
+            freeRatio: quota > 0 ? freeBytes / quota : NaN,
+        };
+    } catch (_e) {
+        return blank;
+    }
+}
+
 /** One-time feature-detection toggle. Controls are rendered visible
  *  server-side; we only ADD the body class so the shared CSS rule in
  *  app.css / admin.css can hide them when the browser can't act. */
