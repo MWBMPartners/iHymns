@@ -72,6 +72,12 @@ if (!defined('DB_HOST')) {
     require_once $credPath;
 }
 
+/* Strict reporting (#525) — exceptions on every failed query so a
+   broken ALTER or backfill UPDATE doesn't silently no-op. Matches
+   migrate-json.php / migrate-account-sync.php / drop-legacy-tables.php
+   which already use this. */
+mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+
 $mysqli = @new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME, defined('DB_PORT') ? (int)DB_PORT : 3306);
 if ($mysqli->connect_errno) {
     _migCredits_out('ERROR: MySQL connect failed: ' . $mysqli->connect_error);
