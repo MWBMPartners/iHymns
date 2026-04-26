@@ -212,9 +212,11 @@ $csrf = csrfToken();
             ['tiers',        'manage_access_tiers',         '/manage/tiers',         'bi-stars',         'Access Tiers',         'Define tiers controlling lyrics, audio, MIDI, sheet music &amp; offline', true],
             ['entitlements', 'manage_entitlements',         '/manage/entitlements',  'bi-key',           'Entitlements &amp; Gating','Assign capabilities to roles',                                          true],
             ['analytics',    'view_analytics',              '/manage/analytics',     'bi-graph-up',      'Analytics',            'Top songs, searches, and user activity',                                  true],
+            ['ccli-report',  'view_ccli_report',            '/manage/ccli-report',   'bi-receipt',       'CCLI Usage Report',    'Per-song view counts + CSV export for the annual CCLI usage return',      true],
+            ['missing-numbers','edit_songs',                '/manage/missing-numbers','bi-binoculars',   'Missing Numbers',      'Catalogue-wide report of songbook number gaps',                           true],
             ['data-health',  'drop_legacy_tables',          '/manage/data-health',   'bi-activity',      'Data Health',          'Confirm MySQL is authoritative; disconnect legacy fallbacks',             true],
             ['schema-audit', 'drop_legacy_tables',          '/manage/schema-audit',  'bi-clipboard2-data','Schema Audit',        'Diff schema.sql vs live DB vs migrations; spot drift before it bites',    true],
-            ['setup-db',     'run_db_install',              '/manage/setup-database','bi-database-gear', 'Database Setup',       'Install, migrate, backup, restore, cleanup',                              true],
+            ['setup-database','run_db_install',             '/manage/setup-database','bi-database-gear', 'Database Setup',       'Install, migrate, backup, restore, cleanup',                              true],
             ['view-site',    null,                          '/',                     'bi-globe',         'View Website',         'Open iHymns in a new tab',                                                true],
         ];
 
