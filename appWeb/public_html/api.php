@@ -56,6 +56,7 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'card_layout.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
 
 /* =========================================================================
  * CSRF DEFENCE POLICY (#293 / B15)
@@ -808,6 +809,23 @@ if ($action !== null) {
                script-accessible storage (#390). */
             setAuthTokenCookie($token, $expiresAtTs);
 
+            /* Audit (#535). The bearer token is NOT logged per the
+               privacy policy; only its sha256 prefix as a debugging
+               handle. PasswordHash is also kept out of Details. */
+            logActivity(
+                'auth.register',
+                'user',
+                (string)$userId,
+                [
+                    'username'     => $username,
+                    'display_name' => $displayName,
+                    'role'         => $role,
+                    'token_prefix' => substr(hash('sha256', $token), 0, 12),
+                ],
+                'success',
+                $userId
+            );
+
             sendJson([
                 'token' => $token,
                 'user'  => [
@@ -855,6 +873,13 @@ if ($action !== null) {
             $recentFailures = (int)$stmt->fetchColumn();
 
             if ($recentFailures >= 10) {
+                logActivity(
+                    'auth.login',
+                    'user',
+                    $username,
+                    ['reason' => 'rate_limited', 'recent_failures' => $recentFailures],
+                    'failure'
+                );
                 sendJson(['error' => 'Too many failed login attempts. Please try again later.'], 429);
                 break;
             }
@@ -864,17 +889,43 @@ if ($action !== null) {
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if (!$user || !password_verify($password, $user['PasswordHash'])) {
-                /* Log failed attempt */
+                /* Log failed attempt to tblLoginAttempts (used by the
+                   brute-force counter above) AND to tblActivityLog
+                   (#535). The two stay in sync because they record
+                   slightly different things — tblLoginAttempts is
+                   tight, indexed for fast brute-force lookup;
+                   tblActivityLog carries richer context (RequestId,
+                   UA, reason). */
                 $stmt = $db->prepare(
                     'INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, ?, 0)'
                 );
                 $stmt->execute([$clientIp, $username]);
+
+                logActivity(
+                    'auth.login',
+                    'user',
+                    $username,
+                    [
+                        'reason'   => $user ? 'wrong_password' : 'unknown_user',
+                        'username' => $username,
+                    ],
+                    'failure',
+                    $user ? (int)$user['Id'] : null
+                );
 
                 sendJson(['error' => 'Invalid username or password.'], 401);
                 break;
             }
 
             if (!$user['IsActive']) {
+                logActivity(
+                    'auth.login',
+                    'user',
+                    (string)$user['Id'],
+                    ['reason' => 'account_disabled', 'username' => $user['Username']],
+                    'failure',
+                    (int)$user['Id']
+                );
                 sendJson(['error' => 'Account is disabled.'], 403);
                 break;
             }
@@ -901,6 +952,21 @@ if ($action !== null) {
             /* Cross-subdomain cookie (#390) */
             setAuthTokenCookie($token, $expiresAtTs);
 
+            /* Audit (#535) — bearer token never enters Details, only
+               its sha256 prefix as a debug handle. */
+            logActivity(
+                'auth.login',
+                'user',
+                (string)$user['Id'],
+                [
+                    'username'     => $user['Username'],
+                    'role'         => $user['Role'],
+                    'token_prefix' => substr(hash('sha256', $token), 0, 12),
+                ],
+                'success',
+                (int)$user['Id']
+            );
+
             sendJson([
                 'token' => $token,
                 'user'  => [
@@ -923,6 +989,7 @@ if ($action !== null) {
             }
 
             $token = getAuthBearerToken();
+            $authedUser = $token ? getAuthenticatedUser() : null;
             if ($token) {
                 $db = getDb();
                 $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE Token = ?');
@@ -932,6 +999,22 @@ if ($action !== null) {
             /* Also clear the auth cookie (#390) so a subsequent page load
                on any iHymns subdomain is properly signed-out. */
             clearAuthTokenCookie();
+
+            /* Audit (#535) — only when we actually had a token; an
+               unauthenticated logout is a no-op and not worth a row. */
+            if ($authedUser) {
+                logActivity(
+                    'auth.logout',
+                    'user',
+                    (string)$authedUser['Id'],
+                    [
+                        'username'     => $authedUser['Username'] ?? null,
+                        'token_prefix' => substr(hash('sha256', $token), 0, 12),
+                    ],
+                    'success',
+                    (int)$authedUser['Id']
+                );
+            }
 
             sendJson(['ok' => true]);
             break;
@@ -1298,7 +1381,19 @@ if ($action !== null) {
             $result = generateEmailLoginToken($requestEmail, $clientIp);
 
             if ($result === null) {
-                /* Rate limited — still return 200 to prevent enumeration */
+                /* Rate limited or no-such-account — still return 200 to
+                   prevent enumeration. The audit row records the
+                   rate-limit reason WITHOUT leaking which case it
+                   actually was; the resolver inside
+                   generateEmailLoginToken() already differentiates
+                   in its own log row. (#535) */
+                logActivity(
+                    'auth.login_email_request',
+                    '',
+                    '',
+                    ['email' => $requestEmail, 'reason' => 'rate_limited_or_no_account'],
+                    'failure'
+                );
                 sendJson([
                     'ok'      => true,
                     'message' => 'If an account exists with that email, a login code has been sent.',
@@ -1314,6 +1409,22 @@ if ($action !== null) {
                 '[iHymns] Email login requested for %s — Code: %s (expires in 10 min)',
                 $requestEmail, $result['code']
             ));
+
+            /* Audit (#535). Token + code are NOT logged per privacy
+               policy; only their hash prefix as a debug handle and
+               the email so admins can correlate "did the email
+               actually go out". */
+            logActivity(
+                'auth.login_email_request',
+                'user',
+                (string)($result['userId'] ?? ''),
+                [
+                    'email'        => $requestEmail,
+                    'token_prefix' => isset($result['token']) ? substr(hash('sha256', (string)$result['token']), 0, 12) : null,
+                ],
+                'success',
+                isset($result['userId']) ? (int)$result['userId'] : null
+            );
 
             sendJson([
                 'ok'      => true,
@@ -1360,6 +1471,17 @@ if ($action !== null) {
             }
 
             if ($verified === null) {
+                logActivity(
+                    'auth.login_email_verify',
+                    '',
+                    '',
+                    [
+                        'mode'   => $verifyToken !== '' ? 'magic_link' : 'code',
+                        'email'  => $verifyEmail,
+                        'reason' => 'invalid_or_expired',
+                    ],
+                    'failure'
+                );
                 sendJson(['error' => 'Invalid or expired login code. Please request a new one.'], 401);
                 break;
             }
@@ -1381,6 +1503,24 @@ if ($action !== null) {
                 'INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, ?, 1)'
             );
             $stmt->execute([$clientIp, $loginResult['user']['username']]);
+
+            /* Audit (#535). Mode + email captured so admins can answer
+               "is the magic-link path being used at all?" Token never
+               leaves the response. */
+            $loginUserId = isset($loginResult['user']['id']) ? (int)$loginResult['user']['id'] : null;
+            logActivity(
+                'auth.login_email_verify',
+                'user',
+                (string)($loginUserId ?? ''),
+                [
+                    'mode'         => $verifyToken !== '' ? 'magic_link' : 'code',
+                    'email'        => $verified['email'],
+                    'username'     => $loginResult['user']['username'] ?? null,
+                    'token_prefix' => isset($loginResult['token']) ? substr(hash('sha256', (string)$loginResult['token']), 0, 12) : null,
+                ],
+                'success',
+                $loginUserId
+            );
 
             sendJson($loginResult);
             break;
@@ -1960,6 +2100,14 @@ if ($action !== null) {
             if (strlen($newUsername) < 3
                 || strlen($newUsername) > 100
                 || !preg_match('/^[a-z0-9_.\-]+$/', $newUsername)) {
+                logActivity(
+                    'auth.username_change',
+                    'user',
+                    (string)$authUser['Id'],
+                    ['reason' => 'invalid_format', 'attempted' => $newUsername],
+                    'failure',
+                    (int)$authUser['Id']
+                );
                 sendJson(['error' => 'Username must be 3–100 characters (letters, numbers, _, -, . only).'], 400);
                 break;
             }
@@ -1975,6 +2123,14 @@ if ($action !== null) {
             $stmt->execute([$authUser['Id']]);
             $row = $stmt->fetch(\PDO::FETCH_ASSOC);
             if (!$row || !password_verify($currentPw, $row['PasswordHash'])) {
+                logActivity(
+                    'auth.username_change',
+                    'user',
+                    (string)$authUser['Id'],
+                    ['reason' => 'wrong_password'],
+                    'failure',
+                    (int)$authUser['Id']
+                );
                 sendJson(['error' => 'Current password is incorrect.'], 401);
                 break;
             }
@@ -1983,12 +2139,34 @@ if ($action !== null) {
             $stmt = $db->prepare('SELECT Id FROM tblUsers WHERE Username = ? AND Id <> ?');
             $stmt->execute([$newUsername, $authUser['Id']]);
             if ($stmt->fetch()) {
+                logActivity(
+                    'auth.username_change',
+                    'user',
+                    (string)$authUser['Id'],
+                    ['reason' => 'taken', 'attempted' => $newUsername],
+                    'failure',
+                    (int)$authUser['Id']
+                );
                 sendJson(['error' => 'Username is already taken.'], 409);
                 break;
             }
 
             $stmt = $db->prepare('UPDATE tblUsers SET Username = ?, UpdatedAt = NOW() WHERE Id = ?');
             $stmt->execute([$newUsername, $authUser['Id']]);
+
+            /* Audit (#535). before/after gives the timeline both halves
+               of the rename without joining anything. */
+            logActivity(
+                'auth.username_change',
+                'user',
+                (string)$authUser['Id'],
+                [
+                    'before' => ['username' => $authUser['Username']],
+                    'after'  => ['username' => $newUsername],
+                ],
+                'success',
+                (int)$authUser['Id']
+            );
 
             sendJson([
                 'ok'   => true,

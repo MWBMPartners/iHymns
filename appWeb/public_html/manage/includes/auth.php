@@ -50,6 +50,12 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'db.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
           . DIRECTORY_SEPARATOR . 'entitlements.php';
 
+/* Activity log helper (#535) — every auth event below writes one row
+   via logActivity(). Loaded here so the helper is available as soon
+   as anything in the /manage/ stack runs. Best-effort, never throws. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+          . DIRECTORY_SEPARATOR . 'activity_log.php';
+
 /* =========================================================================
  * SESSION CONFIGURATION
  * ========================================================================= */
@@ -168,7 +174,20 @@ function requireAuth(): void
     $now = time();
     $lastActive = (int)($_SESSION['last_activity'] ?? 0);
     if ($lastActive > 0 && ($now - $lastActive) > IDLE_TIMEOUT_SECONDS) {
-        logout();
+        $kickedUserId = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : null;
+        /* Record the timeout BEFORE wiping the session so the row is
+           attributed to the user who got kicked, not to NULL. logout()
+           is told not to write its own auth.logout row to avoid
+           double-logging the same event. (#535) */
+        logActivity(
+            'auth.session_timeout',
+            'user',
+            (string)($kickedUserId ?? ''),
+            ['idle_seconds' => $now - $lastActive],
+            'success',
+            $kickedUserId
+        );
+        logout(false);
         $_SESSION = [];
         initSession();
         $_SESSION['redirect_after_login'] = $_SERVER['REQUEST_URI'] ?? '/manage/';
@@ -304,12 +323,28 @@ function requireGlobalAdmin(): void
  */
 function attemptLogin(string $username, string $password): ?array
 {
+    $normalised = strtolower(trim($username));
     $db = getDb();
     $stmt = $db->prepare('SELECT * FROM tblUsers WHERE Username = ? AND IsActive = 1');
-    $stmt->execute([strtolower(trim($username))]);
+    $stmt->execute([$normalised]);
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$user || !password_verify($password, $user['PasswordHash'])) {
+        /* Failed login (#535) — record reason without leaking whether
+           the username existed (the `reason` distinguishes "no such
+           user" from "wrong password" only at the row level, never
+           in the user-facing response). */
+        logActivity(
+            'auth.login',
+            'user',
+            $normalised,
+            [
+                'reason'   => $user ? 'wrong_password' : 'unknown_user',
+                'username' => $normalised,
+            ],
+            'failure',
+            $user ? (int)$user['Id'] : null
+        );
         return null;
     }
 
@@ -319,15 +354,39 @@ function attemptLogin(string $username, string $password): ?array
     $_SESSION['user_id']  = (int)$user['Id'];
     $_SESSION['username'] = $user['Username'];
 
+    /* Successful login (#535). */
+    logActivity(
+        'auth.login',
+        'user',
+        (string)$user['Id'],
+        ['username' => $user['Username']],
+        'success',
+        (int)$user['Id']
+    );
+
     return $user;
 }
 
 /**
  * Log out the current user and destroy the session.
+ *
+ * @param bool $logEvent Set false when the caller is already writing
+ *                       a more-specific row (e.g. the idle-timeout
+ *                       path in requireAuth() emits auth.session_timeout
+ *                       beforehand and would otherwise double-log).
  */
-function logout(): void
+function logout(bool $logEvent = true): void
 {
     initSession();
+
+    /* Capture the user id BEFORE we wipe the session — otherwise the
+       log row gets attributed to NULL and we lose the "who logged out"
+       information. (#535) */
+    $userId = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : null;
+    if ($logEvent && $userId !== null && $userId > 0) {
+        logActivity('auth.logout', 'user', (string)$userId, [], 'success', $userId);
+    }
+
     $_SESSION = [];
 
     if (ini_get('session.use_cookies')) {
@@ -398,7 +457,23 @@ function createUser(string $username, string $password, string $displayName, str
         trim($email),
     ]);
 
-    return (int)$db->lastInsertId();
+    $newUserId = (int)$db->lastInsertId();
+
+    /* Audit (#535). Password is hashed before insert and the hash
+       never enters Details per project-rules.md §10. */
+    logActivity(
+        'user.create',
+        'user',
+        (string)$newUserId,
+        [
+            'username'     => $username,
+            'display_name' => trim($displayName),
+            'role'         => $role,
+            'email'        => trim($email),
+        ]
+    );
+
+    return $newUserId;
 }
 
 /**
@@ -448,6 +523,19 @@ function updateUserRole(int $userId, string $newRole, array $actingUser): bool
 
     $stmt = $db->prepare('UPDATE tblUsers SET Role = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
     $stmt->execute([$newRole, $userId]);
+
+    /* Audit row (#535) — `before` / `after` makes the timeline
+       readable in /manage/activity-log without joining anything. */
+    logActivity(
+        'auth.role_change',
+        'user',
+        (string)$userId,
+        [
+            'before' => ['role' => $target['role']],
+            'after'  => ['role' => $newRole],
+            'acting_user_id' => isset($actingUser['id']) ? (int)$actingUser['id'] : null,
+        ]
+    );
 
     /* Session-fixation defence (#531) — if the role change applies to
        the currently-signed-in user (e.g. self-demotion before
@@ -537,7 +625,19 @@ function validatePasswordResetToken(string $token): ?array
 function resetPassword(string $token, string $newPassword): bool
 {
     $tokenData = validatePasswordResetToken($token);
-    if (!$tokenData) return false;
+    if (!$tokenData) {
+        /* Invalid or expired token (#535) — log without leaking the
+           token itself (only its sha256 prefix). */
+        logActivity(
+            'auth.password_reset',
+            'user',
+            '',
+            ['reason' => 'invalid_or_expired_token',
+             'token_prefix' => substr(hash('sha256', $token), 0, 12)],
+            'failure'
+        );
+        return false;
+    }
 
     $db = getDb();
 
@@ -554,6 +654,17 @@ function resetPassword(string $token, string $newPassword): bool
     /* Invalidate all API tokens for this user (force re-login) */
     $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ?');
     $stmt->execute([$tokenData['UserId']]);
+
+    /* Audit (#535). Note PasswordHash itself never goes into Details
+       per the privacy contract in project-rules.md §10. */
+    logActivity(
+        'auth.password_reset',
+        'user',
+        (string)$tokenData['UserId'],
+        ['method' => 'reset_token'],
+        'success',
+        (int)$tokenData['UserId']
+    );
 
     return true;
 }
@@ -611,10 +722,20 @@ function changeUserPassword(int $userId, string $newPassword): bool
        to the current /manage/ session, rotate the PHP session ID
        alongside the bearer-token wipe above so a stolen pre-change
        session can't continue to act as the user. */
-    if (isset($_SESSION['user_id']) && (int)$_SESSION['user_id'] === $userId) {
+    $isSelf = (isset($_SESSION['user_id']) && (int)$_SESSION['user_id'] === $userId);
+    if ($isSelf) {
         initSession();
         session_regenerate_id(true);
     }
+
+    /* Audit (#535). The new hash itself never enters Details per
+       the privacy contract in project-rules.md §10. */
+    logActivity(
+        'auth.password_change',
+        'user',
+        (string)$userId,
+        ['self' => $isSelf]
+    );
 
     return true;
 }
@@ -630,8 +751,40 @@ function changeUserPassword(int $userId, string $newPassword): bool
 function updateUserProfile(int $userId, string $displayName, string $email): bool
 {
     $db = getDb();
+
+    /* Capture the before state for the audit row (#535) so admins
+       can see what changed in /manage/activity-log without joining
+       a separate revisions table. */
+    $beforeStmt = $db->prepare('SELECT DisplayName AS display_name, Email AS email FROM tblUsers WHERE Id = ?');
+    $beforeStmt->execute([$userId]);
+    $before = $beforeStmt->fetch(PDO::FETCH_ASSOC) ?: ['display_name' => null, 'email' => null];
+
+    $newDisplayName = trim($displayName);
+    $newEmail       = trim($email);
+
     $stmt = $db->prepare('UPDATE tblUsers SET DisplayName = ?, Email = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
-    $stmt->execute([trim($displayName), trim($email), $userId]);
+    $stmt->execute([$newDisplayName, $newEmail, $userId]);
+
+    /* Build a fields-changed list so the audit row is concise. */
+    $changed = [];
+    if ($before['display_name'] !== $newDisplayName) $changed[] = 'DisplayName';
+    if ($before['email']        !== $newEmail)       $changed[] = 'Email';
+
+    if (!empty($changed)) {
+        logActivity(
+            'user.profile_edit',
+            'user',
+            (string)$userId,
+            [
+                'fields' => $changed,
+                'before' => array_intersect_key($before, array_flip(array_map('strtolower', $changed))),
+                'after'  => [
+                    'display_name' => $newDisplayName,
+                    'email'        => $newEmail,
+                ],
+            ]
+        );
+    }
     return true;
 }
 
@@ -668,8 +821,25 @@ function renameUser(int $userId, string $newUsername, ?string &$error = null): b
         return false;
     }
 
+    /* Capture old username before the update so the audit row can
+       carry both halves of the rename. (#535) */
+    $oldStmt = $db->prepare('SELECT Username FROM tblUsers WHERE Id = ?');
+    $oldStmt->execute([$userId]);
+    $oldUsername = (string)($oldStmt->fetchColumn() ?: '');
+
     $stmt = $db->prepare('UPDATE tblUsers SET Username = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
     $stmt->execute([$newUsername, $userId]);
+
+    logActivity(
+        'auth.username_change',
+        'user',
+        (string)$userId,
+        [
+            'before' => ['username' => $oldUsername],
+            'after'  => ['username' => $newUsername],
+        ]
+    );
+
     return true;
 }
 
@@ -692,6 +862,14 @@ function setUserActive(int $userId, bool $isActive): bool
         $stmt->execute([$userId]);
     }
 
+    /* Audit (#535) — `user.activate` / `user.deactivate` so the action
+       label is unambiguous in the timeline. */
+    logActivity(
+        $isActive ? 'user.activate' : 'user.deactivate',
+        'user',
+        (string)$userId
+    );
+
     return true;
 }
 
@@ -705,9 +883,29 @@ function setUserActive(int $userId, bool $isActive): bool
 function deleteUser(int $userId): bool
 {
     $db = getDb();
+
+    /* Capture username for the audit row before the row vanishes
+       — the FK from tblActivityLog.UserId to tblUsers is `ON DELETE
+       SET NULL`, so after the cascade the log loses any obvious
+       handle on who got deleted unless we record it here. (#535) */
+    $beforeStmt = $db->prepare('SELECT Username, DisplayName, Role, Email FROM tblUsers WHERE Id = ?');
+    $beforeStmt->execute([$userId]);
+    $before = $beforeStmt->fetch(PDO::FETCH_ASSOC) ?: null;
+
     $stmt = $db->prepare('DELETE FROM tblUsers WHERE Id = ?');
     $stmt->execute([$userId]);
-    return (int)$stmt->rowCount() > 0;
+    $deleted = (int)$stmt->rowCount() > 0;
+
+    if ($deleted) {
+        logActivity(
+            'user.delete',
+            'user',
+            (string)$userId,
+            $before ? ['before' => $before] : []
+        );
+    }
+
+    return $deleted;
 }
 
 /**
