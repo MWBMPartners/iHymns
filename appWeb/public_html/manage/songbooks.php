@@ -90,6 +90,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $abbr, $name, $order ?: 0, $colour,
                     $isOfficial, $publisher, $pubYear, $copyright, $affiliation,
                 ]);
+                $newId = (int)$db->lastInsertId();
+                logActivity('songbook.create', 'songbook', (string)$newId, [
+                    'abbreviation'    => $abbr,
+                    'name'            => $name,
+                    'display_order'   => $order ?: 0,
+                    'colour'          => $colour,
+                    'is_official'     => (bool)$isOfficial,
+                    'publisher'       => $publisher,
+                    'publication_year'=> $pubYear,
+                    'copyright'       => $copyright,
+                    'affiliation'     => $affiliation,
+                ]);
                 $success = "Songbook '{$abbr}' created.";
                 break;
             }
@@ -108,9 +120,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $copyright   = trim((string)($_POST['copyright']        ?? '')) ?: null;
                 $affiliation = trim((string)($_POST['affiliation']      ?? '')) ?: null;
 
-                $existing = $db->prepare('SELECT Abbreviation FROM tblSongbooks WHERE Id = ?');
+                /* Fetch the full before-row so the audit log carries
+                   a complete diff of which fields actually changed
+                   (#535) — otherwise the timeline reader has to
+                   guess. */
+                $existing = $db->prepare(
+                    'SELECT Abbreviation, Name, DisplayOrder, Colour, IsOfficial,
+                            Publisher, PublicationYear, Copyright, Affiliation
+                       FROM tblSongbooks WHERE Id = ?'
+                );
                 $existing->execute([$id]);
-                $oldAbbr = (string)($existing->fetchColumn() ?: '');
+                $beforeRow = $existing->fetch(PDO::FETCH_ASSOC) ?: null;
+                $oldAbbr = $beforeRow ? (string)$beforeRow['Abbreviation'] : '';
                 if ($oldAbbr === '') { $error = 'Songbook not found.'; break; }
 
                 if ($name === '')                  { $error = 'Name is required.'; break; }
@@ -149,6 +170,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
                     }
                     $db->commit();
+
+                    /* Audit (#535) — compute the changed-fields list
+                       explicitly so the row stays small (the full
+                       before-row is on $beforeRow and we don't need
+                       to dump every key). */
+                    $afterRow = [
+                        'Abbreviation'   => $abbrChanged ? $newAbbr : $oldAbbr,
+                        'Name'           => $name,
+                        'DisplayOrder'   => $order ?: 0,
+                        'Colour'         => $colour,
+                        'IsOfficial'     => $isOfficial,
+                        'Publisher'      => $publisher,
+                        'PublicationYear'=> $pubYear,
+                        'Copyright'      => $copyright,
+                        'Affiliation'    => $affiliation,
+                    ];
+                    $changed = [];
+                    foreach ($afterRow as $k => $v) {
+                        if (!array_key_exists($k, $beforeRow ?? [])) continue;
+                        if ((string)$beforeRow[$k] !== (string)$v) $changed[] = $k;
+                    }
+                    logActivity('songbook.edit', 'songbook', (string)$id, [
+                        'fields'             => $changed,
+                        'before'             => array_intersect_key($beforeRow, array_flip($changed)),
+                        'after'              => array_intersect_key($afterRow,  array_flip($changed)),
+                        'songs_renamed_too'  => $alsoRename && $abbrChanged,
+                    ]);
+
                     $success = $abbrChanged
                         ? "Songbook '{$oldAbbr}' → '{$newAbbr}'" . ($alsoRename ? ' (song references updated).' : ' (song references kept — resolve manually).')
                         : "Songbook '{$oldAbbr}' updated.";
@@ -171,6 +220,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $stmt->execute([(int)$value, (int)$id]);
                     }
                     $db->commit();
+
+                    /* Single audit row for the bulk reorder rather
+                       than one per row — the activity-log viewer
+                       wants the high-level operation, not 6
+                       near-identical entries. (#535) */
+                    logActivity('songbook.reorder', 'songbook', '', [
+                        'count' => count($orders),
+                        'order' => array_map(fn($v) => (int)$v, (array)$orders),
+                    ]);
+
                     $success = 'Display order saved.';
                 } catch (\Throwable $e) {
                     $db->rollBack();
@@ -197,6 +256,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $stmt = $db->prepare('DELETE FROM tblSongbooks WHERE Id = ?');
                 $stmt->execute([$id]);
+
+                /* Audit (#535) — capturing abbreviation in Details
+                   means the row remains useful even after the FK
+                   nulls out / the songbook is gone. */
+                logActivity('songbook.delete', 'songbook', (string)$id, [
+                    'abbreviation' => $abbr,
+                ]);
+
                 $success = "Songbook '{$abbr}' deleted.";
                 break;
             }

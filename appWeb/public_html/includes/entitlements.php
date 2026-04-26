@@ -176,6 +176,11 @@ function saveEntitlementOverrides(array $overrides): bool
         );
         $stmt->execute(['entitlements_overrides', (string)$json]);
         $_ihymns_effective_entitlements = null; /* bust cache */
+        if (function_exists('logActivity')) {
+            logActivity('settings.entitlements_change', 'app_setting', 'entitlements_overrides', [
+                'after_keys' => array_keys($overrides),
+            ]);
+        }
         return true;
     } catch (\Throwable $_e) {
         return false;
@@ -243,6 +248,11 @@ function setChannelGateEnabled(bool $enabled): bool
              ON DUPLICATE KEY UPDATE SettingValue = VALUES(SettingValue)'
         );
         $stmt->execute(['channel_gate_enabled', $enabled ? '1' : '0']);
+        if (function_exists('logActivity')) {
+            logActivity('settings.channel_gate_change', 'app_setting', 'channel_gate_enabled', [
+                'enabled' => $enabled,
+            ]);
+        }
         return true;
     } catch (\Throwable $_e) {
         return false;

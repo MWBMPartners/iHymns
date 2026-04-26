@@ -555,6 +555,7 @@ switch ($action) {
             /* Revision audit log (#400) — authenticated editors only.
                Silent no-op if the user isn't authenticated via the /manage
                session or if the revisions table is missing. */
+            $revisionId = null;
             try {
                 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
                 $editor = getCurrentUser();
@@ -568,8 +569,28 @@ switch ($action) {
                 $userIdParam = $userId !== null ? (int)$userId : null;
                 $rev->bind_param('sisss', $songId, $userIdParam, $action, $previousData, $newData);
                 $rev->execute();
+                $revisionId = (int)$db->insert_id;
                 $rev->close();
             } catch (\Throwable $_e) { /* revisions are best-effort */ }
+
+            /* Activity log (#535) — high-level "song.create" / "song.edit"
+               row with a cross-link to the revisions row above so a
+               timeline reader can drill into the full before/after diff
+               without bloating Details here. */
+            if (function_exists('logActivity')) {
+                logActivity(
+                    $action === 'create' ? 'song.create' : 'song.edit',
+                    'song',
+                    $songId,
+                    [
+                        'title'         => $title,
+                        'songbook'      => $songbookAbbr,
+                        'number'        => $number,
+                        'verified'      => (bool)$verified,
+                        'revision_id'   => $revisionId,
+                    ]
+                );
+            }
 
             $db->commit();
             echo json_encode(['ok' => true, 'songId' => $songId, 'action' => $action]);
