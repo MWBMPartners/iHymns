@@ -716,22 +716,41 @@ CREATE TABLE IF NOT EXISTS tblSongRequests (
 
 -- ----------------------------------------------------------------------------
 -- tblActivityLog
--- Audit trail for significant actions.
+-- Comprehensive activity audit trail (#535).
+--
+-- Every meaningful action — auth, admin CRUD, user activity, API
+-- request, system event — writes one row here. Used for:
+--   - Analytics (most-used features, peak hours, songbook popularity)
+--   - Debugging (replay a user's request sequence to reproduce a bug)
+--   - Support (look up exactly what the user did)
+--   - Edit history (who changed what on songs, songbooks, users, orgs)
+--   - Forensics (suspicious patterns, post-incident timelines)
+--
+-- See includes/activity_log.php for the canonical write API.
+-- See manage/activity-log.php for the admin viewer + filters.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblActivityLog (
     Id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    UserId          INT UNSIGNED    NULL COMMENT 'User who performed the action (NULL for system)',
-    Action          VARCHAR(50)     NOT NULL COMMENT 'e.g. song.edit, user.create, login, import',
-    EntityType      VARCHAR(50)     NOT NULL DEFAULT '' COMMENT 'e.g. song, user, songbook, setlist',
-    EntityId        VARCHAR(50)     NOT NULL DEFAULT '' COMMENT 'ID of the affected entity',
-    Details         JSON            NULL COMMENT 'Additional context (old/new values, etc.)',
+    UserId          INT UNSIGNED    NULL COMMENT 'User who performed the action (NULL for system / unauthenticated)',
+    Action          VARCHAR(50)     NOT NULL COMMENT 'Dotted lowercase verb, e.g. song.edit, auth.login, setlist.share',
+    EntityType      VARCHAR(50)     NOT NULL DEFAULT '' COMMENT 'e.g. song, user, songbook, setlist, organisation',
+    EntityId        VARCHAR(50)     NOT NULL DEFAULT '' COMMENT 'Primary key of the affected entity (string for cross-table use)',
+    Result          ENUM('success','failure','error') NOT NULL DEFAULT 'success'
+                    COMMENT 'success = OK; failure = user-side reject; error = server-side exception (#535)',
+    Details         JSON            NULL COMMENT 'Additional context (before/after diff, error message, request body)',
     IpAddress       VARCHAR(45)     NOT NULL DEFAULT '',
+    UserAgent       VARCHAR(500)    NOT NULL DEFAULT '' COMMENT 'Truncated UA — useful for "mobile vs desktop" debugging (#535)',
+    RequestId       CHAR(16)        NOT NULL DEFAULT '' COMMENT 'Per-HTTP-request correlation ID; groups every row from one request (#535)',
+    Method          VARCHAR(10)     NOT NULL DEFAULT '' COMMENT 'HTTP method (GET/POST/etc) for HTTP-driven events; blank for cron/system (#535)',
+    DurationMs      INT UNSIGNED    NULL COMMENT 'Wall-clock duration of the logged operation in milliseconds (#535)',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     INDEX idx_User      (UserId),
     INDEX idx_Action    (Action),
     INDEX idx_Entity    (EntityType, EntityId),
     INDEX idx_Created   (CreatedAt),
+    INDEX idx_Result    (Result),
+    INDEX idx_RequestId (RequestId),
 
     CONSTRAINT fk_Log_User
         FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
