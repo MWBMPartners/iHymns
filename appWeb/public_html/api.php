@@ -660,6 +660,20 @@ if ($action !== null) {
                 }
             }
 
+            /* Audit (#535) — distinct rows for create vs update so the
+               timeline reads correctly. song_count helps spot the
+               "shared an empty list by accident" cases. */
+            logActivity(
+                $isUpdate ? 'setlist.share_update' : 'setlist.share_create',
+                'setlist',
+                $shareId,
+                [
+                    'name'        => $setlistName,
+                    'song_count'  => count($setlistSongs),
+                    'has_arrangements' => !empty($arrangements),
+                ]
+            );
+
             sendJson([
                 'id'  => $shareId,
                 'url' => '/setlist/shared/' . $shareId,
@@ -1611,8 +1625,10 @@ if ($action !== null) {
             $insert = $db->prepare(
                 'INSERT IGNORE INTO tblUserFavorites (UserId, SongId) VALUES (?, ?)'
             );
+            $newlyAdded = 0;
             foreach ($localFavs as $songId) {
                 $insert->execute([$userId, $songId]);
+                $newlyAdded += $insert->rowCount();
             }
 
             /* Return merged list */
@@ -1621,6 +1637,15 @@ if ($action !== null) {
             );
             $stmt->execute([$userId]);
             $finalFavs = $stmt->fetchAll(PDO::FETCH_COLUMN);
+
+            /* Audit (#535) — only one row per sync, not per favourite,
+               since the sync is the meaningful user action. */
+            if ($newlyAdded > 0) {
+                logActivity('favorites.sync', 'user', (string)$userId, [
+                    'newly_added' => $newlyAdded,
+                    'total'       => count($finalFavs),
+                ]);
+            }
 
             sendJson(['favorites' => $finalFavs]);
             break;
@@ -1655,6 +1680,9 @@ if ($action !== null) {
             $db = getDb();
             $stmt = $db->prepare('DELETE FROM tblUserFavorites WHERE UserId = ? AND SongId = ?');
             $stmt->execute([$authUser['Id'], $removeSongId]);
+            if ($stmt->rowCount() > 0) {
+                logActivity('favorites.remove', 'song', $removeSongId, [], 'success', (int)$authUser['Id']);
+            }
 
             sendJson(['ok' => true]);
             break;
@@ -4525,9 +4553,14 @@ if ($action !== null) {
                      VALUES (?, ?, ?, ?)'
                 );
                 $ins->execute([$setlistId, (int)$authUser['Id'], $dateStr, $notes]);
+                logActivity('setlist.schedule_set', 'setlist', $setlistId, [
+                    'date'      => $dateStr,
+                    'has_notes' => $notes !== '',
+                ]);
                 sendJson(['ok' => true]);
             } catch (\Throwable $e) {
                 error_log('[setlist_schedule_set] ' . $e->getMessage());
+                logActivityError('setlist.schedule_set', 'setlist', $setlistId, $e);
                 sendJson(['error' => 'Could not schedule the setlist.'], 500);
             }
             break;
@@ -4547,9 +4580,13 @@ if ($action !== null) {
                 $db = getDb();
                 $stmt = $db->prepare('DELETE FROM tblSetlistSchedule WHERE UserId = ? AND SetlistId = ?');
                 $stmt->execute([(int)$authUser['Id'], $setlistId]);
+                if ($stmt->rowCount() > 0) {
+                    logActivity('setlist.schedule_clear', 'setlist', $setlistId);
+                }
                 sendJson(['ok' => true]);
             } catch (\Throwable $e) {
                 error_log('[setlist_schedule_clear] ' . $e->getMessage());
+                logActivityError('setlist.schedule_clear', 'setlist', $setlistId, $e);
                 sendJson(['error' => 'Could not clear schedule.'], 500);
             }
             break;
@@ -4671,6 +4708,14 @@ if ($action !== null) {
                    matches the checkRateLimit() call above. */
                 recordRateLimitHit('setlist_collab_invite', 'user:' . (int)$authUser['Id']);
 
+                /* Audit (#535) — collaborator id + permission lets
+                   admins see who invited whom on what setlist. */
+                logActivity('setlist.collab_invite', 'setlist', $setlistId, [
+                    'collaborator_id'       => (int)$collab['Id'],
+                    'collaborator_username' => $collab['Username'],
+                    'permission'            => $permission,
+                ]);
+
                 sendJson([
                     'ok' => true,
                     'collaborator' => [
@@ -4681,6 +4726,7 @@ if ($action !== null) {
                 ]);
             } catch (\Throwable $e) {
                 error_log('[setlist_collab_invite] ' . $e->getMessage());
+                logActivityError('setlist.collab_invite', 'setlist', $setlistId, $e);
                 sendJson(['error' => 'Could not invite collaborator.'], 500);
             }
             break;
@@ -4730,9 +4776,15 @@ if ($action !== null) {
                       WHERE SetlistOwnerId = ? AND SetlistId = ? AND CollaboratorId = ?'
                 );
                 $stmt->execute([(int)$authUser['Id'], $setlistId, $collabId]);
+                if ($stmt->rowCount() > 0) {
+                    logActivity('setlist.collab_remove', 'setlist', $setlistId, [
+                        'collaborator_id' => $collabId,
+                    ]);
+                }
                 sendJson(['ok' => true, 'removed' => $stmt->rowCount()]);
             } catch (\Throwable $e) {
                 error_log('[setlist_collab_remove] ' . $e->getMessage());
+                logActivityError('setlist.collab_remove', 'setlist', $setlistId, $e);
                 sendJson(['error' => 'Could not remove collaborator.'], 500);
             }
             break;
@@ -4818,10 +4870,23 @@ if ($action !== null) {
                      VALUES (?, ?, ?, ?, ?, ?, "pending")'
                 );
                 $stmt->execute([$title, $book, $details, $email, $userId, $ip]);
+                $trackingId = (int)$db->lastInsertId();
 
-                sendJson(['ok' => true, 'trackingId' => (int)$db->lastInsertId()]);
+                /* Audit (#535). Public endpoint — userId may be null
+                   for anonymous submissions; logActivityResolveUserId()
+                   will then leave UserId NULL on the row. */
+                logActivity('song.request_submit', 'song_request', (string)$trackingId, [
+                    'title'        => $title,
+                    'songbook'     => $book,
+                    'has_email'    => $email !== '',
+                    'has_details'  => $details !== '',
+                    'authenticated'=> $userId !== null,
+                ]);
+
+                sendJson(['ok' => true, 'trackingId' => $trackingId]);
             } catch (\Throwable $e) {
                 error_log('[song_request_submit] ' . $e->getMessage());
+                logActivityError('song.request_submit', 'song_request', '', $e);
                 sendJson(['error' => 'Could not save your request. Please try again.'], 500);
             }
             break;
