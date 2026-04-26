@@ -60,15 +60,20 @@ $safeRight = $safeLeft + $H;   /* 915 */
 $fontRegular = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf';
 $fontBold    = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf';
 
-/* Songbook accent colours — matches CSS --songbook-XX-solid values */
-$songbookColours = [
-    'CP'   => [99, 102, 241],   /* #6366f1 — indigo */
-    'JP'   => [236, 72, 153],   /* #ec4899 — pink */
-    'MP'   => [20, 184, 166],   /* #14b8a6 — teal */
-    'SDAH' => [245, 158, 11],   /* #f59e0b — amber */
-    'CH'   => [239, 68, 68],    /* #ef4444 — red */
-    'Misc' => [139, 92, 246],   /* #8b5cf6 — purple */
-];
+/* Songbook accent colours — sourced from APP_CONFIG['songbook_colours']
+   so a colour change in config.php propagates everywhere instead of
+   drifting between the SPA palette and the share-preview generator
+   (#529). The config map stores [light_hex, dark_hex, solid_hex,
+   "r, g, b"]; the 4th entry is already a comma-separated RGB triple
+   (used elsewhere for CSS box-shadow rgba) — split it here into
+   integer RGB for GD's imagecolorallocate. */
+$_ogToRgb = static function (string $bookId): array {
+    $colours = APP_CONFIG['songbook_colours'][$bookId]
+            ?? APP_CONFIG['songbook_colours']['Misc']
+            ?? ['#8b5cf6', '#a78bfa', '#8b5cf6', '139, 92, 246'];
+    $rgb = array_map('intval', array_map('trim', explode(',', (string)($colours[3] ?? '139, 92, 246'))));
+    return count($rgb) === 3 ? $rgb : [139, 92, 246];
+};
 
 /* =========================================================================
  * DETECT MODE — generic, song, songbook, or setlist
@@ -259,7 +264,7 @@ function drawBranding(GdImage $img, int $W, int $H, int $grey, string $fontBold)
  * ========================================================================= */
 if ($mode === 'song') {
     $bookId = strtoupper($songInfo['songbook'] ?? 'Misc');
-    $accentRgb = $songbookColours[$bookId] ?? $songbookColours['Misc'];
+    $accentRgb = $_ogToRgb($bookId);
     $bookAccent = imagecolorallocate($img, $accentRgb[0], $accentRgb[1], $accentRgb[2]);
 
     /* --- Songbook accent bar (left side, decorative) --- */
@@ -336,7 +341,7 @@ if ($mode === 'song') {
  * ========================================================================= */
 elseif ($mode === 'songbook') {
     $bookId = strtoupper($bookInfo['id'] ?? 'Misc');
-    $accentRgb = $songbookColours[$bookId] ?? $songbookColours['Misc'];
+    $accentRgb = $_ogToRgb($bookId);
     $bookAccent = imagecolorallocate($img, $accentRgb[0], $accentRgb[1], $accentRgb[2]);
 
     /* --- Songbook accent bar (left side) --- */

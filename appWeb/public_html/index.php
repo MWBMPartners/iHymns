@@ -108,7 +108,7 @@ $cspDirectives = [
     "img-src 'self' data: https:",
     "font-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
     "connect-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://www.google-analytics.com https://plausible.io https://www.clarity.ms https://*.usefathom.com{$cspMatomoUrl}",
-    "frame-src 'self' https://sync.ihymns.app https://*.ihymns.app",
+    "frame-src 'self' " . APP_CONFIG['storage_bridge']['origin'] . " https://*.ihymns.app",
     "worker-src 'self' https://cdn.jsdelivr.net blob:",
     "manifest-src 'self'",
     "base-uri 'self'",
@@ -1251,7 +1251,7 @@ if (!empty($breadcrumbItems)) {
             'locale'          => $locale,
             'initialPath'     => $requestPath,
             'songbooks'       => $iHymnsConfigSongbooks,
-            'storageBridgeUrl'=> 'https://sync.ihymns.app/bridge.html',
+            'storageBridgeUrl'=> APP_CONFIG['storage_bridge']['url'],
             'analytics'       => [
                 'hasGa4'       => !empty(APP_CONFIG['analytics']['google_analytics_id']),
                 'hasClarity'   => !empty(APP_CONFIG['analytics']['clarity_id']),

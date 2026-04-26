@@ -304,6 +304,26 @@ define('APP_CONFIG', [
     ],
 
     /* -----------------------------------------------------------------
+     * Cross-subdomain storage bridge (#133, #529).
+     *
+     * The bridge is an iframe-hosted helper page on the canonical
+     * sync-domain that uses postMessage to relay localStorage reads /
+     * writes between any *.ihymns.app subdomain. Defining the URL
+     * once here means a staging / white-label / multi-tenant deploy
+     * can override it without editing CSP `frame-src` and the
+     * iHymnsConfig bridge URL in two places that drift.
+     *
+     * `url`    — full URL of the bridge HTML page; loaded in an
+     *            iframe by js/modules/storage-bridge.js
+     * `origin` — bare scheme+host portion used by index.php's CSP
+     *            `frame-src` directive.
+     * ----------------------------------------------------------------- */
+    'storage_bridge' => [
+        'url'    => 'https://sync.ihymns.app/bridge.html',
+        'origin' => 'https://sync.ihymns.app',
+    ],
+
+    /* -----------------------------------------------------------------
      * Native app store URLs for PWA install banner redirection.
      * Set to null if no native app exists for that platform yet.
      * ----------------------------------------------------------------- */
