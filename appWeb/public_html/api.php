@@ -263,6 +263,16 @@ if ($page !== null) {
  * ========================================================================= */
 
 if ($action !== null) {
+    /* Top-level try/catch wraps the whole switch (#535 Phase 4) so
+       any uncaught Throwable from a case clause writes ONE
+       activity-log row tagged Result='error' and the exception's
+       message/class/file:line in Details. The current behaviour
+       (sendJson 500 + error_log) is preserved — the activity-log
+       row is purely additive. Specific case clauses that catch
+       their own exceptions still do, so we don't double-log; this
+       net only catches what isn't already caught. */
+    $_apiSwitchStart = microtime(true);
+    try {
     switch ($action) {
 
         /* -----------------------------------------------------------------
@@ -4962,8 +4972,34 @@ if ($action !== null) {
          * Unknown action
          * ----------------------------------------------------------------- */
         default:
+            /* (#535) Record unknown-action attempts so admins can
+               spot mis-typed action names from clients (often a
+               sign of a forgotten case clause regressing). */
+            logActivity(
+                'api.unknown_action',
+                'api',
+                substr((string)$action, 0, 50),
+                ['method' => $_SERVER['REQUEST_METHOD'] ?? ''],
+                'failure'
+            );
             sendJson(['error' => 'Unknown action: ' . htmlspecialchars($action)], 400);
             break;
+    }
+    } catch (\Throwable $_apiSwitchErr) {
+        /* Catch-all for exceptions that escaped a case clause.
+           One activity-log row tagged Result='error'; the existing
+           500-response behaviour is preserved by re-throwing. */
+        logActivityError(
+            'api.' . substr((string)$action, 0, 40),
+            'api',
+            substr((string)$action, 0, 50),
+            $_apiSwitchErr,
+            ['duration_ms' => (int)((microtime(true) - $_apiSwitchStart) * 1000)]
+        );
+        /* Re-throw so the existing fatal-handler / 500 response path
+           runs as it always has. We are observing, not changing the
+           failure semantics. */
+        throw $_apiSwitchErr;
     }
 
     exit;
