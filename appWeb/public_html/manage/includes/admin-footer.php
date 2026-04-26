@@ -62,8 +62,17 @@ if (!empty($GLOBALS['_adminLayoutOpen'])):
 <!-- Bootstrap bundle — needed by the shared admin nav (hamburger
      offcanvas, brand dropdown, theme dropdown, user avatar dropdown)
      and any per-page modals. Loaded here so every /manage/* page
-     picks it up regardless of whether the page template remembered. -->
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
-        integrity="sha384-zKzgIZcXU99qF1nNW9g+x1znB5NhCPs9qZeGzUnnFOaHJF9jCCKySBjq3vIKabk/"
+     picks it up regardless of whether the page template remembered.
+     Sourced from APP_CONFIG['libraries']['bootstrap'] so the version
+     stays in lock-step with head-libs.php (which loads the matching
+     CSS). #527 closes the drift that previously had setup-database.php
+     loading 5.3.6 CSS while this script loaded 5.3.3 JS. -->
+<?php
+    $_bsJs = APP_CONFIG['libraries']['bootstrap'] ?? null;
+    if ($_bsJs && !empty($_bsJs['js_cdn'])):
+?>
+<script src="<?= htmlspecialchars((string)$_bsJs['js_cdn'], ENT_QUOTES) ?>"
+        integrity="<?= htmlspecialchars((string)($_bsJs['js_sri'] ?? ''), ENT_QUOTES) ?>"
         crossorigin="anonymous"></script>
+<?php endif; ?>
 
