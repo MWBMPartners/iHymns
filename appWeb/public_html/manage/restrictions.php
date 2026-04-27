@@ -25,6 +25,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -40,7 +41,7 @@ $activePage = 'restrictions';
 
 $error   = '';
 $success = '';
-$db      = getDb();
+$db      = getDbMysqli();
 
 /* Allowed vocabularies — kept tight so the UI can't POST rubbish the
    evaluator will silently ignore. Keep in sync with content_access.php. */
@@ -127,10 +128,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         (EntityType, EntityId, RestrictionType, TargetType, TargetId, Effect, Priority, Reason)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
                 );
-                $stmt->execute([
+                /* Types: six string columns, then Priority(int), then Reason(string). */
+                $stmt->bind_param(
+                    'ssssssis',
                     $entityType, $entityId, $restrictionType,
-                    $targetType, $targetId, $effect, $priority, $reason,
-                ]);
+                    $targetType, $targetId, $effect, $priority, $reason
+                );
+                $stmt->execute();
+                $stmt->close();
                 $success = 'Restriction created.';
                 break;
             }
@@ -139,7 +144,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $id = (int)($_POST['id'] ?? 0);
                 if ($id <= 0) { $error = 'Invalid request.'; break; }
                 $stmt = $db->prepare('DELETE FROM tblContentRestrictions WHERE Id = ?');
-                $stmt->execute([$id]);
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $stmt->close();
                 $success = 'Restriction removed.';
                 break;
             }
@@ -177,8 +184,15 @@ try {
     }
     $sql .= ' ORDER BY Priority DESC, CreatedAt DESC LIMIT 500';
     $stmt = $db->prepare($sql);
-    $stmt->execute($args);
-    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    /* Filter values are all strings (entity_type / restriction_type from
+       a closed allowlist). Type string is built from the args length so
+       we don't bind_param when there are no filters. */
+    if (!empty($args)) {
+        $stmt->bind_param(str_repeat('s', count($args)), ...$args);
+    }
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
 } catch (\Throwable $e) {
     error_log('[manage/restrictions.php] ' . $e->getMessage());
     $error = $error ?: 'Could not load restrictions.';
@@ -187,16 +201,19 @@ try {
 /* Summary counts per entity type for the header pills */
 $counts = ['song' => 0, 'songbook' => 0, 'feature' => 0, 'total' => 0];
 try {
-    $rs = $db->query(
+    $stmt = $db->prepare(
         'SELECT EntityType, COUNT(*) AS n
            FROM tblContentRestrictions
           GROUP BY EntityType'
     );
-    foreach ($rs->fetchAll(PDO::FETCH_ASSOC) as $r) {
+    $stmt->execute();
+    $res = $stmt->get_result();
+    while ($r = $res->fetch_assoc()) {
         $t = (string)$r['EntityType'];
         if (isset($counts[$t])) $counts[$t] = (int)$r['n'];
         $counts['total'] += (int)$r['n'];
     }
+    $stmt->close();
 } catch (\Throwable $e) { /* ignore */ }
 
 /* Is the master gating switch enabled? Surface it prominently so admins
@@ -205,7 +222,9 @@ $gatingEnabled = false;
 try {
     $stmt = $db->prepare("SELECT SettingValue FROM tblAppSettings WHERE SettingKey = 'content_gating_enabled'");
     $stmt->execute();
-    $gatingEnabled = ((string)($stmt->fetchColumn() ?: '0')) === '1';
+    $row = $stmt->get_result()->fetch_row();
+    $stmt->close();
+    $gatingEnabled = ((string)($row[0] ?? '0')) === '1';
 } catch (\Throwable $e) { /* ignore */ }
 
 /* Preload songbooks + organisations for the #498 pickers. Both lists
@@ -214,19 +233,23 @@ try {
    stay AJAX-driven because their cardinalities are large. */
 $picker_songbooks = [];
 try {
-    $rs = $db->query(
+    $stmt = $db->prepare(
         'SELECT Abbreviation, Name, SongCount FROM tblSongbooks ORDER BY Name ASC'
     );
-    $picker_songbooks = $rs->fetchAll(PDO::FETCH_ASSOC);
+    $stmt->execute();
+    $picker_songbooks = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
 } catch (\Throwable $_e) { /* empty list is a safe default */ }
 
 $picker_organisations = [];
 try {
-    $rs = $db->query(
+    $stmt = $db->prepare(
         'SELECT Id, Name, Slug, LicenceType FROM tblOrganisations
          WHERE IsActive = 1 ORDER BY Name ASC'
     );
-    $picker_organisations = $rs->fetchAll(PDO::FETCH_ASSOC);
+    $stmt->execute();
+    $picker_organisations = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
 } catch (\Throwable $_e) { /* empty; the picker will fall back to live-search */ }
 
 $csrf = csrfToken();
