@@ -107,7 +107,7 @@ $currentUser = getCurrentUser();
         <a class="navbar-brand d-flex align-items-center gap-2" href="/manage/"
            title="Back to Admin Dashboard">
             <i class="bi bi-music-note-beamed"></i>
-            iHymns Song Editor
+            <span class="navbar-brand-text">iHymns Song Editor</span>
         </a>
 
         <!-- Quick navigation links. `/manage/` returns to the admin dashboard;
@@ -222,7 +222,7 @@ $currentUser = getCurrentUser();
             </button>
 
             <!-- Separator + Admin links / Logout -->
-            <span class="text-muted mx-1">|</span>
+            <span class="text-muted mx-1 navbar-editor-separator">|</span>
             <?php if (($currentUser['role'] ?? '') === 'admin'): ?>
             <a href="/manage/users"
                class="btn btn-sm btn-outline-secondary me-1"

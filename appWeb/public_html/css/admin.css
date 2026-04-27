@@ -793,3 +793,47 @@ body:has(.navbar-admin) {
         max-height: 40vh;
     }
 }
+
+/* --------------------------------------------------------------------------
+   Editor toolbar — phone widths (#547)
+
+   The desktop toolbar carries 10+ controls (brand, Dashboard, Home, Load
+   JSON, Load URL, Save, Validate, History, Export, Import, Users, Logout).
+   Even with btn-sm, that wraps onto two or three rows on a phone and
+   swallows most of the editing surface. Below 576 px we:
+
+     - Hide low-priority controls outright (Load URL, Users link, brand
+       wordmark, the visual `|` separator).
+     - Tighten button padding + font-size so the surviving controls pack
+       into a single row where possible.
+     - Allow controlled wrap so anything that doesn't fit drops cleanly
+       to the next row instead of overflowing horizontally.
+   -------------------------------------------------------------------------- */
+
+@media (max-width: 575.98px) {
+    .navbar-editor {
+        padding: 0.35rem 0.5rem;
+        flex-wrap: wrap;
+        row-gap: 0.35rem;
+    }
+    .navbar-editor .navbar-brand {
+        font-size: 1rem;
+    }
+    .navbar-editor .navbar-brand-text,
+    .navbar-editor .navbar-editor-separator,
+    .navbar-editor #btn-load-url,
+    .navbar-editor a[href="/manage/users"] {
+        display: none;
+    }
+    .navbar-editor .btn.btn-sm {
+        padding: 0.2rem 0.45rem;
+        font-size: 0.78rem;
+    }
+    .navbar-editor .btn.btn-sm .bi {
+        font-size: 0.85rem;
+    }
+    /* Both flex groups (left nav, right actions) — tighten internal gap. */
+    .navbar-editor > .d-flex {
+        gap: 0.35rem !important;
+    }
+}
