@@ -172,6 +172,13 @@ switch ($action) {
             $stmtArranger   = $db->prepare("INSERT INTO tblSongArrangers   (SongId, Name) VALUES (?, ?)");
             $stmtAdaptor    = $db->prepare("INSERT INTO tblSongAdaptors    (SongId, Name) VALUES (?, ?)");
             $stmtTranslator = $db->prepare("INSERT INTO tblSongTranslators (SongId, Name) VALUES (?, ?)");
+            /* Silently keep the credit-people registry in sync with every
+               name that lands in the five song-credit tables (#545).
+               INSERT IGNORE on the unique Name index — adding a name
+               that's already in the registry is a no-op. The registry
+               row carries no metadata at this point; the People page
+               (/manage/credit-people) is where that gets enriched. */
+            $stmtRegistry = $db->prepare("INSERT IGNORE INTO tblCreditPeople (Name) VALUES (?)");
             $stmtComponent  = $db->prepare(
                 "INSERT INTO tblSongComponents (SongId, Type, Number, SortOrder, LinesJson)
                  VALUES (?, ?, ?, ?, ?)"
@@ -224,12 +231,22 @@ switch ($action) {
                 );
                 $stmtSong->execute();
 
-                /* Credit collections — one table each. */
-                foreach ($song['writers']     ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtWriter->bind_param('ss', $songId, $v);     $stmtWriter->execute(); } }
-                foreach ($song['composers']   ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtComposer->bind_param('ss', $songId, $v);   $stmtComposer->execute(); } }
-                foreach ($song['arrangers']   ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtArranger->bind_param('ss', $songId, $v);   $stmtArranger->execute(); } }
-                foreach ($song['adaptors']    ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtAdaptor->bind_param('ss', $songId, $v);    $stmtAdaptor->execute(); } }
-                foreach ($song['translators'] ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtTranslator->bind_param('ss', $songId, $v); $stmtTranslator->execute(); } }
+                /* Credit collections — one table each. The registry sync
+                   (INSERT IGNORE into tblCreditPeople) runs once per
+                   credited name across all five collections, deduped
+                   per song so we don't fire identical INSERTs five
+                   times for someone credited in multiple roles on the
+                   same song. (#545) */
+                $regNames = [];
+                foreach ($song['writers']     ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtWriter->bind_param('ss', $songId, $v);     $stmtWriter->execute();     $regNames[$v] = true; } }
+                foreach ($song['composers']   ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtComposer->bind_param('ss', $songId, $v);   $stmtComposer->execute();   $regNames[$v] = true; } }
+                foreach ($song['arrangers']   ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtArranger->bind_param('ss', $songId, $v);   $stmtArranger->execute();   $regNames[$v] = true; } }
+                foreach ($song['adaptors']    ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtAdaptor->bind_param('ss', $songId, $v);    $stmtAdaptor->execute();    $regNames[$v] = true; } }
+                foreach ($song['translators'] ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtTranslator->bind_param('ss', $songId, $v); $stmtTranslator->execute(); $regNames[$v] = true; } }
+                foreach (array_keys($regNames) as $regName) {
+                    $stmtRegistry->bind_param('s', $regName);
+                    $stmtRegistry->execute();
+                }
 
                 /* Components */
                 $sortOrder = 0;
@@ -250,6 +267,7 @@ switch ($action) {
             $stmtAdaptor->close();
             $stmtTranslator->close();
             $stmtComponent->close();
+            $stmtRegistry->close();
 
             /*
              * Import translation links from songs.json (#352).
@@ -526,14 +544,31 @@ switch ($action) {
                 'adaptors'    => 'INSERT INTO tblSongAdaptors    (SongId, Name) VALUES (?, ?)',
                 'translators' => 'INSERT INTO tblSongTranslators (SongId, Name) VALUES (?, ?)',
             ];
+            $regNames = [];
             foreach ($creditInserts as $key => $sql) {
                 $stmt = $db->prepare($sql);
                 foreach ($song[$key] ?? [] as $name) {
                     if (!is_string($name) || $name === '') continue;
                     $stmt->bind_param('ss', $songId, $name);
                     $stmt->execute();
+                    $regNames[$name] = true;
                 }
                 $stmt->close();
+            }
+            /* Silently keep the credit-people registry in sync (#545).
+               INSERT IGNORE on the unique Name index — names already in
+               the registry are no-ops. The registry row carries no
+               metadata at this point; the People page
+               (/manage/credit-people) is where that gets enriched.
+               Deduped above so a name credited in multiple roles on the
+               same song fires once, not five times. */
+            if (!empty($regNames)) {
+                $stmtRegistry = $db->prepare('INSERT IGNORE INTO tblCreditPeople (Name) VALUES (?)');
+                foreach (array_keys($regNames) as $regName) {
+                    $stmtRegistry->bind_param('s', $regName);
+                    $stmtRegistry->execute();
+                }
+                $stmtRegistry->close();
             }
 
             $insComp = $db->prepare(
@@ -1072,6 +1107,24 @@ switch ($action) {
                                  FROM {$table}
                                  WHERE Name LIKE ?
                                  GROUP BY Name";
+                $params[] = $like;
+                $types   .= 's';
+            }
+            /* When the caller searches "any" role (the default for the
+               editor's chip autocomplete), also surface registry rows
+               from tblCreditPeople — pre-registered names that no song
+               currently cites still need to be selectable. The
+               synthesized 'registry' kindLabel collapses via the outer
+               GROUP BY, so a registry-only name lands as a single
+               suggestion with usage=0. The role-specific searches
+               (kind=writer / composer / etc.) intentionally exclude
+               the registry — those callers want to know how this
+               person is currently credited, not whether their name
+               exists in the catalogue. (#545) */
+            if ($kind === 'any') {
+                $unionParts[] = "SELECT Name, 'registry' AS kindLabel, 0 AS cnt
+                                 FROM tblCreditPeople
+                                 WHERE Name LIKE ?";
                 $params[] = $like;
                 $types   .= 's';
             }
