@@ -17,6 +17,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
 requireAuth();
 $currentUser = getCurrentUser();
@@ -26,7 +27,7 @@ if (!$currentUser || !in_array(($currentUser['role'] ?? ''), ['admin', 'global_a
 }
 
 $activePage = 'activity-log';
-$db = getDb();
+$db = getDbMysqli();
 
 /* Filter parsing — every filter is optional. Defaults give the
    admin "last 24 h, every action, every user" landing view. */
@@ -42,36 +43,56 @@ $filterSearch     = trim((string)($_GET['q'] ?? ''));
 
 $since = (new DateTime("-{$filterDays} days"))->format('Y-m-d H:i:s');
 
-$where  = ['a.CreatedAt >= :since'];
-$params = [':since' => $since];
+/* mysqli only supports positional `?` placeholders. The PDO version
+   used named params + reused them across multiple positions
+   (`:user` appears twice in the Username/Email LIKE clause; same
+   for `:search` in the Action/EntityId LIKE clause). For mysqli we
+   bind the value once per `?` position, so $params and $types stay
+   in lock-step with the order the ?s appear. The same arrays are
+   reused for the COUNT, paginated SELECT, and CSV export queries —
+   they all share the WHERE clause. */
+$where  = ['a.CreatedAt >= ?'];
+$params = [$since];
+$types  = 's';
 
 if ($filterAction !== '') {
-    $where[] = 'a.Action = :action';
-    $params[':action'] = $filterAction;
+    $where[]  = 'a.Action = ?';
+    $params[] = $filterAction;
+    $types   .= 's';
 }
 if ($filterUser !== '') {
-    $where[] = '(u.Username LIKE :user OR u.Email LIKE :user)';
-    $params[':user'] = '%' . $filterUser . '%';
+    $where[]  = '(u.Username LIKE ? OR u.Email LIKE ?)';
+    $userLike = '%' . $filterUser . '%';
+    $params[] = $userLike;
+    $params[] = $userLike;
+    $types   .= 'ss';
 }
 if (in_array($filterResult, ['success', 'failure', 'error'], true)) {
-    $where[] = 'a.Result = :result';
-    $params[':result'] = $filterResult;
+    $where[]  = 'a.Result = ?';
+    $params[] = $filterResult;
+    $types   .= 's';
 }
 if ($filterEntityType !== '') {
-    $where[] = 'a.EntityType = :entity_type';
-    $params[':entity_type'] = $filterEntityType;
+    $where[]  = 'a.EntityType = ?';
+    $params[] = $filterEntityType;
+    $types   .= 's';
 }
 if ($filterEntityId !== '') {
-    $where[] = 'a.EntityId = :entity_id';
-    $params[':entity_id'] = $filterEntityId;
+    $where[]  = 'a.EntityId = ?';
+    $params[] = $filterEntityId;
+    $types   .= 's';
 }
 if ($filterRequestId !== '') {
-    $where[] = 'a.RequestId = :request_id';
-    $params[':request_id'] = $filterRequestId;
+    $where[]  = 'a.RequestId = ?';
+    $params[] = $filterRequestId;
+    $types   .= 's';
 }
 if ($filterSearch !== '') {
-    $where[] = '(a.Action LIKE :search OR a.EntityId LIKE :search)';
-    $params[':search'] = '%' . $filterSearch . '%';
+    $where[]  = '(a.Action LIKE ? OR a.EntityId LIKE ?)';
+    $searchLike = '%' . $filterSearch . '%';
+    $params[] = $searchLike;
+    $params[] = $searchLike;
+    $types   .= 'ss';
 }
 $whereSql = 'WHERE ' . implode(' AND ', $where);
 
@@ -98,8 +119,10 @@ if (($_GET['export'] ?? '') === 'csv') {
            ORDER BY a.CreatedAt DESC
            LIMIT 10000'
     );
-    $stmt->execute($params);
-    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+    $stmt->bind_param($types, ...$params);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    while ($row = $res->fetch_assoc()) {
         fputcsv($out, [
             $row['Id'], $row['CreatedAt'], $row['Username'] ?? '', $row['Action'],
             $row['EntityType'], $row['EntityId'], $row['Result'],
@@ -107,6 +130,7 @@ if (($_GET['export'] ?? '') === 'csv') {
             $row['Method'] ?? '', $row['DurationMs'] ?? '', $row['Details'] ?? '',
         ]);
     }
+    $stmt->close();
     fclose($out);
     exit;
 }
@@ -124,8 +148,11 @@ try {
            FROM tblActivityLog a
            LEFT JOIN tblUsers u ON u.Id = a.UserId ' . $whereSql
     );
-    $countStmt->execute($params);
-    $total = (int)$countStmt->fetchColumn();
+    $countStmt->bind_param($types, ...$params);
+    $countStmt->execute();
+    $row = $countStmt->get_result()->fetch_row();
+    $total = (int)($row[0] ?? 0);
+    $countStmt->close();
 
     $stmt = $db->prepare(
         'SELECT a.Id, a.CreatedAt, a.Action, a.EntityType, a.EntityId, a.Result,
@@ -137,8 +164,10 @@ try {
            ORDER BY a.CreatedAt DESC
            LIMIT ' . (int)$pageSize . ' OFFSET ' . (int)$offset
     );
-    $stmt->execute($params);
-    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $stmt->bind_param($types, ...$params);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
 } catch (\Throwable $e) {
     error_log('[manage/activity-log.php] ' . $e->getMessage());
 }
@@ -153,11 +182,15 @@ try {
     $stmt = $db->prepare(
         'SELECT DISTINCT Action
            FROM tblActivityLog
-          WHERE CreatedAt >= :since
+          WHERE CreatedAt >= ?
           ORDER BY Action ASC'
     );
-    $stmt->execute([':since' => $since]);
-    $distinctActions = $stmt->fetchAll(PDO::FETCH_COLUMN);
+    $stmt->bind_param('s', $since);
+    $stmt->execute();
+    /* PDO::FETCH_COLUMN returned a flat array of column-0 values;
+       mysqli has no direct equivalent — pull all rows then array_column. */
+    $distinctActions = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Action');
+    $stmt->close();
 } catch (\Throwable $_e) { /* empty list is fine */ }
 
 $resultBadgeClass = [

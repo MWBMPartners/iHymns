@@ -31,6 +31,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
 requireGlobalAdmin();
 $currentUser = getCurrentUser();
@@ -192,7 +193,7 @@ function _schemaAudit_scanMigrations(string $sqlDir): array
  *
  * @return array<string, string[]> tableName => [columnName, …]
  */
-function _schemaAudit_readDb(\PDO $db): array
+function _schemaAudit_readDb(\mysqli $db): array
 {
     $sql = "SELECT TABLE_NAME, COLUMN_NAME
               FROM INFORMATION_SCHEMA.COLUMNS
@@ -200,9 +201,12 @@ function _schemaAudit_readDb(\PDO $db): array
                AND TABLE_NAME LIKE 'tbl%'
              ORDER BY TABLE_NAME, ORDINAL_POSITION";
     $tables = [];
-    foreach ($db->query($sql, \PDO::FETCH_ASSOC) as $row) {
+    $stmt = $db->prepare($sql);
+    $stmt->execute();
+    foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $row) {
         $tables[$row['TABLE_NAME']][] = $row['COLUMN_NAME'];
     }
+    $stmt->close();
     return $tables;
 }
 
@@ -308,7 +312,7 @@ $schemaSrc = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . '.sql' . DIRECTORY_SEPA
 $sqlDir    = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . '.sql';
 
 try {
-    $db = getDb();
+    $db = getDbMysqli();
 
     if (!is_readable($schemaSrc)) {
         throw new \RuntimeException('schema.sql is not readable at ' . $schemaSrc);

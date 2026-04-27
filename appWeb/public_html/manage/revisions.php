@@ -12,6 +12,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
 requireAuth();
 $currentUser = getCurrentUser();
@@ -21,7 +22,7 @@ if (!$currentUser || !userHasEntitlement('verify_songs', $currentUser['role'] ??
 }
 
 $activePage = 'revisions';
-$db = getDb();
+$db = getDbMysqli();
 
 $filterUser   = trim((string)($_GET['user']   ?? ''));
 $filterSong   = trim((string)($_GET['song']   ?? ''));
@@ -30,19 +31,31 @@ $filterDays   = (int)($_GET['days']   ?? 30);
 if (!in_array($filterDays, [7, 30, 90, 365], true)) { $filterDays = 30; }
 $since = (new DateTime("-{$filterDays} days"))->format('Y-m-d H:i:s');
 
-$where  = ['r.CreatedAt >= :since'];
-$params = [':since' => $since];
+/* mysqli takes positional `?` placeholders, not named ones — and a
+   placeholder repeated in the SQL needs the value bound twice (PDO
+   allowed reusing :user across multiple positions; mysqli doesn't).
+   Build $params + $types in lock-step with the order the ?s appear
+   in the WHERE clause. The same array is then passed to both the
+   COUNT(*) and the main SELECT — they share the WHERE clause. */
+$where  = ['r.CreatedAt >= ?'];
+$params = [$since];
+$types  = 's';
 if ($filterUser !== '') {
-    $where[] = '(u.Username LIKE :user OR u.Email LIKE :user)';
-    $params[':user'] = '%' . $filterUser . '%';
+    $where[]  = '(u.Username LIKE ? OR u.Email LIKE ?)';
+    $userLike = '%' . $filterUser . '%';
+    $params[] = $userLike;
+    $params[] = $userLike;
+    $types   .= 'ss';
 }
 if ($filterSong !== '') {
-    $where[] = 'r.SongId LIKE :song';
-    $params[':song'] = '%' . $filterSong . '%';
+    $where[]  = 'r.SongId LIKE ?';
+    $params[] = '%' . $filterSong . '%';
+    $types   .= 's';
 }
 if (in_array($filterAction, ['create', 'edit', 'restore', 'delete'], true)) {
-    $where[] = 'r.Action = :action';
-    $params[':action'] = $filterAction;
+    $where[]  = 'r.Action = ?';
+    $params[] = $filterAction;
+    $types   .= 's';
 }
 $whereSql = 'WHERE ' . implode(' AND ', $where);
 
@@ -54,8 +67,11 @@ try {
            FROM tblSongRevisions r
            LEFT JOIN tblUsers u ON u.Id = r.UserId ' . $whereSql
     );
-    $countStmt->execute($params);
-    $total = (int)$countStmt->fetchColumn();
+    $countStmt->bind_param($types, ...$params);
+    $countStmt->execute();
+    $row = $countStmt->get_result()->fetch_row();
+    $total = (int)($row[0] ?? 0);
+    $countStmt->close();
 
     $stmt = $db->prepare(
         'SELECT r.Id, r.SongId, r.Action, r.CreatedAt, r.UserId, u.Username,
@@ -66,8 +82,10 @@ try {
            ORDER BY r.CreatedAt DESC, r.Id DESC
            LIMIT 200'
     );
-    $stmt->execute($params);
-    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $stmt->bind_param($types, ...$params);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
 } catch (\Throwable $e) {
     error_log('[manage revisions] ' . $e->getMessage());
     $rows = [];
