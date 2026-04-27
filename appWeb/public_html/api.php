@@ -3220,18 +3220,23 @@ if ($action !== null) {
                 /* INNER JOIN tblSongs so the recently-viewed list can show
                    the song title + songbook badge instead of the bare ID
                    (#546). A history row whose song has since been deleted
-                   drops out — preferable to rendering an unresolvable ID. */
+                   drops out — preferable to rendering an unresolvable ID.
+
+                   GROUP BY h.SongId collapses repeat views of the same
+                   song into a single row, anchored to its most recent
+                   view, so the list never displays duplicates (#549). */
                 $stmt = $db->prepare(
                     'SELECT h.SongId        AS songId,
                             s.Title         AS title,
                             s.Number        AS number,
                             s.SongbookAbbr  AS songbook,
                             s.SongbookName  AS songbookName,
-                            h.ViewedAt      AS viewedAt
+                            MAX(h.ViewedAt) AS viewedAt
                      FROM tblSongHistory h
                      JOIN tblSongs s ON s.SongId = h.SongId
                      WHERE h.UserId = ?
-                     ORDER BY h.ViewedAt DESC
+                     GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, s.SongbookName
+                     ORDER BY MAX(h.ViewedAt) DESC
                      LIMIT 50'
                 );
                 $stmt->execute([$authUser['Id']]);
