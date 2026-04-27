@@ -2393,8 +2393,8 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
-            $stmt = $db->query(
+            $db = getDbMysqli();
+            $stmt = $db->prepare(
                 'SELECT u.Id AS id, u.Username AS username, u.Email AS email,
                         u.DisplayName AS display_name, u.Role AS role,
                         u.IsActive AS is_active, u.CreatedAt AS created_at,
@@ -2403,7 +2403,9 @@ if ($action !== null) {
                  LEFT JOIN tblUserGroups g ON g.Id = u.GroupId
                  ORDER BY u.CreatedAt ASC'
             );
-            $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $stmt->execute();
+            $users = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
             foreach ($users as &$u) {
                 $u['id'] = (int)$u['id'];
                 $u['is_active'] = (bool)$u['is_active'];
@@ -2423,15 +2425,17 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
-            $stmt = $db->query(
+            $db = getDbMysqli();
+            $stmt = $db->prepare(
                 'SELECT Id AS id, Name AS name, Description AS description,
                         AccessAlpha AS accessAlpha, AccessBeta AS accessBeta,
                         AccessRc AS accessRc, AccessRtw AS accessRtw
                  FROM tblUserGroups
                  ORDER BY Name ASC'
             );
-            $groups = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $stmt->execute();
+            $groups = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
             foreach ($groups as &$g) {
                 $g['id'] = (int)$g['id'];
                 $g['accessAlpha'] = (bool)$g['accessAlpha'];
@@ -2456,12 +2460,15 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
+            $db = getDbMysqli();
             $logLimit  = min((int)($_GET['limit'] ?? 50), 200);
             $logOffset = max((int)($_GET['offset'] ?? 0), 0);
 
-            $where = [];
+            /* mysqli needs $types in lock-step with $params; track
+               both as the WHERE clause is built. */
+            $where  = [];
             $params = [];
+            $types  = '';
 
             /* Filters (#535) — extended to cover the new columns:
                  action_filter   exact-match Action
@@ -2474,44 +2481,53 @@ if ($action !== null) {
                  q               substring match against Action OR EntityId
             */
             if (!empty($_GET['action_filter'])) {
-                $where[] = 'a.Action = ?';
+                $where[]  = 'a.Action = ?';
                 $params[] = trim($_GET['action_filter']);
+                $types   .= 's';
             }
             if (!empty($_GET['user_id'])) {
-                $where[] = 'a.UserId = ?';
+                $where[]  = 'a.UserId = ?';
                 $params[] = (int)$_GET['user_id'];
+                $types   .= 'i';
             }
             if (!empty($_GET['result'])
                 && in_array($_GET['result'], ['success', 'failure', 'error'], true)) {
-                $where[] = 'a.Result = ?';
+                $where[]  = 'a.Result = ?';
                 $params[] = $_GET['result'];
+                $types   .= 's';
             }
             if (!empty($_GET['entity_type'])) {
-                $where[] = 'a.EntityType = ?';
+                $where[]  = 'a.EntityType = ?';
                 $params[] = trim($_GET['entity_type']);
+                $types   .= 's';
             }
             if (!empty($_GET['entity_id'])) {
-                $where[] = 'a.EntityId = ?';
+                $where[]  = 'a.EntityId = ?';
                 $params[] = trim($_GET['entity_id']);
+                $types   .= 's';
             }
             if (!empty($_GET['request_id'])) {
-                $where[] = 'a.RequestId = ?';
+                $where[]  = 'a.RequestId = ?';
                 $params[] = trim($_GET['request_id']);
+                $types   .= 's';
             }
             if (!empty($_GET['since'])) {
-                $where[] = 'a.CreatedAt >= ?';
+                $where[]  = 'a.CreatedAt >= ?';
                 $params[] = trim($_GET['since']);
+                $types   .= 's';
             }
             if (!empty($_GET['q'])) {
                 $like = '%' . trim($_GET['q']) . '%';
-                $where[] = '(a.Action LIKE ? OR a.EntityId LIKE ?)';
+                $where[]  = '(a.Action LIKE ? OR a.EntityId LIKE ?)';
                 $params[] = $like;
                 $params[] = $like;
+                $types   .= 'ss';
             }
 
             $whereClause = !empty($where) ? 'WHERE ' . implode(' AND ', $where) : '';
             $params[] = $logLimit;
             $params[] = $logOffset;
+            $types   .= 'ii';
 
             $stmt = $db->prepare(
                 "SELECT a.Id AS id, a.Action AS action, a.EntityType AS entityType,
@@ -2526,8 +2542,10 @@ if ($action !== null) {
                  ORDER BY a.CreatedAt DESC
                  LIMIT ? OFFSET ?"
             );
-            $stmt->execute($params);
-            $entries = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $stmt->bind_param($types, ...$params);
+            $stmt->execute();
+            $entries = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
 
             foreach ($entries as &$e) {
                 $e['id'] = (int)$e['id'];
@@ -2552,13 +2570,15 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
+            $db = getDbMysqli();
             $params = [];
-            $where = '';
+            $types  = '';
+            $where  = '';
 
             if (!empty($_GET['status'])) {
-                $where = 'WHERE r.Status = ?';
+                $where    = 'WHERE r.Status = ?';
                 $params[] = trim($_GET['status']);
+                $types   .= 's';
             }
 
             $stmt = $db->prepare(
@@ -2575,8 +2595,12 @@ if ($action !== null) {
                  ORDER BY r.CreatedAt DESC
                  LIMIT 200"
             );
-            $stmt->execute($params);
-            $requests = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            if (!empty($params)) {
+                $stmt->bind_param($types, ...$params);
+            }
+            $stmt->execute();
+            $requests = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
 
             sendJson(['requests' => $requests]);
             break;
@@ -2612,13 +2636,16 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
+            $db = getDbMysqli();
             $stmt = $db->prepare(
                 'UPDATE tblSongRequests
                  SET Status = ?, AdminNotes = ?, ResolvedSongId = ?, UpdatedAt = NOW()
                  WHERE Id = ?'
             );
-            $stmt->execute([$newStatus, $notes, $resolved ?: null, $reqId]);
+            $resolvedOrNull = $resolved !== '' ? $resolved : null;
+            $stmt->bind_param('sssi', $newStatus, $notes, $resolvedOrNull, $reqId);
+            $stmt->execute();
+            $stmt->close();
 
             sendJson(['ok' => true]);
             break;
@@ -2638,7 +2665,7 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
+            $db = getDbMysqli();
             $stmt = $db->prepare(
                 'SELECT o.Id AS id, o.Name AS name, o.Slug AS slug,
                         o.ParentOrgId AS parentOrgId, o.Description AS description,
@@ -2649,8 +2676,11 @@ if ($action !== null) {
                  WHERE m.UserId = ? AND o.IsActive = 1
                  ORDER BY o.Name ASC'
             );
-            $stmt->execute([$authUser['Id']]);
-            $orgs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $authUserId = (int)$authUser['Id'];
+            $stmt->bind_param('i', $authUserId);
+            $stmt->execute();
+            $orgs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
 
             foreach ($orgs as &$org) {
                 $org['id'] = (int)$org['id'];
@@ -2670,7 +2700,7 @@ if ($action !== null) {
             $orgId   = isset($_GET['id']) ? (int)$_GET['id'] : 0;
             $orgSlug = trim($_GET['slug'] ?? '');
 
-            $db = getDb();
+            $db = getDbMysqli();
             if ($orgId > 0) {
                 $stmt = $db->prepare(
                     'SELECT Id AS id, Name AS name, Slug AS slug,
@@ -2678,7 +2708,8 @@ if ($action !== null) {
                             LicenceType AS licenceType
                      FROM tblOrganisations WHERE Id = ? AND IsActive = 1'
                 );
-                $stmt->execute([$orgId]);
+                $stmt->bind_param('i', $orgId);
+                $stmt->execute();
             } elseif ($orgSlug !== '') {
                 $stmt = $db->prepare(
                     'SELECT Id AS id, Name AS name, Slug AS slug,
@@ -2686,13 +2717,15 @@ if ($action !== null) {
                             LicenceType AS licenceType
                      FROM tblOrganisations WHERE Slug = ? AND IsActive = 1'
                 );
-                $stmt->execute([$orgSlug]);
+                $stmt->bind_param('s', $orgSlug);
+                $stmt->execute();
             } else {
                 sendJson(['error' => 'Organisation id or slug required.'], 400);
                 break;
             }
 
-            $org = $stmt->fetch(PDO::FETCH_ASSOC);
+            $org = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
             if (!$org) {
                 sendJson(['error' => 'Organisation not found.'], 404);
                 break;
@@ -2706,13 +2739,18 @@ if ($action !== null) {
                  FROM tblOrganisations WHERE ParentOrgId = ? AND IsActive = 1
                  ORDER BY Name ASC'
             );
-            $stmt->execute([$org['id']]);
-            $org['children'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $stmt->bind_param('i', $org['id']);
+            $stmt->execute();
+            $org['children'] = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
 
             /* Get member count */
             $stmt = $db->prepare('SELECT COUNT(*) FROM tblOrganisationMembers WHERE OrgId = ?');
-            $stmt->execute([$org['id']]);
-            $org['memberCount'] = (int)$stmt->fetchColumn();
+            $stmt->bind_param('i', $org['id']);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_row();
+            $stmt->close();
+            $org['memberCount'] = (int)($row[0] ?? 0);
 
             sendJson(['organisation' => $org]);
             break;
@@ -2751,31 +2789,42 @@ if ($action !== null) {
             $slug = trim($slug, '-');
             if (strlen($slug) < 2) $slug = 'org-' . bin2hex(random_bytes(3));
 
-            $db = getDb();
+            $db = getDbMysqli();
 
-            /* Ensure unique slug */
+            /* Ensure unique slug — reused prepared statement with $slug
+               bound by reference; re-assign per iteration. */
             $baseSlug = $slug;
             $counter = 1;
+            $slugStmt = $db->prepare('SELECT COUNT(*) FROM tblOrganisations WHERE Slug = ?');
+            $slugStmt->bind_param('s', $slug);
             while (true) {
-                $stmt = $db->prepare('SELECT COUNT(*) FROM tblOrganisations WHERE Slug = ?');
-                $stmt->execute([$slug]);
-                if ((int)$stmt->fetchColumn() === 0) break;
+                $slugStmt->execute();
+                $row = $slugStmt->get_result()->fetch_row();
+                if ((int)($row[0] ?? 0) === 0) break;
                 $slug = $baseSlug . '-' . $counter;
                 $counter++;
             }
+            $slugStmt->close();
 
             $stmt = $db->prepare(
                 'INSERT INTO tblOrganisations (Name, Slug, ParentOrgId, Description)
                  VALUES (?, ?, ?, ?)'
             );
-            $stmt->execute([$orgName, $slug, $parentId, $orgDesc]);
-            $newOrgId = (int)$db->lastInsertId();
+            /* ParentOrgId(i nullable) — mysqli passes NULL with type 'i' when var is null. */
+            $stmt->bind_param('ssis', $orgName, $slug, $parentId, $orgDesc);
+            $stmt->execute();
+            $newOrgId = (int)$db->insert_id;
+            $stmt->close();
 
             /* Creator becomes owner */
             $stmt = $db->prepare(
                 'INSERT INTO tblOrganisationMembers (UserId, OrgId, Role) VALUES (?, ?, ?)'
             );
-            $stmt->execute([$authUser['Id'], $newOrgId, 'owner']);
+            $authUserId = (int)$authUser['Id'];
+            $ownerRole  = 'owner';
+            $stmt->bind_param('iis', $authUserId, $newOrgId, $ownerRole);
+            $stmt->execute();
+            $stmt->close();
 
             sendJson(['ok' => true, 'id' => $newOrgId, 'slug' => $slug], 201);
             break;
@@ -2813,8 +2862,8 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
-            $stmt = $db->query(
+            $db = getDbMysqli();
+            $stmt = $db->prepare(
                 'SELECT Id AS id, EntityType AS entityType, EntityId AS entityId,
                         RestrictionType AS restrictionType, TargetType AS targetType,
                         TargetId AS targetId, Effect AS effect, Priority AS priority,
@@ -2823,7 +2872,9 @@ if ($action !== null) {
                  ORDER BY Priority DESC, CreatedAt DESC
                  LIMIT 200'
             );
-            $restrictions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $stmt->execute();
+            $restrictions = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
 
             sendJson(['restrictions' => $restrictions]);
             break;
@@ -2847,24 +2898,29 @@ if ($action !== null) {
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
 
-            $db = getDb();
+            $db = getDbMysqli();
             $stmt = $db->prepare(
                 'INSERT INTO tblContentRestrictions
                  (EntityType, EntityId, RestrictionType, TargetType, TargetId, Effect, Priority, Reason)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
             );
-            $stmt->execute([
-                trim($body['entity_type'] ?? ''),
-                trim($body['entity_id'] ?? ''),
-                trim($body['restriction_type'] ?? ''),
-                trim($body['target_type'] ?? ''),
-                trim($body['target_id'] ?? ''),
-                trim($body['effect'] ?? 'deny'),
-                (int)($body['priority'] ?? 0),
-                trim($body['reason'] ?? ''),
-            ]);
+            /* Six string columns + Priority(int) + Reason(string). */
+            $entityType  = trim($body['entity_type']      ?? '');
+            $entityIdStr = trim($body['entity_id']        ?? '');
+            $restrType   = trim($body['restriction_type'] ?? '');
+            $targetType  = trim($body['target_type']      ?? '');
+            $targetIdStr = trim($body['target_id']        ?? '');
+            $effect      = trim($body['effect']           ?? 'deny');
+            $priority    = (int)($body['priority']        ?? 0);
+            $reason      = trim($body['reason']           ?? '');
+            $stmt->bind_param('ssssssis',
+                $entityType, $entityIdStr, $restrType, $targetType,
+                $targetIdStr, $effect, $priority, $reason);
+            $stmt->execute();
+            $newId = (int)$db->insert_id;
+            $stmt->close();
 
-            sendJson(['ok' => true, 'id' => (int)$db->lastInsertId()], 201);
+            sendJson(['ok' => true, 'id' => $newId], 201);
             break;
 
         /* -----------------------------------------------------------------
@@ -2892,9 +2948,11 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
+            $db = getDbMysqli();
             $stmt = $db->prepare('DELETE FROM tblContentRestrictions WHERE Id = ?');
-            $stmt->execute([$delId]);
+            $stmt->bind_param('i', $delId);
+            $stmt->execute();
+            $stmt->close();
 
             sendJson(['ok' => true]);
             break;
@@ -3019,15 +3077,17 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
+            $db = getDbMysqli();
             $stmt = $db->prepare(
                 'SELECT OriginalKey AS originalKey, Tempo AS tempo,
                         TimeSignature AS timeSignature
                  FROM tblSongKeys
                  WHERE SongId = ?'
             );
-            $stmt->execute([$songKeyId]);
-            $keyData = $stmt->fetch(PDO::FETCH_ASSOC);
+            $stmt->bind_param('s', $songKeyId);
+            $stmt->execute();
+            $keyData = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
 
             if (!$keyData) {
                 sendJson(['error' => 'No key data found for this song.'], 404);
@@ -3075,7 +3135,7 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
+            $db = getDbMysqli();
             $stmt = $db->prepare(
                 'INSERT INTO tblSongKeys (SongId, OriginalKey, Tempo, TimeSignature)
                  VALUES (?, ?, ?, ?)
@@ -3084,7 +3144,10 @@ if ($action !== null) {
                     Tempo = VALUES(Tempo),
                     TimeSignature = VALUES(TimeSignature)'
             );
-            $stmt->execute([$keySongId, $originalKey, $tempo, $timeSignature ?: null]);
+            $tsOrNull = $timeSignature !== '' ? $timeSignature : null;
+            $stmt->bind_param('ssis', $keySongId, $originalKey, $tempo, $tsOrNull);
+            $stmt->execute();
+            $stmt->close();
 
             sendJson(['ok' => true]);
             break;
@@ -3120,7 +3183,7 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
+            $db = getDbMysqli();
             $stmt = $db->prepare(
                 'SELECT s.Id AS id, s.SetlistId AS setlistId,
                         s.ScheduledDate AS scheduledDate, s.Notes AS notes,
@@ -3132,8 +3195,11 @@ if ($action !== null) {
                    AND (s.CreatedBy = ? OR m.UserId IS NOT NULL)
                  ORDER BY s.ScheduledDate ASC'
             );
-            $stmt->execute([$authUser['Id'], $schedFrom, $schedTo, $authUser['Id']]);
-            $schedules = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $authUserId = (int)$authUser['Id'];
+            $stmt->bind_param('issi', $authUserId, $schedFrom, $schedTo, $authUserId);
+            $stmt->execute();
+            $schedules = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
 
             foreach ($schedules as &$sched) {
                 $sched['id'] = (int)$sched['id'];
@@ -3182,14 +3248,20 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
+            $db = getDbMysqli();
             $stmt = $db->prepare(
                 'INSERT INTO tblSetlistSchedule (SetlistId, ScheduledDate, Notes, OrgId, CreatedBy)
                  VALUES (?, ?, ?, ?, ?)'
             );
-            $stmt->execute([$schedSetlistId, $schedDate, $schedNotes, $schedOrgId, $authUser['Id']]);
+            /* OrgId(i nullable). */
+            $authUserId = (int)$authUser['Id'];
+            $stmt->bind_param('sssii',
+                $schedSetlistId, $schedDate, $schedNotes, $schedOrgId, $authUserId);
+            $stmt->execute();
+            $newId = (int)$db->insert_id;
+            $stmt->close();
 
-            sendJson(['ok' => true, 'id' => (int)$db->lastInsertId()], 201);
+            sendJson(['ok' => true, 'id' => $newId], 201);
             break;
 
         /* =================================================================
@@ -3201,7 +3273,7 @@ if ($action !== null) {
          * Returns public templates + user's own + user's org templates
          * ----------------------------------------------------------------- */
         case 'setlist_templates':
-            $db = getDb();
+            $db = getDbMysqli();
             $authUser = getAuthenticatedUser();
 
             if ($authUser) {
@@ -3217,9 +3289,11 @@ if ($action !== null) {
                         OR m.UserId IS NOT NULL
                      ORDER BY t.Name ASC'
                 );
-                $stmt->execute([$authUser['Id'], $authUser['Id']]);
+                $authUserId = (int)$authUser['Id'];
+                $stmt->bind_param('ii', $authUserId, $authUserId);
+                $stmt->execute();
             } else {
-                $stmt = $db->query(
+                $stmt = $db->prepare(
                     'SELECT Id AS id, Name AS name, Description AS description,
                             SlotsJson AS slotsJson, IsPublic AS isPublic,
                             OrgId AS orgId, CreatedBy AS createdBy,
@@ -3228,9 +3302,11 @@ if ($action !== null) {
                      WHERE IsPublic = 1
                      ORDER BY Name ASC'
                 );
+                $stmt->execute();
             }
 
-            $templates = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $templates = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
 
             foreach ($templates as &$tpl) {
                 $tpl['id'] = (int)$tpl['id'];
@@ -3291,14 +3367,20 @@ if ($action !== null) {
 
             $slotsJson = json_encode($cleanSlots, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
-            $db = getDb();
+            $db = getDbMysqli();
             $stmt = $db->prepare(
                 'INSERT INTO tblSetlistTemplates (Name, Description, SlotsJson, OrgId, IsPublic, CreatedBy)
                  VALUES (?, ?, ?, ?, ?, ?)'
             );
-            $stmt->execute([$tplName, $tplDesc, $slotsJson, $tplOrgId, $tplIsPublic, $authUser['Id']]);
+            /* OrgId(i nullable), IsPublic(i bool-as-int), CreatedBy(i). */
+            $authUserId = (int)$authUser['Id'];
+            $stmt->bind_param('sssiii',
+                $tplName, $tplDesc, $slotsJson, $tplOrgId, $tplIsPublic, $authUserId);
+            $stmt->execute();
+            $newId = (int)$db->insert_id;
+            $stmt->close();
 
-            sendJson(['ok' => true, 'id' => (int)$db->lastInsertId()], 201);
+            sendJson(['ok' => true, 'id' => $newId], 201);
             break;
 
         /* =================================================================
@@ -3322,7 +3404,7 @@ if ($action !== null) {
             $days = $periodMap[$period] ?? 7;
 
             try {
-                $db = getDb();
+                $db = getDbMysqli();
                 /* INNER JOIN tblSongs so we return the human-readable
                    title + songbook metadata the home-page renderer needs.
                    Songs that have been deleted since they were viewed
@@ -3341,8 +3423,10 @@ if ($action !== null) {
                      ORDER BY views DESC
                      LIMIT ?'
                 );
-                $stmt->execute([$days, $popLimit]);
-                $songs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                $stmt->bind_param('ii', $days, $popLimit);
+                $stmt->execute();
+                $songs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
 
                 foreach ($songs as &$ps) {
                     $ps['views'] = (int)$ps['views'];
@@ -3376,7 +3460,7 @@ if ($action !== null) {
             }
 
             try {
-                $db = getDb();
+                $db = getDbMysqli();
                 /* INNER JOIN tblSongs so the recently-viewed list can show
                    the song title + songbook badge instead of the bare ID
                    (#546). A history row whose song has since been deleted
@@ -3399,8 +3483,11 @@ if ($action !== null) {
                      ORDER BY MAX(h.ViewedAt) DESC
                      LIMIT 50'
                 );
-                $stmt->execute([$authUser['Id']]);
-                $history = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                $authUserId = (int)$authUser['Id'];
+                $stmt->bind_param('i', $authUserId);
+                $stmt->execute();
+                $history = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
                 sendJson(['history' => $history]);
             } catch (\Throwable $e) {
                 error_log('[api/song_history] ' . $e->getMessage());
@@ -3433,11 +3520,14 @@ if ($action !== null) {
             $viewUserId = $authUser ? $authUser['Id'] : null;
 
             try {
-                $db = getDb();
+                $db = getDbMysqli();
                 $stmt = $db->prepare(
                     'INSERT INTO tblSongHistory (SongId, UserId) VALUES (?, ?)'
                 );
-                $stmt->execute([$viewSongId, $viewUserId]);
+                /* UserId(i nullable) — anonymous views OK. */
+                $stmt->bind_param('si', $viewSongId, $viewUserId);
+                $stmt->execute();
+                $stmt->close();
                 sendJson(['ok' => true]);
             } catch (\Throwable $e) {
                 /* DB unavailable — skip view tracking. Logged so
@@ -3456,14 +3546,16 @@ if ($action !== null) {
          * ----------------------------------------------------------------- */
         case 'tags':
             try {
-                $db = getDb();
-                $stmt = $db->query(
+                $db = getDbMysqli();
+                $stmt = $db->prepare(
                     'SELECT Id AS id, Name AS name, Slug AS slug,
                             Description AS description
                      FROM tblSongTags
                      ORDER BY Name ASC'
                 );
-                $tags = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                $stmt->execute();
+                $tags = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
 
                 foreach ($tags as &$tag) {
                     $tag['id'] = (int)$tag['id'];
@@ -3489,7 +3581,7 @@ if ($action !== null) {
             }
 
             try {
-                $db = getDb();
+                $db = getDbMysqli();
 
                 /* Get the tag info */
                 $stmt = $db->prepare(
@@ -3498,8 +3590,10 @@ if ($action !== null) {
                      FROM tblSongTags
                      WHERE Slug = ?'
                 );
-                $stmt->execute([$tagSlug]);
-                $tagInfo = $stmt->fetch(PDO::FETCH_ASSOC);
+                $stmt->bind_param('s', $tagSlug);
+                $stmt->execute();
+                $tagInfo = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
 
                 if (!$tagInfo) {
                     sendJson(['error' => 'Tag not found.'], 404);
@@ -3516,8 +3610,10 @@ if ($action !== null) {
                      WHERE tm.TagId = ?
                      ORDER BY s.Title ASC'
                 );
-                $stmt->execute([$tagInfo['id']]);
-                $tagSongs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                $stmt->bind_param('i', $tagInfo['id']);
+                $stmt->execute();
+                $tagSongs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
 
                 foreach ($tagSongs as &$ts) {
                     $ts['number'] = (int)$ts['number'];
@@ -3547,7 +3643,7 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
+            $db = getDbMysqli();
             $stmt = $db->prepare(
                 'SELECT SongId AS id, Title AS title,
                         SongbookAbbr AS songbook, Number AS number
@@ -3555,8 +3651,11 @@ if ($action !== null) {
                  WHERE Title LIKE ?
                  LIMIT 8'
             );
-            $stmt->execute(['%' . $suggestQ . '%']);
-            $suggestions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $like = '%' . $suggestQ . '%';
+            $stmt->bind_param('s', $like);
+            $stmt->execute();
+            $suggestions = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
 
             foreach ($suggestions as &$sg) {
                 $sg['number'] = (int)$sg['number'];
