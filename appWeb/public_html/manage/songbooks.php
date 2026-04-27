@@ -16,6 +16,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -31,7 +32,7 @@ $activePage = 'songbooks';
 
 $error   = '';
 $success = '';
-$db      = getDb();
+$db      = getDbMysqli();
 
 /* Helpers */
 $validateAbbr = function (string $abbr): ?string {
@@ -77,8 +78,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($e = $validateColour($colour)) { $error = $e; break; }
 
                 $stmt = $db->prepare('SELECT Id FROM tblSongbooks WHERE Abbreviation = ?');
-                $stmt->execute([$abbr]);
-                if ($stmt->fetch()) { $error = 'Abbreviation already exists.'; break; }
+                $stmt->bind_param('s', $abbr);
+                $stmt->execute();
+                $exists = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($exists) { $error = 'Abbreviation already exists.'; break; }
 
                 $stmt = $db->prepare(
                     'INSERT INTO tblSongbooks
@@ -86,11 +90,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                          IsOfficial, Publisher, PublicationYear, Copyright, Affiliation)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
                 );
-                $stmt->execute([
-                    $abbr, $name, $order ?: 0, $colour,
-                    $isOfficial, $publisher, $pubYear, $copyright, $affiliation,
-                ]);
-                $newId = (int)$db->lastInsertId();
+                /* Types: Abbr(s), Name(s), DisplayOrder(i), Colour(s),
+                   IsOfficial(i), Publisher(s nullable), PublicationYear(s nullable),
+                   Copyright(s nullable), Affiliation(s nullable). mysqli passes
+                   NULL correctly when a bound variable is null even with type 's'. */
+                $orderInt = (int)($order ?: 0);
+                $stmt->bind_param(
+                    'ssisissss',
+                    $abbr, $name, $orderInt, $colour,
+                    $isOfficial, $publisher, $pubYear, $copyright, $affiliation
+                );
+                $stmt->execute();
+                $newId = (int)$db->insert_id;
+                $stmt->close();
                 logActivity('songbook.create', 'songbook', (string)$newId, [
                     'abbreviation'    => $abbr,
                     'name'            => $name,
@@ -129,8 +141,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             Publisher, PublicationYear, Copyright, Affiliation
                        FROM tblSongbooks WHERE Id = ?'
                 );
-                $existing->execute([$id]);
-                $beforeRow = $existing->fetch(PDO::FETCH_ASSOC) ?: null;
+                $existing->bind_param('i', $id);
+                $existing->execute();
+                $beforeRow = $existing->get_result()->fetch_assoc() ?: null;
+                $existing->close();
                 $oldAbbr = $beforeRow ? (string)$beforeRow['Abbreviation'] : '';
                 if ($oldAbbr === '') { $error = 'Songbook not found.'; break; }
 
@@ -142,11 +156,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($abbrChanged) {
                     if ($e = $validateAbbr($newAbbr)) { $error = $e; break; }
                     $dup = $db->prepare('SELECT Id FROM tblSongbooks WHERE Abbreviation = ? AND Id <> ?');
-                    $dup->execute([$newAbbr, $id]);
-                    if ($dup->fetch()) { $error = 'That abbreviation is already taken.'; break; }
+                    $dup->bind_param('si', $newAbbr, $id);
+                    $dup->execute();
+                    $dupExists = $dup->get_result()->fetch_row() !== null;
+                    $dup->close();
+                    if ($dupExists) { $error = 'That abbreviation is already taken.'; break; }
                 }
 
-                $db->beginTransaction();
+                $db->begin_transaction();
                 try {
                     $stmt = $db->prepare(
                         'UPDATE tblSongbooks
@@ -155,18 +172,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 PublicationYear = ?, Copyright = ?, Affiliation = ?
                           WHERE Id = ?'
                     );
-                    $stmt->execute([
-                        $name, $colour, $order ?: 0,
+                    /* Types: Name(s), Colour(s), DisplayOrder(i),
+                       IsOfficial(i), Publisher(s), PublicationYear(s),
+                       Copyright(s), Affiliation(s), Id(i). */
+                    $orderInt = (int)($order ?: 0);
+                    $stmt->bind_param(
+                        'ssiissssi',
+                        $name, $colour, $orderInt,
                         $isOfficial, $publisher, $pubYear, $copyright, $affiliation,
-                        $id,
-                    ]);
+                        $id
+                    );
+                    $stmt->execute();
+                    $stmt->close();
 
                     if ($abbrChanged) {
                         $stmt = $db->prepare('UPDATE tblSongbooks SET Abbreviation = ? WHERE Id = ?');
-                        $stmt->execute([$newAbbr, $id]);
+                        $stmt->bind_param('si', $newAbbr, $id);
+                        $stmt->execute();
+                        $stmt->close();
                         if ($alsoRename) {
                             $stmt = $db->prepare('UPDATE tblSongs SET SongbookAbbr = ? WHERE SongbookAbbr = ?');
-                            $stmt->execute([$newAbbr, $oldAbbr]);
+                            $stmt->bind_param('ss', $newAbbr, $oldAbbr);
+                            $stmt->execute();
+                            $stmt->close();
                         }
                     }
                     $db->commit();
@@ -202,7 +230,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         ? "Songbook '{$oldAbbr}' → '{$newAbbr}'" . ($alsoRename ? ' (song references updated).' : ' (song references kept — resolve manually).')
                         : "Songbook '{$oldAbbr}' updated.";
                 } catch (\Throwable $e) {
-                    $db->rollBack();
+                    $db->rollback();
                     throw $e;
                 }
                 break;
@@ -213,12 +241,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $orders = $_POST['display_order'] ?? [];
                 if (!is_array($orders)) { $error = 'Invalid reorder payload.'; break; }
 
-                $db->beginTransaction();
+                $db->begin_transaction();
                 try {
                     $stmt = $db->prepare('UPDATE tblSongbooks SET DisplayOrder = ? WHERE Id = ?');
                     foreach ($orders as $id => $value) {
-                        $stmt->execute([(int)$value, (int)$id]);
+                        $valueInt = (int)$value;
+                        $idInt    = (int)$id;
+                        $stmt->bind_param('ii', $valueInt, $idInt);
+                        $stmt->execute();
                     }
+                    $stmt->close();
                     $db->commit();
 
                     /* Single audit row for the bulk reorder rather
@@ -232,7 +264,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     $success = 'Display order saved.';
                 } catch (\Throwable $e) {
-                    $db->rollBack();
+                    $db->rollback();
                     throw $e;
                 }
                 break;
@@ -242,20 +274,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $id = (int)($_POST['id'] ?? 0);
 
                 $stmt = $db->prepare('SELECT Abbreviation FROM tblSongbooks WHERE Id = ?');
-                $stmt->execute([$id]);
-                $abbr = (string)($stmt->fetchColumn() ?: '');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $abbr = (string)($row[0] ?? '');
                 if ($abbr === '') { $error = 'Songbook not found.'; break; }
 
                 $stmt = $db->prepare('SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?');
-                $stmt->execute([$abbr]);
-                $songCount = (int)$stmt->fetchColumn();
+                $stmt->bind_param('s', $abbr);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $songCount = (int)($row[0] ?? 0);
                 if ($songCount > 0) {
                     $error = "Cannot delete '{$abbr}': {$songCount} song(s) still reference it. Reassign them first.";
                     break;
                 }
 
                 $stmt = $db->prepare('DELETE FROM tblSongbooks WHERE Id = ?');
-                $stmt->execute([$id]);
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $stmt->close();
 
                 /* Audit (#535) — capturing abbreviation in Details
                    means the row remains useful even after the FK
@@ -280,7 +320,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 /* ----- GET: list ----- */
 $rows = [];
 try {
-    $rs = $db->query(
+    $stmt = $db->prepare(
         'SELECT b.Id, b.Abbreviation, b.Name, b.SongCount, b.DisplayOrder, b.Colour,
                 b.IsOfficial, b.Publisher, b.PublicationYear,
                 b.Copyright, b.Affiliation,
@@ -290,7 +330,9 @@ try {
           GROUP BY b.Id
           ORDER BY b.DisplayOrder ASC, b.Name ASC'
     );
-    $rows = $rs->fetchAll(PDO::FETCH_ASSOC);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
 } catch (\Throwable $e) {
     error_log('[manage/songbooks.php] ' . $e->getMessage());
     $error = $error ?: 'Could not load songbooks — check server logs for details.';
