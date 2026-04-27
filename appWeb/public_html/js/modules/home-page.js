@@ -71,7 +71,29 @@ async function loadPopularSongs() {
         return;
     }
 
-    el.innerHTML = songs.map(renderPopularRow).join('');
+    el.innerHTML = uniqueBySongId(songs).map(s => renderPopularRow(s)).join('');
+}
+
+/**
+ * Defensive dedupe by songId/id. The server already groups Popular Songs
+ * by SongId, but a future regression there shouldn't surface duplicates
+ * in the UI (#549). Keeps the first occurrence — the server orders by
+ * relevance (views DESC for popular, recency DESC for history) so first-
+ * seen is the right one to retain.
+ *
+ * @param {Array<{songId?:string,id?:string}>} songs
+ * @returns {Array}
+ */
+function uniqueBySongId(songs) {
+    const seen = new Set();
+    const out = [];
+    for (const s of songs) {
+        const key = s?.songId || s?.id;
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        out.push(s);
+    }
+    return out;
 }
 
 /**
