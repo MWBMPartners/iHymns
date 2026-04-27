@@ -3163,11 +3163,21 @@ if ($action !== null) {
 
             try {
                 $db = getDb();
+                /* INNER JOIN tblSongs so we return the human-readable
+                   title + songbook metadata the home-page renderer needs.
+                   Songs that have been deleted since they were viewed
+                   drop out of the list naturally (#546). */
                 $stmt = $db->prepare(
-                    'SELECT SongId AS songId, COUNT(*) AS views
-                     FROM tblSongHistory
-                     WHERE ViewedAt > DATE_SUB(NOW(), INTERVAL ? DAY)
-                     GROUP BY SongId
+                    'SELECT h.SongId        AS songId,
+                            s.Title         AS title,
+                            s.Number        AS number,
+                            s.SongbookAbbr  AS songbook,
+                            s.SongbookName  AS songbookName,
+                            COUNT(*)        AS views
+                     FROM tblSongHistory h
+                     JOIN tblSongs s ON s.SongId = h.SongId
+                     WHERE h.ViewedAt > DATE_SUB(NOW(), INTERVAL ? DAY)
+                     GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, s.SongbookName
                      ORDER BY views DESC
                      LIMIT ?'
                 );
@@ -3207,11 +3217,21 @@ if ($action !== null) {
 
             try {
                 $db = getDb();
+                /* INNER JOIN tblSongs so the recently-viewed list can show
+                   the song title + songbook badge instead of the bare ID
+                   (#546). A history row whose song has since been deleted
+                   drops out — preferable to rendering an unresolvable ID. */
                 $stmt = $db->prepare(
-                    'SELECT SongId AS songId, ViewedAt AS viewedAt
-                     FROM tblSongHistory
-                     WHERE UserId = ?
-                     ORDER BY ViewedAt DESC
+                    'SELECT h.SongId        AS songId,
+                            s.Title         AS title,
+                            s.Number        AS number,
+                            s.SongbookAbbr  AS songbook,
+                            s.SongbookName  AS songbookName,
+                            h.ViewedAt      AS viewedAt
+                     FROM tblSongHistory h
+                     JOIN tblSongs s ON s.SongId = h.SongId
+                     WHERE h.UserId = ?
+                     ORDER BY h.ViewedAt DESC
                      LIMIT 50'
                 );
                 $stmt->execute([$authUser['Id']]);

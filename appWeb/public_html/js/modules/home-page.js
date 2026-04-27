@@ -106,13 +106,21 @@ function popularFromLocalHistory() {
     }
 }
 
-function renderPopularRow(s) {
+function renderPopularRow(s, opts = {}) {
+    const showViews = opts.showViews !== false;
     const id       = s.songId || s.id || '';
-    const title    = toTitleCase(s.title || id);
+    /* No usable title means the API didn't join (#546) or the song
+       was deleted — drop the row rather than render a bare ID. */
+    if (!id || !s.title) return '';
+    const title    = toTitleCase(s.title);
     const book     = s.songbook || id.split('-')[0] || '';
-    const bookName = SONGBOOK_NAMES[book] || book;
+    const bookName = s.songbookName || SONGBOOK_NAMES[book] || book;
     const number   = s.number ?? '';
     const views    = s.views ?? 0;
+
+    const viewsBadge = showViews
+        ? `<span class="badge bg-secondary">${escapeHtml(String(views))}</span>`
+        : '';
 
     return `<a href="/song/${escapeHtml(id)}"
                data-navigate="song"
@@ -126,7 +134,7 @@ function renderPopularRow(s) {
                         <span class="songbook-name-abbr">${escapeHtml(book)}</span>
                     </small>
                 </div>
-                <span class="badge bg-secondary">${escapeHtml(String(views))}</span>
+                ${viewsBadge}
             </a>`;
 }
 
@@ -155,12 +163,16 @@ async function loadRecentlyViewed() {
         if (!hist.length) return;
 
         section.style.display = '';
-        el.innerHTML = hist.map(h => {
-            const id = escapeHtml(h.songId || '');
-            return `<a href="/song/${id}"
-                       data-navigate="song"
-                       class="list-group-item list-group-item-action">${id}</a>`;
-        }).join('');
+        /* Reuse renderPopularRow so the recently-viewed and popular lists
+           feel consistent (title + songbook badge + number). The 'views'
+           badge is meaningless for a per-row history entry, so suppress
+           it by passing showViews:false. (#546) */
+        el.innerHTML = hist.map(h => renderPopularRow({
+            songId:   h.songId,
+            title:    h.title,
+            songbook: h.songbook,
+            number:   h.number,
+        }, { showViews: false })).join('');
     } catch {
         /* Non-fatal — leave the section hidden. */
     }
