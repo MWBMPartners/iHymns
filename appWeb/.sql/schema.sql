@@ -183,6 +183,92 @@ CREATE TABLE IF NOT EXISTS tblSongTranslators (
 
 
 -- ----------------------------------------------------------------------------
+-- tblCreditPeople (#545)
+-- Registry of people credited on songs. Holds the canonical Name plus
+-- optional biographical metadata. The five song-credit tables above
+-- (tblSongWriters / tblSongComposers / tblSongArrangers / tblSongAdaptors
+-- / tblSongTranslators) continue to store free-text Name strings — this
+-- registry is additive, not a foreign-key on those five. Rename / merge
+-- operations bulk-UPDATE the Name column across all five tables (and the
+-- registry row) inside a single transaction, leaving the existing schema
+-- intact.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblCreditPeople (
+    Id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    Name        VARCHAR(255)    NOT NULL,
+    Notes       TEXT            NULL,
+    BirthPlace  VARCHAR(255)    NULL,
+    BirthDate   DATE            NULL,
+    DeathPlace  VARCHAR(255)    NULL,
+    DeathDate   DATE            NULL,
+    CreatedAt   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uk_Name (Name),
+    INDEX idx_Name (Name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblCreditPersonLinks (#545)
+-- Multiple external reference links per person (Wikipedia, official
+-- website, MusicBrainz, Discogs, IMSLP, Hymnary, other). LinkType is a
+-- short string key the UI maps to a friendly label and icon; storing as
+-- VARCHAR rather than ENUM keeps new categories cheap to add. SortOrder
+-- preserves admin-controlled display order. ON DELETE CASCADE removes
+-- the links automatically when the parent registry row is deleted.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblCreditPersonLinks (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    CreditPersonId  INT UNSIGNED    NOT NULL,
+    LinkType        VARCHAR(64)     NOT NULL,
+    Url             VARCHAR(2048)   NOT NULL,
+    Label           VARCHAR(255)    NULL,
+    SortOrder       SMALLINT        NOT NULL DEFAULT 0,
+    CreatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                    ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_CreditPersonId (CreditPersonId),
+
+    CONSTRAINT fk_CreditPersonLinks_Person
+        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblCreditPersonIPI (#545)
+-- IPI (Interested Parties Information) Name Numbers per person. A single
+-- individual can be registered under more than one IPI Name Number when
+-- they use multiple performing names — hence one-to-many on the registry
+-- row. UNIQUE on (CreditPersonId, IPINumber) prevents duplicate IPIs per
+-- person while still allowing the same number to legitimately attach to
+-- two different registry rows if the data demands it. NameUsed is the
+-- spelling that IPI is registered under (often differs from the canonical
+-- registry Name). ON DELETE CASCADE matches the links table.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblCreditPersonIPI (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    CreditPersonId  INT UNSIGNED    NOT NULL,
+    IPINumber       VARCHAR(32)     NOT NULL,
+    NameUsed        VARCHAR(255)    NULL,
+    Notes           VARCHAR(255)    NULL,
+    CreatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                    ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uk_PersonIPI (CreditPersonId, IPINumber),
+    INDEX idx_IPINumber (IPINumber),
+
+    CONSTRAINT fk_CreditPersonIPI_Person
+        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
 -- tblSongComponents
 -- Each component stores its lyrics lines as a JSON array.
 -- `SortOrder` preserves the display sequence from the original data.
