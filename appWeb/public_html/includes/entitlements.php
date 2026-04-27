@@ -59,6 +59,7 @@ const ENTITLEMENTS = [
     'manage_songbooks'     => ['admin', 'global_admin'],
     'manage_user_groups'   => ['admin', 'global_admin'],
     'manage_organisations' => ['admin', 'global_admin'],
+    'manage_credit_people' => ['admin', 'global_admin'],
 
     /* Content gating for regular users — per-song / per-songbook / per-user
        restrictions (tblContentRestrictions) and access-tier definitions

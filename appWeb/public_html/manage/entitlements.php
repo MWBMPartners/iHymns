@@ -78,7 +78,7 @@ $groups = [
     'User management' => ['view_users', 'edit_users', 'change_user_roles', 'assign_global_admin', 'delete_users'],
     'Database & operations' => ['view_admin_dashboard', 'view_analytics', 'run_db_install', 'run_db_migrate', 'run_db_backup', 'run_db_restore', 'drop_legacy_tables'],
     'Content moderation' => ['review_song_requests'],
-    'Content structure'  => ['manage_songbooks', 'manage_user_groups', 'manage_organisations'],
+    'Content structure'  => ['manage_songbooks', 'manage_user_groups', 'manage_organisations', 'manage_credit_people'],
     'Channel access'     => ['access_alpha', 'access_beta'],
     'Meta' => ['manage_entitlements'],
 ];
@@ -117,6 +117,7 @@ $ENTITLEMENT_LABELS = [
     'manage_songbooks'          => ['Manage songbooks',              'CRUD over the songbook catalogue'],
     'manage_user_groups'        => ['Manage user groups',            'CRUD over groups + channel-access toggles'],
     'manage_organisations'      => ['Manage organisations',          'CRUD over orgs + licence metadata + members'],
+    'manage_credit_people'      => ['Manage credit people',           'Edit / merge / rename people credited on songs (#545)'],
     'manage_content_restrictions' => ['Manage content restrictions', 'Per-song / per-songbook gating rules'],
     'manage_access_tiers'       => ['Manage access tiers',           'Define tiers that gate audio / MIDI / PDF / offline'],
     'assign_user_tier'          => ['Assign a user\'s access tier',  'Move users between tiers'],
