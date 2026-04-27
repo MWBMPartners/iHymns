@@ -123,6 +123,83 @@ $normaliseIpi = static function (mixed $raw): array {
 };
 
 /* ----------------------------------------------------------------------
+ * GET endpoint — view_songs JSON
+ *
+ * Returns the list of songs that cite the given person, grouped by
+ * role. Used by the View Songs modal. Standalone — short-circuits
+ * the rest of the page (returns JSON, then exit).
+ *
+ * GET ?action=view_songs&id=<registry-id>
+ *
+ * Looks up the person's name from the registry row, then queries the
+ * five song-credit tables joined to tblSongs for the human-friendly
+ * Title + SongbookAbbr + Number used in the modal listing.
+ * ---------------------------------------------------------------------- */
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['action'] ?? '') === 'view_songs') {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: no-store');
+
+    $personId = (int)($_GET['id'] ?? 0);
+    if ($personId <= 0) {
+        http_response_code(400);
+        echo json_encode(['error' => 'id is required']);
+        exit;
+    }
+
+    try {
+        $db = getDbMysqli();
+        $stmt = $db->prepare('SELECT Name FROM tblCreditPeople WHERE Id = ?');
+        $stmt->bind_param('i', $personId);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_row();
+        $stmt->close();
+        $name = (string)($row[0] ?? '');
+        if ($name === '') {
+            http_response_code(404);
+            echo json_encode(['error' => 'Person not found.']);
+            exit;
+        }
+
+        /* For each role table, fetch the songs that cite this name.
+           Joining to tblSongs on SongId gives us the human-friendly
+           Title + SongbookAbbr + Number for the modal. */
+        $tables = [
+            'writer'     => 'tblSongWriters',
+            'composer'   => 'tblSongComposers',
+            'arranger'   => 'tblSongArrangers',
+            'adaptor'    => 'tblSongAdaptors',
+            'translator' => 'tblSongTranslators',
+        ];
+        $byRole = [];
+        foreach ($tables as $role => $tbl) {
+            $sql = "SELECT s.SongId, s.Title, s.SongbookAbbr, s.Number
+                      FROM {$tbl} c
+                      JOIN tblSongs s ON s.SongId = c.SongId
+                     WHERE c.Name = ?
+                     ORDER BY s.SongbookAbbr ASC, s.Number ASC, s.Title ASC";
+            $stmt = $db->prepare($sql);
+            $stmt->bind_param('s', $name);
+            $stmt->execute();
+            $byRole[$role] = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+        }
+
+        echo json_encode([
+            'name'    => $name,
+            'by_role' => $byRole,
+            'total'   => array_sum(array_map('count', $byRole)),
+        ]);
+        exit;
+    } catch (\Throwable $e) {
+        error_log('[manage/credit-people.php] view_songs failed: ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['error' => 'Could not load songs.']);
+        exit;
+    }
+}
+
+/* ----------------------------------------------------------------------
  * POST dispatch
  *
  * All actions are CSRF-checked + entitlement-gated (the entitlement
@@ -1126,6 +1203,16 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                                                     aria-label="Merge person <?= htmlspecialchars($p['name'], ENT_QUOTES) ?>">
                                                 <i class="bi bi-union" aria-hidden="true"></i>
                                             </button>
+                                            <button type="button" class="btn btn-outline-secondary cp-view-songs-btn"
+                                                    title="View songs that cite this person"
+                                                    aria-label="View songs that cite <?= htmlspecialchars($p['name'], ENT_QUOTES) ?>">
+                                                <i class="bi bi-music-note-list" aria-hidden="true"></i>
+                                            </button>
+                                            <button type="button" class="btn btn-outline-danger cp-delete-btn"
+                                                    title="Remove from registry"
+                                                    aria-label="Remove <?= htmlspecialchars($p['name'], ENT_QUOTES) ?> from the registry">
+                                                <i class="bi bi-trash" aria-hidden="true"></i>
+                                            </button>
                                         <?php else: ?>
                                             <button type="button" class="btn btn-outline-info cp-edit-btn"
                                                     title="Add to registry — fills in the name + opens the detail drawer for this person"
@@ -1145,6 +1232,97 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
             </div>
         </div>
 
+    </div>
+
+    <!-- =========================================================================
+         Delete-from-registry modal — removes the registry row only.
+         Shows a force-anyway checkbox when the person is still cited
+         by at least one song; the song credits stay either way (they
+         live in the five song-credit tables, not the registry).
+         ========================================================================= -->
+    <div class="modal fade" id="cpDeleteModal" tabindex="-1" aria-labelledby="cpDeleteLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content bg-dark border-secondary">
+                <form method="POST">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="delete_from_registry">
+                    <input type="hidden" name="id" id="cp-delete-id" value="">
+                    <div class="modal-header border-secondary">
+                        <h5 class="modal-title" id="cpDeleteLabel">
+                            <i class="bi bi-trash me-2"></i>Remove from registry
+                        </h5>
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <p class="mb-3">
+                            Remove the registry row for
+                            <strong id="cp-delete-name"></strong>?
+                        </p>
+
+                        <div id="cp-delete-in-use" class="d-none alert alert-warning py-2 small mb-3">
+                            <i class="bi bi-exclamation-triangle me-1"></i>
+                            This person is still cited by
+                            <strong id="cp-delete-usage-count"></strong>
+                            song-credit row(s). The song credits stay either way —
+                            this only removes the registry entry's biographical
+                            metadata, links and IPI numbers.
+                            <div class="form-check mt-2">
+                                <input type="checkbox" class="form-check-input" id="cp-delete-force" name="force" value="1">
+                                <label class="form-check-label" for="cp-delete-force">
+                                    Yes, remove the registry row anyway
+                                </label>
+                            </div>
+                        </div>
+
+                        <div id="cp-delete-not-in-use" class="d-none alert alert-secondary py-2 small mb-0">
+                            No songs currently cite this person — safe to remove.
+                            Deletes the registry row plus its links / IPI rows
+                            (cascade).
+                        </div>
+                    </div>
+                    <div class="modal-footer border-secondary">
+                        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-danger btn-sm" id="cp-delete-submit">
+                            <i class="bi bi-trash me-1"></i>Remove
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- =========================================================================
+         View Songs modal — read-only listing of every song that cites
+         the person, grouped by role. Lazy-loaded from
+         GET ?action=view_songs&id=<id>.
+         ========================================================================= -->
+    <div class="modal fade" id="cpViewSongsModal" tabindex="-1" aria-labelledby="cpViewSongsLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content bg-dark border-secondary">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title" id="cpViewSongsLabel">
+                        <i class="bi bi-music-note-list me-2"></i>
+                        Songs citing <strong id="cp-view-songs-name"></strong>
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="cp-view-songs-loading" class="text-center py-3 text-secondary small d-none">
+                        <span class="spinner-border spinner-border-sm me-2"></span>Loading…
+                    </div>
+                    <div id="cp-view-songs-error" class="alert alert-danger py-2 small d-none"></div>
+                    <div id="cp-view-songs-body"></div>
+                    <div id="cp-view-songs-empty" class="alert alert-secondary py-2 small d-none">
+                        No songs currently cite this person — the registry row
+                        exists in isolation (pre-registered, or all citations
+                        have been re-pointed elsewhere).
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- =========================================================================
@@ -1729,6 +1907,146 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
             /* Submit button only enables once a target is picked. */
             targetSel?.addEventListener('change', () => {
                 submitBtn.disabled = targetSel.value === '';
+            });
+        })();
+
+        /* =========================================================================
+           Delete-from-registry modal — read the row's role-pill counts
+           to decide whether to show the force-anyway path.
+           ========================================================================= */
+        (function () {
+            const modalEl = document.getElementById('cpDeleteModal');
+            if (!modalEl) return;
+            const modal      = bootstrap.Modal.getOrCreateInstance(modalEl);
+            const idIn       = document.getElementById('cp-delete-id');
+            const nameEl     = document.getElementById('cp-delete-name');
+            const inUseEl    = document.getElementById('cp-delete-in-use');
+            const notInUseEl = document.getElementById('cp-delete-not-in-use');
+            const usageCnt   = document.getElementById('cp-delete-usage-count');
+            const forceCb    = document.getElementById('cp-delete-force');
+            const submitBtn  = document.getElementById('cp-delete-submit');
+
+            document.addEventListener('click', (ev) => {
+                const btn = ev.target.closest('.cp-delete-btn');
+                if (!btn) return;
+                const row = btn.closest('tr');
+                if (!row) return;
+                const raw = row.getAttribute('data-person');
+                if (!raw) return;
+                let person; try { person = JSON.parse(raw); } catch (_) { return; }
+                if (!person.registry_id) return;
+
+                /* Read total usage from the row's "Total uses" cell. */
+                const totalCell = row.querySelector('td.text-end strong');
+                const usage = parseInt((totalCell?.textContent || '0').replace(/[,]/g, ''), 10) || 0;
+
+                idIn.value      = String(person.registry_id);
+                nameEl.textContent = person.name || '';
+                forceCb.checked = false;
+
+                if (usage > 0) {
+                    inUseEl.classList.remove('d-none');
+                    notInUseEl.classList.add('d-none');
+                    usageCnt.textContent = usage.toLocaleString();
+                    submitBtn.disabled = true;
+                    submitBtn.innerHTML = '<i class="bi bi-trash me-1"></i>Force remove';
+                } else {
+                    inUseEl.classList.add('d-none');
+                    notInUseEl.classList.remove('d-none');
+                    submitBtn.disabled = false;
+                    submitBtn.innerHTML = '<i class="bi bi-trash me-1"></i>Remove';
+                }
+                modal.show();
+            });
+
+            forceCb?.addEventListener('change', () => {
+                submitBtn.disabled = !forceCb.checked;
+            });
+        })();
+
+        /* =========================================================================
+           View Songs modal — fetches GET ?action=view_songs&id=<id>
+           on open and renders the per-role groups.
+           ========================================================================= */
+        (function () {
+            const modalEl = document.getElementById('cpViewSongsModal');
+            if (!modalEl) return;
+            const modal     = bootstrap.Modal.getOrCreateInstance(modalEl);
+            const nameEl    = document.getElementById('cp-view-songs-name');
+            const loadingEl = document.getElementById('cp-view-songs-loading');
+            const errorEl   = document.getElementById('cp-view-songs-error');
+            const bodyEl    = document.getElementById('cp-view-songs-body');
+            const emptyEl   = document.getElementById('cp-view-songs-empty');
+
+            const ROLE_LABELS = {
+                writer:     'Writers',
+                composer:   'Composers',
+                arranger:   'Arrangers',
+                adaptor:    'Adaptors',
+                translator: 'Translators',
+            };
+
+            function renderRoleGroup(role, songs) {
+                if (!songs.length) return '';
+                const items = songs.map(s => {
+                    const ref = (s.SongbookAbbr || '?') + (s.Number ? '-' + s.Number : '');
+                    const title = s.Title || '(untitled)';
+                    return '<li class="small">'
+                        + '<code class="me-2">' + ref + '</code>'
+                        + title
+                        + '</li>';
+                }).join('');
+                return '<div class="mb-3">'
+                    + '<h6 class="small text-secondary mb-1">'
+                    +   ROLE_LABELS[role] + ' <span class="badge bg-secondary-subtle text-secondary-emphasis ms-1">' + songs.length + '</span>'
+                    + '</h6>'
+                    + '<ul class="list-unstyled mb-0">' + items + '</ul>'
+                    + '</div>';
+            }
+
+            document.addEventListener('click', (ev) => {
+                const btn = ev.target.closest('.cp-view-songs-btn');
+                if (!btn) return;
+                const row = btn.closest('tr');
+                if (!row) return;
+                const raw = row.getAttribute('data-person');
+                if (!raw) return;
+                let person; try { person = JSON.parse(raw); } catch (_) { return; }
+                if (!person.registry_id) return;
+
+                nameEl.textContent = person.name || '';
+                bodyEl.innerHTML = '';
+                errorEl.classList.add('d-none');
+                emptyEl.classList.add('d-none');
+                loadingEl.classList.remove('d-none');
+                modal.show();
+
+                fetch('/manage/credit-people?action=view_songs&id=' + encodeURIComponent(person.registry_id), {
+                    credentials: 'same-origin',
+                    headers: { 'Accept': 'application/json' },
+                })
+                    .then(r => r.json().then(j => ({ ok: r.ok, j })))
+                    .then(({ ok, j }) => {
+                        loadingEl.classList.add('d-none');
+                        if (!ok || j.error) {
+                            errorEl.textContent = j.error || ('HTTP error');
+                            errorEl.classList.remove('d-none');
+                            return;
+                        }
+                        if (!j.total) {
+                            emptyEl.classList.remove('d-none');
+                            return;
+                        }
+                        const html = ['writer', 'composer', 'arranger', 'adaptor', 'translator']
+                            .map(role => renderRoleGroup(role, j.by_role[role] || []))
+                            .join('');
+                        bodyEl.innerHTML = html;
+                    })
+                    .catch(err => {
+                        loadingEl.classList.add('d-none');
+                        errorEl.textContent = String(err.message || err);
+                        errorEl.classList.remove('d-none');
+                    });
             });
         })();
     </script>
