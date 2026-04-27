@@ -3,32 +3,40 @@
 declare(strict_types=1);
 
 /**
- * iHymns — Admin: Credit People (#545, read-only list slice)
+ * iHymns — Admin: Credit People (#545)
  *
- * Catalogue-wide view of every individual credited on songs, unioned
+ * Catalogue-wide CRUD for the people credited on songs, unioned
  * across tblSongWriters / tblSongComposers / tblSongArrangers /
  * tblSongAdaptors / tblSongTranslators, plus the registry rows in
  * tblCreditPeople (which may exist without any current song citing
  * them — pre-registered names for upcoming songs, or names whose
  * usage was cleaned up but the metadata is being kept).
  *
- * This first slice is READ-ONLY:
- *   - Sorts the table client-side.
- *   - Filters by role + free-text search client-side.
- *   - Surfaces the same data the eventual rename / merge / detail
- *     workflows will operate on.
- *   - Adds NO mutations (no POST handlers, no CSRF token usage yet).
- *
- * The Add / Rename / Merge / Person-detail-drawer / Delete actions
- * land in a follow-up PR against the same #545. Splitting like this
- * lets the schema (#553) and the listing query bed in on alpha
- * before we layer mutating endpoints on top.
+ * Surfaces:
+ *   - List view: every distinct name with per-role usage, lifespan,
+ *     link / IPI counts. Filterable + searchable client-side.
+ *   - Person detail drawer: full edit form for biographical
+ *     metadata (notes, birth/death place + date), repeating
+ *     external link sub-form, repeating IPI Name Number sub-form.
+ *     Drives both Add and Update.
+ *   - Rename modal: changes the canonical name, cascading the
+ *     update across the five song-credit tables AND the registry
+ *     row, atomically inside a transaction.
+ *   - Merge modal: collapses two registry entries into one,
+ *     re-pointing every song-credit row from source name → target
+ *     name, with the source registry row removed and the
+ *     ON DELETE CASCADE FK cleaning up its child rows. Admin
+ *     chooses which links / IPI rows to keep on the surviving row.
+ *   - Delete: removes a registry row, refusing by default if any
+ *     song still cites the name; a force flag overrides.
+ *   - View Songs: read-only modal listing every song that cites the
+ *     person, grouped by role.
  *
  * Database access uses mysqli prepared statements throughout
- * (project policy, set 2026-04-27). The two queries on this page
- * are static SQL, so they don't strictly need bound parameters, but
- * we run them via `prepare()` + `execute()` anyway to match the
- * pattern that the follow-up POST handlers will use.
+ * (project policy, set 2026-04-27). All mutating actions run inside
+ * $db->begin_transaction() so a partial failure rolls back cleanly.
+ * Every action emits a tblActivityLog row via logActivity() with
+ * EntityType='credit_person'.
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
@@ -47,7 +55,622 @@ if (!$currentUser || !userHasEntitlement('manage_credit_people', $currentUser['r
 }
 $activePage = 'credit-people';
 
-$error = '';
+$error   = '';
+$success = '';
+$csrf    = csrfToken();
+
+/* ----------------------------------------------------------------------
+ * Activity-log helper
+ *
+ * Every mutating action on this page emits a tblActivityLog row via
+ * logActivity() (which still lives in /includes/activity_log.php
+ * and is PDO-backed until the umbrella migration #554 Batch 4 lands;
+ * mixing the two helpers in the same request is fine — they manage
+ * independent connections).
+ *
+ * The closure bakes in the EntityType so per-action call sites stay
+ * tight and any future rename of the type string is a one-line
+ * change here. Silent no-op if the activity-log table is missing
+ * (matches the pattern in songbooks.php / organisations.php).
+ * ---------------------------------------------------------------------- */
+$logCreditPerson = static function (string $action, string $entityId, array $details): void {
+    if (function_exists('logActivity')) {
+        try {
+            logActivity('credit_person.' . $action, 'credit_person', $entityId, $details);
+        } catch (\Throwable $_e) { /* audit is best-effort */ }
+    }
+};
+
+/* ----------------------------------------------------------------------
+ * Helpers — link / IPI sub-form normalisation
+ *
+ * The Add and Update_person actions both accept arrays of links and
+ * IPI numbers in the POST body, posted as `links[i][type|url|label]`
+ * and `ipi[i][number|name_used|notes]`. Empty rows (no URL / no
+ * IPI number) are silently dropped. Returns a clean array of
+ * row-shaped arrays ready to INSERT.
+ * ---------------------------------------------------------------------- */
+$normaliseLinks = static function (mixed $raw): array {
+    if (!is_array($raw)) return [];
+    $out = [];
+    foreach ($raw as $i => $row) {
+        if (!is_array($row)) continue;
+        $url = trim((string)($row['url'] ?? ''));
+        if ($url === '') continue;
+        $out[] = [
+            'type'       => trim((string)($row['type']  ?? 'other')),
+            'url'        => $url,
+            'label'      => trim((string)($row['label'] ?? '')) ?: null,
+            'sort_order' => (int)($row['sort_order'] ?? $i),
+        ];
+    }
+    return $out;
+};
+$normaliseIpi = static function (mixed $raw): array {
+    if (!is_array($raw)) return [];
+    $out = [];
+    foreach ($raw as $row) {
+        if (!is_array($row)) continue;
+        $num = trim((string)($row['number'] ?? ''));
+        if ($num === '') continue;
+        $out[] = [
+            'number'    => $num,
+            'name_used' => trim((string)($row['name_used'] ?? '')) ?: null,
+            'notes'     => trim((string)($row['notes']     ?? '')) ?: null,
+        ];
+    }
+    return $out;
+};
+
+/* ----------------------------------------------------------------------
+ * POST dispatch
+ *
+ * All actions are CSRF-checked + entitlement-gated (the entitlement
+ * gate is the page-level requireAuth + userHasEntitlement above; the
+ * gate covers every action below). Each action runs inside a single
+ * $db->begin_transaction() so a partial failure (e.g. a child-row
+ * INSERT failing after the parent UPDATE landed) rolls back cleanly.
+ * ---------------------------------------------------------------------- */
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+        http_response_code(403);
+        echo 'Invalid CSRF token';
+        exit;
+    }
+
+    $action = (string)($_POST['action'] ?? '');
+    try {
+        $db = getDbMysqli();
+
+        switch ($action) {
+            /* --------------------------------------------------------
+             * add — create a new registry row (+ optional child rows)
+             * -------------------------------------------------------- */
+            case 'add': {
+                $name        = trim((string)($_POST['name']         ?? ''));
+                $notesRaw    = trim((string)($_POST['notes']        ?? ''));
+                $birthPlace  = trim((string)($_POST['birth_place']  ?? '')) ?: null;
+                $birthDate   = trim((string)($_POST['birth_date']   ?? '')) ?: null;
+                $deathPlace  = trim((string)($_POST['death_place']  ?? '')) ?: null;
+                $deathDate   = trim((string)($_POST['death_date']   ?? '')) ?: null;
+                $notes       = $notesRaw !== '' ? $notesRaw : null;
+                $links       = $normaliseLinks($_POST['links'] ?? null);
+                $ipi         = $normaliseIpi($_POST['ipi']     ?? null);
+
+                if ($name === '')                       { $error = 'Name is required.'; break; }
+                if (mb_strlen($name) > 255)             { $error = 'Name must be 255 characters or fewer.'; break; }
+                if ($birthDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $birthDate)) { $error = 'Birth date must be YYYY-MM-DD.'; break; }
+                if ($deathDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $deathDate)) { $error = 'Death date must be YYYY-MM-DD.'; break; }
+
+                /* Uniqueness check before opening the transaction so we
+                   don't have to reason about MySQL's UNIQUE-violation
+                   error code path. */
+                $stmt = $db->prepare('SELECT Id FROM tblCreditPeople WHERE Name = ?');
+                $stmt->bind_param('s', $name);
+                $stmt->execute();
+                $exists = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($exists) { $error = "A person with the name '{$name}' is already registered."; break; }
+
+                $db->begin_transaction();
+                try {
+                    $stmt = $db->prepare(
+                        'INSERT INTO tblCreditPeople
+                            (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate)
+                         VALUES (?, ?, ?, ?, ?, ?)'
+                    );
+                    /* All six columns are strings (nullable). DATE columns
+                       accept the YYYY-MM-DD format we validated above; null
+                       passes through correctly with type 's'. */
+                    $stmt->bind_param('ssssss', $name, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate);
+                    $stmt->execute();
+                    $newId = (int)$db->insert_id;
+                    $stmt->close();
+
+                    if ($links) {
+                        $linkStmt = $db->prepare(
+                            'INSERT INTO tblCreditPersonLinks
+                                (CreditPersonId, LinkType, Url, Label, SortOrder)
+                             VALUES (?, ?, ?, ?, ?)'
+                        );
+                        foreach ($links as $l) {
+                            $linkStmt->bind_param('isssi',
+                                $newId, $l['type'], $l['url'], $l['label'], $l['sort_order']);
+                            $linkStmt->execute();
+                        }
+                        $linkStmt->close();
+                    }
+                    if ($ipi) {
+                        $ipiStmt = $db->prepare(
+                            'INSERT INTO tblCreditPersonIPI
+                                (CreditPersonId, IPINumber, NameUsed, Notes)
+                             VALUES (?, ?, ?, ?)'
+                        );
+                        foreach ($ipi as $r) {
+                            $ipiStmt->bind_param('isss',
+                                $newId, $r['number'], $r['name_used'], $r['notes']);
+                            $ipiStmt->execute();
+                        }
+                        $ipiStmt->close();
+                    }
+                    $db->commit();
+
+                    $logCreditPerson('add', (string)$newId, [
+                        'name'        => $name,
+                        'fields'      => array_filter([
+                            'birth_place' => $birthPlace,
+                            'birth_date'  => $birthDate,
+                            'death_place' => $deathPlace,
+                            'death_date'  => $deathDate,
+                            'notes'       => $notes,
+                        ], static fn($v) => $v !== null),
+                        'link_count'  => count($links),
+                        'ipi_count'   => count($ipi),
+                    ]);
+                    $success = "Person '{$name}' added to the registry.";
+                } catch (\Throwable $e) {
+                    $db->rollback();
+                    throw $e;
+                }
+                break;
+            }
+
+            /* --------------------------------------------------------
+             * update_person — edit metadata + replace child rows for
+             *                 an existing registry row.
+             *
+             * The Name column is NOT changed by this action — renames
+             * have their own handler because their blast radius is
+             * cross-table. If the form's name field differs from the
+             * stored name we reject and direct the admin to use Rename.
+             * -------------------------------------------------------- */
+            case 'update_person': {
+                $id          = (int)($_POST['id']          ?? 0);
+                $name        = trim((string)($_POST['name']         ?? ''));
+                $notesRaw    = trim((string)($_POST['notes']        ?? ''));
+                $birthPlace  = trim((string)($_POST['birth_place']  ?? '')) ?: null;
+                $birthDate   = trim((string)($_POST['birth_date']   ?? '')) ?: null;
+                $deathPlace  = trim((string)($_POST['death_place']  ?? '')) ?: null;
+                $deathDate   = trim((string)($_POST['death_date']   ?? '')) ?: null;
+                $notes       = $notesRaw !== '' ? $notesRaw : null;
+                $links       = $normaliseLinks($_POST['links'] ?? null);
+                $ipi         = $normaliseIpi($_POST['ipi']     ?? null);
+
+                if ($id <= 0)                           { $error = 'Person id missing.'; break; }
+                if ($name === '')                       { $error = 'Name is required.'; break; }
+                if ($birthDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $birthDate)) { $error = 'Birth date must be YYYY-MM-DD.'; break; }
+                if ($deathDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $deathDate)) { $error = 'Death date must be YYYY-MM-DD.'; break; }
+
+                /* Pull the before-row both as a sanity check (id valid?)
+                   and to compute the audit-log diff. */
+                $stmt = $db->prepare(
+                    'SELECT Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate
+                       FROM tblCreditPeople WHERE Id = ?'
+                );
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $beforeRow = $stmt->get_result()->fetch_assoc() ?: null;
+                $stmt->close();
+                if ($beforeRow === null) { $error = 'Person not found.'; break; }
+
+                if ((string)$beforeRow['Name'] !== $name) {
+                    $error = 'Use the Rename action to change a person\'s name — the change cascades to every song that cites them, so it has its own confirmation flow.';
+                    break;
+                }
+
+                $db->begin_transaction();
+                try {
+                    /* Update the registry row. Name is not in the SET
+                       clause — renames go through the rename action. */
+                    $stmt = $db->prepare(
+                        'UPDATE tblCreditPeople
+                            SET Notes = ?, BirthPlace = ?, BirthDate = ?,
+                                DeathPlace = ?, DeathDate = ?
+                          WHERE Id = ?'
+                    );
+                    $stmt->bind_param('sssssi',
+                        $notes, $birthPlace, $birthDate, $deathPlace, $deathDate, $id);
+                    $stmt->execute();
+                    $stmt->close();
+
+                    /* Child rows: DELETE then INSERT — simpler than
+                       diffing and the per-person row counts are small
+                       (typically < 10 each). The child Ids change as a
+                       side effect, but no other table references them. */
+                    $del = $db->prepare('DELETE FROM tblCreditPersonLinks WHERE CreditPersonId = ?');
+                    $del->bind_param('i', $id);
+                    $del->execute();
+                    $del->close();
+                    if ($links) {
+                        $linkStmt = $db->prepare(
+                            'INSERT INTO tblCreditPersonLinks
+                                (CreditPersonId, LinkType, Url, Label, SortOrder)
+                             VALUES (?, ?, ?, ?, ?)'
+                        );
+                        foreach ($links as $l) {
+                            $linkStmt->bind_param('isssi',
+                                $id, $l['type'], $l['url'], $l['label'], $l['sort_order']);
+                            $linkStmt->execute();
+                        }
+                        $linkStmt->close();
+                    }
+
+                    $del = $db->prepare('DELETE FROM tblCreditPersonIPI WHERE CreditPersonId = ?');
+                    $del->bind_param('i', $id);
+                    $del->execute();
+                    $del->close();
+                    if ($ipi) {
+                        $ipiStmt = $db->prepare(
+                            'INSERT INTO tblCreditPersonIPI
+                                (CreditPersonId, IPINumber, NameUsed, Notes)
+                             VALUES (?, ?, ?, ?)'
+                        );
+                        foreach ($ipi as $r) {
+                            $ipiStmt->bind_param('isss',
+                                $id, $r['number'], $r['name_used'], $r['notes']);
+                            $ipiStmt->execute();
+                        }
+                        $ipiStmt->close();
+                    }
+                    $db->commit();
+
+                    /* Compute the changed-fields list for audit. The
+                       child-table replacement is captured as counts
+                       only — diffing a links list is more noise than
+                       signal in the activity-log timeline. */
+                    $afterRow = [
+                        'Notes'      => $notes,
+                        'BirthPlace' => $birthPlace,
+                        'BirthDate'  => $birthDate,
+                        'DeathPlace' => $deathPlace,
+                        'DeathDate'  => $deathDate,
+                    ];
+                    $changed = [];
+                    foreach ($afterRow as $k => $v) {
+                        if ((string)($beforeRow[$k] ?? '') !== (string)($v ?? '')) {
+                            $changed[] = $k;
+                        }
+                    }
+                    $logCreditPerson('update_person', (string)$id, [
+                        'name'       => $name,
+                        'fields'     => $changed,
+                        'before'     => array_intersect_key($beforeRow, array_flip($changed)),
+                        'after'      => array_intersect_key($afterRow,  array_flip($changed)),
+                        'link_count' => count($links),
+                        'ipi_count'  => count($ipi),
+                    ]);
+                    $success = "Person '{$name}' updated.";
+                } catch (\Throwable $e) {
+                    $db->rollback();
+                    throw $e;
+                }
+                break;
+            }
+
+            /* --------------------------------------------------------
+             * rename — change the canonical name, cascading the UPDATE
+             *          across all five song-credit tables AND the
+             *          registry row inside one transaction.
+             *
+             * Refuses if the new name already belongs to a different
+             * registry row (would clash with the UNIQUE Name index
+             * and forces the admin to think about whether they
+             * actually meant Merge instead).
+             * -------------------------------------------------------- */
+            case 'rename': {
+                $id      = (int)($_POST['id'] ?? 0);
+                $newName = trim((string)($_POST['new_name'] ?? ''));
+
+                if ($id <= 0)                  { $error = 'Person id missing.'; break; }
+                if ($newName === '')           { $error = 'New name is required.'; break; }
+                if (mb_strlen($newName) > 255) { $error = 'Name must be 255 characters or fewer.'; break; }
+
+                /* Look up the current name + check that the target
+                   spelling isn't already in use by a different row. */
+                $stmt = $db->prepare('SELECT Name FROM tblCreditPeople WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $oldName = (string)($row[0] ?? '');
+                if ($oldName === '') { $error = 'Person not found.'; break; }
+                if ($oldName === $newName) { $error = 'New name is the same as the current name.'; break; }
+
+                $stmt = $db->prepare('SELECT Id FROM tblCreditPeople WHERE Name = ? AND Id <> ?');
+                $stmt->bind_param('si', $newName, $id);
+                $stmt->execute();
+                $clash = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($clash) {
+                    $error = "Another registry row already uses '{$newName}'. Use Merge if you want to combine them.";
+                    break;
+                }
+
+                $db->begin_transaction();
+                try {
+                    /* Cascade the rename across the five song-credit
+                       tables. A song that cites the old spelling under
+                       multiple roles is updated in each table. */
+                    $tables = [
+                        'tblSongWriters', 'tblSongComposers', 'tblSongArrangers',
+                        'tblSongAdaptors', 'tblSongTranslators',
+                    ];
+                    $affected = [];
+                    foreach ($tables as $tbl) {
+                        $stmt = $db->prepare("UPDATE {$tbl} SET Name = ? WHERE Name = ?");
+                        $stmt->bind_param('ss', $newName, $oldName);
+                        $stmt->execute();
+                        $affected[$tbl] = $stmt->affected_rows;
+                        $stmt->close();
+                    }
+
+                    /* Update the registry row last — if any of the five
+                       cascades fail, rollback restores everything. */
+                    $stmt = $db->prepare('UPDATE tblCreditPeople SET Name = ? WHERE Id = ?');
+                    $stmt->bind_param('si', $newName, $id);
+                    $stmt->execute();
+                    $stmt->close();
+
+                    $db->commit();
+
+                    $logCreditPerson('rename', (string)$id, [
+                        'before'   => ['name' => $oldName],
+                        'after'    => ['name' => $newName],
+                        'affected' => [
+                            'writers'     => $affected['tblSongWriters'],
+                            'composers'   => $affected['tblSongComposers'],
+                            'arrangers'   => $affected['tblSongArrangers'],
+                            'adaptors'    => $affected['tblSongAdaptors'],
+                            'translators' => $affected['tblSongTranslators'],
+                        ],
+                    ]);
+                    $totalRenamed = array_sum($affected);
+                    $success = "Renamed '{$oldName}' → '{$newName}' across {$totalRenamed} song-credit row(s).";
+                } catch (\Throwable $e) {
+                    $db->rollback();
+                    throw $e;
+                }
+                break;
+            }
+
+            /* --------------------------------------------------------
+             * merge — collapse two registry entries into one.
+             *
+             * Re-points every song-credit row from the source name to
+             * the target name across all five tables, then deletes
+             * the source registry row. ON DELETE CASCADE on the two
+             * child tables removes the source's links + IPI rows.
+             *
+             * The admin selected which links / IPI rows to keep on
+             * the surviving target via keep_links[] / keep_ipi[]
+             * checkboxes — defaults to "keep all from both sides
+             * with exact-match dedupe" which the JS pre-ticks.
+             *
+             * For the kept child rows from the source side, we
+             * re-point CreditPersonId from source to target BEFORE
+             * deleting the source row. That avoids the cascade
+             * dropping rows we wanted to migrate.
+             * -------------------------------------------------------- */
+            case 'merge': {
+                $sourceId   = (int)($_POST['source_id'] ?? 0);
+                $targetId   = (int)($_POST['target_id'] ?? 0);
+                $keepLinks  = array_map('intval', (array)($_POST['keep_link_ids'] ?? []));
+                $keepIpi    = array_map('intval', (array)($_POST['keep_ipi_ids']  ?? []));
+
+                if ($sourceId <= 0 || $targetId <= 0) { $error = 'Both source and target are required.'; break; }
+                if ($sourceId === $targetId)          { $error = 'Source and target must be different people.'; break; }
+
+                /* Look up both rows. Source name is what we cascade
+                   in the song-credit tables; target name is the
+                   surviving spelling. */
+                $stmt = $db->prepare('SELECT Id, Name FROM tblCreditPeople WHERE Id IN (?, ?)');
+                $stmt->bind_param('ii', $sourceId, $targetId);
+                $stmt->execute();
+                $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+                $byId = [];
+                foreach ($rows as $r) { $byId[(int)$r['Id']] = (string)$r['Name']; }
+                if (!isset($byId[$sourceId])) { $error = 'Source person not found.'; break; }
+                if (!isset($byId[$targetId])) { $error = 'Target person not found.'; break; }
+                $sourceName = $byId[$sourceId];
+                $targetName = $byId[$targetId];
+
+                $db->begin_transaction();
+                try {
+                    /* Re-point song-credit rows: source name → target
+                       name across all five tables. */
+                    $tables = [
+                        'tblSongWriters', 'tblSongComposers', 'tblSongArrangers',
+                        'tblSongAdaptors', 'tblSongTranslators',
+                    ];
+                    $affected = [];
+                    foreach ($tables as $tbl) {
+                        $stmt = $db->prepare("UPDATE {$tbl} SET Name = ? WHERE Name = ?");
+                        $stmt->bind_param('ss', $targetName, $sourceName);
+                        $stmt->execute();
+                        $affected[$tbl] = $stmt->affected_rows;
+                        $stmt->close();
+                    }
+
+                    /* Migrate the chosen child rows from source →
+                       target. Anything not in keep_link_ids / keep_ipi_ids
+                       gets dropped via the cascade when the source
+                       registry row is deleted below. */
+                    $linksKept = 0;
+                    $linksDropped = 0;
+                    $ipiKept = 0;
+                    $ipiDropped = 0;
+
+                    /* Count links currently on the source so we can report
+                       kept-vs-dropped accurately. */
+                    $stmt = $db->prepare('SELECT Id FROM tblCreditPersonLinks WHERE CreditPersonId = ?');
+                    $stmt->bind_param('i', $sourceId);
+                    $stmt->execute();
+                    $sourceLinkIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
+                    $stmt->close();
+
+                    $stmt = $db->prepare('SELECT Id FROM tblCreditPersonIPI WHERE CreditPersonId = ?');
+                    $stmt->bind_param('i', $sourceId);
+                    $stmt->execute();
+                    $sourceIpiIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
+                    $stmt->close();
+
+                    /* Re-point each kept child row. Anything from
+                       keep_links that isn't actually on the source is
+                       silently ignored — the form might be stale. */
+                    if ($keepLinks && $sourceLinkIds) {
+                        $toMove = array_intersect($keepLinks, array_map('intval', $sourceLinkIds));
+                        if ($toMove) {
+                            $upd = $db->prepare(
+                                'UPDATE tblCreditPersonLinks SET CreditPersonId = ? WHERE Id = ? AND CreditPersonId = ?'
+                            );
+                            foreach ($toMove as $lid) {
+                                $upd->bind_param('iii', $targetId, $lid, $sourceId);
+                                $upd->execute();
+                                $linksKept += $upd->affected_rows;
+                            }
+                            $upd->close();
+                        }
+                    }
+                    $linksDropped = max(0, count($sourceLinkIds) - $linksKept);
+
+                    if ($keepIpi && $sourceIpiIds) {
+                        $toMove = array_intersect($keepIpi, array_map('intval', $sourceIpiIds));
+                        if ($toMove) {
+                            $upd = $db->prepare(
+                                'UPDATE tblCreditPersonIPI SET CreditPersonId = ? WHERE Id = ? AND CreditPersonId = ?'
+                            );
+                            foreach ($toMove as $iid) {
+                                $upd->bind_param('iii', $targetId, $iid, $sourceId);
+                                $upd->execute();
+                                $ipiKept += $upd->affected_rows;
+                            }
+                            $upd->close();
+                        }
+                    }
+                    $ipiDropped = max(0, count($sourceIpiIds) - $ipiKept);
+
+                    /* Drop the source registry row. Cascade removes any
+                       child rows the admin chose not to migrate. */
+                    $stmt = $db->prepare('DELETE FROM tblCreditPeople WHERE Id = ?');
+                    $stmt->bind_param('i', $sourceId);
+                    $stmt->execute();
+                    $stmt->close();
+
+                    $db->commit();
+
+                    $logCreditPerson('merge', (string)$targetId, [
+                        'source'     => ['id' => $sourceId, 'name' => $sourceName],
+                        'target'     => ['id' => $targetId, 'name' => $targetName],
+                        'affected'   => [
+                            'writers'     => $affected['tblSongWriters'],
+                            'composers'   => $affected['tblSongComposers'],
+                            'arrangers'   => $affected['tblSongArrangers'],
+                            'adaptors'    => $affected['tblSongAdaptors'],
+                            'translators' => $affected['tblSongTranslators'],
+                        ],
+                        'child_rows' => [
+                            'links_kept'    => $linksKept,
+                            'links_dropped' => $linksDropped,
+                            'ipi_kept'      => $ipiKept,
+                            'ipi_dropped'   => $ipiDropped,
+                        ],
+                    ]);
+                    $totalRenamed = array_sum($affected);
+                    $success = "Merged '{$sourceName}' → '{$targetName}' ({$totalRenamed} song-credit row(s) re-pointed).";
+                } catch (\Throwable $e) {
+                    $db->rollback();
+                    throw $e;
+                }
+                break;
+            }
+
+            /* --------------------------------------------------------
+             * delete_from_registry — remove a registry row.
+             *
+             * Refuses by default if any song-credit table still cites
+             * the name. The admin can override with force=1 to wipe
+             * a registry row whose name is still in use; this is the
+             * "drop a seed entry that was never adopted" use case the
+             * issue body mentions.
+             * -------------------------------------------------------- */
+            case 'delete_from_registry': {
+                $id    = (int)($_POST['id']    ?? 0);
+                $force = !empty($_POST['force']);
+                if ($id <= 0) { $error = 'Person id missing.'; break; }
+
+                $stmt = $db->prepare('SELECT Name FROM tblCreditPeople WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $name = (string)($row[0] ?? '');
+                if ($name === '') { $error = 'Person not found.'; break; }
+
+                /* Count how many song-credit rows still cite this name
+                   across the five tables — a single UNION ALL keeps
+                   the round-trip count to one. */
+                $stmt = $db->prepare(
+                    "SELECT (
+                        (SELECT COUNT(*) FROM tblSongWriters     WHERE Name = ?) +
+                        (SELECT COUNT(*) FROM tblSongComposers   WHERE Name = ?) +
+                        (SELECT COUNT(*) FROM tblSongArrangers   WHERE Name = ?) +
+                        (SELECT COUNT(*) FROM tblSongAdaptors    WHERE Name = ?) +
+                        (SELECT COUNT(*) FROM tblSongTranslators WHERE Name = ?)
+                     ) AS total"
+                );
+                $stmt->bind_param('sssss', $name, $name, $name, $name, $name);
+                $stmt->execute();
+                $usage = (int)($stmt->get_result()->fetch_row()[0] ?? 0);
+                $stmt->close();
+
+                if ($usage > 0 && !$force) {
+                    $error = "Cannot delete '{$name}': {$usage} song-credit row(s) still cite this name. Tick the override box to delete anyway (the song credits stay — only the registry row is removed).";
+                    break;
+                }
+
+                $stmt = $db->prepare('DELETE FROM tblCreditPeople WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $stmt->close();
+
+                $logCreditPerson('delete_from_registry', (string)$id, [
+                    'name'         => $name,
+                    'had_credits'  => $usage > 0,
+                    'force'        => $force,
+                ]);
+                $success = "Registry entry for '{$name}' removed.";
+                break;
+            }
+
+            default:
+                $error = 'Unknown action.';
+        }
+    } catch (\Throwable $e) {
+        error_log('[manage/credit-people.php] action=' . $action . ': ' . $e->getMessage());
+        $error = $error ?: 'Database error — check server logs for details.';
+    }
+}
 
 /* ----------------------------------------------------------------------
  * Data load
@@ -282,6 +905,9 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
             cleanup.
         </div>
 
+        <?php if ($success): ?>
+            <div class="alert alert-success py-2"><?= htmlspecialchars($success) ?></div>
+        <?php endif; ?>
         <?php if ($error): ?>
             <div class="alert alert-danger py-2"><?= htmlspecialchars($error) ?></div>
         <?php endif; ?>
