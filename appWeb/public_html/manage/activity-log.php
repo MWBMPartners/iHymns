@@ -150,7 +150,13 @@ $totalPages = $total > 0 ? (int)ceil($total / $pageSize) : 1;
    hand-maintained list to drift. */
 $distinctActions = [];
 try {
-    $stmt = $db->query("SELECT DISTINCT Action FROM tblActivityLog WHERE CreatedAt >= '" . addslashes($since) . "' ORDER BY Action ASC");
+    $stmt = $db->prepare(
+        'SELECT DISTINCT Action
+           FROM tblActivityLog
+          WHERE CreatedAt >= :since
+          ORDER BY Action ASC'
+    );
+    $stmt->execute([':since' => $since]);
     $distinctActions = $stmt->fetchAll(PDO::FETCH_COLUMN);
 } catch (\Throwable $_e) { /* empty list is fine */ }
 
