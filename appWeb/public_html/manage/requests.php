@@ -15,6 +15,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -52,13 +53,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $err = 'Invalid request.';
     } else {
         try {
-            $db = getDb();
+            $db = getDbMysqli();
             $stmt = $db->prepare(
                 'UPDATE tblSongRequests
                     SET Status = ?, AdminNotes = ?, ResolvedSongId = ?
                   WHERE Id = ?'
             );
-            $stmt->execute([$newStatus, $adminNotes, $resolvedSong ?: null, $id]);
+            $resolved = $resolvedSong !== '' ? $resolvedSong : null;
+            $stmt->bind_param('sssi', $newStatus, $adminNotes, $resolved, $id);
+            $stmt->execute();
+            $stmt->close();
             $flash = 'Request #' . $id . ' updated.';
         } catch (\Throwable $e) {
             error_log('[manage/requests.php] ' . $e->getMessage());
@@ -70,15 +74,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 /* --- GET: fetch rows --- */
 $rows = [];
 try {
-    $db = getDb();
+    $db = getDbMysqli();
     if ($filter === 'all') {
-        $stmt = $db->query(
+        $stmt = $db->prepare(
             'SELECT r.*, u.Username AS requested_by
                FROM tblSongRequests r
                LEFT JOIN tblUsers u ON u.Id = r.UserId
               ORDER BY r.CreatedAt DESC
               LIMIT 500'
         );
+        $stmt->execute();
     } else {
         $stmt = $db->prepare(
             'SELECT r.*, u.Username AS requested_by
@@ -88,9 +93,11 @@ try {
               ORDER BY r.CreatedAt DESC
               LIMIT 500'
         );
-        $stmt->execute([$filter]);
+        $stmt->bind_param('s', $filter);
+        $stmt->execute();
     }
-    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
 } catch (\Throwable $e) {
     error_log('[manage/requests.php] ' . $e->getMessage());
     $err = 'Could not load requests — check server logs for details.';
@@ -98,10 +105,13 @@ try {
 
 $counts = [];
 try {
-    $cs = $db->query('SELECT Status, COUNT(*) AS cnt FROM tblSongRequests GROUP BY Status');
-    while ($row = $cs->fetch(PDO::FETCH_ASSOC)) {
+    $cs = $db->prepare('SELECT Status, COUNT(*) AS cnt FROM tblSongRequests GROUP BY Status');
+    $cs->execute();
+    $res = $cs->get_result();
+    while ($row = $res->fetch_assoc()) {
         $counts[$row['Status']] = (int)$row['cnt'];
     }
+    $cs->close();
 } catch (\Throwable $_e) {}
 
 ?>
