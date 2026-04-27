@@ -1458,10 +1458,14 @@ if ($action !== null) {
             }
 
             /* Check if email service is configured (#339) */
-            $db = getDb();
+            $db = getDbMysqli();
             $stmt = $db->prepare('SELECT SettingValue FROM tblAppSettings WHERE SettingKey = ?');
-            $stmt->execute(['email_service']);
-            $emailService = $stmt->fetchColumn() ?: 'none';
+            $key = 'email_service';
+            $stmt->bind_param('s', $key);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_row();
+            $stmt->close();
+            $emailService = (string)($row[0] ?? '') ?: 'none';
             if ($emailService === 'none') {
                 sendJson(['error' => 'Email login is not available. No email service is configured.'], 503);
                 break;
@@ -1599,11 +1603,14 @@ if ($action !== null) {
 
             /* Log the successful login */
             $clientIp = $_SERVER['REMOTE_ADDR'] ?? '';
-            $db = getDb();
+            $db = getDbMysqli();
             $stmt = $db->prepare(
                 'INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, ?, 1)'
             );
-            $stmt->execute([$clientIp, $loginResult['user']['username']]);
+            $loginUsername = $loginResult['user']['username'];
+            $stmt->bind_param('ss', $clientIp, $loginUsername);
+            $stmt->execute();
+            $stmt->close();
 
             /* Audit (#535). Mode + email captured so admins can answer
                "is the magic-link path being used at all?" Token never
@@ -1641,12 +1648,15 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
+            $db = getDbMysqli();
             $stmt = $db->prepare(
                 'SELECT SongId FROM tblUserFavorites WHERE UserId = ? ORDER BY CreatedAt DESC'
             );
-            $stmt->execute([$authUser['Id']]);
-            $rows = $stmt->fetchAll(PDO::FETCH_COLUMN);
+            $authUserId = (int)$authUser['Id'];
+            $stmt->bind_param('i', $authUserId);
+            $stmt->execute();
+            $rows = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'SongId');
+            $stmt->close();
 
             sendJson(['favorites' => $rows]);
             break;
@@ -1678,8 +1688,8 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
-            $userId = $authUser['Id'];
+            $db = getDbMysqli();
+            $userId = (int)$authUser['Id'];
 
             /* Sanitise incoming song IDs */
             $localFavs = array_values(array_filter(
@@ -1692,28 +1702,38 @@ if ($action !== null) {
 
             /* Get existing server favorites */
             $stmt = $db->prepare('SELECT SongId FROM tblUserFavorites WHERE UserId = ?');
-            $stmt->execute([$userId]);
-            $serverFavs = $stmt->fetchAll(PDO::FETCH_COLUMN);
+            $stmt->bind_param('i', $userId);
+            $stmt->execute();
+            $serverFavs = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'SongId');
+            $stmt->close();
 
             /* Merge: union of local and server */
             $merged = array_unique(array_merge($serverFavs, $localFavs));
 
-            /* Insert any new favorites (ignore duplicates) */
+            /* Insert any new favorites (ignore duplicates). Reused
+               prepared statement with $songId as a bound-by-reference
+               variable that we update each iteration. */
             $insert = $db->prepare(
                 'INSERT IGNORE INTO tblUserFavorites (UserId, SongId) VALUES (?, ?)'
             );
+            $songIdBound = '';
+            $insert->bind_param('is', $userId, $songIdBound);
             $newlyAdded = 0;
             foreach ($localFavs as $songId) {
-                $insert->execute([$userId, $songId]);
-                $newlyAdded += $insert->rowCount();
+                $songIdBound = $songId;
+                $insert->execute();
+                $newlyAdded += $insert->affected_rows;
             }
+            $insert->close();
 
             /* Return merged list */
             $stmt = $db->prepare(
                 'SELECT SongId FROM tblUserFavorites WHERE UserId = ? ORDER BY CreatedAt DESC'
             );
-            $stmt->execute([$userId]);
-            $finalFavs = $stmt->fetchAll(PDO::FETCH_COLUMN);
+            $stmt->bind_param('i', $userId);
+            $stmt->execute();
+            $finalFavs = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'SongId');
+            $stmt->close();
 
             /* Audit (#535) — only one row per sync, not per favourite,
                since the sync is the meaningful user action. */
@@ -1754,11 +1774,15 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
+            $db = getDbMysqli();
             $stmt = $db->prepare('DELETE FROM tblUserFavorites WHERE UserId = ? AND SongId = ?');
-            $stmt->execute([$authUser['Id'], $removeSongId]);
-            if ($stmt->rowCount() > 0) {
-                logActivity('favorites.remove', 'song', $removeSongId, [], 'success', (int)$authUser['Id']);
+            $authUserId = (int)$authUser['Id'];
+            $stmt->bind_param('is', $authUserId, $removeSongId);
+            $stmt->execute();
+            $affected = $stmt->affected_rows;
+            $stmt->close();
+            if ($affected > 0) {
+                logActivity('favorites.remove', 'song', $removeSongId, [], 'success', $authUserId);
             }
 
             sendJson(['ok' => true]);
@@ -1781,12 +1805,16 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
+            $db = getDbMysqli();
 
             /* Check if song requests are enabled */
             $stmt = $db->prepare('SELECT SettingValue FROM tblAppSettings WHERE SettingKey = ?');
-            $stmt->execute(['song_requests_enabled']);
-            $enabled = $stmt->fetchColumn();
+            $key = 'song_requests_enabled';
+            $stmt->bind_param('s', $key);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_row();
+            $stmt->close();
+            $enabled = (string)($row[0] ?? '');
             if ($enabled === '0') {
                 sendJson(['error' => 'Song requests are currently disabled.'], 403);
                 break;
@@ -1795,15 +1823,22 @@ if ($action !== null) {
             /* Rate limiting by IP */
             $clientIp = $_SERVER['REMOTE_ADDR'] ?? '';
             $stmt = $db->prepare('SELECT SettingValue FROM tblAppSettings WHERE SettingKey = ?');
-            $stmt->execute(['max_song_requests_per_day']);
-            $maxPerDay = (int)($stmt->fetchColumn() ?: 5);
+            $key = 'max_song_requests_per_day';
+            $stmt->bind_param('s', $key);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_row();
+            $stmt->close();
+            $maxPerDay = (int)((string)($row[0] ?? '') ?: '5');
 
             $stmt = $db->prepare(
                 'SELECT COUNT(*) FROM tblSongRequests
                  WHERE IpAddress = ? AND CreatedAt > DATE_SUB(NOW(), INTERVAL 1 DAY)'
             );
-            $stmt->execute([$clientIp]);
-            if ((int)$stmt->fetchColumn() >= $maxPerDay) {
+            $stmt->bind_param('s', $clientIp);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_row();
+            $stmt->close();
+            if ((int)($row[0] ?? 0) >= $maxPerDay) {
                 sendJson(['error' => 'Rate limit exceeded. Maximum ' . $maxPerDay . ' requests per day.'], 429);
                 break;
             }
@@ -1831,7 +1866,7 @@ if ($action !== null) {
 
             /* Get authenticated user ID if available */
             $authUser = getAuthenticatedUser();
-            $reqUserId = $authUser ? $authUser['Id'] : null;
+            $reqUserId = $authUser ? (int)$authUser['Id'] : null;
 
             $stmt = $db->prepare(
                 'INSERT INTO tblSongRequests
@@ -1839,11 +1874,14 @@ if ($action !== null) {
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
             );
             $status = 'pending';
-            $stmt->execute([
+            /* Types: 6 strings, UserId(i nullable — mysqli passes NULL
+               correctly when bound var is null), IpAddress(s), Status(s). */
+            $stmt->bind_param('ssssssiss',
                 $reqTitle, $reqSongbook, $reqNumber, $reqLanguage,
-                $reqDetails, $reqEmail, $reqUserId, $clientIp, $status
-            ]);
-            $requestId = (int)$db->lastInsertId();
+                $reqDetails, $reqEmail, $reqUserId, $clientIp, $status);
+            $stmt->execute();
+            $requestId = (int)$db->insert_id;
+            $stmt->close();
 
             sendJson(['ok' => true, 'id' => $requestId], 201);
             break;
@@ -1859,7 +1897,7 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
+            $db = getDbMysqli();
             $stmt = $db->prepare(
                 'SELECT Id AS id, Title AS title, Songbook AS songbook,
                         SongNumber AS songNumber, Language AS language,
@@ -1870,8 +1908,11 @@ if ($action !== null) {
                  WHERE UserId = ?
                  ORDER BY CreatedAt DESC'
             );
-            $stmt->execute([$authUser['Id']]);
-            $requests = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $authUserId = (int)$authUser['Id'];
+            $stmt->bind_param('i', $authUserId);
+            $stmt->execute();
+            $requests = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
 
             sendJson(['requests' => $requests]);
             break;
@@ -1884,15 +1925,17 @@ if ($action !== null) {
          * Get all available languages
          * ----------------------------------------------------------------- */
         case 'languages':
-            $db = getDb();
-            $stmt = $db->query(
+            $db = getDbMysqli();
+            $stmt = $db->prepare(
                 'SELECT Code AS code, Name AS name, NativeName AS nativeName,
                         TextDirection AS textDirection
                  FROM tblLanguages
                  WHERE IsActive = 1
                  ORDER BY Name ASC'
             );
-            $languages = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $stmt->execute();
+            $languages = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
             sendJson(['languages' => $languages]);
             break;
 
@@ -1907,7 +1950,7 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
+            $db = getDbMysqli();
 
             /*
              * Bidirectional lookup (#352):
@@ -1917,7 +1960,10 @@ if ($action !== null) {
             $translations = [];
             $seen = [$translationSongId => true]; /* avoid duplicates */
 
-            /* Forward: translations OF this song */
+            /* Forward: translations OF this song. Statement is reused
+               for the sibling-translations lookup further down via
+               $sourceId — bind by reference so $forwardId can be
+               re-assigned for the second execute. */
             $stmt = $db->prepare(
                 'SELECT t.TranslatedSongId AS songId, t.TargetLanguage AS language,
                         t.Translator AS translator, t.Verified AS verified,
@@ -1929,8 +1975,10 @@ if ($action !== null) {
                  WHERE t.SourceSongId = ?
                  ORDER BY l.Name ASC'
             );
-            $stmt->execute([$translationSongId]);
-            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $tr) {
+            $forwardId = $translationSongId;
+            $stmt->bind_param('s', $forwardId);
+            $stmt->execute();
+            foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $tr) {
                 $tr['verified'] = (bool)$tr['verified'];
                 $tr['number'] = (int)$tr['number'];
                 $seen[$tr['songId']] = true;
@@ -1941,11 +1989,13 @@ if ($action !== null) {
             $stmt2 = $db->prepare(
                 'SELECT t.SourceSongId FROM tblSongTranslations t WHERE t.TranslatedSongId = ?'
             );
-            $stmt2->execute([$translationSongId]);
-            $sourceRow = $stmt2->fetch(PDO::FETCH_ASSOC);
+            $stmt2->bind_param('s', $translationSongId);
+            $stmt2->execute();
+            $sourceRow = $stmt2->get_result()->fetch_assoc();
+            $stmt2->close();
 
             if ($sourceRow) {
-                $sourceId = $sourceRow['SourceSongId'];
+                $sourceId = (string)$sourceRow['SourceSongId'];
 
                 /* Add the source song itself (if not already listed) */
                 if (empty($seen[$sourceId])) {
@@ -1957,8 +2007,10 @@ if ($action !== null) {
                          LEFT JOIN tblLanguages l ON l.Code = s.Language
                          WHERE s.SongId = ?'
                     );
-                    $stmtSrc->execute([$sourceId]);
-                    $src = $stmtSrc->fetch(PDO::FETCH_ASSOC);
+                    $stmtSrc->bind_param('s', $sourceId);
+                    $stmtSrc->execute();
+                    $src = $stmtSrc->get_result()->fetch_assoc();
+                    $stmtSrc->close();
                     if ($src) {
                         $src['translator'] = '';
                         $src['verified'] = false;
@@ -1968,9 +2020,12 @@ if ($action !== null) {
                     }
                 }
 
-                /* Add sibling translations (other translations of the same source) */
-                $stmt->execute([$sourceId]);
-                foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $tr) {
+                /* Add sibling translations (other translations of the same source).
+                   Reuse $stmt (Forward statement) — re-assign the bound
+                   variable, then re-execute. */
+                $forwardId = $sourceId;
+                $stmt->execute();
+                foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $tr) {
                     if (!empty($seen[$tr['songId']])) continue;
                     $tr['verified'] = (bool)$tr['verified'];
                     $tr['number'] = (int)$tr['number'];
@@ -1978,6 +2033,7 @@ if ($action !== null) {
                     $translations[] = $tr;
                 }
             }
+            $stmt->close();
 
             sendJson(['translations' => $translations, 'sourceId' => $translationSongId]);
             break;
@@ -1997,9 +2053,10 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
+            $db = getDbMysqli();
 
-            /* Get all groups the user belongs to (primary + additional) */
+            /* Get all groups the user belongs to (primary + additional).
+               $authUserId bound twice — once per `?` position. */
             $stmt = $db->prepare(
                 'SELECT g.Id AS id, g.Name AS name,
                         g.AccessAlpha AS accessAlpha, g.AccessBeta AS accessBeta,
@@ -2014,8 +2071,11 @@ if ($action !== null) {
                  JOIN tblUserGroupMembers m ON m.GroupId = g.Id
                  WHERE m.UserId = ?'
             );
-            $stmt->execute([$authUser['Id'], $authUser['Id']]);
-            $groups = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $authUserId = (int)$authUser['Id'];
+            $stmt->bind_param('ii', $authUserId, $authUserId);
+            $stmt->execute();
+            $groups = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
 
             /* Compute effective access (union of all group permissions) */
             $access = ['alpha' => false, 'beta' => false, 'rc' => false, 'rtw' => false];
@@ -2047,15 +2107,18 @@ if ($action !== null) {
          * No authentication required — used by PWA on startup
          * ----------------------------------------------------------------- */
         case 'app_status':
-            $db = getDb();
-            /* Only fetch public-safe settings — never expose internal config */
+            $db = getDbMysqli();
+            /* Only fetch public-safe settings — never expose internal config.
+               Dynamic IN-list with str_repeat for the bind type string. */
             $publicKeys = ['maintenance_mode', 'song_requests_enabled', 'motd', 'registration_mode', 'email_service', 'captcha_provider', 'ads_enabled'];
             $placeholders = implode(',', array_fill(0, count($publicKeys), '?'));
             $stmt = $db->prepare(
                 "SELECT SettingKey, SettingValue FROM tblAppSettings WHERE SettingKey IN ({$placeholders})"
             );
-            $stmt->execute($publicKeys);
-            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $stmt->bind_param(str_repeat('s', count($publicKeys)), ...$publicKeys);
+            $stmt->execute();
+            $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
 
             $settings = [];
             foreach ($rows as $row) {
@@ -2111,11 +2174,14 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
+            $db = getDbMysqli();
             $stmt = $db->prepare(
                 'UPDATE tblUsers SET DisplayName = ?, Email = ?, UpdatedAt = NOW() WHERE Id = ?'
             );
-            $stmt->execute([$newDisplayName, $newEmail, $authUser['Id']]);
+            $authUserId = (int)$authUser['Id'];
+            $stmt->bind_param('ssi', $newDisplayName, $newEmail, $authUserId);
+            $stmt->execute();
+            $stmt->close();
 
             sendJson([
                 'ok'   => true,
@@ -2163,10 +2229,14 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
+            $db = getDbMysqli();
+            $authUserId = (int)$authUser['Id'];
             $stmt = $db->prepare('SELECT PasswordHash FROM tblUsers WHERE Id = ?');
-            $stmt->execute([$authUser['Id']]);
-            $hash = $stmt->fetchColumn();
+            $stmt->bind_param('i', $authUserId);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_row();
+            $stmt->close();
+            $hash = (string)($row[0] ?? '');
 
             if (!password_verify($currentPw, $hash)) {
                 sendJson(['error' => 'Current password is incorrect.'], 401);
@@ -2175,12 +2245,17 @@ if ($action !== null) {
 
             $newHash = password_hash($newPw, PASSWORD_BCRYPT, ['cost' => 12]);
             $stmt = $db->prepare('UPDATE tblUsers SET PasswordHash = ?, UpdatedAt = NOW() WHERE Id = ?');
-            $stmt->execute([$newHash, $authUser['Id']]);
+            $stmt->bind_param('si', $newHash, $authUserId);
+            $stmt->execute();
+            $stmt->close();
 
             /* Invalidate all OTHER tokens (keep the current one) */
             $currentToken = getAuthBearerToken();
+            $currentTokenHash = hash('sha256', $currentToken);
             $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ? AND Token != ?');
-            $stmt->execute([$authUser['Id'], hash('sha256', $currentToken)]);
+            $stmt->bind_param('is', $authUserId, $currentTokenHash);
+            $stmt->execute();
+            $stmt->close();
 
             sendJson(['ok' => true, 'message' => 'Password changed successfully.']);
             break;
@@ -2231,20 +2306,23 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
+            $db = getDbMysqli();
+            $authUserId = (int)$authUser['Id'];
 
             /* Verify current password before allowing rename */
             $stmt = $db->prepare('SELECT PasswordHash, Email, DisplayName FROM tblUsers WHERE Id = ?');
-            $stmt->execute([$authUser['Id']]);
-            $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+            $stmt->bind_param('i', $authUserId);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
             if (!$row || !password_verify($currentPw, $row['PasswordHash'])) {
                 logActivity(
                     'auth.username_change',
                     'user',
-                    (string)$authUser['Id'],
+                    (string)$authUserId,
                     ['reason' => 'wrong_password'],
                     'failure',
-                    (int)$authUser['Id']
+                    $authUserId
                 );
                 sendJson(['error' => 'Current password is incorrect.'], 401);
                 break;
@@ -2252,22 +2330,27 @@ if ($action !== null) {
 
             /* Uniqueness check (case-insensitive via lowercased compare) */
             $stmt = $db->prepare('SELECT Id FROM tblUsers WHERE Username = ? AND Id <> ?');
-            $stmt->execute([$newUsername, $authUser['Id']]);
-            if ($stmt->fetch()) {
+            $stmt->bind_param('si', $newUsername, $authUserId);
+            $stmt->execute();
+            $exists = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            if ($exists) {
                 logActivity(
                     'auth.username_change',
                     'user',
-                    (string)$authUser['Id'],
+                    (string)$authUserId,
                     ['reason' => 'taken', 'attempted' => $newUsername],
                     'failure',
-                    (int)$authUser['Id']
+                    $authUserId
                 );
                 sendJson(['error' => 'Username is already taken.'], 409);
                 break;
             }
 
             $stmt = $db->prepare('UPDATE tblUsers SET Username = ?, UpdatedAt = NOW() WHERE Id = ?');
-            $stmt->execute([$newUsername, $authUser['Id']]);
+            $stmt->bind_param('si', $newUsername, $authUserId);
+            $stmt->execute();
+            $stmt->close();
 
             /* Audit (#535). before/after gives the timeline both halves
                of the rename without joining anything. */
