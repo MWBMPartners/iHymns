@@ -25,6 +25,8 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
+
 /**
  * Validate a CCLI licence number format.
  *
@@ -101,12 +103,15 @@ const TIER_LEVELS = [
  */
 function resolveEffectiveTier(int $userId): string
 {
-    $db = getDb();
+    $db = getDbMysqli();
 
     /* Get personal tier */
     $stmt = $db->prepare('SELECT AccessTier FROM tblUsers WHERE Id = ?');
-    $stmt->execute([$userId]);
-    $personalTier = $stmt->fetchColumn() ?: 'public';
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_row();
+    $stmt->close();
+    $personalTier = (string)($row[0] ?? 'public') ?: 'public';
 
     /* Get highest org-level tier from all memberships.
      * Org tier comes from tblContentLicences linked to the org,
@@ -120,8 +125,10 @@ function resolveEffectiveTier(int $userId): string
          JOIN tblOrganisationMembers m ON m.OrgId = o.Id
          WHERE m.UserId = ? AND o.IsActive = 1 AND o.LicenceType != \'none\''
     );
-    $stmt->execute([$userId]);
-    $orgLicences = $stmt->fetchAll(PDO::FETCH_COLUMN);
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $orgLicences = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'LicenceType');
+    $stmt->close();
 
     /* Map org licence types to access tiers */
     $licenceToTier = [

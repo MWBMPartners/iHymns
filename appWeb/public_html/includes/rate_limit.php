@@ -20,8 +20,10 @@ declare(strict_types=1);
  *   // Auto-respond with 429 if rate limited (exits on failure)
  *   checkRateLimit('auth_login', $clientIp, 10, 900, true);
  *
- * @requires PHP 8.1+ with PDO
+ * @requires PHP 8.1+ with mysqli
  */
+
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
 /* =========================================================================
  * DIRECT ACCESS PREVENTION
@@ -82,15 +84,18 @@ function checkRateLimit(
     }
 
     try {
-        $db = getDb();
+        $db = getDbMysqli();
 
         $stmt = $db->prepare(
             'SELECT COUNT(*) FROM tblLoginAttempts
              WHERE IpAddress = ? AND Username = ?
              AND AttemptedAt > DATE_SUB(NOW(), INTERVAL ? SECOND)'
         );
-        $stmt->execute([$key, $action, $windowSeconds]);
-        $count = (int)$stmt->fetchColumn();
+        $stmt->bind_param('ssi', $key, $action, $windowSeconds);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_row();
+        $stmt->close();
+        $count = (int)($row[0] ?? 0);
 
         if ($count >= $maxAttempts) {
             if ($autoRespond) {
@@ -108,11 +113,12 @@ function checkRateLimit(
         }
 
         return true;
-    } catch (\PDOException $e) {
+    } catch (\Throwable $e) {
         /* Fail open on DB error — better to over-serve a few requests
            than to lock everyone out of an endpoint because the
            counter table briefly went away. Logged so a sustained
-           outage is visible. */
+           outage is visible. \Throwable catches mysqli_sql_exception
+           plus any other unexpected error from get_result()/fetch_row(). */
         error_log('[iHymns] Rate limit check failed: ' . $e->getMessage());
         return true;
     }
@@ -131,12 +137,15 @@ function checkRateLimit(
 function recordRateLimitHit(string $action, string $ip, bool $success = true): void
 {
     try {
-        $db = getDb();
+        $db = getDbMysqli();
         $stmt = $db->prepare(
             'INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, ?, ?)'
         );
-        $stmt->execute([$ip, $action, $success ? 1 : 0]);
-    } catch (\PDOException $e) {
+        $successInt = $success ? 1 : 0;
+        $stmt->bind_param('ssi', $ip, $action, $successInt);
+        $stmt->execute();
+        $stmt->close();
+    } catch (\Throwable $e) {
         error_log('[iHymns] Rate limit recording failed: ' . $e->getMessage());
     }
 }

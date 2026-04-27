@@ -22,6 +22,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'entitlements.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
           . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 
@@ -38,15 +39,19 @@ function _channelGateCurrentRole(): ?string
         return null;
     }
     try {
-        $db = getDb();
+        $db = getDbMysqli();
         $stmt = $db->prepare(
             'SELECT u.Role
                FROM tblApiTokens t
                JOIN tblUsers u ON u.Id = t.UserId
               WHERE t.Token = ? AND t.ExpiresAt > ? AND u.IsActive = 1'
         );
-        $stmt->execute([hash('sha256', $token), gmdate('c')]);
-        $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+        $tokenHash = hash('sha256', $token);
+        $now       = gmdate('c');
+        $stmt->bind_param('ss', $tokenHash, $now);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
         return $row ? (string)$row['Role'] : null;
     } catch (\Throwable $_e) {
         return null;

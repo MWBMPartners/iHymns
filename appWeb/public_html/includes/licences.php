@@ -26,15 +26,17 @@ declare(strict_types=1);
  * Results are cached per-request in a static map so repeated calls from
  * checkContentAccess() + API handlers hit the DB once per user.
  *
- * Require order: this file relies on getDb() being available, so pages
- * should require `manage/includes/db.php` first. The main app's
- * `api.php` already does this near the top.
+ * Require order: this file's queries use mysqli prepared statements
+ * via getDbMysqli(); db_mysql.php is required at the top so callers
+ * don't need to load it themselves.
  */
 
 if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     http_response_code(403);
     exit('Access denied.');
 }
+
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
 /* Cap org hierarchy traversal depth. A real church → diocese → conference
    chain is typically 2–3 deep; 10 is generous headroom and stops any
@@ -65,20 +67,25 @@ function getUserEffectiveLicences(?int $userId): array
         return $cache[$userId];
     }
 
-    $db = getDb();
+    $db = getDbMysqli();
 
     /* Collect every org the user transitively belongs to: direct
        memberships first, then walk up the ParentOrgId chain. Uses a
        frontier queue rather than recursion so the depth bound is
        explicit and easy to audit. */
     $stmt = $db->prepare('SELECT OrgId FROM tblOrganisationMembers WHERE UserId = ?');
-    $stmt->execute([$userId]);
-    $directOrgIds = array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $directOrgIds = array_map('intval',
+        array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'OrgId'));
+    $stmt->close();
 
     $allOrgIds   = array_fill_keys($directOrgIds, false); /* false = direct, true = inherited */
     $frontier    = $directOrgIds;
 
     for ($depth = 0; $depth < LICENCE_INHERITANCE_MAX_DEPTH && !empty($frontier); $depth++) {
+        /* Dynamic IN-list: build the placeholder list AND a matching
+           type string. Frontier values are always ints (org Ids). */
         $placeholders = implode(',', array_fill(0, count($frontier), '?'));
         $stmt = $db->prepare(
             "SELECT DISTINCT ParentOrgId
@@ -86,8 +93,11 @@ function getUserEffectiveLicences(?int $userId): array
               WHERE Id IN ($placeholders)
                 AND ParentOrgId IS NOT NULL"
         );
-        $stmt->execute($frontier);
-        $parents = array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+        $stmt->bind_param(str_repeat('i', count($frontier)), ...$frontier);
+        $stmt->execute();
+        $parents = array_map('intval',
+            array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'ParentOrgId'));
+        $stmt->close();
 
         $newParents = array_values(array_filter(
             $parents,
@@ -109,8 +119,11 @@ function getUserEffectiveLicences(?int $userId): array
             AND IsActive = 1
             AND (ExpiresAt IS NULL OR ExpiresAt > NOW())'
     );
-    $stmt->execute([$userId]);
-    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+    foreach ($rows as $r) {
         $licences[] = [
             'type'       => (string)$r['type'],
             'key'        => (string)$r['key'],
@@ -123,9 +136,11 @@ function getUserEffectiveLicences(?int $userId): array
 
     /* (b) legacy tblUsers.CcliNumber */
     $stmt = $db->prepare('SELECT CcliNumber FROM tblUsers WHERE Id = ? AND IsActive = 1');
-    $stmt->execute([$userId]);
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    if ($row && !empty(trim((string)$row['CcliNumber']))) {
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if ($row && trim((string)($row['CcliNumber'] ?? '')) !== '') {
         $licences[] = [
             'type'       => 'ccli',
             'key'        => (string)$row['CcliNumber'],
@@ -139,6 +154,7 @@ function getUserEffectiveLicences(?int $userId): array
     if (!empty($allOrgIds)) {
         $orgIds       = array_keys($allOrgIds);
         $placeholders = implode(',', array_fill(0, count($orgIds), '?'));
+        $orgIdTypes   = str_repeat('i', count($orgIds));
 
         /* (c + d) tblContentLicences rows for any org in the chain */
         $stmt = $db->prepare(
@@ -148,8 +164,11 @@ function getUserEffectiveLicences(?int $userId): array
                 AND IsActive = 1
                 AND (ExpiresAt IS NULL OR ExpiresAt > NOW())"
         );
-        $stmt->execute($orgIds);
-        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+        $stmt->bind_param($orgIdTypes, ...$orgIds);
+        $stmt->execute();
+        $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+        foreach ($rows as $r) {
             $orgId = (int)$r['OrgId'];
             $licences[] = [
                 'type'       => (string)$r['type'],
@@ -174,8 +193,11 @@ function getUserEffectiveLicences(?int $userId): array
                 AND LicenceType <> 'none'
                 AND (LicenceExpiresAt IS NULL OR LicenceExpiresAt > NOW())"
         );
-        $stmt->execute($orgIds);
-        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+        $stmt->bind_param($orgIdTypes, ...$orgIds);
+        $stmt->execute();
+        $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+        foreach ($rows as $r) {
             $orgId = (int)$r['Id'];
             $licences[] = [
                 'type'       => (string)$r['LicenceType'],
