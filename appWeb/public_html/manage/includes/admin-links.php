@@ -37,6 +37,7 @@ $_adminLinks = [
     ['revisions',       '/manage/revisions',       'bi-clock-history',  'Revisions Audit',      'verify_songs',                'Content'    ],
     ['missing-numbers', '/manage/missing-numbers', 'bi-binoculars',     'Missing Numbers',      'edit_songs',                  'Content'    ],
     ['songbooks',       '/manage/songbooks',       'bi-book',           'Songbooks',            'manage_songbooks',            'Content'    ],
+    ['credit-people',   '/manage/credit-people',   'bi-person-badge',   'Credit People',        'manage_credit_people',        'Content'    ],
     ['restrictions',    '/manage/restrictions',    'bi-shield-lock',    'Content Restrictions', 'manage_content_restrictions', 'Content'    ],
     ['tiers',           '/manage/tiers',           'bi-stars',          'Access Tiers',         'manage_access_tiers',         'Content'    ],
     ['users',           '/manage/users',           'bi-people',         'Users',                'view_users',                  'People'     ],
