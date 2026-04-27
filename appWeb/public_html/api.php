@@ -295,14 +295,17 @@ if ($action !== null) {
                if the table is missing (fresh installs before the schema
                ALTER has been applied). */
             try {
-                $logDb = getDb();
+                $logDb = getDbMysqli();
                 $uid   = null;
                 $logAuth = getAuthenticatedUser();
                 if ($logAuth) $uid = (int)$logAuth['Id'];
                 $logStmt = $logDb->prepare(
                     'INSERT INTO tblSearchQueries (Query, ResultCount, UserId) VALUES (?, ?, ?)'
                 );
-                $logStmt->execute([$query, count($results), $uid]);
+                $resultCount = count($results);
+                $logStmt->bind_param('sii', $query, $resultCount, $uid);
+                $logStmt->execute();
+                $logStmt->close();
             } catch (\Throwable $_e) {
                 /* Best-effort — search-query analytics is non-critical.
                    Logged so admins notice if the INSERT is failing
@@ -738,14 +741,21 @@ if ($action !== null) {
             }
 
             /* Check registration mode (#236) */
-            $db = getDb();
+            $db = getDbMysqli();
             $stmt = $db->prepare('SELECT SettingValue FROM tblAppSettings WHERE SettingKey = ?');
-            $stmt->execute(['registration_mode']);
-            $regMode = $stmt->fetchColumn() ?: 'open';
+            $regModeKey = 'registration_mode';
+            $stmt->bind_param('s', $regModeKey);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_row();
+            $stmt->close();
+            $regMode = (string)($row[0] ?? '') ?: 'open';
 
             /* Check if any users exist (first user always allowed for initial setup) */
-            $stmt = $db->query('SELECT COUNT(*) FROM tblUsers');
-            $userCount = (int)$stmt->fetchColumn();
+            $stmt = $db->prepare('SELECT COUNT(*) FROM tblUsers');
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_row();
+            $stmt->close();
+            $userCount = (int)($row[0] ?? 0);
 
             if ($userCount > 0 && $regMode === 'admin_only') {
                 /* Only admins can create accounts — check if requester is admin */
@@ -756,22 +766,32 @@ if ($action !== null) {
                 }
             }
 
-            /* Rate limit registrations: max 3 per IP per hour */
+            /* Rate limit registrations: max 3 per IP per hour. The
+               first prepared statement below is intentionally left
+               un-fetched — it's a no-op leftover from #236's original
+               implementation that the simpler fallback (count from
+               tblLoginAttempts) replaced; preserved so this commit
+               stays a pure mechanical mysqli conversion with no
+               behavioural change. */
             $clientIp = $_SERVER['REMOTE_ADDR'] ?? '';
-            $db = getDb();
             $stmt = $db->prepare(
                 'SELECT COUNT(*) FROM tblUsers
                  WHERE CreatedAt > DATE_SUB(NOW(), INTERVAL 1 HOUR)
                  AND Id IN (SELECT DISTINCT UserId FROM tblLoginAttempts WHERE IpAddress = ? AND Success = 1)'
             );
-            $stmt->execute([$clientIp]);
+            $stmt->bind_param('s', $clientIp);
+            $stmt->execute();
+            $stmt->close();
             /* Simpler fallback: count recent registrations by checking tblLoginAttempts */
             $stmt = $db->prepare(
                 'SELECT COUNT(*) FROM tblLoginAttempts
                  WHERE IpAddress = ? AND AttemptedAt > DATE_SUB(NOW(), INTERVAL 1 HOUR)'
             );
-            $stmt->execute([$clientIp]);
-            $recentAttempts = (int)$stmt->fetchColumn();
+            $stmt->bind_param('s', $clientIp);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_row();
+            $stmt->close();
+            $recentAttempts = (int)($row[0] ?? 0);
             if ($recentAttempts >= 20) {
                 sendJson(['error' => 'Too many requests from this IP. Please try again later.'], 429);
                 break;
@@ -801,32 +821,46 @@ if ($action !== null) {
                 $displayName = $username;
             }
 
-            $db = getDb();
+            /* $db is the same mysqli connection as above (getDbMysqli
+               is a singleton). Re-fetch for clarity rather than reuse. */
+            $db = getDbMysqli();
 
             /* Check if username already exists */
             $stmt = $db->prepare('SELECT Id FROM tblUsers WHERE Username = ?');
-            $stmt->execute([$username]);
-            if ($stmt->fetch()) {
+            $stmt->bind_param('s', $username);
+            $stmt->execute();
+            $exists = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            if ($exists) {
                 sendJson(['error' => 'Username already taken.'], 409);
                 break;
             }
 
             /* Auto-assign 'global_admin' to the very first registered user;
              * all subsequent public registrations get 'user' role */
-            $stmt = $db->query('SELECT COUNT(*) FROM tblUsers');
-            $role = ((int)$stmt->fetchColumn() === 0) ? 'global_admin' : 'user';
+            $stmt = $db->prepare('SELECT COUNT(*) FROM tblUsers');
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_row();
+            $stmt->close();
+            $role = ((int)($row[0] ?? 0) === 0) ? 'global_admin' : 'user';
 
             $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
+            $displayTrimmed = mb_substr($displayName, 0, 100);
             $stmt = $db->prepare('INSERT INTO tblUsers (Username, PasswordHash, DisplayName, Role) VALUES (?, ?, ?, ?)');
-            $stmt->execute([$username, $hash, mb_substr($displayName, 0, 100), $role]);
-            $userId = (int)$db->lastInsertId();
+            $stmt->bind_param('ssss', $username, $hash, $displayTrimmed, $role);
+            $stmt->execute();
+            $userId = (int)$db->insert_id;
+            $stmt->close();
 
             /* Generate API token (64-character hex string, 30-day expiry) */
             $token = bin2hex(random_bytes(32));
             $expiresAtTs = time() + 30 * 86400;
             $expiresAt   = gmdate('c', $expiresAtTs);
+            $tokenHash = hash('sha256', $token);
             $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
-            $stmt->execute([hash('sha256', $token), $userId, $expiresAt]);
+            $stmt->bind_param('sis', $tokenHash, $userId, $expiresAt);
+            $stmt->execute();
+            $stmt->close();
 
             /* Cross-subdomain cookie — keeps sign-in state on every
                *.ihymns.app subdomain and survives iOS ITP longer than
@@ -885,7 +919,7 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
+            $db = getDbMysqli();
 
             /* Brute force protection: check recent failed attempts from this IP (#290) */
             $stmt = $db->prepare(
@@ -893,8 +927,11 @@ if ($action !== null) {
                  WHERE IpAddress = ? AND Success = 0
                  AND AttemptedAt > DATE_SUB(NOW(), INTERVAL 15 MINUTE)'
             );
-            $stmt->execute([$clientIp]);
-            $recentFailures = (int)$stmt->fetchColumn();
+            $stmt->bind_param('s', $clientIp);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_row();
+            $stmt->close();
+            $recentFailures = (int)($row[0] ?? 0);
 
             if ($recentFailures >= 10) {
                 logActivity(
@@ -909,8 +946,10 @@ if ($action !== null) {
             }
 
             $stmt = $db->prepare('SELECT Id, Username, PasswordHash, DisplayName, Role, IsActive FROM tblUsers WHERE Username = ?');
-            $stmt->execute([$username]);
-            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+            $stmt->bind_param('s', $username);
+            $stmt->execute();
+            $user = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
 
             if (!$user || !password_verify($password, $user['PasswordHash'])) {
                 /* Log failed attempt to tblLoginAttempts (used by the
@@ -923,7 +962,9 @@ if ($action !== null) {
                 $stmt = $db->prepare(
                     'INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, ?, 0)'
                 );
-                $stmt->execute([$clientIp, $username]);
+                $stmt->bind_param('ss', $clientIp, $username);
+                $stmt->execute();
+                $stmt->close();
 
                 logActivity(
                     'auth.login',
@@ -958,20 +999,28 @@ if ($action !== null) {
             $stmt = $db->prepare(
                 'INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, ?, 1)'
             );
-            $stmt->execute([$clientIp, $username]);
+            $stmt->bind_param('ss', $clientIp, $username);
+            $stmt->execute();
+            $stmt->close();
 
             /* Update last login timestamp and count */
+            $userIdInt = (int)$user['Id'];
             $stmt = $db->prepare(
                 'UPDATE tblUsers SET LastLoginAt = NOW(), LoginCount = LoginCount + 1 WHERE Id = ?'
             );
-            $stmt->execute([(int)$user['Id']]);
+            $stmt->bind_param('i', $userIdInt);
+            $stmt->execute();
+            $stmt->close();
 
             /* Generate API token */
             $token = bin2hex(random_bytes(32));
             $expiresAtTs = time() + 30 * 86400;
             $expiresAt   = gmdate('c', $expiresAtTs);
+            $tokenHash = hash('sha256', $token);
             $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
-            $stmt->execute([hash('sha256', $token), (int)$user['Id'], $expiresAt]);
+            $stmt->bind_param('sis', $tokenHash, $userIdInt, $expiresAt);
+            $stmt->execute();
+            $stmt->close();
 
             /* Cross-subdomain cookie (#390) */
             setAuthTokenCookie($token, $expiresAtTs);
@@ -1015,9 +1064,12 @@ if ($action !== null) {
             $token = getAuthBearerToken();
             $authedUser = $token ? getAuthenticatedUser() : null;
             if ($token) {
-                $db = getDb();
+                $db = getDbMysqli();
                 $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE Token = ?');
-                $stmt->execute([hash('sha256', $token)]);
+                $tokenHash = hash('sha256', $token);
+                $stmt->bind_param('s', $tokenHash);
+                $stmt->execute();
+                $stmt->close();
             }
 
             /* Also clear the auth cookie (#390) so a subsequent page load
@@ -1079,10 +1131,13 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDb();
+            $db = getDbMysqli();
             $stmt = $db->prepare('SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt FROM tblUserSetlists WHERE UserId = ? ORDER BY UpdatedAt DESC');
-            $stmt->execute([$authUser['Id']]);
-            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $authUserId = (int)$authUser['Id'];
+            $stmt->bind_param('i', $authUserId);
+            $stmt->execute();
+            $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
 
             $setlists = array_map(function ($row) {
                 return [
@@ -1133,13 +1188,15 @@ if ($action !== null) {
             /* Cap at 50 setlists per user */
             $localLists = array_slice($body['setlists'], 0, 50);
 
-            $db = getDb();
-            $userId = $authUser['Id'];
+            $db = getDbMysqli();
+            $userId = (int)$authUser['Id'];
 
             /* Fetch all existing server-side setlists for this user */
             $stmt = $db->prepare('SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt FROM tblUserSetlists WHERE UserId = ?');
-            $stmt->execute([$userId]);
-            $serverRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $stmt->bind_param('i', $userId);
+            $stmt->execute();
+            $serverRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
             $serverMap = [];
             foreach ($serverRows as $row) {
                 $serverMap[$row['SetlistId']] = $row;
@@ -1147,7 +1204,16 @@ if ($action !== null) {
 
             $now = gmdate('c');
 
-            /* Upsert each local setlist */
+            /* Upsert each local setlist. NOTE: the SQL below uses
+               PostgreSQL/SQLite ON CONFLICT syntax — almost certainly
+               a leftover from an earlier SQLite era. MySQL would
+               typically use INSERT … ON DUPLICATE KEY UPDATE; the
+               existing PDO version had the same syntax, so this
+               mechanical mysqli conversion preserves it verbatim. If
+               this code path is exercised in production it would
+               error out on prepare(); fixing it is a separate concern
+               (file an issue) and out of scope for the PDO→mysqli
+               migration. */
             $upsert = $db->prepare(
                 'INSERT INTO tblUserSetlists (UserId, SetlistId, Name, SongsJson, CreatedAt, UpdatedAt)
                  VALUES (?, ?, ?, ?, ?, ?)
@@ -1187,18 +1253,23 @@ if ($action !== null) {
                 }
 
                 $songsJson = json_encode($cleanSongs, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-                $createdAt = $list['createdAt'] ?? $now;
+                $createdAt = (string)($list['createdAt'] ?? $now);
 
-                $upsert->execute([$userId, $setlistId, $name, $songsJson, $createdAt, $now]);
+                $upsert->bind_param('isssss',
+                    $userId, $setlistId, $name, $songsJson, $createdAt, $now);
+                $upsert->execute();
 
                 /* Remove from server map so we know which are server-only */
                 unset($serverMap[$setlistId]);
             }
+            $upsert->close();
 
             /* Fetch the merged result (all setlists for this user) */
             $stmt = $db->prepare('SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt FROM tblUserSetlists WHERE UserId = ? ORDER BY UpdatedAt DESC');
-            $stmt->execute([$userId]);
-            $mergedRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $stmt->bind_param('i', $userId);
+            $stmt->execute();
+            $mergedRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
 
             $mergedSetlists = array_map(function ($row) {
                 return [
@@ -1233,12 +1304,15 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
-            $db = getDb();
+            $db = getDbMysqli();
 
             if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                 $stmt = $db->prepare('SELECT Settings, UpdatedAt FROM tblUsers WHERE Id = ?');
-                $stmt->execute([$authUser['Id']]);
-                $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+                $authUserId = (int)$authUser['Id'];
+                $stmt->bind_param('i', $authUserId);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
                 $settingsRaw = $row['Settings'] ?? null;
                 $settings = is_string($settingsRaw) && $settingsRaw !== ''
                     ? (json_decode($settingsRaw, true) ?: new \stdClass())
@@ -1266,7 +1340,10 @@ if ($action !== null) {
                     break;
                 }
                 $stmt = $db->prepare('UPDATE tblUsers SET Settings = ?, UpdatedAt = NOW() WHERE Id = ?');
-                $stmt->execute([$json, $authUser['Id']]);
+                $authUserId = (int)$authUser['Id'];
+                $stmt->bind_param('si', $json, $authUserId);
+                $stmt->execute();
+                $stmt->close();
                 sendJson(['ok' => true]);
                 break;
             }
