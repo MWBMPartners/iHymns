@@ -58,8 +58,10 @@ declare(strict_types=1);
  *     - For edits, log the field-name list + before/after values,
  *       NOT the entire row.
  *
- * @requires PHP 8.1+ with PDO
+ * @requires PHP 8.1+ with mysqli
  */
+
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
 /* =========================================================================
  * DIRECT ACCESS PREVENTION
@@ -211,26 +213,39 @@ function logActivity(
     $rid            = activityLogRequestId();
 
     try {
-        $db = getDb();
+        $db = getDbMysqli();
         $stmt = $db->prepare(
             'INSERT INTO tblActivityLog
                 (UserId, Action, EntityType, EntityId, Result, Details,
                  IpAddress, UserAgent, RequestId, Method, DurationMs, CreatedAt)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())'
         );
-        $stmt->execute([
+        /* Types: UserId(i nullable), Action(s), EntityType(s), EntityId(s),
+           Result(s), Details(s nullable), IpAddress(s), UserAgent(s),
+           RequestId(s), Method(s), DurationMs(i nullable). mysqli passes
+           NULL correctly when the bound variable is null even with type
+           'i' or 's'. */
+        $actionTrim   = substr($action,     0, 50);
+        $entityTrim   = substr($entityType, 0, 50);
+        $entityIdTrim = substr($entityId,   0, 50);
+        $methodTrim   = substr($method,     0, 10);
+        $duration     = $durationMs !== null ? max(0, $durationMs) : null;
+        $stmt->bind_param(
+            'isssssssssi',
             $resolvedUserId,
-            substr($action,     0, 50),
-            substr($entityType, 0, 50),
-            substr($entityId,   0, 50),
+            $actionTrim,
+            $entityTrim,
+            $entityIdTrim,
             $result,
             $detailsJson,
             $ip,
             $ua,
             $rid,
-            substr($method, 0, 10),
-            $durationMs !== null ? max(0, $durationMs) : null,
-        ]);
+            $methodTrim,
+            $duration
+        );
+        $stmt->execute();
+        $stmt->close();
         activityLogWriteCount($count + 1);
     } catch (\Throwable $e) {
         /* Logging is best-effort. A failure here must not propagate.
