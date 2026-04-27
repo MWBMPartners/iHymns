@@ -48,7 +48,14 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
           . DIRECTORY_SEPARATOR . 'debug_mode.php';
 enableDebugModeIfRequested();
 
+/* db.php (PDO) is no longer used by this file after the #554 Batch 4
+   migration, but it's kept in the require chain because other files
+   (api.php, editor/api.php) still call getDb() during their own
+   batch migrations. The capstone PR (#555) removes both this require
+   and db.php itself once Batches 5+6 land. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'db.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+          . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
 /* Entitlement helpers — paired with this file as the canonical /manage/
    bootstrap per the modularity rule in .claude/CLAUDE.md ("Auth + CSRF
@@ -139,7 +146,7 @@ function getCurrentUser(): ?array
         return null;
     }
 
-    $db = getDb();
+    $db = getDbMysqli();
     /* Aliased to lowercase keys so the rest of /manage/ (index.php,
        users.php, entitlements.php, admin-nav.php, …) can use the
        $currentUser['role'] / ['username'] / ['display_name'] shape
@@ -155,8 +162,12 @@ function getCurrentUser(): ?array
          FROM tblUsers
          WHERE Id = ? AND IsActive = 1'
     );
-    $stmt->execute([$_SESSION['user_id']]);
-    return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+    $userId = (int)$_SESSION['user_id'];
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    return $row ?: null;
 }
 
 /**
@@ -336,10 +347,12 @@ function requireGlobalAdmin(): void
 function attemptLogin(string $username, string $password): ?array
 {
     $normalised = strtolower(trim($username));
-    $db = getDb();
+    $db = getDbMysqli();
     $stmt = $db->prepare('SELECT * FROM tblUsers WHERE Username = ? AND IsActive = 1');
-    $stmt->execute([$normalised]);
-    $user = $stmt->fetch(PDO::FETCH_ASSOC);
+    $stmt->bind_param('s', $normalised);
+    $stmt->execute();
+    $user = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
 
     if (!$user || !password_verify($password, $user['PasswordHash'])) {
         /* Failed login (#535) — record reason without leaking whether
@@ -420,10 +433,13 @@ function logout(bool $logEvent = true): void
 function needsSetup(): bool
 {
     try {
-        $db = getDb();
-        $stmt = $db->query('SELECT COUNT(*) FROM tblUsers');
-        return (int)$stmt->fetchColumn() === 0;
-    } catch (\Exception $e) {
+        $db = getDbMysqli();
+        $stmt = $db->prepare('SELECT COUNT(*) FROM tblUsers');
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_row();
+        $stmt->close();
+        return (int)($row[0] ?? 0) === 0;
+    } catch (\Throwable $e) {
         /* Table might not exist yet — needs setup */
         return true;
     }
@@ -442,7 +458,7 @@ function needsSetup(): bool
  */
 function createUser(string $username, string $password, string $displayName, string $role = 'editor', string $email = ''): int
 {
-    $db = getDb();
+    $db = getDbMysqli();
     /* Preserve the case the user chose — the `Username` column is
        utf8mb4_unicode_ci, so uniqueness + login lookups remain
        case-insensitive without us lowercasing. */
@@ -455,21 +471,23 @@ function createUser(string $username, string $password, string $displayName, str
 
     /* Check for duplicate */
     $stmt = $db->prepare('SELECT COUNT(*) FROM tblUsers WHERE Username = ?');
-    $stmt->execute([$username]);
-    if ((int)$stmt->fetchColumn() > 0) {
+    $stmt->bind_param('s', $username);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_row();
+    $stmt->close();
+    if ((int)($row[0] ?? 0) > 0) {
         throw new \RuntimeException('Username already exists.');
     }
 
     $stmt = $db->prepare('INSERT INTO tblUsers (Username, PasswordHash, DisplayName, Role, Email) VALUES (?, ?, ?, ?, ?)');
-    $stmt->execute([
-        $username,
-        password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]),
-        trim($displayName),
-        $role,
-        trim($email),
-    ]);
-
-    $newUserId = (int)$db->lastInsertId();
+    $passHash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
+    $displayTrim = trim($displayName);
+    $emailTrim   = trim($email);
+    $stmt->bind_param('sssss',
+        $username, $passHash, $displayTrim, $role, $emailTrim);
+    $stmt->execute();
+    $newUserId = (int)$db->insert_id;
+    $stmt->close();
 
     /* Audit (#535). Password is hashed before insert and the hash
        never enters Details per project-rules.md §10. */
@@ -506,12 +524,14 @@ function updateUserRole(int $userId, string $newRole, array $actingUser): bool
         throw new \RuntimeException('Invalid role: ' . $newRole);
     }
 
-    $db = getDb();
+    $db = getDbMysqli();
     /* $actingUser comes from getCurrentUser() which is lowercase-
        aliased; match that shape when reading role. */
     $stmt = $db->prepare('SELECT Role AS role FROM tblUsers WHERE Id = ?');
-    $stmt->execute([$userId]);
-    $target = $stmt->fetch(PDO::FETCH_ASSOC);
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $target = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
     if (!$target) throw new \RuntimeException('User not found.');
 
     $actingLevel = roleLevel($actingUser['role']);
@@ -534,7 +554,9 @@ function updateUserRole(int $userId, string $newRole, array $actingUser): bool
     }
 
     $stmt = $db->prepare('UPDATE tblUsers SET Role = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
-    $stmt->execute([$newRole, $userId]);
+    $stmt->bind_param('si', $newRole, $userId);
+    $stmt->execute();
+    $stmt->close();
 
     /* Audit row (#535) — `before` / `after` makes the timeline
        readable in /manage/activity-log without joining anything. */
@@ -576,13 +598,16 @@ function updateUserRole(int $userId, string $newRole, array $actingUser): bool
  */
 function generatePasswordResetToken(string $usernameOrEmail): ?array
 {
-    $db = getDb();
+    $db = getDbMysqli();
     $input = strtolower(trim($usernameOrEmail));
 
-    /* Look up by username or email */
+    /* Look up by username or email — same value bound twice (mysqli
+       requires per-position binds). */
     $stmt = $db->prepare('SELECT Id, Username, Email FROM tblUsers WHERE (Username = ? OR Email = ?) AND IsActive = 1');
-    $stmt->execute([$input, $input]);
-    $user = $stmt->fetch(PDO::FETCH_ASSOC);
+    $stmt->bind_param('ss', $input, $input);
+    $stmt->execute();
+    $user = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
 
     if (!$user) return null;
 
@@ -591,13 +616,18 @@ function generatePasswordResetToken(string $usernameOrEmail): ?array
     $expiresAt = gmdate('c', time() + 3600); /* 1 hour */
 
     /* Invalidate any existing tokens for this user */
+    $userIdInt = (int)$user['Id'];
     $stmt = $db->prepare('DELETE FROM tblPasswordResetTokens WHERE UserId = ?');
-    $stmt->execute([$user['Id']]);
+    $stmt->bind_param('i', $userIdInt);
+    $stmt->execute();
+    $stmt->close();
 
     /* Insert new token (store SHA-256 hash; raw token is returned to the caller) */
     $hashedToken = hash('sha256', $token);
     $stmt = $db->prepare('INSERT INTO tblPasswordResetTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
-    $stmt->execute([$hashedToken, $user['Id'], $expiresAt]);
+    $stmt->bind_param('sis', $hashedToken, $userIdInt, $expiresAt);
+    $stmt->execute();
+    $stmt->close();
 
     return [
         'token'    => $token,
@@ -615,16 +645,20 @@ function generatePasswordResetToken(string $usernameOrEmail): ?array
  */
 function validatePasswordResetToken(string $token): ?array
 {
-    $db = getDb();
+    $db = getDbMysqli();
     $hashedToken = hash('sha256', $token);
+    $now = gmdate('c');
     $stmt = $db->prepare(
         'SELECT t.UserId, u.Username
          FROM tblPasswordResetTokens t
          JOIN tblUsers u ON u.Id = t.UserId
          WHERE t.Token = ? AND t.ExpiresAt > ? AND t.Used = 0 AND u.IsActive = 1'
     );
-    $stmt->execute([$hashedToken, gmdate('c')]);
-    return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+    $stmt->bind_param('ss', $hashedToken, $now);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    return $row ?: null;
 }
 
 /**
@@ -651,21 +685,28 @@ function resetPassword(string $token, string $newPassword): bool
         return false;
     }
 
-    $db = getDb();
+    $db = getDbMysqli();
 
     /* Update password */
     $hash = password_hash($newPassword, PASSWORD_BCRYPT, ['cost' => 12]);
+    $resetUserId = (int)$tokenData['UserId'];
     $stmt = $db->prepare('UPDATE tblUsers SET PasswordHash = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
-    $stmt->execute([$hash, $tokenData['UserId']]);
+    $stmt->bind_param('si', $hash, $resetUserId);
+    $stmt->execute();
+    $stmt->close();
 
     /* Mark token as used */
     $hashedToken = hash('sha256', $token);
     $stmt = $db->prepare('UPDATE tblPasswordResetTokens SET Used = 1 WHERE Token = ?');
-    $stmt->execute([$hashedToken]);
+    $stmt->bind_param('s', $hashedToken);
+    $stmt->execute();
+    $stmt->close();
 
     /* Invalidate all API tokens for this user (force re-login) */
     $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ?');
-    $stmt->execute([$tokenData['UserId']]);
+    $stmt->bind_param('i', $resetUserId);
+    $stmt->execute();
+    $stmt->close();
 
     /* Audit (#535). Note PasswordHash itself never goes into Details
        per the privacy contract in project-rules.md §10. */
@@ -721,14 +762,18 @@ function validateCsrf(string $token): bool
  */
 function changeUserPassword(int $userId, string $newPassword): bool
 {
-    $db = getDb();
+    $db = getDbMysqli();
     $hash = password_hash($newPassword, PASSWORD_BCRYPT, ['cost' => 12]);
     $stmt = $db->prepare('UPDATE tblUsers SET PasswordHash = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
-    $stmt->execute([$hash, $userId]);
+    $stmt->bind_param('si', $hash, $userId);
+    $stmt->execute();
+    $stmt->close();
 
     /* Invalidate all API tokens (force re-login) */
     $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ?');
-    $stmt->execute([$userId]);
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $stmt->close();
 
     /* Session-fixation defence (#531) — if the password change applies
        to the current /manage/ session, rotate the PHP session ID
@@ -762,20 +807,24 @@ function changeUserPassword(int $userId, string $newPassword): bool
  */
 function updateUserProfile(int $userId, string $displayName, string $email): bool
 {
-    $db = getDb();
+    $db = getDbMysqli();
 
     /* Capture the before state for the audit row (#535) so admins
        can see what changed in /manage/activity-log without joining
        a separate revisions table. */
     $beforeStmt = $db->prepare('SELECT DisplayName AS display_name, Email AS email FROM tblUsers WHERE Id = ?');
-    $beforeStmt->execute([$userId]);
-    $before = $beforeStmt->fetch(PDO::FETCH_ASSOC) ?: ['display_name' => null, 'email' => null];
+    $beforeStmt->bind_param('i', $userId);
+    $beforeStmt->execute();
+    $before = $beforeStmt->get_result()->fetch_assoc() ?: ['display_name' => null, 'email' => null];
+    $beforeStmt->close();
 
     $newDisplayName = trim($displayName);
     $newEmail       = trim($email);
 
     $stmt = $db->prepare('UPDATE tblUsers SET DisplayName = ?, Email = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
-    $stmt->execute([$newDisplayName, $newEmail, $userId]);
+    $stmt->bind_param('ssi', $newDisplayName, $newEmail, $userId);
+    $stmt->execute();
+    $stmt->close();
 
     /* Build a fields-changed list so the audit row is concise. */
     $changed = [];
@@ -825,10 +874,13 @@ function renameUser(int $userId, string $newUsername, ?string &$error = null): b
         return false;
     }
 
-    $db = getDb();
+    $db = getDbMysqli();
     $stmt = $db->prepare('SELECT Id FROM tblUsers WHERE Username = ? AND Id <> ?');
-    $stmt->execute([$newUsername, $userId]);
-    if ($stmt->fetch()) {
+    $stmt->bind_param('si', $newUsername, $userId);
+    $stmt->execute();
+    $exists = $stmt->get_result()->fetch_row() !== null;
+    $stmt->close();
+    if ($exists) {
         $error = 'Username is already taken.';
         return false;
     }
@@ -836,11 +888,16 @@ function renameUser(int $userId, string $newUsername, ?string &$error = null): b
     /* Capture old username before the update so the audit row can
        carry both halves of the rename. (#535) */
     $oldStmt = $db->prepare('SELECT Username FROM tblUsers WHERE Id = ?');
-    $oldStmt->execute([$userId]);
-    $oldUsername = (string)($oldStmt->fetchColumn() ?: '');
+    $oldStmt->bind_param('i', $userId);
+    $oldStmt->execute();
+    $row = $oldStmt->get_result()->fetch_row();
+    $oldStmt->close();
+    $oldUsername = (string)($row[0] ?? '');
 
     $stmt = $db->prepare('UPDATE tblUsers SET Username = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
-    $stmt->execute([$newUsername, $userId]);
+    $stmt->bind_param('si', $newUsername, $userId);
+    $stmt->execute();
+    $stmt->close();
 
     logActivity(
         'auth.username_change',
@@ -864,14 +921,19 @@ function renameUser(int $userId, string $newUsername, ?string &$error = null): b
  */
 function setUserActive(int $userId, bool $isActive): bool
 {
-    $db = getDb();
+    $db = getDbMysqli();
+    $isActiveInt = $isActive ? 1 : 0;
     $stmt = $db->prepare('UPDATE tblUsers SET IsActive = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
-    $stmt->execute([$isActive ? 1 : 0, $userId]);
+    $stmt->bind_param('ii', $isActiveInt, $userId);
+    $stmt->execute();
+    $stmt->close();
 
     /* If deactivating, invalidate all their tokens */
     if (!$isActive) {
         $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ?');
-        $stmt->execute([$userId]);
+        $stmt->bind_param('i', $userId);
+        $stmt->execute();
+        $stmt->close();
     }
 
     /* Audit (#535) — `user.activate` / `user.deactivate` so the action
@@ -894,19 +956,23 @@ function setUserActive(int $userId, bool $isActive): bool
  */
 function deleteUser(int $userId): bool
 {
-    $db = getDb();
+    $db = getDbMysqli();
 
     /* Capture username for the audit row before the row vanishes
        — the FK from tblActivityLog.UserId to tblUsers is `ON DELETE
        SET NULL`, so after the cascade the log loses any obvious
        handle on who got deleted unless we record it here. (#535) */
     $beforeStmt = $db->prepare('SELECT Username, DisplayName, Role, Email FROM tblUsers WHERE Id = ?');
-    $beforeStmt->execute([$userId]);
-    $before = $beforeStmt->fetch(PDO::FETCH_ASSOC) ?: null;
+    $beforeStmt->bind_param('i', $userId);
+    $beforeStmt->execute();
+    $before = $beforeStmt->get_result()->fetch_assoc() ?: null;
+    $beforeStmt->close();
 
     $stmt = $db->prepare('DELETE FROM tblUsers WHERE Id = ?');
-    $stmt->execute([$userId]);
-    $deleted = (int)$stmt->rowCount() > 0;
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $deleted = $stmt->affected_rows > 0;
+    $stmt->close();
 
     if ($deleted) {
         logActivity(
@@ -928,7 +994,7 @@ function deleteUser(int $userId): bool
  */
 function getUserById(int $userId): ?array
 {
-    $db = getDb();
+    $db = getDbMysqli();
     /* Aliased to lowercase keys so callers in manage/users.php can read
        $target['role'] / ['username'] / ['is_active'] consistently with
        getCurrentUser() and the main user listing query. */
@@ -944,8 +1010,11 @@ function getUserById(int $userId): ?array
                 UpdatedAt AS updated_at
          FROM tblUsers WHERE Id = ?'
     );
-    $stmt->execute([$userId]);
-    return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    return $row ?: null;
 }
 
 /* =========================================================================
@@ -975,22 +1044,27 @@ function generateEmailLoginToken(string $email, string $clientIp = ''): ?array
         return null;
     }
 
-    $db = getDb();
+    $db = getDbMysqli();
 
     /* Rate limit: max 5 requests per email per hour */
     $stmt = $db->prepare(
         'SELECT COUNT(*) FROM tblEmailLoginTokens
          WHERE Email = ? AND CreatedAt > DATE_SUB(NOW(), INTERVAL 1 HOUR)'
     );
-    $stmt->execute([$email]);
-    if ((int)$stmt->fetchColumn() >= 5) {
+    $stmt->bind_param('s', $email);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_row();
+    $stmt->close();
+    if ((int)($row[0] ?? 0) >= 5) {
         return null; /* Rate limited */
     }
 
     /* Check if user already exists with this email */
     $stmt = $db->prepare('SELECT Id FROM tblUsers WHERE Email = ? AND IsActive = 1');
-    $stmt->execute([$email]);
-    $existingUser = $stmt->fetch(PDO::FETCH_ASSOC);
+    $stmt->bind_param('s', $email);
+    $stmt->execute();
+    $existingUser = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
     $userId = $existingUser ? (int)$existingUser['Id'] : null;
 
     /* Generate token (48-char hex) and code (6-digit numeric) */
@@ -1002,14 +1076,21 @@ function generateEmailLoginToken(string $email, string $clientIp = ''): ?array
     $stmt = $db->prepare(
         'UPDATE tblEmailLoginTokens SET Used = 1 WHERE Email = ? AND Used = 0'
     );
-    $stmt->execute([$email]);
+    $stmt->bind_param('s', $email);
+    $stmt->execute();
+    $stmt->close();
 
-    /* Insert new token */
+    /* Insert new token. UserId is nullable when the email doesn't
+       match an existing user yet (first-login flow); mysqli passes
+       NULL correctly with type 'i' when the bound variable is null. */
     $stmt = $db->prepare(
         'INSERT INTO tblEmailLoginTokens (Email, UserId, Token, Code, ExpiresAt, IpAddress)
          VALUES (?, ?, ?, ?, ?, ?)'
     );
-    $stmt->execute([$email, $userId, $token, $code, $expiresAt, $clientIp]);
+    $stmt->bind_param('sissss',
+        $email, $userId, $token, $code, $expiresAt, $clientIp);
+    $stmt->execute();
+    $stmt->close();
 
     return [
         'token'     => $token,
@@ -1032,21 +1113,26 @@ function verifyEmailLoginToken(string $token): ?array
         return null;
     }
 
-    $db = getDb();
+    $db = getDbMysqli();
     $stmt = $db->prepare(
         'SELECT Id, Email, UserId FROM tblEmailLoginTokens
          WHERE Token = ? AND Used = 0 AND ExpiresAt > NOW()'
     );
-    $stmt->execute([$token]);
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    $stmt->bind_param('s', $token);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
 
     if (!$row) {
         return null;
     }
 
     /* Mark as used */
+    $rowId = (int)$row['Id'];
     $stmt = $db->prepare('UPDATE tblEmailLoginTokens SET Used = 1 WHERE Id = ?');
-    $stmt->execute([$row['Id']]);
+    $stmt->bind_param('i', $rowId);
+    $stmt->execute();
+    $stmt->close();
 
     return [
         'userId' => $row['UserId'] ? (int)$row['UserId'] : null,
@@ -1070,22 +1156,27 @@ function verifyEmailLoginCode(string $email, string $code): ?array
         return null;
     }
 
-    $db = getDb();
+    $db = getDbMysqli();
     $stmt = $db->prepare(
         'SELECT Id, Email, UserId FROM tblEmailLoginTokens
          WHERE Email = ? AND Code = ? AND Used = 0 AND ExpiresAt > NOW()
          ORDER BY CreatedAt DESC LIMIT 1'
     );
-    $stmt->execute([$email, $code]);
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    $stmt->bind_param('ss', $email, $code);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
 
     if (!$row) {
         return null;
     }
 
     /* Mark as used */
+    $rowId = (int)$row['Id'];
     $stmt = $db->prepare('UPDATE tblEmailLoginTokens SET Used = 1 WHERE Id = ?');
-    $stmt->execute([$row['Id']]);
+    $stmt->bind_param('i', $rowId);
+    $stmt->execute();
+    $stmt->close();
 
     return [
         'userId' => $row['UserId'] ? (int)$row['UserId'] : null,
@@ -1103,7 +1194,7 @@ function verifyEmailLoginCode(string $email, string $code): ?array
  */
 function completeEmailLogin(string $email, ?int $userId): array
 {
-    $db = getDb();
+    $db = getDbMysqli();
 
     if ($userId === null) {
         /* Create a new user from the email address */
@@ -1113,52 +1204,73 @@ function completeEmailLogin(string $email, ?int $userId): array
             $username = 'user_' . bin2hex(random_bytes(3));
         }
 
-        /* Ensure username uniqueness */
+        /* Ensure username uniqueness — same prepared statement reused
+           across iterations, with $username as the bound variable
+           that we update each time. */
         $baseUsername = $username;
         $counter = 1;
+        $countStmt = $db->prepare('SELECT COUNT(*) FROM tblUsers WHERE Username = ?');
+        $countStmt->bind_param('s', $username);
         while (true) {
-            $stmt = $db->prepare('SELECT COUNT(*) FROM tblUsers WHERE Username = ?');
-            $stmt->execute([$username]);
-            if ((int)$stmt->fetchColumn() === 0) break;
+            $countStmt->execute();
+            $row = $countStmt->get_result()->fetch_row();
+            if ((int)($row[0] ?? 0) === 0) break;
             $username = $baseUsername . $counter;
             $counter++;
         }
+        $countStmt->close();
 
         /* First user gets global_admin, others get user */
-        $stmt = $db->query('SELECT COUNT(*) FROM tblUsers');
-        $role = ((int)$stmt->fetchColumn() === 0) ? 'global_admin' : 'user';
+        $stmt = $db->prepare('SELECT COUNT(*) FROM tblUsers');
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_row();
+        $stmt->close();
+        $role = ((int)($row[0] ?? 0) === 0) ? 'global_admin' : 'user';
 
         $displayName = ucfirst($baseUsername);
+        $emptyPwHash = '';
         $stmt = $db->prepare(
             'INSERT INTO tblUsers (Username, Email, EmailVerified, PasswordHash, DisplayName, Role)
              VALUES (?, ?, 1, ?, ?, ?)'
         );
-        $stmt->execute([$username, $email, '', $displayName, $role]);
-        $userId = (int)$db->lastInsertId();
+        $stmt->bind_param('sssss',
+            $username, $email, $emptyPwHash, $displayName, $role);
+        $stmt->execute();
+        $userId = (int)$db->insert_id;
+        $stmt->close();
     } else {
         /* Existing user — mark email as verified */
         $stmt = $db->prepare('UPDATE tblUsers SET EmailVerified = 1 WHERE Id = ?');
-        $stmt->execute([$userId]);
+        $stmt->bind_param('i', $userId);
+        $stmt->execute();
+        $stmt->close();
     }
 
     /* Update login stats */
     $stmt = $db->prepare(
         'UPDATE tblUsers SET LastLoginAt = NOW(), LoginCount = LoginCount + 1 WHERE Id = ?'
     );
-    $stmt->execute([$userId]);
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $stmt->close();
 
     /* Fetch user record */
     $stmt = $db->prepare(
         'SELECT Id, Username, DisplayName, Email, Role FROM tblUsers WHERE Id = ?'
     );
-    $stmt->execute([$userId]);
-    $user = $stmt->fetch(PDO::FETCH_ASSOC);
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $user = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
 
     /* Generate API bearer token (30-day expiry) */
     $token = bin2hex(random_bytes(32));
     $expiresAt = gmdate('c', time() + 30 * 86400);
+    $tokenHash = hash('sha256', $token);
     $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
-    $stmt->execute([hash('sha256', $token), $userId, $expiresAt]);
+    $stmt->bind_param('sis', $tokenHash, $userId, $expiresAt);
+    $stmt->execute();
+    $stmt->close();
 
     return [
         'token' => $token,
