@@ -14,6 +14,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'card_layout.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
 /* Dashboard is now the single landing page for every management
    surface, so admit any signed-in user who holds at least one
@@ -45,13 +46,21 @@ $activePage  = 'dashboard';
 /* Gather stats — all queries updated for the v0.10 PascalCase schema
    (#407). Each is wrapped in try/catch so a missing table during early
    setup doesn't blank the whole dashboard. */
-$db = getDb();
+$db = getDbMysqli();
 
 $tryInt = function (string $sql, array $params = []) use ($db): int {
     try {
         $stmt = $db->prepare($sql);
-        $stmt->execute($params);
-        return (int)$stmt->fetchColumn();
+        /* All current callers pass string params; default to 's'×N
+           and skip bind_param when there are no params (mysqli rejects
+           an empty type string). */
+        if (!empty($params)) {
+            $stmt->bind_param(str_repeat('s', count($params)), ...$params);
+        }
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_row();
+        $stmt->close();
+        return (int)($row[0] ?? 0);
     } catch (\Throwable $_e) {
         return 0;
     }
@@ -70,22 +79,28 @@ $views24h      = $tryInt('SELECT COUNT(*) FROM tblSongHistory WHERE ViewedAt >= 
 /* User counts by role */
 $roleCounts = [];
 try {
-    $rs = $db->query('SELECT Role, COUNT(*) AS cnt FROM tblUsers WHERE IsActive = 1 GROUP BY Role');
-    while ($row = $rs->fetch(PDO::FETCH_ASSOC)) {
+    $stmt = $db->prepare('SELECT Role, COUNT(*) AS cnt FROM tblUsers WHERE IsActive = 1 GROUP BY Role');
+    $stmt->execute();
+    $res = $stmt->get_result();
+    while ($row = $res->fetch_assoc()) {
         $roleCounts[$row['Role']] = (int)$row['cnt'];
     }
+    $stmt->close();
 } catch (\Throwable $_e) {}
 
 /* Recent users (last 10) */
 $recentUsers = [];
 try {
-    $recentUsers = $db->query(
+    $stmt = $db->prepare(
         'SELECT Id AS id, Username AS username, DisplayName AS display_name,
                 Role AS role, IsActive AS is_active, CreatedAt AS created_at
            FROM tblUsers
           ORDER BY CreatedAt DESC
           LIMIT 10'
-    )->fetchAll(PDO::FETCH_ASSOC);
+    );
+    $stmt->execute();
+    $recentUsers = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
 } catch (\Throwable $_e) {}
 
 $csrf = csrfToken();
