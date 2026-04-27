@@ -19,6 +19,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
 requireAuth();
 $currentUser = getCurrentUser();
@@ -50,8 +51,11 @@ if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $toDate))   $toDate   = $defaultTo;
 /* ========================================================================
  * Pull the report rows
  * ======================================================================== */
-$db = getDb();
+$db = getDbMysqli();
 
+/* $ccliFilter is built from a server-side bool ($showAll) and only
+   ever takes one of two literal values — never user input. Safe to
+   interpolate. */
 $ccliFilter = $showAll ? '' : "AND s.Ccli <> ''";
 
 try {
@@ -76,8 +80,10 @@ try {
           ORDER BY view_count DESC, s.Title ASC
           LIMIT 5000"
     );
-    $stmt->execute([$fromDate, $toDate]);
-    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $stmt->bind_param('ss', $fromDate, $toDate);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
 } catch (\Throwable $e) {
     error_log('[ccli-report] query failed: ' . $e->getMessage());
     $rows = [];
