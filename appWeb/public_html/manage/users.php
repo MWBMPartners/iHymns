@@ -14,6 +14,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 requireAdmin();
 
 $currentUser = getCurrentUser();
@@ -161,14 +162,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } elseif ($newTier === '') {
                     $error = 'Pick a tier.';
                 } else {
-                    $db = getDb();
+                    $db = getDbMysqli();
                     $stmt = $db->prepare('SELECT 1 FROM tblAccessTiers WHERE Name = ?');
-                    $stmt->execute([$newTier]);
-                    if (!$stmt->fetch()) {
+                    $stmt->bind_param('s', $newTier);
+                    $stmt->execute();
+                    $exists = $stmt->get_result()->fetch_row() !== null;
+                    $stmt->close();
+                    if (!$exists) {
                         $error = 'Unknown access tier.';
                     } else {
                         $stmt = $db->prepare('UPDATE tblUsers SET AccessTier = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
-                        $stmt->execute([$newTier, $targetId]);
+                        $stmt->bind_param('si', $newTier, $targetId);
+                        $stmt->execute();
+                        $stmt->close();
                         $success = 'Access tier updated for "' . $target['username'] . '".';
                     }
                 }
@@ -200,17 +206,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
  * FETCH DATA
  * ========================================================================= */
 
-$db = getDb();
-$users = $db->query('SELECT Id AS id, Username AS username, DisplayName AS display_name, Email AS email, Role AS role, IsActive AS is_active, AccessTier AS access_tier, CreatedAt AS created_at FROM tblUsers ORDER BY CreatedAt ASC')->fetchAll(PDO::FETCH_ASSOC);
+$db = getDbMysqli();
+$stmt = $db->prepare(
+    'SELECT Id AS id, Username AS username, DisplayName AS display_name, Email AS email,
+            Role AS role, IsActive AS is_active, AccessTier AS access_tier, CreatedAt AS created_at
+       FROM tblUsers
+      ORDER BY CreatedAt ASC'
+);
+$stmt->execute();
+$users = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+$stmt->close();
 
 /* Available access tiers for the Change-tier modal. Falls back to an empty
    list if the table is missing (e.g. pre-migration DB) — in that case the
    Tier button is hidden rather than breaking the page. */
 $accessTiers = [];
 try {
-    $accessTiers = $db->query(
+    $stmt = $db->prepare(
         'SELECT Name, DisplayName, Level FROM tblAccessTiers ORDER BY Level ASC, Name ASC'
-    )->fetchAll(PDO::FETCH_ASSOC);
+    );
+    $stmt->execute();
+    $accessTiers = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
 } catch (\Throwable $_e) { /* tier table not installed yet — hide control */ }
 
 $canAssignTier = !empty($accessTiers) && userHasEntitlement('assign_user_tier', $currentUser['role'] ?? null);
