@@ -1109,19 +1109,31 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                                     <?php endif; ?>
                                 </td>
                                 <td class="text-end action-col">
-                                    <?php if ($p['registry_id'] !== null): ?>
-                                        <button type="button" class="btn btn-sm btn-outline-info cp-edit-btn"
-                                                title="Edit person details"
-                                                aria-label="Edit person <?= htmlspecialchars($p['name'], ENT_QUOTES) ?>">
-                                            <i class="bi bi-pencil" aria-hidden="true"></i>
-                                        </button>
-                                    <?php else: ?>
-                                        <button type="button" class="btn btn-sm btn-outline-info cp-edit-btn"
-                                                title="Add to registry — fills in the name + opens the detail drawer for this person"
-                                                aria-label="Add <?= htmlspecialchars($p['name'], ENT_QUOTES) ?> to the registry">
-                                            <i class="bi bi-plus-circle" aria-hidden="true"></i>
-                                        </button>
-                                    <?php endif; ?>
+                                    <div class="btn-group btn-group-sm" role="group" aria-label="Row actions">
+                                        <?php if ($p['registry_id'] !== null): ?>
+                                            <button type="button" class="btn btn-outline-info cp-edit-btn"
+                                                    title="Edit person details"
+                                                    aria-label="Edit person <?= htmlspecialchars($p['name'], ENT_QUOTES) ?>">
+                                                <i class="bi bi-pencil" aria-hidden="true"></i>
+                                            </button>
+                                            <button type="button" class="btn btn-outline-warning cp-rename-btn"
+                                                    title="Rename — cascades to every song that cites this person"
+                                                    aria-label="Rename person <?= htmlspecialchars($p['name'], ENT_QUOTES) ?>">
+                                                <i class="bi bi-pencil-square" aria-hidden="true"></i>
+                                            </button>
+                                            <button type="button" class="btn btn-outline-warning cp-merge-btn"
+                                                    title="Merge into another person — combines two registry rows"
+                                                    aria-label="Merge person <?= htmlspecialchars($p['name'], ENT_QUOTES) ?>">
+                                                <i class="bi bi-union" aria-hidden="true"></i>
+                                            </button>
+                                        <?php else: ?>
+                                            <button type="button" class="btn btn-outline-info cp-edit-btn"
+                                                    title="Add to registry — fills in the name + opens the detail drawer for this person"
+                                                    aria-label="Add <?= htmlspecialchars($p['name'], ENT_QUOTES) ?> to the registry">
+                                                <i class="bi bi-plus-circle" aria-hidden="true"></i>
+                                            </button>
+                                        <?php endif; ?>
+                                    </div>
                                 </td>
                             </tr>
                         <?php endforeach; ?>
@@ -1133,6 +1145,111 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
             </div>
         </div>
 
+    </div>
+
+    <!-- =========================================================================
+         Rename modal — changes the canonical name + cascades to the
+         five song-credit tables.
+         ========================================================================= -->
+    <div class="modal fade" id="cpRenameModal" tabindex="-1" aria-labelledby="cpRenameLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content bg-dark border-secondary">
+                <form method="POST">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="rename">
+                    <input type="hidden" name="id" id="cp-rename-id" value="">
+                    <div class="modal-header border-secondary">
+                        <h5 class="modal-title" id="cpRenameLabel">
+                            <i class="bi bi-pencil-square me-2"></i>Rename person
+                        </h5>
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="mb-2">
+                            <label class="form-label small">Current name</label>
+                            <input type="text" class="form-control form-control-sm" id="cp-rename-current" readonly>
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label small" for="cp-rename-new">New name <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control form-control-sm" id="cp-rename-new" name="new_name" maxlength="255" required>
+                        </div>
+                        <div class="alert alert-warning py-2 small mb-0" id="cp-rename-impact">
+                            Renaming will update the spelling on every song that currently cites this person.
+                        </div>
+                    </div>
+                    <div class="modal-footer border-secondary">
+                        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-warning btn-sm">
+                            <i class="bi bi-pencil-square me-1"></i>Rename and cascade
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- =========================================================================
+         Merge modal — collapses two registry rows into one. The admin
+         picks a target from the dropdown of all other registry rows;
+         the source's links / IPI are listed with checkboxes (default
+         checked) so the admin can drop duplicates before they migrate.
+         ========================================================================= -->
+    <div class="modal fade" id="cpMergeModal" tabindex="-1" aria-labelledby="cpMergeLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content bg-dark border-secondary">
+                <form method="POST">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="merge">
+                    <input type="hidden" name="source_id" id="cp-merge-source-id" value="">
+                    <div class="modal-header border-secondary">
+                        <h5 class="modal-title" id="cpMergeLabel">
+                            <i class="bi bi-union me-2"></i>Merge person into another
+                        </h5>
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="row g-2 mb-3">
+                            <div class="col-6">
+                                <label class="form-label small">Source (will be removed)</label>
+                                <input type="text" class="form-control form-control-sm" id="cp-merge-source-name" readonly>
+                            </div>
+                            <div class="col-6">
+                                <label class="form-label small" for="cp-merge-target">Target (survives) <span class="text-danger">*</span></label>
+                                <select class="form-select form-select-sm" id="cp-merge-target" name="target_id" required>
+                                    <option value="">— pick the surviving person —</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div id="cp-merge-children" class="d-none">
+                            <h6 class="small text-secondary mb-2">Source's links / IPI numbers</h6>
+                            <p class="small text-secondary">
+                                Untick any rows you want to drop. Anything ticked moves to the target;
+                                anything unticked is removed when the source row is deleted.
+                                The target's own links / IPI are unaffected.
+                            </p>
+                            <div id="cp-merge-children-empty" class="alert alert-secondary py-2 small mb-2 d-none">
+                                Source has no links or IPI numbers — nothing to migrate.
+                            </div>
+                            <div id="cp-merge-children-links"  class="mb-2"></div>
+                            <div id="cp-merge-children-ipi"></div>
+                        </div>
+
+                        <div class="alert alert-warning py-2 small mb-0">
+                            Merging re-points every song-credit row from the source name to the target
+                            name across the five song-credit tables, then removes the source registry
+                            row. Tracked in the activity log with full per-table affected counts.
+                        </div>
+                    </div>
+                    <div class="modal-footer border-secondary">
+                        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-warning btn-sm" id="cp-merge-submit" disabled>
+                            <i class="bi bi-union me-1"></i>Merge
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
     </div>
 
     <!-- =========================================================================
@@ -1446,6 +1563,172 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                 if (!remove) return;
                 const row = remove.closest('.cp-link-row, .cp-ipi-row');
                 if (row) row.remove();
+            });
+        })();
+
+        /* =========================================================================
+           Rename modal — opens with the row's current name shown
+           read-only and a new-name input. Submit POSTs action=rename.
+           ========================================================================= */
+        (function () {
+            const modalEl = document.getElementById('cpRenameModal');
+            if (!modalEl) return;
+            const modal     = bootstrap.Modal.getOrCreateInstance(modalEl);
+            const idIn      = document.getElementById('cp-rename-id');
+            const currentIn = document.getElementById('cp-rename-current');
+            const newIn     = document.getElementById('cp-rename-new');
+            const impactEl  = document.getElementById('cp-rename-impact');
+
+            document.addEventListener('click', (ev) => {
+                const btn = ev.target.closest('.cp-rename-btn');
+                if (!btn) return;
+                const row = btn.closest('tr');
+                if (!row) return;
+                const raw = row.getAttribute('data-person');
+                if (!raw) return;
+                let person; try { person = JSON.parse(raw); } catch (_) { return; }
+                if (!person.registry_id) return;
+
+                /* Build a "this will affect …" line from the role
+                   counts already on the row. */
+                const cells = row.querySelectorAll('.role-pill');
+                const counts = {};
+                cells.forEach(p => {
+                    const txt = p.textContent.trim();
+                    const [k, v] = txt.split('·');
+                    if (k && v) counts[k] = parseInt(v, 10) || 0;
+                });
+                const total = Object.values(counts).reduce((a, b) => a + b, 0);
+                if (total === 0) {
+                    impactEl.textContent = 'This person isn\'t cited by any song yet — only the registry row will be updated.';
+                } else {
+                    const parts = [];
+                    if (counts.W  > 0) parts.push(counts.W  + ' writer(s)');
+                    if (counts.C  > 0) parts.push(counts.C  + ' composer(s)');
+                    if (counts.Ar > 0) parts.push(counts.Ar + ' arranger(s)');
+                    if (counts.Ad > 0) parts.push(counts.Ad + ' adaptor(s)');
+                    if (counts.T  > 0) parts.push(counts.T  + ' translator(s)');
+                    impactEl.textContent = 'Will update ' + total + ' song-credit row(s): '
+                        + parts.join(', ') + '.';
+                }
+
+                idIn.value     = String(person.registry_id);
+                currentIn.value= person.name || '';
+                newIn.value    = person.name || '';
+                modal.show();
+                setTimeout(() => { newIn.focus(); newIn.select(); }, 200);
+            });
+        })();
+
+        /* =========================================================================
+           Merge modal — opens with the source row pre-set, populates
+           the target dropdown from every OTHER registry row, and
+           shows the source's links / IPI for migrate-or-drop selection.
+           ========================================================================= */
+        (function () {
+            const modalEl = document.getElementById('cpMergeModal');
+            if (!modalEl) return;
+            const modal      = bootstrap.Modal.getOrCreateInstance(modalEl);
+            const sourceIdIn = document.getElementById('cp-merge-source-id');
+            const sourceNameIn = document.getElementById('cp-merge-source-name');
+            const targetSel  = document.getElementById('cp-merge-target');
+            const childrenWrap = document.getElementById('cp-merge-children');
+            const childrenEmpty = document.getElementById('cp-merge-children-empty');
+            const linksBox   = document.getElementById('cp-merge-children-links');
+            const ipiBox     = document.getElementById('cp-merge-children-ipi');
+            const submitBtn  = document.getElementById('cp-merge-submit');
+
+            /* Build the registry-row index once on page load. Used to
+               populate the target dropdown excluding the source. */
+            const registry = [];
+            document.querySelectorAll('#cp-tbody tr[data-person]').forEach(r => {
+                let p; try { p = JSON.parse(r.getAttribute('data-person')); } catch (_) { return; }
+                if (p.registry_id) registry.push({ id: p.registry_id, name: p.name });
+            });
+            registry.sort((a, b) => a.name.localeCompare(b.name));
+
+            document.addEventListener('click', (ev) => {
+                const btn = ev.target.closest('.cp-merge-btn');
+                if (!btn) return;
+                const row = btn.closest('tr');
+                if (!row) return;
+                const raw = row.getAttribute('data-person');
+                if (!raw) return;
+                let person; try { person = JSON.parse(raw); } catch (_) { return; }
+                if (!person.registry_id) return;
+
+                sourceIdIn.value   = String(person.registry_id);
+                sourceNameIn.value = person.name || '';
+
+                /* Populate target dropdown — every registry row except
+                   the source. Sorted alphabetically. */
+                targetSel.innerHTML = '<option value="">— pick the surviving person —</option>';
+                registry.forEach(p => {
+                    if (p.id === person.registry_id) return;
+                    const opt = document.createElement('option');
+                    opt.value = String(p.id);
+                    opt.textContent = p.name;
+                    targetSel.appendChild(opt);
+                });
+
+                /* Source children — render each link + IPI as a
+                   checkbox row (default checked = keep on target). */
+                linksBox.innerHTML = '';
+                ipiBox.innerHTML   = '';
+                const links = person.links || [];
+                const ipi   = person.ipi   || [];
+                if (links.length === 0 && ipi.length === 0) {
+                    childrenEmpty.classList.remove('d-none');
+                } else {
+                    childrenEmpty.classList.add('d-none');
+                    if (links.length) {
+                        const head = document.createElement('div');
+                        head.className = 'small text-secondary mb-1';
+                        head.textContent = 'External links (' + links.length + ')';
+                        linksBox.appendChild(head);
+                        links.forEach(l => {
+                            const wrap = document.createElement('div');
+                            wrap.className = 'form-check small';
+                            wrap.innerHTML = '<input class="form-check-input" type="checkbox" name="keep_link_ids[]" value="' + l.id + '" id="cp-merge-link-' + l.id + '" checked>'
+                                           + '<label class="form-check-label" for="cp-merge-link-' + l.id + '">'
+                                           + '<code class="me-1">' + (l.type || 'other') + '</code>'
+                                           + (l.label ? l.label + ' — ' : '')
+                                           + '<a href="#" class="text-info text-decoration-none cp-merge-link-href"></a>'
+                                           + '</label>';
+                            const a = wrap.querySelector('.cp-merge-link-href');
+                            a.textContent = l.url;
+                            a.setAttribute('href', l.url);
+                            a.setAttribute('target', '_blank');
+                            a.setAttribute('rel', 'noopener');
+                            linksBox.appendChild(wrap);
+                        });
+                    }
+                    if (ipi.length) {
+                        const head = document.createElement('div');
+                        head.className = 'small text-secondary mb-1 mt-2';
+                        head.textContent = 'IPI Name Numbers (' + ipi.length + ')';
+                        ipiBox.appendChild(head);
+                        ipi.forEach(r => {
+                            const wrap = document.createElement('div');
+                            wrap.className = 'form-check small';
+                            wrap.innerHTML = '<input class="form-check-input" type="checkbox" name="keep_ipi_ids[]" value="' + r.id + '" id="cp-merge-ipi-' + r.id + '" checked>'
+                                           + '<label class="form-check-label" for="cp-merge-ipi-' + r.id + '">'
+                                           + '<code class="me-1">' + r.number + '</code>'
+                                           + (r.name_used ? '(as ' + r.name_used + ') ' : '')
+                                           + (r.notes ? '— ' + r.notes : '')
+                                           + '</label>';
+                            ipiBox.appendChild(wrap);
+                        });
+                    }
+                }
+                childrenWrap.classList.remove('d-none');
+                submitBtn.disabled = true; /* enabled once a target is picked */
+                modal.show();
+            });
+
+            /* Submit button only enables once a target is picked. */
+            targetSel?.addEventListener('change', () => {
+                submitBtn.disabled = targetSel.value === '';
             });
         })();
     </script>
