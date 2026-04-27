@@ -10,6 +10,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -25,7 +26,7 @@ $activePage = 'groups';
 
 $error   = '';
 $success = '';
-$db      = getDb();
+$db      = getDbMysqli();
 
 /* ----- POST actions ----- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -49,14 +50,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (strlen($name) > 100) { $error = 'Name must be 100 characters or fewer.'; break; }
 
                 $stmt = $db->prepare('SELECT Id FROM tblUserGroups WHERE Name = ?');
-                $stmt->execute([$name]);
-                if ($stmt->fetch()) { $error = 'A group with that name already exists.'; break; }
+                $stmt->bind_param('s', $name);
+                $stmt->execute();
+                $exists = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($exists) { $error = 'A group with that name already exists.'; break; }
 
                 $stmt = $db->prepare(
                     'INSERT INTO tblUserGroups (Name, Description, AccessAlpha, AccessBeta, AccessRc, AccessRtw)
                      VALUES (?, ?, ?, ?, ?, ?)'
                 );
-                $stmt->execute([$name, $desc, $aA, $aB, $aR, $aW]);
+                $stmt->bind_param('ssiiii', $name, $desc, $aA, $aB, $aR, $aW);
+                $stmt->execute();
+                $stmt->close();
                 $success = "Group '{$name}' created.";
                 break;
             }
@@ -73,8 +79,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($name === '') { $error = 'Name is required.'; break; }
 
                 $stmt = $db->prepare('SELECT Id FROM tblUserGroups WHERE Name = ? AND Id <> ?');
-                $stmt->execute([$name, $id]);
-                if ($stmt->fetch()) { $error = 'Another group already uses that name.'; break; }
+                $stmt->bind_param('si', $name, $id);
+                $stmt->execute();
+                $exists = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($exists) { $error = 'Another group already uses that name.'; break; }
 
                 $stmt = $db->prepare(
                     'UPDATE tblUserGroups
@@ -82,7 +91,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             AccessAlpha = ?, AccessBeta = ?, AccessRc = ?, AccessRtw = ?
                       WHERE Id = ?'
                 );
-                $stmt->execute([$name, $desc, $aA, $aB, $aR, $aW, $id]);
+                $stmt->bind_param('ssiiiii', $name, $desc, $aA, $aB, $aR, $aW, $id);
+                $stmt->execute();
+                $stmt->close();
                 $success = "Group '{$name}' updated.";
                 break;
             }
@@ -91,20 +102,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $id = (int)($_POST['id'] ?? 0);
 
                 $stmt = $db->prepare('SELECT Name FROM tblUserGroups WHERE Id = ?');
-                $stmt->execute([$id]);
-                $name = (string)($stmt->fetchColumn() ?: '');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $name = (string)($row[0] ?? '');
                 if ($name === '') { $error = 'Group not found.'; break; }
 
                 $stmt = $db->prepare('SELECT COUNT(*) FROM tblUsers WHERE GroupId = ?');
-                $stmt->execute([$id]);
-                $members = (int)$stmt->fetchColumn();
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $members = (int)($row[0] ?? 0);
                 if ($members > 0) {
                     $error = "Cannot delete '{$name}': {$members} user(s) still belong to it. Move them to another group first.";
                     break;
                 }
 
                 $stmt = $db->prepare('DELETE FROM tblUserGroups WHERE Id = ?');
-                $stmt->execute([$id]);
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $stmt->close();
                 $success = "Group '{$name}' deleted.";
                 break;
             }
@@ -114,7 +133,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $userId  = (int)($_POST['user_id']  ?? 0);
                 if ($groupId <= 0 || $userId <= 0) { $error = 'Invalid request.'; break; }
                 $stmt = $db->prepare('UPDATE tblUsers SET GroupId = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
-                $stmt->execute([$groupId, $userId]);
+                $stmt->bind_param('ii', $groupId, $userId);
+                $stmt->execute();
+                $stmt->close();
                 $success = 'Member added.';
                 break;
             }
@@ -123,7 +144,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $userId = (int)($_POST['user_id'] ?? 0);
                 if ($userId <= 0) { $error = 'Invalid request.'; break; }
                 $stmt = $db->prepare('UPDATE tblUsers SET GroupId = NULL, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
-                $stmt->execute([$userId]);
+                $stmt->bind_param('i', $userId);
+                $stmt->execute();
+                $stmt->close();
                 $success = 'Member removed from group.';
                 break;
             }
@@ -140,7 +163,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 /* ----- GET: fetch groups + members ----- */
 $groups = [];
 try {
-    $rs = $db->query(
+    $stmt = $db->prepare(
         'SELECT g.Id, g.Name, g.Description,
                 g.AccessAlpha, g.AccessBeta, g.AccessRc, g.AccessRtw,
                 COUNT(u.Id) AS MemberCount
@@ -149,7 +172,9 @@ try {
           GROUP BY g.Id
           ORDER BY g.Name ASC'
     );
-    $groups = $rs->fetchAll(PDO::FETCH_ASSOC);
+    $stmt->execute();
+    $groups = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
 } catch (\Throwable $e) {
     error_log('[manage/groups.php] ' . $e->getMessage());
     $error = $error ?: 'Could not load groups.';
@@ -163,16 +188,20 @@ $editId = (int)($_GET['edit'] ?? 0);
 if ($editId > 0) {
     try {
         $stmt = $db->prepare('SELECT * FROM tblUserGroups WHERE Id = ?');
-        $stmt->execute([$editId]);
-        $editGroup = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+        $stmt->bind_param('i', $editId);
+        $stmt->execute();
+        $editGroup = $stmt->get_result()->fetch_assoc() ?: null;
+        $stmt->close();
 
         if ($editGroup) {
             $stmt = $db->prepare(
                 'SELECT Id, Username, DisplayName, Role, IsActive
                    FROM tblUsers WHERE GroupId = ? ORDER BY Username ASC'
             );
-            $stmt->execute([$editId]);
-            $editMembers = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $stmt->bind_param('i', $editId);
+            $stmt->execute();
+            $editMembers = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
 
             $stmt = $db->prepare(
                 'SELECT Id, Username, DisplayName, Role
@@ -181,8 +210,10 @@ if ($editId > 0) {
                   ORDER BY Username ASC
                   LIMIT 500'
             );
-            $stmt->execute([$editId]);
-            $candidates = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $stmt->bind_param('i', $editId);
+            $stmt->execute();
+            $candidates = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
         }
     } catch (\Throwable $e) {
         error_log('[manage/groups.php] ' . $e->getMessage());
