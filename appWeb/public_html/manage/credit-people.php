@@ -742,6 +742,46 @@ try {
     $registryRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
     $stmt->close();
 
+    /* Q3 + Q4 — pull every link / IPI row across all people so the
+       Edit drawer can pre-fill without an extra round-trip. The two
+       child tables are small (a handful of rows per person, low
+       hundreds total), so loading them all is cheaper than fetching
+       per-person on demand from JS. */
+    $linksByPerson = [];
+    $ipiByPerson   = [];
+    $stmt = $db->prepare(
+        'SELECT Id, CreditPersonId, LinkType, Url, Label, SortOrder
+           FROM tblCreditPersonLinks
+          ORDER BY CreditPersonId ASC, SortOrder ASC, Id ASC'
+    );
+    $stmt->execute();
+    foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $l) {
+        $linksByPerson[(int)$l['CreditPersonId']][] = [
+            'id'         => (int)$l['Id'],
+            'type'       => (string)$l['LinkType'],
+            'url'        => (string)$l['Url'],
+            'label'      => $l['Label'],
+            'sort_order' => (int)$l['SortOrder'],
+        ];
+    }
+    $stmt->close();
+
+    $stmt = $db->prepare(
+        'SELECT Id, CreditPersonId, IPINumber, NameUsed, Notes
+           FROM tblCreditPersonIPI
+          ORDER BY CreditPersonId ASC, Id ASC'
+    );
+    $stmt->execute();
+    foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $r) {
+        $ipiByPerson[(int)$r['CreditPersonId']][] = [
+            'id'        => (int)$r['Id'],
+            'number'    => (string)$r['IPINumber'],
+            'name_used' => $r['NameUsed'],
+            'notes'     => $r['Notes'],
+        ];
+    }
+    $stmt->close();
+
     /* Merge — keyed by Name. A name may appear in usage only,
        registry only, or both. */
     $byName = [];
@@ -764,6 +804,8 @@ try {
             'updated_at'  => null,
             'link_count'  => 0,
             'ipi_count'   => 0,
+            'links'       => [],
+            'ipi'         => [],
         ];
     }
     foreach ($registryRows as $r) {
@@ -798,6 +840,11 @@ try {
         $byName[$name]['updated_at']  = $r['UpdatedAt'];
         $byName[$name]['link_count']  = (int)$r['LinkCount'];
         $byName[$name]['ipi_count']   = (int)$r['IPICount'];
+        /* Full child rows for the Edit drawer's pre-fill. Empty arrays
+           default for registry rows with no children — the drawer's JS
+           handles the empty case as "no rows yet". */
+        $byName[$name]['links'] = $linksByPerson[(int)$r['Id']] ?? [];
+        $byName[$name]['ipi']   = $ipiByPerson[(int)$r['Id']]   ?? [];
     }
 
     /* Sort: highest-usage first, then alphabetical. Registry-only
@@ -895,16 +942,6 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
             or registry-only names that are waiting on a song to cite them.
         </p>
 
-        <!-- Slice scope notice -->
-        <div class="alert alert-info py-2 small mb-3">
-            <i class="bi bi-info-circle me-1"></i>
-            <strong>Read-only view (v1).</strong>
-            Add / Rename / Merge / Edit-detail / Delete actions land in the next PR
-            against #545. The data here is the same data those mutations will
-            operate on, so you can use this view today to plan which names need
-            cleanup.
-        </div>
-
         <?php if ($success): ?>
             <div class="alert alert-success py-2"><?= htmlspecialchars($success) ?></div>
         <?php endif; ?>
@@ -954,7 +991,7 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                         </button>
                     </div>
                 </div>
-                <div class="col-md-7">
+                <div class="col-md-5">
                     <div class="btn-group btn-group-sm flex-wrap" role="group" aria-label="Filter by role">
                         <button type="button" class="btn btn-outline-secondary filter-btn active" data-filter="all">All</button>
                         <button type="button" class="btn btn-outline-secondary filter-btn" data-filter="writer">Writers</button>
@@ -964,6 +1001,11 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                         <button type="button" class="btn btn-outline-secondary filter-btn" data-filter="translator">Translators</button>
                         <button type="button" class="btn btn-outline-secondary filter-btn" data-filter="registry-only">Registry-only</button>
                     </div>
+                </div>
+                <div class="col-md-2 text-md-end">
+                    <button type="button" class="btn btn-amber-solid btn-sm" id="cp-add-btn">
+                        <i class="bi bi-plus-circle me-1"></i>Add person
+                    </button>
                 </div>
             </div>
         </div>
@@ -980,6 +1022,7 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                             <th scope="col">Source</th>
                             <th scope="col">Lifespan</th>
                             <th scope="col" class="text-end">Meta</th>
+                            <th scope="col" class="text-end">Actions</th>
                         </tr>
                     </thead>
                     <tbody id="cp-tbody">
@@ -1004,10 +1047,29 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                                 (string)$p['death_place'],
                                 (string)$p['notes'],
                             ])));
+                            /* Embed the full person payload in a data
+                               attribute so the Edit button can pre-fill
+                               the drawer without an extra round-trip.
+                               JSON_HEX_* flags + ENT_QUOTES on the
+                               attribute container keep apostrophes /
+                               quotes / angle brackets safe. Nulls in the
+                               PHP array become null literals in JSON. */
+                            $personJson = json_encode([
+                                'registry_id' => $p['registry_id'],
+                                'name'        => $p['name'],
+                                'notes'       => $p['notes'],
+                                'birth_place' => $p['birth_place'],
+                                'birth_date'  => $p['birth_date'],
+                                'death_place' => $p['death_place'],
+                                'death_date'  => $p['death_date'],
+                                'links'       => $p['links'],
+                                'ipi'         => $p['ipi'],
+                            ], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE);
                         ?>
                             <tr data-roles="<?= htmlspecialchars($rolesCsv) ?>"
                                 data-registry-only="<?= $isRegistryOnly ? '1' : '0' ?>"
-                                data-haystack="<?= htmlspecialchars($haystack) ?>">
+                                data-haystack="<?= htmlspecialchars($haystack) ?>"
+                                data-person='<?= htmlspecialchars($personJson, ENT_QUOTES) ?>'>
                                 <td class="person-name">
                                     <?= htmlspecialchars($p['name']) ?>
                                     <?php if ($p['notes']): ?>
@@ -1046,10 +1108,25 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                                         <span class="text-secondary">—</span>
                                     <?php endif; ?>
                                 </td>
+                                <td class="text-end action-col">
+                                    <?php if ($p['registry_id'] !== null): ?>
+                                        <button type="button" class="btn btn-sm btn-outline-info cp-edit-btn"
+                                                title="Edit person details"
+                                                aria-label="Edit person <?= htmlspecialchars($p['name'], ENT_QUOTES) ?>">
+                                            <i class="bi bi-pencil" aria-hidden="true"></i>
+                                        </button>
+                                    <?php else: ?>
+                                        <button type="button" class="btn btn-sm btn-outline-info cp-edit-btn"
+                                                title="Add to registry — fills in the name + opens the detail drawer for this person"
+                                                aria-label="Add <?= htmlspecialchars($p['name'], ENT_QUOTES) ?> to the registry">
+                                            <i class="bi bi-plus-circle" aria-hidden="true"></i>
+                                        </button>
+                                    <?php endif; ?>
+                                </td>
                             </tr>
                         <?php endforeach; ?>
                         <tr class="empty-row" id="cp-empty-row" style="display:none;">
-                            <td colspan="6">No names match the current search / filter.</td>
+                            <td colspan="7">No names match the current search / filter.</td>
                         </tr>
                     </tbody>
                 </table>
@@ -1057,6 +1134,132 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
         </div>
 
     </div>
+
+    <!-- =========================================================================
+         Person detail drawer — drives both Add and Update_person actions.
+         Bootstrap right-side offcanvas with a form inside; the form's
+         method/action are fixed (POST to this page); the action input
+         and id input switch between 'add' / 'update_person' depending
+         on which button opened the drawer.
+         ========================================================================= -->
+    <div class="offcanvas offcanvas-end" tabindex="-1" id="cpDrawer" aria-labelledby="cpDrawerLabel" style="width: min(560px, 95vw);">
+        <div class="offcanvas-header border-bottom border-secondary">
+            <h5 class="offcanvas-title" id="cpDrawerLabel">
+                <i class="bi bi-person-badge me-2"></i>
+                <span id="cp-drawer-title">Add person</span>
+            </h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+        </div>
+        <form method="POST" id="cp-drawer-form" class="offcanvas-body d-flex flex-column gap-3">
+            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+            <input type="hidden" name="action" id="cp-drawer-action" value="add">
+            <input type="hidden" name="id"     id="cp-drawer-id"     value="">
+
+            <!-- Identity -->
+            <div>
+                <label class="form-label small mb-1" for="cp-drawer-name">Name <span class="text-danger">*</span></label>
+                <input type="text" class="form-control form-control-sm" id="cp-drawer-name" name="name" maxlength="255" required>
+                <div class="form-text small" id="cp-drawer-name-help">
+                    The canonical spelling. To rename, save first, then use the Rename action — renames cascade to every song that cites this person.
+                </div>
+            </div>
+
+            <!-- Birth -->
+            <div class="row g-2">
+                <div class="col-7">
+                    <label class="form-label small mb-1" for="cp-drawer-birth-place">Birth place</label>
+                    <input type="text" class="form-control form-control-sm" id="cp-drawer-birth-place" name="birth_place" maxlength="255" placeholder="e.g. London, England">
+                </div>
+                <div class="col-5">
+                    <label class="form-label small mb-1" for="cp-drawer-birth-date">Birth date</label>
+                    <input type="date" class="form-control form-control-sm" id="cp-drawer-birth-date" name="birth_date">
+                </div>
+            </div>
+
+            <!-- Death -->
+            <div class="row g-2">
+                <div class="col-7">
+                    <label class="form-label small mb-1" for="cp-drawer-death-place">Death place</label>
+                    <input type="text" class="form-control form-control-sm" id="cp-drawer-death-place" name="death_place" maxlength="255">
+                </div>
+                <div class="col-5">
+                    <label class="form-label small mb-1" for="cp-drawer-death-date">Death date</label>
+                    <input type="date" class="form-control form-control-sm" id="cp-drawer-death-date" name="death_date">
+                </div>
+            </div>
+
+            <!-- External links — repeating sub-form -->
+            <div>
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <label class="form-label small mb-0">External links</label>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="cp-add-link-btn">
+                        <i class="bi bi-plus me-1"></i>Add link
+                    </button>
+                </div>
+                <div id="cp-links-container" class="d-flex flex-column gap-2"></div>
+                <div class="form-text small">Wikipedia, official website, MusicBrainz, Discogs, IMSLP, Hymnary — anything an editor or curator might want to follow.</div>
+            </div>
+
+            <!-- IPI numbers — repeating sub-form -->
+            <div>
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <label class="form-label small mb-0">IPI Name Numbers</label>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="cp-add-ipi-btn">
+                        <i class="bi bi-plus me-1"></i>Add IPI
+                    </button>
+                </div>
+                <div id="cp-ipi-container" class="d-flex flex-column gap-2"></div>
+                <div class="form-text small">A single individual can hold more than one IPI Name Number when they're registered under different performing names.</div>
+            </div>
+
+            <!-- Notes -->
+            <div>
+                <label class="form-label small mb-1" for="cp-drawer-notes">Notes</label>
+                <textarea class="form-control form-control-sm" id="cp-drawer-notes" name="notes" rows="3" placeholder="Anything that doesn't fit the structured fields above."></textarea>
+            </div>
+
+            <!-- Footer -->
+            <div class="d-flex justify-content-end gap-2 mt-auto pt-3 border-top border-secondary">
+                <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="offcanvas">Cancel</button>
+                <button type="submit" class="btn btn-amber-solid btn-sm">
+                    <i class="bi bi-save me-1"></i>Save
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Templates for the repeating sub-form rows. {i} placeholder gets
+         replaced by the JS with the row's array index so PHP receives
+         them as $_POST['links'][i][...] and $_POST['ipi'][i][...]. -->
+    <template id="cp-link-row-template">
+        <div class="d-flex gap-1 align-items-start cp-link-row" data-row-kind="link">
+            <select class="form-select form-select-sm" style="max-width: 130px;" name="links[{i}][type]">
+                <option value="wikipedia">Wikipedia</option>
+                <option value="official">Official site</option>
+                <option value="musicbrainz">MusicBrainz</option>
+                <option value="discogs">Discogs</option>
+                <option value="imslp">IMSLP</option>
+                <option value="hymnary">Hymnary</option>
+                <option value="other">Other</option>
+            </select>
+            <input type="url" class="form-control form-control-sm" name="links[{i}][url]" placeholder="https://…" required>
+            <input type="text" class="form-control form-control-sm" style="max-width: 140px;" name="links[{i}][label]" placeholder="Label (optional)">
+            <input type="hidden" name="links[{i}][sort_order]" value="{i}">
+            <button type="button" class="btn btn-sm btn-outline-danger cp-row-remove" title="Remove this link" aria-label="Remove this link">
+                <i class="bi bi-x" aria-hidden="true"></i>
+            </button>
+        </div>
+    </template>
+    <template id="cp-ipi-row-template">
+        <div class="d-flex gap-1 align-items-start cp-ipi-row" data-row-kind="ipi">
+            <input type="text" class="form-control form-control-sm" style="max-width: 140px;" name="ipi[{i}][number]" placeholder="IPI number" required>
+            <input type="text" class="form-control form-control-sm" style="max-width: 180px;" name="ipi[{i}][name_used]" placeholder="Name used (optional)">
+            <input type="text" class="form-control form-control-sm" name="ipi[{i}][notes]" placeholder="Notes (optional)">
+            <button type="button" class="btn btn-sm btn-outline-danger cp-row-remove" title="Remove this IPI" aria-label="Remove this IPI">
+                <i class="bi bi-x" aria-hidden="true"></i>
+            </button>
+        </div>
+    </template>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 
@@ -1105,6 +1308,145 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                 activeFilter = b.dataset.filter || 'all';
                 apply();
             }));
+        })();
+
+        /* =========================================================================
+           Person detail drawer — drives Add and Update_person actions.
+           Open from:
+             - #cp-add-btn          → empty drawer, action=add
+             - .cp-edit-btn (per-row) → pre-filled drawer
+                                          - action=add if row has no registry_id
+                                          - action=update_person otherwise
+           ========================================================================= */
+        (function () {
+            const drawerEl  = document.getElementById('cpDrawer');
+            const form      = document.getElementById('cp-drawer-form');
+            const titleEl   = document.getElementById('cp-drawer-title');
+            const nameHelp  = document.getElementById('cp-drawer-name-help');
+            const actionIn  = document.getElementById('cp-drawer-action');
+            const idIn      = document.getElementById('cp-drawer-id');
+            const nameIn    = document.getElementById('cp-drawer-name');
+            const linksBox  = document.getElementById('cp-links-container');
+            const ipiBox    = document.getElementById('cp-ipi-container');
+            const linkTpl   = document.getElementById('cp-link-row-template');
+            const ipiTpl    = document.getElementById('cp-ipi-row-template');
+            const addBtn    = document.getElementById('cp-add-btn');
+            const addLinkBtn= document.getElementById('cp-add-link-btn');
+            const addIpiBtn = document.getElementById('cp-add-ipi-btn');
+            if (!drawerEl || !form) return;
+
+            const drawer = bootstrap.Offcanvas.getOrCreateInstance(drawerEl);
+            let linkIndex = 0;
+            let ipiIndex  = 0;
+
+            /* Append a new sub-form row, optionally pre-filled. The
+               template's {i} placeholders get replaced with the
+               current per-kind index so PHP receives the rows as a
+               densely-keyed array. */
+            function addLinkRow(prefill) {
+                const html = linkTpl.innerHTML.replaceAll('{i}', String(linkIndex++));
+                linksBox.insertAdjacentHTML('beforeend', html);
+                const row = linksBox.lastElementChild;
+                if (prefill) {
+                    const sel = row.querySelector('select');
+                    if (sel) sel.value = prefill.type || 'other';
+                    const url = row.querySelector('input[type="url"]');
+                    if (url) url.value = prefill.url || '';
+                    const lbl = row.querySelector('input[name$="[label]"]');
+                    if (lbl) lbl.value = prefill.label || '';
+                    const ord = row.querySelector('input[name$="[sort_order]"]');
+                    if (ord && prefill.sort_order !== undefined) ord.value = prefill.sort_order;
+                }
+                return row;
+            }
+            function addIpiRow(prefill) {
+                const html = ipiTpl.innerHTML.replaceAll('{i}', String(ipiIndex++));
+                ipiBox.insertAdjacentHTML('beforeend', html);
+                const row = ipiBox.lastElementChild;
+                if (prefill) {
+                    row.querySelector('input[name$="[number]"]').value    = prefill.number    || '';
+                    row.querySelector('input[name$="[name_used]"]').value = prefill.name_used || '';
+                    row.querySelector('input[name$="[notes]"]').value     = prefill.notes     || '';
+                }
+                return row;
+            }
+
+            function resetDrawer() {
+                form.reset();
+                linksBox.innerHTML = '';
+                ipiBox.innerHTML   = '';
+                linkIndex = 0;
+                ipiIndex  = 0;
+            }
+
+            /* Open empty drawer for Add. */
+            addBtn?.addEventListener('click', () => {
+                resetDrawer();
+                actionIn.value = 'add';
+                idIn.value     = '';
+                titleEl.textContent = 'Add person';
+                nameIn.readOnly = false;
+                nameHelp.textContent = 'The canonical spelling. To rename later, save first, then use the Rename action — renames cascade to every song that cites this person.';
+                drawer.show();
+                setTimeout(() => nameIn.focus(), 200);
+            });
+
+            /* Open pre-filled drawer for Edit. Reads the person JSON
+               from the row's data-person attribute. */
+            document.addEventListener('click', (ev) => {
+                const btn = ev.target.closest('.cp-edit-btn');
+                if (!btn) return;
+                const row = btn.closest('tr');
+                if (!row) return;
+                const raw = row.getAttribute('data-person');
+                if (!raw) return;
+                let person;
+                try { person = JSON.parse(raw); }
+                catch (_) { return; }
+
+                resetDrawer();
+                if (person.registry_id) {
+                    actionIn.value = 'update_person';
+                    idIn.value     = String(person.registry_id);
+                    titleEl.textContent = 'Edit person — ' + person.name;
+                    nameIn.value    = person.name || '';
+                    nameIn.readOnly = true;
+                    nameHelp.textContent = 'Locked when editing — use the Rename action to change the canonical name and cascade across the catalogue.';
+                } else {
+                    /* In-use name not yet in the registry — pre-fill the
+                       name and let the admin enrich it. The action stays
+                       'add' (this is a new registry row); the form's
+                       INSERT IGNORE-style uniqueness check on the server
+                       handles the case where the name was added by a
+                       concurrent editor save in the meantime. */
+                    actionIn.value = 'add';
+                    idIn.value     = '';
+                    titleEl.textContent = 'Add to registry — ' + person.name;
+                    nameIn.value    = person.name || '';
+                    nameIn.readOnly = false;
+                    nameHelp.textContent = 'This name is already credited on songs — adding to the registry lets you attach biographical metadata. The Name field is the canonical spelling that the song-credit tables already use; editing it here would create a mismatch, so leave it as-is and use Rename later if you need to change it.';
+                }
+                document.getElementById('cp-drawer-birth-place').value = person.birth_place || '';
+                document.getElementById('cp-drawer-birth-date').value  = person.birth_date  || '';
+                document.getElementById('cp-drawer-death-place').value = person.death_place || '';
+                document.getElementById('cp-drawer-death-date').value  = person.death_date  || '';
+                document.getElementById('cp-drawer-notes').value       = person.notes       || '';
+                (person.links || []).forEach(l => addLinkRow(l));
+                (person.ipi   || []).forEach(r => addIpiRow(r));
+                drawer.show();
+            });
+
+            /* Add-row buttons inside the drawer. */
+            addLinkBtn?.addEventListener('click', () => addLinkRow());
+            addIpiBtn?.addEventListener('click',  () => addIpiRow());
+
+            /* Remove-row delegation. */
+            drawerEl.addEventListener('click', (ev) => {
+                const remove = ev.target.closest('.cp-row-remove');
+                if (!remove) return;
+                const row = remove.closest('.cp-link-row, .cp-ipi-row');
+                if (row) row.remove();
+            });
         })();
     </script>
 
