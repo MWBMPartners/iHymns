@@ -199,6 +199,7 @@ if ($action !== '') {
         'songbook-meta' => 'migrate-songbook-meta.php',
         'user-features-catchup' => 'migrate-user-features-catchup.php',
         'activity-log-expand' => 'migrate-activity-log-expand.php',
+        'credit-people' => 'migrate-credit-people.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -543,6 +544,28 @@ if ($hasCredentials && defined('DB_HOST')) {
                         </p>
                         <a href="?action=activity-log-expand" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run Activity Log Expansion Migration
+                        </a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">3f. Credit People Registry (#545)</h5>
+                        <p class="card-text text-secondary small">
+                            Creates the registry tables that back the new
+                            <code>/manage/credit-people</code> area:
+                            <code>tblCreditPeople</code> (canonical name plus
+                            optional birth/death + notes),
+                            <code>tblCreditPersonLinks</code> (multiple external
+                            reference URLs per person), and
+                            <code>tblCreditPersonIPI</code> (multiple IPI Name
+                            Numbers per person). The five song-credit tables
+                            are not modified — this is additive.
+                            Idempotent — safe to re-run.
+                        </p>
+                        <a href="?action=credit-people" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run Credit People Registry Migration
                         </a>
                     </div>
                 </div>
