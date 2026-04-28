@@ -401,6 +401,16 @@ foreach ($sections as $s) {
                         affects only new users — existing users keep whatever they
                         already had.
                     </div>
+                    <div class="gotcha small">
+                        <strong>Role-gated sections (#641):</strong> the dashboard
+                        renders different bottom-of-page cards depending on your
+                        role. Curators / Editors / Admins see a lightweight
+                        <em>Your session</em> card with their role + username.
+                        <strong>Global Admins</strong> see a richer <em>System Info</em>
+                        card carrying PHP version, database driver and the
+                        connected DB name — useful for triage but not relevant
+                        to curators, so it's deliberately hidden from lower roles.
+                    </div>
                 </section>
 
                 <!-- ====================================================================
