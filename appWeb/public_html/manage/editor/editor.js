@@ -552,6 +552,10 @@ function selectSong(songId) {
 
     /* Render the copyright textarea. */
     setVal('edit-copyright', song.copyright || '');
+    /* Reflect the PD-disables-Copyright rule (#594) on initial render
+       so a fully-PD song shows a disabled, placeholder-styled textarea
+       even before the user toggles a checkbox. */
+    updateCopyrightFieldState();
 
     /* Render the live preview pane. */
     renderPreview(song);
@@ -634,6 +638,13 @@ function bindMetadataListeners() {
             /* Write the boolean value back to the song object. */
             song[field.key] = el.checked;
             markModified(song.id);
+
+            /* PD checkboxes drive the Copyright textarea state (#594).
+               When both are ticked the field becomes disabled — and if
+               it had content, we offer to clear it. */
+            if (field.key === 'lyricsPublicDomain' || field.key === 'musicPublicDomain') {
+                updateCopyrightFieldState({ song: song, fromCheckboxClick: true });
+            }
         });
     });
 
@@ -2975,6 +2986,83 @@ function composeIetfTag() {
 function getVal(elementId) {
     var el = document.getElementById(elementId);
     return el ? el.value : '';
+}
+
+/**
+ * updateCopyrightFieldState({ song, fromCheckboxClick })
+ * ------------------------------------------------------
+ * Mirror the "fully Public Domain → no copyright" rule on the
+ * Credits tab's Copyright textarea (#594):
+ *
+ *   - When BOTH "Lyrics — Public Domain" and "Music — Public Domain"
+ *     are ticked, the Copyright textarea is disabled and shows a
+ *     "Public Domain — no copyright statement applies." placeholder.
+ *
+ *   - If the textarea had content at the moment the second box was
+ *     ticked (i.e. the user just toggled into the fully-PD state via
+ *     a checkbox click), confirm before clearing the existing text —
+ *     prevents accidentally losing a manually-typed statement.
+ *
+ *   - Untick either box → field re-enables empty. Prior content is
+ *     not restored (it was deliberately cleared).
+ *
+ * Called from selectSong() (initial render) and from the PD checkbox
+ * change handlers. Idempotent and safe to call when no song is
+ * selected.
+ */
+function updateCopyrightFieldState(opts) {
+    var song = (opts && opts.song) || (currentSongId ? findSongById(currentSongId) : null);
+    if (!song) return;
+
+    var lyricsPdEl = document.getElementById('edit-lyricsPublicDomain');
+    var musicPdEl  = document.getElementById('edit-musicPublicDomain');
+    var copyEl     = document.getElementById('edit-copyright');
+    if (!copyEl) return;
+
+    var lyricsPd = !!(lyricsPdEl && lyricsPdEl.checked);
+    var musicPd  = !!(musicPdEl  && musicPdEl.checked);
+    var fullyPd  = lyricsPd && musicPd;
+
+    if (fullyPd) {
+        var hasText = (copyEl.value || '').trim() !== '';
+        if (hasText && opts && opts.fromCheckboxClick) {
+            /* User just ticked the second PD box on a song that already
+               carries a copyright string. Confirm before wiping. */
+            var preview = copyEl.value.length > 60
+                ? copyEl.value.slice(0, 57) + '…'
+                : copyEl.value;
+            var ok = window.confirm(
+                'Both Public-Domain flags are now ticked.\n\n' +
+                'Existing copyright text will be cleared:\n  "' + preview + '"\n\n' +
+                'Continue?'
+            );
+            if (!ok) {
+                /* User backed out — un-tick the most recently changed box.
+                   We don't know which one fired the change handler, so undo
+                   the smaller-priority assumption: if music PD was just
+                   ticked, untick it; otherwise untick lyrics. Either way the
+                   data stays consistent. */
+                if (musicPdEl && musicPdEl.checked) {
+                    musicPdEl.checked = false;
+                    song.musicPublicDomain = false;
+                } else if (lyricsPdEl && lyricsPdEl.checked) {
+                    lyricsPdEl.checked = false;
+                    song.lyricsPublicDomain = false;
+                }
+                markModified(song.id);
+                return;
+            }
+            copyEl.value = '';
+            song.copyright = '';
+            markModified(song.id);
+        }
+        copyEl.disabled = true;
+        copyEl.placeholder = 'Public Domain — no copyright statement applies.';
+    } else {
+        copyEl.disabled = false;
+        /* Restore the original placeholder set in the markup. */
+        copyEl.placeholder = 'e.g. Copyright 2024 Hillsong Music Publishing';
+    }
 }
 
 /**
