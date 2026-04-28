@@ -129,25 +129,11 @@ $currentUser = getCurrentUser();
         <!-- Action buttons group — aligned to the right -->
         <div class="d-flex align-items-center gap-2">
 
-            <!-- LOAD JSON — Triggers the hidden file input to select a songs.json file -->
-            <button
-                type="button"
-                class="btn btn-sm btn-amber"
-                id="btn-load-file"
-                title="Load a songs.json file from disk"
-            >
-                <i class="bi bi-folder2-open me-1"></i>Load JSON
-            </button>
-
-            <!-- LOAD FROM URL — Load songs.json from a remote URL (#235) -->
-            <button
-                type="button"
-                class="btn btn-sm btn-outline-amber"
-                id="btn-load-url"
-                title="Load songs.json from a URL"
-            >
-                <i class="bi bi-link-45deg me-1"></i>Load URL
-            </button>
+            <!-- LOAD JSON / LOAD URL buttons removed (#589). The editor
+                 auto-loads from the MySQL backend via `?action=load` on
+                 init, so a curator never needs to point it at a file or
+                 remote URL. The Import button below still exists for
+                 emergency restore from a JSON / CSV file. -->
 
             <!-- SAVE — Writes all songs to MySQL (primary path). If the DB
                  is unavailable, the editor falls back to a JSON download so

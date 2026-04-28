@@ -3280,34 +3280,12 @@ function bindGlobalEventListeners() {
         });
     }
 
-    /* ---- Load from file button ---- */
-    var loadFileBtn = document.getElementById('btn-load-file');
-    if (loadFileBtn) {
-        loadFileBtn.addEventListener('click', function () {
-            /* Create a temporary file input and trigger it. */
-            var input = document.createElement('input');
-            input.type = 'file';
-            input.accept = '.json,application/json';
-            input.addEventListener('change', function () {
-                if (input.files && input.files[0]) {
-                    loadSongsFromFile(input.files[0]);
-                }
-            });
-            input.click();
-        });
-    }
-
-    /* ---- Load from URL button ---- */
-    var loadURLBtn = document.getElementById('btn-load-url');
-    if (loadURLBtn) {
-        loadURLBtn.addEventListener('click', function () {
-            /* Prompt the user for a URL, pre-filling the default. */
-            var url = prompt('Enter songs.json URL:', DEFAULT_SONGS_URL);
-            if (url) {
-                loadSongsFromURL(url);
-            }
-        });
-    }
+    /* Load JSON / Load URL click handlers removed alongside the buttons
+       in #589. The editor auto-loads from MySQL via `?action=load` on
+       init (see loadSongsFromURL(DEFAULT_SONGS_URL) at the bottom of
+       this section), so a curator never needs to load from a file or
+       remote URL. The Import button below still uses importJSON() for
+       merging external data when an admin really needs to. */
 
     /* ---- Save button — writes to MySQL, falls back to JSON download ---- */
     var saveBtn = document.getElementById('btn-save');
