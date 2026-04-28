@@ -324,7 +324,7 @@ switch ($action) {
             break;
         }
         try {
-            $db = getDb();
+            $db   = getDbMysqli();
             $stmt = $db->prepare(
                 'SELECT t.Id AS id, t.TranslatedSongId AS songId,
                         t.TargetLanguage AS language, t.Translator AS translator,
@@ -334,8 +334,10 @@ switch ($action) {
                  WHERE t.SourceSongId = ?
                  ORDER BY t.TargetLanguage ASC'
             );
-            $stmt->execute([$songId]);
-            $translations = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $stmt->bind_param('s', $songId);
+            $stmt->execute();
+            $translations = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
             foreach ($translations as &$tr) {
                 $tr['id'] = (int)$tr['id'];
                 $tr['verified'] = (bool)$tr['verified'];
@@ -343,7 +345,7 @@ switch ($action) {
             }
             unset($tr);
             echo json_encode(['translations' => $translations]);
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             http_response_code(500);
             echo json_encode(['error' => 'Failed to load translations.']);
         }
@@ -374,16 +376,18 @@ switch ($action) {
         }
 
         try {
-            $db = getDb();
+            $db   = getDbMysqli();
             $stmt = $db->prepare(
                 'INSERT INTO tblSongTranslations (SourceSongId, TranslatedSongId, TargetLanguage, Translator)
                  VALUES (?, ?, ?, ?)
                  ON DUPLICATE KEY UPDATE TranslatedSongId = VALUES(TranslatedSongId),
                                          Translator = VALUES(Translator)'
             );
-            $stmt->execute([$srcId, $tgtId, $lang, $translator]);
+            $stmt->bind_param('ssss', $srcId, $tgtId, $lang, $translator);
+            $stmt->execute();
+            $stmt->close();
             echo json_encode(['success' => true]);
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             http_response_code(500);
             error_log('[iHymns Editor] add_translation failed: ' . $e->getMessage());
             echo json_encode(['error' => 'Failed to add translation link.']);
@@ -406,11 +410,14 @@ switch ($action) {
         }
 
         try {
-            $db = getDb();
+            $db   = getDbMysqli();
             $stmt = $db->prepare('DELETE FROM tblSongTranslations WHERE Id = ?');
-            $stmt->execute([$removeId]);
-            echo json_encode(['success' => true, 'deleted' => $stmt->rowCount()]);
-        } catch (Exception $e) {
+            $stmt->bind_param('i', $removeId);
+            $stmt->execute();
+            $deleted = $stmt->affected_rows;
+            $stmt->close();
+            echo json_encode(['success' => true, 'deleted' => $deleted]);
+        } catch (\Throwable $e) {
             http_response_code(500);
             echo json_encode(['error' => 'Failed to remove translation link.']);
         }

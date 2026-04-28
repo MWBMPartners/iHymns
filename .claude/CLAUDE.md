@@ -21,7 +21,7 @@ Before adding code on `/manage/*` or `/` (main app), review this list:
 2. **Footer / copyright / version** → `manage/includes/admin-footer.php`. Do not render your own; do not re-load Bootstrap JS anywhere else.
 3. **Favicon / app icons** → `manage/includes/head-favicon.php` (admin) / the `<link>` block in `index.php` (main site).
 4. **Auth + CSRF + role + entitlement checks** → `manage/includes/auth.php` + `includes/entitlements.php`. Pages MUST call `isAuthenticated()`, `requireAdmin()`, or `userHasEntitlement()` — never reinvent the check.
-5. **DB connection** → `manage/includes/db.php::getDb()`. Never instantiate PDO / mysqli directly.
+5. **DB connection** → `includes/db_mysql.php::getDbMysqli()`. Never instantiate PDO / mysqli directly. (PDO has been fully removed — see #554 / #555.)
 6. **Card-layout reorder + hide** → `includes/card_layout.php` (server) + `js/modules/card-layout.js` (client). Any new card grid that should support reorder uses `data-layout-surface` + the shared helpers.
 7. **Offline-download UI** → `js/modules/offline-ui.js`. Any new "save for offline" button uses `data-song-download` or `data-songbook-download` and relies on the shared feature detection + state machine.
 8. **Content access / gating** → `includes/content_access.php::checkContentAccess()`. Never query `tblContentRestrictions` directly from a page or an API handler.
@@ -35,7 +35,7 @@ Reject any change that introduces:
 - A duplicate `<nav>` on an admin page.
 - A duplicate `<link rel="stylesheet" href="/css/app.css">` + `/css/admin.css` block when `admin-footer.php` or another shared include could host it.
 - A hard-coded list of roles, entitlements, licence types, tier names, or card IDs that already exists in a central map.
-- A PDO / mysqli instantiation outside `getDb()` / `getDbMysqli()`.
+- A PDO / mysqli instantiation outside `getDbMysqli()`. (PDO is no longer used at all — any `new PDO(...)` is a regression.)
 - A `<script>` loading Bootstrap or Bootstrap-Icons on a page that also includes `admin-footer.php` (double-load).
 - An inline click handler that re-implements behaviour the corresponding shared JS module already offers.
 

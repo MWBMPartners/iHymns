@@ -48,12 +48,6 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
           . DIRECTORY_SEPARATOR . 'debug_mode.php';
 enableDebugModeIfRequested();
 
-/* db.php (PDO) is no longer used by this file after the #554 Batch 4
-   migration, but it's kept in the require chain because other files
-   (api.php, editor/api.php) still call getDb() during their own
-   batch migrations. The capstone PR (#555) removes both this require
-   and db.php itself once Batches 5+6 land. */
-require_once __DIR__ . DIRECTORY_SEPARATOR . 'db.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
           . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
