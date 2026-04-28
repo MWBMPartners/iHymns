@@ -1,3 +1,393 @@
+## [0.25.1] — 2026-04-28
+- Add Song of the Day with Christian calendar theming (#108)
+- Add configurable page transition animations (#106)
+- Add display preferences and presentation mode (#95)
+- Add import/export for favourites and set lists (#103)
+- Add keyboard number quick-jump from any page (#96)
+- Add keyboard shortcuts help overlay (#104)
+- Add lyrics full-text search with toggle (#93)
+- Add missing song request form (#107)
+- Add offline status indicator with cached song count (#112)
+- Add print-optimised layout for set lists (#113)
+- Add recently searched terms with quick re-search (#110)
+- Add scroll-linked reading progress indicator on song pages (#109)
+- Add side-by-side song comparison view (#102)
+- Add smooth scroll-to-top button on long pages (#97)
+- Add songbook colour-coding across the entire app (#98)
+- Add songbook table of contents with alphabetical index (#111)
+- Add transpose / capo indicator for song pages (#101)
+- Add update-available notification for users (#83)
+- Add worship set list / playlist feature (#94)
+- Admin surface phases 1–4
+- Admin surface: shared footer, editor back-links, final casing fixes
+- Collapse iHymns menu to single "Manage" entry
+- Compose App ID from shared base + platform suffix (#100)
+- Favicon on every admin page + fix admin footer to viewport bottom
+- Fix blank admin dashboard — align getCurrentUser column casing
+- Fix code review issues: bugs, leaks, color fallbacks
+- Fix requireEditor/Admin/GlobalAdmin regression from PR #417
+- Fix security vulnerabilities: XSS, cache poisoning
+- Fix: Audio/Sheet Music buttons show "coming soon" toast (#80)
+- Fix: Favorites clear-all button event listener accumulation (#79)
+- Fix: Service worker cache version auto-syncs with app version (#81)
+- Gate: username + password sign-in (email service not yet wired up)
+- Header dropdowns: cap height to viewport and scroll internally
+- Header menu: entitlement-driven Curator + Admin sections
+- Implement MIDI audio playback module (#90)
+- Implement PDF sheet music viewer module (#91)
+- Implement client-side fuzzy search with Fuse.js (#82)
+- Implement recently viewed songs history (#92)
+- Make deploys take effect immediately in the browser
+- Match back-to-top button to app theme tokens
+- Merge pull request #153 from MWBMPartners/claude/rebuild-pwa-php-KjLJB
+- Merge pull request #158 from MWBMPartners/claude/rebuild-pwa-php-KjLJB
+- Merge pull request #433 from MWBMPartners/claude/admin-surface-phases-1-4
+- Merge pull request #477 from MWBMPartners/claude/songbook-grid-breakpoints
+- Merge pull request #479 from MWBMPartners/claude/issue-462-licence-inheritance
+- Merge pull request #483 from MWBMPartners/claude/issue-281-translations-ui
+- Merge pull request #484 from MWBMPartners/claude/issue-285-missing-songs-ui
+- Merge pull request #485 from MWBMPartners/claude/issue-289-notifications-ui
+- Merge pull request #486 from MWBMPartners/claude/openapi-refresh
+- Merge pull request #505 from MWBMPartners/alpha
+- Merge pull request #513 from MWBMPartners/claude/fix-displayorder-migration
+- Merge pull request #519 from MWBMPartners/claude/manage-schema-audit
+- Merge pull request #576 from MWBMPartners/claude/copy-alpha-to-beta-cingh
+- Precache recently viewed songs in service worker (#105)
+- Prepare deep linking for native app, PWA, and browser (#99)
+- Schema + migration + shared-setlist storage move to MySQL
+- Settings sync: push on change, pull on auth-changed, opt-in toggle
+- Settings: split into Account/Profile + App tabs, add profile editing
+- Split header menus: account vs app/admin
+- Strip access-control detail from channel gate + default-open bootstrap
+- Temporarily disable channel gate while admin accounts are sorted
+- Username rename (self-service + admin) + Profile-tab deep-link
+- Whitelist toast notification type parameter
+- app refresh upload (early dev 1)
+- chore(admin): audit fixes — XSS, a11y, colspan
+- chore(manage): consistency cleanup — \$activePage backfill, drop redundant requires, role-check helper (#516, #530)
+- chore(misc): hygiene roll-ups — manifest icons split, dashboard cards aligned, app.js promise/init order (#530)
+- chore: alphabetise manifest.json properties
+- chore: full SQL data export, directory access safeguards
+- chore: re-parse songs.json, user migration script, GitHub Wiki sync
+- chore: rebuild songs.json from .SourceSongData with BCP 47 language support
+- chore: reorder manifest.json — identity fields first, rest alphabetical
+- docs(api): add OpenAPI 3.0 specification for all API endpoints (#291)
+- docs(api): comprehensive OpenAPI audit — closes #291 (#575)
+- docs(api): comprehensive OpenAPI refresh for the 0.10.x alpha batch
+- docs(api): cover remaining 37 api.php actions + 5 editor endpoints
+- docs(legal): update Privacy Policy and Terms of Use
+- docs(openapi): refresh spec for 0.25.0 + document recent endpoints
+- docs: refresh in-app help, README, CHANGELOG, DEV_NOTES, .claude memory
+- docs: update README, in-app help, and wiki with recent features
+- feat(a11y): colour vision deficiency mode selector and high contrast toggle (#319)
+- feat(access): CCLI licence validation and tiered content access (#346)
+- feat(activity-log): API-switch error catch-all + unknown-action row (#535 Phase 4)
+- feat(activity-log): admin CRUD instrumentation (#535 Phase 2)
+- feat(activity-log): expand tblActivityLog schema for #535 + fix typo writer
+- feat(activity-log): instrument auth + session events (#535 Phase 1c)
+- feat(activity-log): logActivity() helper + privacy policy doc (#535)
+- feat(activity-log): retention prune + admin viewer UI (#535 Phase 5)
+- feat(activity-log): user actions — favourites, setlists, song requests (#535 Phase 3)
+- feat(admin): /manage/schema-audit page — diff schema.sql vs DB vs migrations (#518)
+- feat(admin): CCLI usage report + CSV export (#317)
+- feat(admin): analytics CSV export + search-query logging (#404)
+- feat(admin): analytics dashboard at /manage/analytics (#404)
+- feat(admin): backup upload path + audit log entry (#405)
+- feat(admin): card-layout reorder/hide on /manage/ + username case + v0.25.0
+- feat(admin): catalogue-wide missing-numbers report page (#285)
+- feat(admin): pinned sidebar at lg+, hamburger below — closes #460
+- feat(admin): regular-user content gating — restrictions, tiers, per-user AccessTier
+- feat(admin): restore pre-flight summary + transactional data-load + pre-restore snapshot (#405)
+- feat(admin): restore-from-backup action on the Setup dashboard (#405)
+- feat(admin): runtime entitlements editor at /manage/entitlements (#407)
+- feat(admin): song-request triage queue at /manage/requests (#403)
+- feat(analytics): add GDPR-compliant consent banner and settings toggle
+- feat(analytics): add Matomo and Fathom analytics platform support
+- feat(analytics): add unified event tracking module
+- feat(api): add 15 new API endpoints for all database features
+- feat(auth): cross-subdomain cookie + sliding expiry so sign-in persists (#390)
+- feat(auth): enforce registration_mode setting (#236)
+- feat(auth): passwordless email login via magic link and 6-digit code (#294)
+- feat(auth): promote magic-link as primary sign-in path (#395)
+- feat(claude): in-repo session history via sync script + secret scrubber
+- feat(community): song request submission form + API (#403)
+- feat(db): CamelCase naming, user groups, song requests, missing song detection, interactive installer
+- feat(db): migrate song data from JSON to MySQL (#270, #271, #272, #273, #274, #275, #276, #277, #278)
+- feat(db): organisation support with licensing and content lockout (#326)
+- feat(db): user-features catch-up migration for the 3 audit-discovered drift items
+- feat(db): web form to configure db_credentials.php from Setup dashboard (#272)
+- feat(debug): on-demand PHP error display via ?_debug=1&_dev=1
+- feat(debug): wire ?_debug=1&_dev=1 into /manage/* admin pages
+- feat(editor): ProPresenter-style arrangement builder + smarter presets
+- feat(editor): Tags tab — per-song add/remove with live-search (#496)
+- feat(editor): add arrangement customisation to Structure tab (#161)
+- feat(editor): add checkboxes for verified, lyricsPublicDomain, musicPublicDomain (#222, #225)
+- feat(editor): bulk tag / move / verify / export in multi-select bar (#399)
+- feat(editor): clearance + layout + textarea fit + label + language names
+- feat(editor): credit chip autocomplete — live dedupe across all 5 lists (#495)
+- feat(editor): credit_search endpoint — live-search distinct credits (#495)
+- feat(editor): debounced auto-save as safety net (#394)
+- feat(editor): find-missing-numbers modal in the sidebar (#285)
+- feat(editor): multi-select mode + bulk delete (#399 MVP)
+- feat(editor): per-song save endpoint + client wiring (closes #394 core)
+- feat(editor): tune name, ISWC, arrangers/adaptors/translators (#497)
+- feat(editor+admin): revision history UI + diff + restore + /manage/revisions (#400)
+- feat(favorites): add batch select mode with bulk operations (#119)
+- feat(favorites): add custom tags/categories with filter (#122)
+- feat(footer): add 'By Number' button and narrow device adjustments
+- feat(header): replace logo with navigation dropdown menu
+- feat(home): add quick-access recent songbook tabs (#121)
+- feat(home): responsive songbook grid — scale columns with viewport
+- feat(infra): database backup script with retention policy (#322)
+- feat(licences): inheritance + multi-licence effective set (#462)
+- feat(manage): credit-people actions — Add / Edit / Rename / Merge / Delete / View Songs (closes #545) (#563)
+- feat(manage): credit-people read-only list page + entitlement (#545 next slice) (#560)
+- feat(manage): in-app Help / Guides page for admin surface (#574)
+- feat(manage): name-first Entity/Target pickers on /restrictions (#498)
+- feat(misc): let Misc songbook hold unnumbered songs (#392)
+- feat(notifications): in-app bell + dropdown + mark-read API (#289)
+- feat(offline+perf): cloud-download buttons, fix SW stall, ETag pages, N+1 fix
+- feat(og): add OG preview images for songbooks, setlists, and Android Smart App Banner
+- feat(portal): channel gating + /admin alias + richer admin dashboard (#407)
+- feat(pwa): Background Sync for favourites + setlists (#338)
+- feat(pwa): bulk audio manifest endpoint + Settings toggle (#401)
+- feat(pwa): cache audio + sheet music on-demand for offline playback (#401)
+- feat(pwa): generate app icons and screenshot placeholders
+- feat(pwa): offline song-request queuing (#337)
+- feat(pwa): platform-specific install prompts for all iOS browsers (#175)
+- feat(pwa): restore "New version — Refresh" toast on SW update (#396)
+- feat(pwa): wire audio pre-cache + per-songbook eviction + real size readout (#401)
+- feat(rate-limit): per-user buckets + apply to setlist_collab_invite (#321)
+- feat(related-songs): add content-based TF-IDF lyric similarity (#118)
+- feat(roles+ux): entitlements map, Edit-Song button, clearer verse demarcation (#407)
+- feat(schema): credit-people registry tables for #545 (data layer only) (#553)
+- feat(search): expand common scripture-reference abbreviations (#397)
+- feat(search): scripture-tag-aware search merges curated tag matches (#397)
+- feat(security): add Content-Security-Policy header with nonces (#117)
+- feat(security): add SRI hashes to CDN resources (#116)
+- feat(seo): centre-safe OG layout + contextual song previews (#172, #173)
+- feat(setlist): scheduled setlists API endpoints (#398 half)
+- feat(setlist): scheduling UI wired + collaboration endpoints + 'Up next' card (#398)
+- feat(settings): add Privacy section with analytics consent toggle
+- feat(setup): add Drop Legacy Tables action to the Setup dashboard
+- feat(share): enhance social share cards with rich metadata (#123)
+- feat(shortcuts): add keyboard shortcuts for worship control (#125)
+- feat(shortcuts): settings toggle to enable/disable keyboard shortcuts (#406)
+- feat(song page): surface tune name, ISWC + arranger/adaptor/translator credits
+- feat(song): add related songs section on song pages (#118)
+- feat(song): practice / memorisation mode with progressive masking (#402)
+- feat(songbooks): Official flag + Publisher/Year/Copyright/Affiliation (#502)
+- feat(stats): add usage statistics dashboard page (#120)
+- feat(transitions): enhance page transitions with loading bar and staggered animations (#149)
+- feat(ui): full-width layout + admin header redesigned to match main site
+- feat(ui): multi-language translations switcher on song page (#281)
+- feat(ui): popular songs, recently viewed, browse by tag on home page (#303, #304, #305)
+- feat(ui): search autocomplete suggestions (#307)
+- feat(ui): setlist scheduling, templates, PDF export buttons (#300, #301, #302)
+- feat(ui): song request submission form (#280)
+- feat: Android — Kotlin/Jetpack Compose project setup
+- feat: Apple universal app — Xcode project setup (Swift 6.3 / SwiftUI)
+- feat: Apple — Widgets (Song of the Day + Recent Favourites)
+- feat: BCP 47 language support, email login UI, and magic link routing (#237, #295, #296)
+- feat: Phase 1 batch — copyright fix, gestures, permalinks, writer links, SEO, setlists, transitions, title case, songbook sort, colour mode fix
+- feat: Song Editor — edit metadata (title, number, songbook, CCLI)
+- feat: Song Editor — web-based developer tool UI
+- feat: WCAG 2.1 AA accessibility compliance
+- feat: Web PWA — MIDI audio playback
+- feat: Web PWA — PDF sheet music viewer
+- feat: add Miscellaneous songbook (Misc) for non-published songs
+- feat: add SQLite database for song storage
+- feat: add branded offline fallback page for uncached PWA launches
+- feat: add experimental manifest properties + reorder
+- feat: add language field (IETF BCP 47) + Add/Delete song buttons
+- feat: add verified/publicDomain fields, verified badge, JSON schema (#222-#226)
+- feat: admin dashboard & enhanced user management (#260)
+- feat: align colour scheme with iLyrics dB + colourblind-friendly mode
+- feat: automated Apple app packaging (App Store, TestFlight, direct)
+- feat: automated Web PWA build & packaging
+- feat: badge contrast fix, song arrangements, SEO enhancements (#159, #160, #151)
+- feat: build Web PWA core — Milestone 2 complete
+- feat: build song data parser and generate songs.json
+- feat: bulk download API reduces 3,612 requests to 6 for offline songs
+- feat: centralise song data in data_share/ and add server-side setlist sharing (#154, #155)
+- feat: complete PWA rebuild with PHP backend, modern UI, and enhanced features
+- feat: complete colour scheme redesign — clean neutral slate
+- feat: comprehensive PWA manifest + update Claude context
+- feat: comprehensive in-app help system
+- feat: deep linking with clean URLs and browser title updates
+- feat: disable numpad live search by default, respect default songbook
+- feat: download all songs for offline use
+- feat: editor song list — title case + songbook badge (#249)
+- feat: email login disable, CAPTCHA config, ad platform settings (#339, #340, #341)
+- feat: enhanced user account system with role hierarchy, password reset, custom arrangements
+- feat: expand Song of the Day seasons and search lyrics (#163)
+- feat: fixed header and footer — always visible on screen
+- feat: hide PWA install banner when already installed cross-subdomain (#248)
+- feat: lyrics copy protection and expanded font size range
+- feat: move editor to /manage/ with session-based auth (#227, #228, #229)
+- feat: numeric keypad toggle for song number search
+- feat: offline song update detection and auto-update (#131, #132)
+- feat: per-songbook and per-song offline download options
+- feat: physical keyboard support for number search keypad
+- feat: project setup — new structure, plan, docs, and song data
+- feat: record song views for history tracking (#287)
+- feat: redirect to app root on direct include file access
+- feat: related songs, export, health dashboard, review workflow, accessibility, rate limit, cleanup (#308-#325)
+- feat: replace MWBM Partners Ltd branding with iHymns + cross-domain storage bridge (#133)
+- feat: replace native prompt()/confirm() with Bootstrap modals (#114)
+- feat: restrict access to private_html/ via HTTP Basic Auth
+- feat: shared data/ directory uploaded one level up from SFTP paths
+- feat: show full songbook name responsively, abbreviation on narrow screens
+- feat: song keys, chords, setlist scheduling/templates/PDF/collab, discovery, preferences, revisions (#298-#316)
+- feat: song translation linking, fix auto-scroll iOS, fix PWA offline blank page
+- feat: sortable song list — title (default), number, songbook (#251)
+- feat: split language into Language, Script, Region fields (#240)
+- feat: subdomain cookie sync for *.ihymns.app (#133)
+- feat: subtle JSON fallback indicator in footer (Alpha/Beta only)
+- feat: unit tests + fix songbook abbreviation badges
+- feat: update footer links and enhance copyright display logic
+- feat: web-accessible database setup dashboard at /manage/setup-database.php
+- fix(admin): Bootstrap JS everywhere, drag-drop, offline buttons, friendly labels
+- fix(admin): drop stale DB_CONFIG reference — fatal killed footer
+- fix(admin): full-height sidebar column (#499)
+- fix(admin): generic clean-URL rewrite so every /manage/<name>.php works
+- fix(admin): make pinned footer visible — solid surface, stronger shadow
+- fix(admin): pin header + footer to viewport like the main site
+- fix(admin-nav): account button overflowed header, hid theme + hamburger
+- fix(admin-nav): keep long display names on one line in header
+- fix(admin/schema-audit): skip ON DELETE/UPDATE + FULLTEXT lines in parser
+- fix(api): document CSRF defence policy + add X-Requested-With guard (#293 B15)
+- fix(api): remove dead song_translations duplicate + sync OpenAPI contract (#291)
+- fix(api): restore licence cases + document missing endpoints (#291)
+- fix(auth): Settings Account card now reflects signed-in state consistently
+- fix(auth): idle timeout + session_regenerate_id on privilege change (#531)
+- fix(badges): automated WCAG contrast for songbook number badges
+- fix(config): hard-coded values → APP_CONFIG (#529)
+- fix(db): catch up missing tblSongbooks.Colour in songbook-meta migration
+- fix(db): defensive AFTER-clause helper in songbook-meta migration
+- fix(db): relax SQL strict mode in user-features-catchup migration
+- fix(db): use MySQL 8.0+ expression-default syntax for SongsJson
+- fix(db/audit): backfill @migration-adds doctags on credit-fields migration
+- fix(editor): Save writes only modified songs, not whole corpus
+- fix(editor): make Add/Delete song buttons more visible (#238)
+- fix(editor): rename 'Save JSON' to 'Save' and clarify DB-first save path
+- fix(editor): resolve toolbar button ID mismatches (#235)
+- fix(home): dedupe Popular Songs and Recently Viewed lists (#549) (#550)
+- fix(home,editor): show titles on home + tighten editor toolbar on mobile (#546, #547) (#548)
+- fix(install): skip interactive prompts when run non-interactively
+- fix(js): JS↔PHP contract sync — entitlements + localStorage centralisation (#528)
+- fix(logs): error_log on silent best-effort catches (#534)
+- fix(manage): load config.php in admin bootstrap so head-libs.php sees APP_CONFIG (#542)
+- fix(manage): load entitlements.php in auth bootstrap
+- fix(migrate-users): bind_param type/variable mismatch crashed user insert
+- fix(migrations): strict mysqli reporting + prepared statement consistency (#525)
+- fix(php): drop literal `<?= ... ?>` from HTML comment to stop runtime fatal
+- fix(php): inline-script + non-HTML endpoint hardening (#526)
+- fix(pwa): IDB private-mode safe + storage quota awareness helper (#354)
+- fix(pwa): Safari install banner blank + iOS safe-area support (#174)
+- fix(pwa): hide install banner on non-Safari iOS browsers
+- fix(pwa): offline boot reliability — vendor population, SW first-install, songs_json precache (#354)
+- fix(pwa): replace navigator.onLine with fetch-failure detection (#354 B24)
+- fix(pwa): share icon direction + empty default banner HTML (#177)
+- fix(pwa): silence manifest warnings + allow CDN sourcemap fetches
+- fix(schema): MySQL 8.0+ DEFAULT-parens on every TEXT/MEDIUMTEXT (#525)
+- fix(security): comprehensive security audit fixes (#293)
+- fix(security): hash API tokens and reset tokens with SHA-256 (#292)
+- fix(seo): add dynamic OG image for social sharing previews (#170)
+- fix(setlist): remove text from Web Share API to prevent broken share links
+- fix(settings): disable reduce motion by default so animations are enabled
+- fix(setup): don't leak text/plain Content-Type through the Setup dashboard
+- fix(sheet-music): add loading guard to prevent rapid-click race condition (#115)
+- fix(songdata): bulk-load credits in search paths to kill N+1 (#533)
+- fix(spa): run inline <script> tags in injected page templates
+- fix(spa+admin): home sections via module; drop Bootstrap double-load
+- fix(stats): equalise Most Viewed badge widths regardless of digit count
+- fix(sw): prevent caching 301 redirects in navigation handler (#140)
+- fix(sw): skip non-GET requests in fetch handler — Cache API rejects them (#544)
+- fix(ui): arrangement badge contrast, tooltips (#266)
+- fix(writer): improve name matching with multiple slug variants
+- fix: PHP/MySQL safety audit Tier 1 + 2 fixes (closes #556, #557, #558) (#559)
+- fix: PWA banner — App Store verification, remove broken Smart App Banner (#267)
+- fix: PWA bugs — sync bar, badge contrast, chorus/refrain, iOS auto-scroll (#262, #263, #265, #269)
+- fix: PWA standalone safe area insets for header, footer, overlays (#267)
+- fix: Popular Songs and Browse by Theme work in JSON fallback and offline
+- fix: SDAH song number badges unreadable in dark mode (#134)
+- fix: Song of the Day not rendering due to async data race (#108)
+- fix: SongData.php falls back to JSON when MySQL not configured
+- fix: add .htaccess rules for /manage/ and use clean URLs (#227)
+- fix: align offline songbook list and show estimated storage sizes
+- fix: arrangement badge contrast, tooltips, and compact layout
+- fix: auto-scroll iOS support and floating stop button (#267)
+- fix: auto-scroll not working on iOS due to sub-pixel rounding
+- fix: call skipWaiting() so new SW activates immediately
+- fix: clean up Web PWA UI — search bar, icons, songbook colours
+- fix: code review and security hardening
+- fix: comprehensive code review + security hardening
+- fix: correct SQLite database path — dirname 3 not 2 (#253)
+- fix: critical editor bugs — form visibility, lyrics/lines, missing fields
+- fix: deduplicate concurrent navigation fetches in service worker (#140)
+- fix: deploy sync detection + softer songbook card colours
+- fix: disable all caching on beta — nuke service worker + cache headers
+- fix: editor HTML-to-JS ID mismatches + admin-only user management
+- fix: enable PWA offline support on iOS (and all platforms)
+- fix: expand public domain detection to include all variant spellings (#225)
+- fix: footer text center alignment and bottom safe area on mobile (#267)
+- fix: hide .php from all URLs, JSON fallback for SongData
+- fix: include data/songs.json inside each SFTP upload directory
+- fix: merge duplicate class attribute on search-clear-btn
+- fix: migration scripts work via web dashboard (no CLI required)
+- fix: offline download continues in background and downloads 4x faster
+- fix: prefix copyright notice with "Application" to distinguish from song copyrights (#230)
+- fix: preserve SQLite directory and protect DB from git/web access
+- fix: put songbook abbreviation inside coloured square in Recent section (#162)
+- fix: re-enable service worker + add Cloudflare no-cache headers
+- fix: remove CSS background override on songbook card headers
+- fix: remove config.php include from service worker to prevent PHP errors
+- fix: render song titles in Title Case consistently across all surfaces
+- fix: revert version-bump to beta-only, show build timestamp on alpha
+- fix: scroll progress bar visibility and safe areas in presentation mode
+- fix: scroll-to-top button overlapping footer on all platforms
+- fix: separate copyright from writer credits, show in header and footer
+- fix: service worker never caches CDN resources — fixes 503 errors
+- fix: set Vendor Parent to NULL — MWBM Partners Ltd is the top-level vendor
+- fix: setlist sync bar, badge text contrast, admin menu links
+- fix: show song numbers in Recent section on home page (#162)
+- fix: song editor loads songs.json from canonical data/ location
+- fix: song list spacing, version bump regex, pre-release version, lyrics resilience
+- fix: split copyright at © in all credit line handlers, zero issues remaining
+- fix: temporarily remove CSP header to clear poisoned SW cache
+- fix: widen song number badge min-width for consistent alignment
+- initial folder structure
+- perf(editor): batch writers/composers/components — 10,800 → 3 queries
+- perf(editor): include tags in bulk ?action=load (#496 follow-up)
+- refactor(api): land 5c+5d delta missed by stacked-PR base mishap (#570, #571) (#572)
+- refactor(api): migrate 14 endpoints from PDO to mysqli (#554 Batch 5b) (#569)
+- refactor(api): migrate 7 endpoints from PDO to mysqli (#554 Batch 5a) (#567)
+- refactor(db): finish PDO→mysqli migration — closes #554, #555, #568 (#573)
+- refactor(includes): PDO→mysqli — #554 Batch 4 part 1 of 2 (9 /includes/* libraries) (#565)
+- refactor(manage): PDO→mysqli migration — #554 Batch 1 (tiers, groups, restrictions, requests) (#561)
+- refactor(manage): PDO→mysqli migration — #554 Batch 2 (users, songbooks, organisations) (#562)
+- refactor(manage): PDO→mysqli — #554 Batch 3 (analytics, activity-log, ccli-report, revisions, schema-audit, index) (#564)
+- refactor(manage): consolidate Bootstrap library loads into head-libs.php (#527)
+- refactor(manage): extract renderEntityPicker helper for reuse (#498)
+- refactor(manage): migrate auth.php from PDO to mysqli (#554 Batch 4 part 2) (#566)
+- refactor: align infoAppVer.php with phpWhoIs structure + platform info files
+- refactor: centralise localStorage key names in constants.js (#139)
+- refactor: consolidate web app to single appWeb/public_html/ directory
+- refactor: extract shared escapeHtml() into js/utils/html.js (#137)
+- refactor: modularise Web/PWA into PHP components
+- refactor: single canonical songs.json — copy during build/deploy
+- refactor: unify Chorus/Refrain — Chorus as primary, Refrain as alias
+- refactor: update PHP code for PHP 8.5 compatibility
+- refactor: use DIRECTORY_SEPARATOR in all PHP require/include paths
+- refactor: use DIRECTORY_SEPARATOR in all path string segments
+- refactor: use PHP constants, remove shortcut vars, update wiki + OpenAPI
+- refactor: use unique platform-specific Application IDs
+- security(favorites): replace innerHTML with DOM APIs (#504)
+- security: add CSRF checks + reduce error info-leak on admin pages
+- style(admin): unify song editor + /manage pages with main-site palette
+- style(credits): canonical '; ' separator for multi-credit join strings
+
 ## [0.25.0] — 2026-04-24
 - Add Song of the Day with Christian calendar theming (#108)
 - Add configurable page transition animations (#106)
