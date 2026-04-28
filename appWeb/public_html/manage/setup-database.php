@@ -206,31 +206,110 @@ if ($action !== '') {
         'drop-legacy' => 'drop-legacy-tables.php',
     ];
 
-    $scriptName = $scriptMap[$action] ?? null;
+    /* Authoritative migration order (#577). Lifted from the historic
+       per-card sequence in this dashboard — we add a single "Apply
+       All Pending Migrations" entry that runs each migration script
+       in this order, sequentially, stopping on the first hard failure.
+       Each script is already idempotent (every migration starts with
+       INFORMATION_SCHEMA / SHOW TABLES probes), so re-running the bulk
+       button after work has been applied is safe.
 
-    if ($scriptName === null) {
-        echo "Unknown action: " . htmlspecialchars($action) . "\n";
-    } elseif (!$hasCredentials && $action !== 'install') {
-        echo "ERROR: Database credentials not configured.\n";
-        echo "Configure appWeb/.auth/db_credentials.php first, or run Install.\n";
-    } else {
-        $scriptPath = $scriptDir . $scriptName;
-        if (!file_exists($scriptPath)) {
-            echo "ERROR: Script not found: {$scriptName}\n";
+       To add a new migration: ship the migrate-*.php file, append its
+       action key here, and the bulk button picks it up. The schema
+       audit page (#518) cross-checks declared @migration-adds against
+       the live schema and warns if the bulk run completed but drift
+       remains. */
+    $migrationOrder = [
+        'account-sync',
+        'credits',
+        'songbook-meta',
+        'user-features-catchup',
+        'activity-log-expand',
+        'credit-people',
+    ];
+
+    /* "Apply all pending migrations" handler (#577). Iterates
+       $migrationOrder, runs each script via require, and stops on
+       the first thrown exception. Per-script output is interleaved
+       with framing headers so the operator can see exactly which
+       migration produced which line in the log. Each migration is
+       already idempotent so re-running the bulk button after some
+       have applied is safe — they no-op individually. */
+    if ($action === 'apply-all-migrations') {
+        if (!$hasCredentials) {
+            echo "ERROR: Database credentials not configured.\n";
+            echo "Configure appWeb/.auth/db_credentials.php first, or run Install.\n";
         } else {
-            try {
-                /* Run the script in an isolated scope via an anonymous function.
-                 * The scripts detect $isCli and adapt output accordingly.
-                 * We catch any exceptions; exit() calls in the scripts will
-                 * terminate this page but that's acceptable — the output
-                 * buffer is flushed to the browser before exit. */
-                $actionSuccess = true;
-                require $scriptPath;
-            } catch (\Throwable $e) {
-                $actionSuccess = false;
-                echo "\nERROR: " . htmlspecialchars($e->getMessage()) . "\n";
-                if ($e->getFile()) {
-                    echo "File: " . htmlspecialchars(basename($e->getFile())) . ":" . $e->getLine() . "\n";
+            $totalRan = 0;
+            $totalFailed = 0;
+            $startedAt = microtime(true);
+            $actionSuccess = true;
+            foreach ($migrationOrder as $migAction) {
+                $migScript = $scriptMap[$migAction] ?? null;
+                if ($migScript === null) {
+                    echo "  ✗ Unknown migration key: {$migAction} — skipped.\n\n";
+                    continue;
+                }
+                $migPath = $scriptDir . $migScript;
+                if (!file_exists($migPath)) {
+                    echo "  ✗ Script not found: {$migScript} — skipped.\n\n";
+                    continue;
+                }
+                $migStart = microtime(true);
+                echo "═══════════════════════════════════════════════════════\n";
+                echo "▶ {$migAction}  ({$migScript})\n";
+                echo "═══════════════════════════════════════════════════════\n";
+                try {
+                    require $migPath;
+                    $totalRan++;
+                    $elapsed = round((microtime(true) - $migStart) * 1000);
+                    echo "\n  ✓ {$migAction} completed in {$elapsed} ms\n\n";
+                } catch (\Throwable $e) {
+                    $totalFailed++;
+                    $actionSuccess = false;
+                    echo "\n  ✗ {$migAction} FAILED: " . htmlspecialchars($e->getMessage()) . "\n";
+                    if ($e->getFile()) {
+                        echo "    File: " . htmlspecialchars(basename($e->getFile())) . ":" . $e->getLine() . "\n";
+                    }
+                    echo "\n  Stopping the bulk run so you can resolve this before continuing.\n";
+                    break;
+                }
+            }
+            $totalElapsed = round((microtime(true) - $startedAt) * 1000);
+            echo "═══════════════════════════════════════════════════════\n";
+            echo "Bulk run finished — {$totalRan} migration"
+               . ($totalRan === 1 ? '' : 's') . " ran successfully";
+            if ($totalFailed > 0) {
+                echo ", {$totalFailed} failed";
+            }
+            echo " in {$totalElapsed} ms.\n";
+        }
+    } else {
+        $scriptName = $scriptMap[$action] ?? null;
+        if ($scriptName === null) {
+            echo "Unknown action: " . htmlspecialchars($action) . "\n";
+        } elseif (!$hasCredentials && $action !== 'install') {
+            echo "ERROR: Database credentials not configured.\n";
+            echo "Configure appWeb/.auth/db_credentials.php first, or run Install.\n";
+        } else {
+            $scriptPath = $scriptDir . $scriptName;
+            if (!file_exists($scriptPath)) {
+                echo "ERROR: Script not found: {$scriptName}\n";
+            } else {
+                try {
+                    /* Run the script in an isolated scope via an anonymous function.
+                     * The scripts detect $isCli and adapt output accordingly.
+                     * We catch any exceptions; exit() calls in the scripts will
+                     * terminate this page but that's acceptable — the output
+                     * buffer is flushed to the browser before exit. */
+                    $actionSuccess = true;
+                    require $scriptPath;
+                } catch (\Throwable $e) {
+                    $actionSuccess = false;
+                    echo "\nERROR: " . htmlspecialchars($e->getMessage()) . "\n";
+                    if ($e->getFile()) {
+                        echo "File: " . htmlspecialchars(basename($e->getFile())) . ":" . $e->getLine() . "\n";
+                    }
                 }
             }
         }
@@ -411,6 +490,37 @@ if ($hasCredentials && defined('DB_HOST')) {
         <div class="output-log"><?= $actionOutput ?></div>
 
     <?php else: ?>
+        <!-- ============================================================
+             ONE-STEP MIGRATIONS RUNNER (#577)
+             Runs every migration script in dependency order. Each
+             script is idempotent so re-running is safe; the runner
+             stops on the first hard failure and reports which one.
+             Sits ABOVE the per-step cards so admins reach for this
+             first, only dropping into individual cards when they
+             need to debug a specific step.
+             ============================================================ -->
+        <div class="alert alert-primary border-0 mb-4 d-flex flex-column flex-md-row gap-3 align-items-md-center justify-content-between">
+            <div>
+                <h5 class="mb-1">
+                    <i class="bi bi-collection-play me-2" aria-hidden="true"></i>
+                    Apply all pending migrations
+                </h5>
+                <p class="mb-0 small">
+                    Runs every <code>migrate-*.php</code> in dependency order,
+                    skipping ones already applied (each migration is idempotent).
+                    Stops on the first hard failure with a clear pointer to the
+                    offending step. Use this on a fresh install, after a deploy,
+                    or whenever the schema-audit page (#518) shows drift.
+                </p>
+            </div>
+            <a href="?action=apply-all-migrations"
+               class="btn btn-primary btn-lg flex-shrink-0 <?= $hasCredentials ? '' : 'disabled' ?>"
+               onclick="return confirm('Run every pending migration in dependency order?\n\nSafe to re-run — applied migrations are skipped automatically.');">
+                <i class="bi bi-play-fill me-1" aria-hidden="true"></i>
+                Apply all
+            </a>
+        </div>
+
         <!-- ============================================================
              ACTION CARDS
              ============================================================ -->
