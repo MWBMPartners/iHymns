@@ -900,10 +900,11 @@ if ($action !== null) {
             sendJson([
                 'token' => $token,
                 'user'  => [
-                    'id'           => $userId,
-                    'username'     => $username,
-                    'display_name' => $displayName,
-                    'role'         => $role,
+                    'id'             => $userId,
+                    'username'       => $username,
+                    'display_name'   => $displayName,
+                    'role'           => $role,
+                    'avatar_service' => null,   /* #616 — fresh registration inherits project default */
                 ],
             ], 201);
             break;
@@ -958,7 +959,19 @@ if ($action !== null) {
                 break;
             }
 
-            $stmt = $db->prepare('SELECT Id, Username, PasswordHash, DisplayName, Role, IsActive FROM tblUsers WHERE Username = ?');
+            /* AvatarService (#616) only included when the column exists
+               so a partly-migrated install can still log users in. */
+            $hasAvatarSvcCol = false;
+            $colCheck = $db->query(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblUsers'
+                    AND COLUMN_NAME  = 'AvatarService' LIMIT 1"
+            );
+            if ($colCheck && $colCheck->fetch_row() !== null) { $hasAvatarSvcCol = true; }
+            if ($colCheck) { $colCheck->close(); }
+            $avatarSvcSel = $hasAvatarSvcCol ? ', AvatarService' : ', NULL AS AvatarService';
+            $stmt = $db->prepare("SELECT Id, Username, PasswordHash, DisplayName, Role, IsActive {$avatarSvcSel} FROM tblUsers WHERE Username = ?");
             $stmt->bind_param('s', $username);
             $stmt->execute();
             $user = $stmt->get_result()->fetch_assoc();
@@ -1056,10 +1069,11 @@ if ($action !== null) {
             sendJson([
                 'token' => $token,
                 'user'  => [
-                    'id'           => (int)$user['Id'],
-                    'username'     => $user['Username'],
-                    'display_name' => $user['DisplayName'],
-                    'role'         => $user['Role'],
+                    'id'             => (int)$user['Id'],
+                    'username'       => $user['Username'],
+                    'display_name'   => $user['DisplayName'],
+                    'role'           => $user['Role'],
+                    'avatar_service' => $user['AvatarService'] ?? null,   /* #616 */
                 ],
             ]);
             break;
@@ -1121,10 +1135,11 @@ if ($action !== null) {
 
             sendJson([
                 'user' => [
-                    'id'           => $authUser['Id'],
-                    'username'     => $authUser['Username'],
-                    'display_name' => $authUser['DisplayName'],
-                    'role'         => $authUser['Role'],
+                    'id'             => $authUser['Id'],
+                    'username'       => $authUser['Username'],
+                    'display_name'   => $authUser['DisplayName'],
+                    'role'           => $authUser['Role'],
+                    'avatar_service' => $authUser['AvatarService'] ?? null,   /* #616 */
                 ],
             ]);
             break;
@@ -2195,12 +2210,86 @@ if ($action !== null) {
             sendJson([
                 'ok'   => true,
                 'user' => [
-                    'id'           => $authUser['Id'],
-                    'username'     => $authUser['Username'],
-                    'display_name' => $newDisplayName,
-                    'email'        => $newEmail,
-                    'role'         => $authUser['Role'],
+                    'id'             => $authUser['Id'],
+                    'username'       => $authUser['Username'],
+                    'display_name'   => $newDisplayName,
+                    'email'          => $newEmail,
+                    'role'           => $authUser['Role'],
+                    'avatar_service' => $authUser['AvatarService'] ?? null,   /* #616 */
                 ],
+            ]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Update the authenticated user's avatar-service preference (#616).
+         *
+         * POST body (JSON): { "avatar_service": "gravatar"|"libravatar"
+         *                                     |"dicebear"|"none"|null }
+         * NULL clears the override (= inherit project default).
+         * Requires: Authorization: Bearer <token>
+         * ----------------------------------------------------------------- */
+        case 'auth_update_avatar_service':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+            $svc  = $body['avatar_service'] ?? null;
+
+            /* Allowed: NULL ('inherit project default') or one of the
+               recognised resolver names. Mirrors USER_AVATAR_SERVICES
+               in includes/avatar.php — kept hand-typed here so the API
+               doesn't require the helper to be loaded. */
+            $allowed = ['gravatar', 'libravatar', 'dicebear', 'none'];
+            if ($svc !== null) {
+                if (!is_string($svc)) {
+                    sendJson(['error' => 'avatar_service must be a string or null.'], 400);
+                    break;
+                }
+                $svc = strtolower(trim($svc));
+                if ($svc === '') {
+                    $svc = null;
+                } elseif (!in_array($svc, $allowed, true)) {
+                    sendJson(['error' => 'avatar_service must be one of: ' . implode(', ', $allowed) . ', or null.'], 400);
+                    break;
+                }
+            }
+
+            $db = getDbMysqli();
+            $colCheck = $db->query(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblUsers'
+                    AND COLUMN_NAME  = 'AvatarService' LIMIT 1"
+            );
+            $hasCol = ($colCheck && $colCheck->fetch_row() !== null);
+            if ($colCheck) { $colCheck->close(); }
+            if (!$hasCol) {
+                sendJson([
+                    'error' => 'Avatar-service preference not yet enabled — administrator must apply migrate-user-avatar-service first.',
+                ], 503);
+                break;
+            }
+
+            $stmt = $db->prepare(
+                'UPDATE tblUsers SET AvatarService = ?, UpdatedAt = NOW() WHERE Id = ?'
+            );
+            $authUserId = (int)$authUser['Id'];
+            $stmt->bind_param('si', $svc, $authUserId);
+            $stmt->execute();
+            $stmt->close();
+
+            sendJson([
+                'ok'             => true,
+                'avatar_service' => $svc,
             ]);
             break;
 
@@ -5714,11 +5803,31 @@ function getAuthenticatedUser(): ?array
     $db = getDbMysqli();
     $hashedToken = hash('sha256', $token);
     $now = gmdate('c');
+
+    /* AvatarService (#616) is selected only when the column exists, so
+       a partly-migrated install keeps working. The check is cached for
+       the lifetime of the request via a static. */
+    static $hasAvatarSvcCol = null;
+    if ($hasAvatarSvcCol === null) {
+        $r = $db->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblUsers'
+                AND COLUMN_NAME  = 'AvatarService' LIMIT 1"
+        );
+        $hasAvatarSvcCol = ($r && $r->fetch_row() !== null);
+        if ($r) $r->close();
+    }
+    $avatarSvcCol = $hasAvatarSvcCol ? ', u.AvatarService' : ', NULL AS AvatarService';
+    $emailCol     = ', u.Email';
+
     $stmt = $db->prepare(
-        'SELECT u.Id, u.Username, u.DisplayName, u.Role
+        "SELECT u.Id, u.Username, u.DisplayName, u.Role
+                {$emailCol}
+                {$avatarSvcCol}
          FROM tblApiTokens t
          JOIN tblUsers u ON u.Id = t.UserId
-         WHERE t.Token = ? AND t.ExpiresAt > ? AND u.IsActive = 1'
+         WHERE t.Token = ? AND t.ExpiresAt > ? AND u.IsActive = 1"
     );
     $stmt->bind_param('ss', $hashedToken, $now);
     $stmt->execute();

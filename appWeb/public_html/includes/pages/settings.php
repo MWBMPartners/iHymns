@@ -133,6 +133,65 @@ declare(strict_types=1);
                     </button>
                 </form>
 
+                <!-- Avatar service preference (#616). Per-user override
+                     of the project-level APP_CONFIG['avatar']['service']
+                     setting from #581. Stored on tblUsers.AvatarService;
+                     NULL = inherit project default. The radio set
+                     covers the privacy / look-and-feel trade-offs
+                     called out in #581's privacy section. -->
+                <form id="avatar-form" class="mb-3 pt-3 border-top" autocomplete="off">
+                    <h3 class="h6 mb-1">Avatar source</h3>
+                    <p class="text-muted small mb-2">
+                        How your circular avatar is generated when you're signed in.
+                        Some options send a hash of your email address to a third party;
+                        others stay entirely on this device.
+                    </p>
+                    <div id="avatar-msg" class="alert d-none py-2 small" role="alert"></div>
+
+                    <div class="form-check small">
+                        <input class="form-check-input" type="radio" name="avatar_service" value="" id="avatar-svc-default">
+                        <label class="form-check-label" for="avatar-svc-default">
+                            <strong>Use site default</strong>
+                            — whatever the operator has chosen (currently Gravatar unless changed).
+                        </label>
+                    </div>
+                    <div class="form-check small">
+                        <input class="form-check-input" type="radio" name="avatar_service" value="gravatar" id="avatar-svc-gravatar">
+                        <label class="form-check-label" for="avatar-svc-gravatar">
+                            <strong>Gravatar</strong>
+                            — your email hash is sent to gravatar.com, which returns your
+                            registered avatar (or a generated identicon).
+                        </label>
+                    </div>
+                    <div class="form-check small">
+                        <input class="form-check-input" type="radio" name="avatar_service" value="libravatar" id="avatar-svc-libravatar">
+                        <label class="form-check-label" for="avatar-svc-libravatar">
+                            <strong>Libravatar</strong>
+                            — federated, Gravatar-protocol-compatible alternative.
+                        </label>
+                    </div>
+                    <div class="form-check small">
+                        <input class="form-check-input" type="radio" name="avatar_service" value="dicebear" id="avatar-svc-dicebear">
+                        <label class="form-check-label" for="avatar-svc-dicebear">
+                            <strong>DiceBear identicon</strong>
+                            — a deterministic geometric pattern from the email hash.
+                            No registered-avatar lookup; no third party sees your email.
+                        </label>
+                    </div>
+                    <div class="form-check small mb-2">
+                        <input class="form-check-input" type="radio" name="avatar_service" value="none" id="avatar-svc-none">
+                        <label class="form-check-label" for="avatar-svc-none">
+                            <strong>None</strong>
+                            — the generic person icon that signed-out users see.
+                        </label>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary btn-sm" id="avatar-save-btn">
+                        <i class="fa-solid fa-floppy-disk me-1" aria-hidden="true"></i>
+                        Save avatar source
+                    </button>
+                </form>
+
                 <!-- Change username form — separate because it requires
                      the current password and has its own validation rules. -->
                 <form id="username-form" class="mb-3" autocomplete="off">

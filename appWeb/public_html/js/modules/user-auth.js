@@ -604,7 +604,10 @@ export class UserAuth {
         const slot = document.getElementById('header-user-icon');
         if (!slot) return;
         if (loggedIn && user) {
-            this._gravatarUrl(user.email || user.username, 64).then(url => {
+            /* #616 — honour the per-user avatar-service preference. NULL
+               or unrecognised string falls through to the default
+               (Gravatar) inside _avatarUrl. */
+            this._avatarUrl(user.email || user.username, 64, user.avatar_service).then(url => {
                 /* User may have signed out by the time the hash resolves. */
                 if (!this.isLoggedIn()) return;
                 const current = document.getElementById('header-user-icon');
@@ -636,25 +639,47 @@ export class UserAuth {
     }
 
     /**
-     * Build a Gravatar URL. Uses SHA-256 via SubtleCrypto since
-     * Gravatar accepts both MD5 (legacy) and SHA-256 (since 2022) —
-     * SHA-256 lets us avoid shipping a hand-rolled hash. Mirrors PHP
-     * `userAvatarUrl()` so signed-in users see the same avatar in
-     * both surfaces.
+     * Build an avatar URL. Mirrors PHP `userAvatarUrl()` so signed-in
+     * users see the same avatar in both surfaces. Uses SHA-256 via
+     * SubtleCrypto (Gravatar accepts both MD5 (legacy) and SHA-256
+     * (since 2022) — SHA-256 lets us avoid shipping a hand-rolled
+     * hash).
      *
      * @param {string} email
      * @param {number} size
+     * @param {string|null} userOverride Per-user resolver preference
+     *        (#616). NULL = use Gravatar (the default for the JS path).
+     *        One of 'gravatar' | 'libravatar' | 'dicebear' | 'none'.
      * @returns {Promise<string>}
      */
-    async _gravatarUrl(email, size = 64) {
+    async _avatarUrl(email, size = 64, userOverride = null) {
         const e = (email || '').trim().toLowerCase();
         if (!e || !crypto?.subtle) return '/assets/avatar-fallback.svg';
+        const service = (typeof userOverride === 'string' ? userOverride.trim().toLowerCase() : '') || 'gravatar';
+        if (service === 'none') return '/assets/avatar-fallback.svg';
+
         const buf = new TextEncoder().encode(e);
         const hash = await crypto.subtle.digest('SHA-256', buf);
         const hex = Array.from(new Uint8Array(hash))
             .map(b => b.toString(16).padStart(2, '0'))
             .join('');
+
+        if (service === 'libravatar') {
+            return `https://seccdn.libravatar.org/avatar/${hex}?s=${size}&d=identicon&r=g`;
+        }
+        if (service === 'dicebear') {
+            return `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(hex)}&size=${size}`;
+        }
+        /* gravatar (default) — and any unknown string */
         return `https://www.gravatar.com/avatar/${hex}?s=${size}&d=identicon&r=g`;
+    }
+
+    /* Backwards-compatible alias for the old name (#616). Kept so any
+       external caller still using `_gravatarUrl(email, size)` keeps
+       working — it just calls through to the new resolver with no
+       per-user override. */
+    _gravatarUrl(email, size = 64) {
+        return this._avatarUrl(email, size, null);
     }
 
     /**

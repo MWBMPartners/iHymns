@@ -244,14 +244,33 @@ function getCurrentUser(): ?array
        consistently. Passing a null key to the typed hasRole()
        parameter previously fatal-errored the admin dashboard mid-
        render. */
+    /* AvatarService (#616) is included via COALESCE-on-COLUMN_EXISTS
+       so the admin nav still renders on a partly-migrated install
+       that hasn't yet applied migrate-user-avatar-service. NULL value
+       means "inherit project default" — admin-nav.php passes it
+       straight to userAvatarUrl()'s third arg, which treats NULL as
+       "use APP_CONFIG default". */
+    $hasAvatarService = false;
+    $colCheck = $db->query(
+        "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'tblUsers'
+            AND COLUMN_NAME  = 'AvatarService' LIMIT 1"
+    );
+    if ($colCheck && $colCheck->fetch_row() !== null) { $hasAvatarService = true; }
+    if ($colCheck) { $colCheck->close(); }
+
+    $avatarSvcCol = $hasAvatarService ? ', AvatarService AS avatar_service' : ', NULL AS avatar_service';
+
     $stmt = $db->prepare(
-        'SELECT Id AS id,
+        "SELECT Id AS id,
                 Username AS username,
                 DisplayName AS display_name,
                 Role AS role,
                 Email AS email
+                {$avatarSvcCol}
          FROM tblUsers
-         WHERE Id = ? AND IsActive = 1'
+         WHERE Id = ? AND IsActive = 1"
     );
     $userId = (int)$_SESSION['user_id'];
     $stmt->bind_param('i', $userId);
