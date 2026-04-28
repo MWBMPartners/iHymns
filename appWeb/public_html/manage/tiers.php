@@ -50,11 +50,18 @@ const TIER_CAPS = [
     'RequiresCcli'       => ['Needs CCLI',   'Tier requires a valid CCLI licence number'],
 ];
 
+/* Name is the machine-key for a tier (e.g. 'public', 'free', 'mwbm-insiders').
+   Allow letters (both cases), digits, hyphen and underscore (#639). The
+   five reserved tiers stay lowercase because TIER_LEVELS / validTiers in
+   ccli_validator.php + api.php are still hand-rolled lowercase maps;
+   custom-named tiers above level 0 get their level from the row itself
+   (tblAccessTiers.Level), so mixed-case names like 'MWBMInsiders' work
+   correctly through the SELECT-by-Name path. */
 $validName = function (string $n): ?string {
     $n = trim($n);
-    if ($n === '')                         return 'Name is required.';
-    if (strlen($n) > 30)                   return 'Name must be 30 characters or fewer.';
-    if (!preg_match('/^[a-z0-9_]+$/', $n)) return 'Name must be lowercase letters, digits, or underscore.';
+    if ($n === '')                            return 'Name is required.';
+    if (strlen($n) > 30)                      return 'Name must be 30 characters or fewer.';
+    if (!preg_match('/^[A-Za-z0-9_-]+$/', $n)) return 'Name must be letters, digits, hyphen or underscore.';
     return null;
 };
 
@@ -70,7 +77,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         switch ($action) {
             case 'create': {
-                $name        = strtolower(trim((string)($_POST['name']         ?? '')));
+                /* #639 — preserve the admin's casing on disk. The
+                   reserved 5 (public/free/ccli/premium/pro) stay
+                   lowercase by convention; custom tier names like
+                   'MWBMInsiders' or 'mwbm-insiders' keep their
+                   original form. */
+                $name        = trim((string)($_POST['name']                    ?? ''));
                 $displayName = trim((string)($_POST['display_name']            ?? ''));
                 $level       = (int)($_POST['level']                           ?? 0);
                 $description = trim((string)($_POST['description']             ?? ''));
@@ -324,7 +336,8 @@ $tierTableCols = 3 + count(TIER_CAPS) + 2;
                 <div class="col-sm-3">
                     <label class="form-label small">Name (machine)</label>
                     <input type="text" name="name" class="form-control form-control-sm" maxlength="30" required
-                           placeholder="e.g. premium_plus" pattern="[a-z0-9_]+">
+                           placeholder="e.g. premium_plus, mwbm-insiders" pattern="[A-Za-z0-9_\-]+"
+                           title="Letters, digits, hyphen or underscore">
                 </div>
                 <div class="col-sm-3">
                     <label class="form-label small">Display name</label>

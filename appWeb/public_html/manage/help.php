@@ -401,6 +401,16 @@ foreach ($sections as $s) {
                         affects only new users — existing users keep whatever they
                         already had.
                     </div>
+                    <div class="gotcha small">
+                        <strong>Role-gated sections (#641):</strong> the dashboard
+                        renders different bottom-of-page cards depending on your
+                        role. Curators / Editors / Admins see a lightweight
+                        <em>Your session</em> card with their role + username.
+                        <strong>Global Admins</strong> see a richer <em>System Info</em>
+                        card carrying PHP version, database driver and the
+                        connected DB name — useful for triage but not relevant
+                        to curators, so it's deliberately hidden from lower roles.
+                    </div>
                 </section>
 
                 <!-- ====================================================================
@@ -681,6 +691,14 @@ foreach ($sections as $s) {
                     </ul>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> One group per user. Re-assigning moves them; there's no &ldquo;in two groups at once.&rdquo;
+                    </div>
+                    <div class="gotcha small">
+                        <strong>Role vs Group (#642):</strong> these names sound similar but they're independent concepts.
+                        <ul class="small mb-0">
+                            <li><strong>User Role</strong> (Curator / Admin / Global Admin) controls which Manage pages a user can <em>access</em>. The four roles are hard-coded today; new roles need a code change.</li>
+                            <li><strong>User Group</strong> controls which release channel a user sees on the public site (Alpha / Beta / RC / RTW). Group membership is freely admin-managed via this page.</li>
+                        </ul>
+                        Don't expect adding a User Group to grant Manage access — for that, change the user's Role from User Management. Issue #642 tracks the rationalisation.
                     </div>
                 </section>
 

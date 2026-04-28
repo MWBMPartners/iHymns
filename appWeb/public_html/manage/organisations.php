@@ -155,6 +155,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute();
                 $stmt->close();
 
+                /* Multi-licence sync (#640). The submitted set replaces the
+                   join-table state. The primary licence_type is also folded
+                   in as one of the rows so the two surfaces stay coherent.
+                   Wrapped in try/catch so a partly-migrated install (no
+                   tblOrganisationLicences) just no-ops the join writes. */
+                try {
+                    $picked = (array)($_POST['additional_licences'] ?? []);
+                    $picked = array_values(array_unique(array_filter(
+                        array_map('strval', $picked),
+                        static fn($k) => $k !== '' && $k !== 'none'
+                    )));
+                    if ($licenceType !== '' && $licenceType !== 'none' && !in_array($licenceType, $picked, true)) {
+                        $picked[] = $licenceType;
+                    }
+                    /* Validate every picked key against the catalogue. */
+                    $picked = array_values(array_intersect($picked, $LICENCE_TYPE_KEYS));
+
+                    $del = $db->prepare('DELETE FROM tblOrganisationLicences WHERE OrganisationId = ?');
+                    $del->bind_param('i', $id);
+                    $del->execute();
+                    $del->close();
+
+                    if (!empty($picked)) {
+                        $ins = $db->prepare(
+                            'INSERT INTO tblOrganisationLicences
+                                (OrganisationId, LicenceType, LicenceNumber)
+                             VALUES (?, ?, ?)'
+                        );
+                        foreach ($picked as $key) {
+                            /* Carry the primary's number onto the matching
+                               row so the two views agree; other rows
+                               carry NULL until edited individually in a
+                               future per-licence sub-form. */
+                            $num = ($key === $licenceType && $licenceNum !== '') ? $licenceNum : null;
+                            $ins->bind_param('iss', $id, $key, $num);
+                            $ins->execute();
+                        }
+                        $ins->close();
+                    }
+                } catch (\Throwable $_e) {
+                    /* tblOrganisationLicences not yet created — silent no-op. */
+                }
+
                 if ($beforeOrg !== null) {
                     $afterOrg = [
                         'Name' => $name, 'Slug' => $slug,
@@ -298,9 +341,11 @@ try {
 }
 
 /* Edit mode */
-$editOrg     = null;
-$editMembers = [];
-$candidates  = [];
+$editOrg      = null;
+$editMembers  = [];
+$candidates   = [];
+$editLicences = [];                  /* keys present in tblOrganisationLicences (#640) */
+$multiLicenceTableExists = false;    /* Cached so the listing render can decide quickly */
 $editId = (int)($_GET['edit'] ?? 0);
 if ($editId > 0) {
     try {
@@ -309,6 +354,24 @@ if ($editId > 0) {
         $stmt->execute();
         $editOrg = $stmt->get_result()->fetch_assoc() ?: null;
         $stmt->close();
+
+        /* Pre-load the multi-licence rows for this org (#640). Wrapped
+           in try/catch so an install without migrate-organisation-
+           licences applied just renders the section empty. */
+        try {
+            $stmt = $db->prepare(
+                'SELECT LicenceType FROM tblOrganisationLicences
+                  WHERE OrganisationId = ? AND IsActive = 1'
+            );
+            $stmt->bind_param('i', $editId);
+            $stmt->execute();
+            $editLicences = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'LicenceType');
+            $stmt->close();
+            $multiLicenceTableExists = true;
+        } catch (\Throwable $_e) {
+            $editLicences = [];
+            $multiLicenceTableExists = false;
+        }
 
         if ($editOrg) {
             $stmt = $db->prepare(
@@ -533,7 +596,7 @@ $csrf = csrfToken();
                 </div>
                 <div class="row g-2 mb-2">
                     <div class="col-sm-4">
-                        <label class="form-label small">Licence type</label>
+                        <label class="form-label small">Primary licence</label>
                         <select name="licence_type" class="form-select form-select-sm">
                             <?php foreach ($LICENCE_TYPES as $key => $info): ?>
                                 <option value="<?= htmlspecialchars($key) ?>"
@@ -556,6 +619,41 @@ $csrf = csrfToken();
                         </div>
                     </div>
                 </div>
+
+                <!-- Additional licences (#640). Each org can hold any
+                     number of licences alongside the primary — e.g. a
+                     church holding both CCLI (lyrics) and MRL (musical
+                     notation). Tier resolution unions all of them. The
+                     Primary picker above is kept for back-compat with
+                     existing tools that read tblOrganisations.LicenceType
+                     directly; saving the form syncs primary into the
+                     join table too so neither side can drift. -->
+                <?php if ($multiLicenceTableExists): ?>
+                <div class="mb-2">
+                    <label class="form-label small mb-1">Additional licences <small class="text-muted">(beyond the primary above)</small></label>
+                    <div class="d-flex flex-wrap gap-3">
+                        <?php foreach ($LICENCE_TYPES as $key => $info): ?>
+                            <?php if ($key === 'none') continue; ?>
+                            <div class="form-check small">
+                                <input class="form-check-input" type="checkbox"
+                                       name="additional_licences[]"
+                                       value="<?= htmlspecialchars($key) ?>"
+                                       id="edit-add-licence-<?= htmlspecialchars($key) ?>"
+                                       <?= in_array($key, $editLicences, true) ? 'checked' : '' ?>>
+                                <label class="form-check-label" for="edit-add-licence-<?= htmlspecialchars($key) ?>"
+                                       title="<?= htmlspecialchars($info['description']) ?>">
+                                    <?= htmlspecialchars($info['label']) ?>
+                                </label>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                    <div class="form-text small">
+                        Tick every licence the org holds. The org's effective
+                        access tier is the max across the primary + every
+                        additional licence + every parent-org licence (#636).
+                    </div>
+                </div>
+                <?php endif; ?>
                 <button type="submit" class="btn btn-amber-solid btn-sm mt-2">
                     <i class="bi bi-save me-1"></i>Save settings
                 </button>

@@ -362,7 +362,16 @@ $csrf = csrfToken();
              lightweight "Your session" card instead. -->
         <?php if (($currentUser['role'] ?? '') === 'global_admin'): ?>
         <div class="card-admin p-3">
-            <h2 class="h6 mb-3"><i class="bi bi-info-circle me-2"></i>System Info</h2>
+            <h2 class="h6 mb-3 d-flex align-items-center gap-2">
+                <i class="bi bi-info-circle"></i>
+                System Info
+                <!-- Audience cue (#641) — global_admin gating is enforced
+                     by the surrounding `if`; the badge makes it
+                     self-documenting when curators see screenshots. -->
+                <span class="badge bg-danger text-light ms-auto" style="font-size: 0.6rem; font-weight: 600;">
+                    Global Admin only
+                </span>
+            </h2>
             <table class="table table-sm table-borderless mb-0 small">
                 <tr><td class="text-muted" style="width:40%">PHP Version</td><td><?= phpversion() ?></td></tr>
                 <tr><td class="text-muted">Database Driver</td><td>MySQL</td></tr>
