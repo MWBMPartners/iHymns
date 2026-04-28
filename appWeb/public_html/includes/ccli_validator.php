@@ -123,6 +123,12 @@ function resolveEffectiveTier(int $userId): string
     $orgTier = 'public';
 
     $orgLicences = [];
+    /* Walk the user → org → ancestor chain via recursive CTE (#636),
+       then union licences from BOTH the legacy primary column on
+       tblOrganisations AND the new tblOrganisationLicences join
+       table (#640). The LEFT JOIN keeps installs without the new
+       table working — the join just yields NULL rows that get
+       filtered out by the WHERE. */
     $sqlRecursive = "
         WITH RECURSIVE org_chain AS (
             /* Anchor: every org the user is a direct member of. */
@@ -136,9 +142,22 @@ function resolveEffectiveTier(int $userId): string
               FROM tblOrganisations po
               JOIN org_chain c ON c.ParentOrgId = po.Id
         )
-        SELECT DISTINCT LicenceType
-          FROM org_chain
-         WHERE IsActive = 1 AND LicenceType <> 'none'
+        SELECT LicenceType FROM (
+            /* Legacy primary licence on the org row (back-compat). */
+            SELECT DISTINCT LicenceType
+              FROM org_chain
+             WHERE IsActive = 1 AND LicenceType <> 'none'
+            UNION
+            /* Multi-licence join table (#640). Each org along the
+               chain may carry any number of additional active
+               licences here. */
+            SELECT DISTINCT ol.LicenceType
+              FROM org_chain c
+              JOIN tblOrganisationLicences ol ON ol.OrganisationId = c.Id
+             WHERE c.IsActive = 1
+               AND ol.IsActive = 1
+               AND ol.LicenceType <> 'none'
+        ) AS uniq_licences
     ";
     try {
         $stmt = $db->prepare($sqlRecursive);

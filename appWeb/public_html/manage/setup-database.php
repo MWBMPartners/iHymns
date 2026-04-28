@@ -204,6 +204,7 @@ if ($action !== '') {
         'song-artists'  => 'migrate-song-artists.php',
         'credit-people-slug' => 'migrate-credit-people-slug.php',
         'user-avatar-service' => 'migrate-user-avatar-service.php',
+        'organisation-licences' => 'migrate-organisation-licences.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -761,6 +762,25 @@ if ($hasCredentials && defined('DB_HOST')) {
                         </p>
                         <a href="?action=user-avatar-service" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run Per-user Avatar Service Migration
+                        </a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">3k. Multiple licence types per organisation (#640)</h5>
+                        <p class="card-text text-secondary small">
+                            Adds <code>tblOrganisationLicences</code> — a join table
+                            so each organisation can hold any number of licences
+                            (e.g. CCLI for lyrics + MRL for musical notation).
+                            Backfills one row per org from the existing primary
+                            <code>LicenceType</code> column. The primary column
+                            is left in place for back-compat; tier resolution
+                            unions across both. Idempotent — safe to re-run.
+                        </p>
+                        <a href="?action=organisation-licences" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run Multi-licence Migration
                         </a>
                     </div>
                 </div>
