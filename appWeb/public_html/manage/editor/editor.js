@@ -1194,8 +1194,22 @@ function autoGenerateArrangement(song) {
 
     if (refrainIndex === -1) return null;
 
-    /* Build arrangement: chorus/refrain after each verse, other components in place. */
+    /* Detect the SDAH-93-style "verse-1-acts-as-chorus" pattern (#598):
+       when the refrain comes BEFORE any verse in the components list,
+       the song convention is to open on the refrain too — not just
+       repeat it after each verse. Most ProPresenter / hymnal renderings
+       of this pattern (e.g. "All Things Bright and Beautiful") lead
+       with the refrain. */
+    var firstVerseIndex = -1;
+    for (var k = 0; k < song.components.length; k++) {
+        if (song.components[k].type === 'verse') { firstVerseIndex = k; break; }
+    }
+    var leadWithRefrain = (firstVerseIndex !== -1 && refrainIndex < firstVerseIndex);
+
+    /* Build arrangement: optional leading refrain, then chorus/refrain
+       after each verse, other components in place. */
     var arrangement = [];
+    if (leadWithRefrain) arrangement.push(refrainIndex);
     for (var j = 0; j < song.components.length; j++) {
         var comp = song.components[j];
         if (comp.type === 'verse') {

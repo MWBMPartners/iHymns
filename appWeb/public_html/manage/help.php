@@ -435,7 +435,20 @@ foreach ($sections as $s) {
                         <dt>Metadata</dt>
                         <dd>Title, song number, songbook, CCLI number, Tune Name (e.g. <em>HYFRYDOL</em>), ISWC, language, region.</dd>
                         <dt>Structure</dt>
-                        <dd>The actual lyrics, broken into sections: verses, choruses, bridges, and so on. Drag to reorder; auto-resizing text areas grow as you type.</dd>
+                        <dd>
+                            The actual lyrics, broken into sections: verses, choruses, bridges, and so on. Drag to reorder; auto-resizing text areas grow as you type.
+                            <details class="mt-2">
+                                <summary class="small text-muted" style="cursor: pointer;">Verse-1-acts-as-chorus convention (e.g. SDAH-93 "All Things Bright and Beautiful")</summary>
+                                <div class="small text-muted mt-1">
+                                    Some hymns open with a stanza that's structurally a refrain — the song repeats it after every verse — but the hymnal still numbers it as <em>Verse 1</em>. To set these up:
+                                    <ol class="mb-0">
+                                        <li>Set the first component's <strong>Type</strong> to <strong>Refrain</strong>, leaving its number as <code>1</code>.</li>
+                                        <li>Click <strong>Chorus after each verse</strong> in the Arrangement quick-actions. Because the refrain comes before any verse, the arrangement starts <em>and</em> ends each cycle with the refrain — exactly the SDAH-93 playback pattern.</li>
+                                    </ol>
+                                    On the public song page, "Refrain" displays as "Chorus" via the standing alias so existing styling and screen-reader cues stay consistent.
+                                </div>
+                            </details>
+                        </dd>
                         <dt>Credits</dt>
                         <dd>Writer, composer, arranger, adaptor, translator, copyright holder. Names autocomplete from the <a href="#credit-people">Credit People</a> registry so you don't get duplicate spellings.</dd>
                         <dt>Tags</dt>
