@@ -1178,9 +1178,23 @@ body.banner-visible.search-open .main-content {
     -webkit-touch-callout: none;
 }
 
-/* Song copyright */
+/* Song copyright (legacy class — retained because print.css still
+   references it for hymnal-style print output of older templates). */
 .song-copyright {
     font-size: 0.85rem;
+}
+
+/* Right-aligned credits + copyright footer at end of lyrics (#601).
+   Mirrors the hymnal / projection convention: small italic-ish text,
+   right-aligned, immediately after the last verse so users projecting
+   or printing have the attribution visible without scrolling back to
+   the header. */
+.song-credits-footer {
+    font-size: 0.85rem;
+    line-height: 1.4;
+}
+.song-credits-footer > div + div {
+    margin-top: 0.1rem;
 }
 
 /* ---------------------------------------------------------------------------

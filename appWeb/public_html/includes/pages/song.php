@@ -49,6 +49,9 @@ $ccli        = $song['ccli']        ?? '';
 $hasAudio    = !empty($song['hasAudio']);
 $hasSheet    = !empty($song['hasSheetMusic']);
 $components  = $song['components'] ?? [];
+$lyricsPublicDomain = !empty($song['lyricsPublicDomain']);
+$musicPublicDomain  = !empty($song['musicPublicDomain']);
+$fullyPublicDomain  = $lyricsPublicDomain && $musicPublicDomain;
 
 /* ===================================================================
  * Translations (#281) — list of other-language versions of this song
@@ -310,11 +313,11 @@ unset($_t);
             <?php endif; ?>
 
             <!-- Copyright, CCLI Song Number, ISWC in song header (#497).
-                 ID labels (CCLI / ISWC) now bold and separated from the
-                 value with a definite gap so the eye scans them as a
-                 parallel column to the people-credit rows above (#600).
-                 Copyright stays as plain text — it's a sentence, not a
-                 labelled field. -->
+                 ID labels (CCLI / ISWC) are bold with a definite gap
+                 between label and value (#600). The two ID rows sit
+                 in a flex row that wraps: side-by-side at wide widths,
+                 stacked at narrow. Copyright stays on its own line
+                 above — it's prose, not a labelled field. -->
             <?php if (!empty($copyright) || !empty($ccli) || $iswc !== ''): ?>
                 <div class="song-meta-copyright mb-3">
                     <?php if (!empty($copyright)): ?>
@@ -323,17 +326,21 @@ unset($_t);
                             <?= htmlspecialchars($copyright) ?>
                         </p>
                     <?php endif; ?>
-                    <?php if (!empty($ccli)): ?>
-                        <p class="mb-<?= $iswc !== '' ? '1' : '0' ?> small text-muted">
-                            <i class="fa-solid fa-hashtag me-2" aria-hidden="true"></i>
-                            <strong>CCLI Song #</strong>&nbsp;<?= htmlspecialchars($ccli) ?>
-                        </p>
-                    <?php endif; ?>
-                    <?php if ($iswc !== ''): ?>
-                        <p class="mb-0 small text-muted" title="International Standard Musical Work Code">
-                            <i class="fa-solid fa-barcode me-2" aria-hidden="true"></i>
-                            <strong>ISWC:</strong>&nbsp;<?= htmlspecialchars($iswc) ?>
-                        </p>
+                    <?php if (!empty($ccli) || $iswc !== ''): ?>
+                        <div class="song-id-row d-flex flex-wrap column-gap-4 row-gap-1">
+                            <?php if (!empty($ccli)): ?>
+                                <span class="small text-muted">
+                                    <i class="fa-solid fa-hashtag me-2" aria-hidden="true"></i>
+                                    <strong>CCLI Song #</strong>&nbsp;<?= htmlspecialchars($ccli) ?>
+                                </span>
+                            <?php endif; ?>
+                            <?php if ($iswc !== ''): ?>
+                                <span class="small text-muted" title="International Standard Musical Work Code">
+                                    <i class="fa-solid fa-barcode me-2" aria-hidden="true"></i>
+                                    <strong>ISWC:</strong>&nbsp;<?= htmlspecialchars($iswc) ?>
+                                </span>
+                            <?php endif; ?>
+                        </div>
                     <?php endif; ?>
                 </div>
             <?php endif; ?>
@@ -524,22 +531,49 @@ unset($_t);
         <?php endforeach; ?>
     </div>
 
-    <!-- Copyright notice -->
-    <?php if (!empty($copyright) || !empty($ccli)): ?>
-        <div class="song-copyright mt-4 pt-3 border-top" role="contentinfo">
-            <?php if (!empty($copyright)): ?>
-                <p class="text-muted small mb-1">
+    <!-- Credits + copyright footer at end of lyrics (#601). Mirrors the
+         hymnal / projection convention: a small right-aligned block
+         after the last verse listing Words / Music / Adapted by /
+         Translated by / Tune, then the copyright line. The same data
+         is already rendered in the header, but the footer is the copy
+         users see when projecting or when they have scrolled past the
+         masthead. The .song-credits-footer class is kept distinct from
+         the older .song-copyright (used only by print.css) so the
+         right-aligned layout doesn't bleed into print rules. */ -->
+    <?php if (
+        !empty($_creditRows) && $_hasAnyCredit
+        || $tuneName !== ''
+        || (!$fullyPublicDomain && !empty($copyright))
+        || $fullyPublicDomain
+    ): ?>
+        <footer class="song-credits-footer text-end small text-muted mt-4 pt-3 border-top" role="contentinfo">
+            <?php if ($_hasAnyCredit): ?>
+                <?php foreach ($_creditRows as $row): ?>
+                    <?php [$rowId, $rowLabel, , $rowNames] = $row; ?>
+                    <?php if (empty($rowNames)) continue; ?>
+                    <div data-credit-kind="<?= htmlspecialchars($rowId) ?>">
+                        <strong><?= htmlspecialchars($rowLabel) ?>:</strong>
+                        <?= htmlspecialchars(implode('; ', $rowNames)) ?>
+                    </div>
+                <?php endforeach; ?>
+            <?php endif; ?>
+            <?php if ($tuneName !== ''): ?>
+                <div data-credit-kind="tune">
+                    <strong>Tune:</strong> <?= htmlspecialchars($tuneName) ?>
+                </div>
+            <?php endif; ?>
+            <?php if ($fullyPublicDomain): ?>
+                <div class="mt-1" data-credit-kind="public-domain">
+                    <i class="fa-regular fa-copyright me-1" aria-hidden="true"></i>
+                    Public Domain
+                </div>
+            <?php elseif (!empty($copyright)): ?>
+                <div class="mt-1" data-credit-kind="copyright">
                     <i class="fa-regular fa-copyright me-1" aria-hidden="true"></i>
                     <?= htmlspecialchars($copyright) ?>
-                </p>
+                </div>
             <?php endif; ?>
-            <?php if (!empty($ccli)): ?>
-                <p class="text-muted small mb-0">
-                    <i class="fa-solid fa-hashtag me-1" aria-hidden="true"></i>
-                    CCLI Song #<?= htmlspecialchars($ccli) ?>
-                </p>
-            <?php endif; ?>
-        </div>
+        </footer>
     <?php endif; ?>
 
     <!-- Report missing song link -->

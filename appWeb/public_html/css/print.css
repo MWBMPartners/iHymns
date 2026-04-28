@@ -78,12 +78,18 @@
         text-decoration: none !important;
     }
 
-    /* Copyright */
-    .song-copyright {
+    /* Copyright + credits footer (#601). Same hymnal-style print
+       treatment for both — small grey block under a thin rule. The
+       on-screen .song-credits-footer is right-aligned via flex/text-end
+       in app.css; for print we keep it left-aligned because printers
+       often clip right-aligned content near the page margin. */
+    .song-copyright,
+    .song-credits-footer {
         border-top: 1px solid #cccccc !important;
         padding-top: 0.5rem !important;
         font-size: 9pt !important;
         color: #666666 !important;
+        text-align: left !important;
     }
 
     /* Page breaks */
