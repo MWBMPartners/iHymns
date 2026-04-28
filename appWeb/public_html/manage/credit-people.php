@@ -582,12 +582,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
              * actually meant Merge instead).
              * -------------------------------------------------------- */
             case 'rename': {
-                $id      = (int)($_POST['id'] ?? 0);
-                $newName = trim((string)($_POST['new_name'] ?? ''));
+                $id          = (int)($_POST['id'] ?? 0);
+                $sourceName  = trim((string)($_POST['source_name'] ?? ''));
+                $newName     = trim((string)($_POST['new_name'] ?? ''));
 
-                if ($id <= 0)                  { $error = 'Person id missing.'; break; }
+                if ($id <= 0 && $sourceName === '') { $error = 'Person id or source name missing.'; break; }
                 if ($newName === '')           { $error = 'New name is required.'; break; }
                 if (mb_strlen($newName) > 255) { $error = 'Name must be 255 characters or fewer.'; break; }
+
+                /* In-use-only rename support (#626). When the row isn't
+                   in the registry yet (Stuart Townend duplicate case),
+                   the JS posts source_name instead of (or alongside)
+                   id; we auto-register a row for it on the fly so the
+                   rest of the rename code path doesn't have to branch. */
+                if ($id <= 0 && $sourceName !== '') {
+                    $reg = $db->prepare('SELECT Id FROM tblCreditPeople WHERE Name = ?');
+                    $reg->bind_param('s', $sourceName);
+                    $reg->execute();
+                    $regRow = $reg->get_result()->fetch_row();
+                    $reg->close();
+                    if ($regRow) {
+                        $id = (int)$regRow[0];
+                    } else {
+                        $ins = $db->prepare('INSERT INTO tblCreditPeople (Name) VALUES (?)');
+                        $ins->bind_param('s', $sourceName);
+                        $ins->execute();
+                        $id = (int)$db->insert_id;
+                        $ins->close();
+                    }
+                }
 
                 /* Look up the current name + check that the target
                    spelling isn't already in use by a different row. */
@@ -678,8 +701,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             case 'merge': {
                 $sourceId   = (int)($_POST['source_id'] ?? 0);
                 $targetId   = (int)($_POST['target_id'] ?? 0);
+                $sourceName = trim((string)($_POST['source_name'] ?? ''));
+                $targetName = trim((string)($_POST['target_name'] ?? ''));
                 $keepLinks  = array_map('intval', (array)($_POST['keep_link_ids'] ?? []));
                 $keepIpi    = array_map('intval', (array)($_POST['keep_ipi_ids']  ?? []));
+
+                /* In-use-only merge support (#626) — the JS posts a
+                   *_name fallback when a row isn't yet in the registry
+                   (e.g. Stuart Townend duplicates). Auto-register
+                   either side as needed so the rest of the merge code
+                   path can assume both sides have a registry id. */
+                $resolvePersonId = static function (int $id, string $name) use ($db): int {
+                    if ($id > 0)       return $id;
+                    if ($name === '')  return 0;
+                    $stmt = $db->prepare('SELECT Id FROM tblCreditPeople WHERE Name = ?');
+                    $stmt->bind_param('s', $name);
+                    $stmt->execute();
+                    $row = $stmt->get_result()->fetch_row();
+                    $stmt->close();
+                    if ($row) return (int)$row[0];
+                    $ins = $db->prepare('INSERT INTO tblCreditPeople (Name) VALUES (?)');
+                    $ins->bind_param('s', $name);
+                    $ins->execute();
+                    $newId = (int)$db->insert_id;
+                    $ins->close();
+                    return $newId;
+                };
+                $sourceId = $resolvePersonId($sourceId, $sourceName);
+                $targetId = $resolvePersonId($targetId, $targetName);
 
                 if ($sourceId <= 0 || $targetId <= 0) { $error = 'Both source and target are required.'; break; }
                 if ($sourceId === $targetId)          { $error = 'Source and target must be different people.'; break; }
@@ -1373,19 +1422,38 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                                 </td>
                                 <td class="text-end action-col">
                                     <div class="btn-group btn-group-sm" role="group" aria-label="Row actions">
-                                        <?php if ($p['registry_id'] !== null): ?>
+                                        <?php
+                                            /* Merge / Rename / Delete are available for any row that
+                                               either has a registry entry OR has at least one credited
+                                               use (#626). The Merge handler auto-registers source/target
+                                               on submit if needed, so the UI no longer hides the action
+                                               from in-use-only rows like the Stuart Townend duplicates. */
+                                            $hasUse      = (int)$p['total'] > 0;
+                                            $inRegistry  = $p['registry_id'] !== null;
+                                            $hasActions  = $inRegistry || $hasUse;
+                                        ?>
+                                        <?php if (!$inRegistry && $hasUse): ?>
+                                            <button type="button" class="btn btn-outline-info cp-edit-btn"
+                                                    title="Add to registry — opens the detail drawer pre-filled with this person"
+                                                    aria-label="Add <?= htmlspecialchars($p['name'], ENT_QUOTES) ?> to the registry">
+                                                <i class="bi bi-plus-circle" aria-hidden="true"></i>
+                                            </button>
+                                        <?php elseif ($inRegistry): ?>
                                             <button type="button" class="btn btn-outline-info cp-edit-btn"
                                                     title="Edit person details"
                                                     aria-label="Edit person <?= htmlspecialchars($p['name'], ENT_QUOTES) ?>">
                                                 <i class="bi bi-pencil" aria-hidden="true"></i>
                                             </button>
+                                        <?php endif; ?>
+
+                                        <?php if ($hasActions): ?>
                                             <button type="button" class="btn btn-outline-warning cp-rename-btn"
                                                     title="Rename — cascades to every song that cites this person"
                                                     aria-label="Rename person <?= htmlspecialchars($p['name'], ENT_QUOTES) ?>">
                                                 <i class="bi bi-pencil-square" aria-hidden="true"></i>
                                             </button>
                                             <button type="button" class="btn btn-outline-warning cp-merge-btn"
-                                                    title="Merge into another person — combines two registry rows"
+                                                    title="Merge into another person — combines two names into one"
                                                     aria-label="Merge person <?= htmlspecialchars($p['name'], ENT_QUOTES) ?>">
                                                 <i class="bi bi-union" aria-hidden="true"></i>
                                             </button>
@@ -1394,17 +1462,13 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                                                     aria-label="View songs that cite <?= htmlspecialchars($p['name'], ENT_QUOTES) ?>">
                                                 <i class="bi bi-music-note-list" aria-hidden="true"></i>
                                             </button>
-                                            <button type="button" class="btn btn-outline-danger cp-delete-btn"
-                                                    title="Remove from registry"
-                                                    aria-label="Remove <?= htmlspecialchars($p['name'], ENT_QUOTES) ?> from the registry">
-                                                <i class="bi bi-trash" aria-hidden="true"></i>
-                                            </button>
-                                        <?php else: ?>
-                                            <button type="button" class="btn btn-outline-info cp-edit-btn"
-                                                    title="Add to registry — fills in the name + opens the detail drawer for this person"
-                                                    aria-label="Add <?= htmlspecialchars($p['name'], ENT_QUOTES) ?> to the registry">
-                                                <i class="bi bi-plus-circle" aria-hidden="true"></i>
-                                            </button>
+                                            <?php if ($inRegistry): ?>
+                                                <button type="button" class="btn btn-outline-danger cp-delete-btn"
+                                                        title="Remove from registry"
+                                                        aria-label="Remove <?= htmlspecialchars($p['name'], ENT_QUOTES) ?> from the registry">
+                                                    <i class="bi bi-trash" aria-hidden="true"></i>
+                                                </button>
+                                            <?php endif; ?>
                                         <?php endif; ?>
                                     </div>
                                 </td>
@@ -1522,6 +1586,9 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                     <input type="hidden" name="action" value="rename">
                     <input type="hidden" name="id" id="cp-rename-id" value="">
+                    <!-- #626 — fallback for in-use-only rows; the server
+                         auto-registers by name when id is empty. -->
+                    <input type="hidden" name="source_name" id="cp-rename-source-name" value="">
                     <div class="modal-header border-secondary">
                         <h5 class="modal-title" id="cpRenameLabel">
                             <i class="bi bi-pencil-square me-2"></i>Rename person
@@ -1565,6 +1632,14 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                     <input type="hidden" name="action" value="merge">
                     <input type="hidden" name="source_id" id="cp-merge-source-id" value="">
+                    <!-- #626 — name fallbacks for in-use-only rows; the
+                         server auto-registers them on submit. The select
+                         element below carries an "id:N" / "name:X" key
+                         that the submit handler routes into either
+                         target_id or target_name before posting. -->
+                    <input type="hidden" name="source_name" id="cp-merge-source-name-hidden" value="">
+                    <input type="hidden" name="target_id"   id="cp-merge-target-id-hidden"   value="">
+                    <input type="hidden" name="target_name" id="cp-merge-target-name-hidden" value="">
                     <div class="modal-header border-secondary">
                         <h5 class="modal-title" id="cpMergeLabel">
                             <i class="bi bi-union me-2"></i>Merge person into another
@@ -1579,7 +1654,11 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                             </div>
                             <div class="col-6">
                                 <label class="form-label small" for="cp-merge-target">Target (survives) <span class="text-danger">*</span></label>
-                                <select class="form-select form-select-sm" id="cp-merge-target" name="target_id" required>
+                                <!-- name omitted — the picked option's
+                                     value is an "id:N" / "name:X" key
+                                     that submit JS routes to either
+                                     target_id or target_name (#626). -->
+                                <select class="form-select form-select-sm" id="cp-merge-target" required>
                                     <option value="">— pick the surviving person —</option>
                                 </select>
                             </div>
@@ -2042,7 +2121,9 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                 const raw = row.getAttribute('data-person');
                 if (!raw) return;
                 let person; try { person = JSON.parse(raw); } catch (_) { return; }
-                if (!person.registry_id) return;
+                /* In-use-only rows pass through too (#626) — the
+                   server's rename handler auto-registers the row by
+                   name on submit. */
 
                 /* Build a "this will affect …" line from the role
                    counts already on the row. */
@@ -2067,7 +2148,11 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                         + parts.join(', ') + '.';
                 }
 
-                idIn.value     = String(person.registry_id);
+                idIn.value     = person.registry_id ? String(person.registry_id) : '';
+                /* In-use-only rows post the name as a fallback so the
+                   server can auto-register before renaming (#626). */
+                const sourceNameIn = document.getElementById('cp-rename-source-name');
+                if (sourceNameIn) sourceNameIn.value = person.registry_id ? '' : (person.name || '');
                 currentIn.value= person.name || '';
                 newIn.value    = person.name || '';
                 modal.show();
@@ -2093,12 +2178,22 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
             const ipiBox     = document.getElementById('cp-merge-children-ipi');
             const submitBtn  = document.getElementById('cp-merge-submit');
 
-            /* Build the registry-row index once on page load. Used to
-               populate the target dropdown excluding the source. */
+            /* Build the all-people index once on page load (#626). Used
+               to populate the target dropdown excluding the source. The
+               index now includes in-use-only rows, not just registry
+               rows — the server auto-registers either side on submit
+               so the dropdown can offer any name. */
             const registry = [];
             document.querySelectorAll('#cp-tbody tr[data-person]').forEach(r => {
                 let p; try { p = JSON.parse(r.getAttribute('data-person')); } catch (_) { return; }
-                if (p.registry_id) registry.push({ id: p.registry_id, name: p.name });
+                if (p.registry_id) {
+                    registry.push({ id: p.registry_id, name: p.name, key: 'id:' + p.registry_id });
+                } else if (p.total > 0) {
+                    /* In-use-only — the merge handler will INSERT IGNORE
+                       on submit. Encode the name as the option value so
+                       the form posts target_name when picked. */
+                    registry.push({ id: 0, name: p.name, key: 'name:' + p.name });
+                }
             });
             registry.sort((a, b) => a.name.localeCompare(b.name));
 
@@ -2110,10 +2205,15 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                 const raw = row.getAttribute('data-person');
                 if (!raw) return;
                 let person; try { person = JSON.parse(raw); } catch (_) { return; }
-                if (!person.registry_id) return;
+                /* In-use-only sources flow through too (#626) — the
+                   server auto-registers by name if source_id is empty. */
 
-                sourceIdIn.value   = String(person.registry_id);
+                sourceIdIn.value   = person.registry_id ? String(person.registry_id) : '';
                 sourceNameIn.value = person.name || '';
+                /* Hidden field that tells the server to auto-register
+                   the source by name when source_id is missing. */
+                const sourceNameHidden = document.getElementById('cp-merge-source-name-hidden');
+                if (sourceNameHidden) sourceNameHidden.value = person.registry_id ? '' : (person.name || '');
 
                 /* Reset the irreversibility ack on every open so a prior
                    ticked state doesn't carry across to a fresh merge. */
@@ -2133,14 +2233,19 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                     previewWrap.classList.remove('d-none');
                 }
 
-                /* Populate target dropdown — every registry row except
-                   the source. Sorted alphabetically. */
+                /* Populate target dropdown — every name except the
+                   source itself. The option `value` is the same `key`
+                   that distinguishes id-vs-name (e.g. "id:42" or
+                   "name:Stuart Townend") so the submit handler can
+                   route the right field to the server. Sorted
+                   alphabetically. */
                 targetSel.innerHTML = '<option value="">— pick the surviving person —</option>';
                 registry.forEach(p => {
-                    if (p.id === person.registry_id) return;
+                    if (p.id && p.id === person.registry_id) return;
+                    if (!p.id && p.name === person.name)     return;
                     const opt = document.createElement('option');
-                    opt.value = String(p.id);
-                    opt.textContent = p.name;
+                    opt.value = p.key;
+                    opt.textContent = p.name + (p.id ? '' : ' (not yet in registry)');
                     targetSel.appendChild(opt);
                 });
 
@@ -2211,6 +2316,23 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                 refreshSubmitState();
             });
             confirmCb?.addEventListener('change', refreshSubmitState);
+
+            /* On submit, translate the picked option's key into the
+               correct hidden field (#626). The select carries
+               "id:N" for registry rows and "name:X" for in-use-only
+               rows; the server handler accepts either. */
+            modalEl.querySelector('form')?.addEventListener('submit', () => {
+                const picked = targetSel?.value || '';
+                const idHidden   = document.getElementById('cp-merge-target-id-hidden');
+                const nameHidden = document.getElementById('cp-merge-target-name-hidden');
+                if (idHidden)   idHidden.value   = '';
+                if (nameHidden) nameHidden.value = '';
+                if (picked.startsWith('id:')) {
+                    if (idHidden) idHidden.value = picked.slice(3);
+                } else if (picked.startsWith('name:')) {
+                    if (nameHidden) nameHidden.value = picked.slice(5);
+                }
+            });
         })();
 
         /* =========================================================================
