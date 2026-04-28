@@ -1026,8 +1026,18 @@ if ($hasCredentials && defined('DB_HOST')) {
     <hr class="my-4">
     <p class="text-secondary text-center small">
         iHymns Database Administration &middot; v0.10.0
+        <?php
+            /* Footer name (#650) — match the header's first-word
+               derivation in admin-nav.php so 'Lance Manasse' reads as
+               'Lance' on both surfaces. Falls back to username when
+               DisplayName is empty. */
+            if (!$isInitialSetup && isset($currentUser)) {
+                $_displayName = (string)($currentUser['display_name'] ?? $currentUser['username'] ?? '');
+                $_footerName  = preg_split('/\s+/', trim($_displayName), 2)[0] ?: $_displayName;
+            }
+        ?>
         <?php if (!$isInitialSetup && isset($currentUser)): ?>
-            &middot; Logged in as <strong><?= htmlspecialchars($currentUser['username'] ?? '') ?></strong>
+            &middot; Logged in as <strong><?= htmlspecialchars($_footerName) ?></strong>
         <?php endif; ?>
     </p>
 </div>
