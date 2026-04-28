@@ -600,22 +600,28 @@ if (!empty($breadcrumbItems)) {
                         <li><a class="dropdown-item" href="/stats" data-navigate="stats">
                             <i class="fa-solid fa-chart-simple me-2" aria-hidden="true"></i> Statistics
                         </a></li>
-                        <li><a class="dropdown-item" href="/help" data-navigate="help">
-                            <i class="fa-solid fa-circle-question me-2" aria-hidden="true"></i> Help
-                        </a></li>
 
                         <!-- Single "Manage" entry — opens /manage/ which
                              shows per-entitlement cards for every
                              curator and administration surface. Visible
                              to any signed-in user with at least one
                              management entitlement (toggled by
-                             user-auth.js). -->
-                        <li id="nav-manage-divider" class="d-none"><hr class="dropdown-divider"></li>
+                             user-auth.js). Sits in the same operations
+                             group as Statistics (#582). -->
                         <li id="nav-manage-li" class="d-none">
                             <a class="dropdown-item" href="/manage/">
                                 <i class="fa-solid fa-gears me-2" aria-hidden="true"></i> Manage
                             </a>
                         </li>
+
+                        <!-- Help moved to the bottom (#582) — support
+                             content is the natural last section in the
+                             menu, separated from operations by its own
+                             divider. -->
+                        <li><hr class="dropdown-divider"></li>
+                        <li><a class="dropdown-item" href="/help" data-navigate="help">
+                            <i class="fa-solid fa-circle-question me-2" aria-hidden="true"></i> Help
+                        </a></li>
                     </ul>
                 </div>
 

@@ -587,10 +587,11 @@ export class UserAuth {
         const canManage = loggedIn && manageEntitlements.some(
             ent => userHasEntitlement(ent, role)
         );
-        ['nav-manage-divider', 'nav-manage-li'].forEach(id => {
-            const el = document.getElementById(id);
-            if (el) el.classList.toggle('d-none', !canManage);
-        });
+        /* Manage now sits in the Operations group with Statistics
+           (no longer needs its own divider) per the dropdown reorder
+           in #582. Only the <li> itself toggles. */
+        const manageLi = document.getElementById('nav-manage-li');
+        if (manageLi) manageLi.classList.toggle('d-none', !canManage);
 
         /* Update icon style */
         const icon = document.getElementById('header-user-icon');
