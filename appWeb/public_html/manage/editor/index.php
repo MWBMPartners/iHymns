@@ -875,11 +875,12 @@ $currentUser = getCurrentUser();
                             </div>
                         </div>
 
-                        <!-- Legacy chips readout — preserved as a visual summary
-                             so the whole tab keeps the pill-row look from before
-                             #492. Updated by renderArrangement() whenever the
-                             strip changes. -->
-                        <div id="arrangement-chips" class="d-flex flex-wrap gap-1 mb-2 d-none"></div>
+                        <!-- Legacy summary-chip row removed (#597) — the
+                             #arrangement-strip row above already renders
+                             the playback order as draggable chips, and
+                             this row was a non-interactive duplicate of
+                             the same data which confused curators. -->
+
 
                         <!-- Validation feedback (used by the advanced text input
                              below and for preset application errors from #493). -->
