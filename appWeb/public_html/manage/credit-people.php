@@ -90,15 +90,75 @@ $logCreditPerson = static function (string $action, string $entityId, array $det
  * IPI number) are silently dropped. Returns a clean array of
  * row-shaped arrays ready to INSERT.
  * ---------------------------------------------------------------------- */
-$normaliseLinks = static function (mixed $raw): array {
+/**
+ * Curated link-type registry (#586).
+ *
+ * Replaces the seven-item hard-coded set with a grouped catalogue of
+ * well-known providers — Wikipedia, Wikidata, MusicBrainz, the
+ * streaming services (Spotify / Apple Music / YouTube Music / …) and
+ * the major social networks. The picker in the modal is built from
+ * this array via <optgroup>; the server-side validator accepts any
+ * key from the flat list. "Other" is always allowed and stays as the
+ * free-text fallback.
+ *
+ * Adding a new provider: append it under its category. The picker
+ * UI and the validator both update automatically. Legacy LinkType
+ * values stored in the DB before #586 (e.g. 'wikipedia', 'official')
+ * remain valid because they still appear in the catalogue under the
+ * General category — no data migration needed.
+ */
+$LINK_TYPE_CATALOGUE = [
+    'General' => [
+        'official'      => 'Official website',
+        'wikipedia'     => 'Wikipedia',
+        'wikidata'      => 'Wikidata',
+        'musicbrainz'   => 'MusicBrainz',
+        'discogs'       => 'Discogs',
+        'imslp'         => 'IMSLP',
+        'hymnary'       => 'Hymnary',
+    ],
+    'Music streaming / stores' => [
+        'spotify'       => 'Spotify',
+        'apple_music'   => 'Apple Music',
+        'youtube_music' => 'YouTube Music',
+        'amazon_music'  => 'Amazon Music',
+        'tidal'         => 'Tidal',
+        'qobuz'         => 'Qobuz',
+        'pandora'       => 'Pandora',
+        'bandcamp'      => 'Bandcamp',
+        'soundcloud'    => 'SoundCloud',
+    ],
+    'Social media' => [
+        'facebook'      => 'Facebook',
+        'instagram'     => 'Instagram',
+        'twitter'       => 'Twitter / X',
+        'tiktok'        => 'TikTok',
+        'youtube'       => 'YouTube',
+        'snapchat'      => 'Snapchat',
+        'threads'       => 'Threads',
+        'mastodon'      => 'Mastodon',
+    ],
+    'Other' => [
+        'other'         => 'Other (free text)',
+    ],
+];
+/* Flat lookup used by the validator + by the JS-side serialiser. */
+$LINK_TYPE_KEYS = array_keys(array_merge(...array_values($LINK_TYPE_CATALOGUE)));
+
+$normaliseLinks = static function (mixed $raw) use ($LINK_TYPE_KEYS): array {
     if (!is_array($raw)) return [];
     $out = [];
     foreach ($raw as $i => $row) {
         if (!is_array($row)) continue;
         $url = trim((string)($row['url'] ?? ''));
         if ($url === '') continue;
+        $type = trim((string)($row['type']  ?? 'other'));
+        /* Unknown types collapse to 'other' rather than 500ing —
+           keeps a forward-compatible UI where a future picker
+           category gets dropped to a sane bucket on older servers. */
+        if (!in_array($type, $LINK_TYPE_KEYS, true)) { $type = 'other'; }
         $out[] = [
-            'type'       => trim((string)($row['type']  ?? 'other')),
+            'type'       => $type,
             'url'        => $url,
             'label'      => trim((string)($row['label'] ?? '')) ?: null,
             'sort_order' => (int)($row['sort_order'] ?? $i),
@@ -1492,7 +1552,7 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                     </button>
                 </div>
                 <div id="cp-links-container" class="d-flex flex-column gap-2"></div>
-                <div class="form-text small">Wikipedia, official website, MusicBrainz, Discogs, IMSLP, Hymnary — anything an editor or curator might want to follow.</div>
+                <div class="form-text small">Pick a provider from the grouped list — General (Wikipedia, MusicBrainz, official site…), streaming services (Spotify, Apple Music…), social networks (Facebook, Instagram, YouTube…), or Other for anything else.</div>
             </div>
 
             <!-- IPI numbers — repeating sub-form -->
@@ -1528,14 +1588,16 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
          them as $_POST['links'][i][...] and $_POST['ipi'][i][...]. -->
     <template id="cp-link-row-template">
         <div class="d-flex gap-1 align-items-start cp-link-row" data-row-kind="link">
-            <select class="form-select form-select-sm" style="max-width: 130px;" name="links[{i}][type]">
-                <option value="wikipedia">Wikipedia</option>
-                <option value="official">Official site</option>
-                <option value="musicbrainz">MusicBrainz</option>
-                <option value="discogs">Discogs</option>
-                <option value="imslp">IMSLP</option>
-                <option value="hymnary">Hymnary</option>
-                <option value="other">Other</option>
+            <select class="form-select form-select-sm" style="min-width: 160px; max-width: 200px;" name="links[{i}][type]">
+                <?php foreach ($LINK_TYPE_CATALOGUE as $groupLabel => $items): ?>
+                    <optgroup label="<?= htmlspecialchars($groupLabel) ?>">
+                        <?php foreach ($items as $key => $label): ?>
+                            <option value="<?= htmlspecialchars($key) ?>"<?= $key === 'official' ? ' selected' : '' ?>>
+                                <?= htmlspecialchars($label) ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </optgroup>
+                <?php endforeach; ?>
             </select>
             <input type="url" class="form-control form-control-sm" name="links[{i}][url]" placeholder="https://…" required>
             <input type="text" class="form-control form-control-sm" style="max-width: 140px;" name="links[{i}][label]" placeholder="Label (optional)">
