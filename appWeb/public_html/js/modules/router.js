@@ -404,6 +404,14 @@ export class Router {
             this.app.transpose.initSongPage();
             this.app.readingProgress.initSongPage();
 
+            /* Audio button — hide if the browser can't actually play
+               our MIDI-via-Tone.js pipeline (#602). The audio module
+               feature-detects Web Audio support; if absent, every
+               .btn-audio on the page is hidden so curators don't see
+               a button that wouldn't work. Idempotent — safe to call
+               on every navigation. */
+            this.app.audio?.hideButtonsIfUnsupported?.();
+
             /* Edit button — show only to users whose role carries the
                `edit_songs` entitlement (#407). The PHP editor API
                re-checks the same map server-side, so hiding the button
