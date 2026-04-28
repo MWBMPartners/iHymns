@@ -3717,7 +3717,14 @@ function updateHistoryButtonState() {
     }
 
     var historyBtn = document.getElementById('btn-history');
-    if (historyBtn) historyBtn.disabled = !hasSong;
+    if (historyBtn) {
+        historyBtn.disabled = !hasSong;
+        /* Renamed History → Revisions (#591) for consistency with the
+           /manage/revisions admin menu entry. ID stays for back-compat. */
+        historyBtn.title = hasSong
+            ? 'Show revision history for the selected song'
+            : 'Select a song to enable Revisions';
+    }
 }
 
 function openHistoryModal(songId) {

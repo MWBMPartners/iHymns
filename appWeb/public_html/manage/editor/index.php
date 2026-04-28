@@ -164,19 +164,25 @@ $currentUser = getCurrentUser();
                 <i class="bi bi-check-circle me-1"></i>Validate
             </button>
 
-            <!-- HISTORY — Show revision history for the currently-selected
-                 song, with a restore action per revision (#400). -->
+            <!-- REVISIONS — Show revision history for the currently-selected
+                 song, with a restore action per revision (#400). Renamed
+                 from "History" in #591 for consistency with the
+                 /manage/revisions admin menu entry; the underlying button
+                 ID is preserved (`btn-history`) so existing JS handlers
+                 keep working. -->
             <button
                 type="button"
                 class="btn btn-sm btn-outline-info"
                 id="btn-history"
-                title="Show revision history for the selected song"
+                title="Select a song to enable Revisions"
                 disabled
             >
-                <i class="bi bi-clock-history me-1"></i>History
+                <i class="bi bi-clock-history me-1"></i>Revisions
             </button>
 
-            <!-- EXPORT DROPDOWN — Provides JSON and CSV export options -->
+            <!-- EXPORT DROPDOWN — Provides JSON and CSV export options.
+                 Tooltip clarifies the scope (#591): exports the entire
+                 currently-loaded catalogue, not the selected song. -->
             <div class="dropdown">
                 <button
                     class="btn btn-sm btn-amber dropdown-toggle"
@@ -184,7 +190,7 @@ $currentUser = getCurrentUser();
                     id="dropdownExport"
                     data-bs-toggle="dropdown"
                     aria-expanded="false"
-                    title="Export songs in different formats"
+                    title="Export the entire loaded catalogue (JSON or CSV)"
                 >
                     <i class="bi bi-box-arrow-up me-1"></i>Export
                 </button>
