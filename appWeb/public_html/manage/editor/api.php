@@ -56,6 +56,28 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
 
+/**
+ * Cached check for the tblSongArtists table (#587). The table arrives
+ * via migrate-song-artists.php; until that migration has been
+ * applied, the save_song path needs to skip both the DELETE and the
+ * INSERT for artists rather than 500ing on a partly-migrated install.
+ * Static cache so the INFORMATION_SCHEMA round-trip happens once per
+ * request even when save_song runs in a loop.
+ */
+function _songArtistsTableExists(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) return $cached;
+    $stmt = $db->prepare(
+        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongArtists' LIMIT 1"
+    );
+    $stmt->execute();
+    $cached = $stmt->get_result()->fetch_row() !== null;
+    $stmt->close();
+    return $cached;
+}
+
 /* =========================================================================
  * REQUEST HANDLING
  * ========================================================================= */
@@ -533,8 +555,17 @@ switch ($action) {
                tables from #497 are cleaned up here too. */
             foreach ([
                 'tblSongWriters', 'tblSongComposers', 'tblSongArrangers',
-                'tblSongAdaptors', 'tblSongTranslators', 'tblSongComponents',
+                'tblSongAdaptors', 'tblSongTranslators', 'tblSongArtists',
+                'tblSongComponents',
             ] as $childTable) {
+                /* tblSongArtists (#587) only exists once
+                   migrate-song-artists.php has been applied. Skip the
+                   DELETE on a partly-migrated install rather than 500ing
+                   the save path; the schema-audit page (#518) flags the
+                   missing table separately. */
+                if ($childTable === 'tblSongArtists' && !_songArtistsTableExists($db)) {
+                    continue;
+                }
                 $del = $db->prepare("DELETE FROM {$childTable} WHERE SongId = ?");
                 $del->bind_param('s', $songId);
                 $del->execute();
@@ -543,7 +574,9 @@ switch ($action) {
 
             /* Insert credit collections. Each collection is a separate
                prepared statement to keep the field name explicit at each
-               call site. */
+               call site. The artists insert (#587) is gated on the
+               table existing — same partly-migrated tolerance as the
+               DELETE above. */
             $creditInserts = [
                 'writers'     => 'INSERT INTO tblSongWriters     (SongId, Name) VALUES (?, ?)',
                 'composers'   => 'INSERT INTO tblSongComposers   (SongId, Name) VALUES (?, ?)',
@@ -551,6 +584,14 @@ switch ($action) {
                 'adaptors'    => 'INSERT INTO tblSongAdaptors    (SongId, Name) VALUES (?, ?)',
                 'translators' => 'INSERT INTO tblSongTranslators (SongId, Name) VALUES (?, ?)',
             ];
+            if (_songArtistsTableExists($db)) {
+                /* SortOrder defaults to 0 — display order falls back to
+                   Id (insertion order) which matches how the editor
+                   sends the artists array. Same 2-param shape as the
+                   other credit inserts so the existing loop below works
+                   without a special case. */
+                $creditInserts['artists'] = 'INSERT INTO tblSongArtists (SongId, Name) VALUES (?, ?)';
+            }
             $regNames = [];
             foreach ($creditInserts as $key => $sql) {
                 $stmt = $db->prepare($sql);

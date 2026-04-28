@@ -42,6 +42,7 @@ $composers   = $song['composers']   ?? [];
 $arrangers   = $song['arrangers']   ?? [];   /* #497 */
 $adaptors    = $song['adaptors']    ?? [];   /* #497 */
 $translators = $song['translators'] ?? [];   /* #497 */
+$artists     = $song['artists']     ?? [];   /* #587 — recording / release artist */
 $tuneName    = $song['tuneName']    ?? '';   /* #497 */
 $iswc        = $song['iswc']        ?? '';   /* #497 */
 $copyright   = $song['copyright']   ?? '';
@@ -217,6 +218,7 @@ unset($_t);
                     ['arranged',    'Arranged by',   'fa-solid fa-sliders',     $arrangers],
                     ['adapted',     'Adapted by',    'fa-solid fa-compact-disc',$adaptors],
                     ['translated',  'Translated by', 'fa-solid fa-language',    $translators],
+                    ['artist',      'Artist',        'fa-solid fa-microphone',  $artists],         /* #587 */
                 ];
             } else {
                 $_creditRows = [
@@ -225,6 +227,7 @@ unset($_t);
                     ['arranged',    'Arranged by', 'fa-solid fa-sliders',     $arrangers],
                     ['adapted',     'Adapted by',  'fa-solid fa-compact-disc',$adaptors],
                     ['translated',  'Translated by','fa-solid fa-language',   $translators],
+                    ['artist',      'Artist',      'fa-solid fa-microphone',  $artists],          /* #587 */
                 ];
             }
             $_hasAnyCredit = false;

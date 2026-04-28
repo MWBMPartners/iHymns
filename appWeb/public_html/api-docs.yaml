@@ -4782,6 +4782,12 @@ components:
             type: string
           description: Composer / tune names
           example: ["Virginia Harmony"]
+        artists:
+          type: array
+          items:
+            type: string
+          description: Recording / release artist names (#587). Most useful for contemporary worship songs; traditional hymns leave this blank.
+          example: ["Hillsong Worship"]
         components:
           type: array
           description: Ordered song components (verses, choruses, etc.)

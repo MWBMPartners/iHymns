@@ -201,6 +201,7 @@ if ($action !== '') {
         'activity-log-expand' => 'migrate-activity-log-expand.php',
         'credit-people' => 'migrate-credit-people.php',
         'credit-people-flags' => 'migrate-credit-people-flags.php',
+        'song-artists'  => 'migrate-song-artists.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -697,6 +698,27 @@ if ($hasCredentials && defined('DB_HOST')) {
                         </p>
                         <a href="?action=credit-people-flags" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run Credit People Flags Migration
+                        </a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">3h. Songs Artist credit (#587)</h5>
+                        <p class="card-text text-secondary small">
+                            Adds <code>tblSongArtists</code> — a sixth credit role
+                            parallel to the existing five (writers / composers /
+                            arrangers / adaptors / translators). Captures the
+                            recording / release artist of contemporary worship
+                            songs (e.g. <em>Hillsong Worship</em> for "What a
+                            Beautiful Name") and feeds the future ProPresenter
+                            export. Names auto-register in <code>tblCreditPeople</code>
+                            via the same INSERT-IGNORE pattern as the other roles.
+                            Idempotent — safe to re-run.
+                        </p>
+                        <a href="?action=song-artists" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run Songs Artist Migration
                         </a>
                     </div>
                 </div>
