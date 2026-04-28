@@ -837,3 +837,25 @@ body:has(.navbar-admin) {
         gap: 0.35rem !important;
     }
 }
+
+/* ----------------------------------------------------------------------------
+   ADMIN MODAL — opaque background (#631)
+
+   Bootstrap's `bg-dark` on `.modal-content` resolves through
+   `--bs-bg-opacity`, which under some cascade orderings ends up
+   tinting partly-transparent. Page text under the modal then bleeds
+   through, making the modal hard to read (Edit Tier in Access Tiers
+   was the canonical repro).
+
+   Pin every admin modal's `.modal-content` to the same solid
+   --surface-card the cards underneath use, with the page's
+   --card-border. Scoped via `body:has(.navbar-admin)` so the
+   main-app modals on `/` keep their own theme.
+---------------------------------------------------------------------------- */
+body:has(.navbar-admin) .modal-content {
+    background-color: var(--surface-card) !important;
+    border: 1px solid var(--card-border);
+}
+body:has(.navbar-admin) .modal-content.bg-dark {
+    --bs-bg-opacity: 1;
+}
