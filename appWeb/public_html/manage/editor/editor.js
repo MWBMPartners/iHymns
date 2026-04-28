@@ -2984,6 +2984,13 @@ function getVal(elementId) {
  * but, or, for, nor, in, on, at, to, by, of, with) stay lowercase unless
  * they are the first or last word.
  *
+ * Skips leading non-letter characters before capitalising — so titles
+ * starting with an apostrophe-prefix abbreviation ('Twas, 'Tis, 'Mid)
+ * capitalise the first *letter* rather than the apostrophe (#596).
+ * Mirrors the behaviour of the shared js/utils/text.js helper and the
+ * PHP toTitleCase() in includes/SongData.php so the editor produces
+ * the same output as the public song view.
+ *
  * @param {string} str - The input string.
  * @returns {string} The title-cased string.
  */
@@ -2991,12 +2998,25 @@ function toTitleCase(str) {
     var smallWords = /^(a|an|the|and|but|or|for|nor|in|on|at|to|by|of|with)$/i;
     var words = str.replace(/\s+/g, ' ').trim().split(' ');
 
+    /* Capitalise the first Unicode letter in a word, skipping any
+       leading quotes or punctuation (e.g. 'twas → 'Twas, "come →
+       "Come). \p{L} matches any Unicode letter. */
+    function capFirstLetter(word) {
+        var lower = word.toLowerCase();
+        var m = lower.match(/^([^\p{L}]*)(\p{L})(.*)$/u);
+        return m ? m[1] + m[2].toUpperCase() + m[3] : lower;
+    }
+
     return words.map(function (word, i, arr) {
-        /* Always capitalise first and last word */
-        if (i === 0 || i === arr.length - 1 || !smallWords.test(word)) {
-            return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+        /* Always capitalise first and last word; minor words use the
+           same word-wide check (which includes their leading punct
+           via the regex below). */
+        var lower = word.toLowerCase();
+        var bareWord = lower.replace(/^[^\p{L}]+/u, '');
+        if (i === 0 || i === arr.length - 1 || !smallWords.test(bareWord)) {
+            return capFirstLetter(word);
         }
-        return word.toLowerCase();
+        return lower;
     }).join(' ');
 }
 
