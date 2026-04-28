@@ -61,6 +61,42 @@ export class Audio {
     init() {}
 
     /**
+     * Whether this browser can actually play our MIDI files.
+     *
+     * Our pipeline is: fetch the .mid file → parse with our tiny
+     * MIDI-to-notes parser → schedule on a Tone.js PolySynth backed
+     * by the Web Audio API. So the only hard requirement is that
+     * Web Audio exists. Tone.js itself loads from CDN with a local
+     * fallback at click time, so we don't probe for it eagerly.
+     *
+     * Native MIDI playback (an `<audio src=".mid">`) is NOT what we
+     * use — checking `audio.canPlayType('audio/midi')` here would
+     * give a false negative on every modern browser even though our
+     * synth-based playback works fine. (#602)
+     *
+     * @returns {boolean}
+     */
+    static isSupported() {
+        return typeof window !== 'undefined' &&
+            (typeof window.AudioContext !== 'undefined' ||
+             typeof window.webkitAudioContext !== 'undefined');
+    }
+
+    /**
+     * Hide every `.btn-audio` on the page if this browser can't run
+     * our MIDI-via-Tone.js pipeline. Called from the router after
+     * each page load so a freshly-injected song view still respects
+     * the same gate. Idempotent. (#602)
+     */
+    hideButtonsIfUnsupported() {
+        if (Audio.isSupported()) return;
+        document.querySelectorAll('.btn-audio').forEach(btn => {
+            btn.classList.add('d-none');
+            btn.setAttribute('aria-hidden', 'true');
+        });
+    }
+
+    /**
      * Handle audio button click on a song page.
      * Creates/toggles the player UI and loads the MIDI file.
      *
