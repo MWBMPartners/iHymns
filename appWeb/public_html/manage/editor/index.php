@@ -137,22 +137,29 @@ $currentUser = getCurrentUser();
 
             <!-- SAVE — Writes all songs to MySQL (primary path). If the DB
                  is unavailable, the editor falls back to a JSON download so
-                 you never lose changes. -->
+                 you never lose changes. Starts disabled (#590) — the JS
+                 enables it when a song is selected so curators can't
+                 click into a no-op. -->
             <button
                 type="button"
                 class="btn btn-sm btn-amber-solid"
                 id="btn-save"
-                title="Save all changes to the database"
+                title="Select a song to enable Save"
+                disabled
             >
                 <i class="bi bi-floppy me-1"></i>Save
             </button>
 
-            <!-- VALIDATE — Check all songs for data quality issues (#235) -->
+            <!-- VALIDATE — Check the entire loaded catalogue for data
+                 quality issues (#235). Catalogue-wide, not per-song —
+                 starts disabled until the editor has finished loading
+                 songs (#590), then enables. -->
             <button
                 type="button"
                 class="btn btn-sm btn-outline-success"
                 id="btn-validate"
-                title="Validate all song data for errors"
+                title="Validate every song in the loaded catalogue"
+                disabled
             >
                 <i class="bi bi-check-circle me-1"></i>Validate
             </button>

@@ -2653,6 +2653,12 @@ function updateStatusBar() {
             warningEl.style.display = 'none';   // hide warning
         }
     }
+
+    /* Toolbar buttons (#590) — Save / Validate / History reflect the
+       current selection + load state. Piggybacking on updateStatusBar
+       ensures every meaningful state change (load, save, select,
+       deselect, add, delete) refreshes the buttons too. */
+    updateHistoryButtonState();
 }
 
 /* ========================================================================
@@ -3676,9 +3682,42 @@ function bindHistoryListener() {
     });
 }
 
+/**
+ * updateHistoryButtonState()
+ * --------------------------
+ * Toggle Save / Validate / History buttons in step with the current
+ * selection + load state (#590). Called from every place currentSongId
+ * changes plus after the auto-load completes so the buttons accurately
+ * reflect what the curator can actually do.
+ *
+ *   Save      — needs a selected song
+ *   History   — needs a selected song (revisions are per-song)
+ *   Validate  — needs at least one song loaded; catalogue-wide, no
+ *               selection required.
+ */
 function updateHistoryButtonState() {
-    var btn = document.getElementById('btn-history');
-    if (btn) btn.disabled = !currentSongId;
+    var hasSong  = !!currentSongId;
+    var hasSongs = (typeof songData !== 'undefined' && songData
+        && Array.isArray(songData.songs) && songData.songs.length > 0);
+
+    var saveBtn = document.getElementById('btn-save');
+    if (saveBtn) {
+        saveBtn.disabled = !hasSong;
+        saveBtn.title = hasSong
+            ? 'Save all changes to the database'
+            : 'Select a song to enable Save';
+    }
+
+    var validateBtn = document.getElementById('btn-validate');
+    if (validateBtn) {
+        validateBtn.disabled = !hasSongs;
+        validateBtn.title = hasSongs
+            ? 'Validate every song in the loaded catalogue'
+            : 'Songs are still loading…';
+    }
+
+    var historyBtn = document.getElementById('btn-history');
+    if (historyBtn) historyBtn.disabled = !hasSong;
 }
 
 function openHistoryModal(songId) {
