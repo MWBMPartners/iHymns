@@ -46,7 +46,7 @@ if (PHP_SAPI === 'cli') {
     $isCli = true;
 } else {
     if (!defined('IHYMNS_SETUP_DASHBOARD')) {
-        require_once __DIR__ . '/../public_html/manage/includes/auth.php';
+        require_once dirname(__DIR__) . '/public_html/manage/includes/auth.php';
         if (!isAuthenticated()) {
             http_response_code(401);
             exit('Authentication required.');
@@ -57,7 +57,7 @@ if (PHP_SAPI === 'cli') {
             exit('Global admin required.');
         }
     }
-    require_once __DIR__ . '/../public_html/includes/db_mysql.php';
+    require_once dirname(__DIR__) . '/public_html/includes/db_mysql.php';
     $isCli = false;
 }
 
