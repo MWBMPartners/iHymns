@@ -28,7 +28,12 @@ var songData = {
  * Primary load/save endpoint — the editor's PHP API reads/writes
  * directly from/to appWeb/data_share/song_data/songs.json (#154).
  */
-var EDITOR_API_URL = 'api';
+/* Absolute path so the fetch resolves the same regardless of whether
+   the browser landed on /manage/editor/ or /manage/editor (no trailing
+   slash). The previous relative form ('api') resolved to /manage/api on
+   the no-slash variant, which 404s and silently dropped credit-search
+   results. (#593) */
+var EDITOR_API_URL = '/manage/editor/api';
 
 /**
  * Fallback relative paths for loading songs.json when the PHP API
@@ -2241,11 +2246,23 @@ function attachCreditAutocomplete(input, row, kind, onChange) {
                   '&q='    + encodeURIComponent(q) +
                   '&kind=any&limit=12';
         fetch(url, { credentials: 'same-origin' })
-            .then(function (r) { return r.json(); })
+            .then(function (r) {
+                /* Surface non-2xx so a 401/404 doesn't silently look
+                   identical to an empty result set. (#593) */
+                if (!r.ok) {
+                    return r.text().then(function (body) {
+                        throw new Error('credit_search ' + r.status + ': ' + body.slice(0, 200));
+                    });
+                }
+                return r.json();
+            })
             .then(function (data) {
                 render(Array.isArray(data.suggestions) ? data.suggestions : []);
             })
-            .catch(function () { close(); });
+            .catch(function (err) {
+                console.warn('[editor] credit_search failed:', err && err.message);
+                close();
+            });
     }
 
     input.addEventListener('input', function () {

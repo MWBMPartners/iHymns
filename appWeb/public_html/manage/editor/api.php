@@ -1135,10 +1135,13 @@ switch ($action) {
                 $params[] = $like;
                 $types   .= 's';
             }
-            $sql = "SELECT Name, GROUP_CONCAT(DISTINCT kindLabel) AS kinds, SUM(cnt) AS usage
+            /* `usage` is a MySQL reserved word, so backtick it explicitly
+               to avoid any edge-case parser drift between server versions
+               or strict-mode configurations. (#593) */
+            $sql = "SELECT Name, GROUP_CONCAT(DISTINCT kindLabel) AS kinds, SUM(cnt) AS `usage`
                     FROM (" . implode(' UNION ALL ', $unionParts) . ") u
                     GROUP BY Name
-                    ORDER BY usage DESC, Name ASC
+                    ORDER BY `usage` DESC, Name ASC
                     LIMIT ?";
             $types   .= 'i';
             $params[] = $limit;
