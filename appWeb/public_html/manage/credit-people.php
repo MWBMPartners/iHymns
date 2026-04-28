@@ -1242,6 +1242,15 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                                 'death_date'  => $p['death_date'],
                                 'is_special_case' => (int)($p['is_special_case'] ?? 0),
                                 'is_group'        => (int)($p['is_group']        ?? 0),
+                                /* Per-role counts so the Merge modal's
+                                   "Song-credit rows to re-point" preview
+                                   (#583) can render without a round-trip. */
+                                'writers'     => $writers,
+                                'composers'   => $composers,
+                                'arrangers'   => $arrangers,
+                                'adaptors'    => $adaptors,
+                                'translators' => $translators,
+                                'total'       => $p['total'],
                                 'links'       => $p['links'],
                                 'ipi'         => $p['ipi'],
                             ], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE);
@@ -1516,6 +1525,25 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                             </div>
                         </div>
 
+                        <!-- Song-credit re-point preview (#583). The Source
+                             aggregate already carries per-role counts in its
+                             data-person attribute, so we render them inline
+                             when the modal opens — no extra round-trip. -->
+                        <div id="cp-merge-credit-preview" class="alert alert-info py-2 small mb-3 d-none">
+                            <div class="fw-semibold mb-1">
+                                <i class="bi bi-arrow-left-right me-1" aria-hidden="true"></i>
+                                Song-credit rows to re-point
+                            </div>
+                            <div class="d-flex flex-wrap gap-2 small">
+                                <span>Writer&nbsp;<strong id="cp-merge-count-writer">0</strong></span>
+                                <span>Composer&nbsp;<strong id="cp-merge-count-composer">0</strong></span>
+                                <span>Arranger&nbsp;<strong id="cp-merge-count-arranger">0</strong></span>
+                                <span>Adaptor&nbsp;<strong id="cp-merge-count-adaptor">0</strong></span>
+                                <span>Translator&nbsp;<strong id="cp-merge-count-translator">0</strong></span>
+                                <span class="ms-auto">Total&nbsp;<strong id="cp-merge-count-total">0</strong></span>
+                            </div>
+                        </div>
+
                         <div id="cp-merge-children" class="d-none">
                             <h6 class="small text-secondary mb-2">Source's links / IPI numbers</h6>
                             <p class="small text-secondary">
@@ -1530,10 +1558,21 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                             <div id="cp-merge-children-ipi"></div>
                         </div>
 
-                        <div class="alert alert-warning py-2 small mb-0">
+                        <div class="alert alert-warning py-2 small mb-2">
                             Merging re-points every song-credit row from the source name to the target
                             name across the five song-credit tables, then removes the source registry
                             row. Tracked in the activity log with full per-table affected counts.
+                        </div>
+
+                        <!-- Explicit irreversibility ack (#583). The submit
+                             button stays disabled until both a target is
+                             picked AND this checkbox is ticked. -->
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="cp-merge-confirm" required>
+                            <label class="form-check-label small" for="cp-merge-confirm">
+                                I understand this is irreversible — the source registry row is
+                                deleted and every song-credit row is re-pointed to the target name.
+                            </label>
                         </div>
                     </div>
                     <div class="modal-footer border-secondary">
@@ -2016,6 +2055,24 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                 sourceIdIn.value   = String(person.registry_id);
                 sourceNameIn.value = person.name || '';
 
+                /* Reset the irreversibility ack on every open so a prior
+                   ticked state doesn't carry across to a fresh merge. */
+                const confirmCb = document.getElementById('cp-merge-confirm');
+                if (confirmCb) confirmCb.checked = false;
+
+                /* Per-role re-point preview (#583). The byName aggregate
+                   already carries every count we need; just display them. */
+                const previewWrap = document.getElementById('cp-merge-credit-preview');
+                if (previewWrap) {
+                    document.getElementById('cp-merge-count-writer').textContent     = person.writers     || 0;
+                    document.getElementById('cp-merge-count-composer').textContent   = person.composers   || 0;
+                    document.getElementById('cp-merge-count-arranger').textContent   = person.arrangers   || 0;
+                    document.getElementById('cp-merge-count-adaptor').textContent    = person.adaptors    || 0;
+                    document.getElementById('cp-merge-count-translator').textContent = person.translators || 0;
+                    document.getElementById('cp-merge-count-total').textContent      = person.total       || 0;
+                    previewWrap.classList.remove('d-none');
+                }
+
                 /* Populate target dropdown — every registry row except
                    the source. Sorted alphabetically. */
                 targetSel.innerHTML = '<option value="">— pick the surviving person —</option>';
@@ -2082,10 +2139,18 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                 modal.show();
             });
 
-            /* Submit button only enables once a target is picked. */
+            /* Submit button enables only when BOTH a target is picked
+               AND the irreversibility ack is ticked (#583). */
+            const confirmCb = document.getElementById('cp-merge-confirm');
+            function refreshSubmitState() {
+                const targetPicked = targetSel?.value !== '';
+                const acknowledged = !!confirmCb?.checked;
+                submitBtn.disabled = !(targetPicked && acknowledged);
+            }
             targetSel?.addEventListener('change', () => {
-                submitBtn.disabled = targetSel.value === '';
+                refreshSubmitState();
             });
+            confirmCb?.addEventListener('change', refreshSubmitState);
         })();
 
         /* =========================================================================
