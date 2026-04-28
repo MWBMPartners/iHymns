@@ -309,7 +309,12 @@ unset($_t);
                 </div>
             <?php endif; ?>
 
-            <!-- Copyright, CCLI Song Number, ISWC in song header (#497). -->
+            <!-- Copyright, CCLI Song Number, ISWC in song header (#497).
+                 ID labels (CCLI / ISWC) now bold and separated from the
+                 value with a definite gap so the eye scans them as a
+                 parallel column to the people-credit rows above (#600).
+                 Copyright stays as plain text — it's a sentence, not a
+                 labelled field. -->
             <?php if (!empty($copyright) || !empty($ccli) || $iswc !== ''): ?>
                 <div class="song-meta-copyright mb-3">
                     <?php if (!empty($copyright)): ?>
@@ -321,13 +326,13 @@ unset($_t);
                     <?php if (!empty($ccli)): ?>
                         <p class="mb-<?= $iswc !== '' ? '1' : '0' ?> small text-muted">
                             <i class="fa-solid fa-hashtag me-2" aria-hidden="true"></i>
-                            CCLI Song #<?= htmlspecialchars($ccli) ?>
+                            <strong>CCLI Song #</strong>&nbsp;<?= htmlspecialchars($ccli) ?>
                         </p>
                     <?php endif; ?>
                     <?php if ($iswc !== ''): ?>
                         <p class="mb-0 small text-muted" title="International Standard Musical Work Code">
                             <i class="fa-solid fa-barcode me-2" aria-hidden="true"></i>
-                            ISWC <?= htmlspecialchars($iswc) ?>
+                            <strong>ISWC:</strong>&nbsp;<?= htmlspecialchars($iswc) ?>
                         </p>
                     <?php endif; ?>
                 </div>
