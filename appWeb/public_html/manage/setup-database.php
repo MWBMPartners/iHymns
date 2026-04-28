@@ -202,6 +202,7 @@ if ($action !== '') {
         'credit-people' => 'migrate-credit-people.php',
         'credit-people-flags' => 'migrate-credit-people-flags.php',
         'song-artists'  => 'migrate-song-artists.php',
+        'credit-people-slug' => 'migrate-credit-people-slug.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -719,6 +720,25 @@ if ($hasCredentials && defined('DB_HOST')) {
                         </p>
                         <a href="?action=song-artists" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run Songs Artist Migration
+                        </a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">3i. Credit People Slug + public page (#588)</h5>
+                        <p class="card-text text-secondary small">
+                            Adds <code>tblCreditPeople.Slug</code> with a UNIQUE
+                            index, backfills it from each row's Name (collision-safe
+                            with numeric suffixes), and unlocks the public
+                            <code>/people/&lt;slug&gt;</code> landing page —
+                            bio, lifespan, external links, and a discography
+                            grouped by role across the six song-credit tables.
+                            Idempotent — safe to re-run.
+                        </p>
+                        <a href="?action=credit-people-slug" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run Credit People Slug Migration
                         </a>
                     </div>
                 </div>

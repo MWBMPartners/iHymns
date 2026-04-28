@@ -184,6 +184,13 @@ export class Router {
                 return { page: 'stats', params: {} };
             case 'writer':
                 return { page: 'writer', params: { id: segments[1] || '' } };
+            case 'people':
+            case 'person':
+                /* Credit Person public page (#588). Both /people/<slug>
+                   and /person/<slug> resolve to the same page so the URL
+                   is forgiving — Wikipedia-style /wiki/Foo + linked-data
+                   habits both work. */
+                return { page: 'person', params: { slug: segments[1] || '' } };
             case 'help':
                 return { page: 'help', params: {} };
             case 'terms':
@@ -238,6 +245,10 @@ export class Router {
         /* Add route-specific parameters */
         if (params.id) {
             url.searchParams.set('id', params.id);
+        }
+        /* Person page (#588) carries `slug`, not `id`. */
+        if (params.slug) {
+            url.searchParams.set('slug', params.slug);
         }
 
         return url.toString();
