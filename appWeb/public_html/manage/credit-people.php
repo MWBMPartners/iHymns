@@ -145,6 +145,29 @@ $LINK_TYPE_CATALOGUE = [
 /* Flat lookup used by the validator + by the JS-side serialiser. */
 $LINK_TYPE_KEYS = array_keys(array_merge(...array_values($LINK_TYPE_CATALOGUE)));
 
+/**
+ * Cached check for the IsSpecialCase / IsGroup columns from #584/#585
+ * (closes #630). Both columns ship together via migrate-credit-people-
+ * flags.php, so detecting one is sufficient to assume both. The result
+ * is cached for the request lifetime via a static so the add / update_
+ * person paths don't pay the INFORMATION_SCHEMA round-trip twice.
+ */
+function _cpFlagsColumnsExist(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) return $cached;
+    $stmt = $db->prepare(
+        "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'tblCreditPeople'
+            AND COLUMN_NAME  = 'IsSpecialCase' LIMIT 1"
+    );
+    $stmt->execute();
+    $cached = $stmt->get_result()->fetch_row() !== null;
+    $stmt->close();
+    return $cached;
+}
+
 $normaliseLinks = static function (mixed $raw) use ($LINK_TYPE_KEYS): array {
     if (!is_array($raw)) return [];
     $out = [];
@@ -318,17 +341,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $db->begin_transaction();
                 try {
-                    $stmt = $db->prepare(
-                        'INSERT INTO tblCreditPeople
-                            (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate, IsSpecialCase, IsGroup)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-                    );
-                    /* Six string fields (nullable, accept YYYY-MM-DD with
-                       type 's') plus the two integer flags from #584 / #585. */
-                    $stmt->bind_param('ssssssii',
-                        $name, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
-                        $isSpecialCase, $isGroup
-                    );
+                    /* Detect whether the flag columns from #584/#585 are
+                       present yet (#630). On a partly-migrated install
+                       — flags migration not applied — the INSERT must
+                       skip those columns rather than throw "Unknown
+                       column", which is what surfaced as the
+                       "Database error" banner before #635 unmasked it. */
+                    $hasFlagsCols = _cpFlagsColumnsExist($db);
+                    if ($hasFlagsCols) {
+                        $stmt = $db->prepare(
+                            'INSERT INTO tblCreditPeople
+                                (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate, IsSpecialCase, IsGroup)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+                        );
+                        $stmt->bind_param('ssssssii',
+                            $name, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
+                            $isSpecialCase, $isGroup
+                        );
+                    } else {
+                        $stmt = $db->prepare(
+                            'INSERT INTO tblCreditPeople
+                                (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate)
+                             VALUES (?, ?, ?, ?, ?, ?)'
+                        );
+                        $stmt->bind_param('ssssss',
+                            $name, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate
+                        );
+                    }
                     $stmt->execute();
                     $newId = (int)$db->insert_id;
                     $stmt->close();
@@ -431,16 +470,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 try {
                     /* Update the registry row. Name is not in the SET
                        clause — renames go through the rename action. */
-                    $stmt = $db->prepare(
-                        'UPDATE tblCreditPeople
-                            SET Notes = ?, BirthPlace = ?, BirthDate = ?,
-                                DeathPlace = ?, DeathDate = ?,
-                                IsSpecialCase = ?, IsGroup = ?
-                          WHERE Id = ?'
-                    );
-                    $stmt->bind_param('sssssiii',
-                        $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
-                        $isSpecialCase, $isGroup, $id);
+                    /* Gate the flag-column writes on column existence
+                       (#630). Same partly-migrated tolerance as the
+                       add path. */
+                    if (_cpFlagsColumnsExist($db)) {
+                        $stmt = $db->prepare(
+                            'UPDATE tblCreditPeople
+                                SET Notes = ?, BirthPlace = ?, BirthDate = ?,
+                                    DeathPlace = ?, DeathDate = ?,
+                                    IsSpecialCase = ?, IsGroup = ?
+                              WHERE Id = ?'
+                        );
+                        $stmt->bind_param('sssssiii',
+                            $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
+                            $isSpecialCase, $isGroup, $id);
+                    } else {
+                        $stmt = $db->prepare(
+                            'UPDATE tblCreditPeople
+                                SET Notes = ?, BirthPlace = ?, BirthDate = ?,
+                                    DeathPlace = ?, DeathDate = ?
+                              WHERE Id = ?'
+                        );
+                        $stmt->bind_param('sssssi',
+                            $notes, $birthPlace, $birthDate, $deathPlace, $deathDate, $id);
+                    }
                     $stmt->execute();
                     $stmt->close();
 
