@@ -42,11 +42,35 @@ declare(strict_types=1);
 
 if (PHP_SAPI === 'cli') {
     /* CLI bootstrap mirrors the other migrate-*.php files. */
-    require_once dirname(__DIR__) . '/public_html/includes/db_mysql.php';
+    /* Guarded require — see #652. The dashboard has already loaded
+
+       db_mysql.php via auth.php's bootstrap, so the function already
+
+       exists at this point in dashboard mode; the guard skips the
+
+       re-open that some hosts block from outside public_html/. */
+
+    if (!function_exists('getDbMysqli')) {
+
+        require_once dirname(__DIR__) . '/public_html/includes/db_mysql.php';
+
+    }
     $isCli = true;
 } else {
     if (!defined('IHYMNS_SETUP_DASHBOARD')) {
-        require_once dirname(__DIR__) . '/public_html/manage/includes/auth.php';
+        /* Guarded: dashboard mode pre-loads auth.php transitively. The
+
+           guard also avoids re-opening the file from outside public_html/,
+
+           which some hosts (open_basedir / php-fpm chroot) refuse even
+
+           though the file is otherwise reachable (#652). */
+
+        if (!function_exists('isAuthenticated')) {
+
+            require_once dirname(__DIR__) . '/public_html/manage/includes/auth.php';
+
+        }
         if (!isAuthenticated()) {
             http_response_code(401);
             exit('Authentication required.');
@@ -57,7 +81,19 @@ if (PHP_SAPI === 'cli') {
             exit('Global admin required.');
         }
     }
-    require_once dirname(__DIR__) . '/public_html/includes/db_mysql.php';
+    /* Guarded require — see #652. The dashboard has already loaded
+
+       db_mysql.php via auth.php's bootstrap, so the function already
+
+       exists at this point in dashboard mode; the guard skips the
+
+       re-open that some hosts block from outside public_html/. */
+
+    if (!function_exists('getDbMysqli')) {
+
+        require_once dirname(__DIR__) . '/public_html/includes/db_mysql.php';
+
+    }
     $isCli = false;
 }
 
