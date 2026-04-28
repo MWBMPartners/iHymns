@@ -200,6 +200,7 @@ if ($action !== '') {
         'user-features-catchup' => 'migrate-user-features-catchup.php',
         'activity-log-expand' => 'migrate-activity-log-expand.php',
         'credit-people' => 'migrate-credit-people.php',
+        'credit-people-flags' => 'migrate-credit-people-flags.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -676,6 +677,26 @@ if ($hasCredentials && defined('DB_HOST')) {
                         </p>
                         <a href="?action=credit-people" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run Credit People Registry Migration
+                        </a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">3g. Credit People Flags (#584, #585)</h5>
+                        <p class="card-text text-secondary small">
+                            Adds the <code>IsSpecialCase</code> and <code>IsGroup</code>
+                            classification flags to <code>tblCreditPeople</code> so the
+                            registry can distinguish special-case attributions
+                            (Anonymous, Traditional, Public Domain, Unknown)
+                            from real individuals, and groups / bands /
+                            collectives (Hillsong United, Bethel Music) from
+                            single people. Backfills the four obvious special-case
+                            names on first run. Idempotent — safe to re-run.
+                        </p>
+                        <a href="?action=credit-people-flags" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run Credit People Flags Migration
                         </a>
                     </div>
                 </div>
