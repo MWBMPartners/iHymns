@@ -245,14 +245,21 @@ unset($_t);
 
             <!-- Tune name (#497). Rendered when set so the viewer sees
                  "Tune: HYFRYDOL" — a meaningful pointer for hymnbook
-                 users. The link target `/tune/<slug>` is reserved for
-                 a future cross-reference listing (#494); until that
-                 ships we still render the label as plain text. -->
+                 users. Layout matches the people-credit rows above
+                 (#599) — same wrapper class, same icon styling, same
+                 bold-label-then-value pattern — so the song header
+                 reads as a single consistent credit block instead of
+                 the credits + a smaller dimmer Tune line. The link
+                 target `/tune/<slug>` is reserved for a future
+                 cross-reference listing (#494); until that ships we
+                 still render the value as plain text. -->
             <?php if ($tuneName !== ''): ?>
-                <p class="song-meta-tune small text-muted mb-2">
-                    <i class="fa-solid fa-music-note-list me-2" aria-hidden="true"></i>
-                    <strong>Tune:</strong> <?= htmlspecialchars($tuneName) ?>
-                </p>
+                <div class="song-meta mb-3">
+                    <p class="mb-0 song-credit-row" data-credit-kind="tune">
+                        <i class="fa-solid fa-music me-2 text-muted" aria-hidden="true"></i>
+                        <strong>Tune:</strong> <?= htmlspecialchars($tuneName) ?>
+                    </p>
+                </div>
             <?php endif; ?>
 
             <!-- ============================================================
