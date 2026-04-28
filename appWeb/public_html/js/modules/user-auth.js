@@ -593,13 +593,68 @@ export class UserAuth {
         const manageLi = document.getElementById('nav-manage-li');
         if (manageLi) manageLi.classList.toggle('d-none', !canManage);
 
-        /* Update icon style */
-        const icon = document.getElementById('header-user-icon');
-        if (icon) {
-            icon.className = loggedIn
-                ? 'fa-solid fa-circle-user'
-                : 'fa-solid fa-user';
+        /* Update header user button: signed-in users get a Gravatar
+           (or configured-resolver) avatar; signed-out users keep the
+           generic Font Awesome icon (#581). The button slot is always
+           the same `#header-user-icon` element — we just swap the
+           tag (<i> ↔ <img>) so styling carried by `.btn-header-icon`
+           stays applied. Avatar URL computation is async (SHA-256 via
+           SubtleCrypto), so we fire-and-forget; if it resolves while
+           the user is still signed in, swap; otherwise no-op. */
+        const slot = document.getElementById('header-user-icon');
+        if (!slot) return;
+        if (loggedIn && user) {
+            this._gravatarUrl(user.email || user.username, 64).then(url => {
+                /* User may have signed out by the time the hash resolves. */
+                if (!this.isLoggedIn()) return;
+                const current = document.getElementById('header-user-icon');
+                if (!current) return;
+                if (current.tagName === 'IMG' && current.getAttribute('src') === url) return;
+                const img = document.createElement('img');
+                img.id = 'header-user-icon';
+                img.src = url;
+                img.alt = '';
+                img.width = 32;
+                img.height = 32;
+                img.className = 'rounded-circle header-user-avatar';
+                img.loading = 'lazy';
+                img.referrerPolicy = 'no-referrer';
+                img.onerror = () => {
+                    img.onerror = null;
+                    img.src = '/assets/avatar-fallback.svg';
+                };
+                current.replaceWith(img);
+            });
+        } else if (slot.tagName !== 'I' || slot.classList.contains('header-user-avatar')) {
+            /* Restore the generic icon for signed-out users. */
+            const i = document.createElement('i');
+            i.id = 'header-user-icon';
+            i.className = 'fa-solid fa-user';
+            i.setAttribute('aria-hidden', 'true');
+            slot.replaceWith(i);
         }
+    }
+
+    /**
+     * Build a Gravatar URL. Uses SHA-256 via SubtleCrypto since
+     * Gravatar accepts both MD5 (legacy) and SHA-256 (since 2022) —
+     * SHA-256 lets us avoid shipping a hand-rolled hash. Mirrors PHP
+     * `userAvatarUrl()` so signed-in users see the same avatar in
+     * both surfaces.
+     *
+     * @param {string} email
+     * @param {number} size
+     * @returns {Promise<string>}
+     */
+    async _gravatarUrl(email, size = 64) {
+        const e = (email || '').trim().toLowerCase();
+        if (!e || !crypto?.subtle) return '/assets/avatar-fallback.svg';
+        const buf = new TextEncoder().encode(e);
+        const hash = await crypto.subtle.digest('SHA-256', buf);
+        const hex = Array.from(new Uint8Array(hash))
+            .map(b => b.toString(16).padStart(2, '0'))
+            .join('');
+        return `https://www.gravatar.com/avatar/${hex}?s=${size}&d=identicon&r=g`;
     }
 
     /**

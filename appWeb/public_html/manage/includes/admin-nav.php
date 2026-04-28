@@ -56,6 +56,16 @@ $_roleBadge   = match($_role) {
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'admin-links.php';
 $_visibleAdminLinks = visibleAdminLinks($_role);
 
+/* Gravatar/Libravatar/DiceBear avatar URL for the signed-in user
+   (#581). The dropdown header carries a 64px copy; the toggle button
+   carries a 32px copy so the network/cache pays for both sizes only
+   once each. Email may be missing on legacy accounts → helper falls
+   back to the static SVG identicon so the markup never breaks. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'avatar.php';
+$_userEmail      = $currentUser['email'] ?? '';
+$_avatarUrlSmall = userAvatarUrl($_userEmail, 32);
+$_avatarUrlLarge = userAvatarUrl($_userEmail, 64);
+
 ?>
 <header class="app-header navbar-admin" role="banner">
     <nav class="navbar navbar-expand" aria-label="Admin navigation">
@@ -131,45 +141,62 @@ $_visibleAdminLinks = visibleAdminLinks($_role);
                     </ul>
                 </div>
 
-                <!-- Account dropdown — avatar on xs, avatar + username +
-                     role badge on sm+. A single Bootstrap dropdown (so
-                     the toggle is the one element Bootstrap wires), the
-                     inline text is rendered as a visual affordance
-                     inside the same button; no separate toggle, no
-                     custom data-bs-target (which doesn't apply to
-                     dropdowns). -->
+                <!-- Account dropdown (#579) — single circular avatar
+                     button at every viewport, matching the main-app
+                     header pattern. The username + role badge moved
+                     INTO the dropdown body so the bar stays compact
+                     on mobile and identical-looking when admins cross
+                     between `/` and `/manage/`. -->
                 <div class="dropdown" id="admin-user-dropdown">
                     <button type="button"
-                            class="btn btn-sm btn-header-icon admin-account-btn d-flex align-items-center gap-2"
+                            class="btn btn-header-icon admin-account-btn p-0"
                             data-bs-toggle="dropdown"
                             aria-expanded="false"
                             aria-label="Account menu"
                             id="admin-user-btn">
-                        <i class="bi bi-person-circle" aria-hidden="true"></i>
-                        <span class="d-none d-sm-inline text-nowrap"><?= htmlspecialchars($_headerName) ?></span>
-                        <span class="badge <?= $_roleBadge[0] ?> d-none d-sm-inline"
-                              style="font-size: 0.65rem;">
-                            <?= htmlspecialchars($_roleBadge[1]) ?>
-                        </span>
+                        <img src="<?= htmlspecialchars($_avatarUrlSmall) ?>"
+                             alt=""
+                             width="32" height="32"
+                             class="rounded-circle"
+                             loading="lazy"
+                             referrerpolicy="no-referrer"
+                             onerror="this.onerror=null;this.src='/assets/avatar-fallback.svg';">
                     </button>
                     <ul class="dropdown-menu dropdown-menu-end"
                         aria-labelledby="admin-user-btn"
                         id="admin-user-dropdown-menu">
-                        <li class="dropdown-item-text small">
-                            <div class="fw-semibold"><?= htmlspecialchars($_displayName) ?></div>
-                            <?php if ($_username && $_username !== $_displayName): ?>
-                                <div class="text-muted small">@<?= htmlspecialchars($_username) ?></div>
-                            <?php endif; ?>
-                            <span class="badge <?= $_roleBadge[0] ?> mt-1" style="font-size: 0.65rem;">
-                                <?= htmlspecialchars($_roleBadge[1]) ?>
-                            </span>
+                        <li class="dropdown-item-text">
+                            <div class="d-flex align-items-center gap-2">
+                                <img src="<?= htmlspecialchars($_avatarUrlLarge) ?>"
+                                     alt=""
+                                     width="40" height="40"
+                                     class="rounded-circle"
+                                     loading="lazy"
+                                     referrerpolicy="no-referrer"
+                                     onerror="this.onerror=null;this.src='/assets/avatar-fallback.svg';">
+                                <div class="small">
+                                    <div class="fw-semibold"><?= htmlspecialchars($_displayName) ?></div>
+                                    <?php if ($_username && $_username !== $_displayName): ?>
+                                        <div class="text-muted small">@<?= htmlspecialchars($_username) ?></div>
+                                    <?php endif; ?>
+                                    <span class="badge <?= $_roleBadge[0] ?> mt-1" style="font-size: 0.65rem;">
+                                        <?= htmlspecialchars($_roleBadge[1]) ?>
+                                    </span>
+                                </div>
+                            </div>
                         </li>
                         <li><hr class="dropdown-divider"></li>
-                        <li><a class="dropdown-item" href="/settings#tab-profile" target="_blank" rel="noopener">
-                            <i class="bi bi-person me-2" aria-hidden="true"></i>Profile &amp; settings
+                        <li><a class="dropdown-item" href="/manage/">
+                            <i class="bi bi-speedometer2 me-2" aria-hidden="true"></i>Dashboard
                         </a></li>
                         <li><a class="dropdown-item" href="/">
-                            <i class="bi bi-house me-2" aria-hidden="true"></i>Back to main site
+                            <i class="bi bi-house me-2" aria-hidden="true"></i>Home (Main site)
+                        </a></li>
+                        <li><a class="dropdown-item" href="/manage/help">
+                            <i class="bi bi-life-preserver me-2" aria-hidden="true"></i>Help &amp; Guides
+                        </a></li>
+                        <li><a class="dropdown-item" href="/settings#tab-profile" target="_blank" rel="noopener">
+                            <i class="bi bi-person me-2" aria-hidden="true"></i>Profile &amp; settings
                         </a></li>
                         <li><hr class="dropdown-divider"></li>
                         <li><a class="dropdown-item text-danger" href="/manage/logout">

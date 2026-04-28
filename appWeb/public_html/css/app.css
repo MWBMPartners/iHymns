@@ -432,6 +432,40 @@ body {
     transition: background-color var(--transition-fast), transform var(--transition-fast);
 }
 
+/* Header user-avatar image: same 40x40 footprint as the icon
+   buttons so the right-edge cluster doesn't reflow when the avatar
+   loads after the SubtleCrypto hash resolves. */
+.btn-header-icon img,
+.header-user-avatar {
+    width: 32px;
+    height: 32px;
+    object-fit: cover;
+    border-radius: 50%;
+}
+
+/* Channel badge ("Alpha" / "Beta") responsive sizing (#580).
+   At wide widths we keep the full word; at < md we shrink to a
+   single letter so the right-edge cluster has room for every icon
+   (search, shuffle, theme, notifications, account) on phones. The
+   single-letter form preserves the colour cue so QA still spots
+   the channel at a glance. */
+.app-header .navbar-brand .badge.bg-warning,
+.navbar-admin .navbar-brand .badge.bg-warning {
+    transition: padding 0.15s ease;
+}
+@media (max-width: 575.98px) {
+    .app-header .navbar-brand .badge.bg-warning,
+    .navbar-admin .navbar-brand .badge.bg-warning {
+        font-size: 0;            /* hide the long word */
+        padding: 0.18em 0.4em;
+        line-height: 1;
+    }
+    .app-header .navbar-brand .badge.bg-warning::first-letter,
+    .navbar-admin .navbar-brand .badge.bg-warning::first-letter {
+        font-size: 0.65rem;      /* show only the first letter */
+    }
+}
+
 .btn-header-icon:hover {
     background-color: rgba(99, 102, 241, 0.1);
     color: var(--accent-solid);
