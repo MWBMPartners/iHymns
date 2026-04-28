@@ -233,6 +233,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $notes       = $notesRaw !== '' ? $notesRaw : null;
                 $links       = $normaliseLinks($_POST['links'] ?? null);
                 $ipi         = $normaliseIpi($_POST['ipi']     ?? null);
+                /* #584 / #585 — classification flags. The two are
+                   mutually exclusive in the UI; if both arrive we
+                   prefer special-case (it's the more constraining
+                   flag — it suppresses biographical fields). */
+                $isSpecialCase = !empty($_POST['is_special_case']) ? 1 : 0;
+                $isGroup       = !empty($_POST['is_group'])        ? 1 : 0;
+                if ($isSpecialCase && $isGroup) { $isGroup = 0; }
 
                 if ($name === '')                       { $error = 'Name is required.'; break; }
                 if (mb_strlen($name) > 255)             { $error = 'Name must be 255 characters or fewer.'; break; }
@@ -253,13 +260,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 try {
                     $stmt = $db->prepare(
                         'INSERT INTO tblCreditPeople
-                            (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate)
-                         VALUES (?, ?, ?, ?, ?, ?)'
+                            (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate, IsSpecialCase, IsGroup)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
                     );
-                    /* All six columns are strings (nullable). DATE columns
-                       accept the YYYY-MM-DD format we validated above; null
-                       passes through correctly with type 's'. */
-                    $stmt->bind_param('ssssss', $name, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate);
+                    /* Six string fields (nullable, accept YYYY-MM-DD with
+                       type 's') plus the two integer flags from #584 / #585. */
+                    $stmt->bind_param('ssssssii',
+                        $name, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
+                        $isSpecialCase, $isGroup
+                    );
                     $stmt->execute();
                     $newId = (int)$db->insert_id;
                     $stmt->close();
@@ -332,6 +341,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $notes       = $notesRaw !== '' ? $notesRaw : null;
                 $links       = $normaliseLinks($_POST['links'] ?? null);
                 $ipi         = $normaliseIpi($_POST['ipi']     ?? null);
+                $isSpecialCase = !empty($_POST['is_special_case']) ? 1 : 0;
+                $isGroup       = !empty($_POST['is_group'])        ? 1 : 0;
+                if ($isSpecialCase && $isGroup) { $isGroup = 0; }
 
                 if ($id <= 0)                           { $error = 'Person id missing.'; break; }
                 if ($name === '')                       { $error = 'Name is required.'; break; }
@@ -362,11 +374,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt = $db->prepare(
                         'UPDATE tblCreditPeople
                             SET Notes = ?, BirthPlace = ?, BirthDate = ?,
-                                DeathPlace = ?, DeathDate = ?
+                                DeathPlace = ?, DeathDate = ?,
+                                IsSpecialCase = ?, IsGroup = ?
                           WHERE Id = ?'
                     );
-                    $stmt->bind_param('sssssi',
-                        $notes, $birthPlace, $birthDate, $deathPlace, $deathDate, $id);
+                    $stmt->bind_param('sssssiii',
+                        $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
+                        $isSpecialCase, $isGroup, $id);
                     $stmt->execute();
                     $stmt->close();
 
@@ -801,6 +815,26 @@ try {
        table grows large enough that the per-row sub-select cost shows
        up, swap to a GROUP BY join. Not now — current row counts make
        this trivially fast. */
+    /* Build the SELECT with the classification flags from #584 / #585.
+       The flags are loaded as 0/1 ints so the PHP-side merge below
+       can pass them straight to JSON without further casting; the
+       table renderer guards against missing columns when running on
+       a schema that hasn't yet had migrate-credit-people-flags
+       applied. */
+    $hasFlags = false;
+    $colCheck = $db->query(
+        "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'tblCreditPeople'
+            AND COLUMN_NAME  = 'IsSpecialCase'"
+    );
+    if ($colCheck && $colCheck->fetch_row() !== null) { $hasFlags = true; }
+    if ($colCheck) { $colCheck->close(); }
+
+    $flagCols = $hasFlags
+        ? ', p.IsSpecialCase, p.IsGroup'
+        : ', 0 AS IsSpecialCase, 0 AS IsGroup';
+
     $registrySql = "
         SELECT p.Id,
                p.Name,
@@ -812,6 +846,7 @@ try {
                p.UpdatedAt,
                (SELECT COUNT(*) FROM tblCreditPersonLinks l WHERE l.CreditPersonId = p.Id) AS LinkCount,
                (SELECT COUNT(*) FROM tblCreditPersonIPI   i WHERE i.CreditPersonId = p.Id) AS IPICount
+               {$flagCols}
           FROM tblCreditPeople p
     ";
     $stmt = $db->prepare($registrySql);
@@ -881,6 +916,8 @@ try {
             'updated_at'  => null,
             'link_count'  => 0,
             'ipi_count'   => 0,
+            'is_special_case' => 0,   /* #584 */
+            'is_group'        => 0,   /* #585 */
             'links'       => [],
             'ipi'         => [],
         ];
@@ -906,6 +943,8 @@ try {
                 'updated_at'  => null,
                 'link_count'  => 0,
                 'ipi_count'   => 0,
+                'is_special_case' => 0,
+                'is_group'        => 0,
             ];
         }
         $byName[$name]['registry_id'] = (int)$r['Id'];
@@ -917,6 +956,8 @@ try {
         $byName[$name]['updated_at']  = $r['UpdatedAt'];
         $byName[$name]['link_count']  = (int)$r['LinkCount'];
         $byName[$name]['ipi_count']   = (int)$r['IPICount'];
+        $byName[$name]['is_special_case'] = (int)($r['IsSpecialCase'] ?? 0);
+        $byName[$name]['is_group']        = (int)($r['IsGroup']        ?? 0);
         /* Full child rows for the Edit drawer's pre-fill. Empty arrays
            default for registry rows with no children — the drawer's JS
            handles the empty case as "no rows yet". */
@@ -1139,16 +1180,32 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                                 'birth_date'  => $p['birth_date'],
                                 'death_place' => $p['death_place'],
                                 'death_date'  => $p['death_date'],
+                                'is_special_case' => (int)($p['is_special_case'] ?? 0),
+                                'is_group'        => (int)($p['is_group']        ?? 0),
                                 'links'       => $p['links'],
                                 'ipi'         => $p['ipi'],
                             ], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE);
+                            $isSpecial = !empty($p['is_special_case']);
+                            $isGroup   = !empty($p['is_group']);
                         ?>
                             <tr data-roles="<?= htmlspecialchars($rolesCsv) ?>"
                                 data-registry-only="<?= $isRegistryOnly ? '1' : '0' ?>"
                                 data-haystack="<?= htmlspecialchars($haystack) ?>"
+                                data-classification="<?= $isSpecial ? 'special' : ($isGroup ? 'group' : 'individual') ?>"
                                 data-person='<?= htmlspecialchars($personJson, ENT_QUOTES) ?>'>
-                                <td class="person-name">
+                                <td class="person-name <?= $isSpecial ? 'fst-italic' : '' ?>">
+                                    <?php if ($isGroup): ?>
+                                        <i class="bi bi-people-fill text-info me-1" title="Group / band / collective" aria-label="Group"></i>
+                                    <?php elseif ($isSpecial): ?>
+                                        <i class="bi bi-question-circle text-warning me-1" title="Special-case attribution" aria-label="Special case"></i>
+                                    <?php endif; ?>
                                     <?= htmlspecialchars($p['name']) ?>
+                                    <?php if ($isSpecial): ?>
+                                        <span class="badge bg-warning-subtle text-warning-emphasis ms-1" style="font-size: 0.6rem;">Special case</span>
+                                    <?php endif; ?>
+                                    <?php if ($isGroup): ?>
+                                        <span class="badge bg-info-subtle text-info-emphasis ms-1" style="font-size: 0.6rem;">Group</span>
+                                    <?php endif; ?>
                                     <?php if ($p['notes']): ?>
                                         <span class="text-secondary small ms-2" title="<?= htmlspecialchars($p['notes']) ?>">
                                             <i class="bi bi-sticky"></i>
@@ -1459,26 +1516,56 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                 </div>
             </div>
 
-            <!-- Birth -->
+            <!-- Classification flags (#584 / #585). Mutually exclusive
+                 by design — both are unticked for an individual. The
+                 JS below toggles them so ticking one unticks the
+                 other, and adapts the date-field labels for groups
+                 (Birth/Death → Founded/Dissolved). -->
+            <div class="border rounded p-2" style="border-color: var(--bs-border-color) !important;">
+                <div class="form-check form-check-inline mb-0">
+                    <input class="form-check-input" type="checkbox" name="is_special_case" value="1" id="cp-drawer-is-special-case">
+                    <label class="form-check-label small" for="cp-drawer-is-special-case">
+                        <i class="bi bi-question-circle me-1" aria-hidden="true"></i>
+                        Special case (Anonymous, Traditional, etc.)
+                    </label>
+                </div>
+                <div class="form-check form-check-inline mb-0">
+                    <input class="form-check-input" type="checkbox" name="is_group" value="1" id="cp-drawer-is-group">
+                    <label class="form-check-label small" for="cp-drawer-is-group">
+                        <i class="bi bi-people-fill me-1" aria-hidden="true"></i>
+                        Group / band / collective
+                    </label>
+                </div>
+            </div>
+
+            <!-- Birth / Founded -->
             <div class="row g-2">
                 <div class="col-7">
-                    <label class="form-label small mb-1" for="cp-drawer-birth-place">Birth place</label>
+                    <label class="form-label small mb-1" for="cp-drawer-birth-place">
+                        <span data-flag-label="individual">Birth place</span><span data-flag-label="group" class="d-none">Founded location</span>
+                    </label>
                     <input type="text" class="form-control form-control-sm" id="cp-drawer-birth-place" name="birth_place" maxlength="255" placeholder="e.g. London, England">
                 </div>
                 <div class="col-5">
-                    <label class="form-label small mb-1" for="cp-drawer-birth-date">Birth date</label>
+                    <label class="form-label small mb-1" for="cp-drawer-birth-date">
+                        <span data-flag-label="individual">Birth date</span><span data-flag-label="group" class="d-none">Founded</span>
+                    </label>
                     <input type="date" class="form-control form-control-sm" id="cp-drawer-birth-date" name="birth_date">
                 </div>
             </div>
 
-            <!-- Death -->
+            <!-- Death / Dissolved -->
             <div class="row g-2">
                 <div class="col-7">
-                    <label class="form-label small mb-1" for="cp-drawer-death-place">Death place</label>
+                    <label class="form-label small mb-1" for="cp-drawer-death-place">
+                        <span data-flag-label="individual">Death place</span><span data-flag-label="group" class="d-none">Dissolved location</span>
+                    </label>
                     <input type="text" class="form-control form-control-sm" id="cp-drawer-death-place" name="death_place" maxlength="255">
                 </div>
                 <div class="col-5">
-                    <label class="form-label small mb-1" for="cp-drawer-death-date">Death date</label>
+                    <label class="form-label small mb-1" for="cp-drawer-death-date">
+                        <span data-flag-label="individual">Death date</span><span data-flag-label="group" class="d-none">Dissolved</span>
+                    </label>
                     <input type="date" class="form-control form-control-sm" id="cp-drawer-death-date" name="death_date">
                 </div>
             </div>
@@ -1682,6 +1769,10 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                 titleEl.textContent = 'Add person';
                 nameIn.readOnly = false;
                 nameHelp.textContent = 'The canonical spelling. To rename later, save first, then use the Rename action — renames cascade to every song that cites this person.';
+                /* form.reset() above already cleared the flag checkboxes;
+                   refresh the label-swap state so a previously-opened
+                   group edit doesn't leave the labels reading "Founded". */
+                applyFlagLabels();
                 drawer.show();
                 setTimeout(() => nameIn.focus(), 200);
             });
@@ -1726,9 +1817,34 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                 document.getElementById('cp-drawer-death-place').value = person.death_place || '';
                 document.getElementById('cp-drawer-death-date').value  = person.death_date  || '';
                 document.getElementById('cp-drawer-notes').value       = person.notes       || '';
+                /* #584 / #585 — pre-tick the classification flags. */
+                document.getElementById('cp-drawer-is-special-case').checked = !!person.is_special_case;
+                document.getElementById('cp-drawer-is-group').checked        = !!person.is_group;
+                applyFlagLabels();
                 (person.links || []).forEach(l => addLinkRow(l));
                 (person.ipi   || []).forEach(r => addIpiRow(r));
                 drawer.show();
+            });
+
+            /* Mutually-exclusive checkboxes + label-swap for groups. */
+            const specialCaseCb = document.getElementById('cp-drawer-is-special-case');
+            const groupCb       = document.getElementById('cp-drawer-is-group');
+            function applyFlagLabels() {
+                const isGroup = !!groupCb?.checked;
+                document.querySelectorAll('[data-flag-label="individual"]').forEach(el => {
+                    el.classList.toggle('d-none', isGroup);
+                });
+                document.querySelectorAll('[data-flag-label="group"]').forEach(el => {
+                    el.classList.toggle('d-none', !isGroup);
+                });
+            }
+            specialCaseCb?.addEventListener('change', () => {
+                if (specialCaseCb.checked && groupCb) groupCb.checked = false;
+                applyFlagLabels();
+            });
+            groupCb?.addEventListener('change', () => {
+                if (groupCb.checked && specialCaseCb) specialCaseCb.checked = false;
+                applyFlagLabels();
             });
 
             /* Add-row buttons inside the drawer. */
