@@ -247,11 +247,15 @@ body:has(.navbar-admin) {
 .admin-account-btn:focus {
     color: var(--text-primary);
 }
-/* Avatar image inside the trigger — render at the same 32px circle
-   the dropdown header uses, centred inside the 40px hit area. */
+/* Avatar image inside the trigger (#646). Sized to match the optical
+   weight of the neighbouring Font-Awesome / Bootstrap-Icons glyphs,
+   which render at roughly 1rem ≈ 16px in a header-icon button. A
+   filled 24px circle next to a ~16-18px line glyph reads as the
+   same visual size; 32px (the previous setting) read distinctly
+   bigger. The 40px hit area on the parent button is unchanged. */
 .admin-account-btn img {
-    width: 32px;
-    height: 32px;
+    width: 24px;
+    height: 24px;
     object-fit: cover;
     border-radius: 50%;
     display: block;

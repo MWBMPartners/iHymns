@@ -157,7 +157,7 @@ $_avatarUrlLarge = userAvatarUrl($_userEmail, 64, $_userAvatarSvc);
                             id="admin-user-btn">
                         <img src="<?= htmlspecialchars($_avatarUrlSmall) ?>"
                              alt=""
-                             width="32" height="32"
+                             width="24" height="24"
                              class="rounded-circle"
                              loading="lazy"
                              referrerpolicy="no-referrer"

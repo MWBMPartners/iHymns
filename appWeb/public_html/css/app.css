@@ -321,7 +321,20 @@
     align-items: center;
 }
 
-#theme-dropdown-btn + .dropdown-menu .dropdown-item i {
+/* Site-wide dropdown-item icon alignment (#647). Font Awesome and
+   Bootstrap Icons glyphs have variable natural widths — fa-gears is
+   wider than fa-house, bi-stars is wider than bi-people, so without
+   a fixed slot the text labels after each icon misalign by a few
+   pixels (visible as e.g. "Manage" sitting further right than its
+   siblings in the iHymns brand dropdown).
+
+   Pin the leading <i> in any .dropdown-item to FA's `fa-fw` 1.25em
+   width with centred glyph alignment. Existing me-2 / me-1 spacing
+   rules continue to drive the icon→text gap; this rule only fixes
+   the icon's horizontal slot. Applies on both surfaces (main app
+   + admin) since admin.css layers on top of app.css. */
+.dropdown-item > i:first-child {
+    display: inline-block;
     width: 1.25em;
     text-align: center;
 }
@@ -433,13 +446,15 @@ body {
     transition: background-color var(--transition-fast), transform var(--transition-fast);
 }
 
-/* Header user-avatar image: same 40x40 footprint as the icon
-   buttons so the right-edge cluster doesn't reflow when the avatar
-   loads after the SubtleCrypto hash resolves. */
+/* Header user-avatar image (#646). Sized to match the optical weight
+   of the FA / BI glyphs in the adjacent header buttons (~16-18px line
+   icons) — a 24px filled circle reads as the same visual size; 32px
+   read distinctly bigger. The 40×40 .btn-header-icon hit area is
+   unchanged so the right-edge cluster still doesn't reflow. */
 .btn-header-icon img,
 .header-user-avatar {
-    width: 32px;
-    height: 32px;
+    width: 24px;
+    height: 24px;
     object-fit: cover;
     border-radius: 50%;
 }
