@@ -819,7 +819,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     } catch (\Throwable $e) {
         error_log('[manage/credit-people.php] action=' . $action . ': ' . $e->getMessage());
-        $error = $error ?: 'Database error — check server logs for details.';
+        if ($error === '') {
+            /* This page is gated to global_admin — surfacing the
+               actual exception message + file:line is a UX win and
+               carries no security trade-off (global admins are
+               trusted with DB internals). Closes #635. */
+            $where = $e->getFile() ? (' ' . basename($e->getFile()) . ':' . $e->getLine()) : '';
+            $error = 'Database error: ' . $e->getMessage() . $where;
+        }
     }
 }
 
