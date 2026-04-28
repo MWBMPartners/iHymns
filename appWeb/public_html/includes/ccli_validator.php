@@ -113,22 +113,55 @@ function resolveEffectiveTier(int $userId): string
     $stmt->close();
     $personalTier = (string)($row[0] ?? 'public') ?: 'public';
 
-    /* Get highest org-level tier from all memberships.
-     * Org tier comes from tblContentLicences linked to the org,
-     * or from tblOrganisations.LicenceType mapped to a tier. */
+    /* Get highest org-level tier from all memberships, walking up the
+     * nesting chain (#636). A direct membership of "Hillsong London"
+     * also inherits the licence/tier of its parent "Hillsong Worship"
+     * — using a recursive CTE up tblOrganisations.ParentOrgId so the
+     * walker stays a single round-trip regardless of nesting depth.
+     * Falls back to the old single-level query on MySQL versions
+     * that don't support WITH RECURSIVE (pre-8.0). */
     $orgTier = 'public';
 
-    /* Check org licence types and map to tiers */
-    $stmt = $db->prepare(
-        'SELECT DISTINCT o.LicenceType
-         FROM tblOrganisations o
-         JOIN tblOrganisationMembers m ON m.OrgId = o.Id
-         WHERE m.UserId = ? AND o.IsActive = 1 AND o.LicenceType != \'none\''
-    );
-    $stmt->bind_param('i', $userId);
-    $stmt->execute();
-    $orgLicences = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'LicenceType');
-    $stmt->close();
+    $orgLicences = [];
+    $sqlRecursive = "
+        WITH RECURSIVE org_chain AS (
+            /* Anchor: every org the user is a direct member of. */
+            SELECT o.Id, o.LicenceType, o.IsActive, o.ParentOrgId
+              FROM tblOrganisations o
+              JOIN tblOrganisationMembers m ON m.OrgId = o.Id
+             WHERE m.UserId = ?
+            UNION ALL
+            /* Recursive step: parent orgs along the nesting chain. */
+            SELECT po.Id, po.LicenceType, po.IsActive, po.ParentOrgId
+              FROM tblOrganisations po
+              JOIN org_chain c ON c.ParentOrgId = po.Id
+        )
+        SELECT DISTINCT LicenceType
+          FROM org_chain
+         WHERE IsActive = 1 AND LicenceType <> 'none'
+    ";
+    try {
+        $stmt = $db->prepare($sqlRecursive);
+        if ($stmt) {
+            $stmt->bind_param('i', $userId);
+            $stmt->execute();
+            $orgLicences = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'LicenceType');
+            $stmt->close();
+        }
+    } catch (\Throwable $_e) {
+        /* MySQL < 8.0 / MariaDB without recursive CTE — fall back to
+         * the direct-membership query so the page keeps working. */
+        $stmt = $db->prepare(
+            'SELECT DISTINCT o.LicenceType
+             FROM tblOrganisations o
+             JOIN tblOrganisationMembers m ON m.OrgId = o.Id
+             WHERE m.UserId = ? AND o.IsActive = 1 AND o.LicenceType <> \'none\''
+        );
+        $stmt->bind_param('i', $userId);
+        $stmt->execute();
+        $orgLicences = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'LicenceType');
+        $stmt->close();
+    }
 
     /* Map org licence types to access tiers */
     $licenceToTier = [
