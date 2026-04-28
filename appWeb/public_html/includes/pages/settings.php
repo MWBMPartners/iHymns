@@ -18,6 +18,19 @@
 
 declare(strict_types=1);
 
+/**
+ * Variables provided by the calling context (api.php / index.php
+ * before this template is included). Declared here so intelephense
+ * can resolve the references in the body of the file (#634); the
+ * runtime injection itself is unchanged.
+ *
+ * @var array $app  Parsed iHymns application metadata from
+ *                  /includes/infoAppVer.php — keys read below
+ *                  include Application.Name, Application.Version,
+ *                  Application.Vendor.Name, Application.License.User
+ *                  and Application.Version.Repo.Commit.
+ */
+
 ?>
 
 <!-- ================================================================

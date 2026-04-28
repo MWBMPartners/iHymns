@@ -35,7 +35,11 @@
 
     .main-content {
         padding: 0 !important;
-        min-height: auto !important;
+        /* Firefox <= 21 doesn't honour `min-height: auto`; replace
+           with the explicit zero. Browsers that resolve `auto` and
+           those that don't both end up at the same effective
+           rendering for this print-rule. */
+        min-height: 0 !important;
     }
 
     .page-content {

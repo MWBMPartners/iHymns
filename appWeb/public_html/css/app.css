@@ -351,6 +351,7 @@
 html {
     scroll-behavior: smooth;
     -webkit-text-size-adjust: 100%;
+    -moz-text-size-adjust: 100%;
     text-size-adjust: 100%;
 }
 
@@ -390,8 +391,8 @@ body {
     right: 0;
     z-index: 1030;
     background: var(--header-bg);
-    backdrop-filter: blur(16px) saturate(180%);
     -webkit-backdrop-filter: blur(16px) saturate(180%);
+    backdrop-filter: blur(16px) saturate(180%);
     box-shadow: var(--header-shadow);
     border-bottom: 1px solid var(--card-border);
 }
@@ -666,8 +667,8 @@ body.banner-visible.search-open .main-content {
     right: 0;
     z-index: 1030;
     background: var(--footer-bg);
-    backdrop-filter: blur(16px) saturate(180%);
     -webkit-backdrop-filter: blur(16px) saturate(180%);
+    backdrop-filter: blur(16px) saturate(180%);
     box-shadow: var(--footer-shadow);
     border-top: 1px solid var(--card-border);
 }
@@ -1436,8 +1437,8 @@ body.banner-visible.search-open .main-content {
 /* Reduced transparency mode */
 body.reduce-transparency .app-header,
 body.reduce-transparency .app-footer {
-    backdrop-filter: none;
     -webkit-backdrop-filter: none;
+    backdrop-filter: none;
     background: var(--surface-card);
 }
 
@@ -2540,8 +2541,8 @@ body.reduce-motion .related-songs-chevron {
     padding: 12px 16px;
     background: var(--glass-bg);
     border-top: 1px solid var(--glass-border);
-    backdrop-filter: blur(16px) saturate(180%);
     -webkit-backdrop-filter: blur(16px) saturate(180%);
+    backdrop-filter: blur(16px) saturate(180%);
     box-shadow: 0 -2px 16px rgba(0, 0, 0, 0.12);
     transform: translateY(100%);
     opacity: 0;
@@ -2578,8 +2579,8 @@ body.reduce-motion .related-songs-chevron {
 [data-ihymns-theme="high-contrast"] .analytics-consent-banner {
     background: #ffffff;
     border-top: 3px solid #000000;
-    backdrop-filter: none;
     -webkit-backdrop-filter: none;
+    backdrop-filter: none;
 }
 
 [data-ihymns-theme="high-contrast"] .analytics-consent-banner .btn-outline-light {
@@ -2770,6 +2771,9 @@ body.reduce-motion .related-songs-chevron {
     border-radius: var(--radius-sm);
     cursor: pointer;
     transition: color var(--transition-fast), background-color var(--transition-fast);
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
     user-select: none;
 }
 .song-lyrics[data-practice-level="2"] .lyric-line::before {
@@ -2784,6 +2788,9 @@ body.reduce-motion .related-songs-chevron {
 .song-lyrics[data-practice-level="2"] .lyric-line:hover {
     color: var(--text-primary);
     background-color: transparent;
+    -webkit-user-select: text;
+    -moz-user-select: text;
+    -ms-user-select: text;
     user-select: text;
 }
 .song-lyrics[data-practice-level="2"] .lyric-line.revealed::before,

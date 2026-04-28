@@ -208,6 +208,13 @@ body:has(.navbar-admin) {
     color: transparent;
     font-weight: 700;
     font-size: 1.15rem;
+    /* Brand button (#632) — the dropdown-toggle is rendered as a
+       <button>, which carries the browser-default button border /
+       background unless explicitly cleared. The main-app brand on
+       index.php sits inside .btn-* which already does this; the admin
+       version doesn't, so the rectangle was bleeding through. */
+    border: none;
+    background-color: transparent;
 }
 .navbar-admin .navbar-brand:hover,
 .navbar-editor .navbar-brand:hover {
@@ -220,24 +227,35 @@ body:has(.navbar-admin) {
     color: var(--accent-solid);
 }
 
-/* Account dropdown trigger — avatar on xs, avatar + first name + role
-   badge on sm+. Shares `.btn-header-icon` for the hover/press feel,
-   but must relax that class's fixed 40×40 so the inline name + badge
-   don't overflow the box and paint over the hamburger to its right.
-   A 40px min keeps the xs icon-only state visually consistent with
-   the other header icon buttons. */
+/* Account dropdown trigger (#633) — single 40×40 circular avatar
+   matching the other header icon buttons. The pre-#615 incarnation
+   carried inline name + role-badge content alongside the icon, so
+   the rule had to flex to `width: auto` with min-40px to fit the
+   text. Since the redesign moved name + role inside the dropdown
+   body, the trigger only ever holds the 32px avatar — pin width
+   and height to the same 40×40 footprint as the theme button + the
+   hamburger so the row reads as one cohesive control set. */
 .admin-account-btn {
-    width: auto;
-    height: auto;
+    width: 40px;
+    height: 40px;
     min-width: 40px;
     min-height: 40px;
-    padding: 0.25rem 0.6rem;
-    font-size: 0.85rem;
+    padding: 0;
     color: var(--text-secondary);
 }
 .admin-account-btn:hover,
 .admin-account-btn:focus {
     color: var(--text-primary);
+}
+/* Avatar image inside the trigger — render at the same 32px circle
+   the dropdown header uses, centred inside the 40px hit area. */
+.admin-account-btn img {
+    width: 32px;
+    height: 32px;
+    object-fit: cover;
+    border-radius: 50%;
+    display: block;
+    margin: 0 auto;
 }
 
 /* Offcanvas surface nav — slide-out list launched by the hamburger.
@@ -836,4 +854,26 @@ body:has(.navbar-admin) {
     .navbar-editor > .d-flex {
         gap: 0.35rem !important;
     }
+}
+
+/* ----------------------------------------------------------------------------
+   ADMIN MODAL — opaque background (#631)
+
+   Bootstrap's `bg-dark` on `.modal-content` resolves through
+   `--bs-bg-opacity`, which under some cascade orderings ends up
+   tinting partly-transparent. Page text under the modal then bleeds
+   through, making the modal hard to read (Edit Tier in Access Tiers
+   was the canonical repro).
+
+   Pin every admin modal's `.modal-content` to the same solid
+   --surface-card the cards underneath use, with the page's
+   --card-border. Scoped via `body:has(.navbar-admin)` so the
+   main-app modals on `/` keep their own theme.
+---------------------------------------------------------------------------- */
+body:has(.navbar-admin) .modal-content {
+    background-color: var(--surface-card) !important;
+    border: 1px solid var(--card-border);
+}
+body:has(.navbar-admin) .modal-content.bg-dark {
+    --bs-bg-opacity: 1;
 }
