@@ -1063,6 +1063,15 @@ $currentUser = getCurrentUser();
                             <div id="translators-container"></div>
                         </div>
 
+                        <!-- Artists Section (#587) — recording / release artist -->
+                        <div class="mb-4">
+                            <label class="form-label">
+                                <i class="bi bi-mic me-1"></i>Artists
+                                <small class="text-muted ms-1">(recording / release artist — useful for contemporary worship songs)</small>
+                            </label>
+                            <div id="artists-container"></div>
+                        </div>
+
                         <!-- Translations Section — linked translations in other languages (#352) -->
                         <div class="mb-4">
                             <label class="form-label">

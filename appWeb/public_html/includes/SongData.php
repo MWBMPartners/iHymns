@@ -407,6 +407,7 @@ class SongData
             $arrangersMap   = $this->_getArrangersMap($songIds);
             $adaptorsMap    = $this->_getAdaptorsMap($songIds);
             $translatorsMap = $this->_getTranslatorsMap($songIds);
+            $artistsMap     = $this->_getArtistsMap($songIds);     /* #587 */
             $componentsMap  = $this->_getComponentsMap($songIds);
             /* Tags included in the bulk load (#496 follow-up) so the
                Song Editor's full-catalogue load + any client that
@@ -421,6 +422,7 @@ class SongData
                 $song['arrangers']   = $arrangersMap[$sid]   ?? [];
                 $song['adaptors']    = $adaptorsMap[$sid]    ?? [];
                 $song['translators'] = $translatorsMap[$sid] ?? [];
+                $song['artists']     = $artistsMap[$sid]     ?? [];   /* #587 */
                 $song['components']  = $componentsMap[$sid]  ?? [];
                 $song['tags']        = $tagsMap[$sid]        ?? [];
             }
@@ -1000,6 +1002,7 @@ class SongData
         $row['arrangers']    = $this->_getArrangers($songId);
         $row['adaptors']     = $this->_getAdaptors($songId);
         $row['translators']  = $this->_getTranslators($songId);
+        $row['artists']      = $this->_getArtists($songId);    /* #587 */
         $row['components']   = $this->_getComponents($songId);
         /* Tags attached here too so the single-song read path matches
            the bulk getSongs() shape (#496 follow-up). Uses the same
@@ -1273,6 +1276,78 @@ class SongData
         while ($row = $res->fetch_assoc()) { $out[] = $row['Name']; }
         $stmt->close();
         return $out;
+    }
+
+    /**
+     * @return string[]
+     * Artists (#587). Returns an empty array on installs where the
+     * tblSongArtists table hasn't been created yet, so the load path
+     * stays usable on a partly-migrated DB.
+     */
+    private function _getArtists(string $songId): array
+    {
+        if (!$this->_songArtistsTableExists()) return [];
+        $stmt = $this->db->prepare(
+            "SELECT Name FROM tblSongArtists WHERE SongId = ? ORDER BY SortOrder, Id"
+        );
+        $stmt->bind_param('s', $songId);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $out = [];
+        while ($row = $res->fetch_assoc()) { $out[] = $row['Name']; }
+        $stmt->close();
+        return $out;
+    }
+
+    /**
+     * Bulk-load artists keyed by SongId (#587). See `_getWritersMap()`.
+     *
+     * @param string[] $songIds
+     * @return array<string,string[]>
+     */
+    private function _getArtistsMap(array $songIds): array
+    {
+        if (empty($songIds))                     return [];
+        if (!$this->_songArtistsTableExists())   return [];
+        $placeholders = implode(',', array_fill(0, count($songIds), '?'));
+        $types = str_repeat('s', count($songIds));
+        $stmt = $this->db->prepare(
+            "SELECT SongId, Name FROM tblSongArtists
+             WHERE SongId IN ($placeholders)
+             ORDER BY SongId, SortOrder, Id"
+        );
+        $stmt->bind_param($types, ...$songIds);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $map = [];
+        while ($row = $result->fetch_assoc()) {
+            $map[$row['SongId']][] = $row['Name'];
+        }
+        $stmt->close();
+        return $map;
+    }
+
+    /**
+     * Cached check for the tblSongArtists table (#587). The table
+     * arrives via migrate-song-artists.php — until that's been
+     * applied, every credit-load helper that touches it must no-op.
+     * INFORMATION_SCHEMA is queried once per request.
+     */
+    private ?bool $_songArtistsTableExistsCached = null;
+    private function _songArtistsTableExists(): bool
+    {
+        if ($this->_songArtistsTableExistsCached !== null) {
+            return $this->_songArtistsTableExistsCached;
+        }
+        $stmt = $this->db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongArtists' LIMIT 1"
+        );
+        $stmt->execute();
+        $exists = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+        $this->_songArtistsTableExistsCached = $exists;
+        return $exists;
     }
 
     /**

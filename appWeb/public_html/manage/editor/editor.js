@@ -546,6 +546,7 @@ function selectSong(songId) {
     renderArrangers(song);    /* #497 */
     renderAdaptors(song);     /* #497 */
     renderTranslators(song);  /* #497 */
+    renderArtists(song);      /* #587 */
 
     /* Render the translations (cross-song link) panel (#352). */
     renderTranslations(song);
@@ -1687,6 +1688,7 @@ var CREDIT_KIND_FOR_KEY = {
     arrangers:   'arranger',
     adaptors:    'adaptor',
     translators: 'translator',
+    artists:     'artist',     /* #587 */
 };
 
 function renderCreditChipList(song, key, containerId, addLabel) {
@@ -1730,6 +1732,10 @@ function renderAdaptors(song) {
 
 function renderTranslators(song) {
     renderCreditChipList(song, 'translators', 'translators-container', 'Add Translator');
+}
+
+function renderArtists(song) {
+    renderCreditChipList(song, 'artists',     'artists-container',     'Add Artist');
 }
 
 /* ----------------------------------------------------------------------
