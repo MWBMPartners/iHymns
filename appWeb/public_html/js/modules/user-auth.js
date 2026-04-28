@@ -617,8 +617,10 @@ export class UserAuth {
                 img.id = 'header-user-icon';
                 img.src = url;
                 img.alt = '';
-                img.width = 32;
-                img.height = 32;
+                /* 24px to match the optical weight of the FA / BI glyphs
+                   in the adjacent header buttons (#646). */
+                img.width = 24;
+                img.height = 24;
                 img.className = 'rounded-circle header-user-avatar';
                 img.loading = 'lazy';
                 img.referrerPolicy = 'no-referrer';

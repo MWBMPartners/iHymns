@@ -433,13 +433,15 @@ body {
     transition: background-color var(--transition-fast), transform var(--transition-fast);
 }
 
-/* Header user-avatar image: same 40x40 footprint as the icon
-   buttons so the right-edge cluster doesn't reflow when the avatar
-   loads after the SubtleCrypto hash resolves. */
+/* Header user-avatar image (#646). Sized to match the optical weight
+   of the FA / BI glyphs in the adjacent header buttons (~16-18px line
+   icons) — a 24px filled circle reads as the same visual size; 32px
+   read distinctly bigger. The 40×40 .btn-header-icon hit area is
+   unchanged so the right-edge cluster still doesn't reflow. */
 .btn-header-icon img,
 .header-user-avatar {
-    width: 32px;
-    height: 32px;
+    width: 24px;
+    height: 24px;
     object-fit: cover;
     border-radius: 50%;
 }
