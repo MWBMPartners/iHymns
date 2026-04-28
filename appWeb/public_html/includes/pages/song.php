@@ -191,13 +191,39 @@ unset($_t);
                  surname-first hymnal citations can legitimately contain
                  commas inside a single name. -->
             <?php
-            $_creditRows = [
-                ['words',       'Words',       'fa-solid fa-pen-fancy',   $writers],
-                ['music',       'Music',       'fa-solid fa-music',       $composers],
-                ['arranged',    'Arranged by', 'fa-solid fa-sliders',     $arrangers],
-                ['adapted',     'Adapted by',  'fa-solid fa-compact-disc',$adaptors],
-                ['translated',  'Translated by','fa-solid fa-language',   $translators],
-            ];
+            /* Combine Words + Music into a single "Words & Music:" row
+               when the two sets are identical (#603) — common for
+               contemporary songs where the songwriter is also the
+               composer (e.g. Graham Kendrick, Stuart Townend). Set
+               equality, not list equality, so order-of-names doesn't
+               break the combine. */
+            $_writersNorm = array_values(array_unique(array_filter(
+                array_map(static fn($n) => trim((string)$n), $writers ?: [])
+            )));
+            $_composersNorm = array_values(array_unique(array_filter(
+                array_map(static fn($n) => trim((string)$n), $composers ?: [])
+            )));
+            sort($_writersNorm);
+            sort($_composersNorm);
+            $_combineWordsMusic = !empty($_writersNorm)
+                && $_writersNorm === $_composersNorm;
+
+            if ($_combineWordsMusic) {
+                $_creditRows = [
+                    ['words-music', 'Words & Music', 'fa-solid fa-pen-fancy', $writers],
+                    ['arranged',    'Arranged by',   'fa-solid fa-sliders',     $arrangers],
+                    ['adapted',     'Adapted by',    'fa-solid fa-compact-disc',$adaptors],
+                    ['translated',  'Translated by', 'fa-solid fa-language',    $translators],
+                ];
+            } else {
+                $_creditRows = [
+                    ['words',       'Words',       'fa-solid fa-pen-fancy',   $writers],
+                    ['music',       'Music',       'fa-solid fa-music',       $composers],
+                    ['arranged',    'Arranged by', 'fa-solid fa-sliders',     $arrangers],
+                    ['adapted',     'Adapted by',  'fa-solid fa-compact-disc',$adaptors],
+                    ['translated',  'Translated by','fa-solid fa-language',   $translators],
+                ];
+            }
             $_hasAnyCredit = false;
             foreach ($_creditRows as $row) { if (!empty($row[3])) { $_hasAnyCredit = true; break; } }
             ?>
