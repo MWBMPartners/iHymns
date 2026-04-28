@@ -121,12 +121,109 @@ function initSession(): void
 /**
  * Check whether a user is currently logged in.
  *
+ * If the PHP session has no user but the cross-subdomain `ihymns_auth`
+ * cookie carries a valid API token (set by main-app sign-in via
+ * `auth_login` / `auth_email_login_verify` / `auth_register`), promote
+ * that token into the admin session so a user signed in on the main
+ * app doesn't get bounced to /manage/login when they click Manage.
+ * Without this, the two auth surfaces are independent — the main app
+ * uses the Bearer/cookie token, /manage/ uses PHP $_SESSION — and a
+ * curator/admin who's already signed in had to sign in twice. (#578)
+ *
  * @return bool True if authenticated
  */
 function isAuthenticated(): bool
 {
     initSession();
-    return isset($_SESSION['user_id']) && isset($_SESSION['username']);
+    if (isset($_SESSION['user_id']) && isset($_SESSION['username'])) {
+        return true;
+    }
+    return adoptApiTokenSession();
+}
+
+/**
+ * If the request carries a valid `ihymns_auth` cookie (the API token
+ * issued by the main-app sign-in flow), look it up in tblApiTokens and
+ * seed $_SESSION as if the user had signed in via /manage/login. The
+ * token must be unexpired and the user active. Sliding-expiry behaviour
+ * mirrors the main API (`getAuthenticatedUser` in api.php) so the same
+ * user being active on /manage/ keeps the token alive.
+ *
+ * Returns true on success (session now populated), false otherwise.
+ */
+function adoptApiTokenSession(): bool
+{
+    /* Cookie name + shape must match api.php. The cookie is httponly so
+       JS can't read it but the request carries it for us. */
+    if (empty($_COOKIE['ihymns_auth'])) {
+        return false;
+    }
+    $token = (string)$_COOKIE['ihymns_auth'];
+    if (!preg_match('/^[a-f0-9]{64}$/i', $token)) {
+        return false;
+    }
+
+    try {
+        $db          = getDbMysqli();
+        $hashedToken = hash('sha256', $token);
+        $now         = gmdate('c');
+        $stmt        = $db->prepare(
+            'SELECT u.Id        AS id,
+                    u.Username  AS username,
+                    t.ExpiresAt AS expires_at
+               FROM tblApiTokens t
+               JOIN tblUsers     u ON u.Id = t.UserId
+              WHERE t.Token     = ?
+                AND t.ExpiresAt > ?
+                AND u.IsActive  = 1'
+        );
+        $stmt->bind_param('ss', $hashedToken, $now);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+    } catch (\Throwable $e) {
+        error_log('[manage/auth] adoptApiTokenSession failed: ' . $e->getMessage());
+        return false;
+    }
+
+    if (!$row) {
+        return false;
+    }
+
+    /* Promote the token into $_SESSION exactly as /manage/login.php's
+       successful POST handler would. The rest of the admin surface
+       reads $_SESSION['user_id'] / ['username'] and never touches the
+       cookie directly, so this keeps the call sites unchanged. */
+    $_SESSION['user_id']       = (int)$row['id'];
+    $_SESSION['username']      = (string)$row['username'];
+    $_SESSION['last_activity'] = time();
+
+    /* Slide the token expiry (#390) so an active manage-side user
+       keeps their main-app sign-in alive too. The DB write is gated
+       to once-per-day-per-token by the main API helper; we duplicate
+       that gate here to keep the two paths consistent without having
+       to share code. */
+    try {
+        $cap = $row['expires_at'];
+        if (is_string($cap) && $cap !== '') {
+            $capTs    = strtotime($cap);
+            $nowTs    = time();
+            $newCapTs = $nowTs + 30 * 86400;
+            if ($capTs && ($newCapTs - $capTs) >= 86400) {
+                $stmt = $db->prepare(
+                    'UPDATE tblApiTokens SET ExpiresAt = ? WHERE Token = ? AND ExpiresAt < ?'
+                );
+                $newCap = gmdate('c', $newCapTs);
+                $stmt->bind_param('sss', $newCap, $hashedToken, $newCap);
+                $stmt->execute();
+                $stmt->close();
+            }
+        }
+    } catch (\Throwable $e) {
+        error_log('[manage/auth] sliding-expiry failed: ' . $e->getMessage());
+    }
+
+    return true;
 }
 
 /**
