@@ -55,7 +55,6 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_access.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'card_layout.php';
-require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
 
 /* =========================================================================
@@ -1204,23 +1203,19 @@ if ($action !== null) {
 
             $now = gmdate('c');
 
-            /* Upsert each local setlist. NOTE: the SQL below uses
-               PostgreSQL/SQLite ON CONFLICT syntax — almost certainly
-               a leftover from an earlier SQLite era. MySQL would
-               typically use INSERT … ON DUPLICATE KEY UPDATE; the
-               existing PDO version had the same syntax, so this
-               mechanical mysqli conversion preserves it verbatim. If
-               this code path is exercised in production it would
-               error out on prepare(); fixing it is a separate concern
-               (file an issue) and out of scope for the PDO→mysqli
-               migration. */
+            /* Upsert each local setlist. The (UserId, SetlistId) pair
+               has a UNIQUE constraint on tblUserSetlists, so
+               ON DUPLICATE KEY UPDATE fires on collision and rewrites
+               the user-editable columns. Fixes #568 — prior to this the
+               SQL used PostgreSQL/SQLite ON CONFLICT syntax which MySQL
+               doesn't recognise, silently breaking multi-device sync. */
             $upsert = $db->prepare(
                 'INSERT INTO tblUserSetlists (UserId, SetlistId, Name, SongsJson, CreatedAt, UpdatedAt)
                  VALUES (?, ?, ?, ?, ?, ?)
-                 ON CONFLICT(UserId, SetlistId) DO UPDATE SET
-                    Name = excluded.Name,
-                    SongsJson = excluded.SongsJson,
-                    UpdatedAt = excluded.UpdatedAt'
+                 ON DUPLICATE KEY UPDATE
+                    Name      = VALUES(Name),
+                    SongsJson = VALUES(SongsJson),
+                    UpdatedAt = VALUES(UpdatedAt)'
             );
 
             foreach ($localLists as $list) {
