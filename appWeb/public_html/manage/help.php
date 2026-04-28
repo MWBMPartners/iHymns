@@ -448,7 +448,7 @@ foreach ($sections as $s) {
                         <li><strong>Save</strong> writes everything to the database. Auto-save runs in the background while you work, but always click Save before navigating away.</li>
                         <li><strong>Validate</strong> runs every song past a quality check (missing required fields, invalid language tags, orphaned references) and lists any problems.</li>
                         <li><strong>Import</strong> from JSON or CSV. <strong>Export</strong> the current view as JSON or CSV.</li>
-                        <li><strong>History</strong> for the selected song shows a diff of every previous edit and a Restore button.</li>
+                        <li><strong>Revisions</strong> for the selected song shows a diff of every previous edit and a Restore button.</li>
                     </ul>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Closing the tab while there are unsaved changes loses them — auto-save catches most things, but treat Save as the source of truth.
@@ -457,7 +457,7 @@ foreach ($sections as $s) {
                         <strong>Gotcha:</strong> A song's ID is set when it's first created and never changes. Renaming the title doesn't rename the ID. Numbering is independent of ID.
                     </div>
                     <div class="gotcha small">
-                        <strong>Gotcha:</strong> Deleting a song is permanent. Use <strong>History &rarr; Restore</strong> if you need an old version <em>before</em> you save further edits over it.
+                        <strong>Gotcha:</strong> Deleting a song is permanent. Use <strong>Revisions &rarr; Restore</strong> if you need an old version <em>before</em> you save further edits over it.
                     </div>
                 </section>
 
@@ -496,7 +496,7 @@ foreach ($sections as $s) {
                     <h3 class="h6">Key actions</h3>
                     <ul>
                         <li>Filter by user, song ID (partial match works), action (create / edit / restore / delete), and time range (7 / 30 / 90 / 365 days).</li>
-                        <li>Click a row to open that song in the editor; the History modal there shows the diff and lets you Restore.</li>
+                        <li>Click a row to open that song in the editor; the Revisions modal there shows the diff and lets you Restore.</li>
                     </ul>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Revisions are immutable. Restore creates a <em>new</em> revision rather than rewriting history, so the trail stays honest.
@@ -880,7 +880,7 @@ foreach ($sections as $s) {
 
                     <h3 class="h6">&ldquo;I deleted a song by mistake.&rdquo;</h3>
                     <p class="small">
-                        Open <a href="#revisions">Revisions Audit</a>, find the song's last edit before the delete, click through to the editor, and use <strong>History &rarr; Restore</strong>. Revisions are kept indefinitely so older deletes are still recoverable.
+                        Open <a href="#revisions">Revisions Audit</a>, find the song's last edit before the delete, click through to the editor, and use <strong>Revisions &rarr; Restore</strong>. Revisions are kept indefinitely so older deletes are still recoverable.
                     </p>
 
                     <h3 class="h6">&ldquo;The dashboard / a /manage page is blank.&rdquo;</h3>

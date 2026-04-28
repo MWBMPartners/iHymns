@@ -2670,6 +2670,12 @@ function updateStatusBar() {
             warningEl.style.display = 'none';   // hide warning
         }
     }
+
+    /* Toolbar buttons (#590) — Save / Validate / History reflect the
+       current selection + load state. Piggybacking on updateStatusBar
+       ensures every meaningful state change (load, save, select,
+       deselect, add, delete) refreshes the buttons too. */
+    updateHistoryButtonState();
 }
 
 /* ========================================================================
@@ -3297,34 +3303,12 @@ function bindGlobalEventListeners() {
         });
     }
 
-    /* ---- Load from file button ---- */
-    var loadFileBtn = document.getElementById('btn-load-file');
-    if (loadFileBtn) {
-        loadFileBtn.addEventListener('click', function () {
-            /* Create a temporary file input and trigger it. */
-            var input = document.createElement('input');
-            input.type = 'file';
-            input.accept = '.json,application/json';
-            input.addEventListener('change', function () {
-                if (input.files && input.files[0]) {
-                    loadSongsFromFile(input.files[0]);
-                }
-            });
-            input.click();
-        });
-    }
-
-    /* ---- Load from URL button ---- */
-    var loadURLBtn = document.getElementById('btn-load-url');
-    if (loadURLBtn) {
-        loadURLBtn.addEventListener('click', function () {
-            /* Prompt the user for a URL, pre-filling the default. */
-            var url = prompt('Enter songs.json URL:', DEFAULT_SONGS_URL);
-            if (url) {
-                loadSongsFromURL(url);
-            }
-        });
-    }
+    /* Load JSON / Load URL click handlers removed alongside the buttons
+       in #589. The editor auto-loads from MySQL via `?action=load` on
+       init (see loadSongsFromURL(DEFAULT_SONGS_URL) at the bottom of
+       this section), so a curator never needs to load from a file or
+       remote URL. The Import button below still uses importJSON() for
+       merging external data when an admin really needs to. */
 
     /* ---- Save button — writes to MySQL, falls back to JSON download ---- */
     var saveBtn = document.getElementById('btn-save');
@@ -3715,9 +3699,49 @@ function bindHistoryListener() {
     });
 }
 
+/**
+ * updateHistoryButtonState()
+ * --------------------------
+ * Toggle Save / Validate / History buttons in step with the current
+ * selection + load state (#590). Called from every place currentSongId
+ * changes plus after the auto-load completes so the buttons accurately
+ * reflect what the curator can actually do.
+ *
+ *   Save      — needs a selected song
+ *   History   — needs a selected song (revisions are per-song)
+ *   Validate  — needs at least one song loaded; catalogue-wide, no
+ *               selection required.
+ */
 function updateHistoryButtonState() {
-    var btn = document.getElementById('btn-history');
-    if (btn) btn.disabled = !currentSongId;
+    var hasSong  = !!currentSongId;
+    var hasSongs = (typeof songData !== 'undefined' && songData
+        && Array.isArray(songData.songs) && songData.songs.length > 0);
+
+    var saveBtn = document.getElementById('btn-save');
+    if (saveBtn) {
+        saveBtn.disabled = !hasSong;
+        saveBtn.title = hasSong
+            ? 'Save all changes to the database'
+            : 'Select a song to enable Save';
+    }
+
+    var validateBtn = document.getElementById('btn-validate');
+    if (validateBtn) {
+        validateBtn.disabled = !hasSongs;
+        validateBtn.title = hasSongs
+            ? 'Validate every song in the loaded catalogue'
+            : 'Songs are still loading…';
+    }
+
+    var historyBtn = document.getElementById('btn-history');
+    if (historyBtn) {
+        historyBtn.disabled = !hasSong;
+        /* Renamed History → Revisions (#591) for consistency with the
+           /manage/revisions admin menu entry. ID stays for back-compat. */
+        historyBtn.title = hasSong
+            ? 'Show revision history for the selected song'
+            : 'Select a song to enable Revisions';
+    }
 }
 
 function openHistoryModal(songId) {
