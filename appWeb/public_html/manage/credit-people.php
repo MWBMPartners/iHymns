@@ -1777,7 +1777,7 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
             </div>
 
             <!-- Birth / Founded -->
-            <div class="row g-2">
+            <div class="row g-2" data-flag-section="birth">
                 <div class="col-7">
                     <label class="form-label small mb-1" for="cp-drawer-birth-place">
                         <span data-flag-label="individual">Birth place</span><span data-flag-label="group" class="d-none">Founded location</span>
@@ -1786,23 +1786,23 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                 </div>
                 <div class="col-5">
                     <label class="form-label small mb-1" for="cp-drawer-birth-date">
-                        <span data-flag-label="individual">Birth date</span><span data-flag-label="group" class="d-none">Founded</span>
+                        <span data-flag-label="individual">Birth date</span><span data-flag-label="group" class="d-none">Founded date</span>
                     </label>
                     <input type="date" class="form-control form-control-sm" id="cp-drawer-birth-date" name="birth_date">
                 </div>
             </div>
 
-            <!-- Death / Dissolved -->
-            <div class="row g-2">
+            <!-- Death / Disbandment -->
+            <div class="row g-2" data-flag-section="death">
                 <div class="col-7">
                     <label class="form-label small mb-1" for="cp-drawer-death-place">
-                        <span data-flag-label="individual">Death place</span><span data-flag-label="group" class="d-none">Dissolved location</span>
+                        <span data-flag-label="individual">Death place</span><span data-flag-label="group" class="d-none">Disbandment location</span>
                     </label>
                     <input type="text" class="form-control form-control-sm" id="cp-drawer-death-place" name="death_place" maxlength="255">
                 </div>
                 <div class="col-5">
                     <label class="form-label small mb-1" for="cp-drawer-death-date">
-                        <span data-flag-label="individual">Death date</span><span data-flag-label="group" class="d-none">Dissolved</span>
+                        <span data-flag-label="individual">Death date</span><span data-flag-label="group" class="d-none">Disbandment date</span>
                     </label>
                     <input type="date" class="form-control form-control-sm" id="cp-drawer-death-date" name="death_date">
                 </div>
@@ -1821,7 +1821,7 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
             </div>
 
             <!-- IPI numbers — repeating sub-form -->
-            <div>
+            <div data-flag-section="ipi">
                 <div class="d-flex justify-content-between align-items-center mb-1">
                     <label class="form-label small mb-0">IPI Name Numbers</label>
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="cp-add-ipi-btn">
@@ -1990,6 +1990,10 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                     row.querySelector('input[name$="[name_used]"]').value = prefill.name_used || '';
                     row.querySelector('input[name$="[notes]"]').value     = prefill.notes     || '';
                 }
+                /* Re-apply the flag rules (#628) — ensures rows added
+                   AFTER the modal is open inherit the correct disabled
+                   state when Special case is ticked. */
+                if (typeof applyFlagLabels === 'function') applyFlagLabels();
                 return row;
             }
 
@@ -2069,14 +2073,54 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
             /* Mutually-exclusive checkboxes + label-swap for groups. */
             const specialCaseCb = document.getElementById('cp-drawer-is-special-case');
             const groupCb       = document.getElementById('cp-drawer-is-group');
+            const birthPlaceIn  = document.getElementById('cp-drawer-birth-place');
+            const birthDateIn   = document.getElementById('cp-drawer-birth-date');
+            const deathPlaceIn  = document.getElementById('cp-drawer-death-place');
+            const deathDateIn   = document.getElementById('cp-drawer-death-date');
+            const addIpiButton  = document.getElementById('cp-add-ipi-btn');
+            const ipiSection    = document.querySelector('[data-flag-section="ipi"]');
+
             function applyFlagLabels() {
-                const isGroup = !!groupCb?.checked;
+                const isGroup       = !!groupCb?.checked;
+                const isSpecialCase = !!specialCaseCb?.checked;
+
+                /* Label swap (#629) — birth/death → founded/disbandment
+                   when Group is ticked. */
                 document.querySelectorAll('[data-flag-label="individual"]').forEach(el => {
                     el.classList.toggle('d-none', isGroup);
                 });
                 document.querySelectorAll('[data-flag-label="group"]').forEach(el => {
                     el.classList.toggle('d-none', !isGroup);
                 });
+
+                /* Field disable rules (#628 / #629):
+                   - Special case → bio inputs (place + date) AND the
+                     entire IPI section disabled. Special-case rows
+                     (Anonymous / Traditional / Public Domain / Unknown)
+                     have no real bio.
+                   - Group → place inputs disabled (no single physical
+                     birth/death location for a band). Date inputs
+                     stay editable as Founded / Disbandment dates.
+                   - Default (individual) → everything editable. */
+                const placesDisabled = isSpecialCase || isGroup;
+                const datesDisabled  = isSpecialCase;
+                const ipiDisabled    = isSpecialCase;
+
+                if (birthPlaceIn) birthPlaceIn.disabled = placesDisabled;
+                if (deathPlaceIn) deathPlaceIn.disabled = placesDisabled;
+                if (birthDateIn)  birthDateIn.disabled  = datesDisabled;
+                if (deathDateIn)  deathDateIn.disabled  = datesDisabled;
+
+                /* Disable the Add IPI button + every existing IPI row's
+                   inputs. The container holds the rows added via the
+                   template so we walk the children. */
+                if (addIpiButton) addIpiButton.disabled = ipiDisabled;
+                if (ipiSection) {
+                    ipiSection.querySelectorAll('input').forEach(inp => {
+                        inp.disabled = ipiDisabled;
+                    });
+                    ipiSection.classList.toggle('opacity-50', ipiDisabled);
+                }
             }
             specialCaseCb?.addEventListener('change', () => {
                 if (specialCaseCb.checked && groupCb) groupCb.checked = false;
