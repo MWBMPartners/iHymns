@@ -254,16 +254,16 @@ $csrf = csrfToken();
             <!-- List of groups -->
             <div class="card-admin p-3 mb-4">
                 <h2 class="h6 mb-3">All groups</h2>
-                <table class="table table-sm mb-0 align-middle">
+                <table class="table table-sm mb-0 align-middle cp-sortable">
                     <thead>
                         <tr class="text-muted small">
-                            <th>Name</th>
-                            <th>Description</th>
+                            <th data-sort-key="name"        data-sort-type="text">Name</th>
+                            <th data-sort-key="description" data-sort-type="text">Description</th>
                             <th class="text-center" title="Alpha">α</th>
                             <th class="text-center" title="Beta">β</th>
                             <th class="text-center" title="Release Candidate">RC</th>
                             <th class="text-center" title="Release to Web">RTW</th>
-                            <th class="text-center">Members</th>
+                            <th class="text-center" data-sort-key="members" data-sort-type="number">Members</th>
                             <th class="text-end">Actions</th>
                         </tr>
                     </thead>
@@ -446,6 +446,12 @@ $csrf = csrfToken();
 
     </div>
 
+
+    <!-- Sortable table headers (#644). -->
+    <script type="module">
+        import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+        bootSortableTables();
+    </script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>

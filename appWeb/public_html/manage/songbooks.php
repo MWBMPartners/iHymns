@@ -373,15 +373,15 @@ $csrf = csrfToken();
         <form method="POST" class="card-admin p-3 mb-4">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
             <input type="hidden" name="action" value="reorder">
-            <table class="table table-sm mb-2 align-middle">
+            <table class="table table-sm mb-2 align-middle cp-sortable">
                 <thead>
                     <tr class="text-muted small">
                         <th style="width:6rem">Order</th>
-                        <th>Abbr</th>
-                        <th>Name</th>
-                        <th class="text-center" title="Official published hymnal (#502)">Official</th>
-                        <th class="text-center">Songs</th>
-                        <th>Colour</th>
+                        <th data-sort-key="abbr" data-sort-type="text">Abbr</th>
+                        <th data-sort-key="name" data-sort-type="text">Name</th>
+                        <th class="text-center" data-sort-key="official" data-sort-type="text" title="Official published hymnal (#502)">Official</th>
+                        <th class="text-center" data-sort-key="songs" data-sort-type="number">Songs</th>
+                        <th data-sort-key="colour" data-sort-type="text">Colour</th>
                         <th class="text-end">Actions</th>
                     </tr>
                 </thead>
@@ -675,6 +675,12 @@ $csrf = csrfToken();
             document.getElementById('delete-abbr-label').textContent = row.abbreviation;
             new bootstrap.Modal(document.getElementById('deleteModal')).show();
         }
+    </script>
+
+    <!-- Sortable table headers (#644). -->
+    <script type="module">
+        import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+        bootSortableTables();
     </script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>

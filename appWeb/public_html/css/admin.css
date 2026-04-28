@@ -877,3 +877,31 @@ body:has(.navbar-admin) .modal-content {
 body:has(.navbar-admin) .modal-content.bg-dark {
     --bs-bg-opacity: 1;
 }
+
+/* ----------------------------------------------------------------------------
+   ADMIN SORTABLE TABLE HEADERS (#644)
+
+   Every <th> with data-sort-key gets `.admin-sort-th` from the boot
+   helper. Hover state hints the click target; the arrow span shows
+   the current direction (▲ asc, ▼ desc, blank = unsorted).
+---------------------------------------------------------------------------- */
+.admin-sort-th {
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+    transition: background-color 120ms ease, color 120ms ease;
+}
+.admin-sort-th:hover {
+    color: var(--text-primary);
+    background-color: rgba(99, 102, 241, 0.06);
+}
+.admin-sort-th:focus-visible {
+    outline: 2px solid var(--accent-solid);
+    outline-offset: -2px;
+}
+.admin-sort-th .sort-arrow {
+    color: var(--accent-solid);
+    font-size: 0.75rem;
+    line-height: 1;
+}
