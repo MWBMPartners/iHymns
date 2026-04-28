@@ -1218,16 +1218,14 @@ function autoGenerateArrangement(song) {
  * @param {Object} song - The song to render arrangement for.
  */
 function renderArrangement(song) {
-    var chipsContainer = document.getElementById('arrangement-chips');
-    var input          = document.getElementById('arrangement-input');
-    var feedback       = document.getElementById('arrangement-feedback');
-    var pool           = document.getElementById('arrangement-pool');
-    var strip          = document.getElementById('arrangement-strip');
+    var input    = document.getElementById('arrangement-input');
+    var feedback = document.getElementById('arrangement-feedback');
+    var pool     = document.getElementById('arrangement-pool');
+    var strip    = document.getElementById('arrangement-strip');
 
-    if (!chipsContainer || !input || !feedback) return;
+    if (!input || !feedback) return;
 
     /* Clear previous state. */
-    chipsContainer.innerHTML = '';
     if (pool)  pool.innerHTML  = '';
     if (strip) strip.innerHTML = '';
     feedback.style.display = 'none';
@@ -1241,11 +1239,10 @@ function renderArrangement(song) {
     /* Advanced text-mode mirror (kept for paste-in / power users). */
     input.value = arrangementToLabels(song);
 
-    /* Legacy summary chips row — kept for at-a-glance reading, even
-       though the builder below is the interactive surface now (#492). */
-    renderArrangementSummaryChips(song, chipsContainer);
-
-    /* Drag-drop builder (#492). */
+    /* Drag-drop builder (#492). The legacy `arrangement-chips`
+       summary row was removed in #597 — the strip below already
+       renders the playback order as draggable chips, and the
+       summary row was a non-interactive duplicate. */
     if (pool && strip) {
         renderArrangementPool(song, pool, strip);
         renderArrangementStrip(song, strip);
@@ -1253,31 +1250,6 @@ function renderArrangement(song) {
 
     /* Re-evaluate quick-action buttons for the song's component set (#493). */
     refreshArrangementPresetAvailability(song);
-}
-
-/**
- * Render the read-only chip summary at the top of the Arrangement
- * block. Matches the pre-#492 look of a coloured pill row, but is now
- * a display surface only — the interactive builder lives below.
- */
-function renderArrangementSummaryChips(song, chipsContainer) {
-    if (!song.arrangement || !Array.isArray(song.arrangement) || song.arrangement.length === 0) {
-        chipsContainer.classList.add('d-none');
-        return;
-    }
-    chipsContainer.classList.remove('d-none');
-    song.arrangement.forEach(function (idx, pos) {
-        var comp = song.components[idx];
-        if (!comp) return;
-        var chip = document.createElement('span');
-        chip.className = 'badge rounded-pill';
-        chip.textContent = getComponentLabel(comp);
-        chip.title = getComponentLabel(comp) + ' — position ' + (pos + 1);
-        var colors = COMP_COLORS[comp.type] || { bg: '#6b7280', text: '#ffffff' };
-        chip.style.backgroundColor = colors.bg;
-        chip.style.color = colors.text;
-        chipsContainer.appendChild(chip);
-    });
 }
 
 /**
