@@ -143,7 +143,7 @@ if ($page !== null) {
        still skip this path because they include user-specific data. */
     $_cacheablePages = [
         'home', 'songbooks', 'songbook', 'song', 'search',
-        'writer', 'help', 'terms', 'privacy', 'request-a-song',
+        'writer', 'person', 'help', 'terms', 'privacy', 'request-a-song',
     ];
     $_shouldCachePage = in_array($page, $_cacheablePages, true);
     if ($_shouldCachePage) {
@@ -215,6 +215,20 @@ if ($page !== null) {
                 break;
             }
             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'writer.php';
+            break;
+
+        case 'person':
+            /* Credit Person public page (#588). Slug column on
+               tblCreditPeople is the canonical lookup; the page
+               renderer falls back to a name-based search if the
+               migration hasn't been applied yet. */
+            $personSlug = isset($_GET['slug']) ? trim($_GET['slug']) : '';
+            if ($personSlug === '') {
+                http_response_code(400);
+                echo '<div class="alert alert-warning" role="alert">Person slug is required.</div>';
+                break;
+            }
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'person.php';
             break;
 
         case 'help':

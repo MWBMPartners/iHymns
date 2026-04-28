@@ -241,9 +241,9 @@ unset($_t);
                         <p class="mb-<?= $rowIdx === count($_creditRows) - 1 || empty(array_slice($_creditRows, $rowIdx + 1, null, true)) ? '0' : '1' ?> song-credit-row" data-credit-kind="<?= htmlspecialchars($rowId) ?>">
                             <i class="<?= htmlspecialchars($rowIcon) ?> me-2 text-muted" aria-hidden="true"></i>
                             <strong><?= htmlspecialchars($rowLabel) ?>:</strong>
-                            <?php foreach ($rowNames as $i => $name): ?><a href="/writer/<?= htmlspecialchars(urlencode(strtolower(str_replace(' ', '-', $name)))) ?>"
+                            <?php foreach ($rowNames as $i => $name): ?><a href="/people/<?= htmlspecialchars(urlencode(strtolower(str_replace(' ', '-', $name)))) ?>"
                                    class="writer-link"
-                                   data-navigate="writer"><?= htmlspecialchars($name) ?></a><?php if ($i < count($rowNames) - 1): ?>;&nbsp;<?php endif; ?><?php endforeach; ?>
+                                   data-navigate="person"><?= htmlspecialchars($name) ?></a><?php if ($i < count($rowNames) - 1): ?>;&nbsp;<?php endif; ?><?php endforeach; ?>
                         </p>
                     <?php endforeach; ?>
                 </div>
