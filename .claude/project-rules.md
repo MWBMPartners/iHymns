@@ -14,8 +14,7 @@ See `.claude/CLAUDE.md` for the full policy. Summary: don't duplicate — extrac
 | Admin footer (copyright / version / Terms / Privacy + Bootstrap bundle JS) | `manage/includes/admin-footer.php` | Include once, immediately before `</body>` |
 | Favicon + app icons | `manage/includes/head-favicon.php` | Include in `<head>` |
 | Session / auth bootstrap | `manage/includes/auth.php` | `require_once` first, then call `isAuthenticated()` / `requireAuth()` / `requireAdmin()` |
-| DB handle (PDO, admin side) | `manage/includes/db.php::getDb()` | Never `new PDO(...)` directly |
-| DB handle (mysqli, main app song data) | `includes/db_mysql.php::getDbMysqli()` | Never `new mysqli(...)` directly |
+| DB handle (single connection across admin + main app) | `includes/db_mysql.php::getDbMysqli()` | Never `new mysqli(...)` or `new PDO(...)` directly. PDO has been fully removed (#554 / #555). |
 | Entitlement check | `includes/entitlements.php::userHasEntitlement()` | Never check role strings directly for authorisation — always through this |
 | Entitlement labels | `$ENTITLEMENT_LABELS` in `manage/entitlements.php` | Extend the map; never hand-craft a string at render time |
 | Licence type labels | `$LICENCE_TYPES` in `manage/organisations.php` (migrating to `tblLicenceTypes`, #459) | Consumers iterate the map; never hard-code licence keys |
