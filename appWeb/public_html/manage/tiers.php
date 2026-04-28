@@ -256,16 +256,16 @@ $tierTableCols = 3 + count(TIER_CAPS) + 2;
         <div class="card-admin p-3 mb-4">
             <h2 class="h6 mb-3">All tiers</h2>
             <div class="table-responsive">
-                <table class="table table-sm align-middle mb-0">
+                <table class="table table-sm align-middle mb-0 cp-sortable" data-default-sort-key="level" data-default-sort-dir="asc">
                     <thead>
                         <tr class="text-muted small">
-                            <th>Name</th>
-                            <th>Display</th>
-                            <th class="text-center">Level</th>
+                            <th data-sort-key="name"    data-sort-type="text">Name</th>
+                            <th data-sort-key="display" data-sort-type="text">Display</th>
+                            <th class="text-center" data-sort-key="level" data-sort-type="number">Level</th>
                             <?php foreach (TIER_CAPS as $col => [$lbl, $hint]): ?>
                                 <th class="text-center" title="<?= htmlspecialchars($hint) ?>"><?= htmlspecialchars($lbl) ?></th>
                             <?php endforeach; ?>
-                            <th class="text-center">Users</th>
+                            <th class="text-center" data-sort-key="users" data-sort-type="number">Users</th>
                             <th class="text-end">Actions</th>
                         </tr>
                     </thead>
@@ -435,6 +435,12 @@ $tierTableCols = 3 + count(TIER_CAPS) + 2;
             });
             new bootstrap.Modal(document.getElementById('editTierModal')).show();
         }
+    </script>
+
+    <!-- Sortable table headers (#644). -->
+    <script type="module">
+        import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+        bootSortableTables();
     </script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>

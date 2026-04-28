@@ -439,15 +439,15 @@ $csrf = csrfToken();
 
             <div class="card-admin p-3 mb-4">
                 <h2 class="h6 mb-3">All organisations</h2>
-                <table class="table table-sm mb-0 align-middle">
+                <table class="table table-sm mb-0 align-middle cp-sortable">
                     <thead>
                         <tr class="text-muted small">
-                            <th>Name</th>
-                            <th>Slug</th>
-                            <th>Parent</th>
-                            <th>Licence</th>
-                            <th class="text-center">Active</th>
-                            <th class="text-center">Members</th>
+                            <th data-sort-key="name"    data-sort-type="text">Name</th>
+                            <th data-sort-key="slug"    data-sort-type="text">Slug</th>
+                            <th data-sort-key="parent"  data-sort-type="text">Parent</th>
+                            <th data-sort-key="licence" data-sort-type="text">Licence</th>
+                            <th class="text-center" data-sort-key="active"  data-sort-type="text">Active</th>
+                            <th class="text-center" data-sort-key="members" data-sort-type="number">Members</th>
                             <th class="text-end">Actions</th>
                         </tr>
                     </thead>
@@ -469,7 +469,7 @@ $csrf = csrfToken();
                                         <small class="text-muted ms-1"><?= htmlspecialchars($o['LicenceNumber']) ?></small>
                                     <?php endif; ?>
                                 </td>
-                                <td class="text-center">
+                                <td class="text-center" data-sort-value="<?= (int)$o['IsActive'] ?>">
                                     <?= (int)$o['IsActive'] ? '<i class="bi bi-check-circle text-success"></i>' : '<i class="bi bi-x-circle text-muted"></i>' ?>
                                 </td>
                                 <td class="text-center"><?= (int)$o['MemberCount'] ?></td>
@@ -749,6 +749,12 @@ $csrf = csrfToken();
 
     </div>
 
+
+    <!-- Sortable table headers (#644). -->
+    <script type="module">
+        import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+        bootSortableTables();
+    </script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>

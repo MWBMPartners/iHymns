@@ -338,15 +338,15 @@ $csrf = csrfToken();
         <div class="card-admin p-3 mb-4">
             <h2 class="h6 mb-3">Rules <span class="text-muted small">(<?= count($rows) ?> shown, newest first within priority)</span></h2>
             <div class="table-responsive">
-                <table class="table table-sm align-middle mb-0">
+                <table class="table table-sm align-middle mb-0 cp-sortable">
                     <thead>
                         <tr class="text-muted small">
-                            <th>Entity</th>
-                            <th>Restriction</th>
-                            <th>Target</th>
-                            <th class="text-center">Effect</th>
-                            <th class="text-center">Priority</th>
-                            <th>Reason</th>
+                            <th data-sort-key="entity"      data-sort-type="text">Entity</th>
+                            <th data-sort-key="restriction" data-sort-type="text">Restriction</th>
+                            <th data-sort-key="target"      data-sort-type="text">Target</th>
+                            <th class="text-center" data-sort-key="effect"   data-sort-type="text">Effect</th>
+                            <th class="text-center" data-sort-key="priority" data-sort-type="number">Priority</th>
+                            <th data-sort-key="reason" data-sort-type="text">Reason</th>
                             <th class="text-end">Actions</th>
                         </tr>
                     </thead>
@@ -600,6 +600,12 @@ $csrf = csrfToken();
 
     </div>
 
+
+    <!-- Sortable table headers (#644). -->
+    <script type="module">
+        import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+        bootSortableTables();
+    </script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>

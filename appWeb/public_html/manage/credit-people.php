@@ -1300,14 +1300,14 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
         <!-- People table -->
         <div class="card bg-dark border-secondary p-2 mb-3">
             <div class="table-responsive">
-                <table class="table table-sm table-hover align-middle mb-0">
+                <table class="table table-sm table-hover align-middle mb-0 cp-sortable">
                     <thead class="text-muted small">
                         <tr>
-                            <th scope="col">Name</th>
+                            <th scope="col" data-sort-key="name"   data-sort-type="text">Name</th>
                             <th scope="col" class="text-center">Roles</th>
-                            <th scope="col" class="text-end">Total uses</th>
-                            <th scope="col">Source</th>
-                            <th scope="col">Lifespan</th>
+                            <th scope="col" class="text-end" data-sort-key="total" data-sort-type="number">Total uses</th>
+                            <th scope="col" data-sort-key="source" data-sort-type="text">Source</th>
+                            <th scope="col" data-sort-key="lifespan" data-sort-type="text">Lifespan</th>
                             <th scope="col" class="text-end">Meta</th>
                             <th scope="col" class="text-end">Actions</th>
                         </tr>
@@ -1397,9 +1397,9 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                                     <span class="badge role-pill role-ad" <?= $adaptors    ? '' : 'data-zero' ?>>Ad&middot;<?= $adaptors ?></span>
                                     <span class="badge role-pill role-t"  <?= $translators ? '' : 'data-zero' ?>>T&middot;<?= $translators ?></span>
                                 </td>
-                                <td class="text-end"><strong><?= number_format($p['total']) ?></strong></td>
-                                <td><?= $sourceBadge($p) ?></td>
-                                <td class="meta-col">
+                                <td class="text-end" data-sort-value="<?= (int)$p['total'] ?>"><strong><?= number_format($p['total']) ?></strong></td>
+                                <td data-sort-value="<?= htmlspecialchars($p['registry_id'] !== null && $p['total'] > 0 ? 'Both' : ($p['registry_id'] !== null ? 'Registry' : 'In use')) ?>"><?= $sourceBadge($p) ?></td>
+                                <td class="meta-col" data-sort-value="<?= htmlspecialchars((string)($p['birth_date'] ?? '')) ?>">
                                     <?php $life = $lifespan($p['birth_date'], $p['death_date']);
                                           echo $life !== '' ? $life : '<span class="text-secondary">—</span>'; ?>
                                 </td>
@@ -1884,6 +1884,14 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
     </template>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
+
+    <!-- Sortable table headers (#644). Cycles asc → desc → unsorted on
+         click of any <th data-sort-key>. Sort runs over visible rows
+         only so it composes cleanly with the search/filter below. -->
+    <script type="module">
+        import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+        bootSortableTables();
+    </script>
 
     <script>
         /* Client-side search + filter. The list is small enough that
