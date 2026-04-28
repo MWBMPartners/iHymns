@@ -266,6 +266,12 @@ export class Settings {
             if (profUsername) profUsername.value = user?.username || '';
             if (profDisplay)  profDisplay.value  = user?.display_name || '';
             if (profEmail)    profEmail.value    = user?.email || '';
+
+            /* #616 — pre-tick the avatar-source radio matching the user's
+               stored preference (NULL = "Use site default"). */
+            const svc = (user?.avatar_service ?? '').toString();
+            const radio = document.querySelector(`#avatar-form input[name="avatar_service"][value="${CSS.escape(svc)}"]`);
+            if (radio) radio.checked = true;
         }
     }
 
@@ -1473,6 +1479,54 @@ export class Settings {
                     show('Profile saved.', 'success');
                 } else {
                     show(result.error || 'Could not save profile.', 'danger');
+                }
+            });
+        }
+
+        /* Avatar service preference (#616) — POSTs the chosen radio
+           value to auth_update_avatar_service. Empty string ('Use
+           site default') is sent as null so the column gets cleared
+           and inheritance kicks in. */
+        const avatarForm = document.getElementById('avatar-form');
+        if (avatarForm && !avatarForm.dataset.bound) {
+            avatarForm.dataset.bound = '1';
+            avatarForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const picked = avatarForm.querySelector('input[name="avatar_service"]:checked');
+                const value = picked ? picked.value : '';
+                const msg = document.getElementById('avatar-msg');
+                const show = (text, kind) => {
+                    if (!msg) return;
+                    msg.className = 'alert py-2 small alert-' + kind;
+                    msg.textContent = text;
+                    msg.classList.remove('d-none');
+                };
+                try {
+                    const res = await fetch(`${this.app.config.apiUrl}?action=auth_update_avatar_service`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Requested-With': 'XMLHttpRequest',
+                            ...auth.authHeaders(),
+                        },
+                        body: JSON.stringify({ avatar_service: value === '' ? null : value }),
+                    });
+                    const data = await res.json();
+                    if (!res.ok) {
+                        show(data.error || 'Could not save avatar source.', 'danger');
+                        return;
+                    }
+                    /* Update the cached user record so the header swaps
+                       immediately without a re-login. saveCredentials
+                       broadcasts ihymns:auth-changed which triggers
+                       _updateHeaderState → new avatar URL. */
+                    const cached = auth.getUser() || {};
+                    cached.avatar_service = data.avatar_service;
+                    const token = auth.getToken();
+                    if (token) auth.saveCredentials(token, cached);
+                    show('Avatar source saved.', 'success');
+                } catch {
+                    show('Network error. Please try again.', 'danger');
                 }
             });
         }

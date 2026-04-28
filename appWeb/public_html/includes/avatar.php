@@ -24,14 +24,26 @@ declare(strict_types=1);
  */
 
 /**
+ * Allowed values for the per-user override and the project-level config.
+ * Anything else collapses to the project default. Exposed as a constant
+ * so the API and Settings UI can validate against the same list.
+ */
+const USER_AVATAR_SERVICES = ['gravatar', 'libravatar', 'dicebear', 'none'];
+
+/**
  * Compute the avatar URL for a user.
  *
- * @param string|null $email  The user's email address. Empty / null
- *                            returns the static fallback identicon.
- * @param int         $size   Pixel size requested from the resolver.
- * @return string             Absolute URL ready to drop into <img src>.
+ * @param string|null $email        The user's email address. Empty / null
+ *                                  returns the static fallback identicon.
+ * @param int         $size         Pixel size requested from the resolver.
+ * @param string|null $userOverride Per-user service preference (#616).
+ *                                  NULL = inherit project default; otherwise
+ *                                  one of USER_AVATAR_SERVICES. Unknown
+ *                                  values are silently ignored, falling
+ *                                  back to the project default.
+ * @return string                   Absolute URL ready to drop into <img src>.
  */
-function userAvatarUrl(?string $email, int $size = 64): string
+function userAvatarUrl(?string $email, int $size = 64, ?string $userOverride = null): string
 {
     $cfg = (defined('APP_CONFIG') && is_array(APP_CONFIG) && isset(APP_CONFIG['avatar']))
          ? APP_CONFIG['avatar']
@@ -39,6 +51,16 @@ function userAvatarUrl(?string $email, int $size = 64): string
     $service = strtolower((string)($cfg['service'] ?? 'gravatar'));
     $default = (string)($cfg['default'] ?? 'identicon');
     $rating  = (string)($cfg['rating']  ?? 'g');
+
+    /* Per-user override (#616) — takes precedence over the project
+       default when set to one of the recognised values. NULL or an
+       unknown string falls through to the project setting. */
+    if ($userOverride !== null) {
+        $userOverride = strtolower(trim($userOverride));
+        if (in_array($userOverride, USER_AVATAR_SERVICES, true)) {
+            $service = $userOverride;
+        }
+    }
 
     $email = trim((string)$email);
 

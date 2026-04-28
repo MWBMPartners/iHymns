@@ -62,9 +62,10 @@ $_visibleAdminLinks = visibleAdminLinks($_role);
    once each. Email may be missing on legacy accounts → helper falls
    back to the static SVG identicon so the markup never breaks. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'avatar.php';
-$_userEmail      = $currentUser['email'] ?? '';
-$_avatarUrlSmall = userAvatarUrl($_userEmail, 32);
-$_avatarUrlLarge = userAvatarUrl($_userEmail, 64);
+$_userEmail      = $currentUser['email']          ?? '';
+$_userAvatarSvc  = $currentUser['avatar_service'] ?? null;  /* #616 — NULL = inherit project default */
+$_avatarUrlSmall = userAvatarUrl($_userEmail, 32, $_userAvatarSvc);
+$_avatarUrlLarge = userAvatarUrl($_userEmail, 64, $_userAvatarSvc);
 
 ?>
 <header class="app-header navbar-admin" role="banner">

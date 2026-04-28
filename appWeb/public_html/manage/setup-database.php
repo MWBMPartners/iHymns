@@ -203,6 +203,7 @@ if ($action !== '') {
         'credit-people-flags' => 'migrate-credit-people-flags.php',
         'song-artists'  => 'migrate-song-artists.php',
         'credit-people-slug' => 'migrate-credit-people-slug.php',
+        'user-avatar-service' => 'migrate-user-avatar-service.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -739,6 +740,27 @@ if ($hasCredentials && defined('DB_HOST')) {
                         </p>
                         <a href="?action=credit-people-slug" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run Credit People Slug Migration
+                        </a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">3j. Per-user avatar service (#616)</h5>
+                        <p class="card-text text-secondary small">
+                            Adds <code>tblUsers.AvatarService</code> so each
+                            signed-in user can override the project-level
+                            avatar resolver default — Gravatar, Libravatar,
+                            DiceBear identicon (no third-party request), or
+                            None. NULL on this column means "inherit project
+                            default", so existing users behave identically
+                            until they choose to opt in or out via Settings
+                            &gt; Profile &gt; Avatar source. Idempotent —
+                            safe to re-run.
+                        </p>
+                        <a href="?action=user-avatar-service" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run Per-user Avatar Service Migration
                         </a>
                     </div>
                 </div>
