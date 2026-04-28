@@ -10,7 +10,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
-require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -26,7 +26,7 @@ $activePage = 'organisations';
 
 $error   = '';
 $success = '';
-$db      = getDb();
+$db      = getDbMysqli();
 
 /* Machine key → human label + short description. The key is what the
    DB / evaluator reference; the label is what every UI surface renders
@@ -73,15 +73,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (!in_array($licenceType, $LICENCE_TYPE_KEYS, true)) { $error = 'Unknown licence type.'; break; }
 
                 $stmt = $db->prepare('SELECT Id FROM tblOrganisations WHERE Slug = ?');
-                $stmt->execute([$slug]);
-                if ($stmt->fetch()) { $error = 'That slug is already in use.'; break; }
+                $stmt->bind_param('s', $slug);
+                $stmt->execute();
+                $exists = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($exists) { $error = 'That slug is already in use.'; break; }
 
                 $stmt = $db->prepare(
                     'INSERT INTO tblOrganisations
                         (Name, Slug, ParentOrgId, Description, LicenceType, LicenceNumber, IsActive)
                      VALUES (?, ?, ?, ?, ?, ?, ?)'
                 );
-                $stmt->execute([$name, $slug, $parent ?: null, $desc, $licenceType, $licenceNum, $active]);
+                /* Types: Name(s), Slug(s), ParentOrgId(i nullable),
+                   Description(s), LicenceType(s), LicenceNumber(s), IsActive(i).
+                   mysqli passes NULL correctly when bound variable is null. */
+                $parentOrNull = $parent ?: null;
+                $stmt->bind_param(
+                    'ssisssi',
+                    $name, $slug, $parentOrNull, $desc, $licenceType, $licenceNum, $active
+                );
+                $stmt->execute();
+                $newOrgId = (int)$db->insert_id;
+                $stmt->close();
+                logActivity('org.create', 'organisation', (string)$newOrgId, [
+                    'name'           => $name,
+                    'slug'           => $slug,
+                    'parent_org_id'  => $parent ?: null,
+                    'licence_type'   => $licenceType,
+                    'is_active'      => (bool)$active,
+                ]);
                 $success = "Organisation '{$name}' created.";
                 break;
             }
@@ -102,8 +122,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($parent === $id) { $error = 'An organisation cannot be its own parent.'; break; }
 
                 $stmt = $db->prepare('SELECT Id FROM tblOrganisations WHERE Slug = ? AND Id <> ?');
-                $stmt->execute([$slug, $id]);
-                if ($stmt->fetch()) { $error = 'That slug is already in use.'; break; }
+                $stmt->bind_param('si', $slug, $id);
+                $stmt->execute();
+                $exists = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($exists) { $error = 'That slug is already in use.'; break; }
+
+                /* Capture before-row for the audit diff (#535). */
+                $beforeStmt = $db->prepare(
+                    'SELECT Name, Slug, ParentOrgId, Description, LicenceType, LicenceNumber, IsActive
+                       FROM tblOrganisations WHERE Id = ?'
+                );
+                $beforeStmt->bind_param('i', $id);
+                $beforeStmt->execute();
+                $beforeOrg = $beforeStmt->get_result()->fetch_assoc() ?: null;
+                $beforeStmt->close();
 
                 $stmt = $db->prepare(
                     'UPDATE tblOrganisations
@@ -111,7 +144,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             LicenceType = ?, LicenceNumber = ?, IsActive = ?
                       WHERE Id = ?'
                 );
-                $stmt->execute([$name, $slug, $parent ?: null, $desc, $licenceType, $licenceNum, $active, $id]);
+                /* Types: Name(s), Slug(s), ParentOrgId(i nullable),
+                   Description(s), LicenceType(s), LicenceNumber(s),
+                   IsActive(i), Id(i). */
+                $parentOrNull = $parent ?: null;
+                $stmt->bind_param(
+                    'ssisssii',
+                    $name, $slug, $parentOrNull, $desc, $licenceType, $licenceNum, $active, $id
+                );
+                $stmt->execute();
+                $stmt->close();
+
+                if ($beforeOrg !== null) {
+                    $afterOrg = [
+                        'Name' => $name, 'Slug' => $slug,
+                        'ParentOrgId' => $parent ?: null, 'Description' => $desc,
+                        'LicenceType' => $licenceType, 'LicenceNumber' => $licenceNum,
+                        'IsActive' => $active,
+                    ];
+                    $changed = [];
+                    foreach ($afterOrg as $k => $v) {
+                        if ((string)($beforeOrg[$k] ?? '') !== (string)$v) $changed[] = $k;
+                    }
+                    logActivity('org.edit', 'organisation', (string)$id, [
+                        'fields' => $changed,
+                        'before' => array_intersect_key($beforeOrg, array_flip($changed)),
+                        'after'  => array_intersect_key($afterOrg,  array_flip($changed)),
+                    ]);
+                }
+
                 $success = "Organisation updated.";
                 break;
             }
@@ -120,22 +181,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $id = (int)($_POST['id'] ?? 0);
 
                 $stmt = $db->prepare('SELECT Name FROM tblOrganisations WHERE Id = ?');
-                $stmt->execute([$id]);
-                $name = (string)($stmt->fetchColumn() ?: '');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $name = (string)($row[0] ?? '');
                 if ($name === '') { $error = 'Organisation not found.'; break; }
 
                 $stmt = $db->prepare('SELECT COUNT(*) FROM tblOrganisationMembers WHERE OrgId = ?');
-                $stmt->execute([$id]);
-                $members = (int)$stmt->fetchColumn();
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $members = (int)($row[0] ?? 0);
                 if ($members > 0) { $error = "Cannot delete '{$name}': {$members} member(s) still listed."; break; }
 
                 $stmt = $db->prepare('SELECT COUNT(*) FROM tblOrganisations WHERE ParentOrgId = ?');
-                $stmt->execute([$id]);
-                $children = (int)$stmt->fetchColumn();
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $children = (int)($row[0] ?? 0);
                 if ($children > 0) { $error = "Cannot delete '{$name}': {$children} sub-organisation(s) still reference it as parent."; break; }
 
                 $stmt = $db->prepare('DELETE FROM tblOrganisations WHERE Id = ?');
-                $stmt->execute([$id]);
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $stmt->close();
+                logActivity('org.delete', 'organisation', (string)$id, ['name' => $name]);
                 $success = "Organisation '{$name}' deleted.";
                 break;
             }
@@ -152,7 +225,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                      VALUES (?, ?, ?)
                      ON DUPLICATE KEY UPDATE Role = VALUES(Role)'
                 );
-                $stmt->execute([$userId, $orgId, $role]);
+                $stmt->bind_param('iis', $userId, $orgId, $role);
+                $stmt->execute();
+                $stmt->close();
+                logActivity('org.member_add', 'organisation', (string)$orgId, [
+                    'user_id' => $userId,
+                    'role'    => $role,
+                ]);
                 $success = 'Member added / updated.';
                 break;
             }
@@ -165,7 +244,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (!in_array($role, $MEMBER_ROLES, true)) { $error = 'Unknown member role.'; break; }
 
                 $stmt = $db->prepare('UPDATE tblOrganisationMembers SET Role = ? WHERE OrgId = ? AND UserId = ?');
-                $stmt->execute([$role, $orgId, $userId]);
+                $stmt->bind_param('sii', $role, $orgId, $userId);
+                $stmt->execute();
+                $stmt->close();
+                logActivity('org.member_role_change', 'organisation', (string)$orgId, [
+                    'user_id' => $userId,
+                    'role'    => $role,
+                ]);
                 $success = 'Member role updated.';
                 break;
             }
@@ -175,7 +260,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $userId = (int)($_POST['user_id'] ?? 0);
                 if ($orgId <= 0 || $userId <= 0) { $error = 'Invalid request.'; break; }
                 $stmt = $db->prepare('DELETE FROM tblOrganisationMembers WHERE OrgId = ? AND UserId = ?');
-                $stmt->execute([$orgId, $userId]);
+                $stmt->bind_param('ii', $orgId, $userId);
+                $stmt->execute();
+                $stmt->close();
+                logActivity('org.member_remove', 'organisation', (string)$orgId, [
+                    'user_id' => $userId,
+                ]);
                 $success = 'Member removed.';
                 break;
             }
@@ -192,14 +282,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 /* ----- Fetch list ----- */
 $orgs = [];
 try {
-    $rs = $db->query(
+    $stmt = $db->prepare(
         'SELECT o.*, p.Name AS ParentName,
                 (SELECT COUNT(*) FROM tblOrganisationMembers WHERE OrgId = o.Id) AS MemberCount
            FROM tblOrganisations o
            LEFT JOIN tblOrganisations p ON p.Id = o.ParentOrgId
           ORDER BY o.Name ASC'
     );
-    $orgs = $rs->fetchAll(PDO::FETCH_ASSOC);
+    $stmt->execute();
+    $orgs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
 } catch (\Throwable $e) {
     error_log('[manage/organisations.php] ' . $e->getMessage());
     $error = $error ?: 'Could not load organisations.';
@@ -213,8 +305,10 @@ $editId = (int)($_GET['edit'] ?? 0);
 if ($editId > 0) {
     try {
         $stmt = $db->prepare('SELECT * FROM tblOrganisations WHERE Id = ?');
-        $stmt->execute([$editId]);
-        $editOrg = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+        $stmt->bind_param('i', $editId);
+        $stmt->execute();
+        $editOrg = $stmt->get_result()->fetch_assoc() ?: null;
+        $stmt->close();
 
         if ($editOrg) {
             $stmt = $db->prepare(
@@ -225,8 +319,10 @@ if ($editId > 0) {
                   WHERE m.OrgId = ?
                   ORDER BY m.JoinedAt DESC'
             );
-            $stmt->execute([$editId]);
-            $editMembers = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $stmt->bind_param('i', $editId);
+            $stmt->execute();
+            $editMembers = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
 
             $stmt = $db->prepare(
                 'SELECT u.Id, u.Username, u.DisplayName
@@ -236,8 +332,10 @@ if ($editId > 0) {
                   ORDER BY u.Username ASC
                   LIMIT 500'
             );
-            $stmt->execute([$editId]);
-            $candidates = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $stmt->bind_param('i', $editId);
+            $stmt->execute();
+            $candidates = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
         }
     } catch (\Throwable $e) {
         error_log('[manage/organisations.php] ' . $e->getMessage());
@@ -252,12 +350,7 @@ $csrf = csrfToken();
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Organisations — iHymns Admin</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"
-          integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
-          integrity="sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+" crossorigin="anonymous">
-    <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__) . '/css/app.css') ?>">
-    <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime(dirname(__DIR__) . '/css/admin.css') ?>">
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
 <body>
@@ -558,9 +651,6 @@ $csrf = csrfToken();
 
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
-            integrity="sha384-zKzgIZcXU99qF1nNW9g+x1znB5NhCPs9qZeGzUnnFOaHJF9jCCKySBjq3vIKabk/"
-            crossorigin="anonymous"></script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>

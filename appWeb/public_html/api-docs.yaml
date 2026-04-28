@@ -51,7 +51,66 @@ info:
     ## Rate Limiting
 
     Song request submissions are rate-limited to a configurable maximum per IP
-    per day (default: 5).
+    per day (default: 5). The shared rate-limit helper
+    (`includes/rate_limit.php::checkRateLimit`) keys by either client IP or
+    authenticated user ID and is reusable for any new endpoint that needs
+    throttling.
+
+    ## Cross-platform consumers
+
+    The API is the single contract for every iHymns client — the web/PWA
+    today, plus the planned Apple (iOS / iPadOS / tvOS), Android (incl.
+    FireOS), and smart-TV native apps. Native clients should:
+
+    - Treat the schemas in this file as the canonical request / response
+      shape; if the docs and the live API disagree, that is a bug — please
+      raise it.
+    - Send `Accept: application/json` and `Content-Type: application/json`
+      on POST bodies. The server is forgiving about both, but explicit is
+      cheaper to debug.
+    - Carry the Bearer token (`Authorization: Bearer <token>`) rather than
+      relying on cookies — cookies require running inside a WebView with
+      cross-domain trust which native shells generally don't have.
+    - Persist the token returned by `auth_login` /
+      `auth_email_login_verify` / `auth_register` and refresh by re-issuing
+      a login if it returns 401. The sliding 30-day expiry means an active
+      user effectively never has to sign in again.
+    - Cache the read-mostly payloads (`songs_json`, `songbooks`,
+      `languages`, `tags`, `access_tiers`) and respect their `ETag` /
+      `Last-Modified` if present; they change rarely but are large.
+
+    ## Admin / curator surface — current API coverage
+
+    Every read-side admin function (listing users / orgs / requests /
+    revisions / restrictions / activity / songbook health) is exposed via
+    the `admin_*` endpoints documented below. The mutation-side admin
+    flows surface as concrete actions where it makes sense (e.g.
+    `admin_song_request_update`, `admin_restriction_create`,
+    `admin_set_user_tier`).
+
+    The following **admin CRUD** flows are currently driven directly by
+    the `/manage/*.php` PHP pages and are not yet exposed as standalone
+    API endpoints — native admin clients that want feature parity with
+    the web manage area will need them:
+
+    - Songbook CRUD (create / update / delete / reorder) — driven by
+      `manage/songbooks.php`.
+    - Credit-people CRUD (add / edit / rename / merge / delete / view
+      songs) — driven by `manage/credit-people.php`.
+    - Access-tier CRUD (create / update / delete a tier definition) —
+      driven by `manage/tiers.php`. (The `access_tiers` read-list and
+      `admin_set_user_tier` write-assignment endpoints are exposed.)
+    - Entitlement override management — driven by
+      `manage/entitlements.php`.
+    - User CRUD beyond role / tier assignment (create user, full profile
+      edit, delete) — driven by `manage/users.php`.
+    - User-group CRUD — driven by `manage/groups.php`.
+    - Organisation CRUD beyond create / list — driven by
+      `manage/organisations.php`. (`organisation_create`, `organisation`,
+      `my_organisations`, `admin_organisations` are exposed.)
+
+    These will be added to the API as native admin clients are built; the
+    PHP page handlers are the design reference.
   contact:
     name: iHymns Support
     url: https://ihymns.app
@@ -595,8 +654,8 @@ paths:
              the source.
 
         Each entry carries the target language, the translator credit
-        (if recorded), a verified flag for curated rows, and the text
-        direction for RTL-aware rendering.
+        (if recorded), a verified flag for curated rows, and the song
+        title and number for direct rendering.
       parameters:
         - name: action
           in: query
@@ -604,7 +663,7 @@ paths:
           schema:
             type: string
             enum: [song_translations]
-        - name: song_id
+        - name: id
           in: query
           required: true
           description: Source song ID (unchanged for outward, the
@@ -620,7 +679,7 @@ paths:
               schema:
                 type: object
                 properties:
-                  song_id:
+                  sourceId:
                     type: string
                     description: The song ID that was queried
                     example: CP-0202
@@ -629,7 +688,7 @@ paths:
                     items:
                       $ref: "#/components/schemas/SongTranslation"
         "400":
-          description: Missing song_id query parameter
+          description: Missing `id` query parameter
           content:
             application/json:
               schema:
@@ -1803,7 +1862,7 @@ paths:
                     description: Whether song requests are currently accepted
                     example: true
 
-  /api?action=ccli_validate:
+  /api.php?action=ccli_validate:
     post:
       operationId: ccliValidate
       tags: [User Access]
@@ -1848,7 +1907,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /api?action=tier_check:
+  /api.php?action=tier_check:
     get:
       operationId: tierCheck
       tags: [User Access]
@@ -1883,7 +1942,7 @@ paths:
                   upgradeTo: { type: string }
                   tier: { type: string }
 
-  /api?action=access_tiers:
+  /api.php?action=access_tiers:
     get:
       operationId: getAccessTiers
       tags: [User Access]
@@ -2176,7 +2235,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /api?action=admin_set_user_tier:
+  /api.php?action=admin_set_user_tier:
     post:
       operationId: adminSetUserTier
       tags: [Admin]
@@ -2208,7 +2267,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/SuccessResponse"
 
-  /api?action=admin_set_user_ccli:
+  /api.php?action=admin_set_user_ccli:
     post:
       operationId: adminSetUserCcli
       tags: [Admin]
@@ -4372,6 +4431,263 @@ paths:
           description: Wrong HTTP method (POST required)
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
+  # ===========================================================================
+  # USER PREFERENCES + ACCOUNT
+  # ===========================================================================
+
+  /api.php?action=user_settings:
+    get:
+      operationId: getUserSettings
+      tags: [Preferences]
+      summary: Get the authenticated user's stored settings blob
+      description: |
+        Returns the JSON settings object stored on `tblUsers.Settings`
+        for the caller — used by the PWA to sync per-user banner state,
+        theme preferences, and other client-side flags across devices.
+        Empty object when nothing has been stored yet.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [user_settings] }
+      responses:
+        "200":
+          description: Settings blob
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:         { type: boolean, example: true }
+                  settings:   { type: object, description: Free-form preference object }
+                  updated_at: { type: string, format: date-time, nullable: true }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    post:
+      operationId: setUserSettings
+      tags: [Preferences]
+      summary: Replace the authenticated user's stored settings blob
+      description: |
+        Persists the supplied JSON object to `tblUsers.Settings`. The
+        PWA writes the whole object on every change (small payload,
+        no diff), so subsequent GETs return what was last POSTed.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [user_settings] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [settings]
+              properties:
+                settings:
+                  type: object
+                  description: Free-form preference object to persist.
+      responses:
+        "200":
+          description: Saved
+          content: { application/json: { schema: { $ref: "#/components/schemas/SuccessResponse" } } }
+        "400":
+          description: settings object missing or not an object
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=auth_change_username:
+    post:
+      operationId: changeUsername
+      tags: [Authentication]
+      summary: Change the authenticated user's username
+      description: |
+        Self-service username change. Requires the caller's current
+        password as a re-confirmation step so a stolen session can't
+        silently rename the account. Username constraints match
+        registration: 3-100 characters, lowercase, `[a-z0-9_.-]` only.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [auth_change_username] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_username, current_password]
+              properties:
+                new_username:
+                  type: string
+                  description: Desired new username (3-100 chars, lowercase).
+                  example: alice2
+                current_password:
+                  type: string
+                  format: password
+                  description: Caller's current password (re-auth).
+      responses:
+        "200":
+          description: Username changed
+          content: { application/json: { schema: { $ref: "#/components/schemas/SuccessResponse" } } }
+        "400":
+          description: Invalid new username or already in use
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated, or current password wrong
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  # ===========================================================================
+  # CARD LAYOUT (#516) — admin / user reorder + hide on dashboard surfaces
+  # ===========================================================================
+
+  /api.php?action=card_layout_get:
+    get:
+      operationId: getCardLayout
+      tags: [Preferences]
+      summary: Resolve card-layout for a dashboard surface
+      description: |
+        Returns the default card order for a named surface (the system
+        baseline), the caller's per-user override (if any), and two
+        capability flags the UI consults to decide what to enable:
+        `canCustomiseOwn` for personal reorder/hide, `canSetDefault`
+        for the admin "save as default" action.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [card_layout_get] }
+        - name: surface
+          in: query
+          required: true
+          description: Layout surface key (e.g. `home_admin`, `home_user`).
+          schema: { type: string }
+      responses:
+        "200":
+          description: Layout state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  surface:  { type: string }
+                  default:  { type: object, description: Baseline layout (order + hidden array). }
+                  override: { type: object, description: Per-user layout if any (order + hidden array). }
+                  canCustomiseOwn: { type: boolean }
+                  canSetDefault:   { type: boolean }
+        "400":
+          description: Invalid surface
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=card_layout_save_user:
+    post:
+      operationId: saveUserCardLayout
+      tags: [Preferences]
+      summary: Save the caller's per-user card-layout override
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [card_layout_save_user] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [surface]
+              properties:
+                surface: { type: string }
+                order:   { type: array, items: { type: string } }
+                hidden:  { type: array, items: { type: string } }
+      responses:
+        "200":
+          description: Saved
+          content: { application/json: { schema: { $ref: "#/components/schemas/SuccessResponse" } } }
+        "400": { description: Invalid surface, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "401": { description: Not authenticated, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "403": { description: Customisation not permitted for this account, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api.php?action=card_layout_reset_user:
+    post:
+      operationId: resetUserCardLayout
+      tags: [Preferences]
+      summary: Discard the caller's per-user card-layout override
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [card_layout_reset_user] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [surface]
+              properties:
+                surface: { type: string }
+      responses:
+        "200":
+          description: Override cleared
+          content: { application/json: { schema: { $ref: "#/components/schemas/SuccessResponse" } } }
+        "400": { description: Invalid surface, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "401": { description: Not authenticated, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api.php?action=card_layout_save_default:
+    post:
+      operationId: saveDefaultCardLayout
+      tags: [Admin]
+      summary: Save the system default card layout for a surface (admin)
+      description: |
+        Updates the baseline `order` + `hidden` arrays for a surface
+        so every user without a personal override sees the new layout.
+        Requires the `manage_default_card_layout` entitlement.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [card_layout_save_default] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [surface]
+              properties:
+                surface: { type: string }
+                order:   { type: array, items: { type: string } }
+                hidden:  { type: array, items: { type: string } }
+      responses:
+        "200":
+          description: Default updated
+          content: { application/json: { schema: { $ref: "#/components/schemas/SuccessResponse" } } }
+        "400": { description: Invalid surface, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "403": { description: Caller lacks `manage_default_card_layout` entitlement, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
 # =============================================================================
 # COMPONENTS
 # =============================================================================
@@ -4586,31 +4902,34 @@ components:
       description: |
         One related-language version of a song, as returned by
         `song_translations` (#281). Unions outward, inward, and sibling
-        relationships, so `song_id` may point at the original, a
+        relationships, so `songId` may point at the original, a
         translation, or another-language sibling depending on which
         direction it was reached from.
       properties:
-        song_id:
+        songId:
           type: string
           description: Related song's ID
           example: FR-0202
+        title:
+          type: string
+          description: Title of the related song
+          example: "Comme la rosée"
+        number:
+          type: integer
+          description: Song number within its songbook
+          example: 202
         language:
           type: string
           description: ISO 639-1 code of the related language
           example: fr
-        language_name:
+        languageName:
           type: string
           description: English name of the language
           example: French
-        native_name:
+        languageNativeName:
           type: string
           description: Native name of the language
           example: "Fran\u00E7ais"
-        dir:
-          type: string
-          enum: [ltr, rtl]
-          description: Text direction (from `tblLanguages.TextDirection`)
-          example: ltr
         translator:
           type: string
           description: Translator credit; empty for the inward link back to the source.

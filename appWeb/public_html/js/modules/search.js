@@ -509,7 +509,10 @@ export class Search {
         html += '<div class="list-group">';
 
         results.forEach(song => {
-            const writers = (song.writers || []).join(', ');
+            /* Canonical separator is "; " (#495). Surname-first hymnal
+               citations legitimately contain commas inside a single
+               name ("Smith, John"), so comma is ambiguous. */
+            const writers = (song.writers || []).join('; ');
             const snippet = song.lyricsSnippet
                 ? `<small class="text-muted d-block fst-italic"><i class="fa-solid fa-music me-1" aria-hidden="true"></i>&ldquo;${escapeHtml(song.lyricsSnippet)}&rdquo;</small>`
                 : '';

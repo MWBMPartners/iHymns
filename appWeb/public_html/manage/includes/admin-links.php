@@ -37,6 +37,7 @@ $_adminLinks = [
     ['revisions',       '/manage/revisions',       'bi-clock-history',  'Revisions Audit',      'verify_songs',                'Content'    ],
     ['missing-numbers', '/manage/missing-numbers', 'bi-binoculars',     'Missing Numbers',      'edit_songs',                  'Content'    ],
     ['songbooks',       '/manage/songbooks',       'bi-book',           'Songbooks',            'manage_songbooks',            'Content'    ],
+    ['credit-people',   '/manage/credit-people',   'bi-person-badge',   'Credit People',        'manage_credit_people',        'Content'    ],
     ['restrictions',    '/manage/restrictions',    'bi-shield-lock',    'Content Restrictions', 'manage_content_restrictions', 'Content'    ],
     ['tiers',           '/manage/tiers',           'bi-stars',          'Access Tiers',         'manage_access_tiers',         'Content'    ],
     ['users',           '/manage/users',           'bi-people',         'Users',                'view_users',                  'People'     ],
@@ -46,7 +47,10 @@ $_adminLinks = [
     ['analytics',       '/manage/analytics',       'bi-graph-up',       'Analytics',            'view_analytics',              'Operations' ],
     ['ccli-report',     '/manage/ccli-report',     'bi-receipt',        'CCLI Usage Report',    'view_ccli_report',            'Operations' ],
     ['data-health',     '/manage/data-health',     'bi-activity',       'Data Health',          'drop_legacy_tables',          'Operations' ],
+    ['activity-log',    '/manage/activity-log',    'bi-journal-text',   'Activity Log',         'view_activity_log',           'Operations' ],
+    ['schema-audit',    '/manage/schema-audit',    'bi-clipboard2-data','Schema Audit',         'drop_legacy_tables',          'Operations' ],
     ['setup-database',  '/manage/setup-database',  'bi-database-gear',  'Database Setup',       'run_db_install',              'Operations' ],
+    ['help',            '/manage/help',            'bi-life-preserver', 'Help / Guides',        null,                          'Help'       ],
 ];
 
 /**

@@ -153,7 +153,7 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 | `appWeb/public_html/sitemap.xml.php` | Dynamic XML sitemap from song database |
 | `appWeb/public_html/includes/config.php` | App configuration (analytics, features) |
 | `appWeb/public_html/manage/includes/auth.php` | Authentication middleware with role hierarchy |
-| `appWeb/public_html/manage/includes/db.php` | Database connection factory with SQLite migrations |
+| `appWeb/public_html/includes/db_mysql.php` | Single mysqli connection factory (`getDbMysqli()`) shared by main app + admin since #555 |
 | `appWeb/public_html/js/modules/user-auth.js` | Public user auth (register, login, sync, password reset) |
 | `appWeb/public_html/js/utils/components.js` | Shared song component tag utility (12 types) |
 | `appWeb/private_html/editor/` | Song editor (dev tool) |

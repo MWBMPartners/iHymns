@@ -1,0 +1,105 @@
+# =============================================================================
+# iHymns — Auto-Merge Alpha PRs Workflow
+#
+# Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+# This software is proprietary. Unauthorized copying, modification, or
+# distribution is strictly prohibited.
+#
+# PURPOSE:
+# Automatically enables GitHub's native "auto-merge" feature on any pull
+# request whose base branch is `alpha`. Once enabled, GitHub will merge the
+# PR as soon as all required status checks pass and any required reviews
+# are satisfied. If checks fail, the PR stays open and is NOT merged.
+#
+# This workflow ONLY targets PRs whose base is `alpha`. PRs targeting any
+# other branch (main, beta, etc.) are unaffected.
+#
+# REQUIREMENTS (one-time repo configuration — see notes at the bottom):
+#   1. Repo Settings → General → "Allow auto-merge" must be enabled.
+#   2. Branch protection rule on `alpha` SHOULD require status checks
+#      (otherwise auto-merge will merge the PR immediately with no gate).
+#
+# MERGE METHOD:
+# Uses squash merge by default. Change `--squash` below to `--merge` or
+# `--rebase` if you prefer a different strategy.
+# =============================================================================
+
+name: Auto-Merge Alpha PRs
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+    branches:
+      - alpha
+
+permissions:
+  contents: write
+  pull-requests: write
+  # `gh workflow run` (used below to dispatch deploy.yml after merge)
+  # requires the actions:write scope.
+  actions: write
+
+# Coalesce repeated synchronize events on the same PR — otherwise a quick
+# series of pushes spawns parallel watchers that all race to dispatch the
+# same deploy when the PR finally merges.
+concurrency:
+  group: auto-merge-alpha-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  enable-auto-merge:
+    name: Enable auto-merge on alpha PRs
+    runs-on: ubuntu-latest
+    # Skip drafts — auto-merge cannot be enabled on draft PRs.
+    if: github.event.pull_request.draft == false
+    steps:
+      - name: Enable auto-merge (squash)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"
+
+      # ---------------------------------------------------------------------
+      # Bridge GitHub's GITHUB_TOKEN anti-recursion rule (#551).
+      #
+      # The push to `alpha` produced by GitHub's auto-merge is attributed to
+      # GITHUB_TOKEN, so deploy.yml's `on: push` trigger is suppressed and
+      # no SFTP deploy fires. workflow_dispatch IS one of the two events a
+      # workflow can trigger via GITHUB_TOKEN, so once the merge lands we
+      # explicitly dispatch the deploy.
+      #
+      # Polling tradeoff: this step keeps a runner busy for the duration of
+      # the merge gate (typically 1–5 min on alpha — only the lint job
+      # gates). Capped at 60 min so a stuck check never burns runner time
+      # indefinitely. A `CLOSED`-without-merge outcome exits cleanly with
+      # no deploy dispatch.
+      # ---------------------------------------------------------------------
+      - name: Wait for merge and dispatch deploy
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 120); do
+              STATE=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json state -q .state)
+              case "$STATE" in
+                  MERGED)
+                      echo "PR #$PR_NUMBER merged — dispatching deploy.yml on alpha."
+                      gh workflow run deploy.yml --repo "$REPO" --ref alpha
+                      exit 0
+                      ;;
+                  CLOSED)
+                      echo "PR #$PR_NUMBER closed without merging — skipping deploy."
+                      exit 0
+                      ;;
+              esac
+              echo "PR #$PR_NUMBER state=$STATE (poll $i/120) — sleeping 30 s"
+              sleep 30
+          done
+          echo "::error::Timed out waiting for PR #$PR_NUMBER to reach a terminal state."
+          exit 1

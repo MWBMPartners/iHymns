@@ -468,6 +468,17 @@ export class Router {
             this.app.history.renderHomeSection();
             this.app.songOfTheDay.renderHomeSection();
             this.renderRecentSongbooks();
+
+            /* Popular Songs / Recently Viewed / Browse by Theme (#303,
+               #304, #305). Previously lived as an inline <script> at the
+               bottom of home.php, which relied on a re-parse shim in
+               loadPage() to execute after innerHTML injection. Pulling
+               it into a proper module and invoking it here removes that
+               transport dependency — the sections now run reliably
+               whenever the home page is shown. */
+            import('./home-page.js')
+                .then(m => m.initHomePage())
+                .catch(err => console.error('[Router] home-page init failed:', err));
         }
 
         /* Initialise favourites list on favorites page */

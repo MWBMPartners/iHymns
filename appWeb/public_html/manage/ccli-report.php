@@ -19,7 +19,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
-require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
 requireAuth();
 $currentUser = getCurrentUser();
@@ -27,6 +27,8 @@ if (!userHasEntitlement('view_ccli_report', $currentUser['role'] ?? null)) {
     http_response_code(403);
     exit('Access denied — CCLI report requires the view_ccli_report entitlement.');
 }
+
+$activePage = 'ccli-report';
 
 $activePage = 'ccli-report';
 
@@ -49,8 +51,11 @@ if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $toDate))   $toDate   = $defaultTo;
 /* ========================================================================
  * Pull the report rows
  * ======================================================================== */
-$db = getDb();
+$db = getDbMysqli();
 
+/* $ccliFilter is built from a server-side bool ($showAll) and only
+   ever takes one of two literal values — never user input. Safe to
+   interpolate. */
 $ccliFilter = $showAll ? '' : "AND s.Ccli <> ''";
 
 try {
@@ -75,8 +80,10 @@ try {
           ORDER BY view_count DESC, s.Title ASC
           LIMIT 5000"
     );
-    $stmt->execute([$fromDate, $toDate]);
-    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $stmt->bind_param('ss', $fromDate, $toDate);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
 } catch (\Throwable $e) {
     error_log('[ccli-report] query failed: ' . $e->getMessage());
     $rows = [];
@@ -119,11 +126,8 @@ foreach ($rows as $r) $totalViews += (int)$r['view_count'];
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CCLI Usage Report — iHymns Admin</title>
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__) . '/css/app.css') ?>">
-    <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime(dirname(__DIR__) . '/css/admin.css') ?>">
 </head>
 <body>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>

@@ -16,12 +16,15 @@ declare(strict_types=1);
  *   - tblEmailLoginTokens:   expired or used tokens
  *   - tblPasswordResetTokens: expired or used tokens
  *   - tblLoginAttempts:      entries older than 30 days
+ *   - tblActivityLog:        entries older than the retention window
+ *                            (configurable via tblAppSettings key
+ *                            `activity_log_retention_days`, default 90)
  *
  * USAGE:
  *   CLI:  php appWeb/.sql/cleanup.php
  *   Cron: 0 3 * * * /usr/bin/php /path/to/appWeb/.sql/cleanup.php >> /var/log/ihymns-cleanup.log 2>&1
  *
- * @requires PHP 8.1+ with pdo_mysql extension
+ * @requires PHP 8.1+ with mysqli extension
  */
 
 /* =========================================================================
@@ -58,18 +61,19 @@ if (!defined('DB_HOST') || !defined('DB_USER') || !defined('DB_PASS') || !define
 $port    = defined('DB_PORT') ? (int)DB_PORT : 3306;
 $charset = defined('DB_CHARSET') ? DB_CHARSET : 'utf8mb4';
 
-$dsn = sprintf(
-    'mysql:host=%s;port=%d;dbname=%s;charset=%s',
-    DB_HOST, $port, DB_NAME, $charset
-);
+/* Strict reporting (#525) — exceptions on every failed query so a
+   broken DELETE doesn't silently no-op. Matches the migrate-*.php
+   scripts in this directory. */
+mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 
 try {
-    $db = new PDO($dsn, DB_USER, DB_PASS, [
-        PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        PDO::ATTR_EMULATE_PREPARES   => false,
-    ]);
-} catch (PDOException $e) {
+    $db = @new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME, $port);
+    if ($db->connect_errno) {
+        echo "ERROR: Database connection failed: " . $db->connect_error . "\n";
+        return;
+    }
+    $db->set_charset($charset);
+} catch (\mysqli_sql_exception $e) {
     echo "ERROR: Database connection failed: " . $e->getMessage() . "\n";
     return;
 }
@@ -87,33 +91,39 @@ $totalDeleted = 0;
 /* 1. Expired API tokens */
 try {
     $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE ExpiresAt < ?');
-    $stmt->execute([$now]);
-    $count = $stmt->rowCount();
+    $stmt->bind_param('s', $now);
+    $stmt->execute();
+    $count = $stmt->affected_rows;
     echo "tblApiTokens:          $count expired token(s) deleted\n";
     $totalDeleted += $count;
-} catch (PDOException $e) {
+    $stmt->close();
+} catch (\mysqli_sql_exception $e) {
     echo "tblApiTokens:          ERROR — " . $e->getMessage() . "\n";
 }
 
 /* 2. Expired or used email login tokens */
 try {
     $stmt = $db->prepare('DELETE FROM tblEmailLoginTokens WHERE ExpiresAt < ? OR Used = 1');
-    $stmt->execute([$now]);
-    $count = $stmt->rowCount();
+    $stmt->bind_param('s', $now);
+    $stmt->execute();
+    $count = $stmt->affected_rows;
     echo "tblEmailLoginTokens:   $count expired/used token(s) deleted\n";
     $totalDeleted += $count;
-} catch (PDOException $e) {
+    $stmt->close();
+} catch (\mysqli_sql_exception $e) {
     echo "tblEmailLoginTokens:   ERROR — " . $e->getMessage() . "\n";
 }
 
 /* 3. Expired or used password reset tokens */
 try {
     $stmt = $db->prepare('DELETE FROM tblPasswordResetTokens WHERE ExpiresAt < ? OR Used = 1');
-    $stmt->execute([$now]);
-    $count = $stmt->rowCount();
+    $stmt->bind_param('s', $now);
+    $stmt->execute();
+    $count = $stmt->affected_rows;
     echo "tblPasswordResetTokens: $count expired/used token(s) deleted\n";
     $totalDeleted += $count;
-} catch (PDOException $e) {
+    $stmt->close();
+} catch (\mysqli_sql_exception $e) {
     echo "tblPasswordResetTokens: ERROR — " . $e->getMessage() . "\n";
 }
 
@@ -121,13 +131,45 @@ try {
 try {
     $stmt = $db->prepare('DELETE FROM tblLoginAttempts WHERE AttemptedAt < DATE_SUB(NOW(), INTERVAL 30 DAY)');
     $stmt->execute();
-    $count = $stmt->rowCount();
+    $count = $stmt->affected_rows;
     echo "tblLoginAttempts:      $count old attempt(s) deleted\n";
     $totalDeleted += $count;
-} catch (PDOException $e) {
+    $stmt->close();
+} catch (\mysqli_sql_exception $e) {
     echo "tblLoginAttempts:      ERROR — " . $e->getMessage() . "\n";
+}
+
+/* 5. tblActivityLog retention prune (#535).
+   Retention window is read from tblAppSettings::activity_log_retention_days
+   (default 90 days). Set to 0 to disable pruning entirely — useful
+   for forensics-heavy deployments that route long-term to a separate
+   archive table. Capped at sensible bounds (1..3650) so a fat-fingered
+   value can't either no-op or wipe years of history in one go. */
+try {
+    $stmt = $db->prepare("SELECT SettingValue FROM tblAppSettings WHERE SettingKey = 'activity_log_retention_days'");
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_row();
+    $stmt->close();
+    $raw = (string)($row[0] ?? '');
+    $retentionDays = $raw !== '' ? (int)$raw : 90;
+    if ($retentionDays === 0) {
+        echo "tblActivityLog:        skipped (retention = 0, pruning disabled)\n";
+    } else {
+        $retentionDays = max(1, min(3650, $retentionDays));
+        $stmt = $db->prepare('DELETE FROM tblActivityLog WHERE CreatedAt < DATE_SUB(NOW(), INTERVAL ? DAY)');
+        $stmt->bind_param('i', $retentionDays);
+        $stmt->execute();
+        $count = $stmt->affected_rows;
+        echo "tblActivityLog:        $count row(s) older than {$retentionDays} day(s) deleted\n";
+        $totalDeleted += $count;
+        $stmt->close();
+    }
+} catch (\mysqli_sql_exception $e) {
+    echo "tblActivityLog:        ERROR — " . $e->getMessage() . "\n";
 }
 
 echo str_repeat('-', 50) . "\n";
 echo "Total deleted: $totalDeleted row(s)\n";
 echo "Cleanup complete.\n";
+
+$db->close();

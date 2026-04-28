@@ -20,8 +20,10 @@ declare(strict_types=1);
  *   // Auto-respond with 429 if rate limited (exits on failure)
  *   checkRateLimit('auth_login', $clientIp, 10, 900, true);
  *
- * @requires PHP 8.1+ with PDO
+ * @requires PHP 8.1+ with mysqli
  */
+
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
 /* =========================================================================
  * DIRECT ACCESS PREVENTION
@@ -32,42 +34,68 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 }
 
 /**
- * Check whether a request is within the rate limit for a given action and IP.
+ * Check whether a request is within the rate limit for a given action.
  *
- * Uses tblLoginAttempts to count recent requests. The `Username` column is
- * repurposed to store the action identifier for non-login rate checks.
+ * Uses tblLoginAttempts as the counter table (the `Username` column is
+ * repurposed to carry the action identifier for non-login checks). When
+ * an authenticated user ID is supplied, the IP-based key is replaced
+ * with `user:<id>` so a single user can't side-step the limit by
+ * cycling addresses, and a per-user signed-in budget can be set
+ * larger than the per-IP unauthenticated one.
  *
- * @param string $action        Identifier for the action being rate limited
- *                               (e.g., 'auth_login', 'song_request', 'register')
- * @param string $ip            Client IP address
- * @param int    $maxAttempts   Maximum allowed attempts within the window
- * @param int    $windowSeconds Time window in seconds (e.g., 900 for 15 minutes)
- * @param bool   $autoRespond   If true, sends a 429 JSON response and exits
- *                               when the rate limit is exceeded
+ * Sliding-window — counts rows whose AttemptedAt is within the last
+ * `windowSeconds` seconds, so the cap glides rather than reset on a
+ * fixed boundary. Fails open on DB errors (logged) so a blip in the
+ * counter table doesn't lock everyone out.
  *
- * @return bool True if the request is allowed, false if rate limited
+ * @param string   $action        Identifier for the action being rate
+ *                                 limited (e.g., 'auth_login',
+ *                                 'song_request', 'og_image').
+ * @param string   $ip            Client IP address (empty string is a
+ *                                 no-op — cannot rate limit without a
+ *                                 key).
+ * @param int      $maxAttempts   Maximum allowed attempts within the
+ *                                 window.
+ * @param int      $windowSeconds Time window in seconds (e.g., 900
+ *                                 for 15 minutes).
+ * @param bool     $autoRespond   If true, sends a 429 JSON response
+ *                                 and exits when the limit is hit.
+ * @param int|null $userId        Optional authenticated user ID. If
+ *                                 supplied, keys the bucket by user
+ *                                 instead of IP — pass for endpoints
+ *                                 where the per-user budget is the
+ *                                 thing you actually want to cap.
+ *
+ * @return bool True if the request is allowed, false if rate limited.
  */
 function checkRateLimit(
     string $action,
     string $ip,
     int $maxAttempts,
     int $windowSeconds,
-    bool $autoRespond = false
+    bool $autoRespond = false,
+    ?int $userId = null
 ): bool {
-    if ($ip === '') {
-        return true; /* Cannot rate limit without an IP */
+    /* Per-user buckets are keyed off `user:<id>` in the IpAddress
+       column. Cannot rate limit without either a user or an IP. */
+    $key = $userId !== null && $userId > 0 ? 'user:' . $userId : $ip;
+    if ($key === '') {
+        return true;
     }
 
     try {
-        $db = getDb();
+        $db = getDbMysqli();
 
         $stmt = $db->prepare(
             'SELECT COUNT(*) FROM tblLoginAttempts
              WHERE IpAddress = ? AND Username = ?
              AND AttemptedAt > DATE_SUB(NOW(), INTERVAL ? SECOND)'
         );
-        $stmt->execute([$ip, $action, $windowSeconds]);
-        $count = (int)$stmt->fetchColumn();
+        $stmt->bind_param('ssi', $key, $action, $windowSeconds);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_row();
+        $stmt->close();
+        $count = (int)($row[0] ?? 0);
 
         if ($count >= $maxAttempts) {
             if ($autoRespond) {
@@ -85,9 +113,12 @@ function checkRateLimit(
         }
 
         return true;
-    } catch (\PDOException $e) {
-        /* If the database is unavailable, fail open to avoid blocking
-         * legitimate requests. Log the error for monitoring. */
+    } catch (\Throwable $e) {
+        /* Fail open on DB error — better to over-serve a few requests
+           than to lock everyone out of an endpoint because the
+           counter table briefly went away. Logged so a sustained
+           outage is visible. \Throwable catches mysqli_sql_exception
+           plus any other unexpected error from get_result()/fetch_row(). */
         error_log('[iHymns] Rate limit check failed: ' . $e->getMessage());
         return true;
     }
@@ -106,12 +137,15 @@ function checkRateLimit(
 function recordRateLimitHit(string $action, string $ip, bool $success = true): void
 {
     try {
-        $db = getDb();
+        $db = getDbMysqli();
         $stmt = $db->prepare(
             'INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, ?, ?)'
         );
-        $stmt->execute([$ip, $action, $success ? 1 : 0]);
-    } catch (\PDOException $e) {
+        $successInt = $success ? 1 : 0;
+        $stmt->bind_param('ssi', $ip, $action, $successInt);
+        $stmt->execute();
+        $stmt->close();
+    } catch (\Throwable $e) {
         error_log('[iHymns] Rate limit recording failed: ' . $e->getMessage());
     }
 }

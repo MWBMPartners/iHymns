@@ -36,6 +36,11 @@ CREATE TABLE IF NOT EXISTS tblSongbooks (
     SongCount       INT UNSIGNED    NOT NULL DEFAULT 0,
     DisplayOrder    INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'Explicit sort order for listings / filter dropdowns',
     Colour          VARCHAR(7)      NOT NULL DEFAULT '' COMMENT 'Badge colour hex #RRGGBB (empty = theme default)',
+    IsOfficial      TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = published hymnal; 0 = curated grouping / pseudo-songbook (#502)',
+    Publisher       VARCHAR(255)    NULL DEFAULT NULL COMMENT 'Publisher or originator (e.g. Praise Trust, Hope Publishing) (#502)',
+    PublicationYear VARCHAR(50)     NULL DEFAULT NULL COMMENT 'Year / edition range (free-form: 1986, 1986-2003, 2nd edition 2011) (#502)',
+    Copyright       VARCHAR(500)    NULL DEFAULT NULL COMMENT 'Copyright notice for the collection as a whole (#502)',
+    Affiliation     VARCHAR(120)    NULL DEFAULT NULL COMMENT 'Denominational / religious affiliation; free-text for now, lookup table later (#502)',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
@@ -59,18 +64,21 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     SongbookName        VARCHAR(255)    NOT NULL COMMENT 'Denormalised songbook name for convenience',
     Language            VARCHAR(10)     NOT NULL DEFAULT 'en',
     Copyright           VARCHAR(500)    NOT NULL DEFAULT '',
-    Ccli                VARCHAR(50)     NOT NULL DEFAULT '',
+    TuneName            VARCHAR(120)    NULL DEFAULT NULL COMMENT 'Traditional tune name, e.g. HYFRYDOL, OLD HUNDREDTH (#497)',
+    Ccli                VARCHAR(50)     NOT NULL DEFAULT '' COMMENT 'CCLI Song Number',
+    Iswc                VARCHAR(15)     NULL DEFAULT NULL COMMENT 'International Standard Musical Work Code, e.g. T-034.524.680-C (#497)',
     Verified            TINYINT(1)      NOT NULL DEFAULT 0,
     LyricsPublicDomain  TINYINT(1)      NOT NULL DEFAULT 0,
     MusicPublicDomain   TINYINT(1)      NOT NULL DEFAULT 0,
     HasAudio            TINYINT(1)      NOT NULL DEFAULT 0,
     HasSheetMusic       TINYINT(1)      NOT NULL DEFAULT 0,
-    LyricsText          MEDIUMTEXT      NOT NULL DEFAULT '' COMMENT 'Concatenated lyrics for full-text search',
+    LyricsText          MEDIUMTEXT      NOT NULL DEFAULT ('') COMMENT 'Concatenated lyrics for full-text search',
     CreatedAt           TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt           TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
     INDEX idx_Songbook          (SongbookAbbr),
     INDEX idx_SongbookNumber    (SongbookAbbr, Number),
+    INDEX idx_TuneName          (TuneName),
     FULLTEXT idx_TitleFt        (Title),
     FULLTEXT idx_LyricsFt       (LyricsText),
     FULLTEXT idx_TitleLyricsFt  (Title, LyricsText),
@@ -118,6 +126,149 @@ CREATE TABLE IF NOT EXISTS tblSongComposers (
 
 
 -- ----------------------------------------------------------------------------
+-- tblSongArrangers (#497)
+-- Many-to-one: a song can have multiple arrangers.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongArrangers (
+    Id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    SongId      VARCHAR(20)     NOT NULL,
+    Name        VARCHAR(255)    NOT NULL,
+
+    INDEX idx_SongId    (SongId),
+    INDEX idx_Name      (Name),
+
+    CONSTRAINT fk_Arrangers_Song
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongAdaptors (#497)
+-- Many-to-one: a song can have multiple adaptors.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongAdaptors (
+    Id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    SongId      VARCHAR(20)     NOT NULL,
+    Name        VARCHAR(255)    NOT NULL,
+
+    INDEX idx_SongId    (SongId),
+    INDEX idx_Name      (Name),
+
+    CONSTRAINT fk_Adaptors_Song
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongTranslators (#497)
+-- Many-to-one: a song can have multiple translators. Distinct from the
+-- tblSongTranslations link table (#352) which joins a source song to its
+-- equivalent in another language — the Translators table credits the
+-- people who produced those translations for *this* song.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongTranslators (
+    Id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    SongId      VARCHAR(20)     NOT NULL,
+    Name        VARCHAR(255)    NOT NULL,
+
+    INDEX idx_SongId    (SongId),
+    INDEX idx_Name      (Name),
+
+    CONSTRAINT fk_Translators_Song
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblCreditPeople (#545)
+-- Registry of people credited on songs. Holds the canonical Name plus
+-- optional biographical metadata. The five song-credit tables above
+-- (tblSongWriters / tblSongComposers / tblSongArrangers / tblSongAdaptors
+-- / tblSongTranslators) continue to store free-text Name strings — this
+-- registry is additive, not a foreign-key on those five. Rename / merge
+-- operations bulk-UPDATE the Name column across all five tables (and the
+-- registry row) inside a single transaction, leaving the existing schema
+-- intact.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblCreditPeople (
+    Id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    Name        VARCHAR(255)    NOT NULL,
+    Notes       TEXT            NULL,
+    BirthPlace  VARCHAR(255)    NULL,
+    BirthDate   DATE            NULL,
+    DeathPlace  VARCHAR(255)    NULL,
+    DeathDate   DATE            NULL,
+    CreatedAt   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uk_Name (Name),
+    INDEX idx_Name (Name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblCreditPersonLinks (#545)
+-- Multiple external reference links per person (Wikipedia, official
+-- website, MusicBrainz, Discogs, IMSLP, Hymnary, other). LinkType is a
+-- short string key the UI maps to a friendly label and icon; storing as
+-- VARCHAR rather than ENUM keeps new categories cheap to add. SortOrder
+-- preserves admin-controlled display order. ON DELETE CASCADE removes
+-- the links automatically when the parent registry row is deleted.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblCreditPersonLinks (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    CreditPersonId  INT UNSIGNED    NOT NULL,
+    LinkType        VARCHAR(64)     NOT NULL,
+    Url             VARCHAR(2048)   NOT NULL,
+    Label           VARCHAR(255)    NULL,
+    SortOrder       SMALLINT        NOT NULL DEFAULT 0,
+    CreatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                    ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_CreditPersonId (CreditPersonId),
+
+    CONSTRAINT fk_CreditPersonLinks_Person
+        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblCreditPersonIPI (#545)
+-- IPI (Interested Parties Information) Name Numbers per person. A single
+-- individual can be registered under more than one IPI Name Number when
+-- they use multiple performing names — hence one-to-many on the registry
+-- row. UNIQUE on (CreditPersonId, IPINumber) prevents duplicate IPIs per
+-- person while still allowing the same number to legitimately attach to
+-- two different registry rows if the data demands it. NameUsed is the
+-- spelling that IPI is registered under (often differs from the canonical
+-- registry Name). ON DELETE CASCADE matches the links table.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblCreditPersonIPI (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    CreditPersonId  INT UNSIGNED    NOT NULL,
+    IPINumber       VARCHAR(32)     NOT NULL,
+    NameUsed        VARCHAR(255)    NULL,
+    Notes           VARCHAR(255)    NULL,
+    CreatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                    ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uk_PersonIPI (CreditPersonId, IPINumber),
+    INDEX idx_IPINumber (IPINumber),
+
+    CONSTRAINT fk_CreditPersonIPI_Person
+        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
 -- tblSongComponents
 -- Each component stores its lyrics lines as a JSON array.
 -- `SortOrder` preserves the display sequence from the original data.
@@ -155,7 +306,7 @@ CREATE TABLE IF NOT EXISTS tblSongComponents (
 CREATE TABLE IF NOT EXISTS tblUserGroups (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
     Name            VARCHAR(100)    NOT NULL UNIQUE,
-    Description     TEXT            NOT NULL DEFAULT '',
+    Description     TEXT            NOT NULL DEFAULT (''),
     AccessAlpha     TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Can access Alpha (dev) builds',
     AccessBeta      TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Can access Beta builds',
     AccessRc        TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Can access RC (Release Candidate) builds',
@@ -307,7 +458,7 @@ CREATE TABLE IF NOT EXISTS tblAccessTiers (
     Name            VARCHAR(30)     NOT NULL UNIQUE COMMENT 'public, free, ccli, premium, pro',
     DisplayName     VARCHAR(50)     NOT NULL,
     Level           INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'Higher = more access',
-    Description     TEXT            NOT NULL DEFAULT '',
+    Description     TEXT            NOT NULL DEFAULT (''),
     CanViewLyrics   TINYINT(1)      NOT NULL DEFAULT 1,
     CanViewCopyrighted TINYINT(1)   NOT NULL DEFAULT 0 COMMENT 'Access copyrighted songs',
     CanPlayAudio    TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'MIDI/audio playback',
@@ -362,7 +513,7 @@ CREATE TABLE IF NOT EXISTS tblOrganisations (
     Name            VARCHAR(255)    NOT NULL,
     Slug            VARCHAR(100)    NOT NULL UNIQUE COMMENT 'URL-safe identifier',
     ParentOrgId     INT UNSIGNED    NULL DEFAULT NULL COMMENT 'Self-ref FK for nested orgs',
-    Description     TEXT            NOT NULL DEFAULT '',
+    Description     TEXT            NOT NULL DEFAULT (''),
     LicenceType     VARCHAR(30)     NOT NULL DEFAULT 'none' COMMENT 'none, ihymns_basic, ihymns_pro, ccli',
     LicenceNumber   VARCHAR(100)    NOT NULL DEFAULT '' COMMENT 'CCLI licence number or iHymns key',
     LicenceExpiresAt TIMESTAMP      NULL DEFAULT NULL,
@@ -506,7 +657,7 @@ CREATE TABLE IF NOT EXISTS tblUserSetlists (
     UserId          INT UNSIGNED    NOT NULL,
     SetlistId       VARCHAR(100)    NOT NULL COMMENT 'Client-generated unique ID',
     Name            VARCHAR(200)    NOT NULL,
-    SongsJson       MEDIUMTEXT      NOT NULL DEFAULT '[]' COMMENT 'JSON array of song objects',
+    SongsJson       MEDIUMTEXT      NOT NULL DEFAULT ('[]') COMMENT 'JSON array of song objects',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
@@ -625,12 +776,12 @@ CREATE TABLE IF NOT EXISTS tblSongRequests (
     Songbook        VARCHAR(100)    NOT NULL DEFAULT '' COMMENT 'Songbook name or abbreviation (if known)',
     SongNumber      VARCHAR(20)     NOT NULL DEFAULT '' COMMENT 'Song number (if known)',
     Language        VARCHAR(10)     NOT NULL DEFAULT 'en' COMMENT 'Language of the requested song',
-    Details         TEXT            NOT NULL DEFAULT '' COMMENT 'Additional info (first line of lyrics, etc.)',
+    Details         TEXT            NOT NULL DEFAULT ('') COMMENT 'Additional info (first line of lyrics, etc.)',
     ContactEmail    VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Optional email for follow-up',
     UserId          INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK to tblUsers (NULL for anonymous)',
     IpAddress       VARCHAR(45)     NOT NULL DEFAULT '' COMMENT 'Submitter IP for rate limiting',
     Status          VARCHAR(20)     NOT NULL DEFAULT 'pending' COMMENT 'pending, reviewed, added, declined',
-    AdminNotes      TEXT            NOT NULL DEFAULT '' COMMENT 'Internal notes from reviewers',
+    AdminNotes      TEXT            NOT NULL DEFAULT ('') COMMENT 'Internal notes from reviewers',
     ResolvedSongId  VARCHAR(20)     NULL DEFAULT NULL COMMENT 'Song ID if request was fulfilled',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -651,22 +802,41 @@ CREATE TABLE IF NOT EXISTS tblSongRequests (
 
 -- ----------------------------------------------------------------------------
 -- tblActivityLog
--- Audit trail for significant actions.
+-- Comprehensive activity audit trail (#535).
+--
+-- Every meaningful action — auth, admin CRUD, user activity, API
+-- request, system event — writes one row here. Used for:
+--   - Analytics (most-used features, peak hours, songbook popularity)
+--   - Debugging (replay a user's request sequence to reproduce a bug)
+--   - Support (look up exactly what the user did)
+--   - Edit history (who changed what on songs, songbooks, users, orgs)
+--   - Forensics (suspicious patterns, post-incident timelines)
+--
+-- See includes/activity_log.php for the canonical write API.
+-- See manage/activity-log.php for the admin viewer + filters.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblActivityLog (
     Id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    UserId          INT UNSIGNED    NULL COMMENT 'User who performed the action (NULL for system)',
-    Action          VARCHAR(50)     NOT NULL COMMENT 'e.g. song.edit, user.create, login, import',
-    EntityType      VARCHAR(50)     NOT NULL DEFAULT '' COMMENT 'e.g. song, user, songbook, setlist',
-    EntityId        VARCHAR(50)     NOT NULL DEFAULT '' COMMENT 'ID of the affected entity',
-    Details         JSON            NULL COMMENT 'Additional context (old/new values, etc.)',
+    UserId          INT UNSIGNED    NULL COMMENT 'User who performed the action (NULL for system / unauthenticated)',
+    Action          VARCHAR(50)     NOT NULL COMMENT 'Dotted lowercase verb, e.g. song.edit, auth.login, setlist.share',
+    EntityType      VARCHAR(50)     NOT NULL DEFAULT '' COMMENT 'e.g. song, user, songbook, setlist, organisation',
+    EntityId        VARCHAR(50)     NOT NULL DEFAULT '' COMMENT 'Primary key of the affected entity (string for cross-table use)',
+    Result          ENUM('success','failure','error') NOT NULL DEFAULT 'success'
+                    COMMENT 'success = OK; failure = user-side reject; error = server-side exception (#535)',
+    Details         JSON            NULL COMMENT 'Additional context (before/after diff, error message, request body)',
     IpAddress       VARCHAR(45)     NOT NULL DEFAULT '',
+    UserAgent       VARCHAR(500)    NOT NULL DEFAULT '' COMMENT 'Truncated UA — useful for "mobile vs desktop" debugging (#535)',
+    RequestId       CHAR(16)        NOT NULL DEFAULT '' COMMENT 'Per-HTTP-request correlation ID; groups every row from one request (#535)',
+    Method          VARCHAR(10)     NOT NULL DEFAULT '' COMMENT 'HTTP method (GET/POST/etc) for HTTP-driven events; blank for cron/system (#535)',
+    DurationMs      INT UNSIGNED    NULL COMMENT 'Wall-clock duration of the logged operation in milliseconds (#535)',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     INDEX idx_User      (UserId),
     INDEX idx_Action    (Action),
     INDEX idx_Entity    (EntityType, EntityId),
     INDEX idx_Created   (CreatedAt),
+    INDEX idx_Result    (Result),
+    INDEX idx_RequestId (RequestId),
 
     CONSTRAINT fk_Log_User
         FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
@@ -680,7 +850,7 @@ CREATE TABLE IF NOT EXISTS tblActivityLog (
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblAppSettings (
     SettingKey      VARCHAR(100)    NOT NULL PRIMARY KEY,
-    SettingValue    TEXT            NOT NULL DEFAULT '',
+    SettingValue    TEXT            NOT NULL DEFAULT (''),
     Description     VARCHAR(255)    NOT NULL DEFAULT '',
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -746,7 +916,7 @@ CREATE TABLE IF NOT EXISTS tblSetlistSchedule (
     UserId          INT UNSIGNED    NOT NULL,
     OrgId           INT UNSIGNED    NULL COMMENT 'Organisation this schedule belongs to',
     ScheduledDate   DATE            NOT NULL,
-    Notes           TEXT            NOT NULL DEFAULT '',
+    Notes           TEXT            NOT NULL DEFAULT (''),
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     INDEX idx_Date      (ScheduledDate),
@@ -769,7 +939,7 @@ CREATE TABLE IF NOT EXISTS tblSetlistSchedule (
 CREATE TABLE IF NOT EXISTS tblSetlistTemplates (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
     Name            VARCHAR(200)    NOT NULL,
-    Description     TEXT            NOT NULL DEFAULT '',
+    Description     TEXT            NOT NULL DEFAULT (''),
     SlotsJson       JSON            NOT NULL COMMENT 'Array of {label, type} slot definitions',
     CreatedBy       INT UNSIGNED    NULL,
     OrgId           INT UNSIGNED    NULL,
@@ -824,7 +994,7 @@ CREATE TABLE IF NOT EXISTS tblSongRevisions (
     NewData         JSON            NULL COMMENT 'Song state after change',
     Status          VARCHAR(20)     NOT NULL DEFAULT 'approved' COMMENT 'pending, approved, rejected',
     ReviewedBy      INT UNSIGNED    NULL,
-    ReviewNote      TEXT            NOT NULL DEFAULT '',
+    ReviewNote      TEXT            NOT NULL DEFAULT (''),
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     INDEX idx_Song      (SongId),
@@ -1007,7 +1177,7 @@ CREATE TABLE IF NOT EXISTS tblNotifications (
     UserId          INT UNSIGNED    NOT NULL,
     Type            VARCHAR(50)     NOT NULL COMMENT 'e.g., song_added, request_update, announcement',
     Title           VARCHAR(255)    NOT NULL,
-    Body            TEXT            NOT NULL DEFAULT '',
+    Body            TEXT            NOT NULL DEFAULT (''),
     ActionUrl       VARCHAR(500)    NOT NULL DEFAULT '' COMMENT 'Deep link (e.g., /song/CP-0001)',
     IsRead          TINYINT(1)      NOT NULL DEFAULT 0,
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,

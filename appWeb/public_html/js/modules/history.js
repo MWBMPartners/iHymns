@@ -69,14 +69,41 @@ export class History {
     /**
      * Get all history entries, ordered by most recent first.
      *
-     * @returns {Array} History entries
+     * `recordView()` dedupes on write, but localStorage may carry legacy
+     * entries written before that logic existed (#549). Dedupe on read so
+     * the returned list is always unique-by-id, keeping the first
+     * occurrence (which is the most recent because the array is ordered
+     * newest-first).
+     *
+     * @returns {Array} History entries — unique by id
      */
     getAll() {
+        let raw;
         try {
-            return JSON.parse(localStorage.getItem(this.storageKey)) || [];
+            raw = JSON.parse(localStorage.getItem(this.storageKey)) || [];
         } catch {
             return [];
         }
+        if (!Array.isArray(raw)) return [];
+
+        const seen = new Set();
+        const deduped = [];
+        for (const h of raw) {
+            if (!h?.id || seen.has(h.id)) continue;
+            seen.add(h.id);
+            deduped.push(h);
+        }
+
+        /* Legacy localStorage from before the on-write dedupe carries
+           duplicates that recordView() only purges for the song currently
+           being recorded. If we've just stripped any out, persist the
+           clean version so subsequent reads stay cheap and other tabs
+           pick up the cleanup via the storage sync. */
+        if (deduped.length !== raw.length) {
+            try { this.saveAll(deduped); } catch { /* best-effort */ }
+        }
+
+        return deduped;
     }
 
     /**

@@ -21,6 +21,8 @@ declare(strict_types=1);
  *     if (userHasEntitlement('edit_songs', $currentUser['role'])) { ... }
  */
 
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
+
 /**
  * Map of entitlement → set of roles that carry it.
  *
@@ -59,6 +61,7 @@ const ENTITLEMENTS = [
     'manage_songbooks'     => ['admin', 'global_admin'],
     'manage_user_groups'   => ['admin', 'global_admin'],
     'manage_organisations' => ['admin', 'global_admin'],
+    'manage_credit_people' => ['admin', 'global_admin'],
 
     /* Content gating for regular users — per-song / per-songbook / per-user
        restrictions (tblContentRestrictions) and access-tier definitions
@@ -94,6 +97,11 @@ const ENTITLEMENTS = [
        usage return. */
     'view_ccli_report'     => ['admin', 'global_admin'],
 
+    /* Activity log viewer (#535). Reads tblActivityLog — every
+       meaningful auth, CRUD, user-action, API, and system event.
+       Default is admin+ since rows expose IP, UA, and email columns. */
+    'view_activity_log'    => ['admin', 'global_admin'],
+
     /* Meta */
     'manage_entitlements'  => ['global_admin'],
 ];
@@ -124,17 +132,23 @@ function effectiveEntitlements(): array
 
     $map = ENTITLEMENTS;
 
-    /* getDb() is PDO, defined in manage/includes/db.php. Not every
-       caller pre-loads it, so fail soft — an unreachable DB falls back
-       to the hardcoded defaults. */
-    if (function_exists('getDb')) {
+    /* db_mysql.php is required at the top of this file, so getDbMysqli()
+       should always be available — but keep the function_exists guard
+       as cheap defence against a require_once failure (e.g. file mode
+       breaking on deploy). Fail soft: an unreachable DB falls back to
+       the hardcoded defaults. */
+    if (function_exists('getDbMysqli')) {
         try {
-            $db = getDb();
+            $db = getDbMysqli();
             $stmt = $db->prepare(
                 'SELECT SettingValue FROM tblAppSettings WHERE SettingKey = ?'
             );
-            $stmt->execute(['entitlements_overrides']);
-            $raw = (string)($stmt->fetchColumn() ?: '');
+            $key = 'entitlements_overrides';
+            $stmt->bind_param('s', $key);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_row();
+            $stmt->close();
+            $raw = (string)($row[0] ?? '');
             if ($raw !== '') {
                 $decoded = json_decode($raw, true);
                 if (is_array($decoded)) {
@@ -165,17 +179,25 @@ function effectiveEntitlements(): array
 function saveEntitlementOverrides(array $overrides): bool
 {
     global $_ihymns_effective_entitlements;
-    if (!function_exists('getDb')) return false;
+    if (!function_exists('getDbMysqli')) return false;
     try {
-        $db = getDb();
-        $json = json_encode($overrides, JSON_UNESCAPED_SLASHES);
+        $db   = getDbMysqli();
+        $json = (string)json_encode($overrides, JSON_UNESCAPED_SLASHES);
         $stmt = $db->prepare(
             'INSERT INTO tblAppSettings (SettingKey, SettingValue)
              VALUES (?, ?)
              ON DUPLICATE KEY UPDATE SettingValue = VALUES(SettingValue)'
         );
-        $stmt->execute(['entitlements_overrides', (string)$json]);
+        $key = 'entitlements_overrides';
+        $stmt->bind_param('ss', $key, $json);
+        $stmt->execute();
+        $stmt->close();
         $_ihymns_effective_entitlements = null; /* bust cache */
+        if (function_exists('logActivity')) {
+            logActivity('settings.entitlements_change', 'app_setting', 'entitlements_overrides', [
+                'after_keys' => array_keys($overrides),
+            ]);
+        }
         return true;
     } catch (\Throwable $_e) {
         return false;
@@ -214,15 +236,18 @@ function userHasEntitlement(string $entitlement, ?string $role): bool
  */
 function isChannelGateEnabled(): bool
 {
-    if (!function_exists('getDb')) return false;
+    if (!function_exists('getDbMysqli')) return false;
     try {
-        $db = getDb();
+        $db   = getDbMysqli();
         $stmt = $db->prepare(
             'SELECT SettingValue FROM tblAppSettings WHERE SettingKey = ?'
         );
-        $stmt->execute(['channel_gate_enabled']);
-        $raw = (string)($stmt->fetchColumn() ?: '');
-        return $raw === '1';
+        $key = 'channel_gate_enabled';
+        $stmt->bind_param('s', $key);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_row();
+        $stmt->close();
+        return (string)($row[0] ?? '') === '1';
     } catch (\Throwable $_e) {
         /* DB unreachable — fail open so admins can still sign in. */
         return false;
@@ -234,15 +259,24 @@ function isChannelGateEnabled(): bool
  */
 function setChannelGateEnabled(bool $enabled): bool
 {
-    if (!function_exists('getDb')) return false;
+    if (!function_exists('getDbMysqli')) return false;
     try {
-        $db = getDb();
+        $db   = getDbMysqli();
         $stmt = $db->prepare(
             'INSERT INTO tblAppSettings (SettingKey, SettingValue)
              VALUES (?, ?)
              ON DUPLICATE KEY UPDATE SettingValue = VALUES(SettingValue)'
         );
-        $stmt->execute(['channel_gate_enabled', $enabled ? '1' : '0']);
+        $key   = 'channel_gate_enabled';
+        $value = $enabled ? '1' : '0';
+        $stmt->bind_param('ss', $key, $value);
+        $stmt->execute();
+        $stmt->close();
+        if (function_exists('logActivity')) {
+            logActivity('settings.channel_gate_change', 'app_setting', 'channel_gate_enabled', [
+                'enabled' => $enabled,
+            ]);
+        }
         return true;
     } catch (\Throwable $_e) {
         return false;

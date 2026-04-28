@@ -196,70 +196,66 @@ function _fetchAndParseSongs(target) {
 /**
  * saveSongs()
  * -----------
- * Primary save action for the editor. Writes the current `songData` to the
- * MySQL database via the editor PHP API (POST api.php?action=save).
+ * Primary save action for the editor. Persists every song the admin has
+ * edited in this session, via POST api.php?action=save_song (one request
+ * per modified song, sequentially).
  *
- * If the server is unreachable or the DB is not configured, the editor falls
- * back to a browser download of songs.json so the admin never loses changes.
+ * Why per-song and not a single bulk write:
+ *   - `action=save` rewrites the whole corpus — TRUNCATE + re-INSERT of
+ *     every songbook, song, writer, composer and component row. That
+ *     blocks the save on validation of songs the user never touched
+ *     (a missing component on SDAH-1653 refuses to let you save a fix
+ *     on SDAH-93) and risks wiping good data if the POST body is
+ *     malformed mid-way.
+ *   - `action=save_song` UPSERTs a single song's rows inside a txn and
+ *     writes a revision to tblSongRevisions (#400). Exactly the unit
+ *     the user worked on.
  *
- * Invoked by the toolbar "Save" button (#btn-save) and by saveToJSON()
- * (legacy alias used by the validation flow).
+ * Validation is scoped to the modified set — issues on other songs are
+ * surfaced by the standalone "Validate" button (toolbar), not by Save.
+ *
+ * Invoked by the toolbar "Save" button (#btn-save).
  */
 function saveSongs() {
-    /* Run validation first; abort if the data is not valid. */
-    var errors = validateSongData();
-    if (errors.length > 0) {
-        /* Show each validation error as a toast notification. */
-        errors.forEach(function (msg) {
-            showToast(msg, 'danger');
-        });
-        return; // do not proceed with save
+    /* Nothing edited -> no-op with a friendly toast. */
+    if (modifiedSongIds.size === 0) {
+        showToast('No unsaved changes.', 'info');
+        return;
     }
 
-    /* Update the generatedAt timestamp so consumers know when data was last built. */
+    var ids = Array.from(modifiedSongIds);
+
+    /* Validate only the songs we're about to save. The user should
+       never be blocked from saving a fix on song X because song Y (that
+       they never opened) is missing a field. */
+    var errors = validateSongsByIds(ids);
+    if (errors.length > 0) {
+        errors.forEach(function (msg) { showToast(msg, 'danger'); });
+        return;
+    }
+
+    /* Refresh the generatedAt timestamp so any subsequent export
+       reflects the save time. */
     songData.meta.generatedAt = new Date().toISOString();
 
-    /* Serialise with 2-space indentation for human readability. */
-    var jsonString = JSON.stringify(songData, null, 2);
-
-    /* Primary path: save to MySQL via the editor API. */
-    fetch(EDITOR_API_URL + '?action=save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: jsonString,
-    })
-    .then(function (response) {
-        return response.json().then(function (data) {
-            if (response.ok && data.success) {
-                /* DB save succeeded */
-                lastSaveTime = new Date();
-                modifiedSongIds.clear();
-                renderSongList();
-                updateStatusBar();
-                showToast(
-                    'Saved ' + data.songs + ' songs to the database.',
-                    'success'
-                );
-            } else {
-                /* Server reachable but the DB save failed — fall back to a
-                   JSON download so the admin can recover the work manually. */
-                showToast(
-                    'Database save failed: ' + (data.error || 'Unknown error') +
-                    '. Downloading a JSON backup so you don\u2019t lose changes.',
-                    'warning'
-                );
-                downloadSongsJson(jsonString);
-            }
-        });
-    })
-    .catch(function (err) {
-        /* Network error / server unavailable — fall back to browser download. */
-        showToast(
-            'Server unavailable: ' + err.message +
-            '. Downloading a JSON backup so you don\u2019t lose changes.',
-            'warning'
-        );
-        downloadSongsJson(jsonString);
+    /* Stream each song to the per-song endpoint. */
+    autoSaveSongsPerSong(ids).then(function (summary) {
+        if (summary.saved.length > 0) {
+            lastSaveTime = new Date();
+            summary.saved.forEach(function (id) { modifiedSongIds.delete(id); });
+            renderSongList();
+            updateStatusBar();
+            showToast(
+                'Saved ' + summary.saved.length + ' song' +
+                (summary.saved.length === 1 ? '' : 's') + ' to the database.',
+                'success'
+            );
+        }
+        if (summary.failed.length > 0) {
+            summary.failed.forEach(function (f) {
+                showToast('Failed to save ' + f.id + ': ' + f.error, 'danger');
+            });
+        }
     });
 }
 
@@ -517,6 +513,8 @@ function selectSong(songId) {
     setVal('edit-number', song.number || '');
     setVal('edit-songbook', song.songbook || '');
     setVal('edit-ccli', song.ccli || '');
+    setVal('edit-iswc', song.iswc || '');            /* #497 */
+    setVal('edit-tune-name', song.tuneName || '');   /* #497 */
     /* Parse IETF BCP 47 tag into sub-fields (#240). */
     var ietf = parseIetfTag(song.language || 'en');
     setVal('edit-lang-language', ietf.language);
@@ -535,14 +533,22 @@ function selectSong(songId) {
     /* Render the arrangement editor (#161). */
     renderArrangement(song);
 
-    /* Render the writers list. */
+    /* Render all five credit chip lists — writers + composers are
+       long-standing; arrangers / adaptors / translators are the new
+       #497 collections. */
     renderWriters(song);
-
-    /* Render the composers list. */
     renderComposers(song);
+    renderArrangers(song);    /* #497 */
+    renderAdaptors(song);     /* #497 */
+    renderTranslators(song);  /* #497 */
 
-    /* Render the translations panel (#352). */
+    /* Render the translations (cross-song link) panel (#352). */
     renderTranslations(song);
+
+    /* Fetch + render this song's tags (#496). Async — the chip list
+       shows "Loading…" until the fetch resolves; failures keep the
+       list empty rather than blocking the whole editor. */
+    loadSongTags(song);
 
     /* Render the copyright textarea. */
     setVal('edit-copyright', song.copyright || '');
@@ -570,10 +576,12 @@ function selectSong(songId) {
 function bindMetadataListeners() {
     /* List of text/select field IDs mapped to their corresponding song-object keys. */
     var fields = [
-        { elId: 'edit-title',    key: 'title' },
-        { elId: 'edit-number',   key: 'number' },
-        { elId: 'edit-songbook', key: 'songbook' },
-        { elId: 'edit-ccli',     key: 'ccli' },
+        { elId: 'edit-title',     key: 'title' },
+        { elId: 'edit-number',    key: 'number' },
+        { elId: 'edit-songbook',  key: 'songbook' },
+        { elId: 'edit-ccli',      key: 'ccli' },
+        { elId: 'edit-iswc',      key: 'iswc' },        /* #497 */
+        { elId: 'edit-tune-name', key: 'tuneName' },    /* #497 */
         { elId: 'edit-copyright', key: 'copyright' }
     ];
 
@@ -727,25 +735,36 @@ function renderComponents(song) {
             renderPreview(song); // refresh preview
         });
 
-        /* Number input (e.g. verse 1, verse 2). */
+        /* Number input — optional (#491). Empty / 0 stores as null so
+           a single-instance component reads as "Chorus" (no number). */
         var numInput = document.createElement('input');
         numInput.type = 'number';
         numInput.className = 'form-control form-control-sm';
-        numInput.style.width = '80px';
-        numInput.placeholder = '#';
-        numInput.value = comp.number != null ? comp.number : '';
+        numInput.style.width = '110px';
+        numInput.placeholder = '(optional)';
+        numInput.min = '0';
+        numInput.value = (comp.number != null && comp.number > 0) ? comp.number : '';
         /* Live-bind number changes. */
         numInput.addEventListener('input', function () {
             comp.number = numInput.value ? parseInt(numInput.value, 10) : null;
             markModified(song.id);
+            /* Update the header label in place so the user sees the
+               effect of their edit without re-rendering every card. */
+            typeLabel.textContent = componentHeaderLabel(comp);
             renderArrangement(song); // refresh arrangement chips (#161)
             renderPreview(song);
         });
 
-        /* Label for clarity. */
+        /* Header label — type + optional number, not the generic
+           "Component N" position we used to show (#491). */
         var typeLabel = document.createElement('span');
         typeLabel.className = 'fw-semibold me-auto';
-        typeLabel.textContent = 'Component ' + (index + 1);
+        typeLabel.textContent = componentHeaderLabel(comp);
+
+        /* Keep label in sync when the user changes the type dropdown. */
+        typeSelect.addEventListener('change', function () {
+            typeLabel.textContent = componentHeaderLabel(comp);
+        });
 
         /* ---- Action buttons (move up, move down, remove) ---- */
         var btnGroup = document.createElement('div');
@@ -800,12 +819,10 @@ function renderComponents(song) {
 
         var textarea = document.createElement('textarea');
         textarea.className = 'form-control component-lyrics';
-        textarea.rows = 4;
+        textarea.rows = 1;  /* Seed at minimum; autoResizeTextarea grows it to content (#490). */
         textarea.placeholder = 'Enter lyrics here...';
         /* Convert lines array to newline-separated string for editing (#244). */
         textarea.value = Array.isArray(comp.lines) ? comp.lines.join('\n') : '';
-        /* Auto-resize: adjust height to content. */
-        autoResizeTextarea(textarea);
         /* Live-bind lyrics changes — split back into lines array on every edit. */
         textarea.addEventListener('input', function () {
             comp.lines = textarea.value.split('\n');
@@ -822,6 +839,55 @@ function renderComponents(song) {
 
         /* Add the card to the container. */
         container.appendChild(card);
+    });
+
+    /* Auto-size every textarea we just inserted (#490).
+       Must be called AFTER the cards are in the DOM — `scrollHeight`
+       on a detached or `display:none` textarea returns 0, which left
+       the boxes stuck at one line on initial load even when they held
+       several lines of lyrics. The tab-shown hook installed once at
+       boot (see below) re-fits them when the Structure tab is opened
+       from a hidden state. */
+    fitAllComponentTextareas(container);
+}
+
+/**
+ * componentHeaderLabel(comp)
+ * --------------------------
+ * Render the human-friendly heading for a component card (#491):
+ *   { type: "chorus", number: 0|null }   → "Chorus"
+ *   { type: "verse",  number: 2 }        → "Verse 2"
+ *   { type: "bridge", number: 1 }        → "Bridge 1"   (kept — author explicitly set it)
+ *
+ * A null / empty / non-positive number is treated as "no number" and
+ * suppressed. We no longer prefix every card with "Component N"
+ * where N was just the row position — the type already names the
+ * row, and the row's vertical order already encodes the position.
+ *
+ * @param {{type:string, number:(number|null|string)}} comp
+ * @returns {string}
+ */
+function componentHeaderLabel(comp) {
+    var type = (comp && comp.type) ? String(comp.type) : 'verse';
+    var cap = type.charAt(0).toUpperCase() + type.slice(1);
+    var n = comp && comp.number;
+    var num = (n != null && n !== '' && !isNaN(n) && parseInt(n, 10) > 0)
+        ? parseInt(n, 10)
+        : null;
+    return num != null ? (cap + ' ' + num) : cap;
+}
+
+/**
+ * fitAllComponentTextareas(scope)
+ * -------------------------------
+ * Run autoResizeTextarea() on every `.component-lyrics` textarea
+ * inside `scope` (defaults to the document). Safe to call at any
+ * time — no-op on nodes whose computed size reports 0 (still hidden).
+ */
+function fitAllComponentTextareas(scope) {
+    var root = scope || document;
+    root.querySelectorAll('.component-lyrics').forEach(function (ta) {
+        autoResizeTextarea(ta);
     });
 }
 
@@ -971,13 +1037,13 @@ function autoResizeTextarea(el) {
  * @returns {string} Human-readable label.
  */
 function getComponentLabel(comp) {
-    /* Refrain is an alias for Chorus in the UI */
-    var type = comp.type === 'refrain' ? 'chorus' : comp.type;
-    var label = type.charAt(0).toUpperCase() + type.slice(1);
-    if (comp.number != null) {
-        label += ' ' + comp.number;
-    }
-    return label;
+    /* Refrain is an alias for Chorus in the UI; otherwise delegate
+       to the shared componentHeaderLabel helper so every chip /
+       card / preview heading says the same thing (#491). */
+    var normalised = Object.assign({}, comp, {
+        type: comp.type === 'refrain' ? 'chorus' : comp.type,
+    });
+    return componentHeaderLabel(normalised);
 }
 
 /**
@@ -1137,13 +1203,17 @@ function autoGenerateArrangement(song) {
  */
 function renderArrangement(song) {
     var chipsContainer = document.getElementById('arrangement-chips');
-    var input = document.getElementById('arrangement-input');
-    var feedback = document.getElementById('arrangement-feedback');
+    var input          = document.getElementById('arrangement-input');
+    var feedback       = document.getElementById('arrangement-feedback');
+    var pool           = document.getElementById('arrangement-pool');
+    var strip          = document.getElementById('arrangement-strip');
 
     if (!chipsContainer || !input || !feedback) return;
 
     /* Clear previous state. */
     chipsContainer.innerHTML = '';
+    if (pool)  pool.innerHTML  = '';
+    if (strip) strip.innerHTML = '';
     feedback.style.display = 'none';
     feedback.textContent = '';
 
@@ -1152,33 +1222,203 @@ function renderArrangement(song) {
         return;
     }
 
-    /* Convert arrangement to labels and show in input. */
-    var labelsStr = arrangementToLabels(song);
-    input.value = labelsStr;
+    /* Advanced text-mode mirror (kept for paste-in / power users). */
+    input.value = arrangementToLabels(song);
 
-    if (!song.arrangement || !Array.isArray(song.arrangement) || song.arrangement.length === 0) {
-        /* Show sequential order as muted chips. */
-        chipsContainer.innerHTML = '<span class="text-muted small">Sequential order (no custom arrangement)</span>';
-        return;
+    /* Legacy summary chips row — kept for at-a-glance reading, even
+       though the builder below is the interactive surface now (#492). */
+    renderArrangementSummaryChips(song, chipsContainer);
+
+    /* Drag-drop builder (#492). */
+    if (pool && strip) {
+        renderArrangementPool(song, pool, strip);
+        renderArrangementStrip(song, strip);
     }
 
-    /* Render coloured chips for each arrangement entry. */
+    /* Re-evaluate quick-action buttons for the song's component set (#493). */
+    refreshArrangementPresetAvailability(song);
+}
+
+/**
+ * Render the read-only chip summary at the top of the Arrangement
+ * block. Matches the pre-#492 look of a coloured pill row, but is now
+ * a display surface only — the interactive builder lives below.
+ */
+function renderArrangementSummaryChips(song, chipsContainer) {
+    if (!song.arrangement || !Array.isArray(song.arrangement) || song.arrangement.length === 0) {
+        chipsContainer.classList.add('d-none');
+        return;
+    }
+    chipsContainer.classList.remove('d-none');
     song.arrangement.forEach(function (idx, pos) {
         var comp = song.components[idx];
         if (!comp) return;
-
         var chip = document.createElement('span');
         chip.className = 'badge rounded-pill';
         chip.textContent = getComponentLabel(comp);
         chip.title = getComponentLabel(comp) + ' — position ' + (pos + 1);
-
-        /* Colour chips by type with WCAG-safe text contrast. */
         var colors = COMP_COLORS[comp.type] || { bg: '#6b7280', text: '#ffffff' };
         chip.style.backgroundColor = colors.bg;
         chip.style.color = colors.text;
-
         chipsContainer.appendChild(chip);
     });
+}
+
+/**
+ * Render the component pool (source chips). Clicking a pool chip
+ * appends that component to the arrangement strip.
+ */
+function renderArrangementPool(song, pool, strip) {
+    if (!Array.isArray(song.components) || song.components.length === 0) {
+        pool.innerHTML = '<span class="text-muted small">No components defined.</span>';
+        return;
+    }
+
+    song.components.forEach(function (comp, idx) {
+        var chip = makeArrangementChip(comp, /* includeRemove */ false);
+        chip.style.cursor = 'pointer';
+        chip.title = getComponentLabel(comp) + ' — click to add';
+        chip.addEventListener('click', function () {
+            appendToArrangement(song, idx);
+        });
+        pool.appendChild(chip);
+    });
+}
+
+/**
+ * Render the sequence strip. Each chip has a remove × and the whole
+ * strip is SortableJS-reorderable. Lazy-loads SortableJS on first use.
+ */
+function renderArrangementStrip(song, strip) {
+    /* Resolve the effective arrangement: explicit or sequential fallback. */
+    var indices = effectiveArrangement(song);
+
+    if (indices.length === 0) {
+        strip.innerHTML = '<span class="text-muted small">Sequence is empty — click a component above to add.</span>';
+        return;
+    }
+
+    indices.forEach(function (idx, posIdx) {
+        var comp = song.components[idx];
+        if (!comp) return;
+        var chip = makeArrangementChip(comp, /* includeRemove */ true);
+        chip.dataset.position = String(posIdx);
+        chip.dataset.compIdx  = String(idx);
+        /* Remove handler — takes the chip's live DOM position, not the
+           closed-over posIdx, so it stays accurate after a drag. */
+        chip.querySelector('.arr-chip-remove')?.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var pos = Array.prototype.indexOf.call(strip.children, chip);
+            removeFromArrangement(song, pos);
+        });
+        strip.appendChild(chip);
+    });
+
+    /* SortableJS for drag-reorder. Lazy-loaded on first use. */
+    ensureSortable().then(function (Sortable) {
+        if (strip._sortable) return;
+        strip._sortable = Sortable.create(strip, {
+            animation: 160,
+            ghostClass: 'arr-chip-ghost',
+            onEnd: function () {
+                /* Rebuild song.arrangement from the strip's new order. */
+                var newOrder = [];
+                Array.prototype.forEach.call(strip.children, function (el) {
+                    if (el.dataset && el.dataset.compIdx != null) {
+                        newOrder.push(parseInt(el.dataset.compIdx, 10));
+                    }
+                });
+                var curSong = findSongById(currentSongId);
+                if (!curSong) return;
+                curSong.arrangement = newOrder;
+                markModified(curSong.id);
+                renderArrangement(curSong);
+                renderPreview(curSong);
+            },
+        });
+    }).catch(function (err) {
+        console.error('[arrangement] failed to load SortableJS:', err);
+    });
+}
+
+/**
+ * Build a coloured chip DOM node for a component. Optionally includes
+ * a ×-remove button in the right corner.
+ */
+function makeArrangementChip(comp, includeRemove) {
+    var chip = document.createElement('span');
+    chip.className = 'badge rounded-pill d-inline-flex align-items-center gap-1 arr-chip';
+    var colors = COMP_COLORS[comp.type] || { bg: '#6b7280', text: '#ffffff' };
+    chip.style.backgroundColor = colors.bg;
+    chip.style.color = colors.text;
+    chip.style.padding = '0.35rem 0.6rem';
+
+    var label = document.createElement('span');
+    label.textContent = getComponentLabel(comp);
+    chip.appendChild(label);
+
+    if (includeRemove) {
+        var x = document.createElement('button');
+        x.type = 'button';
+        x.className = 'btn-close btn-close-white arr-chip-remove';
+        x.setAttribute('aria-label', 'Remove from arrangement');
+        x.style.fontSize = '0.55rem';
+        x.style.marginLeft = '0.25rem';
+        chip.appendChild(x);
+    }
+
+    return chip;
+}
+
+function effectiveArrangement(song) {
+    if (Array.isArray(song.arrangement) && song.arrangement.length > 0) {
+        return song.arrangement.slice();
+    }
+    if (Array.isArray(song.components)) {
+        return song.components.map(function (_, i) { return i; });
+    }
+    return [];
+}
+
+function appendToArrangement(song, compIdx) {
+    var current = effectiveArrangement(song);
+    current.push(compIdx);
+    song.arrangement = current;
+    markModified(song.id);
+    renderArrangement(song);
+    renderPreview(song);
+}
+
+function removeFromArrangement(song, pos) {
+    var current = effectiveArrangement(song);
+    if (pos < 0 || pos >= current.length) return;
+    current.splice(pos, 1);
+    /* Empty list means "fall back to component order" — represent it
+       as `null` so the existing downstream logic keeps working. */
+    song.arrangement = current.length === 0 ? null : current;
+    markModified(song.id);
+    renderArrangement(song);
+    renderPreview(song);
+}
+
+/* ------------------------------------------------------------------
+ * SortableJS lazy loader — same pattern as /js/modules/card-layout.js,
+ * duplicated here because editor.js is a classic script and can't
+ * import the ES-module version.
+ * ------------------------------------------------------------------ */
+var _arrSortablePromise = null;
+function ensureSortable() {
+    if (window.Sortable) return Promise.resolve(window.Sortable);
+    if (_arrSortablePromise) return _arrSortablePromise;
+    _arrSortablePromise = new Promise(function (resolve, reject) {
+        var s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js';
+        s.crossOrigin = 'anonymous';
+        s.onload  = function () { resolve(window.Sortable); };
+        s.onerror = function () { reject(new Error('SortableJS load failed')); };
+        document.head.appendChild(s);
+    });
+    return _arrSortablePromise;
 }
 
 /**
@@ -1263,27 +1503,17 @@ function bindArrangementListeners() {
         });
     }
 
-    /* Auto-generate button (chorus after each verse). */
-    var btnAuto = document.getElementById('btnArrangementAuto');
-    if (btnAuto) {
-        btnAuto.addEventListener('click', function () {
+    /* Preset quick-action buttons (#493). Delegated click handler on
+       any `.arrangement-preset` so adding new presets is a markup-only
+       change — each button carries its preset name in data-preset. */
+    document.querySelectorAll('.arrangement-preset').forEach(function (btn) {
+        btn.addEventListener('click', function () {
             if (!currentSongId) return;
             var song = findSongById(currentSongId);
             if (!song) return;
-
-            var arrangement = autoGenerateArrangement(song);
-            if (arrangement === null) {
-                showToast('No chorus found to auto-arrange.', 'warning');
-                return;
-            }
-
-            song.arrangement = arrangement;
-            markModified(song.id);
-            renderArrangement(song);
-            renderPreview(song);
-            showToast('Arrangement auto-generated.', 'success');
+            applyArrangementPreset(song, btn.dataset.preset);
         });
-    }
+    });
 
     /* Sequential / clear button. */
     var btnSeq = document.getElementById('btnArrangementSequential');
@@ -1297,9 +1527,115 @@ function bindArrangementListeners() {
             markModified(song.id);
             renderArrangement(song);
             renderPreview(song);
-            showToast('Arrangement cleared — sequential order.', 'info');
+            showToast('Arrangement cleared — using component order.', 'info');
         });
     }
+}
+
+/* ========================================================================
+ *  Arrangement presets (#493)
+ *  --------------------------------------------------------------------
+ *  Each preset consumes the song's components array and returns an
+ *  index array. Presets must NEVER throw — they're responsible for
+ *  checking their own prerequisites (which also feed the UI's
+ *  enable/disable logic via the data-requires attribute). Returning
+ *  null means "can't apply — show a toast explaining why".
+ * ======================================================================== */
+function applyArrangementPreset(song, presetName) {
+    var fn = ARRANGEMENT_PRESETS[presetName];
+    if (!fn) {
+        showToast('Unknown arrangement preset: ' + presetName, 'warning');
+        return;
+    }
+    var arrangement = fn(song);
+    if (!arrangement) {
+        showToast('This song is missing a component type needed for that pattern.', 'warning');
+        return;
+    }
+    song.arrangement = arrangement;
+    markModified(song.id);
+    renderArrangement(song);
+    renderPreview(song);
+    showToast('Arrangement set: ' + presetName.replace(/-/g, ' ') + '.', 'success');
+}
+
+var ARRANGEMENT_PRESETS = {
+    'chorus-after-each-verse': function (song) {
+        return autoGenerateArrangement(song);
+    },
+
+    'verses-only': function (song) {
+        var verses = componentIdxByType(song, 'verse');
+        return verses.length > 0 ? verses : null;
+    },
+
+    'verse-prechorus-chorus': function (song) {
+        var verses  = componentIdxByType(song, 'verse');
+        var preIdx  = firstIndexOfType(song, 'pre-chorus');
+        var choIdx  = firstIndexOfType(song, 'chorus', /* alias */ 'refrain');
+        if (!verses.length || preIdx < 0 || choIdx < 0) return null;
+        var arr = [];
+        verses.forEach(function (v) { arr.push(v); arr.push(preIdx); arr.push(choIdx); });
+        return arr;
+    },
+
+    'verse-bridge-verse': function (song) {
+        var verses = componentIdxByType(song, 'verse');
+        var brIdx  = firstIndexOfType(song, 'bridge');
+        if (verses.length < 2 || brIdx < 0) return null;
+        /* Common shape: all-but-last verse · bridge · final verse. */
+        var arr = verses.slice(0, -1);
+        arr.push(brIdx);
+        arr.push(verses[verses.length - 1]);
+        return arr;
+    },
+
+    'intro-verses-outro': function (song) {
+        var intro  = firstIndexOfType(song, 'intro');
+        var outro  = firstIndexOfType(song, 'outro');
+        var verses = componentIdxByType(song, 'verse');
+        if (intro < 0 || outro < 0 || !verses.length) return null;
+        return [intro].concat(verses).concat([outro]);
+    },
+};
+
+function componentIdxByType(song, type) {
+    var out = [];
+    (song.components || []).forEach(function (c, i) { if (c.type === type) out.push(i); });
+    return out;
+}
+function firstIndexOfType(song, type, aliasType) {
+    var comps = song.components || [];
+    for (var i = 0; i < comps.length; i++) {
+        if (comps[i].type === type || (aliasType && comps[i].type === aliasType)) return i;
+    }
+    return -1;
+}
+
+/**
+ * Enable / disable each preset button based on whether its data-requires
+ * component types are all present in the current song (#493). Disabled
+ * buttons get a tooltip explaining which type is missing, so the UI
+ * never silently no-ops.
+ */
+function refreshArrangementPresetAvailability(song) {
+    var types = new Set((song.components || []).map(function (c) {
+        /* Refrain is an alias for chorus everywhere else. */
+        return c.type === 'refrain' ? 'chorus' : c.type;
+    }));
+    document.querySelectorAll('.arrangement-preset').forEach(function (btn) {
+        var req = (btn.dataset.requires || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+        var missing = req.filter(function (t) { return !types.has(t); });
+        if (missing.length === 0) {
+            btn.disabled = false;
+            btn.title = btn.dataset.origTitle || btn.title;
+            if (!btn.dataset.origTitle) btn.dataset.origTitle = btn.title;
+        } else {
+            if (!btn.dataset.origTitle) btn.dataset.origTitle = btn.title;
+            btn.disabled = true;
+            btn.title = 'Needs: ' + missing.join(', ') + ' (not in this song).';
+        }
+    });
 }
 
 /* ========================================================================
@@ -1314,93 +1650,348 @@ function bindArrangementListeners() {
  *
  * @param {Object} song - The song object.
  */
+/* Writers + Composers collapsed onto the shared chip-list helper
+   that also drives Arrangers/Adaptors/Translators (#497). All five
+   credit collections now get the #495 cross-collection autocomplete
+   for free — createDynamicInputRow() attaches a live-search popover
+   whenever a `creditKind` is passed through. */
 function renderWriters(song) {
-    /* Grab the container. */
-    var container = document.getElementById('writers-container');
-    if (!container) return;
+    renderCreditChipList(song, 'writers',   'writers-container',   'Add Writer');
+}
+function renderComposers(song) {
+    renderCreditChipList(song, 'composers', 'composers-container', 'Add Composer');
+}
 
-    /* Clear previous content. */
+/* ----------------------------------------------------------------------
+ * Arrangers / Adaptors / Translators (#497)
+ *
+ * Three sibling credit collections that follow the same rendering
+ * pattern as writers/composers. We factor the per-collection logic
+ * through a tiny helper so adding future credit types (e.g. producers)
+ * is a one-line change.
+ *
+ * Note on naming: `renderTranslators` (here) drives the chip list of
+ * the *people* who translated this song's lyrics. `renderTranslations`
+ * (below) drives the #352 cross-song link list — different feature.
+ * ---------------------------------------------------------------------- */
+
+/* Map the song-object key to the credit_search `kind` (#495). Used
+   by renderCreditChipList to decorate chip inputs with the right
+   live-search popover — the endpoint unions across all five tables
+   and uses the kind only as the primary sort bias. */
+var CREDIT_KIND_FOR_KEY = {
+    writers:     'writer',
+    composers:   'composer',
+    arrangers:   'arranger',
+    adaptors:    'adaptor',
+    translators: 'translator',
+};
+
+function renderCreditChipList(song, key, containerId, addLabel) {
+    var container = document.getElementById(containerId);
+    if (!container) return;
+    if (!Array.isArray(song[key])) song[key] = [];
     container.innerHTML = '';
 
-    /* Ensure the song has a writers array. */
-    if (!song.writers) song.writers = [];
+    var kind = CREDIT_KIND_FOR_KEY[key] || null;
 
-    /* Render one input per writer. */
-    song.writers.forEach(function (writer, i) {
+    song[key].forEach(function (name, i) {
         var row = createDynamicInputRow(
-            writer,                              // current value
-            function (newVal) {                   // on change callback
-                song.writers[i] = newVal;
-                markModified(song.id);
-            },
-            function () {                         // on remove callback
-                song.writers.splice(i, 1);
-                markModified(song.id);
-                renderWriters(song);              // re-render the list
-            }
+            name,
+            function (newVal) { song[key][i] = newVal; markModified(song.id); },
+            function ()       { song[key].splice(i, 1); markModified(song.id);
+                                renderCreditChipList(song, key, containerId, addLabel); },
+            kind
         );
         container.appendChild(row);
     });
 
-    /* "Add Writer" button. */
     var addBtn = document.createElement('button');
     addBtn.type = 'button';
     addBtn.className = 'btn btn-sm btn-outline-primary mt-2';
-    addBtn.textContent = '+ Add Writer';
+    addBtn.textContent = '+ ' + addLabel;
     addBtn.addEventListener('click', function () {
-        song.writers.push('');       // add an empty entry
+        song[key].push('');
         markModified(song.id);
-        renderWriters(song);         // re-render
+        renderCreditChipList(song, key, containerId, addLabel);
     });
     container.appendChild(addBtn);
 }
 
-/**
- * renderComposers(song)
- * ---------------------
- * Same pattern as renderWriters but for the composers array.
- *
- * @param {Object} song - The song object.
- */
-function renderComposers(song) {
-    /* Grab the container. */
-    var container = document.getElementById('composers-container');
-    if (!container) return;
+function renderArrangers(song) {
+    renderCreditChipList(song, 'arrangers',   'arrangers-container',   'Add Arranger');
+}
 
-    /* Clear previous content. */
+function renderAdaptors(song) {
+    renderCreditChipList(song, 'adaptors',    'adaptors-container',    'Add Adaptor');
+}
+
+function renderTranslators(song) {
+    renderCreditChipList(song, 'translators', 'translators-container', 'Add Translator');
+}
+
+/* ----------------------------------------------------------------------
+ * Tags tab (#496)
+ *
+ * Fetches the current song's assigned tags from /api?action=song_tags,
+ * renders them as a chip list with × remove buttons, and wires up a
+ * live-search / create input via /api?action=tag_search. Adds/removes
+ * hit /api?action=bulk_tag with a single-songId payload — the same
+ * endpoint used by the bulk tagging tool elsewhere.
+ *
+ * Tag writes are immediate (no "Save" needed) because the editor save
+ * contract is per-song for tblSongs + its direct children; tag maps
+ * live in tblSongTagMap, outside the save_song flow, and should
+ * persist the moment the admin clicks.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Fetch + render tags for the given song. Idempotent. Prefers the
+ * song.tags array already attached by the bulk ?action=load (#496
+ * follow-up); only round-trips when the bulk load didn't include
+ * them (e.g. older servers, or after a tag mutation that invalidated
+ * the local copy).
+ */
+function loadSongTags(song) {
+    var container = document.getElementById('song-tags-container');
+    if (!container || !song || !song.id) return;
+
+    /* Fast path — the bulk load already attached tags. */
+    if (Array.isArray(song.tags)) {
+        song._tags = song.tags;
+        renderSongTagsChips(song, song.tags);
+        return;
+    }
+
+    container.innerHTML = '<span class="text-muted small">Loading…</span>';
+    fetch(EDITOR_API_URL + '?action=song_tags&id=' + encodeURIComponent(song.id))
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            var tags = Array.isArray(data.tags) ? data.tags : [];
+            song.tags = tags;
+            song._tags = tags;
+            renderSongTagsChips(song, tags);
+        })
+        .catch(function (err) {
+            console.error('[tags] load failed', err);
+            container.innerHTML = '<span class="text-danger small">Failed to load tags.</span>';
+        });
+}
+
+function renderSongTagsChips(song, tags) {
+    var container = document.getElementById('song-tags-container');
+    if (!container) return;
     container.innerHTML = '';
 
-    /* Ensure the song has a composers array. */
-    if (!song.composers) song.composers = [];
+    if (!tags.length) {
+        container.innerHTML = '<span class="text-muted small">No tags yet — add one below.</span>';
+        return;
+    }
 
-    /* Render one input per composer. */
-    song.composers.forEach(function (composer, i) {
-        var row = createDynamicInputRow(
-            composer,                             // current value
-            function (newVal) {                   // on change callback
-                song.composers[i] = newVal;
-                markModified(song.id);
-            },
-            function () {                         // on remove callback
-                song.composers.splice(i, 1);
-                markModified(song.id);
-                renderComposers(song);            // re-render
-            }
-        );
-        container.appendChild(row);
+    tags.forEach(function (tag) {
+        var chip = document.createElement('span');
+        chip.className = 'badge rounded-pill d-inline-flex align-items-center gap-1';
+        chip.style.backgroundColor = '#6366f1';  /* accent-solid */
+        chip.style.color = '#ffffff';
+        chip.style.padding = '0.35rem 0.6rem';
+        chip.title = tag.description || tag.name;
+
+        var label = document.createElement('span');
+        label.textContent = tag.name;
+        chip.appendChild(label);
+
+        var x = document.createElement('button');
+        x.type = 'button';
+        x.className = 'btn-close btn-close-white';
+        x.setAttribute('aria-label', 'Remove tag');
+        x.style.fontSize = '0.55rem';
+        x.style.marginLeft = '0.25rem';
+        x.addEventListener('click', function (e) {
+            e.stopPropagation();
+            removeSongTag(song, tag.name);
+        });
+        chip.appendChild(x);
+
+        container.appendChild(chip);
+    });
+}
+
+/**
+ * POST bulk_tag to add a single tag to the current song.
+ */
+function addSongTag(song, tagName) {
+    if (!song || !song.id || !tagName || !tagName.trim()) return;
+    tagName = tagName.trim();
+
+    /* Optimistic update: append the chip locally so the UI feels
+       snappy, then re-fetch on completion to pick up the real row
+       (so the ×-remove later uses the canonical spelling the DB
+       ended up with, not the user's input casing). */
+    var existing = song._tags || [];
+    if (existing.some(function (t) { return t.name.toLowerCase() === tagName.toLowerCase(); })) {
+        showToast('Already tagged with "' + tagName + '".', 'info');
+        return;
+    }
+
+    fetch(EDITOR_API_URL + '?action=bulk_tag', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ songIds: [song.id], add: [tagName], remove: [] }),
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+        if (data && data.added != null) {
+            /* Invalidate the bulk-load cache so loadSongTags re-fetches
+               with the authoritative row set (#496 follow-up). */
+            delete song.tags;
+            loadSongTags(song);
+            showToast('Added tag "' + tagName + '".', 'success');
+        } else {
+            showToast((data && data.error) || 'Failed to add tag.', 'danger');
+        }
+    })
+    .catch(function (err) {
+        console.error('[tags] add failed', err);
+        showToast('Failed to add tag.', 'danger');
+    });
+}
+
+function removeSongTag(song, tagName) {
+    if (!song || !song.id || !tagName) return;
+    fetch(EDITOR_API_URL + '?action=bulk_tag', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ songIds: [song.id], add: [], remove: [tagName] }),
+    })
+    .then(function (r) { return r.json(); })
+    .then(function () {
+        /* Invalidate the cached bulk-load copy — see addSongTag. */
+        delete song.tags;
+        loadSongTags(song);
+        showToast('Removed tag "' + tagName + '".', 'info');
+    })
+    .catch(function (err) {
+        console.error('[tags] remove failed', err);
+        showToast('Failed to remove tag.', 'danger');
+    });
+}
+
+/**
+ * Wire the tag-search autocomplete input. Idempotent — safe to call
+ * multiple times; a `_tagsWired` flag on the input prevents duplicate
+ * listeners.
+ */
+function bindTagSearchInput() {
+    var input = document.getElementById('song-tag-input');
+    var panel = document.getElementById('song-tag-suggestions');
+    if (!input || !panel || input._tagsWired) return;
+    input._tagsWired = true;
+
+    var debounceTimer = null;
+    var activeIdx = -1;
+    var currentSuggestions = [];
+
+    function closePanel() {
+        panel.classList.add('d-none');
+        panel.innerHTML = '';
+        activeIdx = -1;
+        currentSuggestions = [];
+    }
+
+    function renderSuggestions(suggestions, q) {
+        panel.innerHTML = '';
+        currentSuggestions = suggestions;
+        activeIdx = -1;
+
+        /* "Create new tag" affordance when the query doesn't exactly
+           match an existing name. */
+        var exact = suggestions.some(function (s) {
+            return s.name.toLowerCase() === q.toLowerCase();
+        });
+        if (q && !exact) {
+            var createItem = document.createElement('button');
+            createItem.type = 'button';
+            createItem.className = 'list-group-item list-group-item-action d-flex align-items-center gap-2';
+            createItem.innerHTML = '<i class="bi bi-plus-circle"></i> Create new tag: <strong>' +
+                escapeHtmlSafe(q) + '</strong>';
+            createItem.addEventListener('click', function () {
+                var song = findSongById(currentSongId);
+                if (song) addSongTag(song, q);
+                input.value = '';
+                closePanel();
+            });
+            panel.appendChild(createItem);
+        }
+
+        suggestions.forEach(function (s) {
+            var item = document.createElement('button');
+            item.type = 'button';
+            item.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center';
+            item.innerHTML =
+                '<span>' + escapeHtmlSafe(s.name) + '</span>' +
+                '<span class="badge bg-secondary">' + s.usage + '</span>';
+            item.addEventListener('click', function () {
+                var song = findSongById(currentSongId);
+                if (song) addSongTag(song, s.name);
+                input.value = '';
+                closePanel();
+            });
+            panel.appendChild(item);
+        });
+
+        panel.classList.toggle('d-none', panel.children.length === 0);
+    }
+
+    function fetchSuggestions(q) {
+        fetch(EDITOR_API_URL + '?action=tag_search&q=' + encodeURIComponent(q || ''))
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                renderSuggestions(Array.isArray(data.suggestions) ? data.suggestions : [], q);
+            })
+            .catch(function (err) {
+                console.error('[tags] search failed', err);
+                closePanel();
+            });
+    }
+
+    input.addEventListener('input', function () {
+        clearTimeout(debounceTimer);
+        var q = input.value.trim();
+        debounceTimer = setTimeout(function () { fetchSuggestions(q); }, 180);
     });
 
-    /* "Add Composer" button. */
-    var addBtn = document.createElement('button');
-    addBtn.type = 'button';
-    addBtn.className = 'btn btn-sm btn-outline-primary mt-2';
-    addBtn.textContent = '+ Add Composer';
-    addBtn.addEventListener('click', function () {
-        song.composers.push('');     // add an empty entry
-        markModified(song.id);
-        renderComposers(song);       // re-render
+    input.addEventListener('focus', function () {
+        if (!input.value) fetchSuggestions('');
     });
-    container.appendChild(addBtn);
+
+    input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            /* Plain Enter on a non-empty input creates/adds the tag. */
+            var q = input.value.trim();
+            if (!q) return;
+            var song = findSongById(currentSongId);
+            if (song) addSongTag(song, q);
+            input.value = '';
+            closePanel();
+        } else if (e.key === 'Escape') {
+            closePanel();
+        }
+    });
+
+    /* Click outside to dismiss. */
+    document.addEventListener('click', function (e) {
+        if (!panel.contains(e.target) && e.target !== input) {
+            closePanel();
+        }
+    });
+}
+
+/** Tiny HTML-escape helper for inline suggestion markup. */
+function escapeHtmlSafe(s) {
+    return String(s || '').replace(/[&<>"']/g, function (c) {
+        return { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c];
+    });
 }
 
 /**
@@ -1546,16 +2137,17 @@ function initTranslationControls() {
  * @param {Function} onRemove - Called when the remove button is clicked.
  * @returns {HTMLElement} The assembled input-group div.
  */
-function createDynamicInputRow(value, onChange, onRemove) {
+function createDynamicInputRow(value, onChange, onRemove, creditKind) {
     /* Wrapper div styled as a Bootstrap input group. */
     var row = document.createElement('div');
-    row.className = 'input-group input-group-sm mb-1';
+    row.className = 'input-group input-group-sm mb-1 position-relative credit-chip-row';
 
     /* Text input. */
     var input = document.createElement('input');
     input.type = 'text';
     input.className = 'form-control';
     input.value = value;
+    input.autocomplete = 'off';
     /* Live-bind every keystroke back to the data. */
     input.addEventListener('input', function () {
         onChange(input.value);
@@ -1575,7 +2167,104 @@ function createDynamicInputRow(value, onChange, onRemove) {
     row.appendChild(input);
     row.appendChild(removeBtn);
 
+    /* Attach the live-search popover (#495) when a credit kind is
+       passed. The popover queries /api?action=credit_search which
+       unions across all five credit tables so a "Fanny Crosby"
+       already used as a Writer surfaces when typing in Composers,
+       avoiding the dedupe drift problem described in the issue.
+
+       No-op when called without a kind (e.g. for non-credit dynamic
+       list uses), so the helper stays general. */
+    if (creditKind) {
+        attachCreditAutocomplete(input, row, creditKind, onChange);
+    }
+
     return row;
+}
+
+/**
+ * attachCreditAutocomplete(input, row, kind, onChange)
+ * ----------------------------------------------------
+ * Wire a chip input to the /api?action=credit_search endpoint so
+ * typing surfaces a popover of matching stored-canonical spellings.
+ * Clicking one rewrites the input to the exact stored form and fires
+ * onChange so the song object picks it up. Escape / click-outside
+ * dismiss; popover is constrained within the input-group row via
+ * absolute positioning so long credit lists stay readable.
+ */
+function attachCreditAutocomplete(input, row, kind, onChange) {
+    var popover = document.createElement('div');
+    popover.className = 'list-group position-absolute w-100 shadow d-none credit-suggestions-popover';
+    popover.style.zIndex = '1050';
+    popover.style.top = '100%';
+    popover.style.left = '0';
+    popover.style.maxHeight = '220px';
+    popover.style.overflowY = 'auto';
+    row.appendChild(popover);
+
+    var debounceTimer = null;
+
+    function close() {
+        popover.classList.add('d-none');
+        popover.innerHTML = '';
+    }
+
+    function render(suggestions) {
+        popover.innerHTML = '';
+        if (!suggestions.length) { close(); return; }
+        suggestions.forEach(function (s) {
+            var item = document.createElement('button');
+            item.type = 'button';
+            item.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center py-1';
+            var kindsBadge = (s.kinds && s.kinds.length)
+                ? '<small class="text-muted">' + escapeHtmlSafe(s.kinds.join(' · ')) + '</small>'
+                : '';
+            item.innerHTML =
+                '<span><strong>' + escapeHtmlSafe(s.name) + '</strong> ' + kindsBadge + '</span>' +
+                '<span class="badge bg-secondary">' + (s.usage || 0) + '</span>';
+            item.addEventListener('click', function (e) {
+                e.preventDefault();
+                input.value = s.name;
+                onChange(s.name);
+                close();
+                input.focus();
+            });
+            popover.appendChild(item);
+        });
+        popover.classList.remove('d-none');
+    }
+
+    function fetchSuggestions(q) {
+        /* `kind=any` unions all five tables so the same spelling
+           surfaces no matter which chip list the admin is editing. */
+        var url = EDITOR_API_URL + '?action=credit_search' +
+                  '&q='    + encodeURIComponent(q) +
+                  '&kind=any&limit=12';
+        fetch(url, { credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                render(Array.isArray(data.suggestions) ? data.suggestions : []);
+            })
+            .catch(function () { close(); });
+    }
+
+    input.addEventListener('input', function () {
+        clearTimeout(debounceTimer);
+        var q = input.value.trim();
+        if (q.length < 1) { close(); return; }
+        debounceTimer = setTimeout(function () { fetchSuggestions(q); }, 180);
+    });
+
+    input.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') close();
+    });
+
+    /* Dismiss on click outside this specific row. We register a
+       delegated handler only once per row — listener is cleaned up
+       implicitly when the row is removed from the DOM. */
+    document.addEventListener('click', function (e) {
+        if (!row.contains(e.target)) close();
+    });
 }
 
 /* ========================================================================
@@ -1630,6 +2319,43 @@ function validateSongData() {
     });
 
     /* Return the collected errors (empty array means everything is valid). */
+    return errors;
+}
+
+/**
+ * validateSongsByIds(ids)
+ * -----------------------
+ * Same validation rules as validateSongData(), but scoped to a specific
+ * list of song IDs. Used by the manual Save button so that missing
+ * fields on a song the admin never touched don't block a save of the
+ * song they actually edited.
+ *
+ * @param {string[]} ids Song IDs to validate
+ * @returns {string[]} Human-readable error messages; empty if all valid
+ */
+function validateSongsByIds(ids) {
+    var wanted = new Set(ids);
+    var errors = [];
+    (songData.songs || []).forEach(function (song, i) {
+        if (!wanted.has(song.id)) return;
+        var label = 'Song ' + (song.id || '[' + i + ']') +
+                    ' (' + (song.title || 'no title') + ')';
+        if (!song.id || typeof song.id !== 'string' || song.id.trim() === '') {
+            errors.push(label + ': missing or empty "id".');
+        }
+        if (!song.title || typeof song.title !== 'string' || song.title.trim() === '') {
+            errors.push(label + ': missing or empty "title".');
+        }
+        if (song.number == null || String(song.number).trim() === '') {
+            errors.push(label + ': missing "number".');
+        }
+        if (!song.songbook || typeof song.songbook !== 'string' || song.songbook.trim() === '') {
+            errors.push(label + ': missing or empty "songbook".');
+        }
+        if (!Array.isArray(song.components) || song.components.length === 0) {
+            errors.push(label + ': must have at least one component.');
+        }
+    });
     return errors;
 }
 
@@ -1837,11 +2563,14 @@ function renderPreview(song) {
         /* Component label, e.g. "Verse 1" or "Chorus". Refrain → Chorus alias. */
         var heading = document.createElement('h6');
         heading.className = 'mt-3 mb-1 fw-bold text-uppercase small';
-        var displayType = comp.type === 'refrain' ? 'chorus' : (comp.type || 'Section');
-        var headingText = displayType;
-        if (comp.number != null) {
-            headingText += ' ' + comp.number;
-        }
+        /* Use the shared labelling helper so the Preview heading
+           matches the Structure-tab card heading exactly (#491):
+           no generic "Component N"; number is suppressed when
+           unset or zero. */
+        var previewComp = Object.assign({}, comp, {
+            type: comp.type === 'refrain' ? 'chorus' : comp.type,
+        });
+        var headingText = componentHeaderLabel(previewComp);
         heading.textContent = headingText;
 
         /* Lyrics block. */
@@ -1868,7 +2597,8 @@ function renderPreview(song) {
     if (song.writers && song.writers.length > 0) {
         var writersEl = document.createElement('p');
         writersEl.className = 'text-muted small mt-3';
-        writersEl.textContent = 'Writers: ' + song.writers.join(', ');
+        /* "; " separator (#495). */
+        writersEl.textContent = 'Writers: ' + song.writers.join('; ');
         container.appendChild(writersEl);
     }
     if (song.copyright) {
@@ -2080,57 +2810,154 @@ function setChecked(elementId, checked) {
     }
 }
 
+/* ----------------------------------------------------------------------
+ * Language / Script / Region lookup tables (#489)
+ *
+ * The editor's three language inputs now display **full names** by
+ * default — the average admin doesn't know that "Latn" is Latin or
+ * that "cy" is Welsh. Each table is keyed by ISO code (which is what
+ * MySQL actually stores, as part of the composed IETF BCP 47 tag) and
+ * maps to the human-friendly name shown in the input.
+ *
+ * Keep in lock-step with the <datalist> options in index.php — an
+ * option in the markup but absent from this table would resolve back
+ * to its code on save (harmless but uglier).
+ * ---------------------------------------------------------------------- */
+var LANG_CODE_TO_NAME = {
+    en:'English', fr:'French', de:'German', es:'Spanish', it:'Italian',
+    pt:'Portuguese', la:'Latin', cy:'Welsh', gd:'Scottish Gaelic',
+    ga:'Irish', nl:'Dutch', sv:'Swedish', no:'Norwegian', da:'Danish',
+    fi:'Finnish', pl:'Polish', cs:'Czech', hu:'Hungarian', ro:'Romanian',
+    ko:'Korean', ja:'Japanese', zh:'Chinese', ar:'Arabic', he:'Hebrew',
+    hi:'Hindi', sw:'Swahili', zu:'Zulu', xh:'Xhosa', af:'Afrikaans',
+    tl:'Tagalog',
+};
+var SCRIPT_CODE_TO_NAME = {
+    Latn:'Latin', Cyrl:'Cyrillic', Arab:'Arabic', Hebr:'Hebrew',
+    Deva:'Devanagari', Hans:'Simplified Chinese', Hant:'Traditional Chinese',
+    Hang:'Hangul', Kana:'Katakana', Grek:'Greek', Geor:'Georgian',
+    Armn:'Armenian', Thai:'Thai', Ethi:'Ethiopic',
+};
+var REGION_CODE_TO_NAME = {
+    GB:'United Kingdom', US:'United States', AU:'Australia', NZ:'New Zealand',
+    CA:'Canada', IE:'Ireland', ZA:'South Africa', FR:'France', DE:'Germany',
+    AT:'Austria', CH:'Switzerland', ES:'Spain', MX:'Mexico', IT:'Italy',
+    PT:'Portugal', BR:'Brazil', NL:'Netherlands', SE:'Sweden', NO:'Norway',
+    DK:'Denmark', FI:'Finland', PL:'Poland', CZ:'Czechia', HU:'Hungary',
+    RO:'Romania', KR:'South Korea', JP:'Japan', CN:'China', TW:'Taiwan',
+    IN:'India', PH:'Philippines', KE:'Kenya', NG:'Nigeria', GH:'Ghana',
+};
+
+/* Pre-compute reverse maps (lowercased name → code) for lookup. */
+var _LANG_NAME_TO_CODE = _flipLangMap(LANG_CODE_TO_NAME);
+var _SCRIPT_NAME_TO_CODE = _flipLangMap(SCRIPT_CODE_TO_NAME);
+var _REGION_NAME_TO_CODE = _flipLangMap(REGION_CODE_TO_NAME);
+
+function _flipLangMap(src) {
+    var out = {};
+    Object.keys(src).forEach(function (code) {
+        out[src[code].toLowerCase()] = code;
+    });
+    return out;
+}
+
+/**
+ * Resolve a free-text input value to its canonical ISO code.
+ * Accepts either the full name ("English", case-insensitive) or the
+ * bare code ("en"). Returns the input unchanged if it can't be
+ * resolved — we don't want to silently discard a value the admin
+ * deliberately typed for a language we don't yet list.
+ *
+ * @param {string} value   Raw value from a language/script/region input
+ * @param {"language"|"script"|"region"} dim
+ * @returns {string} ISO code (or original value if not recognised)
+ */
+function resolveLangCode(value, dim) {
+    var v = (value || '').trim();
+    if (!v) return '';
+    var lower = v.toLowerCase();
+    var nameMap = dim === 'language' ? _LANG_NAME_TO_CODE
+                : dim === 'script'   ? _SCRIPT_NAME_TO_CODE
+                : dim === 'region'   ? _REGION_NAME_TO_CODE
+                : {};
+    if (nameMap[lower] != null) return nameMap[lower];
+
+    /* Fall through to code-normalisation. The datalist no longer
+       offers raw codes, but power users may still type them. */
+    if (dim === 'language') return lower.toLowerCase();
+    if (dim === 'region')   return v.toUpperCase();
+    if (dim === 'script') {
+        return v.length > 0
+            ? v.charAt(0).toUpperCase() + v.slice(1).toLowerCase()
+            : '';
+    }
+    return v;
+}
+
+/**
+ * Convert an ISO code back to its full display name, falling back to
+ * the code itself (useful for inputs populated from existing songs
+ * with codes the lookup table doesn't yet know).
+ */
+function resolveLangName(code, dim) {
+    var map = dim === 'language' ? LANG_CODE_TO_NAME
+            : dim === 'script'   ? SCRIPT_CODE_TO_NAME
+            : dim === 'region'   ? REGION_CODE_TO_NAME
+            : {};
+    return map[code] != null ? map[code] : (code || '');
+}
+
 /**
  * parseIetfTag(tag)
  * -----------------
- * Splits an IETF BCP 47 language tag into its constituent parts.
- * Format: language[-Script][-REGION]
- *   - language: 2-3 lowercase letters (ISO 639)
- *   - Script:   4 letters, title-case (ISO 15924) — optional
- *   - REGION:   2 uppercase letters (ISO 3166-1) — optional
+ * Splits an IETF BCP 47 language tag into its constituent parts,
+ * mapping each code to its human-friendly display name (#489). The
+ * returned values are what the three editor inputs should show.
  *
  * @param {string} tag - e.g. "en", "en-GB", "zh-Hant-TW"
  * @returns {{ language: string, script: string, region: string }}
+ *          display names (e.g. "English", "Latin", "United Kingdom")
  */
 function parseIetfTag(tag) {
     var parts = (tag || 'en').split('-');
-    var result = { language: parts[0] || 'en', script: '', region: '' };
+    var langCode = parts[0] || 'en';
+    var scriptCode = '';
+    var regionCode = '';
 
     for (var i = 1; i < parts.length; i++) {
         var p = parts[i];
-        /* Script: exactly 4 chars, first uppercase (e.g. Latn, Cyrl) */
         if (p.length === 4 && /^[A-Z][a-z]{3}$/.test(p)) {
-            result.script = p;
-        /* Region: exactly 2 uppercase chars (e.g. GB, US) */
+            scriptCode = p;
         } else if (p.length === 2 && /^[A-Z]{2}$/.test(p)) {
-            result.region = p;
+            regionCode = p;
         }
     }
-    return result;
+
+    return {
+        language: resolveLangName(langCode,  'language'),
+        script:   resolveLangName(scriptCode,'script'),
+        region:   resolveLangName(regionCode,'region'),
+    };
 }
 
 /**
  * composeIetfTag()
  * ----------------
- * Reads the three language sub-fields from the DOM and composes
- * the IETF BCP 47 tag. Updates the hidden edit-language field
- * and the preview element.
+ * Reads the three language sub-fields from the DOM (which carry full
+ * names after #489), resolves each back to an ISO code, and composes
+ * the IETF BCP 47 tag. Updates the hidden edit-language field and
+ * the preview element.
  *
  * @returns {string} The composed IETF tag (e.g. "en-Latn-GB")
  */
 function composeIetfTag() {
-    var lang   = (getVal('edit-lang-language') || 'en').trim().toLowerCase();
-    var script = (getVal('edit-lang-script') || '').trim();
-    var region = (getVal('edit-lang-region') || '').trim().toUpperCase();
+    var langCode   = resolveLangCode(getVal('edit-lang-language'), 'language') || 'en';
+    var scriptCode = resolveLangCode(getVal('edit-lang-script'),   'script');
+    var regionCode = resolveLangCode(getVal('edit-lang-region'),   'region');
 
-    /* Normalise script to title case (e.g. "latn" → "Latn") */
-    if (script.length > 0) {
-        script = script.charAt(0).toUpperCase() + script.slice(1).toLowerCase();
-    }
-
-    var tag = lang;
-    if (script) tag += '-' + script;
-    if (region) tag += '-' + region;
+    var tag = langCode;
+    if (scriptCode) tag += '-' + scriptCode;
+    if (regionCode) tag += '-' + regionCode;
 
     /* Update the hidden field and preview. */
     setVal('edit-language', tag);
@@ -2191,7 +3018,10 @@ function clearEditForm() {
     setVal('edit-number', '');
     setVal('edit-songbook', '');
     setVal('edit-ccli', '');
-    setVal('edit-lang-language', 'en');
+    setVal('edit-iswc', '');           /* #497 */
+    setVal('edit-tune-name', '');      /* #497 */
+    /* Default to the display name not the raw code (#489). */
+    setVal('edit-lang-language', resolveLangName('en', 'language'));
     setVal('edit-lang-script', '');
     setVal('edit-lang-region', '');
     composeIetfTag();
@@ -2333,6 +3163,8 @@ function addNewSong() {
         songbookName: '',
         language: 'en',
         ccli: '',
+        iswc: '',           /* #497 */
+        tuneName: '',       /* #497 */
         copyright: '',
         verified: false,
         lyricsPublicDomain: false,
@@ -2341,6 +3173,9 @@ function addNewSong() {
         hasSheetMusic: false,
         writers: [],
         composers: [],
+        arrangers: [],      /* #497 */
+        adaptors: [],       /* #497 */
+        translators: [],    /* #497 */
         components: [
             {
                 type: 'verse',
@@ -2583,6 +3418,20 @@ function init() {
 
     /* Bind translation controls (#352). */
     initTranslationControls();
+
+    /* Structure tab is display:none until its Bootstrap tab is opened,
+       so scrollHeight reads 0 on any component textarea fitted while
+       the tab is hidden. Listen for shown.bs.tab and re-fit once the
+       browser actually lays the panel out (#490). */
+    var structureTab = document.getElementById('tab-structure');
+    if (structureTab) {
+        structureTab.addEventListener('shown.bs.tab', function () {
+            fitAllComponentTextareas();
+        });
+    }
+
+    /* Wire the Tags tab autocomplete input (#496). Idempotent. */
+    bindTagSearchInput();
 
     /* Register the beforeunload handler for unsaved-changes protection. */
     window.addEventListener('beforeunload', warnBeforeUnload);

@@ -15,7 +15,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
-require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -27,6 +27,8 @@ if (!$currentUser || !userHasEntitlement('review_song_requests', $currentUser['r
     echo '<!DOCTYPE html><html><body><h1>403 — review_song_requests required</h1></body></html>';
     exit;
 }
+
+$activePage = 'requests';
 
 $statuses = ['pending', 'reviewed', 'added', 'declined'];
 $filter   = (string)($_GET['status'] ?? 'pending');
@@ -51,13 +53,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $err = 'Invalid request.';
     } else {
         try {
-            $db = getDb();
+            $db = getDbMysqli();
             $stmt = $db->prepare(
                 'UPDATE tblSongRequests
                     SET Status = ?, AdminNotes = ?, ResolvedSongId = ?
                   WHERE Id = ?'
             );
-            $stmt->execute([$newStatus, $adminNotes, $resolvedSong ?: null, $id]);
+            $resolved = $resolvedSong !== '' ? $resolvedSong : null;
+            $stmt->bind_param('sssi', $newStatus, $adminNotes, $resolved, $id);
+            $stmt->execute();
+            $stmt->close();
             $flash = 'Request #' . $id . ' updated.';
         } catch (\Throwable $e) {
             error_log('[manage/requests.php] ' . $e->getMessage());
@@ -69,15 +74,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 /* --- GET: fetch rows --- */
 $rows = [];
 try {
-    $db = getDb();
+    $db = getDbMysqli();
     if ($filter === 'all') {
-        $stmt = $db->query(
+        $stmt = $db->prepare(
             'SELECT r.*, u.Username AS requested_by
                FROM tblSongRequests r
                LEFT JOIN tblUsers u ON u.Id = r.UserId
               ORDER BY r.CreatedAt DESC
               LIMIT 500'
         );
+        $stmt->execute();
     } else {
         $stmt = $db->prepare(
             'SELECT r.*, u.Username AS requested_by
@@ -87,9 +93,11 @@ try {
               ORDER BY r.CreatedAt DESC
               LIMIT 500'
         );
-        $stmt->execute([$filter]);
+        $stmt->bind_param('s', $filter);
+        $stmt->execute();
     }
-    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
 } catch (\Throwable $e) {
     error_log('[manage/requests.php] ' . $e->getMessage());
     $err = 'Could not load requests — check server logs for details.';
@@ -97,10 +105,13 @@ try {
 
 $counts = [];
 try {
-    $cs = $db->query('SELECT Status, COUNT(*) AS cnt FROM tblSongRequests GROUP BY Status');
-    while ($row = $cs->fetch(PDO::FETCH_ASSOC)) {
+    $cs = $db->prepare('SELECT Status, COUNT(*) AS cnt FROM tblSongRequests GROUP BY Status');
+    $cs->execute();
+    $res = $cs->get_result();
+    while ($row = $res->fetch_assoc()) {
         $counts[$row['Status']] = (int)$row['cnt'];
     }
+    $cs->close();
 } catch (\Throwable $_e) {}
 
 ?>
@@ -110,12 +121,7 @@ try {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Song Requests — iHymns Admin</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"
-          integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
-          integrity="sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+" crossorigin="anonymous">
-    <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__) . '/css/app.css') ?>">
-    <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime(dirname(__DIR__) . '/css/admin.css') ?>">
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
 <body>
@@ -245,9 +251,6 @@ try {
 
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
-        integrity="sha384-zKzgIZcXU99qF1nNW9g+x1znB5NhCPs9qZeGzUnnFOaHJF9jCCKySBjq3vIKabk/"
-        crossorigin="anonymous"></script>
 <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>
 </html>

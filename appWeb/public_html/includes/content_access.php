@@ -17,13 +17,15 @@ declare(strict_types=1);
  *   3. At equal priority, deny beats allow
  *   4. If no restrictions match, access is granted (open by default)
  *
- * @requires PHP 8.1+ with PDO (via manage/includes/db.php)
+ * @requires PHP 8.1+ with mysqli (via includes/db_mysql.php)
  */
 
 if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     http_response_code(403);
     exit('Access denied.');
 }
+
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
 /* Inheritance-aware licence resolver (#462). The `require_licence` branch
    below calls getUserEffectiveLicenceTypes() so a rule saying
@@ -42,7 +44,7 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'licences.php';
  */
 function checkContentAccess(string $entityType, string $entityId, ?int $userId, string $platform = 'PWA'): array
 {
-    $db = getDb();
+    $db = getDbMysqli();
 
     /* Fetch all restrictions for this entity */
     $stmt = $db->prepare(
@@ -51,8 +53,10 @@ function checkContentAccess(string $entityType, string $entityId, ?int $userId, 
          WHERE EntityType = ? AND (EntityId = ? OR EntityId = \'*\')
          ORDER BY Priority DESC, Effect ASC'
     );
-    $stmt->execute([$entityType, $entityId]);
-    $rules = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $stmt->bind_param('ss', $entityType, $entityId);
+    $stmt->execute();
+    $rules = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
 
     if (empty($rules)) {
         return ['allowed' => true, 'reason' => ''];
@@ -66,8 +70,12 @@ function checkContentAccess(string $entityType, string $entityId, ?int $userId, 
 
     if ($userId !== null) {
         $stmt = $db->prepare('SELECT OrgId FROM tblOrganisationMembers WHERE UserId = ?');
-        $stmt->execute([$userId]);
-        $userOrgIds = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        $stmt->bind_param('i', $userId);
+        $stmt->execute();
+        /* PDO::FETCH_COLUMN returned a flat array of column 0; mysqli has
+           no direct equivalent — pull all rows then array_column. */
+        $userOrgIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'OrgId');
+        $stmt->close();
 
         /* Effective licence types: direct + via every org the user belongs
            to + every ancestor org (#462). Replaces the old single-level

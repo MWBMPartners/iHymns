@@ -13,8 +13,8 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
-require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'card_layout.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
 /* Dashboard is now the single landing page for every management
    surface, so admit any signed-in user who holds at least one
@@ -46,13 +46,21 @@ $activePage  = 'dashboard';
 /* Gather stats — all queries updated for the v0.10 PascalCase schema
    (#407). Each is wrapped in try/catch so a missing table during early
    setup doesn't blank the whole dashboard. */
-$db = getDb();
+$db = getDbMysqli();
 
 $tryInt = function (string $sql, array $params = []) use ($db): int {
     try {
         $stmt = $db->prepare($sql);
-        $stmt->execute($params);
-        return (int)$stmt->fetchColumn();
+        /* All current callers pass string params; default to 's'×N
+           and skip bind_param when there are no params (mysqli rejects
+           an empty type string). */
+        if (!empty($params)) {
+            $stmt->bind_param(str_repeat('s', count($params)), ...$params);
+        }
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_row();
+        $stmt->close();
+        return (int)($row[0] ?? 0);
     } catch (\Throwable $_e) {
         return 0;
     }
@@ -71,22 +79,28 @@ $views24h      = $tryInt('SELECT COUNT(*) FROM tblSongHistory WHERE ViewedAt >= 
 /* User counts by role */
 $roleCounts = [];
 try {
-    $rs = $db->query('SELECT Role, COUNT(*) AS cnt FROM tblUsers WHERE IsActive = 1 GROUP BY Role');
-    while ($row = $rs->fetch(PDO::FETCH_ASSOC)) {
+    $stmt = $db->prepare('SELECT Role, COUNT(*) AS cnt FROM tblUsers WHERE IsActive = 1 GROUP BY Role');
+    $stmt->execute();
+    $res = $stmt->get_result();
+    while ($row = $res->fetch_assoc()) {
         $roleCounts[$row['Role']] = (int)$row['cnt'];
     }
+    $stmt->close();
 } catch (\Throwable $_e) {}
 
 /* Recent users (last 10) */
 $recentUsers = [];
 try {
-    $recentUsers = $db->query(
+    $stmt = $db->prepare(
         'SELECT Id AS id, Username AS username, DisplayName AS display_name,
                 Role AS role, IsActive AS is_active, CreatedAt AS created_at
            FROM tblUsers
           ORDER BY CreatedAt DESC
           LIMIT 10'
-    )->fetchAll(PDO::FETCH_ASSOC);
+    );
+    $stmt->execute();
+    $recentUsers = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
 } catch (\Throwable $_e) {}
 
 $csrf = csrfToken();
@@ -97,14 +111,7 @@ $csrf = csrfToken();
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard — iHymns Admin</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
-          rel="stylesheet"
-          integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
-          crossorigin="anonymous">
-    <link rel="stylesheet"
-          href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
-          integrity="sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+"
-          crossorigin="anonymous">
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <!-- Shared iHymns palette + admin styles -->
     <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__) . "/css/app.css") ?>">
     <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime(dirname(__DIR__) . "/css/admin.css") ?>">
@@ -220,8 +227,11 @@ $csrf = csrfToken();
             ['tiers',        'manage_access_tiers',         '/manage/tiers',         'bi-stars',         'Access Tiers',         'Define tiers controlling lyrics, audio, MIDI, sheet music &amp; offline', true],
             ['entitlements', 'manage_entitlements',         '/manage/entitlements',  'bi-key',           'Entitlements &amp; Gating','Assign capabilities to roles',                                          true],
             ['analytics',    'view_analytics',              '/manage/analytics',     'bi-graph-up',      'Analytics',            'Top songs, searches, and user activity',                                  true],
+            ['ccli-report',  'view_ccli_report',            '/manage/ccli-report',   'bi-receipt',       'CCLI Usage Report',    'Per-song view counts + CSV export for the annual CCLI usage return',      true],
+            ['missing-numbers','edit_songs',                '/manage/missing-numbers','bi-binoculars',   'Missing Numbers',      'Catalogue-wide report of songbook number gaps',                           true],
             ['data-health',  'drop_legacy_tables',          '/manage/data-health',   'bi-activity',      'Data Health',          'Confirm MySQL is authoritative; disconnect legacy fallbacks',             true],
-            ['setup-db',     'run_db_install',              '/manage/setup-database','bi-database-gear', 'Database Setup',       'Install, migrate, backup, restore, cleanup',                              true],
+            ['schema-audit', 'drop_legacy_tables',          '/manage/schema-audit',  'bi-clipboard2-data','Schema Audit',        'Diff schema.sql vs live DB vs migrations; spot drift before it bites',    true],
+            ['setup-database','run_db_install',             '/manage/setup-database','bi-database-gear', 'Database Setup',       'Install, migrate, backup, restore, cleanup',                              true],
             ['view-site',    null,                          '/',                     'bi-globe',         'View Website',         'Open iHymns in a new tab',                                                true],
         ];
 
@@ -355,9 +365,9 @@ $csrf = csrfToken();
             <h2 class="h6 mb-3"><i class="bi bi-info-circle me-2"></i>System Info</h2>
             <table class="table table-sm table-borderless mb-0 small">
                 <tr><td class="text-muted" style="width:40%">PHP Version</td><td><?= phpversion() ?></td></tr>
-                <tr><td class="text-muted">Database Driver</td><td><?= ucfirst(DB_CONFIG['driver']) ?></td></tr>
-                <?php if (DB_CONFIG['driver'] === 'sqlite'): ?>
-                <tr><td class="text-muted">Database File</td><td><code class="small"><?= htmlspecialchars(basename(DB_CONFIG['sqlite']['path'])) ?></code></td></tr>
+                <tr><td class="text-muted">Database Driver</td><td>MySQL</td></tr>
+                <?php if (defined('DB_HOST') && defined('DB_NAME')): ?>
+                <tr><td class="text-muted">Database</td><td><code class="small"><?= htmlspecialchars(DB_NAME . '@' . DB_HOST) ?></code></td></tr>
                 <?php endif; ?>
                 <tr><td class="text-muted">Your Role</td><td><?= htmlspecialchars(roleLabel($currentUser['role'])) ?></td></tr>
                 <tr><td class="text-muted">Your Username</td><td><code><?= htmlspecialchars($currentUser['username']) ?></code></td></tr>
@@ -375,10 +385,12 @@ $csrf = csrfToken();
 
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
-            integrity="sha384-zKzgIZcXU99qF1nNW9g+x1znB5NhCPs9qZeGzUnnFOaHJF9jCCKySBjq3vIKabk/"
-            crossorigin="anonymous"></script>
-
+    <?php /* Bootstrap bundle is loaded once, centrally, by admin-footer.php
+             (CLAUDE.md modularity rule: "A <script> loading Bootstrap ...
+             on a page that also includes admin-footer.php (double-load)"
+             is an explicit red flag). The `type="module"` block below uses
+             native ES-module semantics, not Bootstrap, so it does not need
+             the bundle to be loaded first. */ ?>
     <script type="module">
         import { bootCardLayout } from '/js/modules/card-layout.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/card-layout.js') ?>';
         bootCardLayout();

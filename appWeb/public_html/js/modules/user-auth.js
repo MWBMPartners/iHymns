@@ -16,12 +16,7 @@
 import { escapeHtml } from '../utils/html.js';
 import { userHasEntitlement } from './entitlements.js';
 import { offlineQueue } from './offline-queue.js';
-
-/** @type {string} localStorage key for the auth token */
-const STORAGE_AUTH_TOKEN = 'ihymns_auth_token';
-
-/** @type {string} localStorage key for cached user info */
-const STORAGE_AUTH_USER = 'ihymns_auth_user';
+import { STORAGE_AUTH_TOKEN, STORAGE_AUTH_USER } from '../constants.js';
 
 export class UserAuth {
     /**

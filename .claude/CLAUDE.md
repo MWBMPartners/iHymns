@@ -21,7 +21,7 @@ Before adding code on `/manage/*` or `/` (main app), review this list:
 2. **Footer / copyright / version** → `manage/includes/admin-footer.php`. Do not render your own; do not re-load Bootstrap JS anywhere else.
 3. **Favicon / app icons** → `manage/includes/head-favicon.php` (admin) / the `<link>` block in `index.php` (main site).
 4. **Auth + CSRF + role + entitlement checks** → `manage/includes/auth.php` + `includes/entitlements.php`. Pages MUST call `isAuthenticated()`, `requireAdmin()`, or `userHasEntitlement()` — never reinvent the check.
-5. **DB connection** → `manage/includes/db.php::getDb()`. Never instantiate PDO / mysqli directly.
+5. **DB connection** → `includes/db_mysql.php::getDbMysqli()`. Never instantiate PDO / mysqli directly. (PDO has been fully removed — see #554 / #555.)
 6. **Card-layout reorder + hide** → `includes/card_layout.php` (server) + `js/modules/card-layout.js` (client). Any new card grid that should support reorder uses `data-layout-surface` + the shared helpers.
 7. **Offline-download UI** → `js/modules/offline-ui.js`. Any new "save for offline" button uses `data-song-download` or `data-songbook-download` and relies on the shared feature detection + state machine.
 8. **Content access / gating** → `includes/content_access.php::checkContentAccess()`. Never query `tblContentRestrictions` directly from a page or an API handler.
@@ -35,7 +35,7 @@ Reject any change that introduces:
 - A duplicate `<nav>` on an admin page.
 - A duplicate `<link rel="stylesheet" href="/css/app.css">` + `/css/admin.css` block when `admin-footer.php` or another shared include could host it.
 - A hard-coded list of roles, entitlements, licence types, tier names, or card IDs that already exists in a central map.
-- A PDO / mysqli instantiation outside `getDb()` / `getDbMysqli()`.
+- A PDO / mysqli instantiation outside `getDbMysqli()`. (PDO is no longer used at all — any `new PDO(...)` is a regression.)
 - A `<script>` loading Bootstrap or Bootstrap-Icons on a page that also includes `admin-footer.php` (double-load).
 - An inline click handler that re-implements behaviour the corresponding shared JS module already offers.
 
@@ -55,9 +55,10 @@ tools/           — Build + data-prep scripts
 
 ## 🛠 Commit / PR expectations
 
+- **One PR per piece of work, multiple commits inside it.** Group related work into a single PR with logical, well-scoped commits rather than splitting across several smaller PRs. One review session, one deploy to alpha, one verify pass. Each commit stays atomic and individually revertable (`git revert <sha>` works per-commit). Avoids the inter-PR race conditions and multi-deploy churn that bit the 2026-04-25 audit-cleanup work, where a chain of small PRs each triggered its own deploy + verify cycle and one mis-diagnosis cascaded through all of them. Multiple PRs only for genuinely independent pieces of work that happen to be in flight at the same time (e.g. unrelated bugfix + unrelated feature).
 - Commits have descriptive first-line summaries; wrapped body explaining the WHY, not just the WHAT.
 - Every user-reported bug or feature gets a tracking GitHub issue **before** the commit that closes it, so the timeline reads sensibly.
-- PRs target `alpha`. Stacked PRs are fine; note the base branch in the description.
+- PRs target `alpha`. Stacked PRs (PR-B depends on PR-A landing first) are an exception, reserved for genuinely sequential dependencies — most work should land as a single PR per the rule above. Note the base branch in the description.
 - Never skip pre-commit hooks (`--no-verify`), never force-push main/alpha, never amend merged commits.
 - Audit before opening a PR: PHP syntax (`find appWeb -name '*.php' -exec php -l {} \;`), JS syntax (`find appWeb -name '*.js' -exec node --check {} \;`), security + accessibility + structure per the pattern established on PR #445.
 

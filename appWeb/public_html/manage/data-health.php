@@ -16,31 +16,37 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
-if (!isAuthenticated()) {
-    header('Location: /manage/login');
-    exit;
-}
+requireGlobalAdmin();
 $currentUser = getCurrentUser();
-if (!$currentUser || ($currentUser['role'] ?? '') !== 'global_admin') {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — Global Admin access required</h1></body></html>';
-    exit;
-}
-$activePage = 'data-health';
+$activePage  = 'data-health';
 
 $flash   = '';
 $error   = '';
 
-/* getDb() can throw if MySQL credentials are wrong or the server is
-   unreachable — previously that fatal killed the page output before a
-   single byte reached the browser, so admins saw a blank screen with
-   no clue what went wrong. Catch, record, and render the admin layout
-   anyway with the error surfaced. */
+/* Allowlist of tables this page reports counts for. Used both in the
+   loop that drives the report AND as the runtime guard at the query
+   site (#558). Lifting this out of an inline array literal keeps the
+   safety locally provable: the in_array() check at line ~95 doesn't
+   have to trust that the loop variable came from this list — it can
+   prove it. If the loop is ever refactored into a function that
+   accepts a $tbl parameter, the guard remains in place. */
+const HEALTH_TABLES = [
+    'tblSongs', 'tblSongbooks', 'tblUsers', 'tblUserSetlists',
+    'tblSharedSetlists', 'tblSongRequests', 'tblSongRevisions',
+    'tblUserGroups', 'tblOrganisations',
+];
+
+/* getDbMysqli() can throw if MySQL credentials are wrong or the
+   server is unreachable — previously that fatal killed the page
+   output before a single byte reached the browser, so admins saw a
+   blank screen with no clue what went wrong. Catch, record, and
+   render the admin layout anyway with the error surfaced. */
 try {
-    $db = getDb();
+    $db = getDbMysqli();
 } catch (\Throwable $e) {
-    error_log('[manage/data-health.php] getDb failed: ' . $e->getMessage());
+    error_log('[manage/data-health.php] getDbMysqli failed: ' . $e->getMessage());
     $db = null;
     $error = 'Database is currently unreachable. ' . $e->getMessage();
 }
@@ -92,17 +98,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 /* ---- Gather health ---- */
 $tableCounts = [];
-foreach (['tblSongs', 'tblSongbooks', 'tblUsers', 'tblUserSetlists',
-          'tblSharedSetlists', 'tblSongRequests', 'tblSongRevisions',
-          'tblUserGroups', 'tblOrganisations'] as $tbl) {
+foreach (HEALTH_TABLES as $tbl) {
     if ($db === null) {
         $tableCounts[$tbl] = null;
         continue;
     }
+    /* Belt-and-braces allowlist guard. Technically redundant given the
+       loop iterates HEALTH_TABLES, but it makes the safety provable at
+       the query site without the reader having to trace control flow.
+       SQL identifiers (table names) cannot be parameterised — `?` only
+       binds values — so the guard + backticks is the correct pattern. */
+    if (!in_array($tbl, HEALTH_TABLES, true)) { continue; }
     try {
-        $tableCounts[$tbl] = (int)$db->query('SELECT COUNT(*) FROM ' . $tbl)->fetchColumn();
+        $stmt = $db->prepare('SELECT COUNT(*) FROM `' . $tbl . '`');
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_row();
+        $tableCounts[$tbl] = (int)($row[0] ?? 0);
+        $stmt->close();
     } catch (\Throwable $_e) {
-        $tableCounts[$tbl] = null; /* missing */
+        /* "Table missing" is the expected reason on a fresh deploy —
+           the UI surfaces it as null. Log anyway so non-missing
+           failures (permission, syntax) leave a trail. */
+        error_log("[manage/data-health.php] COUNT({$tbl}) failed: " . $_e->getMessage());
+        $tableCounts[$tbl] = null;
     }
 }
 
@@ -130,12 +148,20 @@ if ($shareDirPath && is_dir($shareDirPath)) {
             $files
         ));
         try {
-            $stmt = $db->query('SELECT ShareId FROM tblSharedSetlists');
-            $inDb = array_fill_keys(array_column($stmt->fetchAll(PDO::FETCH_ASSOC), 'ShareId'), true);
+            $stmt = $db->prepare('SELECT ShareId FROM tblSharedSetlists');
+            $stmt->execute();
+            $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+            $inDb = array_fill_keys(array_column($rows, 'ShareId'), true);
             foreach ($idsOnDisk as $id) {
                 if (!isset($inDb[$id])) $unimportedShareIds[] = $id;
             }
-        } catch (\Throwable $_e) { /* ignore — table absent */ }
+        } catch (\Throwable $_e) {
+            /* Table absent on fresh deploy is expected; log so any
+               other failure mode (permissions, schema drift) is
+               visible to admins. */
+            error_log('[manage/data-health.php] tblSharedSetlists scan: ' . $_e->getMessage());
+        }
     }
 }
 $sqliteExists = $sqliteDbPath && file_exists($sqliteDbPath);
@@ -169,12 +195,7 @@ $csrf = csrfToken();
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Data Health — iHymns Admin</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"
-          integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
-          integrity="sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+" crossorigin="anonymous">
-    <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__) . '/css/app.css') ?>">
-    <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime(dirname(__DIR__) . '/css/admin.css') ?>">
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
 <body>

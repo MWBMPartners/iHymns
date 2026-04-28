@@ -38,6 +38,16 @@ export const STORAGE_PWA_BANNER_DISMISSED = 'ihymns_pwa_banner_dismissed';
 
 export const STORAGE_RECENT_SONGBOOKS = 'ihymns_recent_songbooks';
 
+/* Auth (cross-subdomain SPA session token + cached user object) */
+export const STORAGE_AUTH_TOKEN         = 'ihymns_auth_token';
+export const STORAGE_AUTH_USER          = 'ihymns_auth_user';
+
+/* Accessibility — Colour Vision Deficiency mode (#319) */
+export const STORAGE_CVD_MODE           = 'ihymns_cvd_mode';
+
+/* Offline downloads — whether to also cache MIDI audio when bulk-saving songs */
+export const STORAGE_OFFLINE_INCLUDE_AUDIO = 'ihymns_offline_include_audio';
+
 /* Dynamic key prefix (appended with song ID) */
 export const STORAGE_TRANSPOSE_PREFIX   = 'ihymns_transpose_';
 

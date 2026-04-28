@@ -14,8 +14,7 @@ See `.claude/CLAUDE.md` for the full policy. Summary: don't duplicate — extrac
 | Admin footer (copyright / version / Terms / Privacy + Bootstrap bundle JS) | `manage/includes/admin-footer.php` | Include once, immediately before `</body>` |
 | Favicon + app icons | `manage/includes/head-favicon.php` | Include in `<head>` |
 | Session / auth bootstrap | `manage/includes/auth.php` | `require_once` first, then call `isAuthenticated()` / `requireAuth()` / `requireAdmin()` |
-| DB handle (PDO, admin side) | `manage/includes/db.php::getDb()` | Never `new PDO(...)` directly |
-| DB handle (mysqli, main app song data) | `includes/db_mysql.php::getDbMysqli()` | Never `new mysqli(...)` directly |
+| DB handle (single connection across admin + main app) | `includes/db_mysql.php::getDbMysqli()` | Never `new mysqli(...)` or `new PDO(...)` directly. PDO has been fully removed (#554 / #555). |
 | Entitlement check | `includes/entitlements.php::userHasEntitlement()` | Never check role strings directly for authorisation — always through this |
 | Entitlement labels | `$ENTITLEMENT_LABELS` in `manage/entitlements.php` | Extend the map; never hand-craft a string at render time |
 | Licence type labels | `$LICENCE_TYPES` in `manage/organisations.php` (migrating to `tblLicenceTypes`, #459) | Consumers iterate the map; never hard-code licence keys |
@@ -105,3 +104,29 @@ See `.claude/CLAUDE.md` for the full policy. Summary: don't duplicate — extrac
 - **Don't expose backend keys to end users.** `ihymns_pro` is a DB value, not a label; surface the label via the central map.
 - **Don't scatter auth checks.** One helper call; never `$u['role'] === 'admin'` in business logic.
 - **Don't commit stacked PRs that re-implement work already in a parallel branch.** Rebase and reuse.
+- **Don't write literal `<?=` / `<?php` / `<?` inside HTML comments or backticks in `.php` files.** PHP doesn't respect HTML-comment boundaries — it parses every `<?` open-tag it finds, regardless of surrounding `<!-- ... -->`. On PHP 8.1+, `func(...)` is first-class callable syntax, so a comment that says `<?= json_encode(...) ?>` evaluates `json_encode(...)` (returns a Closure), then `<?=` tries to echo it → runtime fatal `Object of class Closure could not be converted to string` → output halts mid-stream → browser receives a truncated HTML response → the SPA shell renders but `app.js` is never reached and the loading spinner hangs forever. This took down alpha in PR #536 (commit `96cd14a`). If you need to reference PHP code in a comment, omit the open tag (`echo json_encode() call` not `<?= json_encode() ?>`). CI now greps for this pattern in `.github/workflows/test.yml`.
+
+## 10. Activity logging — what NEVER goes in `tblActivityLog.Details` (#535)
+
+Every meaningful action writes a row to `tblActivityLog` via
+`includes/activity_log.php::logActivity()`. The `Details` JSON column
+is free-form, which makes it tempting to dump request bodies wholesale.
+**Don't.**
+
+**NEVER log:**
+- Password hashes (bcrypt/argon2 strings)
+- Plaintext passwords in any form, even temporarily
+- Bearer tokens, magic-link tokens, password-reset tokens, CSRF tokens
+- Email subject lines or bodies for magic-link emails (log only `sent: true|false`)
+- Plaintext personal details that aren't already in the entity's row
+
+**OK to log:**
+- User ID + username (already on `tblUsers`)
+- Email address on auth events (already on `tblUsers`)
+- IP address + truncated User-Agent (already columns on `tblActivityLog`)
+- For edits: the list of fields that changed + before/after values for those fields specifically
+- Error messages and class names for `Result='error'` rows — these aid debugging and don't leak user data
+
+When in doubt, log the field NAME but not the field VALUE. A row that
+says `{ "fields": ["PasswordHash"] }` is fine; one that includes the
+hash itself is a bug.

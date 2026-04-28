@@ -14,8 +14,10 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 requireAdmin();
 
+$activePage  = 'analytics';
 $currentUser = getCurrentUser();
 
 $range = (int)($_GET['range'] ?? 30);
@@ -24,7 +26,7 @@ if (!in_array($range, [7, 30, 90], true)) {
 }
 $since = (new DateTime("-{$range} days"))->format('Y-m-d H:i:s');
 
-$db = getDb();
+$db = getDbMysqli();
 
 /* -----------------------------------------------------------------
  * CSV export (#404). Any panel can be requested as download by
@@ -49,8 +51,11 @@ if ($exportPanel !== '') {
                       GROUP BY h.SongId
                       ORDER BY views DESC'
                 );
-                $stmt->execute([$since]);
-                while ($row = $stmt->fetch(PDO::FETCH_NUM)) { fputcsv($fp, $row); }
+                $stmt->bind_param('s', $since);
+                $stmt->execute();
+                $res = $stmt->get_result();
+                while ($row = $res->fetch_row()) { fputcsv($fp, $row); }
+                $stmt->close();
                 break;
             case 'top_books':
                 fputcsv($fp, ['SongbookAbbr', 'Views']);
@@ -62,8 +67,11 @@ if ($exportPanel !== '') {
                       GROUP BY s.SongbookAbbr
                       ORDER BY views DESC'
                 );
-                $stmt->execute([$since]);
-                while ($row = $stmt->fetch(PDO::FETCH_NUM)) { fputcsv($fp, $row); }
+                $stmt->bind_param('s', $since);
+                $stmt->execute();
+                $res = $stmt->get_result();
+                while ($row = $res->fetch_row()) { fputcsv($fp, $row); }
+                $stmt->close();
                 break;
             case 'searches':
                 fputcsv($fp, ['Query', 'ResultCount', 'Hits']);
@@ -75,8 +83,11 @@ if ($exportPanel !== '') {
                           GROUP BY Query, ResultCount
                           ORDER BY hits DESC'
                     );
-                    $stmt->execute([$since]);
-                    while ($row = $stmt->fetch(PDO::FETCH_NUM)) { fputcsv($fp, $row); }
+                    $stmt->bind_param('s', $since);
+                    $stmt->execute();
+                    $res = $stmt->get_result();
+                    while ($row = $res->fetch_row()) { fputcsv($fp, $row); }
+                    $stmt->close();
                 } catch (\Throwable $_e) { /* table absent */ }
                 break;
             default:
@@ -100,8 +111,10 @@ try {
           ORDER BY views DESC
           LIMIT 15'
     );
-    $stmt->execute([$since]);
-    $topSongs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $stmt->bind_param('s', $since);
+    $stmt->execute();
+    $topSongs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
 } catch (\Throwable $e) { /* table may be empty */ }
 
 /* --- Top songbooks --- */
@@ -115,8 +128,10 @@ try {
           GROUP BY s.SongbookAbbr
           ORDER BY views DESC'
     );
-    $stmt->execute([$since]);
-    $topBooks = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $stmt->bind_param('s', $since);
+    $stmt->execute();
+    $topBooks = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
 } catch (\Throwable $e) {}
 
 /* --- New logins + active users --- */
@@ -124,23 +139,37 @@ $loginCount = 0;
 $activeUsers = 0;
 try {
     $stmt = $db->prepare('SELECT COUNT(*) FROM tblLoginAttempts WHERE Success = 1 AND AttemptedAt >= ?');
-    $stmt->execute([$since]);
-    $loginCount = (int)$stmt->fetchColumn();
+    $stmt->bind_param('s', $since);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_row();
+    $loginCount = (int)($row[0] ?? 0);
+    $stmt->close();
 
     $stmt = $db->prepare('SELECT COUNT(DISTINCT UserId) FROM tblSongHistory WHERE ViewedAt >= ? AND UserId IS NOT NULL');
-    $stmt->execute([$since]);
-    $activeUsers = (int)$stmt->fetchColumn();
+    $stmt->bind_param('s', $since);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_row();
+    $activeUsers = (int)($row[0] ?? 0);
+    $stmt->close();
 } catch (\Throwable $e) {}
 
 /* --- Totals --- */
 $totalUsers = 0;
 try {
-    $totalUsers = (int)$db->query('SELECT COUNT(*) FROM tblUsers WHERE IsActive = 1')->fetchColumn();
+    $stmt = $db->prepare('SELECT COUNT(*) FROM tblUsers WHERE IsActive = 1');
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_row();
+    $totalUsers = (int)($row[0] ?? 0);
+    $stmt->close();
 } catch (\Throwable $e) {}
 
 $totalRequests = 0;
 try {
-    $totalRequests = (int)$db->query("SELECT COUNT(*) FROM tblSongRequests WHERE Status = 'pending'")->fetchColumn();
+    $stmt = $db->prepare("SELECT COUNT(*) FROM tblSongRequests WHERE Status = 'pending'");
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_row();
+    $totalRequests = (int)($row[0] ?? 0);
+    $stmt->close();
 } catch (\Throwable $e) {}
 
 ?>
@@ -150,12 +179,8 @@ try {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Analytics — iHymns Admin</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"
-          integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
-          integrity="sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+" crossorigin="anonymous">
-    <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__) . '/css/app.css') ?>">
-    <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime(dirname(__DIR__) . '/css/admin.css') ?>">
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
 <body>
@@ -248,8 +273,10 @@ try {
                       ORDER BY hits DESC
                       LIMIT 15'
                 );
-                $stmt->execute([$since]);
-                $topSearches = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                $stmt->bind_param('s', $since);
+                $stmt->execute();
+                $topSearches = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
 
                 $stmt = $db->prepare(
                     'SELECT Query, COUNT(*) AS hits
@@ -259,8 +286,10 @@ try {
                       ORDER BY hits DESC
                       LIMIT 10'
                 );
-                $stmt->execute([$since]);
-                $zeroResults = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                $stmt->bind_param('s', $since);
+                $stmt->execute();
+                $zeroResults = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
             } catch (\Throwable $_e) {}
         ?>
         <?php if (!$topSearches): ?>

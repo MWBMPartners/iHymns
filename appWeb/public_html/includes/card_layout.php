@@ -26,6 +26,8 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
+
 const CARD_LAYOUT_SURFACES = ['dashboard', 'home'];
 
 /**
@@ -44,10 +46,13 @@ function cardLayoutDefault(string $surface): array
         : 'home_card_order_default';
 
     try {
-        $db = getDb();
+        $db = getDbMysqli();
         $stmt = $db->prepare('SELECT SettingValue FROM tblAppSettings WHERE SettingKey = ?');
-        $stmt->execute([$key]);
-        $raw = (string)($stmt->fetchColumn() ?: '');
+        $stmt->bind_param('s', $key);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_row();
+        $stmt->close();
+        $raw = (string)($row[0] ?? '');
         if ($raw === '') return ['order' => [], 'hidden' => []];
         $decoded = json_decode($raw, true);
         if (!is_array($decoded)) return ['order' => [], 'hidden' => []];
@@ -78,12 +83,15 @@ function cardLayoutSaveDefault(string $surface, array $layout): bool
         : 'home_card_order_default';
 
     try {
-        $db = getDb();
+        $db = getDbMysqli();
         $stmt = $db->prepare(
             'INSERT INTO tblAppSettings (SettingKey, SettingValue) VALUES (?, ?)
              ON DUPLICATE KEY UPDATE SettingValue = VALUES(SettingValue)'
         );
-        $stmt->execute([$key, (string)$payload]);
+        $value = (string)$payload;
+        $stmt->bind_param('ss', $key, $value);
+        $stmt->execute();
+        $stmt->close();
         return true;
     } catch (\Throwable $_e) {
         return false;
@@ -101,10 +109,13 @@ function cardLayoutUserOverride(int $userId, string $surface): array
         return ['order' => [], 'hidden' => []];
     }
     try {
-        $db = getDb();
+        $db = getDbMysqli();
         $stmt = $db->prepare('SELECT Settings FROM tblUsers WHERE Id = ?');
-        $stmt->execute([$userId]);
-        $raw = (string)($stmt->fetchColumn() ?: '');
+        $stmt->bind_param('i', $userId);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_row();
+        $stmt->close();
+        $raw = (string)($row[0] ?? '');
         if ($raw === '') return ['order' => [], 'hidden' => []];
         $decoded = json_decode($raw, true);
         if (!is_array($decoded)) return ['order' => [], 'hidden' => []];
@@ -128,10 +139,13 @@ function cardLayoutSaveUserOverride(int $userId, string $surface, array $layout)
     if ($userId <= 0 || !in_array($surface, CARD_LAYOUT_SURFACES, true)) return false;
 
     try {
-        $db = getDb();
+        $db = getDbMysqli();
         $stmt = $db->prepare('SELECT Settings FROM tblUsers WHERE Id = ?');
-        $stmt->execute([$userId]);
-        $raw = (string)($stmt->fetchColumn() ?: '');
+        $stmt->bind_param('i', $userId);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_row();
+        $stmt->close();
+        $raw = (string)($row[0] ?? '');
         $settings = $raw === '' ? [] : (json_decode($raw, true) ?: []);
         if (!isset($settings['cardLayouts']) || !is_array($settings['cardLayouts'])) {
             $settings['cardLayouts'] = [];
@@ -140,9 +154,11 @@ function cardLayoutSaveUserOverride(int $userId, string $surface, array $layout)
             'order'  => cardLayoutSanitiseIds($layout['order']  ?? []),
             'hidden' => cardLayoutSanitiseIds($layout['hidden'] ?? []),
         ];
-        $json = json_encode($settings, JSON_UNESCAPED_SLASHES);
+        $json = (string)json_encode($settings, JSON_UNESCAPED_SLASHES);
         $stmt = $db->prepare('UPDATE tblUsers SET Settings = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
-        $stmt->execute([$json, $userId]);
+        $stmt->bind_param('si', $json, $userId);
+        $stmt->execute();
+        $stmt->close();
         return true;
     } catch (\Throwable $_e) {
         return false;
@@ -156,18 +172,23 @@ function cardLayoutClearUserOverride(int $userId, string $surface): bool
 {
     if ($userId <= 0 || !in_array($surface, CARD_LAYOUT_SURFACES, true)) return false;
     try {
-        $db = getDb();
+        $db = getDbMysqli();
         $stmt = $db->prepare('SELECT Settings FROM tblUsers WHERE Id = ?');
-        $stmt->execute([$userId]);
-        $raw = (string)($stmt->fetchColumn() ?: '');
+        $stmt->bind_param('i', $userId);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_row();
+        $stmt->close();
+        $raw = (string)($row[0] ?? '');
         if ($raw === '') return true;
         $settings = json_decode($raw, true) ?: [];
         if (isset($settings['cardLayouts'][$surface])) {
             unset($settings['cardLayouts'][$surface]);
         }
-        $json = json_encode($settings, JSON_UNESCAPED_SLASHES);
+        $json = (string)json_encode($settings, JSON_UNESCAPED_SLASHES);
         $stmt = $db->prepare('UPDATE tblUsers SET Settings = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
-        $stmt->execute([$json, $userId]);
+        $stmt->bind_param('si', $json, $userId);
+        $stmt->execute();
+        $stmt->close();
         return true;
     } catch (\Throwable $_e) {
         return false;
@@ -190,14 +211,18 @@ function cardLayoutUserCanCustomise(?array $user): bool
     if ($groupId <= 0) return true;
 
     try {
-        $db = getDb();
+        $db = getDbMysqli();
         $stmt = $db->prepare('SELECT AllowCardReorder FROM tblUserGroups WHERE Id = ?');
-        $stmt->execute([$groupId]);
-        $val = $stmt->fetchColumn();
-        /* Groups predating this column return null — treat as allowed
-           (i.e. default on) so the feature rolls out non-destructively. */
-        if ($val === null || $val === false) return true;
-        return (int)$val === 1;
+        $stmt->bind_param('i', $groupId);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_row();
+        $stmt->close();
+        /* Groups predating this column return null in $row[0]; rows
+           that don't exist return null from fetch_row(). Both cases
+           are treated as allowed (i.e. default on) so the feature
+           rolls out non-destructively. */
+        if ($row === null || $row[0] === null) return true;
+        return (int)$row[0] === 1;
     } catch (\Throwable $_e) {
         return true;
     }

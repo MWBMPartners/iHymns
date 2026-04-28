@@ -16,7 +16,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
-require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -32,7 +32,7 @@ $activePage = 'songbooks';
 
 $error   = '';
 $success = '';
-$db      = getDb();
+$db      = getDbMysqli();
 
 /* Helpers */
 $validateAbbr = function (string $abbr): ?string {
@@ -60,24 +60,60 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         switch ($action) {
             case 'create': {
-                $abbr   = trim((string)($_POST['abbreviation'] ?? ''));
-                $name   = trim((string)($_POST['name']         ?? ''));
-                $colour = trim((string)($_POST['colour']       ?? ''));
-                $order  = (int)($_POST['display_order']        ?? 0);
+                $abbr    = trim((string)($_POST['abbreviation']    ?? ''));
+                $name    = trim((string)($_POST['name']            ?? ''));
+                $colour  = trim((string)($_POST['colour']          ?? ''));
+                $order   = (int)($_POST['display_order']           ?? 0);
+                /* #502 — new metadata columns. All nullable; empty
+                   input normalises to null so the UNIQUE/null-group
+                   semantics work as expected. */
+                $isOfficial = !empty($_POST['is_official']) ? 1 : 0;
+                $publisher  = trim((string)($_POST['publisher']        ?? '')) ?: null;
+                $pubYear    = trim((string)($_POST['publication_year'] ?? '')) ?: null;
+                $copyright  = trim((string)($_POST['copyright']        ?? '')) ?: null;
+                $affiliation= trim((string)($_POST['affiliation']      ?? '')) ?: null;
 
                 if ($e = $validateAbbr($abbr))   { $error = $e; break; }
                 if ($name === '')                { $error = 'Name is required.'; break; }
                 if ($e = $validateColour($colour)) { $error = $e; break; }
 
                 $stmt = $db->prepare('SELECT Id FROM tblSongbooks WHERE Abbreviation = ?');
-                $stmt->execute([$abbr]);
-                if ($stmt->fetch()) { $error = 'Abbreviation already exists.'; break; }
+                $stmt->bind_param('s', $abbr);
+                $stmt->execute();
+                $exists = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($exists) { $error = 'Abbreviation already exists.'; break; }
 
                 $stmt = $db->prepare(
-                    'INSERT INTO tblSongbooks (Abbreviation, Name, DisplayOrder, Colour)
-                     VALUES (?, ?, ?, ?)'
+                    'INSERT INTO tblSongbooks
+                        (Abbreviation, Name, DisplayOrder, Colour,
+                         IsOfficial, Publisher, PublicationYear, Copyright, Affiliation)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
                 );
-                $stmt->execute([$abbr, $name, $order ?: 0, $colour]);
+                /* Types: Abbr(s), Name(s), DisplayOrder(i), Colour(s),
+                   IsOfficial(i), Publisher(s nullable), PublicationYear(s nullable),
+                   Copyright(s nullable), Affiliation(s nullable). mysqli passes
+                   NULL correctly when a bound variable is null even with type 's'. */
+                $orderInt = (int)($order ?: 0);
+                $stmt->bind_param(
+                    'ssisissss',
+                    $abbr, $name, $orderInt, $colour,
+                    $isOfficial, $publisher, $pubYear, $copyright, $affiliation
+                );
+                $stmt->execute();
+                $newId = (int)$db->insert_id;
+                $stmt->close();
+                logActivity('songbook.create', 'songbook', (string)$newId, [
+                    'abbreviation'    => $abbr,
+                    'name'            => $name,
+                    'display_order'   => $order ?: 0,
+                    'colour'          => $colour,
+                    'is_official'     => (bool)$isOfficial,
+                    'publisher'       => $publisher,
+                    'publication_year'=> $pubYear,
+                    'copyright'       => $copyright,
+                    'affiliation'     => $affiliation,
+                ]);
                 $success = "Songbook '{$abbr}' created.";
                 break;
             }
@@ -89,10 +125,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $order       = (int)($_POST['display_order']        ?? 0);
                 $newAbbr     = trim((string)($_POST['new_abbreviation'] ?? ''));
                 $alsoRename  = !empty($_POST['rename_song_refs']);
+                /* #502 — new metadata columns. */
+                $isOfficial  = !empty($_POST['is_official']) ? 1 : 0;
+                $publisher   = trim((string)($_POST['publisher']        ?? '')) ?: null;
+                $pubYear     = trim((string)($_POST['publication_year'] ?? '')) ?: null;
+                $copyright   = trim((string)($_POST['copyright']        ?? '')) ?: null;
+                $affiliation = trim((string)($_POST['affiliation']      ?? '')) ?: null;
 
-                $existing = $db->prepare('SELECT Abbreviation FROM tblSongbooks WHERE Id = ?');
-                $existing->execute([$id]);
-                $oldAbbr = (string)($existing->fetchColumn() ?: '');
+                /* Fetch the full before-row so the audit log carries
+                   a complete diff of which fields actually changed
+                   (#535) — otherwise the timeline reader has to
+                   guess. */
+                $existing = $db->prepare(
+                    'SELECT Abbreviation, Name, DisplayOrder, Colour, IsOfficial,
+                            Publisher, PublicationYear, Copyright, Affiliation
+                       FROM tblSongbooks WHERE Id = ?'
+                );
+                $existing->bind_param('i', $id);
+                $existing->execute();
+                $beforeRow = $existing->get_result()->fetch_assoc() ?: null;
+                $existing->close();
+                $oldAbbr = $beforeRow ? (string)$beforeRow['Abbreviation'] : '';
                 if ($oldAbbr === '') { $error = 'Songbook not found.'; break; }
 
                 if ($name === '')                  { $error = 'Name is required.'; break; }
@@ -103,33 +156,81 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($abbrChanged) {
                     if ($e = $validateAbbr($newAbbr)) { $error = $e; break; }
                     $dup = $db->prepare('SELECT Id FROM tblSongbooks WHERE Abbreviation = ? AND Id <> ?');
-                    $dup->execute([$newAbbr, $id]);
-                    if ($dup->fetch()) { $error = 'That abbreviation is already taken.'; break; }
+                    $dup->bind_param('si', $newAbbr, $id);
+                    $dup->execute();
+                    $dupExists = $dup->get_result()->fetch_row() !== null;
+                    $dup->close();
+                    if ($dupExists) { $error = 'That abbreviation is already taken.'; break; }
                 }
 
-                $db->beginTransaction();
+                $db->begin_transaction();
                 try {
                     $stmt = $db->prepare(
                         'UPDATE tblSongbooks
-                            SET Name = ?, Colour = ?, DisplayOrder = ?
+                            SET Name = ?, Colour = ?, DisplayOrder = ?,
+                                IsOfficial = ?, Publisher = ?,
+                                PublicationYear = ?, Copyright = ?, Affiliation = ?
                           WHERE Id = ?'
                     );
-                    $stmt->execute([$name, $colour, $order ?: 0, $id]);
+                    /* Types: Name(s), Colour(s), DisplayOrder(i),
+                       IsOfficial(i), Publisher(s), PublicationYear(s),
+                       Copyright(s), Affiliation(s), Id(i). */
+                    $orderInt = (int)($order ?: 0);
+                    $stmt->bind_param(
+                        'ssiissssi',
+                        $name, $colour, $orderInt,
+                        $isOfficial, $publisher, $pubYear, $copyright, $affiliation,
+                        $id
+                    );
+                    $stmt->execute();
+                    $stmt->close();
 
                     if ($abbrChanged) {
                         $stmt = $db->prepare('UPDATE tblSongbooks SET Abbreviation = ? WHERE Id = ?');
-                        $stmt->execute([$newAbbr, $id]);
+                        $stmt->bind_param('si', $newAbbr, $id);
+                        $stmt->execute();
+                        $stmt->close();
                         if ($alsoRename) {
                             $stmt = $db->prepare('UPDATE tblSongs SET SongbookAbbr = ? WHERE SongbookAbbr = ?');
-                            $stmt->execute([$newAbbr, $oldAbbr]);
+                            $stmt->bind_param('ss', $newAbbr, $oldAbbr);
+                            $stmt->execute();
+                            $stmt->close();
                         }
                     }
                     $db->commit();
+
+                    /* Audit (#535) — compute the changed-fields list
+                       explicitly so the row stays small (the full
+                       before-row is on $beforeRow and we don't need
+                       to dump every key). */
+                    $afterRow = [
+                        'Abbreviation'   => $abbrChanged ? $newAbbr : $oldAbbr,
+                        'Name'           => $name,
+                        'DisplayOrder'   => $order ?: 0,
+                        'Colour'         => $colour,
+                        'IsOfficial'     => $isOfficial,
+                        'Publisher'      => $publisher,
+                        'PublicationYear'=> $pubYear,
+                        'Copyright'      => $copyright,
+                        'Affiliation'    => $affiliation,
+                    ];
+                    $changed = [];
+                    foreach ($afterRow as $k => $v) {
+                        if (!array_key_exists($k, $beforeRow ?? [])) continue;
+                        if ((string)$beforeRow[$k] !== (string)$v) $changed[] = $k;
+                    }
+                    logActivity('songbook.edit', 'songbook', (string)$id, [
+                        'fields'             => $changed,
+                        'before'             => array_intersect_key($beforeRow, array_flip($changed)),
+                        'after'              => array_intersect_key($afterRow,  array_flip($changed)),
+                        'songs_renamed_too'  => $alsoRename && $abbrChanged,
+                    ]);
+
                     $success = $abbrChanged
                         ? "Songbook '{$oldAbbr}' → '{$newAbbr}'" . ($alsoRename ? ' (song references updated).' : ' (song references kept — resolve manually).')
                         : "Songbook '{$oldAbbr}' updated.";
                 } catch (\Throwable $e) {
-                    $db->rollBack();
+                    $db->rollback();
                     throw $e;
                 }
                 break;
@@ -140,16 +241,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $orders = $_POST['display_order'] ?? [];
                 if (!is_array($orders)) { $error = 'Invalid reorder payload.'; break; }
 
-                $db->beginTransaction();
+                $db->begin_transaction();
                 try {
                     $stmt = $db->prepare('UPDATE tblSongbooks SET DisplayOrder = ? WHERE Id = ?');
                     foreach ($orders as $id => $value) {
-                        $stmt->execute([(int)$value, (int)$id]);
+                        $valueInt = (int)$value;
+                        $idInt    = (int)$id;
+                        $stmt->bind_param('ii', $valueInt, $idInt);
+                        $stmt->execute();
                     }
+                    $stmt->close();
                     $db->commit();
+
+                    /* Single audit row for the bulk reorder rather
+                       than one per row — the activity-log viewer
+                       wants the high-level operation, not 6
+                       near-identical entries. (#535) */
+                    logActivity('songbook.reorder', 'songbook', '', [
+                        'count' => count($orders),
+                        'order' => array_map(fn($v) => (int)$v, (array)$orders),
+                    ]);
+
                     $success = 'Display order saved.';
                 } catch (\Throwable $e) {
-                    $db->rollBack();
+                    $db->rollback();
                     throw $e;
                 }
                 break;
@@ -159,20 +274,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $id = (int)($_POST['id'] ?? 0);
 
                 $stmt = $db->prepare('SELECT Abbreviation FROM tblSongbooks WHERE Id = ?');
-                $stmt->execute([$id]);
-                $abbr = (string)($stmt->fetchColumn() ?: '');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $abbr = (string)($row[0] ?? '');
                 if ($abbr === '') { $error = 'Songbook not found.'; break; }
 
                 $stmt = $db->prepare('SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?');
-                $stmt->execute([$abbr]);
-                $songCount = (int)$stmt->fetchColumn();
+                $stmt->bind_param('s', $abbr);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $songCount = (int)($row[0] ?? 0);
                 if ($songCount > 0) {
                     $error = "Cannot delete '{$abbr}': {$songCount} song(s) still reference it. Reassign them first.";
                     break;
                 }
 
                 $stmt = $db->prepare('DELETE FROM tblSongbooks WHERE Id = ?');
-                $stmt->execute([$id]);
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $stmt->close();
+
+                /* Audit (#535) — capturing abbreviation in Details
+                   means the row remains useful even after the FK
+                   nulls out / the songbook is gone. */
+                logActivity('songbook.delete', 'songbook', (string)$id, [
+                    'abbreviation' => $abbr,
+                ]);
+
                 $success = "Songbook '{$abbr}' deleted.";
                 break;
             }
@@ -189,15 +320,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 /* ----- GET: list ----- */
 $rows = [];
 try {
-    $rs = $db->query(
+    $stmt = $db->prepare(
         'SELECT b.Id, b.Abbreviation, b.Name, b.SongCount, b.DisplayOrder, b.Colour,
+                b.IsOfficial, b.Publisher, b.PublicationYear,
+                b.Copyright, b.Affiliation,
                 COUNT(s.Id) AS ActualSongCount
            FROM tblSongbooks b
            LEFT JOIN tblSongs s ON s.SongbookAbbr = b.Abbreviation
           GROUP BY b.Id
           ORDER BY b.DisplayOrder ASC, b.Name ASC'
     );
-    $rows = $rs->fetchAll(PDO::FETCH_ASSOC);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
 } catch (\Throwable $e) {
     error_log('[manage/songbooks.php] ' . $e->getMessage());
     $error = $error ?: 'Could not load songbooks — check server logs for details.';
@@ -211,12 +346,7 @@ $csrf = csrfToken();
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Songbooks — iHymns Admin</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"
-          integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
-          integrity="sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+" crossorigin="anonymous">
-    <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__) . '/css/app.css') ?>">
-    <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime(dirname(__DIR__) . '/css/admin.css') ?>">
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
 <body>
@@ -249,6 +379,7 @@ $csrf = csrfToken();
                         <th style="width:6rem">Order</th>
                         <th>Abbr</th>
                         <th>Name</th>
+                        <th class="text-center" title="Official published hymnal (#502)">Official</th>
                         <th class="text-center">Songs</th>
                         <th>Colour</th>
                         <th class="text-end">Actions</th>
@@ -265,6 +396,15 @@ $csrf = csrfToken();
                             </td>
                             <td><code><?= htmlspecialchars($r['Abbreviation']) ?></code></td>
                             <td><?= htmlspecialchars($r['Name']) ?></td>
+                            <td class="text-center">
+                                <?php if ((int)$r['IsOfficial'] === 1): ?>
+                                    <span class="badge bg-info" title="Official published hymnal">
+                                        <i class="bi bi-patch-check-fill" aria-hidden="true"></i> Yes
+                                    </span>
+                                <?php else: ?>
+                                    <small class="text-muted" title="Curated grouping / pseudo-songbook">—</small>
+                                <?php endif; ?>
+                            </td>
                             <td class="text-center"><?= number_format((int)$r['ActualSongCount']) ?></td>
                             <td>
                                 <?php if ($r['Colour']): ?>
@@ -277,12 +417,17 @@ $csrf = csrfToken();
                             <td class="text-end">
                                 <button type="button" class="btn btn-sm btn-outline-info"
                                         onclick='openEditModal(<?= json_encode([
-                                            'id'           => (int)$r['Id'],
-                                            'abbreviation' => $r['Abbreviation'],
-                                            'name'         => $r['Name'],
-                                            'colour'       => $r['Colour'],
-                                            'display_order'=> (int)$r['DisplayOrder'],
-                                            'song_count'   => (int)$r['ActualSongCount'],
+                                            'id'               => (int)$r['Id'],
+                                            'abbreviation'     => $r['Abbreviation'],
+                                            'name'             => $r['Name'],
+                                            'colour'           => $r['Colour'],
+                                            'display_order'    => (int)$r['DisplayOrder'],
+                                            'song_count'       => (int)$r['ActualSongCount'],
+                                            'is_official'      => (int)$r['IsOfficial'] === 1,
+                                            'publisher'        => $r['Publisher']       ?? '',
+                                            'publication_year' => $r['PublicationYear'] ?? '',
+                                            'copyright'        => $r['Copyright']       ?? '',
+                                            'affiliation'      => $r['Affiliation']     ?? '',
                                         ]) ?>)'
                                         title="Edit songbook">
                                     <i class="bi bi-pencil"></i>
@@ -303,7 +448,7 @@ $csrf = csrfToken();
                         </tr>
                     <?php endforeach; ?>
                     <?php if (!$rows): ?>
-                        <tr><td colspan="6" class="text-muted text-center py-4">No songbooks yet. Add one below.</td></tr>
+                        <tr><td colspan="7" class="text-muted text-center py-4">No songbooks yet. Add one below.</td></tr>
                     <?php endif; ?>
                 </tbody>
             </table>
@@ -320,6 +465,7 @@ $csrf = csrfToken();
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
             <input type="hidden" name="action" value="create">
             <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a songbook</h2>
+
             <div class="row g-2">
                 <div class="col-sm-3">
                     <label class="form-label small">Abbreviation</label>
@@ -343,6 +489,44 @@ $csrf = csrfToken();
                            min="0" step="10" value="0">
                 </div>
             </div>
+
+            <!-- #502 metadata -->
+            <div class="row g-2 mt-2">
+                <div class="col-sm-3 d-flex align-items-end">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" name="is_official" id="create-is-official" value="1">
+                        <label class="form-check-label small" for="create-is-official">
+                            Official published hymnal
+                        </label>
+                        <div class="form-text small">
+                            Unticked by default — tick for a published hymnal; leave unticked for a curated grouping.
+                        </div>
+                    </div>
+                </div>
+                <div class="col-sm-5">
+                    <label class="form-label small">Publisher</label>
+                    <input type="text" name="publisher" class="form-control form-control-sm"
+                           maxlength="255" placeholder="e.g. Praise Trust">
+                </div>
+                <div class="col-sm-4">
+                    <label class="form-label small">Publication year / edition</label>
+                    <input type="text" name="publication_year" class="form-control form-control-sm"
+                           maxlength="50" placeholder="e.g. 1986, 1986–2003, 2nd edition 2011">
+                </div>
+            </div>
+            <div class="row g-2 mt-2">
+                <div class="col-sm-8">
+                    <label class="form-label small">Copyright</label>
+                    <input type="text" name="copyright" class="form-control form-control-sm"
+                           maxlength="500" placeholder="e.g. © 2012 Praise Trust, All Rights Reserved">
+                </div>
+                <div class="col-sm-4">
+                    <label class="form-label small">Affiliation</label>
+                    <input type="text" name="affiliation" class="form-control form-control-sm"
+                           maxlength="120" placeholder="e.g. Seventh-day Adventist, Non-denominational">
+                </div>
+            </div>
+
             <button type="submit" class="btn btn-amber-solid btn-sm mt-3">
                 <i class="bi bi-plus me-1"></i>Create songbook
             </button>
@@ -379,6 +563,42 @@ $csrf = csrfToken();
                                        min="0" step="10">
                             </div>
                         </div>
+
+                        <!-- #502 metadata block -->
+                        <div class="form-check mb-3">
+                            <input class="form-check-input" type="checkbox"
+                                   name="is_official" id="edit-is-official" value="1">
+                            <label class="form-check-label" for="edit-is-official">
+                                Official published hymnal
+                            </label>
+                            <div class="form-text small">
+                                Unticked means this is a curated grouping / pseudo-songbook.
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Publisher</label>
+                            <input type="text" class="form-control" name="publisher" id="edit-publisher"
+                                   maxlength="255" placeholder="e.g. Praise Trust">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Publication year / edition</label>
+                            <input type="text" class="form-control" name="publication_year" id="edit-publication-year"
+                                   maxlength="50" placeholder="e.g. 1986, 1986–2003, 2nd edition 2011">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Copyright</label>
+                            <input type="text" class="form-control" name="copyright" id="edit-copyright"
+                                   maxlength="500" placeholder="e.g. © 2012 Praise Trust, All Rights Reserved">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Affiliation</label>
+                            <input type="text" class="form-control" name="affiliation" id="edit-affiliation"
+                                   maxlength="120" placeholder="e.g. Seventh-day Adventist, Non-denominational">
+                            <div class="form-text small">
+                                Free-text for now; a controlled lookup table is planned (#502).
+                            </div>
+                        </div>
+
                         <hr>
                         <div class="mb-3">
                             <label class="form-label">New abbreviation (optional)</label>
@@ -429,19 +649,24 @@ $csrf = csrfToken();
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
-            integrity="sha384-zKzgIZcXU99qF1nNW9g+x1znB5NhCPs9qZeGzUnnFOaHJF9jCCKySBjq3vIKabk/"
-            crossorigin="anonymous"></script>
     <script>
         function openEditModal(row) {
-            document.getElementById('edit-id').value            = row.id;
-            document.getElementById('edit-abbr-label').textContent = row.abbreviation;
-            document.getElementById('edit-name').value          = row.name;
-            document.getElementById('edit-colour').value        = row.colour || '';
-            document.getElementById('edit-order').value         = row.display_order || 0;
-            document.getElementById('edit-new-abbr').value      = '';
-            document.getElementById('edit-rename-refs').checked = false;
-            document.getElementById('edit-song-count').textContent = row.song_count;
+            document.getElementById('edit-id').value                = row.id;
+            document.getElementById('edit-abbr-label').textContent  = row.abbreviation;
+            document.getElementById('edit-name').value              = row.name;
+            document.getElementById('edit-colour').value            = row.colour || '';
+            document.getElementById('edit-order').value             = row.display_order || 0;
+
+            /* #502 metadata fields */
+            document.getElementById('edit-is-official').checked     = !!row.is_official;
+            document.getElementById('edit-publisher').value         = row.publisher        || '';
+            document.getElementById('edit-publication-year').value  = row.publication_year || '';
+            document.getElementById('edit-copyright').value         = row.copyright        || '';
+            document.getElementById('edit-affiliation').value       = row.affiliation      || '';
+
+            document.getElementById('edit-new-abbr').value          = '';
+            document.getElementById('edit-rename-refs').checked     = false;
+            document.getElementById('edit-song-count').textContent  = row.song_count;
             document.getElementById('edit-rename-refs-wrap').style.display = row.song_count > 0 ? '' : 'none';
             new bootstrap.Modal(document.getElementById('editModal')).show();
         }

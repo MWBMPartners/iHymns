@@ -168,7 +168,12 @@ class iHymnsApp {
 
             /* Cross-domain storage bridge (#133) — initialise in background.
              * Modules use localStorage directly (synchronous). The bridge
-             * syncs data across domains asynchronously without blocking. */
+             * syncs data across domains asynchronously without blocking.
+             *
+             * Both promise chains carry .catch() handlers so a network /
+             * iframe / postMessage failure becomes a logged warning rather
+             * than an unhandled rejection that some browsers surface as
+             * a console error or page-level event (#530). */
             if (this.config.storageBridgeUrl) {
                 this.storageBridge = new StorageBridge(this.config.storageBridgeUrl);
                 this.storageBridge.init().then((connected) => {
@@ -188,8 +193,12 @@ class iHymnsApp {
                                 this.settings.applyReduceMotion(this.settings.get('reduceMotion'));
                                 this.settings.applyFontSize(this.settings.get('fontSize'));
                             }
+                        }).catch((err) => {
+                            console.warn('[iHymns] storageBridge.getAll failed (offline / cross-domain block):', err);
                         });
                     }
+                }).catch((err) => {
+                    console.warn('[iHymns] storageBridge.init failed (offline / iframe load):', err);
                 });
             }
 
@@ -247,6 +256,17 @@ class iHymnsApp {
                call even if not signed in; the drain handlers short-
                circuit and re-bind on next login. */
             this.userAuth.bindOfflineDrains();
+
+            /* Re-refresh the Settings → Account section now that userAuth
+               exists and has read its localStorage credentials. Settings
+               .init() ran earlier (with userAuth still undefined) and
+               called refreshAccountSection(), which short-circuits via
+               optional chaining when userAuth is missing — leaving the
+               account section in its signed-out state even for already-
+               authenticated users. (#530) */
+            if (this.settings && typeof this.settings.refreshAccountSection === 'function') {
+                this.settings.refreshAccountSection();
+            }
 
             /* In-app notifications bell (#289). Shows unread count from
                tblNotifications for the signed-in user; hidden when

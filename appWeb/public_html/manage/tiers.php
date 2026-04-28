@@ -19,7 +19,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
-require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -35,7 +35,7 @@ $activePage = 'tiers';
 
 $error   = '';
 $success = '';
-$db      = getDb();
+$db      = getDbMysqli();
 
 /* Ordered list of capability columns — used for both the table header
    and as the authoritative input/update list, so adding a new capability
@@ -80,8 +80,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($level < 0 || $level > 1000)  { $error = 'Level must be between 0 and 1000.'; break; }
 
                 $stmt = $db->prepare('SELECT Id FROM tblAccessTiers WHERE Name = ?');
-                $stmt->execute([$name]);
-                if ($stmt->fetch()) { $error = 'A tier with that name already exists.'; break; }
+                $stmt->bind_param('s', $name);
+                $stmt->execute();
+                $exists = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($exists) { $error = 'A tier with that name already exists.'; break; }
 
                 $caps = [];
                 foreach (array_keys(TIER_CAPS) as $col) {
@@ -91,8 +94,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $cols = array_merge(['Name','DisplayName','Level','Description'], array_keys(TIER_CAPS));
                 $placeholders = implode(', ', array_fill(0, count($cols), '?'));
                 $sql = 'INSERT INTO tblAccessTiers (' . implode(',', $cols) . ') VALUES (' . $placeholders . ')';
+                /* Type string: Name(s) DisplayName(s) Level(i) Description(s) +
+                   each TIER_CAPS column as int. Built dynamically so a new
+                   capability column auto-extends the bind without code change. */
+                $types  = 'ssis' . str_repeat('i', count(TIER_CAPS));
+                $values = array_merge([$name, $displayName, $level, $description], array_values($caps));
                 $stmt = $db->prepare($sql);
-                $stmt->execute(array_merge([$name, $displayName, $level, $description], array_values($caps)));
+                $stmt->bind_param($types, ...$values);
+                $stmt->execute();
+                $stmt->close();
                 $success = "Tier '{$name}' created.";
                 break;
             }
@@ -120,10 +130,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 $args[] = $id;
 
-                $stmt = $db->prepare(
+                /* Type string: DisplayName(s), Level(i), Description(s),
+                   each TIER_CAPS column as int, and finally Id(i). */
+                $types = 'sis' . str_repeat('i', count(TIER_CAPS)) . 'i';
+                $stmt  = $db->prepare(
                     'UPDATE tblAccessTiers SET ' . implode(', ', $sets) . ' WHERE Id = ?'
                 );
-                $stmt->execute($args);
+                $stmt->bind_param($types, ...$args);
+                $stmt->execute();
+                $stmt->close();
                 $success = 'Tier updated.';
                 break;
             }
@@ -131,20 +146,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             case 'delete': {
                 $id = (int)($_POST['id'] ?? 0);
                 $stmt = $db->prepare('SELECT Name FROM tblAccessTiers WHERE Id = ?');
-                $stmt->execute([$id]);
-                $name = (string)($stmt->fetchColumn() ?: '');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $name = (string)($row[0] ?? '');
                 if ($name === '') { $error = 'Tier not found.'; break; }
 
                 $stmt = $db->prepare('SELECT COUNT(*) FROM tblUsers WHERE AccessTier = ?');
-                $stmt->execute([$name]);
-                $inUse = (int)$stmt->fetchColumn();
+                $stmt->bind_param('s', $name);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $inUse = (int)($row[0] ?? 0);
                 if ($inUse > 0) {
                     $error = "Cannot delete '{$name}': {$inUse} user(s) are currently on this tier. Reassign them first.";
                     break;
                 }
 
                 $stmt = $db->prepare('DELETE FROM tblAccessTiers WHERE Id = ?');
-                $stmt->execute([$id]);
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $stmt->close();
                 $success = "Tier '{$name}' deleted.";
                 break;
             }
@@ -161,14 +184,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 /* ----- GET: tiers + per-tier user counts ----- */
 $tiers = [];
 try {
+    /* $capsCols is built from TIER_CAPS keys (a file-scope const), so the
+       interpolated identifier list cannot be user-influenced. SQL identifiers
+       can't be parameterised — this is the correct pattern for trusted
+       internal-source identifier lists. */
     $capsCols = implode(', ', array_keys(TIER_CAPS));
-    $rs = $db->query(
+    $stmt = $db->prepare(
         "SELECT t.Id, t.Name, t.DisplayName, t.Level, t.Description, $capsCols,
                 (SELECT COUNT(*) FROM tblUsers u WHERE u.AccessTier = t.Name) AS UserCount
            FROM tblAccessTiers t
           ORDER BY t.Level ASC, t.Name ASC"
     );
-    $tiers = $rs->fetchAll(PDO::FETCH_ASSOC);
+    $stmt->execute();
+    $tiers = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
 } catch (\Throwable $e) {
     error_log('[manage/tiers.php] ' . $e->getMessage());
     $error = $error ?: 'Could not load tiers.';
@@ -187,12 +216,7 @@ $tierTableCols = 3 + count(TIER_CAPS) + 2;
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Access Tiers — iHymns Admin</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"
-          integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
-          integrity="sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+" crossorigin="anonymous">
-    <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__) . '/css/app.css') ?>">
-    <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime(dirname(__DIR__) . '/css/admin.css') ?>">
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
 <body>
@@ -385,9 +409,6 @@ $tierTableCols = 3 + count(TIER_CAPS) + 2;
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
-            integrity="sha384-zKzgIZcXU99qF1nNW9g+x1znB5NhCPs9qZeGzUnnFOaHJF9jCCKySBjq3vIKabk/"
-            crossorigin="anonymous"></script>
     <script>
         function openEditTier(t) {
             document.getElementById('edit-tier-id').value          = t.Id;
