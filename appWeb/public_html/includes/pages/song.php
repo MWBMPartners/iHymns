@@ -191,13 +191,39 @@ unset($_t);
                  surname-first hymnal citations can legitimately contain
                  commas inside a single name. -->
             <?php
-            $_creditRows = [
-                ['words',       'Words',       'fa-solid fa-pen-fancy',   $writers],
-                ['music',       'Music',       'fa-solid fa-music',       $composers],
-                ['arranged',    'Arranged by', 'fa-solid fa-sliders',     $arrangers],
-                ['adapted',     'Adapted by',  'fa-solid fa-compact-disc',$adaptors],
-                ['translated',  'Translated by','fa-solid fa-language',   $translators],
-            ];
+            /* Combine Words + Music into a single "Words & Music:" row
+               when the two sets are identical (#603) — common for
+               contemporary songs where the songwriter is also the
+               composer (e.g. Graham Kendrick, Stuart Townend). Set
+               equality, not list equality, so order-of-names doesn't
+               break the combine. */
+            $_writersNorm = array_values(array_unique(array_filter(
+                array_map(static fn($n) => trim((string)$n), $writers ?: [])
+            )));
+            $_composersNorm = array_values(array_unique(array_filter(
+                array_map(static fn($n) => trim((string)$n), $composers ?: [])
+            )));
+            sort($_writersNorm);
+            sort($_composersNorm);
+            $_combineWordsMusic = !empty($_writersNorm)
+                && $_writersNorm === $_composersNorm;
+
+            if ($_combineWordsMusic) {
+                $_creditRows = [
+                    ['words-music', 'Words & Music', 'fa-solid fa-pen-fancy', $writers],
+                    ['arranged',    'Arranged by',   'fa-solid fa-sliders',     $arrangers],
+                    ['adapted',     'Adapted by',    'fa-solid fa-compact-disc',$adaptors],
+                    ['translated',  'Translated by', 'fa-solid fa-language',    $translators],
+                ];
+            } else {
+                $_creditRows = [
+                    ['words',       'Words',       'fa-solid fa-pen-fancy',   $writers],
+                    ['music',       'Music',       'fa-solid fa-music',       $composers],
+                    ['arranged',    'Arranged by', 'fa-solid fa-sliders',     $arrangers],
+                    ['adapted',     'Adapted by',  'fa-solid fa-compact-disc',$adaptors],
+                    ['translated',  'Translated by','fa-solid fa-language',   $translators],
+                ];
+            }
             $_hasAnyCredit = false;
             foreach ($_creditRows as $row) { if (!empty($row[3])) { $_hasAnyCredit = true; break; } }
             ?>
@@ -219,14 +245,21 @@ unset($_t);
 
             <!-- Tune name (#497). Rendered when set so the viewer sees
                  "Tune: HYFRYDOL" — a meaningful pointer for hymnbook
-                 users. The link target `/tune/<slug>` is reserved for
-                 a future cross-reference listing (#494); until that
-                 ships we still render the label as plain text. -->
+                 users. Layout matches the people-credit rows above
+                 (#599) — same wrapper class, same icon styling, same
+                 bold-label-then-value pattern — so the song header
+                 reads as a single consistent credit block instead of
+                 the credits + a smaller dimmer Tune line. The link
+                 target `/tune/<slug>` is reserved for a future
+                 cross-reference listing (#494); until that ships we
+                 still render the value as plain text. -->
             <?php if ($tuneName !== ''): ?>
-                <p class="song-meta-tune small text-muted mb-2">
-                    <i class="fa-solid fa-music-note-list me-2" aria-hidden="true"></i>
-                    <strong>Tune:</strong> <?= htmlspecialchars($tuneName) ?>
-                </p>
+                <div class="song-meta mb-3">
+                    <p class="mb-0 song-credit-row" data-credit-kind="tune">
+                        <i class="fa-solid fa-music me-2 text-muted" aria-hidden="true"></i>
+                        <strong>Tune:</strong> <?= htmlspecialchars($tuneName) ?>
+                    </p>
+                </div>
             <?php endif; ?>
 
             <!-- ============================================================
@@ -276,7 +309,12 @@ unset($_t);
                 </div>
             <?php endif; ?>
 
-            <!-- Copyright, CCLI Song Number, ISWC in song header (#497). -->
+            <!-- Copyright, CCLI Song Number, ISWC in song header (#497).
+                 ID labels (CCLI / ISWC) now bold and separated from the
+                 value with a definite gap so the eye scans them as a
+                 parallel column to the people-credit rows above (#600).
+                 Copyright stays as plain text — it's a sentence, not a
+                 labelled field. -->
             <?php if (!empty($copyright) || !empty($ccli) || $iswc !== ''): ?>
                 <div class="song-meta-copyright mb-3">
                     <?php if (!empty($copyright)): ?>
@@ -288,13 +326,13 @@ unset($_t);
                     <?php if (!empty($ccli)): ?>
                         <p class="mb-<?= $iswc !== '' ? '1' : '0' ?> small text-muted">
                             <i class="fa-solid fa-hashtag me-2" aria-hidden="true"></i>
-                            CCLI Song #<?= htmlspecialchars($ccli) ?>
+                            <strong>CCLI Song #</strong>&nbsp;<?= htmlspecialchars($ccli) ?>
                         </p>
                     <?php endif; ?>
                     <?php if ($iswc !== ''): ?>
                         <p class="mb-0 small text-muted" title="International Standard Musical Work Code">
                             <i class="fa-solid fa-barcode me-2" aria-hidden="true"></i>
-                            ISWC <?= htmlspecialchars($iswc) ?>
+                            <strong>ISWC:</strong>&nbsp;<?= htmlspecialchars($iswc) ?>
                         </p>
                     <?php endif; ?>
                 </div>
