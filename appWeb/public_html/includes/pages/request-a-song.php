@@ -100,6 +100,26 @@ declare(strict_types=1);
         const btn      = document.getElementById('request-submit-btn');
         const countEl  = document.getElementById('request-queued-count');
 
+        /* Prefill from query string (#660) — used by the editor's
+           missing-numbers panel and the standalone missing-numbers
+           page when an editor wants to log a request for a numbered
+           gap. Only writes into a field if the param is present and
+           non-empty; cap lengths to match the input maxlengths so a
+           crafted URL can't bypass the form's own caps. */
+        const qp = new URLSearchParams(window.location.search);
+        const prefillSongbook = (qp.get('songbook') || '').trim().slice(0, 100);
+        const prefillNumber   = (qp.get('number')   || '').trim().slice(0, 500);
+        if (prefillSongbook) {
+            form.elements['songbook'].value = prefillSongbook;
+        }
+        if (prefillNumber) {
+            /* The missing-numbers tools pass the song number; populate
+               the title field with it so the editor sees what number
+               they're requesting and only has to add the actual song
+               title. */
+            form.elements['title'].value = prefillNumber;
+        }
+
         const hideAll = () => {
             okEl.classList.add('d-none');
             queuedEl.classList.add('d-none');
