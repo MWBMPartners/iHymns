@@ -363,6 +363,13 @@
 
 html {
     scroll-behavior: smooth;
+    /* Stop iOS / Android Chrome from auto-bumping body text size on
+       rotation. Three forms because the property is in transition:
+       Safari/iOS only know the -webkit- form, Firefox only knows the
+       -moz- form, Chromium 54+ supports the unprefixed standard. The
+       Edge Tools linter flags the unprefixed line as "not supported in
+       Firefox/Safari" — true, but the prefixed lines above cover those;
+       the standard form is for forward-compat. */
     -webkit-text-size-adjust: 100%;
     -moz-text-size-adjust: 100%;
     text-size-adjust: 100%;

@@ -582,6 +582,13 @@ body:has(.navbar-admin) {
     color: var(--text-muted);
     font-size: 1.2rem;
     padding: 0.25rem;
+    /* Vendor-prefixed user-select for Safari (3+) and Safari on iOS — the
+       drag handle is text-content-adjacent and would otherwise let a
+       drag-init highlight a few characters before the drag starts. Same
+       4-line convention as .admin-sort-th below and .song-lyrics in app.css. */
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
     user-select: none;
     transition: color var(--transition-fast);
 }
