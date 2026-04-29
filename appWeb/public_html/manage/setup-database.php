@@ -205,6 +205,7 @@ if ($action !== '') {
         'credit-people-slug' => 'migrate-credit-people-slug.php',
         'user-avatar-service' => 'migrate-user-avatar-service.php',
         'organisation-licences' => 'migrate-organisation-licences.php',
+        'songbook-affiliations' => 'migrate-songbook-affiliations.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -781,6 +782,25 @@ if ($hasCredentials && defined('DB_HOST')) {
                         </p>
                         <a href="?action=organisation-licences" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run Multi-licence Migration
+                        </a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">3l. Songbook affiliations registry (#670)</h5>
+                        <p class="card-text text-secondary small">
+                            Closes the &ldquo;Affiliation lookup table&rdquo; out-of-scope
+                            item from #502. Adds <code>tblSongbookAffiliations</code> as
+                            a controlled vocabulary (Name UNIQUE) so the songbook editor
+                            can typeahead-suggest existing values instead of letting small
+                            typing variations create duplicate entries. Backfills the
+                            registry from every distinct non-empty <code>Affiliation</code>
+                            already in <code>tblSongbooks</code>. Idempotent — safe to re-run.
+                        </p>
+                        <a href="?action=songbook-affiliations" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run Songbook Affiliations Migration
                         </a>
                     </div>
                 </div>

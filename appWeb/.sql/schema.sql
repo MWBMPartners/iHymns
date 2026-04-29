@@ -40,11 +40,29 @@ CREATE TABLE IF NOT EXISTS tblSongbooks (
     Publisher       VARCHAR(255)    NULL DEFAULT NULL COMMENT 'Publisher or originator (e.g. Praise Trust, Hope Publishing) (#502)',
     PublicationYear VARCHAR(50)     NULL DEFAULT NULL COMMENT 'Year / edition range (free-form: 1986, 1986-2003, 2nd edition 2011) (#502)',
     Copyright       VARCHAR(500)    NULL DEFAULT NULL COMMENT 'Copyright notice for the collection as a whole (#502)',
-    Affiliation     VARCHAR(120)    NULL DEFAULT NULL COMMENT 'Denominational / religious affiliation; free-text for now, lookup table later (#502)',
+    Affiliation     VARCHAR(120)    NULL DEFAULT NULL COMMENT 'Denominational / religious affiliation; backed by tblSongbookAffiliations registry (#670)',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
     INDEX idx_DisplayOrder (DisplayOrder)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongbookAffiliations (#670)
+-- Controlled vocabulary for the Affiliation column on tblSongbooks. Acts as a
+-- parallel registry — Affiliation stays a denormalised VARCHAR on tblSongbooks
+-- (no FK), but every non-empty value the songbook editor saves is also
+-- INSERT IGNOREd here so the typeahead can prevent duplicate-creation drift
+-- (e.g. "Seventh-day Adventist Church" vs "Seventh-Day Adventist Church"
+-- vs "SDA Church"). Same shape as tblCreditPeople below.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongbookAffiliations (
+    Id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    Name        VARCHAR(120)    NOT NULL,
+    CreatedAt   TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE KEY ux_affiliation_name (Name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
