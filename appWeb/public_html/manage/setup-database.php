@@ -208,6 +208,7 @@ if ($action !== '') {
         'songbook-affiliations' => 'migrate-songbook-affiliations.php',
         'songbook-bibliographic' => 'migrate-songbook-bibliographic.php',
         'songbook-language'      => 'migrate-songbook-language.php',
+        'ietf-bcp47-language'    => 'migrate-ietf-bcp47-language.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -839,6 +840,28 @@ if ($hasCredentials && defined('DB_HOST')) {
                         </p>
                         <a href="?action=songbook-language" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run Songbook Language Migration
+                        </a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">3o. IETF BCP 47 language tagging (#681)</h5>
+                        <p class="card-text text-secondary small">
+                            Brings every <code>Language</code> column on songs,
+                            songbooks, translations and song-requests up to
+                            <code>VARCHAR(35)</code> so they can hold a full IETF
+                            BCP 47 tag (language[-script][-region], e.g.
+                            <code>pt-BR</code>, <code>zh-Hans-CN</code>,
+                            <code>sr-Latn</code>). Adds <code>tblScripts</code>
+                            (~28 ISO 15924 codes) and <code>tblRegions</code>
+                            (~255 ISO 3166-1 codes + six M.49 area groupings)
+                            for the composite picker's typeahead. Idempotent
+                            — safe to re-run.
+                        </p>
+                        <a href="?action=ietf-bcp47-language" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run IETF BCP 47 Language Migration
                         </a>
                     </div>
                 </div>
