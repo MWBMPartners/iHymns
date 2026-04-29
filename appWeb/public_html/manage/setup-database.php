@@ -206,6 +206,7 @@ if ($action !== '') {
         'user-avatar-service' => 'migrate-user-avatar-service.php',
         'organisation-licences' => 'migrate-organisation-licences.php',
         'songbook-affiliations' => 'migrate-songbook-affiliations.php',
+        'songbook-bibliographic' => 'migrate-songbook-bibliographic.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -801,6 +802,24 @@ if ($hasCredentials && defined('DB_HOST')) {
                         </p>
                         <a href="?action=songbook-affiliations" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run Songbook Affiliations Migration
+                        </a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">3m. Songbook bibliographic metadata (#672)</h5>
+                        <p class="card-text text-secondary small">
+                            Adds 13 nullable columns to <code>tblSongbooks</code> for
+                            canonical references to the wider bibliographic record:
+                            Website / Internet Archive / Wikipedia URLs, plus the
+                            authority identifiers WikiData, OCLC, OCN, LCP, ISBN,
+                            ARK, ISNI, VIAF, LCCN, and LC Class. All optional;
+                            no FKs. Idempotent — safe to re-run.
+                        </p>
+                        <a href="?action=songbook-bibliographic" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run Songbook Bibliographic Migration
                         </a>
                     </div>
                 </div>

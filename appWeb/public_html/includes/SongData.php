@@ -248,6 +248,7 @@ class SongData
             return $books;
         }
 
+        $bibSelect = $this->_songbookBibSelect();
         $stmt = $this->db->prepare(
             "SELECT Abbreviation AS id, Name AS name, SongCount AS songCount,
                     Colour AS colour,
@@ -256,6 +257,7 @@ class SongData
                     PublicationYear AS publicationYear,
                     Copyright       AS copyright,
                     Affiliation     AS affiliation
+                    {$bibSelect}
              FROM tblSongbooks
              ORDER BY Name ASC"
         );
@@ -274,6 +276,46 @@ class SongData
     }
 
     /**
+     * Build the trailing fragment of the SELECT for songbook bibliographic
+     * + authority-control identifier columns (#672). On a deployment that
+     * hasn't run migrate-songbook-bibliographic.php yet the columns
+     * aren't there and a SELECT that names them would 500 the songbooks
+     * API. Probe INFORMATION_SCHEMA once per object instance, then return
+     * either the full ", b.WebsiteUrl, b.OcnNumber, …" tail or an empty
+     * string. Cached on the instance because getSongbooks() and
+     * getSongbook() are commonly called in pairs on the same request.
+     */
+    private function _songbookBibSelect(): string
+    {
+        if (isset($this->_bibSelectCache)) {
+            return $this->_bibSelectCache;
+        }
+        $hasBibCols = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongbooks'
+                    AND COLUMN_NAME  = 'WikidataId'
+                  LIMIT 1"
+            );
+            $probe->execute();
+            $hasBibCols = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* probe failure → fall through to empty tail */ }
+        $this->_bibSelectCache = $hasBibCols
+            ? ', WebsiteUrl AS websiteUrl, InternetArchiveUrl AS internetArchiveUrl,
+               WikipediaUrl AS wikipediaUrl, WikidataId AS wikidataId,
+               OclcNumber AS oclcNumber, OcnNumber AS ocnNumber,
+               LcpNumber AS lcpNumber, Isbn AS isbn,
+               ArkId AS arkId, IsniId AS isniId,
+               ViafId AS viafId, Lccn AS lccn, LcClass AS lcClass'
+            : '';
+        return $this->_bibSelectCache;
+    }
+    private ?string $_bibSelectCache = null;
+
+    /**
      * Get a single songbook by its abbreviation ID.
      *
      * @param string $id Songbook abbreviation (e.g., 'CP', 'MP')
@@ -288,6 +330,7 @@ class SongData
             }
             return null;
         }
+        $bibSelect = $this->_songbookBibSelect();
         $stmt = $this->db->prepare(
             "SELECT Abbreviation AS id, Name AS name, SongCount AS songCount,
                     Colour AS colour,
@@ -296,6 +339,7 @@ class SongData
                     PublicationYear AS publicationYear,
                     Copyright       AS copyright,
                     Affiliation     AS affiliation
+                    {$bibSelect}
              FROM tblSongbooks
              WHERE Abbreviation = ?"
         );

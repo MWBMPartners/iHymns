@@ -189,6 +189,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $copyright  = trim((string)($_POST['copyright']        ?? '')) ?: null;
                 $affiliation= trim((string)($_POST['affiliation']      ?? '')) ?: null;
 
+                /* #672 — bibliographic + authority-control identifiers.
+                   All nullable, all VARCHAR. trim()→null normalises
+                   blank inputs so the column actually stores NULL
+                   rather than '' (avoids the typical "is it really
+                   missing" ambiguity in downstream queries). */
+                $websiteUrl   = trim((string)($_POST['website_url']         ?? '')) ?: null;
+                $iaUrl        = trim((string)($_POST['internet_archive_url']?? '')) ?: null;
+                $wikipediaUrl = trim((string)($_POST['wikipedia_url']       ?? '')) ?: null;
+                $wikidataId   = trim((string)($_POST['wikidata_id']         ?? '')) ?: null;
+                $oclcNumber   = trim((string)($_POST['oclc_number']         ?? '')) ?: null;
+                $ocnNumber    = trim((string)($_POST['ocn_number']          ?? '')) ?: null;
+                $lcpNumber    = trim((string)($_POST['lcp_number']          ?? '')) ?: null;
+                $isbn         = trim((string)($_POST['isbn']                ?? '')) ?: null;
+                $arkId        = trim((string)($_POST['ark_id']              ?? '')) ?: null;
+                $isniId       = trim((string)($_POST['isni_id']             ?? '')) ?: null;
+                $viafId       = trim((string)($_POST['viaf_id']             ?? '')) ?: null;
+                $lccn         = trim((string)($_POST['lccn']                ?? '')) ?: null;
+                $lcClass      = trim((string)($_POST['lc_class']            ?? '')) ?: null;
+
                 if ($e = $validateAbbr($abbr))   { $error = $e; break; }
                 if ($name === '')                { $error = 'Name is required.'; break; }
                 if ($e = $validateColour($colour)) { $error = $e; break; }
@@ -203,18 +222,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt = $db->prepare(
                     'INSERT INTO tblSongbooks
                         (Abbreviation, Name, DisplayOrder, Colour,
-                         IsOfficial, Publisher, PublicationYear, Copyright, Affiliation)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                         IsOfficial, Publisher, PublicationYear, Copyright, Affiliation,
+                         WebsiteUrl, InternetArchiveUrl, WikipediaUrl, WikidataId,
+                         OclcNumber, OcnNumber, LcpNumber, Isbn, ArkId, IsniId,
+                         ViafId, Lccn, LcClass)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
                 );
-                /* Types: Abbr(s), Name(s), DisplayOrder(i), Colour(s),
-                   IsOfficial(i), Publisher(s nullable), PublicationYear(s nullable),
-                   Copyright(s nullable), Affiliation(s nullable). mysqli passes
-                   NULL correctly when a bound variable is null even with type 's'. */
+                /* Types breakdown:
+                     Abbr(s), Name(s), DisplayOrder(i), Colour(s),               4
+                     IsOfficial(i), Publisher(s), PubYear(s), Copyright(s),
+                       Affiliation(s),                                            5
+                     Website(s), IA(s), Wikipedia(s), Wikidata(s),
+                       OCLC(s), OCN(s), LCP(s), ISBN(s), ARK(s), ISNI(s),
+                       VIAF(s), LCCN(s), LcClass(s)                              13
+                                                                            ----
+                                                                              22
+                   mysqli passes NULL correctly when a bound variable is null
+                   even with type 's'. */
                 $orderInt = (int)($order ?: 0);
                 $stmt->bind_param(
-                    'ssisissss',
+                    'ssisissssssssssssssssss',
                     $abbr, $name, $orderInt, $colour,
-                    $isOfficial, $publisher, $pubYear, $copyright, $affiliation
+                    $isOfficial, $publisher, $pubYear, $copyright, $affiliation,
+                    $websiteUrl, $iaUrl, $wikipediaUrl, $wikidataId,
+                    $oclcNumber, $ocnNumber, $lcpNumber, $isbn, $arkId, $isniId,
+                    $viafId, $lccn, $lcClass
                 );
                 $stmt->execute();
                 $newId = (int)$db->insert_id;
@@ -229,6 +262,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'publication_year'=> $pubYear,
                     'copyright'       => $copyright,
                     'affiliation'     => $affiliation,
+                    /* #672 — log only the keys that have a value, so
+                       empty bibliographic blocks don't bloat the
+                       activity-log row. */
+                    'bibliographic'   => array_filter([
+                        'website_url'           => $websiteUrl,
+                        'internet_archive_url'  => $iaUrl,
+                        'wikipedia_url'         => $wikipediaUrl,
+                        'wikidata_id'           => $wikidataId,
+                        'oclc_number'           => $oclcNumber,
+                        'ocn_number'            => $ocnNumber,
+                        'lcp_number'            => $lcpNumber,
+                        'isbn'                  => $isbn,
+                        'ark_id'                => $arkId,
+                        'isni_id'               => $isniId,
+                        'viaf_id'               => $viafId,
+                        'lccn'                  => $lccn,
+                        'lc_class'              => $lcClass,
+                    ], fn($v) => $v !== null && $v !== ''),
                 ]);
                 /* Self-populate the affiliation registry so the next
                    open of the typeahead surfaces this value (#670). */
@@ -244,20 +295,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $order       = (int)($_POST['display_order']        ?? 0);
                 $newAbbr     = trim((string)($_POST['new_abbreviation'] ?? ''));
                 $alsoRename  = !empty($_POST['rename_song_refs']);
-                /* #502 — new metadata columns. */
+                /* #502 — basic metadata columns. */
                 $isOfficial  = !empty($_POST['is_official']) ? 1 : 0;
                 $publisher   = trim((string)($_POST['publisher']        ?? '')) ?: null;
                 $pubYear     = trim((string)($_POST['publication_year'] ?? '')) ?: null;
                 $copyright   = trim((string)($_POST['copyright']        ?? '')) ?: null;
                 $affiliation = trim((string)($_POST['affiliation']      ?? '')) ?: null;
 
+                /* #672 — bibliographic + authority-control identifiers. */
+                $websiteUrl   = trim((string)($_POST['website_url']         ?? '')) ?: null;
+                $iaUrl        = trim((string)($_POST['internet_archive_url']?? '')) ?: null;
+                $wikipediaUrl = trim((string)($_POST['wikipedia_url']       ?? '')) ?: null;
+                $wikidataId   = trim((string)($_POST['wikidata_id']         ?? '')) ?: null;
+                $oclcNumber   = trim((string)($_POST['oclc_number']         ?? '')) ?: null;
+                $ocnNumber    = trim((string)($_POST['ocn_number']          ?? '')) ?: null;
+                $lcpNumber    = trim((string)($_POST['lcp_number']          ?? '')) ?: null;
+                $isbn         = trim((string)($_POST['isbn']                ?? '')) ?: null;
+                $arkId        = trim((string)($_POST['ark_id']              ?? '')) ?: null;
+                $isniId       = trim((string)($_POST['isni_id']             ?? '')) ?: null;
+                $viafId       = trim((string)($_POST['viaf_id']             ?? '')) ?: null;
+                $lccn         = trim((string)($_POST['lccn']                ?? '')) ?: null;
+                $lcClass      = trim((string)($_POST['lc_class']            ?? '')) ?: null;
+
                 /* Fetch the full before-row so the audit log carries
                    a complete diff of which fields actually changed
                    (#535) — otherwise the timeline reader has to
-                   guess. */
+                   guess. SELECT extended for #672 metadata so the
+                   diff covers the new identifier columns too. */
                 $existing = $db->prepare(
                     'SELECT Abbreviation, Name, DisplayOrder, Colour, IsOfficial,
-                            Publisher, PublicationYear, Copyright, Affiliation
+                            Publisher, PublicationYear, Copyright, Affiliation,
+                            WebsiteUrl, InternetArchiveUrl, WikipediaUrl, WikidataId,
+                            OclcNumber, OcnNumber, LcpNumber, Isbn, ArkId, IsniId,
+                            ViafId, Lccn, LcClass
                        FROM tblSongbooks WHERE Id = ?'
                 );
                 $existing->bind_param('i', $id);
@@ -288,17 +358,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'UPDATE tblSongbooks
                             SET Name = ?, Colour = ?, DisplayOrder = ?,
                                 IsOfficial = ?, Publisher = ?,
-                                PublicationYear = ?, Copyright = ?, Affiliation = ?
+                                PublicationYear = ?, Copyright = ?, Affiliation = ?,
+                                WebsiteUrl = ?, InternetArchiveUrl = ?,
+                                WikipediaUrl = ?, WikidataId = ?,
+                                OclcNumber = ?, OcnNumber = ?, LcpNumber = ?,
+                                Isbn = ?, ArkId = ?, IsniId = ?,
+                                ViafId = ?, Lccn = ?, LcClass = ?
                           WHERE Id = ?'
                     );
-                    /* Types: Name(s), Colour(s), DisplayOrder(i),
-                       IsOfficial(i), Publisher(s), PublicationYear(s),
-                       Copyright(s), Affiliation(s), Id(i). */
+                    /* Types breakdown:
+                         Name(s), Colour(s), Order(i),                   3
+                         IsOfficial(i), Publisher(s), Year(s), Copy(s),
+                           Affiliation(s),                               5
+                         13 × bibliographic-identifier strings           13
+                         Id(i)                                            1
+                                                                        ----
+                                                                         22 */
                     $orderInt = (int)($order ?: 0);
                     $stmt->bind_param(
-                        'ssiissssi',
+                        'ssiissssssssssssssssssi',
                         $name, $colour, $orderInt,
                         $isOfficial, $publisher, $pubYear, $copyright, $affiliation,
+                        $websiteUrl, $iaUrl, $wikipediaUrl, $wikidataId,
+                        $oclcNumber, $ocnNumber, $lcpNumber, $isbn, $arkId, $isniId,
+                        $viafId, $lccn, $lcClass,
                         $id
                     );
                     $stmt->execute();
@@ -321,17 +404,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     /* Audit (#535) — compute the changed-fields list
                        explicitly so the row stays small (the full
                        before-row is on $beforeRow and we don't need
-                       to dump every key). */
+                       to dump every key). Extended for #672 to cover
+                       the 13 new identifier columns. */
                     $afterRow = [
-                        'Abbreviation'   => $abbrChanged ? $newAbbr : $oldAbbr,
-                        'Name'           => $name,
-                        'DisplayOrder'   => $order ?: 0,
-                        'Colour'         => $colour,
-                        'IsOfficial'     => $isOfficial,
-                        'Publisher'      => $publisher,
-                        'PublicationYear'=> $pubYear,
-                        'Copyright'      => $copyright,
-                        'Affiliation'    => $affiliation,
+                        'Abbreviation'      => $abbrChanged ? $newAbbr : $oldAbbr,
+                        'Name'              => $name,
+                        'DisplayOrder'      => $order ?: 0,
+                        'Colour'            => $colour,
+                        'IsOfficial'        => $isOfficial,
+                        'Publisher'         => $publisher,
+                        'PublicationYear'   => $pubYear,
+                        'Copyright'         => $copyright,
+                        'Affiliation'       => $affiliation,
+                        'WebsiteUrl'        => $websiteUrl,
+                        'InternetArchiveUrl'=> $iaUrl,
+                        'WikipediaUrl'      => $wikipediaUrl,
+                        'WikidataId'        => $wikidataId,
+                        'OclcNumber'        => $oclcNumber,
+                        'OcnNumber'         => $ocnNumber,
+                        'LcpNumber'         => $lcpNumber,
+                        'Isbn'              => $isbn,
+                        'ArkId'             => $arkId,
+                        'IsniId'            => $isniId,
+                        'ViafId'            => $viafId,
+                        'Lccn'              => $lccn,
+                        'LcClass'           => $lcClass,
                     ];
                     $changed = [];
                     foreach ($afterRow as $k => $v) {
@@ -444,10 +541,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 /* ----- GET: list ----- */
 $rows = [];
 try {
+    /* Probe whether the #672 columns exist before SELECTing them.
+       A deployment that hasn't run migrate-songbook-bibliographic.php
+       yet should still render the songbook list — the new fields are
+       just absent from the edit-modal payload until the migration
+       runs. Cheaper than a try/catch + retry. */
+    $hasBibCols = false;
+    try {
+        $probe = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblSongbooks'
+                AND COLUMN_NAME  = 'WikidataId'
+              LIMIT 1"
+        );
+        $probe->execute();
+        $hasBibCols = $probe->get_result()->fetch_row() !== null;
+        $probe->close();
+    } catch (\Throwable $_e) { /* probe failure → fall through to base SELECT */ }
+
+    $bibSelect = $hasBibCols
+        ? ', b.WebsiteUrl, b.InternetArchiveUrl, b.WikipediaUrl, b.WikidataId,
+             b.OclcNumber, b.OcnNumber, b.LcpNumber, b.Isbn, b.ArkId, b.IsniId,
+             b.ViafId, b.Lccn, b.LcClass'
+        : '';
     $stmt = $db->prepare(
         'SELECT b.Id, b.Abbreviation, b.Name, b.SongCount, b.DisplayOrder, b.Colour,
                 b.IsOfficial, b.Publisher, b.PublicationYear,
-                b.Copyright, b.Affiliation,
+                b.Copyright, b.Affiliation' . $bibSelect . ',
                 COUNT(s.Id) AS ActualSongCount
            FROM tblSongbooks b
            LEFT JOIN tblSongs s ON s.SongbookAbbr = b.Abbreviation
@@ -541,17 +662,33 @@ $csrf = csrfToken();
                             <td class="text-end">
                                 <button type="button" class="btn btn-sm btn-outline-info"
                                         onclick='openEditModal(<?= json_encode([
-                                            'id'               => (int)$r['Id'],
-                                            'abbreviation'     => $r['Abbreviation'],
-                                            'name'             => $r['Name'],
-                                            'colour'           => $r['Colour'],
-                                            'display_order'    => (int)$r['DisplayOrder'],
-                                            'song_count'       => (int)$r['ActualSongCount'],
-                                            'is_official'      => (int)$r['IsOfficial'] === 1,
-                                            'publisher'        => $r['Publisher']       ?? '',
-                                            'publication_year' => $r['PublicationYear'] ?? '',
-                                            'copyright'        => $r['Copyright']       ?? '',
-                                            'affiliation'      => $r['Affiliation']     ?? '',
+                                            'id'                  => (int)$r['Id'],
+                                            'abbreviation'        => $r['Abbreviation'],
+                                            'name'                => $r['Name'],
+                                            'colour'              => $r['Colour'],
+                                            'display_order'       => (int)$r['DisplayOrder'],
+                                            'song_count'          => (int)$r['ActualSongCount'],
+                                            'is_official'         => (int)$r['IsOfficial'] === 1,
+                                            'publisher'           => $r['Publisher']       ?? '',
+                                            'publication_year'    => $r['PublicationYear'] ?? '',
+                                            'copyright'           => $r['Copyright']       ?? '',
+                                            'affiliation'         => $r['Affiliation']     ?? '',
+                                            /* #672 — fields default to '' so a row from a
+                                               pre-migration deployment renders cleanly
+                                               (the bibSelect probe above gates the SELECT). */
+                                            'website_url'         => $r['WebsiteUrl']         ?? '',
+                                            'internet_archive_url'=> $r['InternetArchiveUrl'] ?? '',
+                                            'wikipedia_url'       => $r['WikipediaUrl']       ?? '',
+                                            'wikidata_id'         => $r['WikidataId']         ?? '',
+                                            'oclc_number'         => $r['OclcNumber']         ?? '',
+                                            'ocn_number'          => $r['OcnNumber']          ?? '',
+                                            'lcp_number'          => $r['LcpNumber']          ?? '',
+                                            'isbn'                => $r['Isbn']               ?? '',
+                                            'ark_id'              => $r['ArkId']              ?? '',
+                                            'isni_id'             => $r['IsniId']             ?? '',
+                                            'viaf_id'             => $r['ViafId']             ?? '',
+                                            'lccn'                => $r['Lccn']               ?? '',
+                                            'lc_class'            => $r['LcClass']            ?? '',
                                         ]) ?>)'
                                         title="Edit songbook">
                                     <i class="bi bi-pencil"></i>
@@ -655,6 +792,90 @@ $csrf = csrfToken();
                 </div>
             </div>
 
+            <!-- #672 — collapsed by default; the create form already has 8 visible
+                 fields and most curators don't need the bibliographic block on a
+                 brand-new songbook. <details> is native HTML5 — no JS needed. -->
+            <details class="mt-3">
+                <summary class="form-label small text-muted" style="cursor:pointer;">
+                    <i class="bi bi-link-45deg me-1"></i>Online links (optional)
+                </summary>
+                <div class="row g-2 mt-1">
+                    <div class="col-sm-4">
+                        <label class="form-label small">Official website</label>
+                        <input type="url" name="website_url" class="form-control form-control-sm"
+                               maxlength="500" placeholder="https://www.example.com">
+                    </div>
+                    <div class="col-sm-4">
+                        <label class="form-label small">Internet Archive URL</label>
+                        <input type="url" name="internet_archive_url" class="form-control form-control-sm"
+                               maxlength="500" placeholder="https://archive.org/details/…">
+                    </div>
+                    <div class="col-sm-4">
+                        <label class="form-label small">Wikipedia URL</label>
+                        <input type="url" name="wikipedia_url" class="form-control form-control-sm"
+                               maxlength="500" placeholder="https://en.wikipedia.org/wiki/…">
+                    </div>
+                </div>
+            </details>
+
+            <details class="mt-2">
+                <summary class="form-label small text-muted" style="cursor:pointer;">
+                    <i class="bi bi-card-list me-1"></i>Authority identifiers (optional)
+                </summary>
+                <div class="row g-2 mt-1">
+                    <div class="col-sm-3">
+                        <label class="form-label small">WikiData ID</label>
+                        <input type="text" name="wikidata_id" class="form-control form-control-sm"
+                               maxlength="20" placeholder="Q12345">
+                    </div>
+                    <div class="col-sm-3">
+                        <label class="form-label small">OCLC number</label>
+                        <input type="text" name="oclc_number" class="form-control form-control-sm"
+                               maxlength="30" placeholder="12345678">
+                    </div>
+                    <div class="col-sm-3">
+                        <label class="form-label small">OCN number</label>
+                        <input type="text" name="ocn_number" class="form-control form-control-sm"
+                               maxlength="30" placeholder="ocn123456789">
+                    </div>
+                    <div class="col-sm-3">
+                        <label class="form-label small">LCP number</label>
+                        <input type="text" name="lcp_number" class="form-control form-control-sm"
+                               maxlength="30" placeholder="LC2018012345">
+                    </div>
+                    <div class="col-sm-3">
+                        <label class="form-label small">ISBN</label>
+                        <input type="text" name="isbn" class="form-control form-control-sm"
+                               maxlength="20" placeholder="978-0-86065-654-1">
+                    </div>
+                    <div class="col-sm-3">
+                        <label class="form-label small">ARK ID</label>
+                        <input type="text" name="ark_id" class="form-control form-control-sm"
+                               maxlength="80" placeholder="ark:/13960/t8jf3w89z">
+                    </div>
+                    <div class="col-sm-3">
+                        <label class="form-label small">ISNI ID</label>
+                        <input type="text" name="isni_id" class="form-control form-control-sm"
+                               maxlength="25" placeholder="0000 0001 2345 6789">
+                    </div>
+                    <div class="col-sm-3">
+                        <label class="form-label small">VIAF ID</label>
+                        <input type="text" name="viaf_id" class="form-control form-control-sm"
+                               maxlength="20" placeholder="123456789">
+                    </div>
+                    <div class="col-sm-3">
+                        <label class="form-label small">LCCN</label>
+                        <input type="text" name="lccn" class="form-control form-control-sm"
+                               maxlength="20" placeholder="n79123456">
+                    </div>
+                    <div class="col-sm-9">
+                        <label class="form-label small">LC Classification</label>
+                        <input type="text" name="lc_class" class="form-control form-control-sm"
+                               maxlength="50" placeholder="M2117 .M5 1990">
+                    </div>
+                </div>
+            </details>
+
             <button type="submit" class="btn btn-amber-solid btn-sm mt-3">
                 <i class="bi bi-plus me-1"></i>Create songbook
             </button>
@@ -733,6 +954,105 @@ $csrf = csrfToken();
                             </div>
                         </div>
 
+                        <!-- #672 — collapsible "Online links" + "Authority identifiers".
+                             Closed by default so the modal still opens at the same height
+                             curators are used to. <details> is native HTML5; no JS needed
+                             to toggle. The same field IDs are populated in openEditModal()
+                             below from the row.* payload. -->
+                        <details class="mb-3">
+                            <summary class="form-label small text-muted" style="cursor:pointer;">
+                                <i class="bi bi-link-45deg me-1"></i>Online links (optional)
+                            </summary>
+                            <div class="mt-2">
+                                <div class="mb-2">
+                                    <label class="form-label small">Official website</label>
+                                    <input type="url" class="form-control form-control-sm"
+                                           name="website_url" id="edit-website-url"
+                                           maxlength="500" placeholder="https://www.example.com">
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label small">Internet Archive URL</label>
+                                    <input type="url" class="form-control form-control-sm"
+                                           name="internet_archive_url" id="edit-internet-archive-url"
+                                           maxlength="500" placeholder="https://archive.org/details/…">
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label small">Wikipedia URL</label>
+                                    <input type="url" class="form-control form-control-sm"
+                                           name="wikipedia_url" id="edit-wikipedia-url"
+                                           maxlength="500" placeholder="https://en.wikipedia.org/wiki/…">
+                                </div>
+                            </div>
+                        </details>
+
+                        <details class="mb-3">
+                            <summary class="form-label small text-muted" style="cursor:pointer;">
+                                <i class="bi bi-card-list me-1"></i>Authority identifiers (optional)
+                            </summary>
+                            <div class="row g-2 mt-2">
+                                <div class="col-sm-6">
+                                    <label class="form-label small">WikiData ID</label>
+                                    <input type="text" class="form-control form-control-sm"
+                                           name="wikidata_id" id="edit-wikidata-id"
+                                           maxlength="20" placeholder="Q12345">
+                                </div>
+                                <div class="col-sm-6">
+                                    <label class="form-label small">OCLC number</label>
+                                    <input type="text" class="form-control form-control-sm"
+                                           name="oclc_number" id="edit-oclc-number"
+                                           maxlength="30" placeholder="12345678">
+                                </div>
+                                <div class="col-sm-6">
+                                    <label class="form-label small">OCN number</label>
+                                    <input type="text" class="form-control form-control-sm"
+                                           name="ocn_number" id="edit-ocn-number"
+                                           maxlength="30" placeholder="ocn123456789">
+                                </div>
+                                <div class="col-sm-6">
+                                    <label class="form-label small">LCP number</label>
+                                    <input type="text" class="form-control form-control-sm"
+                                           name="lcp_number" id="edit-lcp-number"
+                                           maxlength="30" placeholder="LC2018012345">
+                                </div>
+                                <div class="col-sm-6">
+                                    <label class="form-label small">ISBN</label>
+                                    <input type="text" class="form-control form-control-sm"
+                                           name="isbn" id="edit-isbn"
+                                           maxlength="20" placeholder="978-0-86065-654-1">
+                                </div>
+                                <div class="col-sm-6">
+                                    <label class="form-label small">ARK ID</label>
+                                    <input type="text" class="form-control form-control-sm"
+                                           name="ark_id" id="edit-ark-id"
+                                           maxlength="80" placeholder="ark:/13960/t8jf3w89z">
+                                </div>
+                                <div class="col-sm-6">
+                                    <label class="form-label small">ISNI ID</label>
+                                    <input type="text" class="form-control form-control-sm"
+                                           name="isni_id" id="edit-isni-id"
+                                           maxlength="25" placeholder="0000 0001 2345 6789">
+                                </div>
+                                <div class="col-sm-6">
+                                    <label class="form-label small">VIAF ID</label>
+                                    <input type="text" class="form-control form-control-sm"
+                                           name="viaf_id" id="edit-viaf-id"
+                                           maxlength="20" placeholder="123456789">
+                                </div>
+                                <div class="col-sm-6">
+                                    <label class="form-label small">LCCN</label>
+                                    <input type="text" class="form-control form-control-sm"
+                                           name="lccn" id="edit-lccn"
+                                           maxlength="20" placeholder="n79123456">
+                                </div>
+                                <div class="col-sm-6">
+                                    <label class="form-label small">LC Classification</label>
+                                    <input type="text" class="form-control form-control-sm"
+                                           name="lc_class" id="edit-lc-class"
+                                           maxlength="50" placeholder="M2117 .M5 1990">
+                                </div>
+                            </div>
+                        </details>
+
                         <hr>
                         <div class="mb-3">
                             <label class="form-label">New abbreviation (optional)</label>
@@ -797,6 +1117,24 @@ $csrf = csrfToken();
             document.getElementById('edit-publication-year').value  = row.publication_year || '';
             document.getElementById('edit-copyright').value         = row.copyright        || '';
             document.getElementById('edit-affiliation').value       = row.affiliation      || '';
+
+            /* #672 — bibliographic + authority-control identifiers. The
+               row payload normalises every key to '' when the source
+               column was NULL (or missing entirely on a pre-migration
+               deployment) so each input always receives a string. */
+            document.getElementById('edit-website-url').value          = row.website_url          || '';
+            document.getElementById('edit-internet-archive-url').value = row.internet_archive_url || '';
+            document.getElementById('edit-wikipedia-url').value        = row.wikipedia_url        || '';
+            document.getElementById('edit-wikidata-id').value          = row.wikidata_id          || '';
+            document.getElementById('edit-oclc-number').value          = row.oclc_number          || '';
+            document.getElementById('edit-ocn-number').value           = row.ocn_number           || '';
+            document.getElementById('edit-lcp-number').value           = row.lcp_number           || '';
+            document.getElementById('edit-isbn').value                 = row.isbn                 || '';
+            document.getElementById('edit-ark-id').value               = row.ark_id               || '';
+            document.getElementById('edit-isni-id').value              = row.isni_id              || '';
+            document.getElementById('edit-viaf-id').value              = row.viaf_id              || '';
+            document.getElementById('edit-lccn').value                 = row.lccn                 || '';
+            document.getElementById('edit-lc-class').value             = row.lc_class             || '';
 
             document.getElementById('edit-new-abbr').value          = '';
             document.getElementById('edit-rename-refs').checked     = false;
