@@ -677,12 +677,39 @@ $csrf = csrfToken();
         <?php endif; ?>
 
         <!-- List + reorder -->
-        <form method="POST" class="card-admin p-3 mb-4">
+        <form method="POST" class="card-admin p-3 mb-4" id="songbook-list-form">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
             <input type="hidden" name="action" value="reorder">
-            <table class="table table-sm mb-2 align-middle cp-sortable">
+
+            <!-- #674 — quick-sort presets. Renumber DisplayOrder in 10-spaced
+                 steps based on the chosen field; the user can review the
+                 new order and hit "Save display order" to persist (or
+                 navigate away to back out). Leading "The "/"A "/"An "
+                 are stripped for the Name sort so "The Church Hymnal"
+                 sorts among the C's, not the T's. -->
+            <?php if ($rows): ?>
+            <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+                <small class="text-muted me-1">Quick sort:</small>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-sort-preset="name:asc">
+                    <i class="bi bi-sort-alpha-down me-1"></i>Name A→Z
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-sort-preset="name:desc">
+                    <i class="bi bi-sort-alpha-up-alt me-1"></i>Name Z→A
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-sort-preset="abbr:asc">
+                    <i class="bi bi-sort-alpha-down me-1"></i>Abbr A→Z
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-sort-preset="abbr:desc">
+                    <i class="bi bi-sort-alpha-up-alt me-1"></i>Abbr Z→A
+                </button>
+                <small class="text-muted ms-1">— preview applied; hit <em>Save display order</em> to persist.</small>
+            </div>
+            <?php endif; ?>
+
+            <table class="table table-sm mb-2 align-middle cp-sortable" id="songbook-list-table">
                 <thead>
                     <tr class="text-muted small">
+                        <th style="width:1.5rem" aria-label="Drag to reorder"></th>
                         <th style="width:6rem">Order</th>
                         <th data-sort-key="abbr" data-sort-type="text">Abbr</th>
                         <th data-sort-key="name" data-sort-type="text">Name</th>
@@ -694,7 +721,15 @@ $csrf = csrfToken();
                 </thead>
                 <tbody>
                     <?php foreach ($rows as $r): ?>
-                        <tr>
+                        <tr class="songbook-row"
+                            data-row-id="<?= (int)$r['Id'] ?>"
+                            data-sort-name="<?= htmlspecialchars($r['Name']) ?>"
+                            data-sort-abbr="<?= htmlspecialchars($r['Abbreviation']) ?>">
+                            <td class="text-center align-middle">
+                                <span class="songbook-drag-handle" title="Drag to reorder" aria-hidden="true">
+                                    <i class="bi bi-grip-vertical"></i>
+                                </span>
+                            </td>
                             <td>
                                 <input type="number" min="0"
                                        class="form-control form-control-sm"
@@ -774,7 +809,7 @@ $csrf = csrfToken();
                         </tr>
                     <?php endforeach; ?>
                     <?php if (!$rows): ?>
-                        <tr><td colspan="7" class="text-muted text-center py-4">No songbooks yet. Add one below.</td></tr>
+                        <tr><td colspan="8" class="text-muted text-center py-4">No songbooks yet. Add one below.</td></tr>
                     <?php endif; ?>
                 </tbody>
             </table>
@@ -1266,6 +1301,140 @@ $csrf = csrfToken();
     <script type="module">
         import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
         bootSortableTables();
+    </script>
+
+    <!-- Drag-and-drop reorder + Sort by Name/Abbr presets (#674).
+         Vanilla HTML5 Drag-and-Drop on the songbook list table; no
+         third-party library. Touch users can still type a number into
+         each row's Order input + hit Save (the existing path) — a
+         touch-driven reorder UX would need significantly more code
+         and isn't blocking. The four sort-preset buttons renumber
+         in 10-spaced steps without saving so the curator can review
+         and back out. -->
+    <style>
+        .songbook-drag-handle {
+            cursor: grab;
+            color: var(--text-muted);
+            font-size: 1.05rem;
+            /* Vendor-prefixed user-select to suppress text selection
+               on Safari/iOS during a drag — same 4-line convention
+               used elsewhere (see admin.css drag-handle, #668). */
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+        }
+        .songbook-drag-handle:hover { color: var(--accent-solid); }
+        .songbook-row.dragging { opacity: 0.4; }
+        .songbook-row.drop-above td { box-shadow: 0 -2px 0 var(--accent-solid) inset; }
+        .songbook-row.drop-below td { box-shadow: 0  2px 0 var(--accent-solid) inset; }
+    </style>
+    <script>
+    (function () {
+        const tbody = document.querySelector('#songbook-list-table tbody');
+        if (!tbody) return;
+
+        /* Live snapshot of the current row order. Recomputed on every
+           DOM read because drag-drop reshuffles in place. */
+        const rows = () => Array.from(tbody.querySelectorAll('tr.songbook-row'));
+
+        /* Renumber the DisplayOrder <input>s in 10-spaced steps based
+           on the current visual row order. The "Save display order"
+           submit button picks them up via display_order[<id>]. */
+        const renumber = () => {
+            rows().forEach((tr, i) => {
+                const input = tr.querySelector('input[name^="display_order"]');
+                if (input) input.value = (i + 1) * 10;
+            });
+        };
+
+        /* ----- Sort presets ----- */
+        /* Strip a leading "The "/"A "/"An " (case-insensitive, with
+           trailing whitespace) so "The Church Hymnal" sorts among the
+           C's. Same convention as libraries / WikiData / iTunes.
+           Other-language articles (Spanish "El", French "Le/La", …)
+           are out of scope for v1; flag in the issue comment if a
+           curator hits the limit (#674). */
+        const stripArticle = (s) =>
+            (s || '').replace(/^\s*(the|an|a)\s+/i, '').toLowerCase();
+
+        const sortByKey = (keyFn, dir) => {
+            const sorted = rows().sort((a, b) => {
+                const cmp = keyFn(a).localeCompare(keyFn(b));
+                return dir === 'asc' ? cmp : -cmp;
+            });
+            sorted.forEach(tr => tbody.appendChild(tr));
+            renumber();
+        };
+        document.querySelectorAll('[data-sort-preset]').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                const [field, dir] = btn.dataset.sortPreset.split(':');
+                const keyFn = field === 'name'
+                    ? (tr) => stripArticle(tr.dataset.sortName)
+                    : (tr) => (tr.dataset.sortAbbr || '').toLowerCase();
+                sortByKey(keyFn, dir);
+            });
+        });
+
+        /* ----- Drag and drop -----
+           HTML5 D&D: source row gets draggable=true while the user is
+           pressing the handle, source emits dragstart, every other
+           row's dragover decides whether to insert above or below
+           the cursor based on the row's vertical midpoint. Visual
+           feedback via .drop-above / .drop-below pseudo-classes that
+           paint a 2px accent bar on the relevant edge. */
+        let draggedRow = null;
+        const clearDropMarkers = () => {
+            rows().forEach(tr => tr.classList.remove('drop-above', 'drop-below'));
+        };
+
+        rows().forEach(tr => {
+            const handle = tr.querySelector('.songbook-drag-handle');
+            if (!handle) return;
+
+            /* Only enable draggable while the user is pressing the
+               handle so clicking elsewhere on the row (e.g. into the
+               Order input) doesn't kick off an accidental drag. */
+            handle.addEventListener('mousedown', () => { tr.draggable = true; });
+            tr.addEventListener('mouseup',   () => { tr.draggable = false; });
+
+            tr.addEventListener('dragstart', (e) => {
+                draggedRow = tr;
+                tr.classList.add('dragging');
+                e.dataTransfer.effectAllowed = 'move';
+                /* Set a payload so Firefox actually fires drag events. */
+                e.dataTransfer.setData('text/plain', tr.dataset.rowId || '');
+            });
+
+            tr.addEventListener('dragover', (e) => {
+                if (!draggedRow || draggedRow === tr) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                const rect = tr.getBoundingClientRect();
+                const above = e.clientY < (rect.top + rect.height / 2);
+                clearDropMarkers();
+                tr.classList.add(above ? 'drop-above' : 'drop-below');
+            });
+
+            tr.addEventListener('drop', (e) => {
+                if (!draggedRow || draggedRow === tr) return;
+                e.preventDefault();
+                const rect = tr.getBoundingClientRect();
+                const above = e.clientY < (rect.top + rect.height / 2);
+                if (above)  tr.parentNode.insertBefore(draggedRow, tr);
+                else        tr.parentNode.insertBefore(draggedRow, tr.nextSibling);
+            });
+
+            tr.addEventListener('dragend', () => {
+                if (draggedRow) draggedRow.classList.remove('dragging');
+                draggedRow = null;
+                tr.draggable = false;
+                clearDropMarkers();
+                renumber();
+            });
+        });
+    })();
     </script>
 
     <!-- Affiliation typeahead (#670).
