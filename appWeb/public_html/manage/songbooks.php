@@ -634,7 +634,7 @@ $csrf = csrfToken();
                     <?php foreach ($rows as $r): ?>
                         <tr>
                             <td>
-                                <input type="number" min="0" step="10"
+                                <input type="number" min="0"
                                        class="form-control form-control-sm"
                                        name="display_order[<?= (int)$r['Id'] ?>]"
                                        value="<?= (int)$r['DisplayOrder'] ?>">
@@ -717,7 +717,7 @@ $csrf = csrfToken();
                 <button type="submit" class="btn btn-sm btn-amber-solid">
                     <i class="bi bi-save me-1"></i>Save display order
                 </button>
-                <small class="text-muted ms-2">Lower numbers render first. Step of 10 lets you insert between two rows.</small>
+                <small class="text-muted ms-2">Lower numbers render first. Any non-negative integer is fine — gaps of 10 between rows give you room to slot in a new book later, but you can use 1, 2, 3, … or anything else (#672).</small>
             <?php endif; ?>
         </form>
 
@@ -747,7 +747,7 @@ $csrf = csrfToken();
                 <div class="col-sm-2">
                     <label class="form-label small">Display order</label>
                     <input type="number" name="display_order" class="form-control form-control-sm"
-                           min="0" step="10" value="0">
+                           min="0" value="0">
                 </div>
             </div>
 
@@ -909,7 +909,7 @@ $csrf = csrfToken();
                             <div class="col-sm-6">
                                 <label class="form-label">Display order</label>
                                 <input type="number" class="form-control" name="display_order" id="edit-order"
-                                       min="0" step="10">
+                                       min="0">
                             </div>
                         </div>
 
