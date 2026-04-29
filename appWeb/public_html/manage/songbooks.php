@@ -34,6 +34,144 @@ $error   = '';
 $success = '';
 $db      = getDbMysqli();
 
+/* ---- GET ?action=script_search&q=… (#681) ------------------------------
+ * JSON typeahead for the IETF BCP 47 picker's Script field. Matches
+ * substring (LIKE %q%) against tblScripts.Name OR tblScripts.Code so
+ * a curator can search either by friendly name ("Latin") or by ISO
+ * 15924 code ("Latn"). Empty query → empty list; pre-migration
+ * deployments → empty list with a `note` rather than a 500.
+ * ----------------------------------------------------------------------- */
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
+    && ($_GET['action'] ?? '') === 'script_search'
+) {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store');
+    $q     = trim((string)($_GET['q'] ?? ''));
+    $limit = max(1, min(50, (int)($_GET['limit'] ?? 20)));
+    if ($q === '') {
+        echo json_encode(['suggestions' => []]);
+        exit;
+    }
+
+    $hasTable = false;
+    try {
+        $probe = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblScripts' LIMIT 1"
+        );
+        $probe->execute();
+        $hasTable = $probe->get_result()->fetch_row() !== null;
+        $probe->close();
+    } catch (\Throwable $e) {
+        error_log('[script_search] probe failed: ' . $e->getMessage());
+    }
+    if (!$hasTable) {
+        echo json_encode([
+            'suggestions' => [],
+            'note'        => 'tblScripts not yet created — run /manage/setup-database',
+        ]);
+        exit;
+    }
+
+    try {
+        $like = '%' . $q . '%';
+        $stmt = $db->prepare(
+            'SELECT Code AS code, Name AS name, NativeName AS nativeName
+               FROM tblScripts
+              WHERE IsActive = 1
+                AND (Name LIKE ? OR Code LIKE ?)
+              ORDER BY Name ASC
+              LIMIT ?'
+        );
+        $stmt->bind_param('ssi', $like, $like, $limit);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $suggestions = [];
+        while ($row = $res->fetch_assoc()) {
+            $suggestions[] = [
+                'code'       => (string)$row['code'],
+                'name'       => (string)$row['name'],
+                'nativeName' => (string)$row['nativeName'],
+            ];
+        }
+        $stmt->close();
+        echo json_encode(['suggestions' => $suggestions], JSON_UNESCAPED_UNICODE);
+    } catch (\Throwable $e) {
+        error_log('[script_search] ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['error' => 'Search failed.']);
+    }
+    exit;
+}
+
+/* ---- GET ?action=region_search&q=… (#681) ------------------------------
+ * Same shape as script_search, against tblRegions. Codes are
+ * uppercase ISO 3166-1 alpha-2 (or 3-digit M.49 numeric area codes
+ * for groupings like 419 = Latin America), so the typeahead matches
+ * either Name or Code as the user types.
+ * ----------------------------------------------------------------------- */
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
+    && ($_GET['action'] ?? '') === 'region_search'
+) {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store');
+    $q     = trim((string)($_GET['q'] ?? ''));
+    $limit = max(1, min(50, (int)($_GET['limit'] ?? 20)));
+    if ($q === '') {
+        echo json_encode(['suggestions' => []]);
+        exit;
+    }
+
+    $hasTable = false;
+    try {
+        $probe = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblRegions' LIMIT 1"
+        );
+        $probe->execute();
+        $hasTable = $probe->get_result()->fetch_row() !== null;
+        $probe->close();
+    } catch (\Throwable $e) {
+        error_log('[region_search] probe failed: ' . $e->getMessage());
+    }
+    if (!$hasTable) {
+        echo json_encode([
+            'suggestions' => [],
+            'note'        => 'tblRegions not yet created — run /manage/setup-database',
+        ]);
+        exit;
+    }
+
+    try {
+        $like = '%' . $q . '%';
+        $stmt = $db->prepare(
+            'SELECT Code AS code, Name AS name
+               FROM tblRegions
+              WHERE IsActive = 1
+                AND (Name LIKE ? OR Code LIKE ?)
+              ORDER BY Name ASC
+              LIMIT ?'
+        );
+        $stmt->bind_param('ssi', $like, $like, $limit);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $suggestions = [];
+        while ($row = $res->fetch_assoc()) {
+            $suggestions[] = [
+                'code' => (string)$row['code'],
+                'name' => (string)$row['name'],
+            ];
+        }
+        $stmt->close();
+        echo json_encode(['suggestions' => $suggestions], JSON_UNESCAPED_UNICODE);
+    } catch (\Throwable $e) {
+        error_log('[region_search] ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['error' => 'Search failed.']);
+    }
+    exit;
+}
+
 /* ---- GET ?action=affiliation_search&q=… (#670) -------------------------
  * JSON typeahead endpoint for the Songbook edit modal's Affiliation
  * field. Returns up to `limit` matching rows from
