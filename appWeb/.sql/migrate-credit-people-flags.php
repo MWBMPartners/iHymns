@@ -101,8 +101,14 @@ function _migCpFlags_out(string $line): void
 {
     global $isCli;
     echo $line . ($isCli ? "\n" : "<br>\n");
-    @ob_flush();
-    @flush();
+    /* CLI only: stream line-by-line. In dashboard mode the parent
+       (setup-database.php) wraps this require in ob_start() so it
+       can render captured output inside its dedicated output panel —
+       calling ob_flush() here would punt the buffer past that wrapper
+       and the lines would render above the navbar. See #661. */
+    if ($isCli) {
+        flush();
+    }
 }
 
 function _migCpFlags_columnExists(mysqli $db, string $table, string $column): bool

@@ -107,8 +107,10 @@ function _migOrgLic_out(string $line): void
 {
     global $isCli;
     echo $line . ($isCli ? "\n" : "<br>\n");
-    @ob_flush();
-    @flush();
+    /* CLI only — see migrate-credit-people-flags.php for rationale (#661). */
+    if ($isCli) {
+        flush();
+    }
 }
 
 function _migOrgLic_tableExists(mysqli $db, string $table): bool

@@ -197,8 +197,12 @@ export class Router {
                 return { page: 'terms', params: {} };
             case 'privacy':
                 return { page: 'privacy', params: {} };
+            case 'request':
             case 'request-a-song':
-                return { page: 'request-a-song', params: {} };
+                /* /request is the canonical URL (#658). /request-a-song
+                   stays as a back-compat alias so older bookmarks /
+                   shared links / offline-queue submissions still resolve. */
+                return { page: 'request', params: {} };
             case 'login':
                 return { page: 'login', params: {} };
             default:
@@ -386,7 +390,7 @@ export class Router {
             'help': 'Help — ' + appName,
             'terms': 'Terms of Use — ' + appName,
             'privacy': 'Privacy Policy — ' + appName,
-            'request-a-song': 'Request a Song — ' + appName,
+            'request': 'Request a Song — ' + appName,
         };
         document.title = titles[page] || appName;
     }

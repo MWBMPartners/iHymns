@@ -143,7 +143,7 @@ if ($page !== null) {
        still skip this path because they include user-specific data. */
     $_cacheablePages = [
         'home', 'songbooks', 'songbook', 'song', 'search',
-        'writer', 'person', 'help', 'terms', 'privacy', 'request-a-song',
+        'writer', 'person', 'help', 'terms', 'privacy', 'request', 'request-a-song',
     ];
     $_shouldCachePage = in_array($page, $_cacheablePages, true);
     if ($_shouldCachePage) {
@@ -243,7 +243,11 @@ if ($page !== null) {
             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'privacy.php';
             break;
 
+        case 'request':
         case 'request-a-song':
+            /* /request is canonical (#658). request-a-song retained as
+               an alias for older bookmarks / shared links / offline-queue
+               replays. Both render the same page partial. */
             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'request-a-song.php';
             break;
 

@@ -90,8 +90,10 @@ function _migAvatarSvc_out(string $line): void
 {
     global $isCli;
     echo $line . ($isCli ? "\n" : "<br>\n");
-    @ob_flush();
-    @flush();
+    /* CLI only — see migrate-credit-people-flags.php for rationale (#661). */
+    if ($isCli) {
+        flush();
+    }
 }
 
 function _migAvatarSvc_columnExists(mysqli $db, string $table, string $column): bool

@@ -492,7 +492,7 @@ foreach ($sections as $s) {
                         <span class="badge bg-danger">global_admin</span>
                     </p>
                     <p>
-                        End users in the main app can submit a song request via the dedicated <a href="/request-a-song">/request-a-song</a> page &mdash; reachable from the &ldquo;Report a missing song or suggest a correction&rdquo; link at the bottom of every song page, the &ldquo;Suggest a Missing Song&rdquo; CTA on <a href="/help">/help</a>, and a deep-link from the editor's missing-numbers tool with the songbook + number prefilled. Submissions queue offline and replay automatically when the user is back online; each submission also returns a tracking ID the user can quote when following up. All paths land in this triage list.
+                        End users in the main app can submit a song request via the dedicated <a href="/request">/request</a> page &mdash; reachable from the &ldquo;Report a missing song or suggest a correction&rdquo; link at the bottom of every song page, the &ldquo;Suggest a Missing Song&rdquo; CTA on <a href="/help">/help</a>, and a deep-link from the editor's missing-numbers tool with the songbook + number prefilled. Submissions queue offline and replay automatically when the user is back online; each submission also returns a tracking ID the user can quote when following up. All paths land in this triage list.
                     </p>
                     <h3 class="h6">Key actions</h3>
                     <ul>

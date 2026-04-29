@@ -226,7 +226,7 @@ foreach ($reports as $r) {
                                                         </td>
                                                         <td>
                                                             <a class="btn btn-sm btn-outline-primary"
-                                                               href="/request-a-song?songbook=<?= htmlspecialchars(urlencode($r['id'])) ?>&number=<?= (int)$first ?>"
+                                                               href="/request?songbook=<?= htmlspecialchars(urlencode($r['id'])) ?>&number=<?= (int)$first ?>"
                                                                target="_blank" rel="noopener">
                                                                 <i class="bi bi-lightbulb me-1" aria-hidden="true"></i>
                                                                 Log request

@@ -306,7 +306,7 @@ declare(strict_types=1);
                 <div class="accordion-body">
                     <p>
                         Can't find a hymn? Submit it via
-                        <a href="/request-a-song" data-navigate="request-a-song">Request a Song</a>.
+                        <a href="/request" data-navigate="request">Request a Song</a>.
                         You'll get a tracking number; our curators triage submissions in
                         their admin queue.
                     </p>
@@ -352,7 +352,7 @@ declare(strict_types=1);
 
     <!-- ============================================================
          SUGGEST A MISSING SONG — CTA to the dedicated form page (#656)
-         The actual submission form lives at /request-a-song where it
+         The actual submission form lives at /request where it
          has the page to itself, supports offline queueing, and returns
          a tracking-id reference. We keep a card here so help-page
          readers still see the feature exists.
@@ -368,7 +368,7 @@ declare(strict_types=1);
                 You can also reach this from the &ldquo;Report a missing
                 song&rdquo; link at the bottom of any song page.
             </p>
-            <a href="/request-a-song" data-navigate="request-a-song" class="btn btn-primary">
+            <a href="/request" data-navigate="request" class="btn btn-primary">
                 <i class="fa-solid fa-paper-plane me-1" aria-hidden="true"></i>
                 Open the request form
             </a>
