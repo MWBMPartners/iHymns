@@ -79,6 +79,45 @@ function _songArtistsTableExists(\mysqli $db): bool
 }
 
 /* =========================================================================
+ * BULK_IMPORT_ZIP constants (#664)
+ *
+ * Declared up here — ABOVE the switch — because PHP's top-level `const`
+ * keyword defines the constant at the moment execution reaches the line,
+ * not at compile time. The bulk-import helpers at the bottom of this
+ * file reference these constants from inside the switch case, so the
+ * declarations have to be evaluated before the switch runs or the
+ * helpers blow up with "Undefined constant" the first time anyone
+ * uploads a zip.
+ * ========================================================================= */
+
+/**
+ * Folder name regex: matches "Christ in Song [CIS]" (the hymnal title
+ * followed by a space, an opening square bracket, the abbreviation, and a
+ * closing bracket). Anchored to the entire path-segment string so we
+ * don't match accidental "[" inside titles.
+ */
+const _BULK_IMPORT_FOLDER_RE = '/^(?P<name>.+?)\s*\[(?P<abbr>[A-Za-z0-9_\-]+)\]$/u';
+
+/**
+ * Filename regex: "001 (CIS) - Watchman Blow The Gospel Trumpet.txt".
+ * Captures the (zero-padded) number, the abbreviation in parentheses,
+ * and the title. Tolerant of variable padding widths (3- or 4-digit).
+ */
+const _BULK_IMPORT_FILE_RE = '/^(?P<num>\d{1,5})\s*\((?P<abbr>[A-Za-z0-9_\-]+)\)\s*-\s*(?P<title>.+)\.txt$/u';
+
+/**
+ * Maximum number of *real* zip entries to process in one request — the
+ * count after we strip __MACOSX/, .DS_Store and bare directory entries
+ * (see _bulkImport_processZip). The cap is a defensive guardrail
+ * against a malformed/zip-bomb archive that's tiny on disk but expands
+ * into a million entries; real auth + the 100 MB upload cap are the
+ * actual access controls. 100,000 covers any realistic future bundle
+ * (every published Adventist hymnal worldwide is well under 50,000)
+ * while still tripping on a true zip bomb.
+ */
+const _BULK_IMPORT_MAX_ENTRIES = 100000;
+
+/* =========================================================================
  * REQUEST HANDLING
  * ========================================================================= */
 
@@ -1387,28 +1426,12 @@ switch ($action) {
  * comparing source-of-truth lyrics to the live database row.
  * =========================================================================== */
 
-/**
- * Folder name regex: matches "Christ in Song [CIS]" (the hymnal title
- * followed by a space, an opening square bracket, the abbreviation, and a
- * closing bracket). Anchored to the entire path-segment string so we
- * don't match accidental "[" inside titles.
- */
-const _BULK_IMPORT_FOLDER_RE = '/^(?P<name>.+?)\s*\[(?P<abbr>[A-Za-z0-9_\-]+)\]$/u';
-
-/**
- * Filename regex: "001 (CIS) - Watchman Blow The Gospel Trumpet.txt".
- * Captures the (zero-padded) number, the abbreviation in parentheses,
- * and the title. Tolerant of variable padding widths (3- or 4-digit).
- */
-const _BULK_IMPORT_FILE_RE = '/^(?P<num>\d{1,5})\s*\((?P<abbr>[A-Za-z0-9_\-]+)\)\s*-\s*(?P<title>.+)\.txt$/u';
-
-/**
- * Maximum number of zip entries to process in one request. Defends
- * against zip-bombs (a small archive that expands into a million empty
- * files, exhausting inodes / memory). 10,000 is well above any real
- * hymnal corpus we ship — the SDAH at 695 + MP at 1655 is < 2,500.
- */
-const _BULK_IMPORT_MAX_ENTRIES = 10000;
+/* The _BULK_IMPORT_FOLDER_RE / _BULK_IMPORT_FILE_RE / _BULK_IMPORT_MAX_ENTRIES
+   constants are now declared above the switch (search this file for
+   "BULK_IMPORT_ZIP constants"). Top-level `const` declarations are
+   evaluated at runtime when the line is reached, not at compile time
+   — leaving them down here meant they were undefined when the switch
+   case called into the helper function above. */
 
 /**
  * Section-marker → component-type map. Anything not in the map (e.g.
