@@ -85,11 +85,16 @@ $currentUser = getCurrentUser();
         aria-label="Load songs.json file"
     >
 
-    <!-- Hidden file input for importing songs from an external file -->
+    <!-- Hidden file input for importing songs from an external file.
+         Accepts .json (curator-edited corpus) and .zip bulk archives
+         that mirror the .SourceSongData/ folder layout (#664). The
+         zip path inserts directly into MySQL via the
+         /manage/editor/api.php?action=bulk_import_zip endpoint and
+         never overwrites existing songbook or song rows. -->
     <input
         type="file"
         id="fileInputImport"
-        accept=".json,.csv"
+        accept=".json,.zip,application/json,application/zip"
         style="display: none;"
         aria-label="Import songs from file"
     >
@@ -215,7 +220,7 @@ $currentUser = getCurrentUser();
                 type="button"
                 class="btn btn-sm btn-amber"
                 id="btn-import"
-                title="Import songs from an external JSON or CSV file"
+                title="Import songs from a JSON file (in-memory merge) or a .zip bulk archive (.SourceSongData layout — inserts directly into MySQL, never overwrites existing rows)"
             >
                 <i class="bi bi-box-arrow-in-down me-1"></i>Import
             </button>
