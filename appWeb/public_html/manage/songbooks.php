@@ -34,6 +34,122 @@ $error   = '';
 $success = '';
 $db      = getDbMysqli();
 
+/* ---- GET ?action=affiliation_search&q=… (#670) -------------------------
+ * JSON typeahead endpoint for the Songbook edit modal's Affiliation
+ * field. Returns up to `limit` matching rows from
+ * tblSongbookAffiliations, ranked by current usage in tblSongbooks
+ * (most-cited first) so a curator's recent additions surface
+ * straight away. Same auth gate as the page itself
+ * (`manage_songbooks` entitlement); returns an empty list rather
+ * than 4xx when the query is empty so the caller's onInput handler
+ * stays trivial. Exits early so no page HTML follows.
+ * ----------------------------------------------------------------------- */
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
+    && ($_GET['action'] ?? '') === 'affiliation_search'
+) {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store');
+    $q     = trim((string)($_GET['q'] ?? ''));
+    $limit = max(1, min(50, (int)($_GET['limit'] ?? 20)));
+
+    /* Empty query → empty list. We don't 400 because the typeahead
+       calls this on every keystroke, including the first one before
+       the user has typed anything. */
+    if ($q === '') {
+        echo json_encode(['suggestions' => []]);
+        exit;
+    }
+
+    /* Probe whether the registry table exists yet. New deployments
+       that haven't run migrate-songbook-affiliations.php should not
+       see a 500 — return an empty list and log a server-side note so
+       the migration prompt on /manage/setup-database is the cure. */
+    $hasRegistry = false;
+    try {
+        $probe = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME = 'tblSongbookAffiliations' LIMIT 1"
+        );
+        $probe->execute();
+        $hasRegistry = $probe->get_result()->fetch_row() !== null;
+        $probe->close();
+    } catch (\Throwable $e) {
+        error_log('[affiliation_search] probe failed: ' . $e->getMessage());
+    }
+    if (!$hasRegistry) {
+        echo json_encode([
+            'suggestions' => [],
+            'note'        => 'tblSongbookAffiliations not yet created — run /manage/setup-database',
+        ]);
+        exit;
+    }
+
+    /* Substring match anywhere in the name (LIKE %q%). Real-world
+       affiliation strings are short enough that ranking by current
+       usage in tblSongbooks (a LEFT JOIN + COUNT) is fine; the
+       registry will be small (low hundreds at most). */
+    try {
+        $like = '%' . $q . '%';
+        $stmt = $db->prepare(
+            'SELECT a.Name AS name,
+                    (SELECT COUNT(*) FROM tblSongbooks b WHERE b.Affiliation = a.Name) AS songbookCount
+               FROM tblSongbookAffiliations a
+              WHERE a.Name LIKE ?
+              ORDER BY songbookCount DESC, a.Name ASC
+              LIMIT ?'
+        );
+        $stmt->bind_param('si', $like, $limit);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $suggestions = [];
+        while ($row = $res->fetch_assoc()) {
+            $suggestions[] = [
+                'name'          => (string)$row['name'],
+                'songbookCount' => (int)$row['songbookCount'],
+            ];
+        }
+        $stmt->close();
+        echo json_encode(['suggestions' => $suggestions], JSON_UNESCAPED_UNICODE);
+    } catch (\Throwable $e) {
+        error_log('[affiliation_search] ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['error' => 'Search failed.']);
+    }
+    exit;
+}
+
+/**
+ * INSERT IGNORE the supplied affiliation name into the registry so
+ * the typeahead surfaces it on the next save (#670). Silent no-op
+ * when the table doesn't exist (pre-migration deployments) so the
+ * songbook save path can't be broken by a half-applied schema. The
+ * tblCreditPeople sync in the editor's save_song path uses the same
+ * "best-effort registry sync" pattern (#545).
+ *
+ * @param ?string $name Affiliation name as typed; null/empty = no-op.
+ */
+$registerAffiliation = function (?string $name) use ($db): void {
+    if ($name === null) return;
+    $trimmed = trim($name);
+    if ($trimmed === '') return;
+    /* Cap to the column width so a crafted form post can't crash
+       the INSERT. mb_substr is unicode-safe for languages whose
+       glyphs are multi-byte (e.g. denomination names in Cyrillic). */
+    $trimmed = mb_substr($trimmed, 0, 120);
+    try {
+        $stmt = $db->prepare('INSERT IGNORE INTO tblSongbookAffiliations (Name) VALUES (?)');
+        $stmt->bind_param('s', $trimmed);
+        $stmt->execute();
+        $stmt->close();
+    } catch (\Throwable $e) {
+        /* Most likely cause: the migration hasn't been run yet so the
+           table doesn't exist. The save itself is unaffected — this is
+           best-effort registry sync. */
+        error_log('[songbooks] registry sync skipped: ' . $e->getMessage());
+    }
+};
+
 /* Helpers */
 $validateAbbr = function (string $abbr): ?string {
     $abbr = trim($abbr);
@@ -114,6 +230,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'copyright'       => $copyright,
                     'affiliation'     => $affiliation,
                 ]);
+                /* Self-populate the affiliation registry so the next
+                   open of the typeahead surfaces this value (#670). */
+                $registerAffiliation($affiliation);
                 $success = "Songbook '{$abbr}' created.";
                 break;
             }
@@ -225,6 +344,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'after'              => array_intersect_key($afterRow,  array_flip($changed)),
                         'songs_renamed_too'  => $alsoRename && $abbrChanged,
                     ]);
+                    /* Keep the affiliation registry in sync — only when the
+                       value actually changed and is non-empty (#670). */
+                    if (in_array('Affiliation', $changed, true)) {
+                        $registerAffiliation($affiliation);
+                    }
 
                     $success = $abbrChanged
                         ? "Songbook '{$oldAbbr}' → '{$newAbbr}'" . ($alsoRename ? ' (song references updated).' : ' (song references kept — resolve manually).')
@@ -522,8 +646,12 @@ $csrf = csrfToken();
                 </div>
                 <div class="col-sm-4">
                     <label class="form-label small">Affiliation</label>
-                    <input type="text" name="affiliation" class="form-control form-control-sm"
-                           maxlength="120" placeholder="e.g. Seventh-day Adventist, Non-denominational">
+                    <input type="text" name="affiliation"
+                           class="form-control form-control-sm js-affiliation-input"
+                           list="affiliations-datalist"
+                           autocomplete="off"
+                           maxlength="120"
+                           placeholder="e.g. Seventh-day Adventist, Non-denominational">
                 </div>
             </div>
 
@@ -592,10 +720,16 @@ $csrf = csrfToken();
                         </div>
                         <div class="mb-3">
                             <label class="form-label">Affiliation</label>
-                            <input type="text" class="form-control" name="affiliation" id="edit-affiliation"
-                                   maxlength="120" placeholder="e.g. Seventh-day Adventist, Non-denominational">
+                            <input type="text"
+                                   class="form-control js-affiliation-input"
+                                   name="affiliation" id="edit-affiliation"
+                                   list="affiliations-datalist"
+                                   autocomplete="off"
+                                   maxlength="120"
+                                   placeholder="e.g. Seventh-day Adventist, Non-denominational">
                             <div class="form-text small">
-                                Free-text for now; a controlled lookup table is planned (#502).
+                                Type to search existing affiliations or enter a new one — it
+                                will be added to the registry on save (#670).
                             </div>
                         </div>
 
@@ -681,6 +815,80 @@ $csrf = csrfToken();
     <script type="module">
         import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
         bootSortableTables();
+    </script>
+
+    <!-- Affiliation typeahead (#670).
+         A single <datalist> shared by every input.js-affiliation-input on
+         the page (the create form's affiliation field + the edit modal's
+         affiliation field). Each `input` event runs the same debounced
+         fetch against /manage/songbooks?action=affiliation_search and
+         rebuilds the datalist <option>s. The browser handles the dropdown
+         UI natively, so there's no third-party autocomplete library and
+         the user can still type a brand-new value if no match exists —
+         it lands in Affiliation on save and the server-side handler
+         self-registers it in tblSongbookAffiliations for next time. -->
+    <datalist id="affiliations-datalist"></datalist>
+    <script>
+    (function () {
+        const inputs   = document.querySelectorAll('.js-affiliation-input');
+        const datalist = document.getElementById('affiliations-datalist');
+        if (!inputs.length || !datalist) return;
+
+        let debounceTimer = null;
+        let inflight      = null;
+        const lookup = (query) => {
+            if (inflight) inflight.abort();
+            const ac = new AbortController();
+            inflight = ac;
+            const url = '/manage/songbooks?action=affiliation_search&q=' +
+                        encodeURIComponent(query) + '&limit=20';
+            fetch(url, { credentials: 'same-origin', signal: ac.signal })
+                .then(r => r.ok ? r.json() : { suggestions: [] })
+                .then(data => {
+                    const list = Array.isArray(data.suggestions) ? data.suggestions : [];
+                    /* Rebuild the datalist with one <option> per match.
+                       The `value` is what the input gets when picked;
+                       the `label` carries the usage count so curators
+                       can see how often each affiliation is in play. */
+                    datalist.innerHTML = list.map(s => {
+                        const v = (s.name || '').replace(/"/g, '&quot;');
+                        const c = (typeof s.songbookCount === 'number') ? s.songbookCount : 0;
+                        const tag = c > 0 ? ' (' + c + ' songbook' + (c === 1 ? '' : 's') + ')' : '';
+                        return '<option value="' + v + '" label="' + v + tag + '"></option>';
+                    }).join('');
+                })
+                .catch(err => {
+                    if (err.name !== 'AbortError') {
+                        /* Silent — the typeahead is a nicety, not critical
+                           path. Server-side errors are already in error_log
+                           via affiliation_search. */
+                    }
+                });
+        };
+
+        inputs.forEach(input => {
+            input.addEventListener('input', () => {
+                const q = input.value.trim();
+                /* Clear datalist when the input is empty so the dropdown
+                   doesn't show stale matches from a prior word. */
+                if (q === '') {
+                    datalist.innerHTML = '';
+                    return;
+                }
+                clearTimeout(debounceTimer);
+                /* 200 ms is the same debounce the editor's tag-search and
+                   credit-search use — feels instant but coalesces typing
+                   bursts into a single request. */
+                debounceTimer = setTimeout(() => lookup(q), 200);
+            });
+            /* Also trigger on focus when there's already a value (e.g.
+               opening the edit modal on a row that has an affiliation
+               populated) so the dropdown shows immediately on click. */
+            input.addEventListener('focus', () => {
+                if (input.value.trim() !== '') lookup(input.value.trim());
+            });
+        });
+    })();
     </script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
