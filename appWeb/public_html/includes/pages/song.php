@@ -579,9 +579,11 @@ unset($_t);
         </footer>
     <?php endif; ?>
 
-    <!-- Report missing song link -->
+    <!-- Report missing song link — points at the dedicated form page (#656)
+         rather than dumping the user at the bottom of the long /help
+         article where the request form used to live. -->
     <div class="mt-3">
-        <a href="/help" data-navigate="help" class="text-muted small text-decoration-none">
+        <a href="/request-a-song" data-navigate="request-a-song" class="text-muted small text-decoration-none">
             <i class="fa-solid fa-flag me-1" aria-hidden="true"></i>
             Report a missing song or suggest a correction
         </a>

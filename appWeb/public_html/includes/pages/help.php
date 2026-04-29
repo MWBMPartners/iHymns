@@ -351,7 +351,11 @@ declare(strict_types=1);
     </div>
 
     <!-- ============================================================
-         SONG REQUEST FORM — Suggest a missing song
+         SUGGEST A MISSING SONG — CTA to the dedicated form page (#656)
+         The actual submission form lives at /request-a-song where it
+         has the page to itself, supports offline queueing, and returns
+         a tracking-id reference. We keep a card here so help-page
+         readers still see the feature exists.
          ============================================================ -->
     <div class="card mb-3 mt-4">
         <div class="card-body">
@@ -359,51 +363,16 @@ declare(strict_types=1);
                 <i class="fa-solid fa-paper-plane me-2" aria-hidden="true"></i>
                 Suggest a Missing Song
             </h5>
-            <p class="text-muted small">Can't find a song? Let us know and we'll try to add it.</p>
-            <form id="song-request-form">
-                <input type="text" class="form-control mb-2" name="title" placeholder="Song title" required>
-                <input type="text" class="form-control mb-2" name="songbook" placeholder="Songbook (if known)">
-                <input type="text" class="form-control mb-2" name="song_number" placeholder="Song number (if known)">
-                <textarea class="form-control mb-2" name="details" rows="2" placeholder="Any additional details (first line of lyrics, etc.)"></textarea>
-                <input type="email" class="form-control mb-2" name="contact_email" placeholder="Your email (optional, for follow-up)">
-                <button type="submit" class="btn btn-primary">
-                    <i class="fa-solid fa-paper-plane me-1" aria-hidden="true"></i>
-                    Submit Request
-                </button>
-            </form>
-            <div id="song-request-result" class="mt-2"></div>
+            <p class="text-muted small mb-3">
+                Can't find a song? Let us know and we'll try to add it.
+                You can also reach this from the &ldquo;Report a missing
+                song&rdquo; link at the bottom of any song page.
+            </p>
+            <a href="/request-a-song" data-navigate="request-a-song" class="btn btn-primary">
+                <i class="fa-solid fa-paper-plane me-1" aria-hidden="true"></i>
+                Open the request form
+            </a>
         </div>
     </div>
-
-    <script>
-        document.getElementById('song-request-form')?.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const form = e.target;
-            const btn = form.querySelector('button[type="submit"]');
-            btn.disabled = true;
-            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin me-1"></i>Submitting...';
-            try {
-                const data = Object.fromEntries(new FormData(form));
-                const res = await fetch('/api?action=song_request', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(data)
-                });
-                const result = await res.json();
-                const el = document.getElementById('song-request-result');
-                if (result.ok) {
-                    el.innerHTML = '<div class="alert alert-success"><i class="fa-solid fa-check-circle me-1"></i>Thank you! Your suggestion has been submitted.</div>';
-                    form.reset();
-                } else {
-                    el.innerHTML = '<div class="alert alert-danger"><i class="fa-solid fa-triangle-exclamation me-1"></i>' + (result.error || 'Failed to submit.') + '</div>';
-                }
-            } catch {
-                document.getElementById('song-request-result').innerHTML = '<div class="alert alert-danger"><i class="fa-solid fa-triangle-exclamation me-1"></i>Network error. Please try again.</div>';
-            } finally {
-                btn.disabled = false;
-                btn.innerHTML = '<i class="fa-solid fa-paper-plane me-1"></i>Submit Request';
-            }
-        });
-    </script>
 
 </section>
