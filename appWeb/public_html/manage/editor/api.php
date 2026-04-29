@@ -1303,10 +1303,579 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
+     * BULK_IMPORT_ZIP — bulk-load songs and songbooks from a ZIP that
+     * mirrors the .SourceSongData/ folder layout (#664).
+     *
+     * Multipart upload, single field `zip`. The archive is expected to
+     * contain one folder per songbook named "<Hymnal Name> [<ABBREV>]/"
+     * holding one .txt file per song named
+     * "<#> (<ABBREV>) - <Title>.txt" in the established source format
+     * (title line, blank, alternating section markers + lyric blocks).
+     *
+     * Each parsed song is UPSERTed via _bulkImport_saveSong() — the
+     * same write path used by the save_song action (tblSongs + child
+     * tables + revision audit + activity log) so an imported row is
+     * indistinguishable from a hand-edited one.
+     *
+     * Returns a JSON summary; never aborts the batch on a single bad
+     * file (errors are collected and reported per-entry).
+     * ----------------------------------------------------------------- */
+    case 'bulk_import_zip':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        if (!class_exists('ZipArchive')) {
+            http_response_code(500);
+            echo json_encode(['error' => 'Server is missing the PHP zip extension.']);
+            break;
+        }
+        if (!isset($_FILES['zip']) || ($_FILES['zip']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $err = $_FILES['zip']['error'] ?? UPLOAD_ERR_NO_FILE;
+            $msg = 'Upload failed.';
+            if ($err === UPLOAD_ERR_INI_SIZE || $err === UPLOAD_ERR_FORM_SIZE) {
+                $msg = 'Uploaded file is larger than the server limit.';
+            } elseif ($err === UPLOAD_ERR_NO_FILE) {
+                $msg = 'No file received — expected a multipart upload with a "zip" field.';
+            }
+            http_response_code(400);
+            echo json_encode(['error' => $msg, 'phpError' => $err]);
+            break;
+        }
+
+        /* Hard size cap as a second line of defence in case php.ini is
+           generous. 100 MB covers a full multi-hymnal CIS bundle (~1.3
+           MB compressed) with three orders of magnitude of headroom. */
+        $sizeBytes = (int)($_FILES['zip']['size'] ?? 0);
+        if ($sizeBytes > 100 * 1024 * 1024) {
+            http_response_code(413);
+            echo json_encode(['error' => 'Uploaded zip exceeds the 100 MB import limit.']);
+            break;
+        }
+
+        $tmpPath = (string)$_FILES['zip']['tmp_name'];
+        try {
+            $summary = _bulkImport_processZip($tmpPath);
+            echo json_encode($summary, JSON_UNESCAPED_UNICODE);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[bulk_import_zip] ' . $e->getMessage());
+            echo json_encode(['error' => 'Import failed: ' . $e->getMessage()]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
      * Unknown action
      * ----------------------------------------------------------------- */
     default:
         http_response_code(400);
-        echo json_encode(['error' => 'Unknown action. Use: load, save, save_song, save_song_tags, tag_search, credit_search, bulk_tag, list_revisions, restore_revision, get_translations, add_translation, remove_translation']);
+        echo json_encode(['error' => 'Unknown action. Use: load, save, save_song, save_song_tags, tag_search, credit_search, bulk_tag, list_revisions, restore_revision, get_translations, add_translation, remove_translation, bulk_import_zip']);
         break;
+}
+
+
+/* ===========================================================================
+ * BULK_IMPORT_ZIP helpers (#664)
+ *
+ * Kept at the bottom of this file rather than in a new module: every other
+ * editor write path lives in this same file (save / save_song / restore
+ * etc.) and the helpers here are not used outside of `bulk_import_zip`.
+ *
+ * The folder + filename layout mirrors what the .importers/scrapers/* tools
+ * emit into .SourceSongData/, so this is also the format curators see when
+ * comparing source-of-truth lyrics to the live database row.
+ * =========================================================================== */
+
+/**
+ * Folder name regex: matches "Christ in Song [CIS]" (the hymnal title
+ * followed by a space, an opening square bracket, the abbreviation, and a
+ * closing bracket). Anchored to the entire path-segment string so we
+ * don't match accidental "[" inside titles.
+ */
+const _BULK_IMPORT_FOLDER_RE = '/^(?P<name>.+?)\s*\[(?P<abbr>[A-Za-z0-9_\-]+)\]$/u';
+
+/**
+ * Filename regex: "001 (CIS) - Watchman Blow The Gospel Trumpet.txt".
+ * Captures the (zero-padded) number, the abbreviation in parentheses,
+ * and the title. Tolerant of variable padding widths (3- or 4-digit).
+ */
+const _BULK_IMPORT_FILE_RE = '/^(?P<num>\d{1,5})\s*\((?P<abbr>[A-Za-z0-9_\-]+)\)\s*-\s*(?P<title>.+)\.txt$/u';
+
+/**
+ * Maximum number of zip entries to process in one request. Defends
+ * against zip-bombs (a small archive that expands into a million empty
+ * files, exhausting inodes / memory). 10,000 is well above any real
+ * hymnal corpus we ship — the SDAH at 695 + MP at 1655 is < 2,500.
+ */
+const _BULK_IMPORT_MAX_ENTRIES = 10000;
+
+/**
+ * Section-marker → component-type map. Anything not in the map (e.g.
+ * non-English refrain labels like "Coro", "Ciindululo", "Pripev") is
+ * treated as a refrain section — refrain labels are language-specific
+ * and the editor has a single 'refrain' / 'chorus' component type
+ * regardless of the surface label.
+ */
+function _bulkImport_componentTypeFor(string $marker): string
+{
+    $m = strtolower(trim($marker));
+    return [
+        'verse'      => 'verse',
+        'refrain'    => 'refrain',
+        'chorus'     => 'chorus',
+        'bridge'     => 'bridge',
+        'pre-chorus' => 'pre-chorus',
+        'prechorus'  => 'pre-chorus',
+        'intro'      => 'intro',
+        'outro'      => 'outro',
+    ][$m] ?? 'refrain';
+}
+
+/**
+ * Parse a single .txt file into the song-object shape that the
+ * existing save_song path consumes. Returns null + a reason if the
+ * body is too malformed to import (caller logs the reason in
+ * errors[]).
+ *
+ * @param string $body       File contents (UTF-8)
+ * @param string $abbrev     Songbook abbreviation parsed from the filename
+ * @param string $songbook   Songbook display name parsed from the folder
+ * @param int    $number     Song number parsed from the filename
+ * @return array{0: ?array, 1: ?string}  [songObject, errorReason]
+ */
+function _bulkImport_parseTxt(string $body, string $abbrev, string $songbook, int $number): array
+{
+    /* Normalise line endings so a CRLF source from Windows reads the
+       same as an LF source from macOS/Linux. */
+    $body  = str_replace(["\r\n", "\r"], "\n", $body);
+    $lines = explode("\n", $body);
+
+    /* Find the title — first non-empty line. Anything before it
+       (BOM left-overs, blank prefix) is skipped. */
+    $title = '';
+    $i     = 0;
+    $n     = count($lines);
+    while ($i < $n) {
+        $l = trim($lines[$i]);
+        if ($l !== '') {
+            /* Strip leading UTF-8 BOM if it survived the upload. */
+            $title = preg_replace('/^\xEF\xBB\xBF/', '', $l);
+            $i++;
+            break;
+        }
+        $i++;
+    }
+    if ($title === '') {
+        return [null, 'no title line'];
+    }
+
+    /* Walk the remaining lines, alternating between section markers
+       and lyric lines. A blank line ends a section's lyric block. */
+    $components = [];
+    $current    = null;
+    while ($i < $n) {
+        $line = $lines[$i];
+        $trim = trim($line);
+
+        if ($current === null) {
+            /* Looking for the next section marker. Blank lines between
+               sections are skipped. */
+            if ($trim === '') { $i++; continue; }
+
+            /* A bare integer is a verse with that number. Any other
+               non-empty token is a labelled section (Refrain, Chorus,
+               Bridge, or a non-English equivalent). */
+            if (preg_match('/^\d{1,3}$/', $trim)) {
+                $current = ['type' => 'verse', 'number' => (int)$trim, 'lines' => []];
+            } else {
+                $current = [
+                    'type'   => _bulkImport_componentTypeFor($trim),
+                    'number' => 0,
+                    'lines'  => [],
+                ];
+            }
+            $i++;
+            continue;
+        }
+
+        /* Inside a section. Blank line → flush the section. Anything
+           else → append to lyric lines (preserve internal whitespace
+           but strip trailing spaces). */
+        if ($trim === '') {
+            if (!empty($current['lines'])) {
+                $components[] = $current;
+            }
+            $current = null;
+            $i++;
+            continue;
+        }
+        $current['lines'][] = rtrim($line);
+        $i++;
+    }
+    /* Final section if the file didn't end with a blank line. */
+    if ($current !== null && !empty($current['lines'])) {
+        $components[] = $current;
+    }
+
+    if (empty($components)) {
+        return [null, 'no lyric components found'];
+    }
+
+    /* Canonical SongId format: <ABBREV>-<4-digit-padded-#>. Matches the
+       /song/<id> route normalisation in router.js so URLs work straight
+       away after import. */
+    $songId = sprintf('%s-%04d', strtoupper($abbrev), $number);
+
+    return [[
+        'id'                 => $songId,
+        'title'              => $title,
+        'number'             => $number,
+        'songbook'           => $abbrev,
+        'songbookName'       => $songbook,
+        'language'           => 'en',
+        'ccli'               => '',
+        'iswc'               => '',
+        'tuneName'           => '',
+        'copyright'          => '',
+        'verified'           => 0,
+        'lyricsPublicDomain' => 0,
+        'musicPublicDomain'  => 0,
+        'hasAudio'           => 0,
+        'hasSheetMusic'      => 0,
+        'writers'            => [],
+        'composers'          => [],
+        'arrangers'          => [],
+        'adaptors'           => [],
+        'translators'        => [],
+        'components'         => $components,
+    ], null];
+}
+
+/**
+ * Persist one parsed song — INSERT-ONLY. If a row with the same
+ * SongId already exists, the existing row is left untouched and the
+ * call returns 'skipped'. This is the explicit user requirement for
+ * bulk import (#664): never overwrite curator-edited data with
+ * scraped source data.
+ *
+ * @return array{0: string, 1: ?string}  ['create'|'skipped'|'fail', errorMessage|null]
+ */
+function _bulkImport_saveSong(\mysqli $db, array $song): array
+{
+    $songId       = (string)$song['id'];
+    $title        = (string)$song['title'];
+    $number       = isset($song['number']) ? (int)$song['number'] : null;
+    $songbookAbbr = (string)$song['songbook'];
+    $songbookName = (string)$song['songbookName'];
+    $language     = (string)$song['language'];
+    $copyright    = '';
+    $tuneName     = null;
+    $ccli         = '';
+    $iswc         = null;
+    $verified     = 0;
+    $lyricsPD     = 0;
+    $musicPD      = 0;
+    $hasAudio     = 0;
+    $hasSheet     = 0;
+
+    /* Build lyrics_text for the FULLTEXT index (matches save_song). */
+    $lyricsLines = [];
+    foreach ($song['components'] as $comp) {
+        foreach ($comp['lines'] as $line) {
+            $lyricsLines[] = $line;
+        }
+    }
+    $lyricsText = implode("\n", $lyricsLines);
+
+    try {
+        /* Pre-flight existence check — INSERT-ONLY semantics. A row
+           with this SongId already in tblSongs means a curator (or a
+           prior import) has owned the data; we do not touch it.
+           Cheap SELECT before opening a transaction so the no-op path
+           doesn't churn the binlog. */
+        $existsStmt = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+        $existsStmt->bind_param('s', $songId);
+        $existsStmt->execute();
+        $alreadyExists = $existsStmt->get_result()->fetch_row() !== null;
+        $existsStmt->close();
+        if ($alreadyExists) {
+            return ['skipped', null];
+        }
+
+        $db->begin_transaction();
+
+        /* Plain INSERT — no ON DUPLICATE KEY clause, because we
+           verified above that the row doesn't exist. The unique
+           index on SongId remains a hard safety net: if a concurrent
+           writer inserts the same id between the check and this
+           insert, we'll surface the duplicate-key error and the
+           outer try/catch reports it as a per-row failure rather
+           than half-succeeding. */
+        $action = 'create';
+        $previousData = null;
+        $insert = $db->prepare(
+            'INSERT INTO tblSongs
+                (SongId, Number, Title, SongbookAbbr, SongbookName, Language,
+                 Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
+                 MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        );
+        $insert->bind_param(
+            'sissssssssiiiiis',
+            $songId, $number, $title, $songbookAbbr, $songbookName,
+            $language, $copyright, $tuneName, $ccli, $iswc,
+            $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText
+        );
+        $insert->execute();
+        $insert->close();
+
+        $insComp = $db->prepare(
+            'INSERT INTO tblSongComponents
+                (SongId, Type, Number, SortOrder, LinesJson)
+             VALUES (?, ?, ?, ?, ?)'
+        );
+        $order = 0;
+        foreach ($song['components'] as $comp) {
+            $type   = (string)($comp['type'] ?? 'verse');
+            $cNum   = isset($comp['number']) ? (int)$comp['number'] : 0;
+            $lines  = json_encode($comp['lines'] ?? [], JSON_UNESCAPED_UNICODE);
+            $insComp->bind_param('ssiis', $songId, $type, $cNum, $order, $lines);
+            $insComp->execute();
+            $order++;
+        }
+        $insComp->close();
+
+        /* Revision audit row (#400). Same shape as save_song writes. */
+        try {
+            $editor = function_exists('getCurrentUser') ? getCurrentUser() : null;
+            $userId = $editor['id'] ?? null;
+            $newData = json_encode($song, JSON_UNESCAPED_UNICODE);
+            $rev = $db->prepare(
+                'INSERT INTO tblSongRevisions
+                    (SongId, UserId, Action, PreviousData, NewData, Status)
+                 VALUES (?, ?, ?, ?, ?, "approved")'
+            );
+            $userIdParam = $userId !== null ? (int)$userId : null;
+            $rev->bind_param('sisss', $songId, $userIdParam, $action, $previousData, $newData);
+            $rev->execute();
+            $rev->close();
+        } catch (\Throwable $_e) { /* revisions are best-effort */ }
+
+        $db->commit();
+
+        if (function_exists('logActivity')) {
+            logActivity(
+                $action === 'create' ? 'song.create' : 'song.edit',
+                'song',
+                $songId,
+                ['title' => $title, 'songbook' => $songbookAbbr, 'source' => 'bulk_import_zip']
+            );
+        }
+
+        return [$action, null];
+    } catch (\Throwable $e) {
+        try { $db->rollback(); } catch (\Throwable $_e) {}
+        return ['fail', $e->getMessage()];
+    }
+}
+
+/**
+ * INSERT-ONLY songbook helper. If a songbook with this Abbreviation
+ * already exists, the row is left fully untouched — no rename, no
+ * Name refresh — per the bulk-import contract: never overwrite
+ * existing data (#664). New abbreviations get a fresh row with the
+ * supplied Name; SongCount is recomputed at the end of the import
+ * pass over the songs that successfully landed.
+ *
+ * Returns 'created' for a brand-new abbreviation, 'existing' if the
+ * abbreviation was already in tblSongbooks.
+ */
+function _bulkImport_upsertSongbook(\mysqli $db, string $abbr, string $name): string
+{
+    $sel = $db->prepare('SELECT 1 FROM tblSongbooks WHERE Abbreviation = ? LIMIT 1');
+    $sel->bind_param('s', $abbr);
+    $sel->execute();
+    $exists = $sel->get_result()->fetch_row() !== null;
+    $sel->close();
+
+    if ($exists) {
+        return 'existing';
+    }
+
+    $ins = $db->prepare('INSERT INTO tblSongbooks (Abbreviation, Name, SongCount) VALUES (?, ?, 0)');
+    $ins->bind_param('ss', $abbr, $name);
+    $ins->execute();
+    $ins->close();
+    return 'created';
+}
+
+/**
+ * Walk a ZIP archive and import every recognised hymnal folder + song
+ * .txt file. Returns a JSON-serialisable summary.
+ */
+function _bulkImport_processZip(string $zipPath): array
+{
+    $zip = new \ZipArchive();
+    if ($zip->open($zipPath) !== true) {
+        return [
+            'ok'    => false,
+            'error' => 'Could not open uploaded file as a ZIP archive.',
+        ];
+    }
+
+    $entryCount = $zip->numFiles;
+    if ($entryCount > _BULK_IMPORT_MAX_ENTRIES) {
+        $zip->close();
+        return [
+            'ok'    => false,
+            'error' => sprintf(
+                'ZIP has %d entries; the per-import cap is %d.',
+                $entryCount, _BULK_IMPORT_MAX_ENTRIES
+            ),
+        ];
+    }
+
+    $db = getDbMysqli();
+
+    /* Tally counters. Bulk import is INSERT-ONLY (#664) — existing
+       songbook + song rows are skipped untouched, never overwritten,
+       so the response reports skipped counts rather than updated. */
+    $songbooksCreated         = [];
+    $songbooksExisting        = [];
+    $songsCreated             = 0;
+    $songsSkippedExisting     = 0;
+    $songsFailed              = 0;
+    $errors                   = [];
+
+    /* Single pass over the archive: for each .txt entry, parse the
+       enclosing folder name to learn (songbook name, abbrev), upsert
+       the songbook on first encounter, then parse + save the song. */
+    $songbookSeen = [];   // abbrev → (created|existing) — caches the songbook upsert per archive
+
+    for ($i = 0; $i < $entryCount; $i++) {
+        $name = $zip->getNameIndex($i);
+        if ($name === false) continue;
+
+        /* Reject path-traversal attempts before we even read. The zip
+           tools we ship don't produce these, but a hand-crafted
+           archive could. */
+        if (strpos($name, '..') !== false || str_starts_with($name, '/') || preg_match('/^[A-Za-z]:[\\\\\/]/', $name)) {
+            $errors[] = ['entry' => $name, 'error' => 'unsafe path — skipped'];
+            continue;
+        }
+
+        /* Skip directory entries and non-.txt files (a future revision
+           might also accept .json metadata; for now .txt is the
+           contract). Zip mac metadata stores ('__MACOSX/', '.DS_Store')
+           are silently ignored. */
+        if (str_ends_with($name, '/'))                continue;
+        if (!preg_match('/\.txt$/i', $name))          continue;
+        if (str_contains($name, '__MACOSX/'))         continue;
+        if (str_contains($name, '/.'))                continue;
+
+        /* Pull out the folder + file segments. We expect exactly one
+           level of nesting: "<Hymnal Name> [<ABBR>]/<filename>.txt". */
+        $segments = explode('/', $name);
+        if (count($segments) < 2) {
+            $errors[] = ['entry' => $name, 'error' => 'file is not inside a hymnal folder'];
+            continue;
+        }
+        $folder = $segments[count($segments) - 2];
+        $file   = $segments[count($segments) - 1];
+
+        if (!preg_match(_BULK_IMPORT_FOLDER_RE, $folder, $folderMatch)) {
+            $errors[] = ['entry' => $name, 'error' => 'folder name does not match "<Title> [<ABBR>]"'];
+            continue;
+        }
+        if (!preg_match(_BULK_IMPORT_FILE_RE, $file, $fileMatch)) {
+            $errors[] = ['entry' => $name, 'error' => 'filename does not match "<#> (<ABBR>) - <Title>.txt"'];
+            continue;
+        }
+
+        $abbr     = strtoupper($folderMatch['abbr']);
+        $bookName = trim($folderMatch['name']);
+        $fileAbbr = strtoupper($fileMatch['abbr']);
+        $songNum  = (int)$fileMatch['num'];
+
+        /* Cross-check: the abbreviation in the filename must match
+           the folder's abbreviation. Otherwise we'd silently put a
+           song from book A into book B. */
+        if ($fileAbbr !== $abbr) {
+            $errors[] = [
+                'entry' => $name,
+                'error' => "filename abbrev '$fileAbbr' does not match folder abbrev '$abbr'",
+            ];
+            continue;
+        }
+
+        /* Songbook upsert — once per abbreviation per import. */
+        if (!isset($songbookSeen[$abbr])) {
+            $state = _bulkImport_upsertSongbook($db, $abbr, $bookName);
+            $songbookSeen[$abbr] = $state;
+            if ($state === 'created') {
+                $songbooksCreated[] = $abbr;
+            } else {
+                $songbooksExisting[] = $abbr;
+            }
+        }
+
+        /* Read the file body. ZipArchive::getFromIndex returns false
+           on read errors (corrupted entry, bad CRC). */
+        $body = $zip->getFromIndex($i);
+        if ($body === false) {
+            $errors[] = ['entry' => $name, 'error' => 'could not read entry'];
+            $songsFailed++;
+            continue;
+        }
+
+        [$song, $reason] = _bulkImport_parseTxt($body, $abbr, $bookName, $songNum);
+        if ($song === null) {
+            $errors[] = ['entry' => $name, 'error' => 'parse failed: ' . $reason];
+            $songsFailed++;
+            continue;
+        }
+
+        [$action, $err] = _bulkImport_saveSong($db, $song);
+        if ($action === 'create') {
+            $songsCreated++;
+        } elseif ($action === 'skipped') {
+            /* Existing row — left untouched per the no-overwrite
+               contract. Counted separately from failures so a curator
+               can see at a glance how many imports were no-ops because
+               the songs were already in the database. */
+            $songsSkippedExisting++;
+        } else {
+            $errors[] = ['entry' => $name, 'error' => 'save failed: ' . $err];
+            $songsFailed++;
+        }
+    }
+
+    $zip->close();
+
+    /* Refresh SongCount only for songbooks we created in this run.
+       Existing songbooks are off-limits per the no-overwrite contract,
+       so we leave their SongCount alone — even though zero new songs
+       landed inside them, the column was already correct from
+       whoever populated those rows previously. */
+    foreach ($songbooksCreated as $abbr) {
+        $cnt = $db->prepare(
+            'UPDATE tblSongbooks
+                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?)
+              WHERE Abbreviation = ?'
+        );
+        $cnt->bind_param('ss', $abbr, $abbr);
+        $cnt->execute();
+        $cnt->close();
+    }
+
+    return [
+        'ok'                     => true,
+        'songbooks_created'      => $songbooksCreated,
+        'songbooks_existing'     => $songbooksExisting,
+        'songs_created'          => $songsCreated,
+        'songs_skipped_existing' => $songsSkippedExisting,
+        'songs_failed'           => $songsFailed,
+        'errors'                 => $errors,
+    ];
 }

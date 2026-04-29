@@ -2448,79 +2448,170 @@ function csvEscape(value) {
 /**
  * importJSON()
  * ------------
- * Opens a file picker, reads a JSON file, and MERGES its songs into the
- * current songData. Songs with matching IDs are updated; new IDs are appended.
+ * Opens a file picker that accepts a JSON corpus or a .zip bulk
+ * archive, then routes the picked file to the right handler:
+ *
+ *   .json — In-memory merge into the editor's loaded catalogue.
+ *           Songs with matching IDs replace the loaded copy; new IDs
+ *           are appended. The curator must hit Save to persist.
+ *
+ *   .zip  — Streamed straight to /manage/editor/api.php?action=
+ *           bulk_import_zip, which inserts directly into MySQL.
+ *           INSERT-ONLY semantics: existing songbook + song rows are
+ *           NEVER overwritten. After a successful zip import, the
+ *           editor reloads its catalogue so newly inserted rows
+ *           appear in the song list immediately. (#664)
+ *
+ * Anything else surfaces a "use .json or .zip" toast.
  */
 function importJSON() {
-    /* Create a hidden file input element to open the system file picker. */
     var input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.json,application/json';
+    input.accept = '.json,.zip,application/json,application/zip';
 
-    /* When the user picks a file, process it. */
     input.addEventListener('change', function () {
         if (!input.files || !input.files[0]) return; // user cancelled
+        var file = input.files[0];
+        var lower = (file.name || '').toLowerCase();
 
-        var reader = new FileReader();
-        reader.onload = function (event) {
-            try {
-                /* Parse the imported file. */
-                var imported = JSON.parse(event.target.result);
-                var importedSongs = imported.songs || [];
-
-                /* Counters for user feedback. */
-                var added = 0;
-                var updated = 0;
-
-                /* Process each imported song. */
-                importedSongs.forEach(function (incoming) {
-                    /* Try to find an existing song with the same ID. */
-                    var existingIndex = songData.songs.findIndex(function (s) {
-                        return s.id === incoming.id;
-                    });
-
-                    if (existingIndex !== -1) {
-                        /* Update existing song by replacing it entirely. */
-                        songData.songs[existingIndex] = incoming;
-                        markModified(incoming.id);
-                        updated++;
-                    } else {
-                        /* Append as a new song. */
-                        songData.songs.push(incoming);
-                        markModified(incoming.id);
-                        added++;
-                    }
-                });
-
-                /* Also merge songbooks if the imported file has them. */
-                if (imported.songbooks && Array.isArray(imported.songbooks)) {
-                    imported.songbooks.forEach(function (sb) {
-                        /* Only add songbooks that don't already exist. */
-                        var exists = songData.songbooks.some(function (existing) {
-                            return existing.id === sb.id;
-                        });
-                        if (!exists) {
-                            songData.songbooks.push(sb);
-                        }
-                    });
-                }
-
-                /* Refresh all UI. */
-                populateSongbookFilterDropdown();
-                renderSongList();
-                updateStatusBar();
-
-                /* Inform the user. */
-                showToast('Import complete: ' + added + ' added, ' + updated + ' updated.', 'success');
-            } catch (err) {
-                showToast('Import failed: ' + err.message, 'danger');
-            }
-        };
-        reader.readAsText(input.files[0]);
+        if (lower.endsWith('.zip')) {
+            importBulkZip(file);
+        } else if (lower.endsWith('.json')) {
+            importJsonCorpus(file);
+        } else {
+            showToast(
+                'Unsupported file type. Choose a .json corpus file or a .zip ' +
+                'archive in .SourceSongData/ layout.',
+                'danger'
+            );
+        }
     });
 
-    /* Programmatically click the hidden input to open the file dialog. */
     input.click();
+}
+
+/**
+ * importJsonCorpus(file)
+ * ----------------------
+ * In-memory merge of a JSON corpus into the loaded catalogue. The
+ * curator must hit Save afterwards to persist the change.
+ */
+function importJsonCorpus(file) {
+    var reader = new FileReader();
+    reader.onload = function (event) {
+        try {
+            var imported = JSON.parse(event.target.result);
+            var importedSongs = imported.songs || [];
+
+            var added = 0;
+            var updated = 0;
+
+            importedSongs.forEach(function (incoming) {
+                var existingIndex = songData.songs.findIndex(function (s) {
+                    return s.id === incoming.id;
+                });
+
+                if (existingIndex !== -1) {
+                    songData.songs[existingIndex] = incoming;
+                    markModified(incoming.id);
+                    updated++;
+                } else {
+                    songData.songs.push(incoming);
+                    markModified(incoming.id);
+                    added++;
+                }
+            });
+
+            if (imported.songbooks && Array.isArray(imported.songbooks)) {
+                imported.songbooks.forEach(function (sb) {
+                    var exists = songData.songbooks.some(function (existing) {
+                        return existing.id === sb.id;
+                    });
+                    if (!exists) {
+                        songData.songbooks.push(sb);
+                    }
+                });
+            }
+
+            populateSongbookFilterDropdown();
+            renderSongList();
+            updateStatusBar();
+
+            showToast('Import complete: ' + added + ' added, ' + updated + ' updated. Hit Save to persist.', 'success');
+        } catch (err) {
+            showToast('Import failed: ' + err.message, 'danger');
+        }
+    };
+    reader.readAsText(file);
+}
+
+/**
+ * importBulkZip(file)
+ * -------------------
+ * Server-side bulk import. Streams the picked file as multipart to
+ * the bulk_import_zip endpoint and surfaces the per-import summary
+ * the server returns. Insert-only by contract (#664) — existing
+ * songs are reported as "skipped (existing)" and the database row
+ * stays untouched.
+ */
+function importBulkZip(file) {
+    /* Cheap UX hint while the upload is in flight. The endpoint
+       streams the parse + INSERT loop synchronously so big archives
+       (a 2,300-song multi-hymnal CIS bundle ~1.3 MB compressed)
+       can take a few seconds. */
+    showToast('Importing ' + file.name + '… please wait.', 'info');
+
+    var fd = new FormData();
+    fd.append('zip', file, file.name);
+
+    fetch(EDITOR_API_URL + '?action=bulk_import_zip', {
+        method:      'POST',
+        body:        fd,
+        credentials: 'same-origin',
+    }).then(function (res) {
+        return res.json().catch(function () {
+            return { error: 'Server returned an unparseable response (status ' + res.status + ').' };
+        }).then(function (data) {
+            return { ok: res.ok, data: data };
+        });
+    }).then(function (out) {
+        if (!out.ok || !out.data || out.data.ok !== true) {
+            var msg = (out.data && out.data.error) || 'Import failed.';
+            showToast('Import failed: ' + msg, 'danger');
+            return;
+        }
+        var d  = out.data;
+        var sb = (d.songbooks_created || []).length;
+        var sx = (d.songbooks_existing || []).length;
+
+        /* One-line summary for the happy path; details for any errors. */
+        showToast(
+            'Imported ' + d.songs_created + ' new song' + (d.songs_created === 1 ? '' : 's') +
+            ' (' + d.songs_skipped_existing + ' already in DB, skipped). ' +
+            sb + ' new songbook' + (sb === 1 ? '' : 's') + ', ' +
+            sx + ' existing.',
+            'success'
+        );
+
+        if (d.songs_failed > 0 || (d.errors && d.errors.length > 0)) {
+            showToast(
+                'Note: ' + d.songs_failed + ' file' + (d.songs_failed === 1 ? '' : 's') +
+                ' failed during import — see browser console for details.',
+                'warning'
+            );
+            try { console.warn('[bulk_import_zip] errors:', d.errors); } catch (_e) {}
+        }
+
+        /* Reload the catalogue from MySQL so the newly inserted rows
+           appear in the song list straight away. Same fetch path the
+           editor uses on page open (init() → loadSongsFromURL on the
+           first SONGS_URL_CANDIDATES entry, which is the PHP API). */
+        if (typeof loadSongsFromURL === 'function' && typeof SONGS_URL_CANDIDATES !== 'undefined') {
+            loadSongsFromURL(SONGS_URL_CANDIDATES[0]);
+        }
+    }).catch(function (err) {
+        showToast('Import failed: ' + (err && err.message ? err.message : err), 'danger');
+    });
 }
 
 /* ========================================================================
