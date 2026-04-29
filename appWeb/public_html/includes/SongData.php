@@ -248,6 +248,8 @@ class SongData
             return $books;
         }
 
+        $bibSelect  = $this->_songbookBibSelect();
+        $langSelect = $this->_songbookLanguageSelect();
         $stmt = $this->db->prepare(
             "SELECT Abbreviation AS id, Name AS name, SongCount AS songCount,
                     Colour AS colour,
@@ -256,6 +258,8 @@ class SongData
                     PublicationYear AS publicationYear,
                     Copyright       AS copyright,
                     Affiliation     AS affiliation
+                    {$langSelect}
+                    {$bibSelect}
              FROM tblSongbooks
              ORDER BY Name ASC"
         );
@@ -274,6 +278,75 @@ class SongData
     }
 
     /**
+     * Build the trailing fragment of the SELECT for songbook bibliographic
+     * + authority-control identifier columns (#672). On a deployment that
+     * hasn't run migrate-songbook-bibliographic.php yet the columns
+     * aren't there and a SELECT that names them would 500 the songbooks
+     * API. Probe INFORMATION_SCHEMA once per object instance, then return
+     * either the full ", b.WebsiteUrl, b.OcnNumber, …" tail or an empty
+     * string. Cached on the instance because getSongbooks() and
+     * getSongbook() are commonly called in pairs on the same request.
+     */
+    private function _songbookBibSelect(): string
+    {
+        if (isset($this->_bibSelectCache)) {
+            return $this->_bibSelectCache;
+        }
+        $hasBibCols = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongbooks'
+                    AND COLUMN_NAME  = 'WikidataId'
+                  LIMIT 1"
+            );
+            $probe->execute();
+            $hasBibCols = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* probe failure → fall through to empty tail */ }
+        $this->_bibSelectCache = $hasBibCols
+            ? ', WebsiteUrl AS websiteUrl, InternetArchiveUrl AS internetArchiveUrl,
+               WikipediaUrl AS wikipediaUrl, WikidataId AS wikidataId,
+               OclcNumber AS oclcNumber, OcnNumber AS ocnNumber,
+               LcpNumber AS lcpNumber, Isbn AS isbn,
+               ArkId AS arkId, IsniId AS isniId,
+               ViafId AS viafId, Lccn AS lccn, LcClass AS lcClass'
+            : '';
+        return $this->_bibSelectCache;
+    }
+    private ?string $_bibSelectCache = null;
+
+    /**
+     * Same shape as _songbookBibSelect() but for the optional Language
+     * column added in #673. Probe-once cache so getSongbooks() and
+     * getSongbook() called in the same request only pay one
+     * INFORMATION_SCHEMA round-trip between them.
+     */
+    private function _songbookLanguageSelect(): string
+    {
+        if (isset($this->_langSelectCache)) {
+            return $this->_langSelectCache;
+        }
+        $hasLangCol = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongbooks'
+                    AND COLUMN_NAME  = 'Language'
+                  LIMIT 1"
+            );
+            $probe->execute();
+            $hasLangCol = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* probe failure → no Language tail */ }
+        $this->_langSelectCache = $hasLangCol ? ', Language AS language' : '';
+        return $this->_langSelectCache;
+    }
+    private ?string $_langSelectCache = null;
+
+    /**
      * Get a single songbook by its abbreviation ID.
      *
      * @param string $id Songbook abbreviation (e.g., 'CP', 'MP')
@@ -288,6 +361,8 @@ class SongData
             }
             return null;
         }
+        $bibSelect  = $this->_songbookBibSelect();
+        $langSelect = $this->_songbookLanguageSelect();
         $stmt = $this->db->prepare(
             "SELECT Abbreviation AS id, Name AS name, SongCount AS songCount,
                     Colour AS colour,
@@ -296,6 +371,8 @@ class SongData
                     PublicationYear AS publicationYear,
                     Copyright       AS copyright,
                     Affiliation     AS affiliation
+                    {$langSelect}
+                    {$bibSelect}
              FROM tblSongbooks
              WHERE Abbreviation = ?"
         );

@@ -188,6 +188,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pubYear    = trim((string)($_POST['publication_year'] ?? '')) ?: null;
                 $copyright  = trim((string)($_POST['copyright']        ?? '')) ?: null;
                 $affiliation= trim((string)($_POST['affiliation']      ?? '')) ?: null;
+                /* #673 — optional language. Empty selection saves as NULL.
+                   Capped to the column width so a tampered post can't
+                   blow up the INSERT. */
+                $language   = trim((string)($_POST['language']         ?? '')) ?: null;
+                if ($language !== null) $language = mb_substr($language, 0, 10);
+
+                /* #672 — bibliographic + authority-control identifiers.
+                   All nullable, all VARCHAR. trim()→null normalises
+                   blank inputs so the column actually stores NULL
+                   rather than '' (avoids the typical "is it really
+                   missing" ambiguity in downstream queries). */
+                $websiteUrl   = trim((string)($_POST['website_url']         ?? '')) ?: null;
+                $iaUrl        = trim((string)($_POST['internet_archive_url']?? '')) ?: null;
+                $wikipediaUrl = trim((string)($_POST['wikipedia_url']       ?? '')) ?: null;
+                $wikidataId   = trim((string)($_POST['wikidata_id']         ?? '')) ?: null;
+                $oclcNumber   = trim((string)($_POST['oclc_number']         ?? '')) ?: null;
+                $ocnNumber    = trim((string)($_POST['ocn_number']          ?? '')) ?: null;
+                $lcpNumber    = trim((string)($_POST['lcp_number']          ?? '')) ?: null;
+                $isbn         = trim((string)($_POST['isbn']                ?? '')) ?: null;
+                $arkId        = trim((string)($_POST['ark_id']              ?? '')) ?: null;
+                $isniId       = trim((string)($_POST['isni_id']             ?? '')) ?: null;
+                $viafId       = trim((string)($_POST['viaf_id']             ?? '')) ?: null;
+                $lccn         = trim((string)($_POST['lccn']                ?? '')) ?: null;
+                $lcClass      = trim((string)($_POST['lc_class']            ?? '')) ?: null;
 
                 if ($e = $validateAbbr($abbr))   { $error = $e; break; }
                 if ($name === '')                { $error = 'Name is required.'; break; }
@@ -203,18 +227,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt = $db->prepare(
                     'INSERT INTO tblSongbooks
                         (Abbreviation, Name, DisplayOrder, Colour,
-                         IsOfficial, Publisher, PublicationYear, Copyright, Affiliation)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                         IsOfficial, Publisher, PublicationYear, Copyright, Affiliation,
+                         Language,
+                         WebsiteUrl, InternetArchiveUrl, WikipediaUrl, WikidataId,
+                         OclcNumber, OcnNumber, LcpNumber, Isbn, ArkId, IsniId,
+                         ViafId, Lccn, LcClass)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                             ?,
+                             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
                 );
-                /* Types: Abbr(s), Name(s), DisplayOrder(i), Colour(s),
-                   IsOfficial(i), Publisher(s nullable), PublicationYear(s nullable),
-                   Copyright(s nullable), Affiliation(s nullable). mysqli passes
-                   NULL correctly when a bound variable is null even with type 's'. */
+                /* Types breakdown:
+                     Abbr(s), Name(s), DisplayOrder(i), Colour(s),               4
+                     IsOfficial(i), Publisher(s), PubYear(s), Copyright(s),
+                       Affiliation(s),                                            5
+                     Language(s) — #673                                            1
+                     Website(s), IA(s), Wikipedia(s), Wikidata(s),
+                       OCLC(s), OCN(s), LCP(s), ISBN(s), ARK(s), ISNI(s),
+                       VIAF(s), LCCN(s), LcClass(s)                              13
+                                                                            ----
+                                                                              23
+                   mysqli passes NULL correctly when a bound variable is null
+                   even with type 's'. */
                 $orderInt = (int)($order ?: 0);
                 $stmt->bind_param(
-                    'ssisissss',
+                    'ssisisssssssssssssssssss',
                     $abbr, $name, $orderInt, $colour,
-                    $isOfficial, $publisher, $pubYear, $copyright, $affiliation
+                    $isOfficial, $publisher, $pubYear, $copyright, $affiliation,
+                    $language,
+                    $websiteUrl, $iaUrl, $wikipediaUrl, $wikidataId,
+                    $oclcNumber, $ocnNumber, $lcpNumber, $isbn, $arkId, $isniId,
+                    $viafId, $lccn, $lcClass
                 );
                 $stmt->execute();
                 $newId = (int)$db->insert_id;
@@ -229,6 +271,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'publication_year'=> $pubYear,
                     'copyright'       => $copyright,
                     'affiliation'     => $affiliation,
+                    'language'        => $language,
+                    /* #672 — log only the keys that have a value, so
+                       empty bibliographic blocks don't bloat the
+                       activity-log row. */
+                    'bibliographic'   => array_filter([
+                        'website_url'           => $websiteUrl,
+                        'internet_archive_url'  => $iaUrl,
+                        'wikipedia_url'         => $wikipediaUrl,
+                        'wikidata_id'           => $wikidataId,
+                        'oclc_number'           => $oclcNumber,
+                        'ocn_number'            => $ocnNumber,
+                        'lcp_number'            => $lcpNumber,
+                        'isbn'                  => $isbn,
+                        'ark_id'                => $arkId,
+                        'isni_id'               => $isniId,
+                        'viaf_id'               => $viafId,
+                        'lccn'                  => $lccn,
+                        'lc_class'              => $lcClass,
+                    ], fn($v) => $v !== null && $v !== ''),
                 ]);
                 /* Self-populate the affiliation registry so the next
                    open of the typeahead surfaces this value (#670). */
@@ -244,20 +305,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $order       = (int)($_POST['display_order']        ?? 0);
                 $newAbbr     = trim((string)($_POST['new_abbreviation'] ?? ''));
                 $alsoRename  = !empty($_POST['rename_song_refs']);
-                /* #502 — new metadata columns. */
+                /* #502 — basic metadata columns. */
                 $isOfficial  = !empty($_POST['is_official']) ? 1 : 0;
                 $publisher   = trim((string)($_POST['publisher']        ?? '')) ?: null;
                 $pubYear     = trim((string)($_POST['publication_year'] ?? '')) ?: null;
                 $copyright   = trim((string)($_POST['copyright']        ?? '')) ?: null;
                 $affiliation = trim((string)($_POST['affiliation']      ?? '')) ?: null;
+                /* #673 — optional language. */
+                $language    = trim((string)($_POST['language']         ?? '')) ?: null;
+                if ($language !== null) $language = mb_substr($language, 0, 10);
+
+                /* #672 — bibliographic + authority-control identifiers. */
+                $websiteUrl   = trim((string)($_POST['website_url']         ?? '')) ?: null;
+                $iaUrl        = trim((string)($_POST['internet_archive_url']?? '')) ?: null;
+                $wikipediaUrl = trim((string)($_POST['wikipedia_url']       ?? '')) ?: null;
+                $wikidataId   = trim((string)($_POST['wikidata_id']         ?? '')) ?: null;
+                $oclcNumber   = trim((string)($_POST['oclc_number']         ?? '')) ?: null;
+                $ocnNumber    = trim((string)($_POST['ocn_number']          ?? '')) ?: null;
+                $lcpNumber    = trim((string)($_POST['lcp_number']          ?? '')) ?: null;
+                $isbn         = trim((string)($_POST['isbn']                ?? '')) ?: null;
+                $arkId        = trim((string)($_POST['ark_id']              ?? '')) ?: null;
+                $isniId       = trim((string)($_POST['isni_id']             ?? '')) ?: null;
+                $viafId       = trim((string)($_POST['viaf_id']             ?? '')) ?: null;
+                $lccn         = trim((string)($_POST['lccn']                ?? '')) ?: null;
+                $lcClass      = trim((string)($_POST['lc_class']            ?? '')) ?: null;
 
                 /* Fetch the full before-row so the audit log carries
                    a complete diff of which fields actually changed
                    (#535) — otherwise the timeline reader has to
-                   guess. */
+                   guess. SELECT extended for #672 metadata so the
+                   diff covers the new identifier columns too. */
                 $existing = $db->prepare(
                     'SELECT Abbreviation, Name, DisplayOrder, Colour, IsOfficial,
-                            Publisher, PublicationYear, Copyright, Affiliation
+                            Publisher, PublicationYear, Copyright, Affiliation,
+                            Language,
+                            WebsiteUrl, InternetArchiveUrl, WikipediaUrl, WikidataId,
+                            OclcNumber, OcnNumber, LcpNumber, Isbn, ArkId, IsniId,
+                            ViafId, Lccn, LcClass
                        FROM tblSongbooks WHERE Id = ?'
                 );
                 $existing->bind_param('i', $id);
@@ -288,17 +372,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'UPDATE tblSongbooks
                             SET Name = ?, Colour = ?, DisplayOrder = ?,
                                 IsOfficial = ?, Publisher = ?,
-                                PublicationYear = ?, Copyright = ?, Affiliation = ?
+                                PublicationYear = ?, Copyright = ?, Affiliation = ?,
+                                Language = ?,
+                                WebsiteUrl = ?, InternetArchiveUrl = ?,
+                                WikipediaUrl = ?, WikidataId = ?,
+                                OclcNumber = ?, OcnNumber = ?, LcpNumber = ?,
+                                Isbn = ?, ArkId = ?, IsniId = ?,
+                                ViafId = ?, Lccn = ?, LcClass = ?
                           WHERE Id = ?'
                     );
-                    /* Types: Name(s), Colour(s), DisplayOrder(i),
-                       IsOfficial(i), Publisher(s), PublicationYear(s),
-                       Copyright(s), Affiliation(s), Id(i). */
+                    /* Types breakdown:
+                         Name(s), Colour(s), Order(i),                   3
+                         IsOfficial(i), Publisher(s), Year(s), Copy(s),
+                           Affiliation(s),                               5
+                         Language(s) — #673                              1
+                         13 × bibliographic-identifier strings           13
+                         Id(i)                                            1
+                                                                        ----
+                                                                         23 */
                     $orderInt = (int)($order ?: 0);
                     $stmt->bind_param(
-                        'ssiissssi',
+                        'ssiisssssssssssssssssssi',
                         $name, $colour, $orderInt,
                         $isOfficial, $publisher, $pubYear, $copyright, $affiliation,
+                        $language,
+                        $websiteUrl, $iaUrl, $wikipediaUrl, $wikidataId,
+                        $oclcNumber, $ocnNumber, $lcpNumber, $isbn, $arkId, $isniId,
+                        $viafId, $lccn, $lcClass,
                         $id
                     );
                     $stmt->execute();
@@ -321,17 +421,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     /* Audit (#535) — compute the changed-fields list
                        explicitly so the row stays small (the full
                        before-row is on $beforeRow and we don't need
-                       to dump every key). */
+                       to dump every key). Extended for #672 to cover
+                       the 13 new identifier columns. */
                     $afterRow = [
-                        'Abbreviation'   => $abbrChanged ? $newAbbr : $oldAbbr,
-                        'Name'           => $name,
-                        'DisplayOrder'   => $order ?: 0,
-                        'Colour'         => $colour,
-                        'IsOfficial'     => $isOfficial,
-                        'Publisher'      => $publisher,
-                        'PublicationYear'=> $pubYear,
-                        'Copyright'      => $copyright,
-                        'Affiliation'    => $affiliation,
+                        'Abbreviation'      => $abbrChanged ? $newAbbr : $oldAbbr,
+                        'Name'              => $name,
+                        'DisplayOrder'      => $order ?: 0,
+                        'Colour'            => $colour,
+                        'IsOfficial'        => $isOfficial,
+                        'Publisher'         => $publisher,
+                        'PublicationYear'   => $pubYear,
+                        'Copyright'         => $copyright,
+                        'Affiliation'       => $affiliation,
+                        'Language'          => $language,
+                        'WebsiteUrl'        => $websiteUrl,
+                        'InternetArchiveUrl'=> $iaUrl,
+                        'WikipediaUrl'      => $wikipediaUrl,
+                        'WikidataId'        => $wikidataId,
+                        'OclcNumber'        => $oclcNumber,
+                        'OcnNumber'         => $ocnNumber,
+                        'LcpNumber'         => $lcpNumber,
+                        'Isbn'              => $isbn,
+                        'ArkId'             => $arkId,
+                        'IsniId'            => $isniId,
+                        'ViafId'            => $viafId,
+                        'Lccn'              => $lccn,
+                        'LcClass'           => $lcClass,
                     ];
                     $changed = [];
                     foreach ($afterRow as $k => $v) {
@@ -441,13 +556,81 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
+/* ----- Active languages for the songbook editor's optional
+ *       Language dropdown (#673). Sourced from tblLanguages so the
+ *       admin doesn't have to hard-code ISO codes. We pull this
+ *       once per page-load and pass it through to both the create
+ *       form and the edit modal. Best-effort — if tblLanguages is
+ *       missing (very old install) we fall back to a minimal English
+ *       option so the dropdown at least has something selectable.
+ * ----- */
+$languages = [];
+try {
+    $stmt = $db->prepare(
+        'SELECT Code, Name, NativeName
+           FROM tblLanguages
+          WHERE IsActive = 1
+          ORDER BY Name ASC'
+    );
+    $stmt->execute();
+    $languages = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+} catch (\Throwable $e) {
+    error_log('[manage/songbooks.php] could not load tblLanguages: ' . $e->getMessage());
+    $languages = [['Code' => 'en', 'Name' => 'English', 'NativeName' => 'English']];
+}
+
 /* ----- GET: list ----- */
 $rows = [];
 try {
+    /* Probe whether the #672 columns exist before SELECTing them.
+       A deployment that hasn't run migrate-songbook-bibliographic.php
+       yet should still render the songbook list — the new fields are
+       just absent from the edit-modal payload until the migration
+       runs. Cheaper than a try/catch + retry. */
+    $hasBibCols = false;
+    try {
+        $probe = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblSongbooks'
+                AND COLUMN_NAME  = 'WikidataId'
+              LIMIT 1"
+        );
+        $probe->execute();
+        $hasBibCols = $probe->get_result()->fetch_row() !== null;
+        $probe->close();
+    } catch (\Throwable $_e) { /* probe failure → fall through to base SELECT */ }
+
+    $bibSelect = $hasBibCols
+        ? ', b.WebsiteUrl, b.InternetArchiveUrl, b.WikipediaUrl, b.WikidataId,
+             b.OclcNumber, b.OcnNumber, b.LcpNumber, b.Isbn, b.ArkId, b.IsniId,
+             b.ViafId, b.Lccn, b.LcClass'
+        : '';
+
+    /* Same probe-then-conditional-SELECT pattern for the #673
+       Language column. A deployment that hasn't run
+       migrate-songbook-language.php yet renders without the
+       column; the edit-modal payload defaults Language to ''. */
+    $hasLangCol = false;
+    try {
+        $probe = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblSongbooks'
+                AND COLUMN_NAME  = 'Language'
+              LIMIT 1"
+        );
+        $probe->execute();
+        $hasLangCol = $probe->get_result()->fetch_row() !== null;
+        $probe->close();
+    } catch (\Throwable $_e) { /* probe failure → fall through */ }
+    $langSelect = $hasLangCol ? ', b.Language' : '';
+
     $stmt = $db->prepare(
         'SELECT b.Id, b.Abbreviation, b.Name, b.SongCount, b.DisplayOrder, b.Colour,
                 b.IsOfficial, b.Publisher, b.PublicationYear,
-                b.Copyright, b.Affiliation,
+                b.Copyright, b.Affiliation' . $langSelect . $bibSelect . ',
                 COUNT(s.Id) AS ActualSongCount
            FROM tblSongbooks b
            LEFT JOIN tblSongs s ON s.SongbookAbbr = b.Abbreviation
@@ -494,12 +677,39 @@ $csrf = csrfToken();
         <?php endif; ?>
 
         <!-- List + reorder -->
-        <form method="POST" class="card-admin p-3 mb-4">
+        <form method="POST" class="card-admin p-3 mb-4" id="songbook-list-form">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
             <input type="hidden" name="action" value="reorder">
-            <table class="table table-sm mb-2 align-middle cp-sortable">
+
+            <!-- #674 — quick-sort presets. Renumber DisplayOrder in 10-spaced
+                 steps based on the chosen field; the user can review the
+                 new order and hit "Save display order" to persist (or
+                 navigate away to back out). Leading "The "/"A "/"An "
+                 are stripped for the Name sort so "The Church Hymnal"
+                 sorts among the C's, not the T's. -->
+            <?php if ($rows): ?>
+            <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+                <small class="text-muted me-1">Quick sort:</small>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-sort-preset="name:asc">
+                    <i class="bi bi-sort-alpha-down me-1"></i>Name A→Z
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-sort-preset="name:desc">
+                    <i class="bi bi-sort-alpha-up-alt me-1"></i>Name Z→A
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-sort-preset="abbr:asc">
+                    <i class="bi bi-sort-alpha-down me-1"></i>Abbr A→Z
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-sort-preset="abbr:desc">
+                    <i class="bi bi-sort-alpha-up-alt me-1"></i>Abbr Z→A
+                </button>
+                <small class="text-muted ms-1">— preview applied; hit <em>Save display order</em> to persist.</small>
+            </div>
+            <?php endif; ?>
+
+            <table class="table table-sm mb-2 align-middle cp-sortable" id="songbook-list-table">
                 <thead>
                     <tr class="text-muted small">
+                        <th style="width:1.5rem" aria-label="Drag to reorder"></th>
                         <th style="width:6rem">Order</th>
                         <th data-sort-key="abbr" data-sort-type="text">Abbr</th>
                         <th data-sort-key="name" data-sort-type="text">Name</th>
@@ -511,9 +721,17 @@ $csrf = csrfToken();
                 </thead>
                 <tbody>
                     <?php foreach ($rows as $r): ?>
-                        <tr>
+                        <tr class="songbook-row"
+                            data-row-id="<?= (int)$r['Id'] ?>"
+                            data-sort-name="<?= htmlspecialchars($r['Name']) ?>"
+                            data-sort-abbr="<?= htmlspecialchars($r['Abbreviation']) ?>">
+                            <td class="text-center align-middle">
+                                <span class="songbook-drag-handle" title="Drag to reorder" aria-hidden="true">
+                                    <i class="bi bi-grip-vertical"></i>
+                                </span>
+                            </td>
                             <td>
-                                <input type="number" min="0" step="10"
+                                <input type="number" min="0"
                                        class="form-control form-control-sm"
                                        name="display_order[<?= (int)$r['Id'] ?>]"
                                        value="<?= (int)$r['DisplayOrder'] ?>">
@@ -541,17 +759,36 @@ $csrf = csrfToken();
                             <td class="text-end">
                                 <button type="button" class="btn btn-sm btn-outline-info"
                                         onclick='openEditModal(<?= json_encode([
-                                            'id'               => (int)$r['Id'],
-                                            'abbreviation'     => $r['Abbreviation'],
-                                            'name'             => $r['Name'],
-                                            'colour'           => $r['Colour'],
-                                            'display_order'    => (int)$r['DisplayOrder'],
-                                            'song_count'       => (int)$r['ActualSongCount'],
-                                            'is_official'      => (int)$r['IsOfficial'] === 1,
-                                            'publisher'        => $r['Publisher']       ?? '',
-                                            'publication_year' => $r['PublicationYear'] ?? '',
-                                            'copyright'        => $r['Copyright']       ?? '',
-                                            'affiliation'      => $r['Affiliation']     ?? '',
+                                            'id'                  => (int)$r['Id'],
+                                            'abbreviation'        => $r['Abbreviation'],
+                                            'name'                => $r['Name'],
+                                            'colour'              => $r['Colour'],
+                                            'display_order'       => (int)$r['DisplayOrder'],
+                                            'song_count'          => (int)$r['ActualSongCount'],
+                                            'is_official'         => (int)$r['IsOfficial'] === 1,
+                                            'publisher'           => $r['Publisher']       ?? '',
+                                            'publication_year'    => $r['PublicationYear'] ?? '',
+                                            'copyright'           => $r['Copyright']       ?? '',
+                                            'affiliation'         => $r['Affiliation']     ?? '',
+                                            /* #673 — Language defaults to '' so the dropdown
+                                               picks "— Not specified —" when absent. */
+                                            'language'            => $r['Language']        ?? '',
+                                            /* #672 — fields default to '' so a row from a
+                                               pre-migration deployment renders cleanly
+                                               (the bibSelect probe above gates the SELECT). */
+                                            'website_url'         => $r['WebsiteUrl']         ?? '',
+                                            'internet_archive_url'=> $r['InternetArchiveUrl'] ?? '',
+                                            'wikipedia_url'       => $r['WikipediaUrl']       ?? '',
+                                            'wikidata_id'         => $r['WikidataId']         ?? '',
+                                            'oclc_number'         => $r['OclcNumber']         ?? '',
+                                            'ocn_number'          => $r['OcnNumber']          ?? '',
+                                            'lcp_number'          => $r['LcpNumber']          ?? '',
+                                            'isbn'                => $r['Isbn']               ?? '',
+                                            'ark_id'              => $r['ArkId']              ?? '',
+                                            'isni_id'             => $r['IsniId']             ?? '',
+                                            'viaf_id'             => $r['ViafId']             ?? '',
+                                            'lccn'                => $r['Lccn']               ?? '',
+                                            'lc_class'            => $r['LcClass']            ?? '',
                                         ]) ?>)'
                                         title="Edit songbook">
                                     <i class="bi bi-pencil"></i>
@@ -572,7 +809,7 @@ $csrf = csrfToken();
                         </tr>
                     <?php endforeach; ?>
                     <?php if (!$rows): ?>
-                        <tr><td colspan="7" class="text-muted text-center py-4">No songbooks yet. Add one below.</td></tr>
+                        <tr><td colspan="8" class="text-muted text-center py-4">No songbooks yet. Add one below.</td></tr>
                     <?php endif; ?>
                 </tbody>
             </table>
@@ -580,7 +817,7 @@ $csrf = csrfToken();
                 <button type="submit" class="btn btn-sm btn-amber-solid">
                     <i class="bi bi-save me-1"></i>Save display order
                 </button>
-                <small class="text-muted ms-2">Lower numbers render first. Step of 10 lets you insert between two rows.</small>
+                <small class="text-muted ms-2">Lower numbers render first. Any non-negative integer is fine — gaps of 10 between rows give you room to slot in a new book later, but you can use 1, 2, 3, … or anything else (#672).</small>
             <?php endif; ?>
         </form>
 
@@ -610,7 +847,7 @@ $csrf = csrfToken();
                 <div class="col-sm-2">
                     <label class="form-label small">Display order</label>
                     <input type="number" name="display_order" class="form-control form-control-sm"
-                           min="0" step="10" value="0">
+                           min="0" value="0">
                 </div>
             </div>
 
@@ -654,6 +891,110 @@ $csrf = csrfToken();
                            placeholder="e.g. Seventh-day Adventist, Non-denominational">
                 </div>
             </div>
+            <!-- #673 — optional Language. Sourced from tblLanguages so a curator
+                 doesn't have to remember ISO 639-1 codes. Empty selection saves
+                 as NULL ("not specified") since many curated groupings span
+                 languages. -->
+            <div class="row g-2 mt-2">
+                <div class="col-sm-4">
+                    <label class="form-label small">Language (optional)</label>
+                    <select name="language" class="form-select form-select-sm">
+                        <option value="">— Not specified —</option>
+                        <?php foreach ($languages as $lang): ?>
+                            <option value="<?= htmlspecialchars($lang['Code']) ?>">
+                                <?= htmlspecialchars($lang['Name']) ?>
+                                <?php if ($lang['NativeName'] !== '' && $lang['NativeName'] !== $lang['Name']): ?>
+                                    (<?= htmlspecialchars($lang['NativeName']) ?>)
+                                <?php endif; ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+            </div>
+
+            <!-- #672 — collapsed by default; the create form already has 8 visible
+                 fields and most curators don't need the bibliographic block on a
+                 brand-new songbook. <details> is native HTML5 — no JS needed. -->
+            <details class="mt-3">
+                <summary class="form-label small text-muted" style="cursor:pointer;">
+                    <i class="bi bi-link-45deg me-1"></i>Online links (optional)
+                </summary>
+                <div class="row g-2 mt-1">
+                    <div class="col-sm-4">
+                        <label class="form-label small">Official website</label>
+                        <input type="url" name="website_url" class="form-control form-control-sm"
+                               maxlength="500" placeholder="https://www.example.com">
+                    </div>
+                    <div class="col-sm-4">
+                        <label class="form-label small">Internet Archive URL</label>
+                        <input type="url" name="internet_archive_url" class="form-control form-control-sm"
+                               maxlength="500" placeholder="https://archive.org/details/…">
+                    </div>
+                    <div class="col-sm-4">
+                        <label class="form-label small">Wikipedia URL</label>
+                        <input type="url" name="wikipedia_url" class="form-control form-control-sm"
+                               maxlength="500" placeholder="https://en.wikipedia.org/wiki/…">
+                    </div>
+                </div>
+            </details>
+
+            <details class="mt-2">
+                <summary class="form-label small text-muted" style="cursor:pointer;">
+                    <i class="bi bi-card-list me-1"></i>Authority identifiers (optional)
+                </summary>
+                <div class="row g-2 mt-1">
+                    <div class="col-sm-3">
+                        <label class="form-label small">WikiData ID</label>
+                        <input type="text" name="wikidata_id" class="form-control form-control-sm"
+                               maxlength="20" placeholder="Q12345">
+                    </div>
+                    <div class="col-sm-3">
+                        <label class="form-label small">OCLC number</label>
+                        <input type="text" name="oclc_number" class="form-control form-control-sm"
+                               maxlength="30" placeholder="12345678">
+                    </div>
+                    <div class="col-sm-3">
+                        <label class="form-label small">OCN number</label>
+                        <input type="text" name="ocn_number" class="form-control form-control-sm"
+                               maxlength="30" placeholder="ocn123456789">
+                    </div>
+                    <div class="col-sm-3">
+                        <label class="form-label small">LCP number</label>
+                        <input type="text" name="lcp_number" class="form-control form-control-sm"
+                               maxlength="30" placeholder="LC2018012345">
+                    </div>
+                    <div class="col-sm-3">
+                        <label class="form-label small">ISBN</label>
+                        <input type="text" name="isbn" class="form-control form-control-sm"
+                               maxlength="20" placeholder="978-0-86065-654-1">
+                    </div>
+                    <div class="col-sm-3">
+                        <label class="form-label small">ARK ID</label>
+                        <input type="text" name="ark_id" class="form-control form-control-sm"
+                               maxlength="80" placeholder="ark:/13960/t8jf3w89z">
+                    </div>
+                    <div class="col-sm-3">
+                        <label class="form-label small">ISNI ID</label>
+                        <input type="text" name="isni_id" class="form-control form-control-sm"
+                               maxlength="25" placeholder="0000 0001 2345 6789">
+                    </div>
+                    <div class="col-sm-3">
+                        <label class="form-label small">VIAF ID</label>
+                        <input type="text" name="viaf_id" class="form-control form-control-sm"
+                               maxlength="20" placeholder="123456789">
+                    </div>
+                    <div class="col-sm-3">
+                        <label class="form-label small">LCCN</label>
+                        <input type="text" name="lccn" class="form-control form-control-sm"
+                               maxlength="20" placeholder="n79123456">
+                    </div>
+                    <div class="col-sm-9">
+                        <label class="form-label small">LC Classification</label>
+                        <input type="text" name="lc_class" class="form-control form-control-sm"
+                               maxlength="50" placeholder="M2117 .M5 1990">
+                    </div>
+                </div>
+            </details>
 
             <button type="submit" class="btn btn-amber-solid btn-sm mt-3">
                 <i class="bi bi-plus me-1"></i>Create songbook
@@ -688,7 +1029,7 @@ $csrf = csrfToken();
                             <div class="col-sm-6">
                                 <label class="form-label">Display order</label>
                                 <input type="number" class="form-control" name="display_order" id="edit-order"
-                                       min="0" step="10">
+                                       min="0">
                             </div>
                         </div>
 
@@ -732,6 +1073,126 @@ $csrf = csrfToken();
                                 will be added to the registry on save (#670).
                             </div>
                         </div>
+
+                        <!-- #673 — optional Language. -->
+                        <div class="mb-3">
+                            <label class="form-label">Language (optional)</label>
+                            <select class="form-select" name="language" id="edit-language">
+                                <option value="">— Not specified —</option>
+                                <?php foreach ($languages as $lang): ?>
+                                    <option value="<?= htmlspecialchars($lang['Code']) ?>">
+                                        <?= htmlspecialchars($lang['Name']) ?>
+                                        <?php if ($lang['NativeName'] !== '' && $lang['NativeName'] !== $lang['Name']): ?>
+                                            (<?= htmlspecialchars($lang['NativeName']) ?>)
+                                        <?php endif; ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                            <div class="form-text small">
+                                ISO 639-1 code, sourced from the active rows in
+                                <code>tblLanguages</code>. Leave blank for songbooks
+                                that span multiple languages.
+                            </div>
+                        </div>
+
+                        <!-- #672 — collapsible "Online links" + "Authority identifiers".
+                             Closed by default so the modal still opens at the same height
+                             curators are used to. <details> is native HTML5; no JS needed
+                             to toggle. The same field IDs are populated in openEditModal()
+                             below from the row.* payload. -->
+                        <details class="mb-3">
+                            <summary class="form-label small text-muted" style="cursor:pointer;">
+                                <i class="bi bi-link-45deg me-1"></i>Online links (optional)
+                            </summary>
+                            <div class="mt-2">
+                                <div class="mb-2">
+                                    <label class="form-label small">Official website</label>
+                                    <input type="url" class="form-control form-control-sm"
+                                           name="website_url" id="edit-website-url"
+                                           maxlength="500" placeholder="https://www.example.com">
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label small">Internet Archive URL</label>
+                                    <input type="url" class="form-control form-control-sm"
+                                           name="internet_archive_url" id="edit-internet-archive-url"
+                                           maxlength="500" placeholder="https://archive.org/details/…">
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label small">Wikipedia URL</label>
+                                    <input type="url" class="form-control form-control-sm"
+                                           name="wikipedia_url" id="edit-wikipedia-url"
+                                           maxlength="500" placeholder="https://en.wikipedia.org/wiki/…">
+                                </div>
+                            </div>
+                        </details>
+
+                        <details class="mb-3">
+                            <summary class="form-label small text-muted" style="cursor:pointer;">
+                                <i class="bi bi-card-list me-1"></i>Authority identifiers (optional)
+                            </summary>
+                            <div class="row g-2 mt-2">
+                                <div class="col-sm-6">
+                                    <label class="form-label small">WikiData ID</label>
+                                    <input type="text" class="form-control form-control-sm"
+                                           name="wikidata_id" id="edit-wikidata-id"
+                                           maxlength="20" placeholder="Q12345">
+                                </div>
+                                <div class="col-sm-6">
+                                    <label class="form-label small">OCLC number</label>
+                                    <input type="text" class="form-control form-control-sm"
+                                           name="oclc_number" id="edit-oclc-number"
+                                           maxlength="30" placeholder="12345678">
+                                </div>
+                                <div class="col-sm-6">
+                                    <label class="form-label small">OCN number</label>
+                                    <input type="text" class="form-control form-control-sm"
+                                           name="ocn_number" id="edit-ocn-number"
+                                           maxlength="30" placeholder="ocn123456789">
+                                </div>
+                                <div class="col-sm-6">
+                                    <label class="form-label small">LCP number</label>
+                                    <input type="text" class="form-control form-control-sm"
+                                           name="lcp_number" id="edit-lcp-number"
+                                           maxlength="30" placeholder="LC2018012345">
+                                </div>
+                                <div class="col-sm-6">
+                                    <label class="form-label small">ISBN</label>
+                                    <input type="text" class="form-control form-control-sm"
+                                           name="isbn" id="edit-isbn"
+                                           maxlength="20" placeholder="978-0-86065-654-1">
+                                </div>
+                                <div class="col-sm-6">
+                                    <label class="form-label small">ARK ID</label>
+                                    <input type="text" class="form-control form-control-sm"
+                                           name="ark_id" id="edit-ark-id"
+                                           maxlength="80" placeholder="ark:/13960/t8jf3w89z">
+                                </div>
+                                <div class="col-sm-6">
+                                    <label class="form-label small">ISNI ID</label>
+                                    <input type="text" class="form-control form-control-sm"
+                                           name="isni_id" id="edit-isni-id"
+                                           maxlength="25" placeholder="0000 0001 2345 6789">
+                                </div>
+                                <div class="col-sm-6">
+                                    <label class="form-label small">VIAF ID</label>
+                                    <input type="text" class="form-control form-control-sm"
+                                           name="viaf_id" id="edit-viaf-id"
+                                           maxlength="20" placeholder="123456789">
+                                </div>
+                                <div class="col-sm-6">
+                                    <label class="form-label small">LCCN</label>
+                                    <input type="text" class="form-control form-control-sm"
+                                           name="lccn" id="edit-lccn"
+                                           maxlength="20" placeholder="n79123456">
+                                </div>
+                                <div class="col-sm-6">
+                                    <label class="form-label small">LC Classification</label>
+                                    <input type="text" class="form-control form-control-sm"
+                                           name="lc_class" id="edit-lc-class"
+                                           maxlength="50" placeholder="M2117 .M5 1990">
+                                </div>
+                            </div>
+                        </details>
 
                         <hr>
                         <div class="mb-3">
@@ -798,6 +1259,31 @@ $csrf = csrfToken();
             document.getElementById('edit-copyright').value         = row.copyright        || '';
             document.getElementById('edit-affiliation').value       = row.affiliation      || '';
 
+            /* #673 — optional Language. The <select>'s value is set
+               directly; if the row's saved code isn't in the active
+               tblLanguages list the dropdown silently falls back to
+               "— Not specified —" (a deactivated language deserves a
+               curator's manual review, not a silent reset). */
+            document.getElementById('edit-language').value          = row.language         || '';
+
+            /* #672 — bibliographic + authority-control identifiers. The
+               row payload normalises every key to '' when the source
+               column was NULL (or missing entirely on a pre-migration
+               deployment) so each input always receives a string. */
+            document.getElementById('edit-website-url').value          = row.website_url          || '';
+            document.getElementById('edit-internet-archive-url').value = row.internet_archive_url || '';
+            document.getElementById('edit-wikipedia-url').value        = row.wikipedia_url        || '';
+            document.getElementById('edit-wikidata-id').value          = row.wikidata_id          || '';
+            document.getElementById('edit-oclc-number').value          = row.oclc_number          || '';
+            document.getElementById('edit-ocn-number').value           = row.ocn_number           || '';
+            document.getElementById('edit-lcp-number').value           = row.lcp_number           || '';
+            document.getElementById('edit-isbn').value                 = row.isbn                 || '';
+            document.getElementById('edit-ark-id').value               = row.ark_id               || '';
+            document.getElementById('edit-isni-id').value              = row.isni_id              || '';
+            document.getElementById('edit-viaf-id').value              = row.viaf_id              || '';
+            document.getElementById('edit-lccn').value                 = row.lccn                 || '';
+            document.getElementById('edit-lc-class').value             = row.lc_class             || '';
+
             document.getElementById('edit-new-abbr').value          = '';
             document.getElementById('edit-rename-refs').checked     = false;
             document.getElementById('edit-song-count').textContent  = row.song_count;
@@ -815,6 +1301,140 @@ $csrf = csrfToken();
     <script type="module">
         import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
         bootSortableTables();
+    </script>
+
+    <!-- Drag-and-drop reorder + Sort by Name/Abbr presets (#674).
+         Vanilla HTML5 Drag-and-Drop on the songbook list table; no
+         third-party library. Touch users can still type a number into
+         each row's Order input + hit Save (the existing path) — a
+         touch-driven reorder UX would need significantly more code
+         and isn't blocking. The four sort-preset buttons renumber
+         in 10-spaced steps without saving so the curator can review
+         and back out. -->
+    <style>
+        .songbook-drag-handle {
+            cursor: grab;
+            color: var(--text-muted);
+            font-size: 1.05rem;
+            /* Vendor-prefixed user-select to suppress text selection
+               on Safari/iOS during a drag — same 4-line convention
+               used elsewhere (see admin.css drag-handle, #668). */
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+        }
+        .songbook-drag-handle:hover { color: var(--accent-solid); }
+        .songbook-row.dragging { opacity: 0.4; }
+        .songbook-row.drop-above td { box-shadow: 0 -2px 0 var(--accent-solid) inset; }
+        .songbook-row.drop-below td { box-shadow: 0  2px 0 var(--accent-solid) inset; }
+    </style>
+    <script>
+    (function () {
+        const tbody = document.querySelector('#songbook-list-table tbody');
+        if (!tbody) return;
+
+        /* Live snapshot of the current row order. Recomputed on every
+           DOM read because drag-drop reshuffles in place. */
+        const rows = () => Array.from(tbody.querySelectorAll('tr.songbook-row'));
+
+        /* Renumber the DisplayOrder <input>s in 10-spaced steps based
+           on the current visual row order. The "Save display order"
+           submit button picks them up via display_order[<id>]. */
+        const renumber = () => {
+            rows().forEach((tr, i) => {
+                const input = tr.querySelector('input[name^="display_order"]');
+                if (input) input.value = (i + 1) * 10;
+            });
+        };
+
+        /* ----- Sort presets ----- */
+        /* Strip a leading "The "/"A "/"An " (case-insensitive, with
+           trailing whitespace) so "The Church Hymnal" sorts among the
+           C's. Same convention as libraries / WikiData / iTunes.
+           Other-language articles (Spanish "El", French "Le/La", …)
+           are out of scope for v1; flag in the issue comment if a
+           curator hits the limit (#674). */
+        const stripArticle = (s) =>
+            (s || '').replace(/^\s*(the|an|a)\s+/i, '').toLowerCase();
+
+        const sortByKey = (keyFn, dir) => {
+            const sorted = rows().sort((a, b) => {
+                const cmp = keyFn(a).localeCompare(keyFn(b));
+                return dir === 'asc' ? cmp : -cmp;
+            });
+            sorted.forEach(tr => tbody.appendChild(tr));
+            renumber();
+        };
+        document.querySelectorAll('[data-sort-preset]').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                const [field, dir] = btn.dataset.sortPreset.split(':');
+                const keyFn = field === 'name'
+                    ? (tr) => stripArticle(tr.dataset.sortName)
+                    : (tr) => (tr.dataset.sortAbbr || '').toLowerCase();
+                sortByKey(keyFn, dir);
+            });
+        });
+
+        /* ----- Drag and drop -----
+           HTML5 D&D: source row gets draggable=true while the user is
+           pressing the handle, source emits dragstart, every other
+           row's dragover decides whether to insert above or below
+           the cursor based on the row's vertical midpoint. Visual
+           feedback via .drop-above / .drop-below pseudo-classes that
+           paint a 2px accent bar on the relevant edge. */
+        let draggedRow = null;
+        const clearDropMarkers = () => {
+            rows().forEach(tr => tr.classList.remove('drop-above', 'drop-below'));
+        };
+
+        rows().forEach(tr => {
+            const handle = tr.querySelector('.songbook-drag-handle');
+            if (!handle) return;
+
+            /* Only enable draggable while the user is pressing the
+               handle so clicking elsewhere on the row (e.g. into the
+               Order input) doesn't kick off an accidental drag. */
+            handle.addEventListener('mousedown', () => { tr.draggable = true; });
+            tr.addEventListener('mouseup',   () => { tr.draggable = false; });
+
+            tr.addEventListener('dragstart', (e) => {
+                draggedRow = tr;
+                tr.classList.add('dragging');
+                e.dataTransfer.effectAllowed = 'move';
+                /* Set a payload so Firefox actually fires drag events. */
+                e.dataTransfer.setData('text/plain', tr.dataset.rowId || '');
+            });
+
+            tr.addEventListener('dragover', (e) => {
+                if (!draggedRow || draggedRow === tr) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                const rect = tr.getBoundingClientRect();
+                const above = e.clientY < (rect.top + rect.height / 2);
+                clearDropMarkers();
+                tr.classList.add(above ? 'drop-above' : 'drop-below');
+            });
+
+            tr.addEventListener('drop', (e) => {
+                if (!draggedRow || draggedRow === tr) return;
+                e.preventDefault();
+                const rect = tr.getBoundingClientRect();
+                const above = e.clientY < (rect.top + rect.height / 2);
+                if (above)  tr.parentNode.insertBefore(draggedRow, tr);
+                else        tr.parentNode.insertBefore(draggedRow, tr.nextSibling);
+            });
+
+            tr.addEventListener('dragend', () => {
+                if (draggedRow) draggedRow.classList.remove('dragging');
+                draggedRow = null;
+                tr.draggable = false;
+                clearDropMarkers();
+                renumber();
+            });
+        });
+    })();
     </script>
 
     <!-- Affiliation typeahead (#670).
