@@ -1585,7 +1585,7 @@ $currentUser = getCurrentUser();
                                 <span class="badge bg-warning text-dark" style="min-width:7rem;">${label}</span>
                                 <span class="text-muted small flex-grow-1">${count} missing</span>
                                 <a class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener"
-                                   href="/request-a-song?songbook=${encodeURIComponent(bookId)}&number=${run[0]}">
+                                   href="/request?songbook=${encodeURIComponent(bookId)}&number=${run[0]}">
                                     <i class="bi bi-lightbulb me-1" aria-hidden="true"></i>Log request
                                 </a>
                             </div>`;

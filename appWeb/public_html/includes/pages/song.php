@@ -581,9 +581,10 @@ unset($_t);
 
     <!-- Report missing song link — points at the dedicated form page (#656)
          rather than dumping the user at the bottom of the long /help
-         article where the request form used to live. -->
+         article where the request form used to live. URL is /request (#658)
+         with /request-a-song retained as a back-compat alias. -->
     <div class="mt-3">
-        <a href="/request-a-song" data-navigate="request-a-song" class="text-muted small text-decoration-none">
+        <a href="/request" data-navigate="request" class="text-muted small text-decoration-none">
             <i class="fa-solid fa-flag me-1" aria-hidden="true"></i>
             Report a missing song or suggest a correction
         </a>
