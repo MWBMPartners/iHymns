@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS tblSongbooks (
     PublicationYear VARCHAR(50)     NULL DEFAULT NULL COMMENT 'Year / edition range (free-form: 1986, 1986-2003, 2nd edition 2011) (#502)',
     Copyright       VARCHAR(500)    NULL DEFAULT NULL COMMENT 'Copyright notice for the collection as a whole (#502)',
     Affiliation     VARCHAR(120)    NULL DEFAULT NULL COMMENT 'Denominational / religious affiliation; backed by tblSongbookAffiliations registry (#670)',
-    Language        VARCHAR(10)     NULL DEFAULT NULL COMMENT 'Optional ISO 639-1 code; NULL = not specified. Mirrors tblSongs.Language without the FK or NOT NULL — soft validation via the tblLanguages dropdown (#673)',
+    Language        VARCHAR(35)     NULL DEFAULT NULL COMMENT 'Optional IETF BCP 47 tag (language[-script][-region], e.g. en, pt-BR, zh-Hans-CN); NULL = not specified. Soft validation via the composite picker dropdowns; widened from VARCHAR(10) to fit script+region subtags (#681)',
 
     /* Bibliographic + authority-control identifiers (#672). All
        optional, all VARCHAR — no FKs, no CHECK constraints. Curators
@@ -100,7 +100,7 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     Title               VARCHAR(500)    NOT NULL,
     SongbookAbbr        VARCHAR(10)     NOT NULL COMMENT 'FK to tblSongbooks.Abbreviation',
     SongbookName        VARCHAR(255)    NOT NULL COMMENT 'Denormalised songbook name for convenience',
-    Language            VARCHAR(10)     NOT NULL DEFAULT 'en',
+    Language            VARCHAR(35)     NOT NULL DEFAULT 'en' COMMENT 'IETF BCP 47 tag (language[-script][-region]); widened from VARCHAR(10) to fit script + region subtags (#681)',
     Copyright           VARCHAR(500)    NOT NULL DEFAULT '',
     TuneName            VARCHAR(120)    NULL DEFAULT NULL COMMENT 'Traditional tune name, e.g. HYFRYDOL, OLD HUNDREDTH (#497)',
     Ccli                VARCHAR(50)     NOT NULL DEFAULT '' COMMENT 'CCLI Song Number',
@@ -770,6 +770,37 @@ CREATE TABLE IF NOT EXISTS tblLanguages (
 
 
 -- ----------------------------------------------------------------------------
+-- tblScripts (#681)
+-- Reference table for ISO 15924 four-letter script codes (e.g. Latn, Cyrl,
+-- Hans, Hant, Arab). Used as the optional second subtag in an IETF BCP 47
+-- language tag (e.g. zh-Hans, sr-Latn). Curators pick from this list via the
+-- songbook + song editors' composite IETF language picker.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblScripts (
+    Code            VARCHAR(4)      NOT NULL PRIMARY KEY COMMENT 'ISO 15924 four-letter code (Title Case: Latn, Cyrl, Hans, …)',
+    Name            VARCHAR(100)    NOT NULL COMMENT 'English name (e.g. Latin, Cyrillic, Han Simplified)',
+    NativeName      VARCHAR(100)    NOT NULL DEFAULT '' COMMENT 'Native or contextual name where useful (e.g. 简体)',
+    IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblRegions (#681)
+-- Reference table for ISO 3166-1 alpha-2 region codes (e.g. GB, US, BR, PT).
+-- Used as the optional third subtag in an IETF BCP 47 language tag (e.g.
+-- pt-BR, en-GB). VARCHAR(3) leaves room for the M.49 numeric area codes
+-- (e.g. 419 for Latin America) that BCP 47 also accepts.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblRegions (
+    Code            VARCHAR(3)      NOT NULL PRIMARY KEY COMMENT 'ISO 3166-1 alpha-2 (uppercase) or M.49 numeric area code',
+    Name            VARCHAR(150)    NOT NULL COMMENT 'English name (e.g. United Kingdom, Brazil)',
+    IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
 -- tblSongTranslations
 -- Links a song to its translation in another language.
 -- Each translation is itself a song record in tblSongs.
@@ -778,7 +809,7 @@ CREATE TABLE IF NOT EXISTS tblSongTranslations (
     Id                  INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
     SourceSongId        VARCHAR(20)     NOT NULL COMMENT 'Original song ID',
     TranslatedSongId    VARCHAR(20)     NOT NULL COMMENT 'Translated song ID',
-    TargetLanguage      VARCHAR(10)     NOT NULL COMMENT 'ISO 639-1 code of translation',
+    TargetLanguage      VARCHAR(35)     NOT NULL COMMENT 'IETF BCP 47 tag of translation; widened from VARCHAR(10) to align with tblSongs.Language (#681)',
     Translator          VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Translator name(s)',
     Verified            TINYINT(1)      NOT NULL DEFAULT 0,
     CreatedAt           TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -813,7 +844,7 @@ CREATE TABLE IF NOT EXISTS tblSongRequests (
     Title           VARCHAR(500)    NOT NULL COMMENT 'Requested song title',
     Songbook        VARCHAR(100)    NOT NULL DEFAULT '' COMMENT 'Songbook name or abbreviation (if known)',
     SongNumber      VARCHAR(20)     NOT NULL DEFAULT '' COMMENT 'Song number (if known)',
-    Language        VARCHAR(10)     NOT NULL DEFAULT 'en' COMMENT 'Language of the requested song',
+    Language        VARCHAR(35)     NOT NULL DEFAULT 'en' COMMENT 'IETF BCP 47 tag of requested song; widened from VARCHAR(10) for consistency (#681)',
     Details         TEXT            NOT NULL DEFAULT ('') COMMENT 'Additional info (first line of lyrics, etc.)',
     ContactEmail    VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Optional email for follow-up',
     UserId          INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK to tblUsers (NULL for anonymous)',
