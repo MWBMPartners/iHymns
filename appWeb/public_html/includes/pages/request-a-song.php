@@ -5,9 +5,31 @@
  *
  * Public-facing form that writes to tblSongRequests. Admins can
  * later triage submissions via the admin dashboard (follow-up).
+ *
+ * Deep-link prefill (#666): the editor's missing-numbers panel and
+ * the standalone admin missing-numbers page send users here with
+ * `?songbook=<ABBR>&number=<n>` query params. The router forwards
+ * those through to /api?page=request, so they arrive in $_GET on
+ * this partial — we echo them straight into the input value
+ * attributes so prefill works the moment the HTML reaches the
+ * browser, without depending on the inline-module rehydration
+ * that proved racy in #666 (SW caches + module-import timing).
  */
 
 declare(strict_types=1);
+
+/* Read + length-cap the prefill values to match the inputs' own
+   maxlength attributes so a crafted URL can't bypass the form's
+   caps. htmlspecialchars below makes the values safe to interpolate
+   inside the value="" attribute regardless of content. */
+$_prefillSongbook = isset($_GET['songbook']) ? trim((string)$_GET['songbook']) : '';
+if ($_prefillSongbook !== '') {
+    $_prefillSongbook = mb_substr($_prefillSongbook, 0, 100);
+}
+$_prefillNumber = isset($_GET['number']) ? trim((string)$_GET['number']) : '';
+if ($_prefillNumber !== '') {
+    $_prefillNumber = mb_substr($_prefillNumber, 0, 500);
+}
 
 ?>
 <section class="page-request-a-song" aria-label="Request a song">
@@ -40,12 +62,14 @@ declare(strict_types=1);
             <div class="col-md-8">
                 <label for="request-title" class="form-label">Song title <span class="text-danger">*</span></label>
                 <input type="text" class="form-control" id="request-title" name="title"
-                       required maxlength="500" autocomplete="off">
+                       required maxlength="500" autocomplete="off"
+                       value="<?= htmlspecialchars($_prefillNumber, ENT_QUOTES, 'UTF-8') ?>">
             </div>
             <div class="col-md-4">
                 <label for="request-songbook" class="form-label">Songbook <span class="text-muted">(optional)</span></label>
                 <input type="text" class="form-control" id="request-songbook" name="songbook"
-                       maxlength="100" placeholder="e.g. Mission Praise" autocomplete="off">
+                       maxlength="100" placeholder="e.g. Mission Praise" autocomplete="off"
+                       value="<?= htmlspecialchars($_prefillSongbook, ENT_QUOTES, 'UTF-8') ?>">
             </div>
             <div class="col-md-12">
                 <label for="request-details" class="form-label">Any extra details? <span class="text-muted">(first line of lyrics, writer name, etc.)</span></label>
@@ -100,23 +124,21 @@ declare(strict_types=1);
         const btn      = document.getElementById('request-submit-btn');
         const countEl  = document.getElementById('request-queued-count');
 
-        /* Prefill from query string (#660) — used by the editor's
-           missing-numbers panel and the standalone missing-numbers
-           page when an editor wants to log a request for a numbered
-           gap. Only writes into a field if the param is present and
-           non-empty; cap lengths to match the input maxlengths so a
-           crafted URL can't bypass the form's own caps. */
+        /* Prefill fallback (#660, #666). The PHP partial above already
+           bakes ?songbook= and ?number= into the input value="" attrs,
+           so by the time this script runs the fields are already
+           populated. This block is a defence-in-depth fallback for
+           edge cases where the partial was served from a cache that
+           predates the server-side bake — fill in fields that are
+           still empty, but never overwrite a value the user (or the
+           server) has already set. */
         const qp = new URLSearchParams(window.location.search);
         const prefillSongbook = (qp.get('songbook') || '').trim().slice(0, 100);
         const prefillNumber   = (qp.get('number')   || '').trim().slice(0, 500);
-        if (prefillSongbook) {
+        if (prefillSongbook && !form.elements['songbook'].value) {
             form.elements['songbook'].value = prefillSongbook;
         }
-        if (prefillNumber) {
-            /* The missing-numbers tools pass the song number; populate
-               the title field with it so the editor sees what number
-               they're requesting and only has to add the actual song
-               title. */
+        if (prefillNumber && !form.elements['title'].value) {
             form.elements['title'].value = prefillNumber;
         }
 
