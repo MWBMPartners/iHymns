@@ -1396,6 +1396,17 @@ body.banner-visible.search-open .main-content {
     box-shadow: 0 0 0 2px var(--accent-solid);
 }
 
+/* Pin the leading <i> in each help accordion-button to a fixed 1.25em
+   slot so the section labels start at the same x-position regardless
+   of which FA glyph leads the row (fa-rocket vs fa-heart vs fa-keyboard
+   etc. all have slightly different natural widths). Same convention as
+   the .dropdown-item rule above (#647); see #654. */
+.accordion-help .accordion-button > i:first-child {
+    display: inline-block;
+    width: 1.25em;
+    text-align: center;
+}
+
 /* ---------------------------------------------------------------------------
    About list (settings page)
    --------------------------------------------------------------------------- */
