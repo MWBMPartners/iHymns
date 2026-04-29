@@ -198,11 +198,22 @@ export class Router {
             case 'privacy':
                 return { page: 'privacy', params: {} };
             case 'request':
-            case 'request-a-song':
+            case 'request-a-song': {
                 /* /request is the canonical URL (#658). /request-a-song
                    stays as a back-compat alias so older bookmarks /
-                   shared links / offline-queue submissions still resolve. */
-                return { page: 'request', params: {} };
+                   shared links / offline-queue submissions still resolve.
+                   Forward `?songbook=` and `?number=` through to the API
+                   so the partial can bake them into the form server-side
+                   (#666) — relying on a client-side prefill alone proved
+                   racy across SW caches + module-import timing. */
+                const sp = new URLSearchParams(window.location.search || '');
+                const params = {};
+                const sb = (sp.get('songbook') || '').trim();
+                const num = (sp.get('number')   || '').trim();
+                if (sb)  params.songbook = sb.slice(0, 100);
+                if (num) params.number   = num.slice(0, 500);
+                return { page: 'request', params };
+            }
             case 'login':
                 return { page: 'login', params: {} };
             default:
@@ -253,6 +264,15 @@ export class Router {
         /* Person page (#588) carries `slug`, not `id`. */
         if (params.slug) {
             url.searchParams.set('slug', params.slug);
+        }
+        /* Request-a-song deep-link prefill (#666) — forwarded straight
+           through to the partial so it can echo them into the input
+           value attributes server-side. */
+        if (params.songbook) {
+            url.searchParams.set('songbook', params.songbook);
+        }
+        if (params.number) {
+            url.searchParams.set('number', params.number);
         }
 
         return url.toString();
