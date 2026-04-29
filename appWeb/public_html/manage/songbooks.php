@@ -188,6 +188,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pubYear    = trim((string)($_POST['publication_year'] ?? '')) ?: null;
                 $copyright  = trim((string)($_POST['copyright']        ?? '')) ?: null;
                 $affiliation= trim((string)($_POST['affiliation']      ?? '')) ?: null;
+                /* #673 — optional language. Empty selection saves as NULL.
+                   Capped to the column width so a tampered post can't
+                   blow up the INSERT. */
+                $language   = trim((string)($_POST['language']         ?? '')) ?: null;
+                if ($language !== null) $language = mb_substr($language, 0, 10);
 
                 /* #672 — bibliographic + authority-control identifiers.
                    All nullable, all VARCHAR. trim()→null normalises
@@ -223,28 +228,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'INSERT INTO tblSongbooks
                         (Abbreviation, Name, DisplayOrder, Colour,
                          IsOfficial, Publisher, PublicationYear, Copyright, Affiliation,
+                         Language,
                          WebsiteUrl, InternetArchiveUrl, WikipediaUrl, WikidataId,
                          OclcNumber, OcnNumber, LcpNumber, Isbn, ArkId, IsniId,
                          ViafId, Lccn, LcClass)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                             ?,
                              ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
                 );
                 /* Types breakdown:
                      Abbr(s), Name(s), DisplayOrder(i), Colour(s),               4
                      IsOfficial(i), Publisher(s), PubYear(s), Copyright(s),
                        Affiliation(s),                                            5
+                     Language(s) — #673                                            1
                      Website(s), IA(s), Wikipedia(s), Wikidata(s),
                        OCLC(s), OCN(s), LCP(s), ISBN(s), ARK(s), ISNI(s),
                        VIAF(s), LCCN(s), LcClass(s)                              13
                                                                             ----
-                                                                              22
+                                                                              23
                    mysqli passes NULL correctly when a bound variable is null
                    even with type 's'. */
                 $orderInt = (int)($order ?: 0);
                 $stmt->bind_param(
-                    'ssisissssssssssssssssss',
+                    'ssisisssssssssssssssssss',
                     $abbr, $name, $orderInt, $colour,
                     $isOfficial, $publisher, $pubYear, $copyright, $affiliation,
+                    $language,
                     $websiteUrl, $iaUrl, $wikipediaUrl, $wikidataId,
                     $oclcNumber, $ocnNumber, $lcpNumber, $isbn, $arkId, $isniId,
                     $viafId, $lccn, $lcClass
@@ -262,6 +271,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'publication_year'=> $pubYear,
                     'copyright'       => $copyright,
                     'affiliation'     => $affiliation,
+                    'language'        => $language,
                     /* #672 — log only the keys that have a value, so
                        empty bibliographic blocks don't bloat the
                        activity-log row. */
@@ -301,6 +311,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pubYear     = trim((string)($_POST['publication_year'] ?? '')) ?: null;
                 $copyright   = trim((string)($_POST['copyright']        ?? '')) ?: null;
                 $affiliation = trim((string)($_POST['affiliation']      ?? '')) ?: null;
+                /* #673 — optional language. */
+                $language    = trim((string)($_POST['language']         ?? '')) ?: null;
+                if ($language !== null) $language = mb_substr($language, 0, 10);
 
                 /* #672 — bibliographic + authority-control identifiers. */
                 $websiteUrl   = trim((string)($_POST['website_url']         ?? '')) ?: null;
@@ -325,6 +338,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $existing = $db->prepare(
                     'SELECT Abbreviation, Name, DisplayOrder, Colour, IsOfficial,
                             Publisher, PublicationYear, Copyright, Affiliation,
+                            Language,
                             WebsiteUrl, InternetArchiveUrl, WikipediaUrl, WikidataId,
                             OclcNumber, OcnNumber, LcpNumber, Isbn, ArkId, IsniId,
                             ViafId, Lccn, LcClass
@@ -359,6 +373,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             SET Name = ?, Colour = ?, DisplayOrder = ?,
                                 IsOfficial = ?, Publisher = ?,
                                 PublicationYear = ?, Copyright = ?, Affiliation = ?,
+                                Language = ?,
                                 WebsiteUrl = ?, InternetArchiveUrl = ?,
                                 WikipediaUrl = ?, WikidataId = ?,
                                 OclcNumber = ?, OcnNumber = ?, LcpNumber = ?,
@@ -370,15 +385,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                          Name(s), Colour(s), Order(i),                   3
                          IsOfficial(i), Publisher(s), Year(s), Copy(s),
                            Affiliation(s),                               5
+                         Language(s) — #673                              1
                          13 × bibliographic-identifier strings           13
                          Id(i)                                            1
                                                                         ----
-                                                                         22 */
+                                                                         23 */
                     $orderInt = (int)($order ?: 0);
                     $stmt->bind_param(
-                        'ssiissssssssssssssssssi',
+                        'ssiisssssssssssssssssssi',
                         $name, $colour, $orderInt,
                         $isOfficial, $publisher, $pubYear, $copyright, $affiliation,
+                        $language,
                         $websiteUrl, $iaUrl, $wikipediaUrl, $wikidataId,
                         $oclcNumber, $ocnNumber, $lcpNumber, $isbn, $arkId, $isniId,
                         $viafId, $lccn, $lcClass,
@@ -416,6 +433,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'PublicationYear'   => $pubYear,
                         'Copyright'         => $copyright,
                         'Affiliation'       => $affiliation,
+                        'Language'          => $language,
                         'WebsiteUrl'        => $websiteUrl,
                         'InternetArchiveUrl'=> $iaUrl,
                         'WikipediaUrl'      => $wikipediaUrl,
@@ -538,6 +556,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
+/* ----- Active languages for the songbook editor's optional
+ *       Language dropdown (#673). Sourced from tblLanguages so the
+ *       admin doesn't have to hard-code ISO codes. We pull this
+ *       once per page-load and pass it through to both the create
+ *       form and the edit modal. Best-effort — if tblLanguages is
+ *       missing (very old install) we fall back to a minimal English
+ *       option so the dropdown at least has something selectable.
+ * ----- */
+$languages = [];
+try {
+    $stmt = $db->prepare(
+        'SELECT Code, Name, NativeName
+           FROM tblLanguages
+          WHERE IsActive = 1
+          ORDER BY Name ASC'
+    );
+    $stmt->execute();
+    $languages = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+} catch (\Throwable $e) {
+    error_log('[manage/songbooks.php] could not load tblLanguages: ' . $e->getMessage());
+    $languages = [['Code' => 'en', 'Name' => 'English', 'NativeName' => 'English']];
+}
+
 /* ----- GET: list ----- */
 $rows = [];
 try {
@@ -565,10 +607,30 @@ try {
              b.OclcNumber, b.OcnNumber, b.LcpNumber, b.Isbn, b.ArkId, b.IsniId,
              b.ViafId, b.Lccn, b.LcClass'
         : '';
+
+    /* Same probe-then-conditional-SELECT pattern for the #673
+       Language column. A deployment that hasn't run
+       migrate-songbook-language.php yet renders without the
+       column; the edit-modal payload defaults Language to ''. */
+    $hasLangCol = false;
+    try {
+        $probe = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblSongbooks'
+                AND COLUMN_NAME  = 'Language'
+              LIMIT 1"
+        );
+        $probe->execute();
+        $hasLangCol = $probe->get_result()->fetch_row() !== null;
+        $probe->close();
+    } catch (\Throwable $_e) { /* probe failure → fall through */ }
+    $langSelect = $hasLangCol ? ', b.Language' : '';
+
     $stmt = $db->prepare(
         'SELECT b.Id, b.Abbreviation, b.Name, b.SongCount, b.DisplayOrder, b.Colour,
                 b.IsOfficial, b.Publisher, b.PublicationYear,
-                b.Copyright, b.Affiliation' . $bibSelect . ',
+                b.Copyright, b.Affiliation' . $langSelect . $bibSelect . ',
                 COUNT(s.Id) AS ActualSongCount
            FROM tblSongbooks b
            LEFT JOIN tblSongs s ON s.SongbookAbbr = b.Abbreviation
@@ -673,6 +735,9 @@ $csrf = csrfToken();
                                             'publication_year'    => $r['PublicationYear'] ?? '',
                                             'copyright'           => $r['Copyright']       ?? '',
                                             'affiliation'         => $r['Affiliation']     ?? '',
+                                            /* #673 — Language defaults to '' so the dropdown
+                                               picks "— Not specified —" when absent. */
+                                            'language'            => $r['Language']        ?? '',
                                             /* #672 — fields default to '' so a row from a
                                                pre-migration deployment renders cleanly
                                                (the bibSelect probe above gates the SELECT). */
@@ -789,6 +854,26 @@ $csrf = csrfToken();
                            autocomplete="off"
                            maxlength="120"
                            placeholder="e.g. Seventh-day Adventist, Non-denominational">
+                </div>
+            </div>
+            <!-- #673 — optional Language. Sourced from tblLanguages so a curator
+                 doesn't have to remember ISO 639-1 codes. Empty selection saves
+                 as NULL ("not specified") since many curated groupings span
+                 languages. -->
+            <div class="row g-2 mt-2">
+                <div class="col-sm-4">
+                    <label class="form-label small">Language (optional)</label>
+                    <select name="language" class="form-select form-select-sm">
+                        <option value="">— Not specified —</option>
+                        <?php foreach ($languages as $lang): ?>
+                            <option value="<?= htmlspecialchars($lang['Code']) ?>">
+                                <?= htmlspecialchars($lang['Name']) ?>
+                                <?php if ($lang['NativeName'] !== '' && $lang['NativeName'] !== $lang['Name']): ?>
+                                    (<?= htmlspecialchars($lang['NativeName']) ?>)
+                                <?php endif; ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
                 </div>
             </div>
 
@@ -951,6 +1036,27 @@ $csrf = csrfToken();
                             <div class="form-text small">
                                 Type to search existing affiliations or enter a new one — it
                                 will be added to the registry on save (#670).
+                            </div>
+                        </div>
+
+                        <!-- #673 — optional Language. -->
+                        <div class="mb-3">
+                            <label class="form-label">Language (optional)</label>
+                            <select class="form-select" name="language" id="edit-language">
+                                <option value="">— Not specified —</option>
+                                <?php foreach ($languages as $lang): ?>
+                                    <option value="<?= htmlspecialchars($lang['Code']) ?>">
+                                        <?= htmlspecialchars($lang['Name']) ?>
+                                        <?php if ($lang['NativeName'] !== '' && $lang['NativeName'] !== $lang['Name']): ?>
+                                            (<?= htmlspecialchars($lang['NativeName']) ?>)
+                                        <?php endif; ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                            <div class="form-text small">
+                                ISO 639-1 code, sourced from the active rows in
+                                <code>tblLanguages</code>. Leave blank for songbooks
+                                that span multiple languages.
                             </div>
                         </div>
 
@@ -1117,6 +1223,13 @@ $csrf = csrfToken();
             document.getElementById('edit-publication-year').value  = row.publication_year || '';
             document.getElementById('edit-copyright').value         = row.copyright        || '';
             document.getElementById('edit-affiliation').value       = row.affiliation      || '';
+
+            /* #673 — optional Language. The <select>'s value is set
+               directly; if the row's saved code isn't in the active
+               tblLanguages list the dropdown silently falls back to
+               "— Not specified —" (a deactivated language deserves a
+               curator's manual review, not a silent reset). */
+            document.getElementById('edit-language').value          = row.language         || '';
 
             /* #672 — bibliographic + authority-control identifiers. The
                row payload normalises every key to '' when the source

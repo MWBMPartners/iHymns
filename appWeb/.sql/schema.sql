@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS tblSongbooks (
     PublicationYear VARCHAR(50)     NULL DEFAULT NULL COMMENT 'Year / edition range (free-form: 1986, 1986-2003, 2nd edition 2011) (#502)',
     Copyright       VARCHAR(500)    NULL DEFAULT NULL COMMENT 'Copyright notice for the collection as a whole (#502)',
     Affiliation     VARCHAR(120)    NULL DEFAULT NULL COMMENT 'Denominational / religious affiliation; backed by tblSongbookAffiliations registry (#670)',
+    Language        VARCHAR(10)     NULL DEFAULT NULL COMMENT 'Optional ISO 639-1 code; NULL = not specified. Mirrors tblSongs.Language without the FK or NOT NULL — soft validation via the tblLanguages dropdown (#673)',
 
     /* Bibliographic + authority-control identifiers (#672). All
        optional, all VARCHAR — no FKs, no CHECK constraints. Curators

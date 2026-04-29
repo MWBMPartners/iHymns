@@ -248,7 +248,8 @@ class SongData
             return $books;
         }
 
-        $bibSelect = $this->_songbookBibSelect();
+        $bibSelect  = $this->_songbookBibSelect();
+        $langSelect = $this->_songbookLanguageSelect();
         $stmt = $this->db->prepare(
             "SELECT Abbreviation AS id, Name AS name, SongCount AS songCount,
                     Colour AS colour,
@@ -257,6 +258,7 @@ class SongData
                     PublicationYear AS publicationYear,
                     Copyright       AS copyright,
                     Affiliation     AS affiliation
+                    {$langSelect}
                     {$bibSelect}
              FROM tblSongbooks
              ORDER BY Name ASC"
@@ -316,6 +318,35 @@ class SongData
     private ?string $_bibSelectCache = null;
 
     /**
+     * Same shape as _songbookBibSelect() but for the optional Language
+     * column added in #673. Probe-once cache so getSongbooks() and
+     * getSongbook() called in the same request only pay one
+     * INFORMATION_SCHEMA round-trip between them.
+     */
+    private function _songbookLanguageSelect(): string
+    {
+        if (isset($this->_langSelectCache)) {
+            return $this->_langSelectCache;
+        }
+        $hasLangCol = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongbooks'
+                    AND COLUMN_NAME  = 'Language'
+                  LIMIT 1"
+            );
+            $probe->execute();
+            $hasLangCol = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* probe failure → no Language tail */ }
+        $this->_langSelectCache = $hasLangCol ? ', Language AS language' : '';
+        return $this->_langSelectCache;
+    }
+    private ?string $_langSelectCache = null;
+
+    /**
      * Get a single songbook by its abbreviation ID.
      *
      * @param string $id Songbook abbreviation (e.g., 'CP', 'MP')
@@ -330,7 +361,8 @@ class SongData
             }
             return null;
         }
-        $bibSelect = $this->_songbookBibSelect();
+        $bibSelect  = $this->_songbookBibSelect();
+        $langSelect = $this->_songbookLanguageSelect();
         $stmt = $this->db->prepare(
             "SELECT Abbreviation AS id, Name AS name, SongCount AS songCount,
                     Colour AS colour,
@@ -339,6 +371,7 @@ class SongData
                     PublicationYear AS publicationYear,
                     Copyright       AS copyright,
                     Affiliation     AS affiliation
+                    {$langSelect}
                     {$bibSelect}
              FROM tblSongbooks
              WHERE Abbreviation = ?"

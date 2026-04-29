@@ -207,6 +207,7 @@ if ($action !== '') {
         'organisation-licences' => 'migrate-organisation-licences.php',
         'songbook-affiliations' => 'migrate-songbook-affiliations.php',
         'songbook-bibliographic' => 'migrate-songbook-bibliographic.php',
+        'songbook-language'      => 'migrate-songbook-language.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -820,6 +821,24 @@ if ($hasCredentials && defined('DB_HOST')) {
                         </p>
                         <a href="?action=songbook-bibliographic" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run Songbook Bibliographic Migration
+                        </a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">3n. Songbook language column (#673)</h5>
+                        <p class="card-text text-secondary small">
+                            Adds an optional <code>Language</code> column to
+                            <code>tblSongbooks</code> (ISO 639-1 code, NULLable) so a
+                            curator can tag a songbook with its predominant language.
+                            Mirrors <code>tblSongs.Language</code> without the NOT NULL
+                            or DEFAULT — empty selection saves as NULL. Idempotent —
+                            safe to re-run.
+                        </p>
+                        <a href="?action=songbook-language" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run Songbook Language Migration
                         </a>
                     </div>
                 </div>
