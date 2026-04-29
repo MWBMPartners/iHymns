@@ -301,6 +301,34 @@ $validateColour = function (string $c): ?string {
     return preg_match('/^#[0-9A-Fa-f]{6}$/', $c) ? null : 'Colour must be a #RRGGBB hex value (or blank).';
 };
 
+/**
+ * Validate an IETF BCP 47 language tag (#681). Empty is fine
+ * (NULL = "not specified" for songbooks). Otherwise must match
+ * the v1 grammar: lowercase 2-3 letter language, optional 4-letter
+ * Title Case script, optional 2-letter UPPER region or 3-digit
+ * numeric area code. Variants / extensions / private-use are out
+ * of scope for v1 per the issue brief.
+ *
+ * Returns null if valid (empty or matching), an error message
+ * string otherwise. Caller is responsible for calling mb_substr
+ * to cap to the column width regardless — the regex doesn't bound
+ * length on its own.
+ */
+$validateBcp47 = function (string $tag): ?string {
+    if ($tag === '') return null;
+    if (strlen($tag) > 35) {
+        return 'Language tag must be 35 characters or fewer.';
+    }
+    /* The full grammar of BCP 47 is much richer; this regex covers
+       the in-scope subset (#681). Anything beyond is rejected so a
+       tampered POST can't smuggle private-use subtags into a column
+       the rest of the system assumes is well-formed. */
+    if (!preg_match('/^[a-z]{2,3}(-[A-Z][a-z]{3})?(-[A-Z]{2}|-[0-9]{3})?$/', $tag)) {
+        return 'Language tag must be a valid IETF BCP 47 form (e.g. en, pt-BR, zh-Hans-CN).';
+    }
+    return null;
+};
+
 /* ----- POST actions ----- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
@@ -326,11 +354,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pubYear    = trim((string)($_POST['publication_year'] ?? '')) ?: null;
                 $copyright  = trim((string)($_POST['copyright']        ?? '')) ?: null;
                 $affiliation= trim((string)($_POST['affiliation']      ?? '')) ?: null;
-                /* #673 — optional language. Empty selection saves as NULL.
-                   Capped to the column width so a tampered post can't
-                   blow up the INSERT. */
+                /* #673 / #681 — optional language. Empty selection saves
+                   as NULL. Now widened to 35 chars to fit a full IETF
+                   BCP 47 tag (lang[-Script][-Region]) and validated
+                   against the v1 grammar. */
                 $language   = trim((string)($_POST['language']         ?? '')) ?: null;
-                if ($language !== null) $language = mb_substr($language, 0, 10);
+                if ($language !== null) {
+                    $language = mb_substr($language, 0, 35);
+                    if ($e = $validateBcp47($language)) { $error = $e; break; }
+                }
 
                 /* #672 — bibliographic + authority-control identifiers.
                    All nullable, all VARCHAR. trim()→null normalises
@@ -449,9 +481,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pubYear     = trim((string)($_POST['publication_year'] ?? '')) ?: null;
                 $copyright   = trim((string)($_POST['copyright']        ?? '')) ?: null;
                 $affiliation = trim((string)($_POST['affiliation']      ?? '')) ?: null;
-                /* #673 — optional language. */
+                /* #673 / #681 — optional language; full IETF BCP 47 tag. */
                 $language    = trim((string)($_POST['language']         ?? '')) ?: null;
-                if ($language !== null) $language = mb_substr($language, 0, 10);
+                if ($language !== null) {
+                    $language = mb_substr($language, 0, 35);
+                    if ($e = $validateBcp47($language)) { $error = $e; break; }
+                }
 
                 /* #672 — bibliographic + authority-control identifiers. */
                 $websiteUrl   = trim((string)($_POST['website_url']         ?? '')) ?: null;
@@ -1029,26 +1064,19 @@ $csrf = csrfToken();
                            placeholder="e.g. Seventh-day Adventist, Non-denominational">
                 </div>
             </div>
-            <!-- #673 — optional Language. Sourced from tblLanguages so a curator
-                 doesn't have to remember ISO 639-1 codes. Empty selection saves
-                 as NULL ("not specified") since many curated groupings span
-                 languages. -->
-            <div class="row g-2 mt-2">
-                <div class="col-sm-4">
-                    <label class="form-label small">Language (optional)</label>
-                    <select name="language" class="form-select form-select-sm">
-                        <option value="">— Not specified —</option>
-                        <?php foreach ($languages as $lang): ?>
-                            <option value="<?= htmlspecialchars($lang['Code']) ?>">
-                                <?= htmlspecialchars($lang['Name']) ?>
-                                <?php if ($lang['NativeName'] !== '' && $lang['NativeName'] !== $lang['Name']): ?>
-                                    (<?= htmlspecialchars($lang['NativeName']) ?>)
-                                <?php endif; ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-            </div>
+            <!-- #681 — IETF BCP 47 composite picker. Replaces the
+                 single ISO 639-1 dropdown from #673. The shared
+                 partial under manage/includes/partials/ renders three
+                 inputs (Language, Script, Region) plus a hidden
+                 'language' field that holds the composed tag. -->
+            <?php
+                $idPrefix = 'create-songbook';
+                $name     = 'language';
+                $tag      = '';
+                $label    = 'Language (IETF BCP 47, optional)';
+                $help     = 'Empty = "not specified" (multi-lingual collection).';
+                require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'ietf-language-picker.php';
+            ?>
 
             <!-- #672 — collapsed by default; the create form already has 8 visible
                  fields and most curators don't need the bibliographic block on a
@@ -1212,26 +1240,18 @@ $csrf = csrfToken();
                             </div>
                         </div>
 
-                        <!-- #673 — optional Language. -->
-                        <div class="mb-3">
-                            <label class="form-label">Language (optional)</label>
-                            <select class="form-select" name="language" id="edit-language">
-                                <option value="">— Not specified —</option>
-                                <?php foreach ($languages as $lang): ?>
-                                    <option value="<?= htmlspecialchars($lang['Code']) ?>">
-                                        <?= htmlspecialchars($lang['Name']) ?>
-                                        <?php if ($lang['NativeName'] !== '' && $lang['NativeName'] !== $lang['Name']): ?>
-                                            (<?= htmlspecialchars($lang['NativeName']) ?>)
-                                        <?php endif; ?>
-                                    </option>
-                                <?php endforeach; ?>
-                            </select>
-                            <div class="form-text small">
-                                ISO 639-1 code, sourced from the active rows in
-                                <code>tblLanguages</code>. Leave blank for songbooks
-                                that span multiple languages.
-                            </div>
-                        </div>
+                        <!-- #681 — IETF BCP 47 composite picker (edit modal).
+                             Renders empty here; openEditModal() below calls
+                             editIetfPicker.setTag(row.language) on click to
+                             pre-fill the three inputs from the saved tag. -->
+                        <?php
+                            $idPrefix = 'edit-songbook';
+                            $name     = 'language';
+                            $tag      = '';
+                            $label    = 'Language (IETF BCP 47, optional)';
+                            $help     = 'Empty = "not specified" (multi-lingual collection).';
+                            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'ietf-language-picker.php';
+                        ?>
 
                         <!-- #672 — collapsible "Online links" + "Authority identifiers".
                              Closed by default so the modal still opens at the same height
@@ -1397,12 +1417,15 @@ $csrf = csrfToken();
             document.getElementById('edit-copyright').value         = row.copyright        || '';
             document.getElementById('edit-affiliation').value       = row.affiliation      || '';
 
-            /* #673 — optional Language. The <select>'s value is set
-               directly; if the row's saved code isn't in the active
-               tblLanguages list the dropdown silently falls back to
-               "— Not specified —" (a deactivated language deserves a
-               curator's manual review, not a silent reset). */
-            document.getElementById('edit-language').value          = row.language         || '';
+            /* #681 — IETF BCP 47 composite picker. The picker's
+               setTag() decomposes the saved tag and pre-fills the
+               three inputs (with friendly names looked up from the
+               typeahead endpoints). Falls through silently if the
+               picker isn't booted yet — an empty saved tag opens
+               the modal with all three fields blank. */
+            if (typeof window.editIetfPicker?.setTag === 'function') {
+                window.editIetfPicker.setTag(row.language || '');
+            }
 
             /* #672 — bibliographic + authority-control identifiers. The
                row payload normalises every key to '' when the source
@@ -1439,6 +1462,19 @@ $csrf = csrfToken();
     <script type="module">
         import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
         bootSortableTables();
+    </script>
+
+    <!-- IETF BCP 47 composite language picker (#681). Boots the
+         create-form picker on page load (always blank initially)
+         and the edit-modal picker on first edit click — exposing
+         the latter as window.editIetfPicker so openEditModal() can
+         call setTag() with the row's saved tag. -->
+    <script type="module">
+        import { bootIetfLanguagePicker } from '/js/modules/ietf-language-picker.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/ietf-language-picker.js') ?>';
+        const createPicker = document.querySelector('[data-ietf-picker-id="create-songbook"]');
+        if (createPicker) bootIetfLanguagePicker(createPicker);
+        const editPicker   = document.querySelector('[data-ietf-picker-id="edit-songbook"]');
+        if (editPicker)   window.editIetfPicker = bootIetfLanguagePicker(editPicker);
     </script>
 
     <!-- Drag-and-drop reorder + Sort by Name/Abbr presets (#674).
