@@ -16,9 +16,16 @@ if (needsSetup()) {
     exit;
 }
 
-/* Already logged in? Go to editor */
+/* Already logged in? Go to the Dashboard (#693). The post-login
+   default used to be /manage/editor/, but that surprised curators who
+   clicked "Manage" from the brand dropdown expecting the admin
+   Dashboard — they kept landing on the Song Editor on first visit
+   (when no $_SESSION['redirect_after_login'] was queued by an upstream
+   requireAuth bounce). The Dashboard is the correct landing surface
+   for "Manage", and curators who specifically want the editor have
+   the Song Editor card a single click away. */
 if (isAuthenticated()) {
-    $redirect = $_SESSION['redirect_after_login'] ?? '/manage/editor/';
+    $redirect = $_SESSION['redirect_after_login'] ?? '/manage/';
     unset($_SESSION['redirect_after_login']);
     header('Location: ' . $redirect);
     exit;
@@ -46,7 +53,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } else {
         $user = attemptLogin($username, $password);
         if ($user) {
-            $redirect = $_SESSION['redirect_after_login'] ?? '/manage/editor/';
+            /* Default to /manage/ (Dashboard) — see #693 explanation
+               above the matching block at the top of this file. */
+            $redirect = $_SESSION['redirect_after_login'] ?? '/manage/';
             unset($_SESSION['redirect_after_login']);
             header('Location: ' . $redirect);
             exit;
