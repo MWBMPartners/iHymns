@@ -209,6 +209,7 @@ if ($action !== '') {
         'songbook-bibliographic' => 'migrate-songbook-bibliographic.php',
         'songbook-language'      => 'migrate-songbook-language.php',
         'ietf-bcp47-language'    => 'migrate-ietf-bcp47-language.php',
+        'bulk-import-jobs'       => 'migrate-bulk-import-jobs.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -862,6 +863,26 @@ if ($hasCredentials && defined('DB_HOST')) {
                         </p>
                         <a href="?action=ietf-bcp47-language" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run IETF BCP 47 Language Migration
+                        </a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">3p. Bulk import jobs tracking (#676)</h5>
+                        <p class="card-text text-secondary small">
+                            Adds <code>tblBulkImportJobs</code> so the Song Editor's
+                            ZIP import can run asynchronously: the upload returns
+                            <code>{job_id}</code> immediately, the worker keeps
+                            processing in the freed PHP request, and the browser
+                            polls a status endpoint for live progress (% complete).
+                            Lets a curator navigate away while a long import runs;
+                            a notification fires on completion. Idempotent —
+                            safe to re-run.
+                        </p>
+                        <a href="?action=bulk-import-jobs" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run Bulk Import Jobs Migration
                         </a>
                     </div>
                 </div>
