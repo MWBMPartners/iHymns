@@ -56,6 +56,24 @@ $_roleBadge   = match($_role) {
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'admin-links.php';
 $_visibleAdminLinks = visibleAdminLinks($_role);
 
+/* Data-driven hide for `my-organisations` (#707). The entitlement
+   `manage_own_organisation` is open to every signed-in role so the
+   role-based filter alone would surface the link to every user.
+   The actual restriction is "user holds an admin or owner row in
+   tblOrganisationMembers" — checked via userHasOwnOrganisation().
+   system_admin / global_admin keep the link unconditionally
+   because they can manage any org via /manage/organisations. */
+if (!in_array($_role, ['admin', 'global_admin'], true)) {
+    $_userIdForOrgCheck = (int)($currentUser['id'] ?? $currentUser['Id'] ?? 0);
+    if (function_exists('userHasOwnOrganisation')
+        && !userHasOwnOrganisation($_userIdForOrgCheck)) {
+        $_visibleAdminLinks = array_values(array_filter(
+            $_visibleAdminLinks,
+            static fn(array $l): bool => $l[0] !== 'my-organisations'
+        ));
+    }
+}
+
 /* Gravatar/Libravatar/DiceBear avatar URL for the signed-in user
    (#581). The dropdown header carries a 64px copy; the toggle button
    carries a 32px copy so the network/cache pays for both sizes only
