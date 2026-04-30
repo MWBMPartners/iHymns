@@ -538,6 +538,16 @@ export class Router {
                 .catch(err => console.error('[Router] songbook-language-filter init failed:', err));
         }
 
+        /* Persistent bulk-import progress widget (#676). Booted on
+           every SPA navigation so a curator who started an import
+           on /manage/editor and switched to the public app still
+           sees the widget on the home / songbooks / song pages.
+           The module reads the active job_id from localStorage and
+           renders nothing if there's no in-flight import. */
+        import('./bulk-import-progress.js')
+            .then(m => m.bootBulkImportProgressWidget())
+            .catch(err => console.error('[Router] bulk-import-progress init failed:', err));
+
         /* Initialise favourites list on favorites page */
         if (page === 'favorites') {
             this.app.favorites.loadFavoritesList();
