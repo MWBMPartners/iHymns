@@ -76,14 +76,20 @@ import argparse         # Command-line argument parsing
 #                Plain ISO 639-1 ("en", "fr", "pt") is fine; the picker
 #                in the song editor reconciles to a full BCP 47 tag.
 #
-# Sister sites NOT yet covered (different DOM hooks — need a second
-# parser class, tracked under #699 Phase B):
-#   - himne.net (Serbo-Croatian, /HAC-pesmarica?no=N) — 62 KB page
-#     but no block-heading-* / wedding-heading classes
-#   - hristianskipesni.com (Bulgarian)
-#   - hristijanskipesni.com (Macedonian)
-#   - pesmarica.net (Serbian Cyrillic)
-#   - pjesme.net (Croatian)
+# #699 Phase B finding: the South-Slavic sister sites (himne.net /
+# hristianskipesni.com / hristijanskipesni.com / pesmarica.net /
+# pjesme.net) DO use the same parser markers — but their songbook
+# index paths (e.g. /HAC-pesmarica) only render a search form. The
+# actual hymn-display URL is a separate path discovered by submitting
+# the search-by-number form for hymn 1 and observing the redirect:
+#
+#   himne.net               /Himna?no=N              (SR Latin)
+#   hristianskipesni.com    /%D0%9F%D0%B5%D1%81%D0%B5%D0%BD?no=N (BG: Песен)
+#   hristijanskipesni.com   /%D0%9F%D0%B5%D1%81%D0%BD%D0%B0?no=N (MK: Песна)
+#   pesmarica.net           /%D0%A5%D0%B8%D0%BC%D0%BD%D0%B0?no=N (SR Cyrl: Химна)
+#   pjesme.net              /Himna?no=N              (HR)
+#
+# These five sites are wired in below as keys hac / hp / hjp / pes / pj.
 SITES = {
     "sdah": {
         "base_url":  "https://www.sdahymnal.org/Hymn",
@@ -146,6 +152,64 @@ SITES = {
         "label":     "IA",
         "subdir":    "Innario Avventista [IA]",
         "lang":      "it",
+    },
+    # ---- #699 Phase B: sister sites where the *index* paths
+    #      (HAC-pesmarica / Адвентната-песнарка / etc.) only serve a
+    #      search form. The actual hymn-display URL is a separate path
+    #      (Himna / Песен / Песна / Химна), discovered by submitting
+    #      the search-by-number form for hymn 1 and observing the
+    #      redirect target. Once you GET that URL with ?no=N you get
+    #      the same DOM markers (block-heading-three/four/five +
+    #      wedding-heading) the existing parser already handles.
+    #
+    #      Cyrillic-path sites use percent-encoded URLs in the
+    #      base_url so the scraper's `f"{base_url}?no={n}"` doesn't
+    #      need to round-trip through urllib's IRI handling.
+    "hac": {
+        # Serbian/Croatian (Latin script) — Hrišćanske Adventističke
+        # himne via himne.net. The site exposes 3 sub-songbooks but
+        # /Himna?no=N maps to the default (HAC-pesmarica).
+        "base_url":  "https://www.himne.net/Himna",
+        "home_url":  "https://www.himne.net",
+        "label":     "HAC",
+        "subdir":    "HAC pesmarica [HAC]",
+        "lang":      "sr-Latn",   # Serbian, Latin script (composite IETF tag)
+    },
+    "hp": {
+        # Bulgarian — Християнски песни via hristianskipesni.com.
+        # Display URL is /Песен?no=N (BG: "song"), percent-encoded.
+        "base_url":  "https://www.hristianskipesni.com/%D0%9F%D0%B5%D1%81%D0%B5%D0%BD",
+        "home_url":  "https://www.hristianskipesni.com",
+        "label":     "HP",
+        "subdir":    "Hristianski Pesni [HP]",
+        "lang":      "bg",
+    },
+    "hjp": {
+        # Macedonian — Христијански песни via hristijanskipesni.com.
+        # Display URL is /Песна?no=N.
+        "base_url":  "https://www.hristijanskipesni.com/%D0%9F%D0%B5%D1%81%D0%BD%D0%B0",
+        "home_url":  "https://www.hristijanskipesni.com",
+        "label":     "HJP",
+        "subdir":    "Hristijanski Pesni [HJP]",
+        "lang":      "mk",
+    },
+    "pes": {
+        # Serbian (Cyrillic) — Песмарица via pesmarica.net.
+        # Display URL is /Химна?no=N (SR: "hymn").
+        "base_url":  "https://www.pesmarica.net/%D0%A5%D0%B8%D0%BC%D0%BD%D0%B0",
+        "home_url":  "https://www.pesmarica.net",
+        "label":     "PES",
+        "subdir":    "Pesmarica [PES]",
+        "lang":      "sr-Cyrl",   # Serbian, Cyrillic script
+    },
+    "pj": {
+        # Croatian — Kršćanske pjesme via pjesme.net.
+        # Display URL is /Himna?no=N (HR: "hymn").
+        "base_url":  "https://www.pjesme.net/Himna",
+        "home_url":  "https://www.pjesme.net",
+        "label":     "PJ",
+        "subdir":    "Krscanske Pjesme [PJ]",
+        "lang":      "hr",
     },
 }
 
@@ -767,7 +831,140 @@ def build_existing_set(label, output_dir):
     return existing
 
 
-def save_hymn(hymn, label, output_dir):
+def _normalise_for_diff(text):
+    """
+    Normalise a hymn text for cross-source comparison (#699 Phase C).
+
+    The two sources we compare (SDAHymnal-network sites + ChristInSong.app
+    extracts) format the same hymn with small typographic differences:
+    - SDAHymnal wraps titles in double quotes; ChristInSong doesn't.
+    - SDAHymnal omits trailing whitespace before a comma; ChristInSong
+      occasionally inserts one (e.g. "Senhor ," vs "Senhor,").
+    - Hyphenation differs ("sem par" vs "sem-par").
+    - Unicode normalisation form may differ (NFC vs NFD).
+
+    These differences are real but cosmetic — the underlying lyric is
+    identical. The integrity check should flag a song as "identical"
+    when only those differences exist, and as "differs" when there's
+    a genuine word-level divergence.
+
+    The transformation:
+        - NFC-normalise unicode so combining-character vs precomposed
+          forms compare equal.
+        - Strip leading/trailing double quotes from the title line
+          (SDAHymnal-style "..." → bare).
+        - Collapse runs of whitespace to a single space.
+        - Strip trailing whitespace per line.
+        - Normalise hyphen-vs-space inside compound words (treat
+          "sem-par" and "sem par" as equivalent).
+        - Lower-case for comparison only (the saved file keeps the
+          original casing).
+    """
+    import unicodedata
+    text = unicodedata.normalize('NFC', text)
+    out_lines = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if line.startswith('"') and line.endswith('"') and len(line) >= 2:
+            line = line[1:-1].strip()       # strip surrounding quotes from title
+        line = re.sub(r'\s+', ' ', line)    # collapse internal whitespace
+        line = re.sub(r'\s+([,.!?;:])', r'\1', line)  # drop space-before-punct
+        line = line.replace('-', ' ')       # hyphen ≡ space for compound words
+        # The hyphen→space substitution can re-introduce double spaces
+        # (e.g. "sem-par," → "sem par,"  AND  earlier collapse already
+        # ran), so collapse one more time to keep the normal form clean.
+        line = re.sub(r'\s+', ' ', line)
+        out_lines.append(line.lower())
+    return '\n'.join(out_lines).strip()
+
+
+def _find_existing_hymn_file(number, label, book_dir):
+    """
+    Look for an already-existing hymn file for this number + label
+    in book_dir. Used by the integrity check so the same hymn from a
+    second source (e.g. ChristInSong.app extract) gets compared
+    rather than overwritten.
+
+    Returns the full path to the first matching file, or None if no
+    file exists for this number. The match is on the
+    "NNN (LABEL) - " prefix; the title portion can differ between
+    sources (e.g. "Ó Deus De Amor" vs "Ó Deus de Amor") and we still
+    want them paired up.
+    """
+    if not os.path.isdir(book_dir):
+        return None
+    padded = str(number).zfill(3)
+    prefix = f"{padded} ({label}) - "
+    for name in os.listdir(book_dir):
+        if name.startswith(prefix) and name.endswith('.txt'):
+            return os.path.join(book_dir, name)
+    return None
+
+
+def _write_integrity_report(book_dir, number, label, status, existing_path,
+                            existing_text, new_text):
+    """
+    Append one entry to {book_dir}/_integrity-check.md describing how the
+    fresh-scraped hymn compares to the file already on disk for the same
+    number. (#699 Phase C)
+
+    Sections per entry:
+        ### NNN — Title (status)
+        - existing file: …
+        - normalised:    identical | differs (word count delta, first-mismatch
+                         location)
+        - diff (only when status="differs"): unified diff trimmed to ±3
+          lines around each change
+
+    The report is markdown so it renders cleanly on GitHub when the
+    output folder is committed for cross-checking.
+    """
+    import difflib
+    report_path = os.path.join(book_dir, '_integrity-check.md')
+    is_new_report = not os.path.exists(report_path)
+
+    with open(report_path, 'a', encoding='utf-8') as f:
+        if is_new_report:
+            f.write(f"# Cross-source integrity check — {label}\n\n")
+            f.write(
+                "Compares hymns scraped from the SDAHymnal.org network against "
+                "files already present in this folder (typically ChristInSong.app "
+                "extracts). \"identical\" means the two sources match after "
+                "normalisation (NFC unicode, collapsed whitespace, hyphen ≡ space, "
+                "case-insensitive). \"differs\" means a real word-level divergence "
+                "is present.\n\n"
+                "Generated by `SDAHymnals_SDAHymnal.org.py` (#699 Phase C).\n\n"
+                "---\n\n"
+            )
+        # Pull the title from the first non-empty line of either text
+        title = (existing_text.splitlines() or [''])[0].strip().strip('"')
+        f.write(f"### {str(number).zfill(3)} — {title}  ({status})\n\n")
+        f.write(f"- existing file: `{os.path.basename(existing_path)}`\n")
+
+        if status == 'identical':
+            f.write("- normalised: **identical** — only cosmetic differences "
+                    "(quotes, whitespace, hyphenation)\n\n")
+        else:
+            # Word-count delta is a quick "how big is this?" signal
+            ew = len(existing_text.split())
+            nw = len(new_text.split())
+            f.write(f"- normalised word counts: existing={ew}, fresh={nw} "
+                    f"(delta {nw - ew:+d})\n")
+            # Unified diff between normalised forms — keeps the report
+            # short while still surfacing what changed
+            diff = list(difflib.unified_diff(
+                _normalise_for_diff(existing_text).splitlines(),
+                _normalise_for_diff(new_text).splitlines(),
+                fromfile='existing', tofile='fresh', lineterm='', n=2,
+            ))
+            f.write("- diff (normalised):\n\n```diff\n")
+            f.write('\n'.join(diff[:60]))   # cap at 60 lines per song
+            if len(diff) > 60:
+                f.write(f"\n... ({len(diff) - 60} more lines truncated)")
+            f.write("\n```\n\n")
+
+
+def save_hymn(hymn, label, output_dir, prefer_source=None):
     """
     Save a parsed hymn to a plain-text file in the output directory.
 
@@ -775,13 +972,39 @@ def save_hymn(hymn, label, output_dir):
     content, and writes it to a file with the standard naming convention:
         {number zero-padded to 3} ({label}) - {Title Case Title}.txt
 
+    When `prefer_source` is None (the default), behaves as a plain write:
+    creates the file unconditionally. The caller (scrape_site) only
+    invokes save_hymn for hymns that aren't already on disk in this
+    case, so there is no overwrite risk.
+
+    When `prefer_source` is set (the cross-source integrity-check mode,
+    #699 Phase C), and a file for this number+label already exists,
+    the fresh scrape is compared against it and a markdown entry is
+    appended to `_integrity-check.md`. The handling of the actual
+    write then depends on the value:
+
+        'sidebar' — keep the existing file, write the fresh scrape
+            with `.sdah-fresh` suffix on the same name so a curator
+            can diff manually.
+
+        'sdah' — overwrite the existing file with the fresh scrape.
+            Useful for re-syncing a folder where ChristInSong's
+            extract is known to be stale.
+
+        'cis' — keep the existing file, do NOT write the fresh scrape
+            at all. Useful for an audit-only pass where the curator
+            just wants the report.
+
     Args:
-        hymn:       Dict with "number" (int), "title" (str), and "sections" (list)
-        label:      Book label for the filename (e.g. "SDAH", "CH")
-        output_dir: Directory path where the file should be saved
+        hymn:          Dict with "number" (int), "title" (str), "sections" (list)
+        label:         Book label for the filename (e.g. "SDAH", "CH")
+        output_dir:    Directory path where the file should be saved
+        prefer_source: None | 'sidebar' | 'sdah' | 'cis' — see above
 
     Returns:
-        str: The full file path of the saved file
+        str | None: The full file path of the saved file, or None if
+        prefer_source='cis' and an existing file was kept (so the
+        caller can adjust counters).
     """
     # Ensure the output directory exists (creates parent dirs too if needed)
     os.makedirs(output_dir, exist_ok=True)
@@ -794,10 +1017,44 @@ def save_hymn(hymn, label, output_dir):
     # then convert to Title Case for consistent, readable filenames
     filename = f"{padded} ({label}) - {title_case(sanitize(hymn['title']))}.txt"
     filepath = os.path.join(output_dir, filename)
+    new_text = format_hymn(hymn)
 
-    # Write the formatted hymn text to the file
+    # Cross-source integrity check (#699 Phase C). Only runs when the
+    # caller explicitly opted in via prefer_source. When prefer_source
+    # is None, save_hymn is the plain-write path and we skip the
+    # comparison entirely (the call site has its own resumability
+    # check). When prefer_source is set, look for an existing file
+    # under the same NNN (LABEL) prefix; if one exists, compare and
+    # write per the chosen mode.
+    if prefer_source is not None:
+        existing_path = _find_existing_hymn_file(hymn["number"], label, output_dir)
+        if existing_path:
+            with open(existing_path, 'r', encoding='utf-8') as ef:
+                existing_text = ef.read()
+            status = ('identical'
+                      if _normalise_for_diff(existing_text) == _normalise_for_diff(new_text)
+                      else 'differs')
+            _write_integrity_report(
+                output_dir, hymn["number"], label, status,
+                existing_path, existing_text, new_text,
+            )
+
+            if prefer_source == 'sdah':
+                with open(existing_path, 'w', encoding='utf-8') as f:
+                    f.write(new_text)
+                return existing_path
+            if prefer_source == 'cis':
+                return None
+            # 'sidebar': write side-by-side with .sdah-fresh suffix so
+            # the curator can pick the survivor manually.
+            sidebar = filepath + '.sdah-fresh'
+            with open(sidebar, 'w', encoding='utf-8') as f:
+                f.write(new_text)
+            return sidebar
+
+    # No conflict / no integrity check — straightforward write.
     with open(filepath, "w", encoding="utf-8") as f:
-        f.write(format_hymn(hymn))
+        f.write(new_text)
 
     return filepath
 
@@ -833,7 +1090,7 @@ def log_skip(number, label, reason, book_dir):
 # ---------------------------------------------------------------------------
 
 
-def scrape_site(site_key, start, end, output_dir, delay, force=False):
+def scrape_site(site_key, start, end, output_dir, delay, force=False, prefer_source=None):
     """
     Scrape all hymns from a single site (SDAH or CH).
 
@@ -883,10 +1140,17 @@ def scrape_site(site_key, start, end, output_dir, delay, force=False):
     print(f"{'='*50}\n")
 
     # Scan the output directory for already-saved hymns to enable resumability.
-    # When --force is set, we skip this check and re-download everything.
-    existing     = set() if force else build_existing_set(label, book_dir)
+    # Two opt-outs:
+    #   --force                          — re-download + overwrite everything
+    #   --prefer-source {sidebar|sdah|cis} — re-download every hymn so the
+    #     integrity check can compare against the existing file
+    integrity_mode = prefer_source is not None
+    existing = set() if (force or integrity_mode) else build_existing_set(label, book_dir)
     if force:
         print(f"  Force mode: will re-download and overwrite existing files.\n")
+    elif integrity_mode:
+        print(f"  Integrity mode (--prefer-source={prefer_source}): will re-download "
+              f"every hymn and compare against existing files in this folder.\n")
     elif existing:
         print(f"  Found {len(existing)} existing {label} hymns — will skip.\n")
 
@@ -940,11 +1204,19 @@ def scrape_site(site_key, start, end, output_dir, delay, force=False):
             time.sleep(delay)   # Rate limit even on failures
             continue
 
-        # Success — reset the consecutive skip counter and save the hymn
+        # Success — reset the consecutive skip counter and save the hymn.
+        # save_hymn returns None when prefer_source='cis' kept an
+        # existing file; treat that as a successful scrape (the network
+        # request happened) but with a different success message.
         consec_skip = 0
-        path = save_hymn(hymn, label, book_dir)
+        path = save_hymn(hymn, label, book_dir, prefer_source=prefer_source)
         saved += 1
-        print(f"✓  {os.path.basename(path)}")
+        if path is None:
+            print(f"✓  kept existing (prefer_source=cis)")
+        elif path.endswith('.sdah-fresh'):
+            print(f"✓  side-by-side: {os.path.basename(path)}")
+        else:
+            print(f"✓  {os.path.basename(path)}")
 
         number += 1
         time.sleep(delay)  # Rate limit between successful requests
@@ -1018,6 +1290,23 @@ notes:
                     help="seconds to wait between HTTP requests (default: 1.0)")
     ap.add_argument("--force",  action="store_true", default=False,
                     help="force re-download of all hymns, even if files already exist")
+    # --prefer-source defaults to None (not passed) so the existing
+    # resumability behaviour stays the default for normal scrape runs.
+    # When the curator passes the flag, the scraper switches into
+    # integrity-check mode: it re-fetches every hymn (bypassing the
+    # "already exists, skipping" optimisation) so it can compare
+    # against the file already on disk. (#699 Phase C.)
+    ap.add_argument("--prefer-source", choices=['sidebar', 'sdah', 'cis'], default=None,
+                    dest='prefer_source',
+                    help="opt-in cross-source integrity check. When a hymn file "
+                         "already exists for this number+label (typically a "
+                         "ChristInSong.app extract), the fresh scrape is compared "
+                         "against it and a diff is appended to _integrity-check.md. "
+                         "'sidebar' — keep existing, write fresh with .sdah-fresh "
+                         "suffix. 'sdah' — overwrite existing with fresh. 'cis' — "
+                         "keep existing, do not write fresh (report only). Passing "
+                         "the flag also disables resumability so every hymn is "
+                         "re-fetched for comparison.")
     args = ap.parse_args()
 
     # Determine which sites to scrape based on the --site argument.
@@ -1032,7 +1321,9 @@ notes:
 
     # Scrape each site sequentially, accumulating the total saved count
     for site_key in sites_to_run:
-        total += scrape_site(site_key, args.start, args.end, args.output, args.delay, args.force)
+        total += scrape_site(site_key, args.start, args.end, args.output,
+                             args.delay, args.force,
+                             prefer_source=args.prefer_source)
 
     print(f"\nAll done! {total} hymns total saved to: {os.path.abspath(args.output)}")
 
