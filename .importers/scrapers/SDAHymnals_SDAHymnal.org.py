@@ -64,28 +64,88 @@ import argparse         # Command-line argument parsing
 # Site configuration — both sites share the same HTML structure
 # ---------------------------------------------------------------------------
 # Both sdahymnal.org and hymnal.xyz are built on the same web platform,
-# so they use identical CSS class names and page layouts. This allows us
-# to use a single parser class (HymnParser) for both sites. Each site
-# entry defines:
+# so they use identical CSS class names and page layouts. The same
+# .NET-based codebase also powers a network of multilingual sister
+# sites (#699), which means a single parser class (HymnParser) can
+# cover them all. Each site entry defines:
 #   - base_url:  The hymn page URL template (hymn number passed as ?no=N)
 #   - home_url:  The site homepage (used to detect end-of-hymnal redirects)
 #   - label:     Short identifier used in output filenames, e.g. "SDAH"
 #   - subdir:    Human-readable subdirectory name for organised output
-#   - lang:      ISO 639-1 language code for the songbook's language (e.g. "en")
+#   - lang:      IETF BCP 47 tag for the songbook's primary language.
+#                Plain ISO 639-1 ("en", "fr", "pt") is fine; the picker
+#                in the song editor reconciles to a full BCP 47 tag.
+#
+# Sister sites NOT yet covered (different DOM hooks — need a second
+# parser class, tracked under #699 Phase B):
+#   - himne.net (Serbo-Croatian, /HAC-pesmarica?no=N) — 62 KB page
+#     but no block-heading-* / wedding-heading classes
+#   - hristianskipesni.com (Bulgarian)
+#   - hristijanskipesni.com (Macedonian)
+#   - pesmarica.net (Serbian Cyrillic)
+#   - pjesme.net (Croatian)
 SITES = {
     "sdah": {
         "base_url":  "https://www.sdahymnal.org/Hymn",
         "home_url":  "https://www.sdahymnal.org",
         "label":     "SDAH",
         "subdir":    "Seventh-day Adventist Hymnal [SDAH]",
-        "lang":      "en",   # ISO 639-1: English
+        "lang":      "en",
     },
     "ch": {
         "base_url":  "https://www.hymnal.xyz/Hymn",
         "home_url":  "https://www.hymnal.xyz",
         "label":     "CH",
         "subdir":    "The Church Hymnal [CH]",
-        "lang":      "en",   # ISO 639-1: English
+        "lang":      "en",
+    },
+    # ---- #699 Phase A: multilingual sister sites confirmed to use the
+    #      same DOM hooks (block-heading-three/four/five + wedding-heading).
+    "ha": {
+        "base_url":  "https://www.himnario.net/Himno",
+        "home_url":  "https://www.himnario.net",
+        "label":     "HA",
+        "subdir":    "Himnario Adventista [HA]",
+        "lang":      "es",
+    },
+    "nha": {
+        # nuevohimnario.com is the modern Spanish hymnal — distinct from
+        # the classic himnario.net (which we map to "ha" above) — so it
+        # gets its own label + folder. Curators can run --site ha or
+        # --site nha individually as needed.
+        "base_url":  "https://www.nuevohimnario.com/Himno",
+        "home_url":  "https://www.nuevohimnario.com",
+        "label":     "NHA",
+        "subdir":    "Nuevo Himnario Adventista [NHA]",
+        "lang":      "es",
+    },
+    "hasd": {
+        "base_url":  "https://www.hinarioadventista.com/Hino",
+        "home_url":  "https://www.hinarioadventista.com",
+        "label":     "HASD",
+        "subdir":    "Hinario Adventista do Setimo Dia [HASD]",
+        "lang":      "pt",
+    },
+    "hl": {
+        # Note the URL is /Cantique?no=N, NOT /Hymne (which 200s but
+        # serves an empty shell). The site's English-translated brand
+        # is "Hymns and Songs of Praise" (Hymnes & Louanges).
+        "base_url":  "https://www.hymnes.net/Cantique",
+        "home_url":  "https://www.hymnes.net",
+        "label":     "HL",
+        "subdir":    "Hymnes et Louanges [HL]",
+        "lang":      "fr",
+    },
+    "ia": {
+        # innarioavventista.com matched 4 of 6 markers on probe — fewer
+        # than the canonical 6 but still parseable. If a future probe
+        # shows missing fields we may need a parser tweak; flagging this
+        # under #699 Phase B for follow-up.
+        "base_url":  "https://www.innarioavventista.com/Inno",
+        "home_url":  "https://www.innarioavventista.com",
+        "label":     "IA",
+        "subdir":    "Innario Avventista [IA]",
+        "lang":      "it",
     },
 }
 
@@ -913,13 +973,17 @@ def main():
     if "-?" in sys.argv:
         sys.argv[sys.argv.index("-?")] = "--help"
 
+    site_keys = list(SITES.keys())   # source of truth — one place to add a site
     ap = argparse.ArgumentParser(
-        description="Hymnal scraper — SDAH + CH (no pip required)",
+        description="Hymnal scraper — SDAHymnal.org network (no pip required)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""examples:
-  python3 %(prog)s                         Scrape both sites from hymn 1
+  python3 %(prog)s                         Scrape every configured site (--site all)
   python3 %(prog)s --site sdah             Only scrape sdahymnal.org (SDAH)
   python3 %(prog)s --site ch               Only scrape hymnal.xyz (CH)
+  python3 %(prog)s --site ha               Only scrape himnario.net (HA)
+  python3 %(prog)s --site hasd             Only scrape hinarioadventista.com (HASD)
+  python3 %(prog)s --site hl               Only scrape hymnes.net (HL)
   python3 %(prog)s --start 50              Resume scraping from hymn 50
   python3 %(prog)s --start 1 --end 100     Scrape a specific range of hymns
   python3 %(prog)s --output ~/Desktop/hymns
@@ -929,18 +993,21 @@ def main():
 output:
   Files are saved as plain text in book-specific subdirectories:
     hymns/Seventh-day Adventist Hymnal [SDAH]/001 (SDAH) - Praise To The Lord.txt
-    hymns/The Church Hymnal [CH]/001 (CH) - Praise To The Lord.txt
+    hymns/Himnario Adventista [HA]/001 (HA) - Cantad Al Senor.txt
 
   The scraper is resumable — existing files are detected and skipped.
   Skipped hymns (errors, missing data) are logged to skipped.log.
 
 notes:
   - No dependencies required — uses only Python standard library modules.
-  - Both sites share the same HTML structure, so one parser handles both.
+  - Sister sites share the same HTML structure (block-heading-* +
+    wedding-heading), so one parser handles them all (#699).
   - The scraper auto-detects the end of the hymnal (no --end needed).
   - Rate limiting is handled automatically (pauses 60s, retries once).""")
-    ap.add_argument("--site",   choices=["sdah", "ch", "both"], default="both",
-                    help="which site to scrape (default: both)")
+    ap.add_argument("--site",   choices=site_keys + ["all", "both"], default="all",
+                    help="which site to scrape (default: all). 'both' is an alias "
+                         "for 'all' kept for backwards compatibility with prior "
+                         "two-site default; new callers should prefer 'all'.")
     ap.add_argument("--start",  type=int,   default=1,
                     help="first hymn number to scrape (default: 1)")
     ap.add_argument("--end",    type=int,   default=None,
@@ -953,8 +1020,14 @@ notes:
                     help="force re-download of all hymns, even if files already exist")
     args = ap.parse_args()
 
-    # Determine which sites to scrape based on the --site argument
-    sites_to_run = ["sdah", "ch"] if args.site == "both" else [args.site]
+    # Determine which sites to scrape based on the --site argument.
+    # 'all' (the new default) walks every configured site; 'both' is
+    # the legacy alias from when there were only two sites — kept
+    # working so existing scripts / scheduled jobs don't break (#699).
+    if args.site in ("all", "both"):
+        sites_to_run = site_keys
+    else:
+        sites_to_run = [args.site]
     total = 0
 
     # Scrape each site sequentially, accumulating the total saved count
