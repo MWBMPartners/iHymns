@@ -19,6 +19,7 @@ declare(strict_types=1);
  *     $tag      = 'pt-BR';                 // saved BCP 47 tag (or empty)
  *     $label    = 'Language (IETF BCP 47)'; // optional override
  *     $help     = '';                      // optional sub-label hint
+ *     $outputId = 'edit-language';         // optional id="" on the hidden output
  *     require __DIR__ . '/includes/partials/ietf-language-picker.php';
  *   ?>
  *
@@ -26,6 +27,11 @@ declare(strict_types=1);
  * The PHP side just emits the markup + the saved tag; the JS module
  * decomposes it on boot, queries the typeaheads, and writes the
  * composed tag back into the hidden field on every input change.
+ *
+ * $outputId (optional): legacy callers — the song editor uses a
+ * non-form save flow that reads the composed tag via getElementById,
+ * so the hidden output needs a stable id. Form-POST callers leave
+ * this blank and lookup-by-name suffices.
  */
 
 /* Defensive defaults — if the caller forgot to set any of these,
@@ -35,6 +41,11 @@ $name     = isset($name)     ? (string)$name     : 'language';
 $tag      = isset($tag)      ? (string)$tag      : '';
 $label    = isset($label)    ? (string)$label    : 'Language (IETF BCP 47)';
 $help     = isset($help)     ? (string)$help     : 'Optional. Pick a language; add a script (Latin / Cyrillic / …) or region (United Kingdom / Brazil / …) only if it differs from the default.';
+$outputId = isset($outputId) ? (string)$outputId : '';
+
+/* Sanitise the output id with the same rule as the prefix so a
+   typo can't produce broken HTML. Empty stays empty. */
+$outputIdSafe = $outputId !== '' ? preg_replace('/[^A-Za-z0-9_-]/', '-', $outputId) : '';
 
 /* Sanitise the id so a future caller passing "edit modal" doesn't
    produce broken HTML. Strip everything but [a-z0-9-]. */
@@ -94,6 +105,7 @@ $idSafe = preg_replace('/[^a-z0-9-]/i', '-', $idPrefix);
 
     <input type="hidden"
            class="ietf-tag-output"
+           <?php if ($outputIdSafe !== ''): ?>id="<?= htmlspecialchars($outputIdSafe, ENT_QUOTES, 'UTF-8') ?>"<?php endif; ?>
            name="<?= htmlspecialchars($name, ENT_QUOTES, 'UTF-8') ?>"
            value="<?= htmlspecialchars($tag, ENT_QUOTES, 'UTF-8') ?>">
 

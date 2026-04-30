@@ -520,12 +520,15 @@ function selectSong(songId) {
     setVal('edit-ccli', song.ccli || '');
     setVal('edit-iswc', song.iswc || '');            /* #497 */
     setVal('edit-tune-name', song.tuneName || '');   /* #497 */
-    /* Parse IETF BCP 47 tag into sub-fields (#240). */
-    var ietf = parseIetfTag(song.language || 'en');
-    setVal('edit-lang-language', ietf.language);
-    setVal('edit-lang-script', ietf.script);
-    setVal('edit-lang-region', ietf.region);
-    composeIetfTag();
+    /* Hand the saved IETF BCP 47 tag to the shared picker (#687). The
+       picker is booted by the module script in index.php and stashed
+       on window.editSongIetfPicker; setTag() decomposes the tag,
+       resolves the codes against the live tblScripts / tblRegions
+       endpoints, and writes the composed tag back to the hidden
+       #edit-language field. */
+    if (window.editSongIetfPicker && typeof window.editSongIetfPicker.setTag === 'function') {
+        window.editSongIetfPicker.setTag(song.language || 'en');
+    }
 
     /* Populate the boolean checkboxes (#222, #225). */
     setChecked('edit-verified', !!song.verified);
@@ -654,23 +657,28 @@ function bindMetadataListeners() {
         });
     });
 
-    /* Language sub-fields — compose IETF BCP 47 tag on change (#240). */
-    ['edit-lang-language', 'edit-lang-script', 'edit-lang-region'].forEach(function (elId) {
-        var el = document.getElementById(elId);
-        if (!el) return;
-
-        ['input', 'change'].forEach(function (eventType) {
-            el.addEventListener(eventType, function () {
-                if (!currentSongId) return;
-                var song = findSongById(currentSongId);
-                if (!song) return;
-
-                /* Compose the three fields into a single IETF tag and store it. */
-                song.language = composeIetfTag();
-                markModified(song.id);
-            });
+    /* Language picker (#687) — the shared module composes the tag and
+       writes it into the hidden #edit-language field on every change.
+       We just watch that one hidden field and propagate to song.language.
+       Listening on the wrapper's three visible inputs gives us the
+       compose-on-blur behaviour the picker provides; listening on the
+       hidden field would only fire if some external code set its value
+       directly. */
+    var pickerRoot = document.querySelector('.ietf-picker[data-ietf-picker-id="edit-song"]');
+    if (pickerRoot) {
+        var commitLanguage = function () {
+            if (!currentSongId) return;
+            var song = findSongById(currentSongId);
+            if (!song) return;
+            var hidden = document.getElementById('edit-language');
+            if (!hidden) return;
+            song.language = hidden.value || 'en';
+            markModified(song.id);
+        };
+        ['input', 'change', 'blur'].forEach(function (eventType) {
+            pickerRoot.addEventListener(eventType, commitLanguage, true);
         });
-    });
+    }
 }
 
 /* ========================================================================
@@ -2956,163 +2964,6 @@ function setChecked(elementId, checked) {
     }
 }
 
-/* ----------------------------------------------------------------------
- * Language / Script / Region lookup tables (#489)
- *
- * The editor's three language inputs now display **full names** by
- * default — the average admin doesn't know that "Latn" is Latin or
- * that "cy" is Welsh. Each table is keyed by ISO code (which is what
- * MySQL actually stores, as part of the composed IETF BCP 47 tag) and
- * maps to the human-friendly name shown in the input.
- *
- * Keep in lock-step with the <datalist> options in index.php — an
- * option in the markup but absent from this table would resolve back
- * to its code on save (harmless but uglier).
- * ---------------------------------------------------------------------- */
-var LANG_CODE_TO_NAME = {
-    en:'English', fr:'French', de:'German', es:'Spanish', it:'Italian',
-    pt:'Portuguese', la:'Latin', cy:'Welsh', gd:'Scottish Gaelic',
-    ga:'Irish', nl:'Dutch', sv:'Swedish', no:'Norwegian', da:'Danish',
-    fi:'Finnish', pl:'Polish', cs:'Czech', hu:'Hungarian', ro:'Romanian',
-    ko:'Korean', ja:'Japanese', zh:'Chinese', ar:'Arabic', he:'Hebrew',
-    hi:'Hindi', sw:'Swahili', zu:'Zulu', xh:'Xhosa', af:'Afrikaans',
-    tl:'Tagalog',
-};
-var SCRIPT_CODE_TO_NAME = {
-    Latn:'Latin', Cyrl:'Cyrillic', Arab:'Arabic', Hebr:'Hebrew',
-    Deva:'Devanagari', Hans:'Simplified Chinese', Hant:'Traditional Chinese',
-    Hang:'Hangul', Kana:'Katakana', Grek:'Greek', Geor:'Georgian',
-    Armn:'Armenian', Thai:'Thai', Ethi:'Ethiopic',
-};
-var REGION_CODE_TO_NAME = {
-    GB:'United Kingdom', US:'United States', AU:'Australia', NZ:'New Zealand',
-    CA:'Canada', IE:'Ireland', ZA:'South Africa', FR:'France', DE:'Germany',
-    AT:'Austria', CH:'Switzerland', ES:'Spain', MX:'Mexico', IT:'Italy',
-    PT:'Portugal', BR:'Brazil', NL:'Netherlands', SE:'Sweden', NO:'Norway',
-    DK:'Denmark', FI:'Finland', PL:'Poland', CZ:'Czechia', HU:'Hungary',
-    RO:'Romania', KR:'South Korea', JP:'Japan', CN:'China', TW:'Taiwan',
-    IN:'India', PH:'Philippines', KE:'Kenya', NG:'Nigeria', GH:'Ghana',
-};
-
-/* Pre-compute reverse maps (lowercased name → code) for lookup. */
-var _LANG_NAME_TO_CODE = _flipLangMap(LANG_CODE_TO_NAME);
-var _SCRIPT_NAME_TO_CODE = _flipLangMap(SCRIPT_CODE_TO_NAME);
-var _REGION_NAME_TO_CODE = _flipLangMap(REGION_CODE_TO_NAME);
-
-function _flipLangMap(src) {
-    var out = {};
-    Object.keys(src).forEach(function (code) {
-        out[src[code].toLowerCase()] = code;
-    });
-    return out;
-}
-
-/**
- * Resolve a free-text input value to its canonical ISO code.
- * Accepts either the full name ("English", case-insensitive) or the
- * bare code ("en"). Returns the input unchanged if it can't be
- * resolved — we don't want to silently discard a value the admin
- * deliberately typed for a language we don't yet list.
- *
- * @param {string} value   Raw value from a language/script/region input
- * @param {"language"|"script"|"region"} dim
- * @returns {string} ISO code (or original value if not recognised)
- */
-function resolveLangCode(value, dim) {
-    var v = (value || '').trim();
-    if (!v) return '';
-    var lower = v.toLowerCase();
-    var nameMap = dim === 'language' ? _LANG_NAME_TO_CODE
-                : dim === 'script'   ? _SCRIPT_NAME_TO_CODE
-                : dim === 'region'   ? _REGION_NAME_TO_CODE
-                : {};
-    if (nameMap[lower] != null) return nameMap[lower];
-
-    /* Fall through to code-normalisation. The datalist no longer
-       offers raw codes, but power users may still type them. */
-    if (dim === 'language') return lower.toLowerCase();
-    if (dim === 'region')   return v.toUpperCase();
-    if (dim === 'script') {
-        return v.length > 0
-            ? v.charAt(0).toUpperCase() + v.slice(1).toLowerCase()
-            : '';
-    }
-    return v;
-}
-
-/**
- * Convert an ISO code back to its full display name, falling back to
- * the code itself (useful for inputs populated from existing songs
- * with codes the lookup table doesn't yet know).
- */
-function resolveLangName(code, dim) {
-    var map = dim === 'language' ? LANG_CODE_TO_NAME
-            : dim === 'script'   ? SCRIPT_CODE_TO_NAME
-            : dim === 'region'   ? REGION_CODE_TO_NAME
-            : {};
-    return map[code] != null ? map[code] : (code || '');
-}
-
-/**
- * parseIetfTag(tag)
- * -----------------
- * Splits an IETF BCP 47 language tag into its constituent parts,
- * mapping each code to its human-friendly display name (#489). The
- * returned values are what the three editor inputs should show.
- *
- * @param {string} tag - e.g. "en", "en-GB", "zh-Hant-TW"
- * @returns {{ language: string, script: string, region: string }}
- *          display names (e.g. "English", "Latin", "United Kingdom")
- */
-function parseIetfTag(tag) {
-    var parts = (tag || 'en').split('-');
-    var langCode = parts[0] || 'en';
-    var scriptCode = '';
-    var regionCode = '';
-
-    for (var i = 1; i < parts.length; i++) {
-        var p = parts[i];
-        if (p.length === 4 && /^[A-Z][a-z]{3}$/.test(p)) {
-            scriptCode = p;
-        } else if (p.length === 2 && /^[A-Z]{2}$/.test(p)) {
-            regionCode = p;
-        }
-    }
-
-    return {
-        language: resolveLangName(langCode,  'language'),
-        script:   resolveLangName(scriptCode,'script'),
-        region:   resolveLangName(regionCode,'region'),
-    };
-}
-
-/**
- * composeIetfTag()
- * ----------------
- * Reads the three language sub-fields from the DOM (which carry full
- * names after #489), resolves each back to an ISO code, and composes
- * the IETF BCP 47 tag. Updates the hidden edit-language field and
- * the preview element.
- *
- * @returns {string} The composed IETF tag (e.g. "en-Latn-GB")
- */
-function composeIetfTag() {
-    var langCode   = resolveLangCode(getVal('edit-lang-language'), 'language') || 'en';
-    var scriptCode = resolveLangCode(getVal('edit-lang-script'),   'script');
-    var regionCode = resolveLangCode(getVal('edit-lang-region'),   'region');
-
-    var tag = langCode;
-    if (scriptCode) tag += '-' + scriptCode;
-    if (regionCode) tag += '-' + regionCode;
-
-    /* Update the hidden field and preview. */
-    setVal('edit-language', tag);
-    var preview = document.getElementById('edit-lang-preview');
-    if (preview) preview.textContent = tag;
-
-    return tag;
-}
-
 /**
  * getVal(elementId)
  * -----------------
@@ -3263,11 +3114,11 @@ function clearEditForm() {
     setVal('edit-ccli', '');
     setVal('edit-iswc', '');           /* #497 */
     setVal('edit-tune-name', '');      /* #497 */
-    /* Default to the display name not the raw code (#489). */
-    setVal('edit-lang-language', resolveLangName('en', 'language'));
-    setVal('edit-lang-script', '');
-    setVal('edit-lang-region', '');
-    composeIetfTag();
+    /* Reset the IETF picker to a blank state (#687). The shared module
+       resolves "" → empty inputs and a "—" preview. */
+    if (window.editSongIetfPicker && typeof window.editSongIetfPicker.setTag === 'function') {
+        window.editSongIetfPicker.setTag('');
+    }
     setVal('edit-copyright', '');
 
     /* Clear boolean checkboxes (#222, #225). */

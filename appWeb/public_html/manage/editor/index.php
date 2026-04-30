@@ -599,124 +599,25 @@ $currentUser = getCurrentUser();
                             </div>
                         </div>
 
-                        <!-- Language — IETF BCP 47 composed from Language + Script + Region (#240) -->
-                        <div class="mb-3">
-                            <label class="form-label"><i class="bi bi-translate me-1"></i>Language (IETF BCP 47)</label>
-                            <div class="row g-2">
-                                <!-- Language (required) — shows full names (#489).
-                                     Datalist values are full names; editor.js resolves
-                                     them to ISO 639 codes when composing the IETF tag. -->
-                                <div class="col-4">
-                                    <label for="edit-lang-language" class="form-label" style="font-size:0.75rem;">Language</label>
-                                    <input type="text" class="form-control form-control-sm" id="edit-lang-language"
-                                        placeholder="e.g. English" list="lang-language-list" required>
-                                    <datalist id="lang-language-list">
-                                        <option value="English">en</option>
-                                        <option value="French">fr</option>
-                                        <option value="German">de</option>
-                                        <option value="Spanish">es</option>
-                                        <option value="Italian">it</option>
-                                        <option value="Portuguese">pt</option>
-                                        <option value="Latin">la</option>
-                                        <option value="Welsh">cy</option>
-                                        <option value="Scottish Gaelic">gd</option>
-                                        <option value="Irish">ga</option>
-                                        <option value="Dutch">nl</option>
-                                        <option value="Swedish">sv</option>
-                                        <option value="Norwegian">no</option>
-                                        <option value="Danish">da</option>
-                                        <option value="Finnish">fi</option>
-                                        <option value="Polish">pl</option>
-                                        <option value="Czech">cs</option>
-                                        <option value="Hungarian">hu</option>
-                                        <option value="Romanian">ro</option>
-                                        <option value="Korean">ko</option>
-                                        <option value="Japanese">ja</option>
-                                        <option value="Chinese">zh</option>
-                                        <option value="Arabic">ar</option>
-                                        <option value="Hebrew">he</option>
-                                        <option value="Hindi">hi</option>
-                                        <option value="Swahili">sw</option>
-                                        <option value="Zulu">zu</option>
-                                        <option value="Xhosa">xh</option>
-                                        <option value="Afrikaans">af</option>
-                                        <option value="Tagalog">tl</option>
-                                    </datalist>
-                                </div>
-                                <!-- Script (optional) — full names (#489) -->
-                                <div class="col-4">
-                                    <label for="edit-lang-script" class="form-label" style="font-size:0.75rem;">Script</label>
-                                    <input type="text" class="form-control form-control-sm" id="edit-lang-script"
-                                        placeholder="e.g. Latin" list="lang-script-list">
-                                    <datalist id="lang-script-list">
-                                        <option value="Latin">Latn</option>
-                                        <option value="Cyrillic">Cyrl</option>
-                                        <option value="Arabic">Arab</option>
-                                        <option value="Hebrew">Hebr</option>
-                                        <option value="Devanagari">Deva</option>
-                                        <option value="Simplified Chinese">Hans</option>
-                                        <option value="Traditional Chinese">Hant</option>
-                                        <option value="Hangul">Hang</option>
-                                        <option value="Katakana">Kana</option>
-                                        <option value="Greek">Grek</option>
-                                        <option value="Georgian">Geor</option>
-                                        <option value="Armenian">Armn</option>
-                                        <option value="Thai">Thai</option>
-                                        <option value="Ethiopic">Ethi</option>
-                                    </datalist>
-                                </div>
-                                <!-- Region (optional) — full names (#489) -->
-                                <div class="col-4">
-                                    <label for="edit-lang-region" class="form-label" style="font-size:0.75rem;">Region</label>
-                                    <input type="text" class="form-control form-control-sm" id="edit-lang-region"
-                                        placeholder="e.g. United Kingdom" list="lang-region-list">
-                                    <datalist id="lang-region-list">
-                                        <option value="United Kingdom">GB</option>
-                                        <option value="United States">US</option>
-                                        <option value="Australia">AU</option>
-                                        <option value="New Zealand">NZ</option>
-                                        <option value="Canada">CA</option>
-                                        <option value="Ireland">IE</option>
-                                        <option value="South Africa">ZA</option>
-                                        <option value="France">FR</option>
-                                        <option value="Germany">DE</option>
-                                        <option value="Austria">AT</option>
-                                        <option value="Switzerland">CH</option>
-                                        <option value="Spain">ES</option>
-                                        <option value="Mexico">MX</option>
-                                        <option value="Italy">IT</option>
-                                        <option value="Portugal">PT</option>
-                                        <option value="Brazil">BR</option>
-                                        <option value="Netherlands">NL</option>
-                                        <option value="Sweden">SE</option>
-                                        <option value="Norway">NO</option>
-                                        <option value="Denmark">DK</option>
-                                        <option value="Finland">FI</option>
-                                        <option value="Poland">PL</option>
-                                        <option value="Czechia">CZ</option>
-                                        <option value="Hungary">HU</option>
-                                        <option value="Romania">RO</option>
-                                        <option value="South Korea">KR</option>
-                                        <option value="Japan">JP</option>
-                                        <option value="China">CN</option>
-                                        <option value="Taiwan">TW</option>
-                                        <option value="India">IN</option>
-                                        <option value="Philippines">PH</option>
-                                        <option value="Kenya">KE</option>
-                                        <option value="Nigeria">NG</option>
-                                        <option value="Ghana">GH</option>
-                                    </datalist>
-                                </div>
-                            </div>
-                            <!-- Composed IETF tag preview -->
-                            <div class="mt-1 d-flex align-items-center gap-2">
-                                <span class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
-                                    IETF tag:
-                                </span>
-                                <code id="edit-lang-preview" style="font-size: 0.8rem;">en</code>
-                                <input type="hidden" id="edit-language">
-                            </div>
-                        </div>
+                        <!-- Language — IETF BCP 47 picker (shared with /manage/songbooks
+                             via the partial introduced by #685). The hidden output gets a
+                             stable id="edit-language" so editor.js can read the composed
+                             tag via getElementById without going through a form POST.
+                             Closes #687 — the editor's inline copy of the picker has been
+                             removed in favour of this single source of truth, so curators
+                             see the same vocabulary (live tblScripts + tblRegions, ~28 +
+                             ~255 entries) on both surfaces. -->
+                        <?php
+                            $idPrefix = 'edit-song';
+                            $name     = 'language';
+                            $tag      = '';
+                            $outputId = 'edit-language';
+                            require dirname(__DIR__) . DIRECTORY_SEPARATOR
+                                . 'includes' . DIRECTORY_SEPARATOR
+                                . 'partials' . DIRECTORY_SEPARATOR
+                                . 'ietf-language-picker.php';
+                            unset($idPrefix, $name, $tag, $outputId);
+                        ?>
 
                         <!-- Status & Copyright Flags (#222, #225) -->
                         <hr style="border-color: var(--ih-border);">
@@ -1435,6 +1336,27 @@ $currentUser = getCurrentUser();
     <!-- Editor JavaScript — all interactive logic (loading, saving, editing, previewing)
          is handled in this separate file to keep concerns separated -->
     <script src="editor.js"></script>
+
+    <!-- IETF BCP 47 picker boot (#687). The shared module is the same one
+         that powers /manage/songbooks. We expose the booted instance on
+         window.editSongIetfPicker so editor.js (a classic script that
+         can't `import`) can call setTag()/getTag() on it. The module is
+         auto-deferred, so it executes after editor.js but before
+         DOMContentLoaded — which means by the time editor.js's init()
+         fires (on DOMContentLoaded) and starts loading songs into the
+         form, the picker is already booted. -->
+    <?php
+        $_ietfModulePath = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'ietf-language-picker.js';
+        $_ietfModuleVersion = is_file($_ietfModulePath) ? (string)filemtime($_ietfModulePath) : '1';
+    ?>
+    <script type="module">
+        import { bootIetfLanguagePicker }
+            from '/js/modules/ietf-language-picker.js?v=<?= htmlspecialchars($_ietfModuleVersion, ENT_QUOTES) ?>';
+        const root = document.querySelector('.ietf-picker[data-ietf-picker-id="edit-song"]');
+        if (root) {
+            window.editSongIetfPicker = bootIetfLanguagePicker(root);
+        }
+    </script>
 
     <!-- ============================================================
          Find Missing Numbers modal (#285)
