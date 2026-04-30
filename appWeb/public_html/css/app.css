@@ -2882,6 +2882,42 @@ body.reduce-motion .related-songs-chevron {
     border-color: var(--accent-solid);
 }
 
+/* Language indicator badge on a songbook tile (#680). Small uppercase
+   2-3 letter ISO code in the top-right corner of each tile. Sits on
+   the LEFT of the offline-download cloud button so the two don't
+   collide on the home page's compact tiles (the cloud button uses
+   `right: 0.35rem`; this badge uses `right: 2.5rem` so they pack
+   side-by-side). On the standalone /songbooks page (no download
+   button rendered) the badge stays in the top-right too — visually
+   consistent across surfaces. */
+.songbook-tile-language-badge {
+    position: absolute;
+    top: 0.45rem;
+    right: 2.5rem;
+    z-index: 2;
+    /* Compact pill so a 2-letter code reads at a glance without
+       crowding neighbouring elements. */
+    padding: 0.1rem 0.4rem;
+    border-radius: 0.25rem;
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    background: var(--surface-elevated);
+    color: var(--text-secondary);
+    /* Subtle border so the badge stays visible when it overlaps a
+       light section of a coloured songbook icon background. */
+    border: 1px solid var(--card-border);
+    line-height: 1;
+}
+/* On the /songbooks full-cards surface there's no download button,
+   so the badge can hug the top-right corner. The card has
+   `position: relative` set inline; this rule just nudges the
+   badge into the corner there. */
+.page-songbooks .songbook-tile-language-badge {
+    right: 0.45rem;
+}
+
 /* Feature-detect class driven by js/modules/offline-ui.js. When
    .offline-unsupported is on the body, every download control hides
    (rather than showing a permanently-disabled UI that can't recover). */

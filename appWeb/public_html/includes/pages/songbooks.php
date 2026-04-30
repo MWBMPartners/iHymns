@@ -38,12 +38,29 @@ $stats = $songData->getStats();
     <div class="row g-3">
         <?php foreach ($songbooks as $index => $book): ?>
             <?php if (($book['songCount'] ?? 0) > 0): ?>
+                <?php
+                    /* Language indicator badge data (#680) — same pattern
+                       as home.php: pull the IETF tag, extract the 2-3
+                       letter language subtag, uppercase. Empty = no
+                       badge (multi-lingual / not specified). */
+                    $bookLang = (string)($book['language'] ?? '');
+                    $langCode = '';
+                    if ($bookLang !== '' && preg_match('/^([a-z]{2,3})/i', $bookLang, $m)) {
+                        $langCode = mb_strtoupper($m[1]);
+                    }
+                ?>
                 <div class="col-12 col-sm-6 col-md-4 col-lg-3">
                     <a href="/songbook/<?= htmlspecialchars($book['id']) ?>"
-                       class="card card-songbook h-100 text-decoration-none"
+                       class="card card-songbook h-100 text-decoration-none position-relative"
                        data-navigate="songbook"
                        data-songbook-id="<?= htmlspecialchars($book['id']) ?>"
-                       aria-label="Open <?= htmlspecialchars($book['name']) ?>">
+                       <?php if ($langCode !== ''): ?>data-songbook-language="<?= htmlspecialchars($bookLang) ?>"<?php endif; ?>
+                       aria-label="Open <?= htmlspecialchars($book['name']) ?><?= $langCode !== '' ? ' (' . htmlspecialchars($langCode) . ')' : '' ?>">
+                        <?php if ($langCode !== ''): ?>
+                            <span class="songbook-tile-language-badge"
+                                  title="Language: <?= htmlspecialchars($bookLang) ?>"
+                                  aria-hidden="true"><?= htmlspecialchars($langCode) ?></span>
+                        <?php endif; ?>
                         <div class="card-body">
                             <div class="d-flex align-items-start gap-3">
                                 <!-- Songbook icon -->
