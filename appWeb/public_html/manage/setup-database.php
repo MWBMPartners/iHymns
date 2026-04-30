@@ -178,6 +178,14 @@ if (isset($_GET['saved'])) {
 $action = $_GET['action'] ?? '';
 $actionOutput = '';
 $actionSuccess = false;
+/* Captured during bulk-run so the failure can be surfaced as a visible
+   banner ABOVE the (potentially long, scrollable) output panel. (#720) */
+$bulkFirstFailStep    = null;
+$bulkFirstFailMessage = '';
+$bulkFirstFailFile    = '';
+$bulkFirstFailLine    = 0;
+$bulkTotalRan         = 0;
+$bulkTotalFailed      = 0;
 
 if ($action !== '') {
     /* Signal to the included scripts that they're being run from the
@@ -273,6 +281,35 @@ if ($action !== '') {
             $totalFailed = 0;
             $startedAt = microtime(true);
             $actionSuccess = true;
+            /* First-failing-step is captured so we can surface it as a
+               prominent banner ABOVE the output panel — the original
+               implementation wrote the FAILED line into the panel where
+               it could be missed if the panel's overflow scrolled past
+               it. (#720) */
+            $firstFailStep    = null;
+            $firstFailMessage = '';
+            $firstFailFile    = '';
+            $firstFailLine    = 0;
+
+            /* Catch fatal errors mid-bulk (PHP Fatal in an included
+               migration script bypasses the try/catch). The shutdown
+               handler captures the last error and surfaces it the
+               same way as a caught Throwable. (#720) */
+            register_shutdown_function(function () {
+                $err = error_get_last();
+                if (!$err) return;
+                if (!in_array($err['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR], true)) {
+                    return;
+                }
+                /* Best-effort flush so the operator at least sees the
+                   fatal in the output panel even if the bulk loop
+                   never reached its summary footer. */
+                echo "\n\n══════════════════════════════════════════════════════\n";
+                echo "✗ FATAL DURING BULK RUN: " . $err['message'] . "\n";
+                echo "  File: " . basename($err['file']) . ":" . $err['line'] . "\n";
+                echo "══════════════════════════════════════════════════════\n";
+            });
+
             foreach ($migrationOrder as $migAction) {
                 $migScript = $scriptMap[$migAction] ?? null;
                 if ($migScript === null) {
@@ -296,6 +333,12 @@ if ($action !== '') {
                 } catch (\Throwable $e) {
                     $totalFailed++;
                     $actionSuccess = false;
+                    if ($firstFailStep === null) {
+                        $firstFailStep    = $migAction;
+                        $firstFailMessage = $e->getMessage();
+                        $firstFailFile    = basename((string)$e->getFile());
+                        $firstFailLine    = (int)$e->getLine();
+                    }
                     echo "\n  ✗ {$migAction} FAILED: " . htmlspecialchars($e->getMessage()) . "\n";
                     if ($e->getFile()) {
                         echo "    File: " . htmlspecialchars(basename($e->getFile())) . ":" . $e->getLine() . "\n";
@@ -304,6 +347,15 @@ if ($action !== '') {
                     break;
                 }
             }
+            /* Promote captured failure data to the outer scope so the
+               render below can surface a visible "Failed at" banner. */
+            $bulkFirstFailStep    = $firstFailStep;
+            $bulkFirstFailMessage = $firstFailMessage;
+            $bulkFirstFailFile    = $firstFailFile;
+            $bulkFirstFailLine    = $firstFailLine;
+            $bulkTotalRan         = $totalRan;
+            $bulkTotalFailed      = $totalFailed;
+
             $totalElapsed = round((microtime(true) - $startedAt) * 1000);
             echo "═══════════════════════════════════════════════════════\n";
             echo "Bulk run finished — {$totalRan} migration"
@@ -516,6 +568,39 @@ if ($hasCredentials && defined('DB_HOST')) {
                 <span class="badge bg-danger ms-2">Error</span>
             <?php endif; ?>
         </h4>
+
+        <?php if ($action === 'apply-all-migrations' && $bulkFirstFailStep !== null): ?>
+            <!-- Prominent failure banner ABOVE the (potentially long,
+                 scrollable) output panel so the operator sees exactly
+                 which step broke and the message detail without having
+                 to scroll the panel to find it. (#720) -->
+            <div class="alert alert-danger" role="alert">
+                <h5 class="alert-heading mb-2">
+                    <i class="bi bi-exclamation-triangle-fill me-1"></i>
+                    Bulk run failed at step:
+                    <code><?= htmlspecialchars($bulkFirstFailStep) ?></code>
+                </h5>
+                <p class="mb-2">
+                    <strong><?= $bulkTotalRan ?></strong>
+                    migration<?= $bulkTotalRan === 1 ? '' : 's' ?>
+                    completed before this step;
+                    <strong><?= $bulkTotalFailed ?></strong>
+                    failed; remaining steps were not attempted.
+                </p>
+                <p class="mb-1">
+                    <strong>Cause:</strong>
+                    <code><?= htmlspecialchars($bulkFirstFailMessage) ?></code>
+                </p>
+                <?php if ($bulkFirstFailFile !== ''): ?>
+                    <p class="mb-0 small text-muted">
+                        At
+                        <code><?= htmlspecialchars($bulkFirstFailFile) ?>:<?= (int)$bulkFirstFailLine ?></code>
+                        — full per-step output below.
+                    </p>
+                <?php endif; ?>
+            </div>
+        <?php endif; ?>
+
         <div class="output-log"><?= $actionOutput ?></div>
 
     <?php else: ?>

@@ -355,7 +355,12 @@ $buildQuery = function (array $overrides = []) {
                 <table class="table table-sm table-dark table-hover align-middle">
                     <thead>
                         <tr>
-                            <th style="width: 11rem;">When (UTC)</th>
+                            <?php /* Header label flips between (local) and (UTC) at runtime
+                                     once the inline script below has rewritten the cells.
+                                     If the script doesn't run (CSP block, ancient browser),
+                                     the cells stay UTC and the header keeps its initial
+                                     "(UTC)" suffix. (#723) */ ?>
+                            <th style="width: 11rem;" id="activity-when-header">When (UTC)</th>
                             <th style="width: 10rem;">User</th>
                             <th>Action</th>
                             <th>Entity</th>
@@ -374,7 +379,12 @@ $buildQuery = function (array $overrides = []) {
                         $rowId = (int)$r['Id'];
                     ?>
                         <tr class="activity-row">
-                            <td class="text-muted small">
+                            <td class="text-muted small activity-when"
+                                data-utc="<?= htmlspecialchars(
+                                    str_replace(' ', 'T', (string)$r['CreatedAt']) . 'Z',
+                                    ENT_QUOTES, 'UTF-8'
+                                ) ?>"
+                                title="<?= htmlspecialchars((string)$r['CreatedAt'], ENT_QUOTES, 'UTF-8') ?> UTC">
                                 <?= htmlspecialchars((string)$r['CreatedAt'], ENT_QUOTES, 'UTF-8') ?>
                             </td>
                             <td>
@@ -421,8 +431,14 @@ $buildQuery = function (array $overrides = []) {
                                         · <?= (int)$r['DurationMs'] ?> ms
                                     <?php endif; ?>
                                     <?php if (!empty($r['UserAgent'])): ?>
-                                        · UA: <span title="<?= htmlspecialchars((string)$r['UserAgent'], ENT_QUOTES, 'UTF-8') ?>">
-                                            <?= htmlspecialchars(substr((string)$r['UserAgent'], 0, 80), ENT_QUOTES, 'UTF-8') ?>
+                                        <?php /* Render the full UA inline (no 80-char substr cap)
+                                                 — long UAs wrap to a second line via the
+                                                 .activity-ua wrapper class, which uses
+                                                 word-break:break-word + max-width:100% so
+                                                 long unbroken tokens still wrap rather than
+                                                 overflow the row. (#721) */ ?>
+                                        · UA: <span class="activity-ua" title="<?= htmlspecialchars((string)$r['UserAgent'], ENT_QUOTES, 'UTF-8') ?>">
+                                            <?= htmlspecialchars((string)$r['UserAgent'], ENT_QUOTES, 'UTF-8') ?>
                                         </span>
                                     <?php endif; ?>
                                 </div>
@@ -460,6 +476,52 @@ $buildQuery = function (array $overrides = []) {
             <?php endif; ?>
         <?php endif; ?>
     </div>
+
+    <!-- Local-time conversion + UA-wrap styling (#721 / #723).
+         Each .activity-when cell carries data-utc="2026-04-30T13:53:42Z";
+         this script formats it via the browser's Intl.DateTimeFormat in
+         the user's local timezone and replaces the cell's text. If Intl
+         isn't available (very old browser) the cells stay UTC and the
+         header label stays "When (UTC)". -->
+    <style>
+        .activity-ua {
+            display: inline-block;
+            max-width: 100%;
+            word-break: break-word;
+            overflow-wrap: anywhere;
+        }
+    </style>
+    <script>
+    (function () {
+        try {
+            if (typeof Intl === 'undefined' || !Intl.DateTimeFormat) return;
+            var fmt = new Intl.DateTimeFormat(undefined, {
+                year:   'numeric', month:  '2-digit', day:    '2-digit',
+                hour:   '2-digit', minute: '2-digit', second: '2-digit',
+                hour12: false,
+            });
+            var cells = document.querySelectorAll('.activity-when[data-utc]');
+            if (!cells.length) return;
+            cells.forEach(function (cell) {
+                var iso = cell.getAttribute('data-utc');
+                if (!iso) return;
+                var d = new Date(iso);
+                if (isNaN(d.getTime())) return;
+                /* Reformat to "YYYY-MM-DD HH:MM:SS" — matches the
+                   table's existing visual cadence; some locales would
+                   otherwise produce "30/04/2026, 14:53:42" which jars
+                   in a tabular layout. */
+                var parts = fmt.formatToParts(d).reduce(function (acc, p) {
+                    if (p.type !== 'literal') acc[p.type] = p.value; return acc;
+                }, {});
+                cell.textContent = parts.year + '-' + parts.month + '-' + parts.day
+                    + ' ' + parts.hour + ':' + parts.minute + ':' + parts.second;
+            });
+            var header = document.getElementById('activity-when-header');
+            if (header) header.textContent = 'When (local)';
+        } catch (_e) { /* fail-soft — leave UTC text in place */ }
+    })();
+    </script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>

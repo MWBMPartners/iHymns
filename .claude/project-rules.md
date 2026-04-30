@@ -131,6 +131,18 @@ These are project conventions worth knowing when touching adjacent code, establi
 
   And note: SQL string literals always use single quotes (`'pending'`, not `"pending"`). MySQL's default mode treats both as strings, but `sql_mode='ANSI_QUOTES'` parses double-quoted as a column reference — and the song-request endpoint had exactly that bug for a while (#711).
 
+- **Shared colour-picker partial (#715).** Hex-colour text inputs on `/manage/*` go through `manage/includes/partials/colour-picker.php` + the `js/modules/colour-picker.js` boot. The partial emits a native `<input type="color">` swatch alongside the hex text input, two-way bound. Empty text → swatch shows a neutral seed but the saved value stays empty so the auto-pick path (#677) runs at render. New consumers should pull this partial rather than rolling their own.
+
+- **Misc-pinned-bottom + non-official alphabetical (#717 / #718).** Two related sort rules:
+  - `/manage/songbooks` quick-sort presets pin the Misc songbook (`Abbreviation = 'Misc'`) to the bottom regardless of name/abbr direction. Implementation: short-circuit in the `sortByKey` JS helper before the regular compare.
+  - Songs within a songbook sort by Number when the songbook is `IsOfficial = 1` AND has at least one numbered hymn; else sort alphabetically by Title. Hybrid books (mostly numbered with an un-numbered supplement) put numbered first, alphabetical tail second. Implemented via a CASE branch in `SongData::getSongs()`'s ORDER BY.
+
+- **Database Setup bulk-run (#708 / #720).** The "Apply all pending migrations" button walks `$migrationOrder` (separate list from `$scriptMap`). When adding a new `migrate-*.php` register it in BOTH places, in deployment order, AND add the per-card UI block. The bulk-run handler:
+  - Captures the first-failing-step's metadata so the page renders a prominent banner ABOVE the (potentially long, scrollable) output panel — operators can spot the failure without scrolling.
+  - Has a `register_shutdown_function` that catches PHP fatals (E_ERROR / E_PARSE / etc.) which bypass try/catch, so even a fatal mid-bulk gets surfaced before the page renders.
+
+- **Activity Log local-time + UA wrapping (#721 / #723).** The `/manage/activity-log` listing renders the When column in the user's local timezone via inline `Intl.DateTimeFormat`, falling back to UTC if Intl is unavailable. UA strings render in full (no server-side substr cap) with `.activity-ua { word-break: break-word; overflow-wrap: anywhere }` so long UAs wrap rather than truncate.
+
 ## 11. Activity logging — what NEVER goes in `tblActivityLog.Details` (#535)
 
 Every meaningful action writes a row to `tblActivityLog` via

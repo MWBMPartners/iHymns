@@ -431,6 +431,30 @@ class SongData
 
         $whereClause = !empty($where) ? 'WHERE ' . implode(' AND ', $where) : '';
 
+        /* #718 — Non-official songbooks (and any songbook where every
+           song's Number is NULL) sort their songs alphabetically by
+           Title. Officially-published hymnals with numbered hymns
+           keep the by-Number sort.
+
+           SQL evaluates the branch per-row via a JOIN to
+           tblSongbooks.IsOfficial:
+             - IsOfficial = 1 AND Number IS NOT NULL → numbered (rank 0)
+             - otherwise                             → alphabetical (rank 1)
+
+           Within each songbook (clustered by SongbookAbbr), numbered
+           rows come first (Number ASC), then any un-numbered entries
+           in alphabetical order. Non-official songbooks therefore
+           render as a flat alphabetical list because every row gets
+           rank 1 + uses the title key.
+
+           LOWER(s.Title) suffices as the alphabetical key — the
+           leading-article strip from #717 / #674 is desktop-only
+           (JS) for the songbook list; doing it in SQL would require
+           REGEXP_REPLACE which is MySQL 8.0+ only and the project
+           supports 5.7+. Acceptable degradation: "The Solid Rock"
+           sorts under T in the un-numbered tail. Future enhancement:
+           add a generated column TitleSortKey on tblSongs that
+           strips the article at write-time. */
         $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title, s.SongbookAbbr AS songbook,
                        s.SongbookName AS songbookName, s.Language AS language, s.Copyright AS copyright,
                        s.TuneName AS tuneName, s.Ccli AS ccli, s.Iswc AS iswc,
@@ -438,8 +462,15 @@ class SongData
                        s.MusicPublicDomain AS musicPublicDomain,
                        s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
                 FROM tblSongs s
+                LEFT JOIN tblSongbooks b ON b.Abbreviation = s.SongbookAbbr
                 {$whereClause}
-                ORDER BY s.SongbookAbbr, s.Number";
+                ORDER BY s.SongbookAbbr ASC,
+                         CASE
+                            WHEN b.IsOfficial = 1 AND s.Number IS NOT NULL THEN 0
+                            ELSE 1
+                         END ASC,
+                         s.Number ASC,
+                         LOWER(s.Title) ASC";
 
         $stmt = $this->db->prepare($sql);
         if (!empty($params)) {

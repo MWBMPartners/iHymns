@@ -752,6 +752,78 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 break;
             }
 
+            case 'auto_colour_fill':
+            case 'auto_colour_reassign': {
+                /* Bulk auto-colour action (#716). Two modes:
+                     fill      — only rows where Colour IS NULL or '' get a
+                                 newly-picked palette colour. Existing values
+                                 left alone.
+                     reassign  — every row gets a fresh colour. Destructive,
+                                 hence the confirm-by-typing-REASSIGN-ALL gate
+                                 enforced both client-side AND server-side.
+                   Admin / global_admin only. */
+                if (!in_array(($currentUser['role'] ?? ''), ['admin', 'global_admin'], true)) {
+                    $error = 'Admin role required for the auto-colour bulk action.';
+                    break;
+                }
+                $mode = $action === 'auto_colour_reassign' ? 'reassign' : 'fill';
+                if ($mode === 'reassign') {
+                    /* Server-side typed-confirmation gate — even if the
+                       client-side disable was bypassed, the action only
+                       runs when the curator typed the literal phrase. */
+                    $typed = trim((string)($_POST['confirm_phrase'] ?? ''));
+                    if ($typed !== 'REASSIGN ALL') {
+                        $error = 'Reassign-all needs the phrase REASSIGN ALL typed exactly.';
+                        break;
+                    }
+                }
+                /* Walk every songbook abbreviation, pick a colour, write back.
+                   Uses pickAutoSongbookColour() which reads the in-use set
+                   from tblSongbooks AS WE WRITE — so each successive pick
+                   factors in the colours the loop has just assigned. */
+                $stmt = $db->prepare('SELECT Id, Abbreviation, Colour FROM tblSongbooks ORDER BY Id');
+                $stmt->execute();
+                $books = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+
+                $db->begin_transaction();
+                $changed = 0;
+                try {
+                    $up = $db->prepare('UPDATE tblSongbooks SET Colour = ? WHERE Id = ?');
+                    foreach ($books as $b) {
+                        $existing = trim((string)($b['Colour'] ?? ''));
+                        $needsAssign = $mode === 'reassign'
+                            ? true
+                            : !preg_match('/^#[0-9A-Fa-f]{6}$/', $existing);
+                        if (!$needsAssign) continue;
+                        $newColour = pickAutoSongbookColour($db, (string)$b['Abbreviation']);
+                        $bookId    = (int)$b['Id'];
+                        $up->bind_param('si', $newColour, $bookId);
+                        $up->execute();
+                        $changed++;
+                    }
+                    $up->close();
+                    $db->commit();
+
+                    logActivity(
+                        $mode === 'reassign'
+                            ? 'songbook.auto_colour_reassign'
+                            : 'songbook.auto_colour_fill',
+                        'songbook', '',
+                        ['count' => $changed, 'mode' => $mode]
+                    );
+                    $success = $mode === 'reassign'
+                        ? "Reassigned colours on {$changed} songbook"
+                          . ($changed === 1 ? '' : 's') . '.'
+                        : "Auto-coloured {$changed} songbook"
+                          . ($changed === 1 ? '' : 's') . ' that had no colour set.';
+                } catch (\Throwable $e) {
+                    $db->rollback();
+                    throw $e;
+                }
+                break;
+            }
+
             default:
                 $error = 'Unknown action.';
         }
@@ -1035,6 +1107,45 @@ $csrf = csrfToken();
             <?php endif; ?>
         </form>
 
+        <?php if (in_array(($currentUser['role'] ?? ''), ['admin', 'global_admin'], true)): ?>
+        <!-- Auto-colour bulk action panel (#716). Admin / global_admin only.
+             Two modes: fill (only rows with no colour set) and reassign
+             (every row, gated by typed-confirmation). -->
+        <div class="card-admin p-3 mb-4">
+            <h2 class="h6 mb-3"><i class="bi bi-palette me-2"></i>Auto-colour songbooks</h2>
+            <p class="small text-muted mb-3">
+                Pick palette colours from the active theme so the catalogue stays visually consistent. Existing curator-typed colours are preserved unless the destructive Reassign mode is used.
+            </p>
+            <div class="d-flex flex-wrap gap-2 align-items-end">
+                <form method="POST" class="d-inline-block"
+                      onsubmit="return confirm('Auto-colour every songbook that currently has no colour assigned?');">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="auto_colour_fill">
+                    <button type="submit" class="btn btn-amber btn-sm">
+                        <i class="bi bi-droplet-half me-1"></i>Fill missing colours
+                    </button>
+                </form>
+                <form method="POST" class="d-inline-flex align-items-end gap-2"
+                      onsubmit="
+                        if (this.querySelector('input[name=confirm_phrase]').value !== 'REASSIGN ALL') {
+                            alert('Type the phrase REASSIGN ALL to enable this destructive action.');
+                            return false;
+                        }
+                        return confirm('REASSIGN colours on EVERY songbook? Existing curator-typed values will be overwritten. This cannot be undone.');
+                      ">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="auto_colour_reassign">
+                    <input type="text" name="confirm_phrase" class="form-control form-control-sm"
+                           placeholder="Type: REASSIGN ALL" autocomplete="off"
+                           style="max-width: 11rem;">
+                    <button type="submit" class="btn btn-outline-danger btn-sm">
+                        <i class="bi bi-shuffle me-1"></i>Reassign all (destructive)
+                    </button>
+                </form>
+            </div>
+        </div>
+        <?php endif; ?>
+
         <!-- Create -->
         <form method="POST" class="card-admin p-3 mb-4">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
@@ -1055,8 +1166,19 @@ $csrf = csrfToken();
                 </div>
                 <div class="col-sm-2">
                     <label class="form-label small">Colour (hex)</label>
-                    <input type="text" name="colour" class="form-control form-control-sm"
-                           pattern="#[0-9A-Fa-f]{6}" placeholder="#1a73e8">
+                    <?php
+                        /* Shared colour picker partial — native swatch
+                           bound to the hex text input (#715). */
+                        $name        = 'colour';
+                        $value       = '';
+                        $idPrefix    = 'create-songbook-colour';
+                        $placeholder = '#1a73e8';
+                        require __DIR__ . DIRECTORY_SEPARATOR
+                            . 'includes' . DIRECTORY_SEPARATOR
+                            . 'partials' . DIRECTORY_SEPARATOR
+                            . 'colour-picker.php';
+                        unset($name, $value, $idPrefix, $placeholder);
+                    ?>
                 </div>
                 <div class="col-sm-2">
                     <label class="form-label small">Display order</label>
@@ -1230,8 +1352,22 @@ $csrf = csrfToken();
                         <div class="row g-2 mb-3">
                             <div class="col-sm-6">
                                 <label class="form-label">Colour (hex)</label>
-                                <input type="text" class="form-control" name="colour" id="edit-colour"
-                                       pattern="#[0-9A-Fa-f]{6}" placeholder="#1a73e8">
+                                <?php
+                                    /* Shared colour picker partial (#715). The text
+                                       input keeps id="edit-colour" via the partial's
+                                       internal scheme — the JS that opens this modal
+                                       still sets the value via querySelector on
+                                       the .colour-picker-text class instead of by id. */
+                                    $name        = 'colour';
+                                    $value       = '';
+                                    $idPrefix    = 'edit-songbook-colour';
+                                    $placeholder = '#1a73e8';
+                                    require __DIR__ . DIRECTORY_SEPARATOR
+                                        . 'includes' . DIRECTORY_SEPARATOR
+                                        . 'partials' . DIRECTORY_SEPARATOR
+                                        . 'colour-picker.php';
+                                    unset($name, $value, $idPrefix, $placeholder);
+                                ?>
                             </div>
                             <div class="col-sm-6">
                                 <label class="form-label">Display order</label>
@@ -1448,7 +1584,26 @@ $csrf = csrfToken();
             document.getElementById('edit-id').value                = row.id;
             document.getElementById('edit-abbr-label').textContent  = row.abbreviation;
             document.getElementById('edit-name').value              = row.name;
-            document.getElementById('edit-colour').value            = row.colour || '';
+            /* The colour field is now wrapped in the shared colour-picker
+               partial (#715), which gives the text input the id
+               edit-songbook-colour-text and adds a sibling swatch.
+               Setting the text input's value also fires an `input` event
+               so the boot-script's text→swatch sync handler updates the
+               native picker preview to match. */
+            (function () {
+                const colourText   = document.getElementById('edit-songbook-colour-text');
+                const colourSwatch = document.querySelector(
+                    '[data-colour-picker-id="edit-songbook-colour"] .colour-picker-swatch'
+                );
+                const v = row.colour || '';
+                if (colourText) {
+                    colourText.value = v;
+                    colourText.dispatchEvent(new Event('input', { bubbles: true }));
+                }
+                if (colourSwatch && /^#[0-9A-Fa-f]{6}$/.test(v)) {
+                    colourSwatch.value = v.toLowerCase();
+                }
+            })();
             document.getElementById('edit-order').value             = row.display_order || 0;
 
             /* #502 metadata fields */
@@ -1518,6 +1673,16 @@ $csrf = csrfToken();
         if (editPicker)   window.editIetfPicker = bootIetfLanguagePicker(editPicker);
     </script>
 
+    <!-- Colour picker boot (#715). Wires the native swatch ↔ hex
+         text two-way binding for every .colour-picker on the page —
+         currently the create form's Colour field + the edit modal's
+         Colour field. Both render via the shared
+         manage/includes/partials/colour-picker.php. -->
+    <script type="module">
+        import { bootColourPickers } from '/js/modules/colour-picker.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/colour-picker.js') ?>';
+        bootColourPickers();
+    </script>
+
     <!-- Drag-and-drop reorder + Sort by Name/Abbr presets (#674).
          Vanilla HTML5 Drag-and-Drop on the songbook list table; no
          third-party library. Touch users can still type a number into
@@ -1573,8 +1738,24 @@ $csrf = csrfToken();
         const stripArticle = (s) =>
             (s || '').replace(/^\s*(the|an|a)\s+/i, '').toLowerCase();
 
+        /* "Miscellaneous" (abbreviation: Misc) is a catch-all for
+           orphan / outside-canon songs. It must always sit at the
+           bottom of every name- or abbr-sort regardless of direction
+           — otherwise it ends up among the M's (asc) or at the very
+           top (desc) and confuses curators. (#717) */
+        const isMiscRow = (tr) =>
+            (tr.dataset.sortAbbr || '').toLowerCase() === 'misc';
+
         const sortByKey = (keyFn, dir) => {
             const sorted = rows().sort((a, b) => {
+                /* Misc-pinned-bottom rule: any Misc row always sorts
+                   AFTER any non-Misc row. Two Misc rows fall back to
+                   the regular key compare (rare in practice — there's
+                   normally only one Misc songbook). */
+                const aMisc = isMiscRow(a);
+                const bMisc = isMiscRow(b);
+                if (aMisc && !bMisc) return 1;
+                if (!aMisc && bMisc) return -1;
                 const cmp = keyFn(a).localeCompare(keyFn(b));
                 return dir === 'asc' ? cmp : -cmp;
             });

@@ -213,3 +213,5 @@ Active in-flight items deferred from the second-cycle batch (will land in their 
 - **#707** — Org-admin role + per-org member/licence management at /manage/my-organisations. Issue filed; multi-PR scope.
 - **#709** — tblUserSetlists empty despite migrations + legacy JSON files not imported. Needs investigation into where legacy setlists were originally stored.
 - **#713** — Rolling Manage-area sweep tracker for catch-all-with-error_log-no-logActivityError pattern. Several pages threaded; the rest catalogued in the issue checklist.
+- **#719** — Comprehensive API parity audit + OpenAPI refresh + in-app docs + Wiki refresh. Multi-PR tracker (5 sub-PRs). Realistic timeline ~1 week of focused work.
+- **#722** — Schema Audit drift: 3 uncovered columns + 18 orphans-in-DB. Needs new migration scripts for orphans (tblOrganisationLicences full table, tblSongArtists full table, tblUsers.AvatarService, tblCreditPeople.Slug/IsSpecialCase/IsGroup) + schema.sql cleanup for the typo "uncovered" entries.
