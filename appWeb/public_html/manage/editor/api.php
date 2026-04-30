@@ -1444,14 +1444,309 @@ switch ($action) {
             break;
         }
 
+        /* Async path (#676). Move the upload out of php's tmp dir so
+           it survives the request close, create a job row, return
+           {job_id} to the browser immediately, then call
+           fastcgi_finish_request() to release the HTTP connection
+           and continue processing in the freed worker. The browser
+           polls bulk_import_status?job_id=N for live progress.
+
+           If fastcgi_finish_request() isn't available (CLI, non-FPM
+           SAPI), fall back to the synchronous path — the polling
+           UI just sees status='running' flip straight to 'completed'
+           in one tick. */
         $tmpPath = (string)$_FILES['zip']['tmp_name'];
+        $origName = (string)($_FILES['zip']['name'] ?? 'upload.zip');
+        $userId   = isset($currentUser['id']) ? (int)$currentUser['id'] : null;
+
+        /* Pre-flight: tblBulkImportJobs must exist. If migrate-bulk-
+           import-jobs.php hasn't run yet we fall back to the
+           synchronous behaviour and the response shape stays the
+           old-style summary so the existing client keeps working. */
+        $jobsTableReady = false;
         try {
-            $summary = _bulkImport_processZip($tmpPath);
-            echo json_encode($summary, JSON_UNESCAPED_UNICODE);
+            $db = getDbMysqli();
+            $probe = $db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME = 'tblBulkImportJobs' LIMIT 1"
+            );
+            $probe->execute();
+            $jobsTableReady = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
         } catch (\Throwable $e) {
+            error_log('[bulk_import_zip] tblBulkImportJobs probe failed: ' . $e->getMessage());
+        }
+
+        if (!$jobsTableReady) {
+            /* Synchronous fallback — keeps the old contract for any
+               deployment that hasn't run card 3p. Mirrors the
+               pre-#676 flow exactly. */
+            try {
+                $summary = _bulkImport_processZip($tmpPath);
+                echo json_encode($summary, JSON_UNESCAPED_UNICODE);
+            } catch (\Throwable $e) {
+                http_response_code(500);
+                error_log('[bulk_import_zip] ' . $e->getMessage());
+                echo json_encode(['error' => 'Import failed: ' . $e->getMessage()]);
+            }
+            break;
+        }
+
+        /* Move the upload to a known durable spot so the temp file
+           survives the request close. PHP's default upload_tmp_dir
+           is supposed to survive, but `move_uploaded_file` to a
+           known path inside our app dir is safer + makes cleanup
+           predictable. The dir lives outside public_html so a curious
+           HTTP request can't enumerate / fetch zips uploaded by
+           other users. */
+        $persistDir = dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . '.bulk_import_uploads';
+        if (!is_dir($persistDir)) {
+            @mkdir($persistDir, 0700, true);
+        }
+        $persistPath = $persistDir . DIRECTORY_SEPARATOR
+                     . 'job-' . bin2hex(random_bytes(8))
+                     . '-' . preg_replace('/[^A-Za-z0-9._-]/', '_', $origName);
+        if (!@move_uploaded_file($tmpPath, $persistPath)) {
+            /* move_uploaded_file fails if the upload was already
+               moved or if persistDir is unwritable. Fall back to
+               the sync path so the import still succeeds. */
+            error_log('[bulk_import_zip] move_uploaded_file failed; falling back to sync path');
+            try {
+                $summary = _bulkImport_processZip($tmpPath);
+                echo json_encode($summary, JSON_UNESCAPED_UNICODE);
+            } catch (\Throwable $e) {
+                http_response_code(500);
+                error_log('[bulk_import_zip] sync fallback failed: ' . $e->getMessage());
+                echo json_encode(['error' => 'Import failed: ' . $e->getMessage()]);
+            }
+            break;
+        }
+        @chmod($persistPath, 0600);
+
+        /* Create the job row. */
+        $jobId = null;
+        try {
+            $stmt = $db->prepare(
+                'INSERT INTO tblBulkImportJobs
+                    (UserId, Filename, TempPath, SizeBytes, Status)
+                 VALUES (?, ?, ?, ?, "queued")'
+            );
+            $stmt->bind_param('issi', $userId, $origName, $persistPath, $sizeBytes);
+            $stmt->execute();
+            $jobId = (int)$db->insert_id;
+            $stmt->close();
+        } catch (\Throwable $e) {
+            @unlink($persistPath);
             http_response_code(500);
-            error_log('[bulk_import_zip] ' . $e->getMessage());
-            echo json_encode(['error' => 'Import failed: ' . $e->getMessage()]);
+            error_log('[bulk_import_zip] could not create job row: ' . $e->getMessage());
+            echo json_encode(['error' => 'Could not start import job.']);
+            break;
+        }
+
+        /* Hand the browser its tracking handle. The frontend's
+           progress widget reads `job_id` and starts polling. */
+        echo json_encode([
+            'ok'         => true,
+            'async'      => true,
+            'job_id'     => $jobId,
+            'status'     => 'queued',
+            'poll_url'   => '/manage/editor/api?action=bulk_import_status&job_id=' . $jobId,
+        ], JSON_UNESCAPED_UNICODE);
+
+        /* Release the HTTP connection so the browser can fire its
+           first poll. session_write_close so a parallel poll request
+           can read the session lock; ignore_user_abort so the worker
+           keeps running even if the curator closes the tab. */
+        @session_write_close();
+        @ignore_user_abort(true);
+        if (function_exists('fastcgi_finish_request')) {
+            @fastcgi_finish_request();
+        } else {
+            /* Plain CGI / mod_php — best we can do is flush the
+               output and hope the worker continues. The job table
+               update path still runs; the frontend just sees the
+               status flip from queued → completed in one tick. */
+            if (ob_get_level() > 0) {
+                @ob_end_flush();
+            }
+            @flush();
+        }
+
+        /* Worker section — runs after the HTTP connection has been
+           released to the client. Bumps Status to 'running', calls
+           the existing _bulkImport_processZip on the persisted file,
+           writes the summary back to the job row, deletes the temp
+           file, fires a notification. Wrapped in try/catch so a
+           crash leaves the row in 'failed' (with the error message)
+           rather than stuck in 'running' forever. */
+        try {
+            /* Re-grab the DB connection — fastcgi_finish_request can
+               occasionally invalidate the prior handle on some FPM
+               builds. Cheap to redo. */
+            $db = getDbMysqli();
+            _bulkImport_jobMark($db, $jobId, 'running', ['StartedAt' => 'NOW()']);
+            $summary = _bulkImport_processZip($persistPath, $db, $jobId);
+            _bulkImport_jobMark($db, $jobId, 'completed', [
+                'CompletedAt'           => 'NOW()',
+                'SongbooksCreatedJson'  => json_encode($summary['songbooks_created']  ?? [], JSON_UNESCAPED_UNICODE),
+                'SongbooksExistingJson' => json_encode($summary['songbooks_existing'] ?? [], JSON_UNESCAPED_UNICODE),
+                'SongsCreated'          => (int)($summary['songs_created'] ?? 0),
+                'SongsSkippedExisting'  => (int)($summary['songs_skipped_existing'] ?? 0),
+                'SongsFailed'           => (int)($summary['songs_failed'] ?? 0),
+                'ErrorsJson'            => json_encode($summary['errors'] ?? [], JSON_UNESCAPED_UNICODE),
+                'TempPath'              => '',
+            ]);
+            @unlink($persistPath);
+
+            /* Notify the curator so they find the result on their
+               next page-load even if they walked away. Best-effort —
+               a tblNotifications failure must not poison the import
+               result. */
+            if ($userId !== null) {
+                try {
+                    $created  = (int)($summary['songs_created'] ?? 0);
+                    $skipped  = (int)($summary['songs_skipped_existing'] ?? 0);
+                    $failed   = (int)($summary['songs_failed'] ?? 0);
+                    $title    = "Import finished: {$created} new, {$skipped} skipped"
+                              . ($failed > 0 ? ", {$failed} failed" : '');
+                    $body     = "Bulk import of \"{$origName}\" completed.";
+                    $url      = '/manage/editor/';
+                    $type     = 'bulk_import_complete';
+                    $stmt = $db->prepare(
+                        'INSERT INTO tblNotifications (UserId, Type, Title, Body, ActionUrl)
+                         VALUES (?, ?, ?, ?, ?)'
+                    );
+                    $stmt->bind_param('issss', $userId, $type, $title, $body, $url);
+                    $stmt->execute();
+                    $stmt->close();
+                } catch (\Throwable $_e) {
+                    error_log('[bulk_import_zip] notification insert skipped: ' . $_e->getMessage());
+                }
+            }
+        } catch (\Throwable $e) {
+            error_log('[bulk_import_zip async worker] ' . $e->getMessage());
+            try {
+                _bulkImport_jobMark($db, $jobId, 'failed', [
+                    'CompletedAt' => 'NOW()',
+                    'ErrorsJson'  => json_encode(
+                        [['entry' => '', 'error' => $e->getMessage()]],
+                        JSON_UNESCAPED_UNICODE
+                    ),
+                ]);
+            } catch (\Throwable $_) { /* DB itself is unreachable */ }
+            @unlink($persistPath);
+        }
+        return; /* worker is done; no further switch processing needed */
+
+    /* -----------------------------------------------------------------
+     * BULK_IMPORT_STATUS — poll one async-import job (#676).
+     *
+     * GET /manage/editor/api?action=bulk_import_status&job_id=N
+     *   → { ok: true, job: {
+     *         id, status, filename, size_bytes,
+     *         total_entries, processed_entries, percent,
+     *         songs_created, songs_skipped_existing, songs_failed,
+     *         songbooks_created, songbooks_existing,
+     *         errors,
+     *         started_at, completed_at, created_at, updated_at,
+     *       } }
+     *
+     * Auth: editor+ (matches the rest of this file). The query also
+     * gates WHERE UserId = ? so a curator can only poll their OWN
+     * jobs — the row is invisible to anyone else even though
+     * /manage/editor/api.php is shared.
+     *
+     * Pre-migration deployments (no tblBulkImportJobs) return a 404
+     * with `migration_needed: true` so the frontend can fall back
+     * to the synchronous flow without surprising the user.
+     * ----------------------------------------------------------------- */
+    case 'bulk_import_status':
+        $jobId = (int)($_GET['job_id'] ?? 0);
+        if ($jobId <= 0) {
+            http_response_code(400);
+            echo json_encode(['error' => 'job_id required.']);
+            break;
+        }
+
+        try {
+            $db = getDbMysqli();
+            $probe = $db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME = 'tblBulkImportJobs' LIMIT 1"
+            );
+            $probe->execute();
+            $jobsTableReady = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+
+            if (!$jobsTableReady) {
+                http_response_code(404);
+                echo json_encode([
+                    'error'             => 'Bulk-import job tracking is not enabled on this deployment.',
+                    'migration_needed'  => true,
+                ]);
+                break;
+            }
+
+            $userId = isset($currentUser['id']) ? (int)$currentUser['id'] : 0;
+            $stmt = $db->prepare(
+                'SELECT Id, UserId, Filename, SizeBytes, Status,
+                        TotalEntries, ProcessedEntries,
+                        SongbooksCreatedJson, SongbooksExistingJson,
+                        SongsCreated, SongsSkippedExisting, SongsFailed,
+                        ErrorsJson,
+                        StartedAt, CompletedAt, CreatedAt, UpdatedAt
+                   FROM tblBulkImportJobs
+                  WHERE Id = ? AND UserId = ?
+                  LIMIT 1'
+            );
+            $stmt->bind_param('ii', $jobId, $userId);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+
+            if (!$row) {
+                http_response_code(404);
+                echo json_encode(['error' => 'Job not found.']);
+                break;
+            }
+
+            /* Decode the JSON columns lazily so the frontend gets
+               structured arrays instead of JSON strings. NULL on
+               either side stays NULL on the wire. */
+            $decode = static fn($s) => $s === null ? null : json_decode($s, true);
+
+            $total      = (int)$row['TotalEntries'];
+            $processed  = (int)$row['ProcessedEntries'];
+            $percent    = $total > 0 ? round(($processed / $total) * 100, 1) : 0;
+
+            echo json_encode([
+                'ok'  => true,
+                'job' => [
+                    'id'                      => (int)$row['Id'],
+                    'status'                  => (string)$row['Status'],
+                    'filename'                => (string)$row['Filename'],
+                    'size_bytes'              => (int)$row['SizeBytes'],
+                    'total_entries'           => $total,
+                    'processed_entries'       => $processed,
+                    'percent'                 => $percent,
+                    'songs_created'           => (int)$row['SongsCreated'],
+                    'songs_skipped_existing'  => (int)$row['SongsSkippedExisting'],
+                    'songs_failed'            => (int)$row['SongsFailed'],
+                    'songbooks_created'       => $decode($row['SongbooksCreatedJson'])  ?? [],
+                    'songbooks_existing'      => $decode($row['SongbooksExistingJson']) ?? [],
+                    'errors'                  => $decode($row['ErrorsJson'])            ?? [],
+                    'started_at'              => $row['StartedAt'],
+                    'completed_at'            => $row['CompletedAt'],
+                    'created_at'              => $row['CreatedAt'],
+                    'updated_at'              => $row['UpdatedAt'],
+                ],
+            ], JSON_UNESCAPED_UNICODE);
+        } catch (\Throwable $e) {
+            error_log('[bulk_import_status] ' . $e->getMessage());
+            http_response_code(500);
+            echo json_encode(['error' => 'Status query failed.']);
         }
         break;
 
@@ -1460,7 +1755,7 @@ switch ($action) {
      * ----------------------------------------------------------------- */
     default:
         http_response_code(400);
-        echo json_encode(['error' => 'Unknown action. Use: load, save, save_song, save_song_tags, tag_search, credit_search, bulk_tag, list_revisions, restore_revision, get_translations, add_translation, remove_translation, bulk_import_zip']);
+        echo json_encode(['error' => 'Unknown action. Use: load, save, save_song, save_song_tags, tag_search, credit_search, bulk_tag, list_revisions, restore_revision, get_translations, add_translation, remove_translation, bulk_import_zip, bulk_import_status']);
         break;
 }
 
@@ -1810,11 +2105,76 @@ function _bulkImport_upsertSongbook(\mysqli $db, string $abbr, string $name): st
 }
 
 /**
+ * Update tblBulkImportJobs row state for the async progress path
+ * (#676). Called by the bulk_import_zip case to mark queued →
+ * running → completed / failed transitions, and by
+ * _bulkImport_processZip below to bump ProcessedEntries +
+ * TotalEntries every ~50 rows so the polling endpoint can render
+ * a percentage.
+ *
+ * Status is the new ENUM value; $extra carries column → value
+ * pairs to set in the same UPDATE. NULL $jobId is a no-op so
+ * the synchronous fallback path can call this without a job
+ * record.
+ *
+ * Special-case: any value 'NOW()' is emitted as the SQL function
+ * (not bound) so timestamp columns get the server clock.
+ */
+function _bulkImport_jobMark(\mysqli $db, ?int $jobId, string $status, array $extra = []): void
+{
+    if ($jobId === null || $jobId <= 0) return;
+    /* Build the SET fragment — status always, plus any extras. */
+    $setParts = ['Status = ?'];
+    $bindTypes  = 's';
+    $bindValues = [$status];
+    foreach ($extra as $col => $val) {
+        /* Hard whitelist of column names we accept here so a future
+           caller can't accidentally splice user data into the SQL.
+           tblBulkImportJobs columns only. */
+        if (!preg_match('/^[A-Za-z][A-Za-z0-9]*$/', $col)) continue;
+        if ($val === 'NOW()') {
+            $setParts[] = "{$col} = NOW()";
+            continue;
+        }
+        $setParts[] = "{$col} = ?";
+        if (is_int($val)) {
+            $bindTypes .= 'i';
+        } else {
+            $bindTypes .= 's';
+            $val = (string)$val;
+        }
+        $bindValues[] = $val;
+    }
+    $sql = 'UPDATE tblBulkImportJobs SET ' . implode(', ', $setParts) . ' WHERE Id = ?';
+    $bindTypes  .= 'i';
+    $bindValues[] = $jobId;
+    try {
+        $stmt = $db->prepare($sql);
+        $stmt->bind_param($bindTypes, ...$bindValues);
+        $stmt->execute();
+        $stmt->close();
+    } catch (\Throwable $e) {
+        error_log('[_bulkImport_jobMark] ' . $e->getMessage());
+    }
+}
+
+/**
  * Walk a ZIP archive and import every recognised hymnal folder + song
  * .txt file. Returns a JSON-serialisable summary.
+ *
+ * When $jobDb + $jobId are passed, the function updates
+ * tblBulkImportJobs every PROGRESS_BATCH entries so the polling
+ * endpoint can show the progress bar move. Synchronous callers
+ * (the pre-#676 fallback path, future CLI tools) can omit both
+ * args and the function behaves exactly as before.
  */
-function _bulkImport_processZip(string $zipPath): array
+function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $jobId = null): array
 {
+    /* How often to flush the progress counters back to the job row.
+       Every 50 entries is ~1% of a typical 5000-song bundle — small
+       enough to feel live, large enough that the per-update cost
+       (one prepared UPDATE) stays under 0.5% of total runtime. */
+    $PROGRESS_BATCH = 50;
     $zip = new \ZipArchive();
     if ($zip->open($zipPath) !== true) {
         return [
@@ -1847,12 +2207,38 @@ function _bulkImport_processZip(string $zipPath): array
     $songsFailed              = 0;
     $errors                   = [];
 
+    /* Initial progress write — set TotalEntries to the post-filter
+       count so the polling endpoint's percentage uses the right
+       denominator. We don't know it precisely until we've walked
+       once, so send the raw entry count as a ceiling. (#676) */
+    if ($jobDb !== null && $jobId !== null) {
+        _bulkImport_jobMark($jobDb, $jobId, 'running', [
+            'TotalEntries'     => (int)$entryCount,
+            'ProcessedEntries' => 0,
+        ]);
+    }
+    $progressFlushCounter = 0;
+
     /* Single pass over the archive: for each .txt entry, parse the
        enclosing folder name to learn (songbook name, abbrev), upsert
        the songbook on first encounter, then parse + save the song. */
     $songbookSeen = [];   // abbrev → (created|existing) — caches the songbook upsert per archive
 
     for ($i = 0; $i < $entryCount; $i++) {
+        /* Periodic progress flush every $PROGRESS_BATCH iterations so
+           the polling endpoint shows a moving bar. Async path only —
+           sync callers pay no per-iteration cost. (#676) */
+        if ($jobDb !== null && $jobId !== null
+            && $i > 0 && ($i % $PROGRESS_BATCH) === 0
+        ) {
+            _bulkImport_jobMark($jobDb, $jobId, 'running', [
+                'ProcessedEntries'      => (int)$i,
+                'SongsCreated'          => (int)$songsCreated,
+                'SongsSkippedExisting'  => (int)$songsSkippedExisting,
+                'SongsFailed'           => (int)$songsFailed,
+            ]);
+        }
+
         $name = $zip->getNameIndex($i);
         if ($name === false) continue;
 

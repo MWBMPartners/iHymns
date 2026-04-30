@@ -2555,11 +2555,13 @@ function importJsonCorpus(file) {
  * stays untouched.
  */
 function importBulkZip(file) {
-    /* Cheap UX hint while the upload is in flight. The endpoint
-       streams the parse + INSERT loop synchronously so big archives
-       (a 2,300-song multi-hymnal CIS bundle ~1.3 MB compressed)
-       can take a few seconds. */
-    showToast('Importing ' + file.name + '… please wait.', 'info');
+    /* Cheap UX hint while the multipart upload is climbing the
+       wire. The server response now lands almost immediately
+       once the upload completes (the server returns the job_id
+       and processes asynchronously per #676), so this toast is
+       only on screen for a few seconds before the persistent
+       progress widget takes over. */
+    showToast('Uploading ' + file.name + '…', 'info');
 
     var fd = new FormData();
     fd.append('zip', file, file.name);
@@ -2580,11 +2582,44 @@ function importBulkZip(file) {
             showToast('Import failed: ' + msg, 'danger');
             return;
         }
-        var d  = out.data;
+        var d = out.data;
+
+        /* Async path (#676) — the server returned a job_id; hand it
+           off to the persistent progress widget which polls the
+           status endpoint, survives navigation, and refreshes the
+           editor catalogue on completion. The widget is loaded as
+           an ES module from this classic-script context. */
+        if (d.async && d.job_id) {
+            showToast('Import started — see progress widget.', 'success');
+            import('/js/modules/bulk-import-progress.js?v=' + Date.now())
+                .then(function (m) {
+                    m.startTracking({
+                        jobId:    d.job_id,
+                        filename: file.name,
+                        pollUrl:  d.poll_url
+                                || ('/manage/editor/api?action=bulk_import_status&job_id=' + d.job_id),
+                    });
+                })
+                .catch(function (err) {
+                    /* If the dynamic import fails (broken deploy /
+                       offline / etc.) the import itself still ran on
+                       the server — we just lose the live UI. Fall
+                       through to a manual-reload notice so the
+                       curator knows their data is on the way. */
+                    showToast(
+                        'Import is running in the background. Refresh the page in a minute to see results.',
+                        'info'
+                    );
+                    try { console.warn('[bulk_import_zip] progress widget load failed:', err); } catch (_e) {}
+                });
+            return;
+        }
+
+        /* Synchronous fallback (#664 contract — kept for deployments
+           that haven't run migration card 3p). Surfaces the summary
+           toast straight away. */
         var sb = (d.songbooks_created || []).length;
         var sx = (d.songbooks_existing || []).length;
-
-        /* One-line summary for the happy path; details for any errors. */
         showToast(
             'Imported ' + d.songs_created + ' new song' + (d.songs_created === 1 ? '' : 's') +
             ' (' + d.songs_skipped_existing + ' already in DB, skipped). ' +
@@ -2592,7 +2627,6 @@ function importBulkZip(file) {
             sx + ' existing.',
             'success'
         );
-
         if (d.songs_failed > 0 || (d.errors && d.errors.length > 0)) {
             showToast(
                 'Note: ' + d.songs_failed + ' file' + (d.songs_failed === 1 ? '' : 's') +
@@ -2601,11 +2635,6 @@ function importBulkZip(file) {
             );
             try { console.warn('[bulk_import_zip] errors:', d.errors); } catch (_e) {}
         }
-
-        /* Reload the catalogue from MySQL so the newly inserted rows
-           appear in the song list straight away. Same fetch path the
-           editor uses on page open (init() → loadSongsFromURL on the
-           first SONGS_URL_CANDIDATES entry, which is the PHP API). */
         if (typeof loadSongsFromURL === 'function' && typeof SONGS_URL_CANDIDATES !== 'undefined') {
             loadSongsFromURL(SONGS_URL_CANDIDATES[0]);
         }

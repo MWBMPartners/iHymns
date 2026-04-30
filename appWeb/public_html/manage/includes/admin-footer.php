@@ -76,3 +76,19 @@ if (!empty($GLOBALS['_adminLayoutOpen'])):
         crossorigin="anonymous"></script>
 <?php endif; ?>
 
+<?php
+    /* Persistent bulk-import progress widget (#676). Boots on every
+       /manage/* page so a curator who started an import on
+       /manage/editor and navigated to /manage/songbooks (or any
+       other admin page) still sees the live progress. The module
+       is idempotent: if no job is tracked in localStorage, it
+       does nothing. */
+    $_bulkImportModulePath = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'bulk-import-progress.js';
+    $_bulkImportVersion = is_file($_bulkImportModulePath) ? (string)filemtime($_bulkImportModulePath) : '1';
+?>
+<script type="module">
+    import { bootBulkImportProgressWidget }
+        from '/js/modules/bulk-import-progress.js?v=<?= htmlspecialchars($_bulkImportVersion, ENT_QUOTES) ?>';
+    bootBulkImportProgressWidget();
+</script>
+
