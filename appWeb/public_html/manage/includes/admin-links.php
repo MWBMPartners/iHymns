@@ -43,6 +43,11 @@ $_adminLinks = [
     ['users',           '/manage/users',           'bi-people',         'Users',                'view_users',                  'People'     ],
     ['groups',          '/manage/groups',          'bi-people-fill',    'User Groups',          'manage_user_groups',          'People'     ],
     ['organisations',   '/manage/organisations',   'bi-building',       'Organisations',        'manage_organisations',        'People'     ],
+    /* My Organisations (#707) — the entitlement is open to every signed-in
+       role; admin-nav.php applies a data-driven hide via
+       userHasOwnOrganisation() so non-admins only see this link when they
+       hold an admin/owner row in tblOrganisationMembers. */
+    ['my-organisations','/manage/my-organisations','bi-buildings',      'My Organisations',     'manage_own_organisation',     'People'     ],
     ['entitlements',    '/manage/entitlements',    'bi-key',            'Entitlements',         'manage_entitlements',         'People'     ],
     ['analytics',       '/manage/analytics',       'bi-graph-up',       'Analytics',            'view_analytics',              'Operations' ],
     ['ccli-report',     '/manage/ccli-report',     'bi-receipt',        'CCLI Usage Report',    'view_ccli_report',            'Operations' ],
