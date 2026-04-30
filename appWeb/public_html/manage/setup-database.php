@@ -236,6 +236,25 @@ if ($action !== '') {
         'user-features-catchup',
         'activity-log-expand',
         'credit-people',
+        'credit-people-flags',
+        'song-artists',
+        'credit-people-slug',
+        'user-avatar-service',
+        'organisation-licences',
+        'songbook-affiliations',
+        'songbook-bibliographic',
+        'songbook-language',
+        'ietf-bcp47-language',
+        'bulk-import-jobs',
+        /* When you add a new migrate-*.php under appWeb/.sql/, ALSO add
+           its action key to:
+             1. $scriptMap above (action key → file)
+             2. this $migrationOrder list (so the bulk runner picks it up)
+             3. The card definitions further down (so the per-card UI
+                still works for one-off targeted runs)
+           Keep this list in deployment order. Each script must be
+           idempotent — re-runs across the bulk action must no-op when
+           the schema is already up-to-date. (#708) */
     ];
 
     /* "Apply all pending migrations" handler (#577). Iterates
