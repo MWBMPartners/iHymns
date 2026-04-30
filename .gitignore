@@ -228,6 +228,6 @@ appWeb/public_html/vendor/
 # ----------------------------------------------------------------------------
 # Source Scraped Song data
 # ----------------------------------------------------------------------------
-.SourceSongData/_archive/*
+.SourceSongData/*
 *_debug_*_raw.html
 *_debug_*_skipped.html
