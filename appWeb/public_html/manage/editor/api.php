@@ -78,6 +78,36 @@ function _songArtistsTableExists(\mysqli $db): bool
     return $cached;
 }
 
+/**
+ * Validate + normalise an IETF BCP 47 language tag (#681).
+ *
+ * v1 grammar (matches the songbook editor's $validateBcp47): lowercase
+ * 2-3 letter language, optional 4-letter Title Case script, optional
+ * 2-letter UPPER region or 3-digit numeric area code. Variants /
+ * extensions / private-use are out of scope and rejected so a tampered
+ * POST can't smuggle exotic subtags into the column.
+ *
+ * Returns:
+ *   - null  if `$tag` is empty (caller decides whether to default to
+ *           'en' for a NOT NULL column or NULL for a nullable one).
+ *   - the trimmed tag, capped to 35 chars (the new column width per
+ *     #681), if it matches the v1 grammar.
+ *   - false if the input is non-empty but malformed; caller should
+ *     400 / refuse to save.
+ *
+ * @return string|null|false
+ */
+function _ietfBcp47Validate(string $raw)
+{
+    $tag = trim($raw);
+    if ($tag === '') return null;
+    if (strlen($tag) > 35) return false;
+    if (!preg_match('/^[a-z]{2,3}(-[A-Z][a-z]{3})?(-[A-Z]{2}|-[0-9]{3})?$/', $tag)) {
+        return false;
+    }
+    return $tag;
+}
+
 /* =========================================================================
  * BULK_IMPORT_ZIP constants (#664)
  *
@@ -259,7 +289,16 @@ switch ($action) {
 
                 $title        = $song['title'];
                 $songbookName = $song['songbookName'] ?? '';
-                $language     = $song['language'] ?? 'en';
+                /* Legacy bulk-save path. Soft-fallback on a malformed
+                   IETF tag rather than aborting the whole corpus save —
+                   the action 'save' rewrites every song and refusing
+                   one malformed entry would lose the curator's other
+                   work. The save_song single-song path 400s instead,
+                   which is the right behaviour there since the user is
+                   editing one row. (#681) */
+                $rawLang  = $song['language'] ?? 'en';
+                $validLang = _ietfBcp47Validate((string)$rawLang);
+                $language  = $validLang ?? 'en';
                 $copyright    = $song['copyright'] ?? '';
                 /* TuneName / Iswc: empty strings normalise to NULL so
                    the indexed TuneName column groups "unknown" rows
@@ -520,7 +559,19 @@ switch ($action) {
 
         $title        = (string)$song['title'];
         $songbookName = (string)($song['songbookName'] ?? '');
-        $language     = (string)($song['language']    ?? 'en');
+        /* IETF BCP 47 validation (#681). Empty string normalises to
+           'en' for tblSongs.Language NOT NULL DEFAULT 'en'; a malformed
+           tag (variants, extensions, anything past the v1 grammar) is
+           rejected up-front so the rest of the save runs against a
+           well-formed value. */
+        $rawLang = (string)($song['language'] ?? 'en');
+        $valid   = _ietfBcp47Validate($rawLang);
+        if ($valid === false) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Invalid IETF BCP 47 language tag: ' . $rawLang]);
+            break;
+        }
+        $language     = $valid ?? 'en';
         $copyright    = (string)($song['copyright']   ?? '');
         /* TuneName + Iswc are nullable (#497). Empty/whitespace-only
            input normalises to NULL so the indexed TuneName column
@@ -1591,7 +1642,15 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
     $number       = isset($song['number']) ? (int)$song['number'] : null;
     $songbookAbbr = (string)$song['songbook'];
     $songbookName = (string)$song['songbookName'];
-    $language     = (string)$song['language'];
+    /* IETF BCP 47 sanitise (#681). Bulk-import builds the song dict
+       in _bulkImport_parseTxt with 'language' => 'en' hard-coded
+       today, but any future caller (a CSV bulk import, a different
+       parser) can post a tag here. Soft-fallback to 'en' on a
+       malformed value — the bulk import already counts skipped /
+       failed entries and we'd rather not abort the whole archive
+       on one bad row. */
+    $validLang    = _ietfBcp47Validate((string)$song['language']);
+    $language     = $validLang ?? 'en';
     $copyright    = '';
     $tuneName     = null;
     $ccli         = '';

@@ -25,6 +25,40 @@ declare(strict_types=1);
 $_prefillSongbook = isset($_GET['songbook']) ? trim((string)$_GET['songbook']) : '';
 if ($_prefillSongbook !== '') {
     $_prefillSongbook = mb_substr($_prefillSongbook, 0, 100);
+    /* Resolve abbrev → full songbook name (#683). The deep-link from
+       the editor's Find-Missing-Numbers panel and the standalone
+       admin missing-numbers page sends `?songbook=<ABBREV>`; without
+       this lookup the form arrives showing "MP" instead of "Mission
+       Praise", which is confusing once the request lands in front
+       of a curator (or the user themselves). One prepared SELECT;
+       falls through to the raw param if no row matches (defensive —
+       covers a user typing a free-text value or a deleted songbook). */
+    try {
+        if (!function_exists('getDbMysqli')) {
+            require_once dirname(__DIR__, 2) . '/includes/db_mysql.php';
+        }
+        $_resolveDb = getDbMysqli();
+        if ($_resolveDb) {
+            $_lookup = $_resolveDb->prepare(
+                'SELECT Name FROM tblSongbooks WHERE Abbreviation = ? LIMIT 1'
+            );
+            if ($_lookup) {
+                $_lookup->bind_param('s', $_prefillSongbook);
+                $_lookup->execute();
+                $_row = $_lookup->get_result()->fetch_row();
+                $_lookup->close();
+                if ($_row && $_row[0] !== '') {
+                    /* mb_substr again so a column with a name longer
+                       than the input's maxlength still fits. */
+                    $_prefillSongbook = mb_substr((string)$_row[0], 0, 100);
+                }
+            }
+        }
+    } catch (\Throwable $_e) {
+        /* Best-effort lookup — a DB hiccup must not break the page
+           render. The user keeps the abbreviation as a fallback. */
+        error_log('[request-a-song] songbook abbrev lookup skipped: ' . $_e->getMessage());
+    }
 }
 $_prefillNumber = isset($_GET['number']) ? trim((string)$_GET['number']) : '';
 if ($_prefillNumber !== '') {

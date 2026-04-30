@@ -12,9 +12,9 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 - **Copyright**: © 2026– MWBM Partners Ltd
 - **License**: Proprietary (third-party components retain their own licenses)
 - **GitHub Repo**: <https://github.com/MWBMPartners/iHymns>
-- **Current Version**: 0.10.0 (pre-release, Phase 1)
-- **Database**: MySQL 5.7+ (30+ tables, tblCamelCase naming)
-- **API**: 50+ JSON endpoints via `api.php`
+- **Current Version**: 0.25.0 Alpha (pre-release, Phase 1)
+- **Database**: MySQL 5.7+ (~40 tables, tblCamelCase naming). Songbook metadata extended in 2026-04 with bibliographic + authority-control identifiers (#672), an Affiliation registry (#670), and an optional Language column (#673 → IETF BCP 47 in #681)
+- **API**: 60+ JSON endpoints via `api.php`, plus the editor's separate `/manage/editor/api.php` (load / save_song / bulk_import_zip / typeaheads)
 
 ---
 
@@ -24,7 +24,7 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 
 - Songs sourced from local `.SourceSongData/` text files
 - Parsed into JSON (`data/songs.json`), then migrated into **MySQL database**
-- 6 songbooks, 3,612 songs: CP (243), JP (617), MP (1355), SDAH (695), CH (702), Misc (0)
+- ~30 songbooks, 12,370+ songs after the CIS scrape (#663 / 2026-04-29). Original five English: CP (243), JP (617), MP (1355), SDAH (695), CH (702); plus 23 multi-language CIS hymnals (Spanish HA, Portuguese HASD, French DLG, Russian GASD, Twi TWI, Tonga TKMN, Tswana KMK, Sotho KP, Chichewa KMN, Shona KMNz, Venda NYD, Swahili NZK, Ndebele UKE, Xhosa UKEng, Xitsonga RRV, Gikuyu NCA, Abagusii OKON, Dholuo WN, Kinyarwanda IZGI, Tumbuka NMSDA, Sepedi KKK, Bemba BKMN, English CIS) plus Misc + AH/AYS/NAH placeholder books
 - MySQL with MySQLi prepared statements (song data) and PDO (auth/admin)
 - Database naming: `tblCamelCase` tables, `CamelCase` columns
 - User accounts with role hierarchy (global_admin/admin/editor/user)
@@ -205,4 +205,4 @@ See `DEV_NOTES.md` for full setup guide including Apple, Android, and Fire OS.
 
 ---
 
-Last updated: 2026-04-09
+Last updated: 2026-04-29
