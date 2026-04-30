@@ -221,6 +221,30 @@ CREATE TABLE IF NOT EXISTS tblSongTranslators (
 
 
 -- ----------------------------------------------------------------------------
+-- tblSongArtists (#587)
+-- Recording / release artist credits — distinct from the Writers /
+-- Composers / Arrangers etc. roles. Captures the performing artist
+-- (e.g. "Hillsong Worship" for "What a Beautiful Name") rather than
+-- the songwriter. Feeds the future ProPresenter export which wants
+-- the artist name on every slide. Created via migrate-song-artists.php.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongArtists (
+    Id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    SongId      VARCHAR(20)     NOT NULL,
+    Name        VARCHAR(255)    NOT NULL,
+    SortOrder   INT             NOT NULL DEFAULT 0 COMMENT 'Display order when a song has multiple artists',
+    CreatedAt   TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_SongId    (SongId),
+    INDEX idx_Name      (Name),
+
+    CONSTRAINT fk_Artists_Song
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
 -- tblCreditPeople (#545)
 -- Registry of people credited on songs. Holds the canonical Name plus
 -- optional biographical metadata. The five song-credit tables above
@@ -232,19 +256,33 @@ CREATE TABLE IF NOT EXISTS tblSongTranslators (
 -- intact.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblCreditPeople (
-    Id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
-    Name        VARCHAR(255)    NOT NULL,
-    Notes       TEXT            NULL,
-    BirthPlace  VARCHAR(255)    NULL,
-    BirthDate   DATE            NULL,
-    DeathPlace  VARCHAR(255)    NULL,
-    DeathDate   DATE            NULL,
-    CreatedAt   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UpdatedAt   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
-                                ON UPDATE CURRENT_TIMESTAMP,
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    Name            VARCHAR(255)    NOT NULL,
+    /* URL-safe slug (#588) — backfilled from Name with collision-safe
+       numeric suffixes so two "John Smith" rows still map to two
+       distinct slugs. Used for the public /people/<slug> page. */
+    Slug            VARCHAR(255)    NULL UNIQUE,
+    /* Special-case + Group flags (#584 / #585) — distinguish
+       Anonymous / Traditional / Public Domain / Unknown ("special
+       case") from real individuals, and Hillsong United / Bethel
+       Music ("group / collective") from solo writers. Both flags
+       feed UI rules in the Credit People editor (e.g. disable
+       birth/death fields when special case; relabel dates as
+       Founded/Disbanded when group). */
+    IsSpecialCase   TINYINT(1)      NOT NULL DEFAULT 0,
+    IsGroup         TINYINT(1)      NOT NULL DEFAULT 0,
+    Notes           TEXT            NULL,
+    BirthPlace      VARCHAR(255)    NULL,
+    BirthDate       DATE            NULL,
+    DeathPlace      VARCHAR(255)    NULL,
+    DeathDate       DATE            NULL,
+    CreatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                    ON UPDATE CURRENT_TIMESTAMP,
 
     UNIQUE KEY uk_Name (Name),
-    INDEX idx_Name (Name)
+    INDEX idx_Name (Name),
+    INDEX idx_Slug (Slug)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -378,6 +416,7 @@ CREATE TABLE IF NOT EXISTS tblUsers (
     LastLoginAt     TIMESTAMP       NULL DEFAULT NULL COMMENT 'Last successful login timestamp',
     LoginCount      INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'Total successful login count',
     Settings        JSON            NULL DEFAULT NULL COMMENT 'Synced per-user app preferences (theme, font, accessibility, etc.)',
+    AvatarService   VARCHAR(20)     NULL DEFAULT NULL COMMENT 'Avatar resolver: gravatar, libravatar, dicebear, none. NULL = use site default. (#616)',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
@@ -586,6 +625,37 @@ CREATE TABLE IF NOT EXISTS tblOrganisationMembers (
         ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT fk_OrgMember_Org
         FOREIGN KEY (OrgId) REFERENCES tblOrganisations(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblOrganisationLicences
+-- Multi-licence-per-org join table (#640). An organisation can hold
+-- several licence types in parallel — e.g. CCLI for the lyrics + MRL
+-- for the print rights — each with its own number, expiry, and
+-- active flag. The original tblOrganisations.LicenceType /
+-- LicenceNumber columns remain as the "primary" licence and are
+-- mirrored into a row in this table; additional licences live only
+-- here. Created via migrate-organisation-licences.php.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblOrganisationLicences (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    OrganisationId  INT UNSIGNED    NOT NULL,
+    LicenceType     VARCHAR(30)     NOT NULL COMMENT 'ccli, mrl, ihymns_basic, ihymns_pro, custom',
+    LicenceNumber   VARCHAR(100)    NOT NULL DEFAULT '',
+    IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
+    ExpiresAt       TIMESTAMP       NULL DEFAULT NULL,
+    Notes           TEXT            NULL DEFAULT NULL,
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uniq_OrgLicence (OrganisationId, LicenceType),
+    INDEX idx_LicenceType (LicenceType),
+    INDEX idx_IsActive    (IsActive),
+
+    CONSTRAINT fk_OrgLicence_Org
+        FOREIGN KEY (OrganisationId) REFERENCES tblOrganisations(Id)
         ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

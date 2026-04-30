@@ -71,32 +71,70 @@ function _schemaAudit_parseSchema(string $schemaSql): array
     foreach ($matches as $m) {
         $tableName = $m[1];
         $body      = $m[2];
-        $columns   = [];
 
-        foreach (preg_split('/\r?\n/', $body) as $rawLine) {
-            $line = trim($rawLine);
-            if ($line === '' || str_starts_with($line, '--') || str_starts_with($line, '/*')) {
+        /* Strip multi-line block comments first — otherwise lines inside
+           a /* … *\/ block (which themselves don't start with /* on the
+           current line) get read as phantom column declarations. The
+           previous parser flagged "fill" + "catalogue" as uncovered
+           columns because they appeared at the start of body-comment
+           lines on tblSongbooks. (#722 parser fix) */
+        $body = preg_replace('/\/\*.*?\*\//s', '', $body);
+
+        /* Split into top-level segments at commas, ignoring commas
+           inside parentheses (so ENUM('success','failure','error') stays
+           in one segment, not three). Each segment is exactly one column
+           declaration OR one table-level constraint — irrespective of
+           how many lines it spans. The previous newline-based split read
+           the SECOND line of multi-line column declarations as a
+           phantom column (e.g. the "COMMENT '...'" continuation of
+           tblActivityLog.Result was flagged as a column called COMMENT). */
+        $segments = [];
+        $depth = 0;
+        $buf   = '';
+        for ($i = 0, $n = strlen($body); $i < $n; $i++) {
+            $ch = $body[$i];
+            if ($ch === "'" ) {
+                /* Skip over string literal — quotes can wrap commas. */
+                $buf .= $ch;
+                $i++;
+                while ($i < $n) {
+                    $buf .= $body[$i];
+                    if ($body[$i] === "'" && (($i + 1) >= $n || $body[$i + 1] !== "'")) break;
+                    $i++;
+                }
                 continue;
             }
-            /* Skip table-level constraints AND constraint-continuation lines.
-               Catches:
-                 - PRIMARY KEY / KEY / UNIQUE / INDEX / FULLTEXT / SPATIAL
-                 - CONSTRAINT … FOREIGN KEY … REFERENCES …
-                 - The continuation line of a multi-line FOREIGN KEY:
-                       …REFERENCES tblX(Id)
-                           ON DELETE SET NULL ON UPDATE CASCADE
-                   — the second line starts with `ON`, which a naïve column
-                   parser would otherwise read as a column literally named
-                   "ON". Same for the FULLTEXT / SPATIAL index forms which
-                   start with their own keyword (not INDEX). */
+            if ($ch === '(') $depth++;
+            if ($ch === ')') $depth--;
+            if ($ch === ',' && $depth === 0) {
+                $segments[] = $buf;
+                $buf = '';
+                continue;
+            }
+            $buf .= $ch;
+        }
+        if (trim($buf) !== '') {
+            $segments[] = $buf;
+        }
+
+        $columns = [];
+        foreach ($segments as $segment) {
+            /* Strip line comments + collapse whitespace so the leading
+               keyword check sees the segment cleanly. */
+            $segment = preg_replace('/--[^\n]*/', '', $segment);
+            $segment = trim(preg_replace('/\s+/', ' ', $segment));
+            if ($segment === '') continue;
+
+            /* Skip table-level constraints (PRIMARY KEY / INDEX / etc.). */
             if (preg_match(
-                '/^(PRIMARY\s+KEY|INDEX|UNIQUE|KEY|CONSTRAINT|FOREIGN\s+KEY|FULLTEXT|SPATIAL|ON\s+(DELETE|UPDATE))\b/i',
-                $line
+                '/^(PRIMARY\s+KEY|INDEX|UNIQUE|KEY|CONSTRAINT|FOREIGN\s+KEY|FULLTEXT|SPATIAL)\b/i',
+                $segment
             )) {
                 continue;
             }
-            /* Column line: starts with `Name` or `\`Name\`` followed by a type. */
-            if (preg_match('/^`?([A-Za-z_][A-Za-z0-9_]*)`?\s+/', $line, $cm)) {
+            /* Column declaration: starts with Name (optionally backtick-quoted)
+               followed by a type. */
+            if (preg_match('/^`?([A-Za-z_][A-Za-z0-9_]*)`?\s+/', $segment, $cm)) {
                 $columns[] = $cm[1];
             }
         }
