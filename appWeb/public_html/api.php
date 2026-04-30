@@ -56,6 +56,10 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'card_layout.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+/* Shared songbook validators (#719 PR 2a). Same rules used by
+   /manage/songbooks.php so a tweak to abbrev / colour / IETF-tag
+   grammar lands on the web admin and the API surface in one go. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_validation.php';
 
 /* =========================================================================
  * CSRF DEFENCE POLICY (#293 / B15)
@@ -5742,6 +5746,791 @@ if ($action !== null) {
                 sendJson(['error' => 'Could not mark as read.'], 500);
             }
             break;
+
+        /* =================================================================
+         * SONGBOOKS — admin CRUD parity (#719 PR 2a)
+         *
+         * Mirrors the web-admin POST handlers in /manage/songbooks.php so
+         * native clients (Apple, Android, FireOS) can perform songbook
+         * curation without a webview. Field names are JSON-body snake_case
+         * to match the rest of /api.php; the underlying SQL writes the
+         * same column set as the web admin.
+         *
+         * Auth: admin / global_admin role only — same gate that grants the
+         * `manage_songbooks` entitlement (see includes/entitlements.php).
+         *
+         * Activity-log verb prefix is `api.admin.songbook.*` so a curator
+         * scanning /manage/activity-log can tell API-driven changes apart
+         * from web-UI changes (which still log under `songbook.*`).
+         *
+         * Validation lives in includes/songbook_validation.php — the same
+         * file the web admin uses. One source of truth for abbreviation,
+         * colour, and IETF BCP 47 language-tag rules.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: create a songbook
+         * POST body: {
+         *   abbreviation, name, display_order?, colour?,
+         *   is_official?, publisher?, publication_year?,
+         *   copyright?, affiliation?, language?,
+         *   website_url?, internet_archive_url?, wikipedia_url?,
+         *   wikidata_id?, oclc_number?, ocn_number?, lcp_number?,
+         *   isbn?, ark_id?, isni_id?, viaf_id?, lccn?, lc_class?
+         * }
+         * Empty colour triggers the auto-pick palette (#677). Conflict on
+         * duplicate abbreviation returns 409. Returns 201 + new id +
+         * resolved colour so the caller can render the badge immediately.
+         * ----------------------------------------------------------------- */
+        case 'admin_songbook_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+
+            $abbr     = trim((string)($body['abbreviation']  ?? ''));
+            $name     = trim((string)($body['name']          ?? ''));
+            $colour   = trim((string)($body['colour']        ?? ''));
+            $order    = (int)($body['display_order']         ?? 0);
+            $isOfficial = !empty($body['is_official']) ? 1 : 0;
+            $publisher  = trim((string)($body['publisher']        ?? '')) ?: null;
+            $pubYear    = trim((string)($body['publication_year'] ?? '')) ?: null;
+            $copyright  = trim((string)($body['copyright']        ?? '')) ?: null;
+            $affiliation= trim((string)($body['affiliation']      ?? '')) ?: null;
+
+            /* Optional language tag (#673 / #681). Cap to column width
+               (35 chars) before validating so a crafted-long tag can't
+               smuggle past the regex via mid-string truncation. */
+            $language   = trim((string)($body['language']         ?? '')) ?: null;
+            if ($language !== null) {
+                $language = mb_substr($language, 0, 35);
+                if ($e = validateSongbookBcp47($language)) {
+                    sendJson(['error' => $e], 400);
+                    break;
+                }
+            }
+
+            $websiteUrl   = trim((string)($body['website_url']         ?? '')) ?: null;
+            $iaUrl        = trim((string)($body['internet_archive_url']?? '')) ?: null;
+            $wikipediaUrl = trim((string)($body['wikipedia_url']       ?? '')) ?: null;
+            $wikidataId   = trim((string)($body['wikidata_id']         ?? '')) ?: null;
+            $oclcNumber   = trim((string)($body['oclc_number']         ?? '')) ?: null;
+            $ocnNumber    = trim((string)($body['ocn_number']          ?? '')) ?: null;
+            $lcpNumber    = trim((string)($body['lcp_number']          ?? '')) ?: null;
+            $isbn         = trim((string)($body['isbn']                ?? '')) ?: null;
+            $arkId        = trim((string)($body['ark_id']              ?? '')) ?: null;
+            $isniId       = trim((string)($body['isni_id']             ?? '')) ?: null;
+            $viafId       = trim((string)($body['viaf_id']             ?? '')) ?: null;
+            $lccn         = trim((string)($body['lccn']                ?? '')) ?: null;
+            $lcClass      = trim((string)($body['lc_class']            ?? '')) ?: null;
+
+            if ($e = validateSongbookAbbr($abbr)) {
+                sendJson(['error' => $e], 400);
+                break;
+            }
+            if ($name === '') {
+                sendJson(['error' => 'Name is required.'], 400);
+                break;
+            }
+            if ($e = validateSongbookColour($colour)) {
+                sendJson(['error' => $e], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+
+                /* Auto-colour fallback (#677) — palette helper lives in
+                   the manage tree because that's where the seed colours
+                   are documented. Lazy-loaded so the read paths above
+                   don't pay the include cost. */
+                if ($colour === '') {
+                    require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                               . 'includes'  . DIRECTORY_SEPARATOR . 'songbook-palette.php';
+                    $colour = pickAutoSongbookColour($db, $abbr);
+                }
+
+                $stmt = $db->prepare('SELECT Id FROM tblSongbooks WHERE Abbreviation = ?');
+                $stmt->bind_param('s', $abbr);
+                $stmt->execute();
+                $exists = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($exists) {
+                    sendJson(['error' => 'Abbreviation already exists.'], 409);
+                    break;
+                }
+
+                $stmt = $db->prepare(
+                    'INSERT INTO tblSongbooks
+                        (Abbreviation, Name, DisplayOrder, Colour,
+                         IsOfficial, Publisher, PublicationYear, Copyright, Affiliation,
+                         Language,
+                         WebsiteUrl, InternetArchiveUrl, WikipediaUrl, WikidataId,
+                         OclcNumber, OcnNumber, LcpNumber, Isbn, ArkId, IsniId,
+                         ViafId, Lccn, LcClass)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                             ?,
+                             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                );
+                /* 23-char type string mirrors the web admin save (#694
+                   regression check): ssis (Abbr,Name,Order,Colour) +
+                   isssss (IsOfficial,Publisher,Year,Copyright,Affiliation)
+                   + s (Language) + 13s (bibliographic identifiers). */
+                $orderInt = (int)($order ?: 0);
+                $stmt->bind_param(
+                    'ssisissssssssssssssssss',
+                    $abbr, $name, $orderInt, $colour,
+                    $isOfficial, $publisher, $pubYear, $copyright, $affiliation,
+                    $language,
+                    $websiteUrl, $iaUrl, $wikipediaUrl, $wikidataId,
+                    $oclcNumber, $ocnNumber, $lcpNumber, $isbn, $arkId, $isniId,
+                    $viafId, $lccn, $lcClass
+                );
+                $stmt->execute();
+                $newId = (int)$db->insert_id;
+                $stmt->close();
+
+                logActivity('api.admin.songbook.create', 'songbook', (string)$newId, [
+                    'abbreviation'    => $abbr,
+                    'name'            => $name,
+                    'display_order'   => $orderInt,
+                    'colour'          => $colour,
+                    'is_official'     => (bool)$isOfficial,
+                    'publisher'       => $publisher,
+                    'publication_year'=> $pubYear,
+                    'copyright'       => $copyright,
+                    'affiliation'     => $affiliation,
+                    'language'        => $language,
+                    'bibliographic'   => array_filter([
+                        'website_url'           => $websiteUrl,
+                        'internet_archive_url'  => $iaUrl,
+                        'wikipedia_url'         => $wikipediaUrl,
+                        'wikidata_id'           => $wikidataId,
+                        'oclc_number'           => $oclcNumber,
+                        'ocn_number'            => $ocnNumber,
+                        'lcp_number'            => $lcpNumber,
+                        'isbn'                  => $isbn,
+                        'ark_id'                => $arkId,
+                        'isni_id'               => $isniId,
+                        'viaf_id'               => $viafId,
+                        'lccn'                  => $lccn,
+                        'lc_class'              => $lcClass,
+                    ], fn($v) => $v !== null && $v !== ''),
+                ]);
+
+                /* Self-populate affiliation registry (#670). */
+                registerSongbookAffiliation($db, $affiliation);
+
+                sendJson([
+                    'ok'           => true,
+                    'id'           => $newId,
+                    'abbreviation' => $abbr,
+                    'colour'       => $colour,
+                ], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.songbook.create', 'songbook', '', $e, [
+                    'abbreviation' => $abbr,
+                ]);
+                error_log('[admin_songbook_create] ' . $e->getMessage());
+                sendJson(['error' => 'Could not create songbook.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: update a songbook
+         * POST body: {
+         *   id (required),
+         *   name, colour, display_order,
+         *   new_abbreviation? (rename — opt-in),
+         *   rename_song_refs? (cascade abbr to tblSongs.SongbookAbbr),
+         *   …same metadata fields as create
+         * }
+         * Returns 200 + ok + list of changed fields. The before/after rows
+         * are written to the activity log so the timeline reader sees
+         * exactly what the call mutated.
+         * ----------------------------------------------------------------- */
+        case 'admin_songbook_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+
+            $id          = (int)($body['id'] ?? 0);
+            if ($id <= 0) {
+                sendJson(['error' => 'Songbook id required.'], 400);
+                break;
+            }
+            $name        = trim((string)($body['name']         ?? ''));
+            $colour      = trim((string)($body['colour']       ?? ''));
+            $order       = (int)($body['display_order']        ?? 0);
+            $newAbbr     = trim((string)($body['new_abbreviation'] ?? ''));
+            $alsoRename  = !empty($body['rename_song_refs']);
+            $isOfficial  = !empty($body['is_official']) ? 1 : 0;
+            $publisher   = trim((string)($body['publisher']        ?? '')) ?: null;
+            $pubYear     = trim((string)($body['publication_year'] ?? '')) ?: null;
+            $copyright   = trim((string)($body['copyright']        ?? '')) ?: null;
+            $affiliation = trim((string)($body['affiliation']      ?? '')) ?: null;
+
+            $language    = trim((string)($body['language']         ?? '')) ?: null;
+            if ($language !== null) {
+                $language = mb_substr($language, 0, 35);
+                if ($e = validateSongbookBcp47($language)) {
+                    sendJson(['error' => $e], 400);
+                    break;
+                }
+            }
+
+            $websiteUrl   = trim((string)($body['website_url']         ?? '')) ?: null;
+            $iaUrl        = trim((string)($body['internet_archive_url']?? '')) ?: null;
+            $wikipediaUrl = trim((string)($body['wikipedia_url']       ?? '')) ?: null;
+            $wikidataId   = trim((string)($body['wikidata_id']         ?? '')) ?: null;
+            $oclcNumber   = trim((string)($body['oclc_number']         ?? '')) ?: null;
+            $ocnNumber    = trim((string)($body['ocn_number']          ?? '')) ?: null;
+            $lcpNumber    = trim((string)($body['lcp_number']          ?? '')) ?: null;
+            $isbn         = trim((string)($body['isbn']                ?? '')) ?: null;
+            $arkId        = trim((string)($body['ark_id']              ?? '')) ?: null;
+            $isniId       = trim((string)($body['isni_id']             ?? '')) ?: null;
+            $viafId       = trim((string)($body['viaf_id']             ?? '')) ?: null;
+            $lccn         = trim((string)($body['lccn']                ?? '')) ?: null;
+            $lcClass      = trim((string)($body['lc_class']            ?? '')) ?: null;
+
+            if ($name === '') {
+                sendJson(['error' => 'Name is required.'], 400);
+                break;
+            }
+            if ($e = validateSongbookColour($colour)) {
+                sendJson(['error' => $e], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+
+                /* Capture the full before-row for diff-aware audit logs (#535).
+                   Match the web admin's SELECT shape exactly so the diff key set
+                   stays consistent across both surfaces. */
+                $existing = $db->prepare(
+                    'SELECT Abbreviation, Name, DisplayOrder, Colour, IsOfficial,
+                            Publisher, PublicationYear, Copyright, Affiliation,
+                            Language,
+                            WebsiteUrl, InternetArchiveUrl, WikipediaUrl, WikidataId,
+                            OclcNumber, OcnNumber, LcpNumber, Isbn, ArkId, IsniId,
+                            ViafId, Lccn, LcClass
+                       FROM tblSongbooks WHERE Id = ?'
+                );
+                $existing->bind_param('i', $id);
+                $existing->execute();
+                $beforeRow = $existing->get_result()->fetch_assoc() ?: null;
+                $existing->close();
+                $oldAbbr = $beforeRow ? (string)$beforeRow['Abbreviation'] : '';
+                if ($oldAbbr === '') {
+                    sendJson(['error' => 'Songbook not found.'], 404);
+                    break;
+                }
+
+                $abbrChanged = $newAbbr !== '' && $newAbbr !== $oldAbbr;
+                if ($abbrChanged) {
+                    if ($e = validateSongbookAbbr($newAbbr)) {
+                        sendJson(['error' => $e], 400);
+                        break;
+                    }
+                    $dup = $db->prepare('SELECT Id FROM tblSongbooks WHERE Abbreviation = ? AND Id <> ?');
+                    $dup->bind_param('si', $newAbbr, $id);
+                    $dup->execute();
+                    $dupExists = $dup->get_result()->fetch_row() !== null;
+                    $dup->close();
+                    if ($dupExists) {
+                        sendJson(['error' => 'That abbreviation is already taken.'], 409);
+                        break;
+                    }
+                }
+
+                $db->begin_transaction();
+                try {
+                    $stmt = $db->prepare(
+                        'UPDATE tblSongbooks
+                            SET Name = ?, Colour = ?, DisplayOrder = ?,
+                                IsOfficial = ?, Publisher = ?,
+                                PublicationYear = ?, Copyright = ?, Affiliation = ?,
+                                Language = ?,
+                                WebsiteUrl = ?, InternetArchiveUrl = ?,
+                                WikipediaUrl = ?, WikidataId = ?,
+                                OclcNumber = ?, OcnNumber = ?, LcpNumber = ?,
+                                Isbn = ?, ArkId = ?, IsniId = ?,
+                                ViafId = ?, Lccn = ?, LcClass = ?
+                          WHERE Id = ?'
+                    );
+                    /* 23-char type string: ssi (Name,Colour,Order)
+                       + issss (IsOfficial,Publisher,Year,Copyright,Affiliation)
+                       + s (Language) + 13s (bibliographic) + i (Id). */
+                    $orderInt = (int)($order ?: 0);
+                    $stmt->bind_param(
+                        'ssiissssssssssssssssssi',
+                        $name, $colour, $orderInt,
+                        $isOfficial, $publisher, $pubYear, $copyright, $affiliation,
+                        $language,
+                        $websiteUrl, $iaUrl, $wikipediaUrl, $wikidataId,
+                        $oclcNumber, $ocnNumber, $lcpNumber, $isbn, $arkId, $isniId,
+                        $viafId, $lccn, $lcClass,
+                        $id
+                    );
+                    $stmt->execute();
+                    $stmt->close();
+
+                    if ($abbrChanged) {
+                        $stmt = $db->prepare('UPDATE tblSongbooks SET Abbreviation = ? WHERE Id = ?');
+                        $stmt->bind_param('si', $newAbbr, $id);
+                        $stmt->execute();
+                        $stmt->close();
+                        if ($alsoRename) {
+                            $stmt = $db->prepare('UPDATE tblSongs SET SongbookAbbr = ? WHERE SongbookAbbr = ?');
+                            $stmt->bind_param('ss', $newAbbr, $oldAbbr);
+                            $stmt->execute();
+                            $stmt->close();
+                        }
+                    }
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                /* Audit (#535) — narrow the row to the actually-changed
+                   fields so the timeline reader doesn't have to skim
+                   identical before/after pairs. */
+                $afterRow = [
+                    'Abbreviation'      => $abbrChanged ? $newAbbr : $oldAbbr,
+                    'Name'              => $name,
+                    'DisplayOrder'      => (int)($order ?: 0),
+                    'Colour'            => $colour,
+                    'IsOfficial'        => $isOfficial,
+                    'Publisher'         => $publisher,
+                    'PublicationYear'   => $pubYear,
+                    'Copyright'         => $copyright,
+                    'Affiliation'       => $affiliation,
+                    'Language'          => $language,
+                    'WebsiteUrl'        => $websiteUrl,
+                    'InternetArchiveUrl'=> $iaUrl,
+                    'WikipediaUrl'      => $wikipediaUrl,
+                    'WikidataId'        => $wikidataId,
+                    'OclcNumber'        => $oclcNumber,
+                    'OcnNumber'         => $ocnNumber,
+                    'LcpNumber'         => $lcpNumber,
+                    'Isbn'              => $isbn,
+                    'ArkId'             => $arkId,
+                    'IsniId'            => $isniId,
+                    'ViafId'            => $viafId,
+                    'Lccn'              => $lccn,
+                    'LcClass'           => $lcClass,
+                ];
+                $changed = [];
+                foreach ($afterRow as $k => $v) {
+                    if (!array_key_exists($k, $beforeRow ?? [])) continue;
+                    if ((string)$beforeRow[$k] !== (string)$v) $changed[] = $k;
+                }
+                logActivity('api.admin.songbook.edit', 'songbook', (string)$id, [
+                    'fields'             => $changed,
+                    'before'             => array_intersect_key($beforeRow, array_flip($changed)),
+                    'after'              => array_intersect_key($afterRow,  array_flip($changed)),
+                    'songs_renamed_too'  => $alsoRename && $abbrChanged,
+                ]);
+
+                if (in_array('Affiliation', $changed, true)) {
+                    registerSongbookAffiliation($db, $affiliation);
+                }
+
+                sendJson([
+                    'ok'             => true,
+                    'id'             => $id,
+                    'abbreviation'   => $abbrChanged ? $newAbbr : $oldAbbr,
+                    'fields_changed' => $changed,
+                    'songs_renamed'  => $alsoRename && $abbrChanged,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.songbook.edit', 'songbook', (string)$id, $e);
+                error_log('[admin_songbook_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update songbook.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete an empty songbook
+         * POST body: { id }
+         * Refuses if any song still references the abbreviation — the
+         * caller must reassign or use admin_songbook_delete_cascade.
+         * Returns 422 (cannot delete) when the dependency check fails so
+         * native UIs can distinguish "wrong id" (404) from "not safe yet".
+         * ----------------------------------------------------------------- */
+        case 'admin_songbook_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) {
+                sendJson(['error' => 'Songbook id required.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+
+                $stmt = $db->prepare('SELECT Abbreviation FROM tblSongbooks WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $abbr = (string)($row[0] ?? '');
+                if ($abbr === '') {
+                    sendJson(['error' => 'Songbook not found.'], 404);
+                    break;
+                }
+
+                $stmt = $db->prepare('SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?');
+                $stmt->bind_param('s', $abbr);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $songCount = (int)($row[0] ?? 0);
+                if ($songCount > 0) {
+                    sendJson([
+                        'error'        => "Cannot delete '{$abbr}': {$songCount} song(s) still reference it.",
+                        'song_count'   => $songCount,
+                        'abbreviation' => $abbr,
+                        'hint'         => 'Reassign the songs OR call admin_songbook_delete_cascade.',
+                    ], 422);
+                    break;
+                }
+
+                $stmt = $db->prepare('DELETE FROM tblSongbooks WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.admin.songbook.delete', 'songbook', (string)$id, [
+                    'abbreviation' => $abbr,
+                ]);
+
+                sendJson([
+                    'ok'           => true,
+                    'id'           => $id,
+                    'abbreviation' => $abbr,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.songbook.delete', 'songbook', (string)$id, $e);
+                error_log('[admin_songbook_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete songbook.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: cascade delete (songbook + every song + every credit /
+         * tag / chord / translation that referenced those songs)
+         * POST body: { id, confirm_abbreviation }
+         * Server-side typed-confirmation gate mirrors the web admin
+         * defence-in-depth check (#706). Admin / global_admin only.
+         * Returns 200 + song_count so the caller can render an honest
+         * "deleted N songs" toast.
+         * ----------------------------------------------------------------- */
+        case 'admin_songbook_delete_cascade': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) {
+                sendJson(['error' => 'Songbook id required.'], 400);
+                break;
+            }
+            $typed = trim((string)($body['confirm_abbreviation'] ?? ''));
+
+            try {
+                $db = getDbMysqli();
+
+                $stmt = $db->prepare('SELECT Abbreviation FROM tblSongbooks WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $abbr = (string)($row[0] ?? '');
+                if ($abbr === '') {
+                    sendJson(['error' => 'Songbook not found.'], 404);
+                    break;
+                }
+                if ($typed !== $abbr) {
+                    sendJson([
+                        'error' => "Cascade delete cancelled — confirm_abbreviation must equal the songbook abbreviation '{$abbr}' exactly.",
+                    ], 400);
+                    break;
+                }
+
+                $stmt = $db->prepare('SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?');
+                $stmt->bind_param('s', $abbr);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $songCount = (int)($row[0] ?? 0);
+
+                $db->begin_transaction();
+                try {
+                    /* DELETE the songs — cascades to every credit / tag /
+                       chord / translation / artist / request-resolved
+                       reference / etc. via the FK ON DELETE CASCADE rules.
+                       The FK on SongbookAbbr is ON DELETE RESTRICT so we
+                       MUST delete the songs first; then the songbook row
+                       goes cleanly. */
+                    $stmt = $db->prepare('DELETE FROM tblSongs WHERE SongbookAbbr = ?');
+                    $stmt->bind_param('s', $abbr);
+                    $stmt->execute();
+                    $stmt->close();
+
+                    $stmt = $db->prepare('DELETE FROM tblSongbooks WHERE Id = ?');
+                    $stmt->bind_param('i', $id);
+                    $stmt->execute();
+                    $stmt->close();
+
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                logActivity('api.admin.songbook.delete_cascade', 'songbook', (string)$id, [
+                    'abbreviation' => $abbr,
+                    'song_count'   => $songCount,
+                ]);
+
+                sendJson([
+                    'ok'           => true,
+                    'id'           => $id,
+                    'abbreviation' => $abbr,
+                    'song_count'   => $songCount,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.songbook.delete_cascade', 'songbook', (string)$id, $e);
+                error_log('[admin_songbook_delete_cascade] ' . $e->getMessage());
+                sendJson(['error' => 'Could not cascade-delete songbook.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: bulk reorder
+         * POST body: { display_order: { "<id>": <int>, ... } }
+         * Single transaction; one activity-log row for the bulk op.
+         * ----------------------------------------------------------------- */
+        case 'admin_songbooks_reorder': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orders = $body['display_order'] ?? null;
+            if (!is_array($orders) || empty($orders)) {
+                sendJson(['error' => 'display_order map (id => order) required.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $db->begin_transaction();
+                $count = 0;
+                try {
+                    $stmt = $db->prepare('UPDATE tblSongbooks SET DisplayOrder = ? WHERE Id = ?');
+                    foreach ($orders as $rowId => $value) {
+                        $valueInt = (int)$value;
+                        $idInt    = (int)$rowId;
+                        if ($idInt <= 0) continue;
+                        $stmt->bind_param('ii', $valueInt, $idInt);
+                        $stmt->execute();
+                        $count++;
+                    }
+                    $stmt->close();
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                logActivity('api.admin.songbook.reorder', 'songbook', '', [
+                    'count' => $count,
+                    'order' => array_map(fn($v) => (int)$v, (array)$orders),
+                ]);
+
+                sendJson(['ok' => true, 'count' => $count]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.songbook.reorder', 'songbook', '', $e);
+                error_log('[admin_songbooks_reorder] ' . $e->getMessage());
+                sendJson(['error' => 'Could not reorder songbooks.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: auto-colour fill (NULL/blank colours only)
+         * POST body: {}
+         * Walks tblSongbooks; rows without a valid #RRGGBB get a
+         * freshly-picked palette colour. Existing values left alone.
+         * Admin / global_admin only.
+         * ----------------------------------------------------------------- */
+        case 'admin_songbooks_auto_colour_fill': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                           . 'includes'  . DIRECTORY_SEPARATOR . 'songbook-palette.php';
+
+                $stmt = $db->prepare('SELECT Id, Abbreviation, Colour FROM tblSongbooks ORDER BY Id');
+                $stmt->execute();
+                $books = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+
+                $db->begin_transaction();
+                $changed = 0;
+                try {
+                    $up = $db->prepare('UPDATE tblSongbooks SET Colour = ? WHERE Id = ?');
+                    foreach ($books as $b) {
+                        $existing = trim((string)($b['Colour'] ?? ''));
+                        if (preg_match('/^#[0-9A-Fa-f]{6}$/', $existing)) continue;
+                        $newColour = pickAutoSongbookColour($db, (string)$b['Abbreviation']);
+                        $bookId    = (int)$b['Id'];
+                        $up->bind_param('si', $newColour, $bookId);
+                        $up->execute();
+                        $changed++;
+                    }
+                    $up->close();
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                logActivity('api.admin.songbook.auto_colour_fill', 'songbook', '', [
+                    'count' => $changed,
+                    'mode'  => 'fill',
+                ]);
+
+                sendJson(['ok' => true, 'changed' => $changed, 'mode' => 'fill']);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.songbook.auto_colour_fill', 'songbook', '', $e);
+                error_log('[admin_songbooks_auto_colour_fill] ' . $e->getMessage());
+                sendJson(['error' => 'Could not auto-fill colours.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: auto-colour reassign (every row gets a fresh colour)
+         * POST body: { confirm_phrase: "REASSIGN ALL" }
+         * Destructive — overwrites every Colour. Server-side phrase gate
+         * mirrors the web admin's defence-in-depth check. Admin /
+         * global_admin only.
+         * ----------------------------------------------------------------- */
+        case 'admin_songbooks_auto_colour_reassign': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body  = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $typed = trim((string)($body['confirm_phrase'] ?? ''));
+            if ($typed !== 'REASSIGN ALL') {
+                sendJson(['error' => 'Reassign-all needs confirm_phrase="REASSIGN ALL".'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                           . 'includes'  . DIRECTORY_SEPARATOR . 'songbook-palette.php';
+
+                $stmt = $db->prepare('SELECT Id, Abbreviation FROM tblSongbooks ORDER BY Id');
+                $stmt->execute();
+                $books = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+
+                $db->begin_transaction();
+                $changed = 0;
+                try {
+                    $up = $db->prepare('UPDATE tblSongbooks SET Colour = ? WHERE Id = ?');
+                    foreach ($books as $b) {
+                        $newColour = pickAutoSongbookColour($db, (string)$b['Abbreviation']);
+                        $bookId    = (int)$b['Id'];
+                        $up->bind_param('si', $newColour, $bookId);
+                        $up->execute();
+                        $changed++;
+                    }
+                    $up->close();
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                logActivity('api.admin.songbook.auto_colour_reassign', 'songbook', '', [
+                    'count' => $changed,
+                    'mode'  => 'reassign',
+                ]);
+
+                sendJson(['ok' => true, 'changed' => $changed, 'mode' => 'reassign']);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.songbook.auto_colour_reassign', 'songbook', '', $e);
+                error_log('[admin_songbooks_auto_colour_reassign] ' . $e->getMessage());
+                sendJson(['error' => 'Could not reassign colours.'], 500);
+            }
+            break;
+        }
 
         /* -----------------------------------------------------------------
          * Unknown action
