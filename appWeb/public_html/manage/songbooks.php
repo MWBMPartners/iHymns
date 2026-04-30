@@ -757,6 +757,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     } catch (\Throwable $e) {
         error_log('[manage/songbooks.php] ' . $e->getMessage());
+        /* Surface the failure in the in-app Activity Log too, so a
+           curator who hits this banner can see what actually went
+           wrong without SSH'ing the host (#695). The action ties
+           every failed admin save under one searchable verb so the
+           viewer's "show errors" filter is one click. */
+        logActivityError('admin.songbooks.save', 'songbook',
+            (string)($_POST['id'] ?? ''), $e, [
+                'action' => $_POST['action'] ?? null,
+            ]);
         $error = $error ?: 'Database error — check server logs for details.';
     }
 }
