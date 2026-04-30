@@ -12,9 +12,9 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 - **Copyright**: © 2026– MWBM Partners Ltd
 - **License**: Proprietary (third-party components retain their own licenses)
 - **GitHub Repo**: <https://github.com/MWBMPartners/iHymns>
-- **Current Version**: 0.25.0 Alpha (pre-release, Phase 1)
-- **Database**: MySQL 5.7+ (~40 tables, tblCamelCase naming). Songbook metadata extended in 2026-04 with bibliographic + authority-control identifiers (#672), an Affiliation registry (#670), and an optional Language column (#673 → IETF BCP 47 in #681)
-- **API**: 60+ JSON endpoints via `api.php`, plus the editor's separate `/manage/editor/api.php` (load / save_song / bulk_import_zip / typeaheads)
+- **Current Version**: 0.50.0 Alpha (pre-release, Phase 1) — bumped at the end of the 2026-04 #670–#681 / #687 / #676 batch
+- **Database**: MySQL 5.7+ (~40 tables, tblCamelCase naming). Songbook metadata extended in 2026-04 with bibliographic + authority-control identifiers (#672), an Affiliation registry (#670), an optional Language column (#673 → composite IETF BCP 47 with `tblScripts` + `tblRegions` in #681), an `tblBulkImportJobs` async job table (#676), and Activity Log Result/Details columns for in-app error visibility (#695)
+- **API**: 60+ JSON endpoints via `api.php` (now including public `action=scripts` + `action=regions` listings for native clients, #682), plus the editor's separate `/manage/editor/api.php` (load / save_song / bulk_import_zip / bulk_import_status / typeaheads). OpenAPI 3.0 spec at `appWeb/public_html/api-docs.yaml` (#291 / refreshed #682)
 
 ---
 
@@ -25,7 +25,8 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 - Songs sourced from local `.SourceSongData/` text files
 - Parsed into JSON (`data/songs.json`), then migrated into **MySQL database**
 - ~30 songbooks, 12,370+ songs after the CIS scrape (#663 / 2026-04-29). Original five English: CP (243), JP (617), MP (1355), SDAH (695), CH (702); plus 23 multi-language CIS hymnals (Spanish HA, Portuguese HASD, French DLG, Russian GASD, Twi TWI, Tonga TKMN, Tswana KMK, Sotho KP, Chichewa KMN, Shona KMNz, Venda NYD, Swahili NZK, Ndebele UKE, Xhosa UKEng, Xitsonga RRV, Gikuyu NCA, Abagusii OKON, Dholuo WN, Kinyarwanda IZGI, Tumbuka NMSDA, Sepedi KKK, Bemba BKMN, English CIS) plus Misc + AH/AYS/NAH placeholder books
-- MySQL with MySQLi prepared statements (song data) and PDO (auth/admin)
+- Multilingual sister-site scraper expansion (#699 Phase A + B, 2026-04-30): the SDAHymnal scraper now covers 12 sites — sdah, ch, ha (es), nha (es), hasd (pt), hl (fr), ia (it), hac (sr-Latn), hp (bg), hjp (mk), pes (sr-Cyrl), pj (hr) — plus an opt-in cross-source integrity check (`--prefer-source`) that diffs ChristInSong extracts against fresh scrapes. Audit findings in `.importers/audits/2026-04-30-cross-source-integrity.md`: English sources match perfectly; HASD has ~11% real data-quality issues (Latin-1 → Latin-2 encoding corruption + OCR-style errors in CIS — SDAHymnal is the cleaner source).
+- MySQL with mysqli prepared statements throughout (PDO removed via #554/#555; project-wide auto-memory enforces this)
 - Database naming: `tblCamelCase` tables, `CamelCase` columns
 - User accounts with role hierarchy (global_admin/admin/editor/user)
 - User groups with version access control (Alpha/Beta/RC/RTW channel gating)
@@ -205,4 +206,4 @@ See `DEV_NOTES.md` for full setup guide including Apple, Android, and Fire OS.
 
 ---
 
-Last updated: 2026-04-29
+Last updated: 2026-04-30 — refreshed at the close of the #670–#681 / #687 / #676 / #682 / #699 batch (auto-colour, IETF BCP 47, bulk ZIP import, hygiene, multilingual scraper + cross-source integrity check)

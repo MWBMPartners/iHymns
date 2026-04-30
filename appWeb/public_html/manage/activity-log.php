@@ -269,8 +269,8 @@ $buildQuery = function (array $overrides = []) {
 
         <form method="GET" class="row g-2 mb-3 small">
             <div class="col-md-3">
-                <label class="form-label mb-1">Action</label>
-                <select class="form-select form-select-sm" name="action">
+                <label class="form-label mb-1" for="filter-action">Action</label>
+                <select class="form-select form-select-sm" id="filter-action" name="action">
                     <option value="">— any —</option>
                     <?php foreach ($distinctActions as $a): ?>
                         <option value="<?= htmlspecialchars($a, ENT_QUOTES, 'UTF-8') ?>"
@@ -281,14 +281,14 @@ $buildQuery = function (array $overrides = []) {
                 </select>
             </div>
             <div class="col-md-2">
-                <label class="form-label mb-1">User</label>
-                <input class="form-control form-control-sm" type="text" name="user"
+                <label class="form-label mb-1" for="filter-user">User</label>
+                <input class="form-control form-control-sm" id="filter-user" type="text" name="user"
                        value="<?= htmlspecialchars($filterUser, ENT_QUOTES, 'UTF-8') ?>"
                        placeholder="username or email">
             </div>
             <div class="col-md-2">
-                <label class="form-label mb-1">Result</label>
-                <select class="form-select form-select-sm" name="result">
+                <label class="form-label mb-1" for="filter-result">Result</label>
+                <select class="form-select form-select-sm" id="filter-result" name="result">
                     <option value="">— any —</option>
                     <option value="success" <?= $filterResult === 'success' ? 'selected' : '' ?>>success</option>
                     <option value="failure" <?= $filterResult === 'failure' ? 'selected' : '' ?>>failure</option>
@@ -296,20 +296,20 @@ $buildQuery = function (array $overrides = []) {
                 </select>
             </div>
             <div class="col-md-2">
-                <label class="form-label mb-1">Entity</label>
-                <input class="form-control form-control-sm" type="text" name="entity_type"
+                <label class="form-label mb-1" for="filter-entity-type">Entity</label>
+                <input class="form-control form-control-sm" id="filter-entity-type" type="text" name="entity_type"
                        value="<?= htmlspecialchars($filterEntityType, ENT_QUOTES, 'UTF-8') ?>"
                        placeholder="song, user, songbook, …">
             </div>
             <div class="col-md-2">
-                <label class="form-label mb-1">Entity ID</label>
-                <input class="form-control form-control-sm" type="text" name="entity_id"
+                <label class="form-label mb-1" for="filter-entity-id">Entity ID</label>
+                <input class="form-control form-control-sm" id="filter-entity-id" type="text" name="entity_id"
                        value="<?= htmlspecialchars($filterEntityId, ENT_QUOTES, 'UTF-8') ?>"
                        placeholder="CP-0001, 42, …">
             </div>
             <div class="col-md-1">
-                <label class="form-label mb-1">Window</label>
-                <select class="form-select form-select-sm" name="days">
+                <label class="form-label mb-1" for="filter-days">Window</label>
+                <select class="form-select form-select-sm" id="filter-days" name="days">
                     <option value="1"   <?= $filterDays === 1   ? 'selected' : '' ?>>24 h</option>
                     <option value="7"   <?= $filterDays === 7   ? 'selected' : '' ?>>7 d</option>
                     <option value="30"  <?= $filterDays === 30  ? 'selected' : '' ?>>30 d</option>
@@ -318,14 +318,14 @@ $buildQuery = function (array $overrides = []) {
                 </select>
             </div>
             <div class="col-md-3">
-                <label class="form-label mb-1">Search</label>
-                <input class="form-control form-control-sm" type="text" name="q"
+                <label class="form-label mb-1" for="filter-search">Search</label>
+                <input class="form-control form-control-sm" id="filter-search" type="text" name="q"
                        value="<?= htmlspecialchars($filterSearch, ENT_QUOTES, 'UTF-8') ?>"
                        placeholder="action or entity id substring">
             </div>
             <div class="col-md-3">
-                <label class="form-label mb-1">Request ID</label>
-                <input class="form-control form-control-sm" type="text" name="request_id"
+                <label class="form-label mb-1" for="filter-request-id">Request ID</label>
+                <input class="form-control form-control-sm" id="filter-request-id" type="text" name="request_id"
                        value="<?= htmlspecialchars($filterRequestId, ENT_QUOTES, 'UTF-8') ?>"
                        placeholder="16-char hex">
             </div>
