@@ -147,6 +147,30 @@ const _BULK_IMPORT_FILE_RE = '/^(?P<num>\d{1,5})\s*\((?P<abbr>[A-Za-z0-9_\-]+)\)
  */
 const _BULK_IMPORT_MAX_ENTRIES = 100000;
 
+/**
+ * Decompression-bomb defenses (#682). A zip can declare a tiny
+ * compressed size but a huge uncompressed payload — a 1 MB archive
+ * advertising 1 TB of content is a classic DoS shape. We reject
+ * anything where:
+ *
+ *   - any single entry's uncompressed size exceeds 5 MiB. A song
+ *     text file is at most a few KB; 5 MiB is ~3 orders of magnitude
+ *     above the realistic upper bound and still small enough that one
+ *     read won't blow PHP's memory limit.
+ *
+ *   - the cumulative uncompressed size across the archive exceeds
+ *     500 MiB. The biggest real bundle we know of (CIS, ~2,300 songs)
+ *     is well under 30 MiB uncompressed; 500 MiB tolerates a 15× size
+ *     jump while still tripping on a true bomb.
+ *
+ * Both caps run BEFORE any read — we use ZipArchive::statIndex to read
+ * the central-directory size header, which is what `unzip -l` shows
+ * and what an attacker would have to forge to bypass the check (the
+ * server-side library would then catch the discrepancy on extract).
+ */
+const _BULK_IMPORT_MAX_ENTRY_UNCOMPRESSED = 5 * 1024 * 1024;       // 5 MiB
+const _BULK_IMPORT_MAX_TOTAL_UNCOMPRESSED = 500 * 1024 * 1024;     // 500 MiB
+
 /* =========================================================================
  * REQUEST HANDLING
  * ========================================================================= */
@@ -2193,6 +2217,41 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
                 $entryCount, _BULK_IMPORT_MAX_ENTRIES
             ),
         ];
+    }
+
+    /* Decompression-bomb pre-flight (#682). Walk the central directory
+       once and reject if any single entry — or the cumulative archive —
+       declares an uncompressed size above the cap. statIndex() returns
+       the size header, so we never read or decompress the entry just
+       to find out it's too big. */
+    $cumulativeUncompressed = 0;
+    for ($k = 0; $k < $entryCount; $k++) {
+        $stat = $zip->statIndex($k);
+        if ($stat === false) continue;
+        $size = (int)($stat['size'] ?? 0);
+        if ($size > _BULK_IMPORT_MAX_ENTRY_UNCOMPRESSED) {
+            $zip->close();
+            return [
+                'ok'    => false,
+                'error' => sprintf(
+                    'Entry "%s" reports an uncompressed size of %d bytes; per-entry cap is %d bytes.',
+                    (string)($stat['name'] ?? "(index $k)"),
+                    $size,
+                    _BULK_IMPORT_MAX_ENTRY_UNCOMPRESSED
+                ),
+            ];
+        }
+        $cumulativeUncompressed += $size;
+        if ($cumulativeUncompressed > _BULK_IMPORT_MAX_TOTAL_UNCOMPRESSED) {
+            $zip->close();
+            return [
+                'ok'    => false,
+                'error' => sprintf(
+                    'Cumulative uncompressed size exceeds the per-import cap of %d bytes.',
+                    _BULK_IMPORT_MAX_TOTAL_UNCOMPRESSED
+                ),
+            ];
+        }
     }
 
     $db = getDbMysqli();

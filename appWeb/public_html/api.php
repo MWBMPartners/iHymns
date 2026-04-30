@@ -1968,6 +1968,93 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
+         * Get all available IETF BCP 47 scripts (#681 / #682)
+         *
+         * Mirrors `action=languages`: returns the full active list of
+         * ISO 15924 script codes from tblScripts so native clients
+         * (Apple / Android / FireOS) can render the same composite
+         * IETF picker the web admin already uses. The admin-only
+         * `action=script_search` typeahead on /manage/songbooks?
+         * is the prefix-search variant; this endpoint is a one-shot
+         * dump suitable for caching client-side. Pre-migration: empty
+         * list with a `note` rather than a 500.
+         * ----------------------------------------------------------------- */
+        case 'scripts':
+            $db = getDbMysqli();
+            $hasTable = false;
+            try {
+                $probe = $db->prepare(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblScripts' LIMIT 1"
+                );
+                $probe->execute();
+                $hasTable = $probe->get_result()->fetch_row() !== null;
+                $probe->close();
+            } catch (\Throwable $_e) { /* probe failure → empty list */ }
+
+            if (!$hasTable) {
+                sendJson([
+                    'scripts' => [],
+                    'note'    => 'tblScripts not yet created — run /manage/setup-database',
+                ]);
+                break;
+            }
+
+            $stmt = $db->prepare(
+                'SELECT Code AS code, Name AS name, NativeName AS nativeName
+                 FROM tblScripts
+                 WHERE IsActive = 1
+                 ORDER BY Name ASC'
+            );
+            $stmt->execute();
+            $scripts = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+            sendJson(['scripts' => $scripts]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Get all available IETF BCP 47 regions (#681 / #682)
+         *
+         * Same shape as `action=scripts` for tblRegions — ISO 3166-1
+         * alpha-2 codes plus M.49 numeric area codes (e.g. 419 = Latin
+         * America & Caribbean). The list is bigger (~255 entries) so
+         * native clients usually fetch it once at first launch and
+         * cache. Pre-migration: empty list with a `note`.
+         * ----------------------------------------------------------------- */
+        case 'regions':
+            $db = getDbMysqli();
+            $hasTable = false;
+            try {
+                $probe = $db->prepare(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblRegions' LIMIT 1"
+                );
+                $probe->execute();
+                $hasTable = $probe->get_result()->fetch_row() !== null;
+                $probe->close();
+            } catch (\Throwable $_e) { /* probe failure → empty list */ }
+
+            if (!$hasTable) {
+                sendJson([
+                    'regions' => [],
+                    'note'    => 'tblRegions not yet created — run /manage/setup-database',
+                ]);
+                break;
+            }
+
+            $stmt = $db->prepare(
+                'SELECT Code AS code, Name AS name
+                 FROM tblRegions
+                 WHERE IsActive = 1
+                 ORDER BY Name ASC'
+            );
+            $stmt->execute();
+            $regions = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+            sendJson(['regions' => $regions]);
+            break;
+
+        /* -----------------------------------------------------------------
          * Get translations for a specific song
          * Parameters: id (required) — source song ID
          * ----------------------------------------------------------------- */

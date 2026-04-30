@@ -470,9 +470,32 @@ foreach ($sections as $s) {
                     <ul>
                         <li><strong>Save</strong> writes everything to the database. Auto-save runs in the background while you work, but always click Save before navigating away.</li>
                         <li><strong>Validate</strong> runs every song past a quality check (missing required fields, invalid language tags, orphaned references) and lists any problems.</li>
-                        <li><strong>Import</strong> from JSON or CSV. <strong>Export</strong> the current view as JSON or CSV.</li>
+                        <li><strong>Import</strong> from JSON or CSV — small, single-file. For mass onboarding (e.g. a complete new hymnal), see the <strong>Bulk Import ZIP</strong> section below.</li>
+                        <li><strong>Export</strong> the current view as JSON or CSV.</li>
                         <li><strong>Revisions</strong> for the selected song shows a diff of every previous edit and a Restore button.</li>
                     </ul>
+                    <h3 class="h6">Bulk Import ZIP (#664 / #676)</h3>
+                    <p>
+                        For onboarding an entire songbook at once. Upload a ZIP whose top-level folders match <code>&lt;Hymnal Name&gt; [&lt;ABBR&gt;]/</code> and whose files match <code>&lt;number&gt; (&lt;ABBR&gt;) - &lt;Title&gt;.txt</code>. The importer creates the songbook on first encounter, then parses + inserts every song.
+                    </p>
+                    <ul>
+                        <li><strong>INSERT-only contract:</strong> if a songbook or song already exists, it's left untouched — never overwritten. The summary reports created vs. existing counts so you can see what landed.</li>
+                        <li><strong>Live progress widget:</strong> the upload completes almost immediately; the actual import runs server-side. A small fixed-position card pinned bottom-right polls the job status, shows a progress bar, and survives navigation between admin pages and the public app. Hard-reload the page mid-import and the widget reattaches via localStorage.</li>
+                        <li><strong>Notification on completion:</strong> a row is written to <a href="#notifications">Notifications</a> when the worker finishes, and (if you've granted permission) a native browser notification fires.</li>
+                        <li><strong>Caps:</strong> 100 MB upload, 100,000 entries per archive, 5 MiB per uncompressed entry, 500 MiB cumulative uncompressed. These are zip-bomb defences (#682) — far above any real bundle.</li>
+                    </ul>
+                    <h3 class="h6">Language tagging (IETF BCP 47, #240 / #281 / #681 / #687)</h3>
+                    <p>
+                        The Metadata tab's Language field is a composite IETF picker — three sub-fields that compose into a single saved tag:
+                    </p>
+                    <ul>
+                        <li><strong>Language</strong> (required) — e.g. <em>English</em> (<code>en</code>) or <em>Portuguese</em> (<code>pt</code>).</li>
+                        <li><strong>Script</strong> (optional) — only when the script differs from the language default. e.g. <em>Simplified Chinese</em> for Mandarin written in Hans, or <em>Latin</em> for Serbian written Latn instead of the default Cyrl.</li>
+                        <li><strong>Region</strong> (optional) — e.g. <em>United Kingdom</em> for British English (<code>en-GB</code>) vs. <em>United States</em> for American English (<code>en-US</code>).</li>
+                    </ul>
+                    <p>
+                        The "IETF tag:" line below the picker shows the composed tag live as you type. The full ISO 15924 / ISO 3166-1 vocabulary is loaded from <code>tblScripts</code> + <code>tblRegions</code> (seeded by Database Setup card 3o), so the picker stays in sync with the songbook editor's identical picker — one source of truth across both surfaces.
+                    </p>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Closing the tab while there are unsaved changes loses them — auto-save catches most things, but treat Save as the source of truth.
                     </div>
@@ -559,9 +582,13 @@ foreach ($sections as $s) {
                         <dt>Abbreviation</dt><dd>Short identifier (e.g. <code>HYM</code>). Unique. Max 10 chars, alphanumeric. This is the natural key referenced by every song.</dd>
                         <dt>Name</dt><dd>Friendly name (e.g. "Methodist Hymnal").</dd>
                         <dt>Display order</dt><dd>Numeric sort key — lower numbers appear first in the app.</dd>
-                        <dt>Colour</dt><dd>Hex code (<code>#RRGGBB</code>) used as the songbook badge colour. Leave blank to inherit a default.</dd>
-                        <dt>Publisher / Publication year / Copyright / Affiliation</dt><dd>Optional metadata for filtering and reports.</dd>
-                        <dt>Official flag</dt><dd>Marks "real" published books vs. user-curated collections.</dd>
+                        <dt>Colour</dt><dd>Hex code (<code>#RRGGBB</code>) used as the songbook tile colour on the home page. <strong>Leave blank</strong> to let the system auto-pick a tone from the current theme palette (#677) — the result is consistent with the rest of the UI and changes with the user's chosen theme.</dd>
+                        <dt>Official flag</dt><dd>Marks "real" published hymnals vs. user-curated collections / pseudo-songbooks. Used by the home-page filter to separate the two surfaces.</dd>
+                        <dt>Publisher / Publication year / Copyright</dt><dd>Issuing body, year of publication, and the copyright statement. Optional, surface in search and reports.</dd>
+                        <dt>Affiliation</dt><dd>Issuing organisation, drawn from a curated registry (#670). Type to search; new affiliations get added on save. Use this rather than free-text Publisher when the same organisation issues multiple songbooks.</dd>
+                        <dt>Language (IETF BCP 47)</dt><dd>The songbook's primary language as a composite IETF tag (#673 / #681) — same picker as the song editor, with three sub-fields: <strong>Language</strong> (required), <strong>Script</strong> (optional — only when the script differs from the language default), and <strong>Region</strong> (optional — e.g. <code>en-GB</code> vs <code>en-US</code>). Leave blank for multi-lingual collections.</dd>
+                        <dt>Online links — Official website / Internet Archive / Wikipedia (#672)</dt><dd>Free-text URLs. Used as outbound references on the songbook detail page so users can verify the source.</dd>
+                        <dt>Authority identifiers — WikiData ID, OCLC, OCN, LCP, ISBN, ARK, ISNI, VIAF, LCCN, LC Class (#672)</dt><dd>Standard cataloguing identifiers from major library and authority systems. All optional. Useful for cross-referencing and de-duplicating against external catalogues.</dd>
                     </dl>
                     <h3 class="h6">Renaming an abbreviation</h3>
                     <p>
@@ -569,6 +596,9 @@ foreach ($sections as $s) {
                     </p>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Deleting a songbook does <em>not</em> delete its songs. The UI refuses if any song still references its abbreviation; reassign or delete those songs first.
+                    </div>
+                    <div class="gotcha small">
+                        <strong>Tip:</strong> The home-page tile grid (#678) shows official hymnals first, with a language filter (#679) that hides languages on demand. Songbooks without a Language field always show — useful for catch-all collections you don't want to risk filtering away.
                     </div>
                 </section>
 
