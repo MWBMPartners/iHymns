@@ -66,6 +66,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $flash = 'Request #' . $id . ' updated.';
         } catch (\Throwable $e) {
             error_log('[manage/requests.php] ' . $e->getMessage());
+            /* Mirror the failure into the in-app Activity Log so a
+               curator can self-diagnose without server-log access (#695). */
+            logActivityError('admin.requests.update', 'song_request', (string)$id, $e, [
+                'status' => $newStatus,
+            ]);
             $err = 'Database error — check server logs for details.';
         }
     }
@@ -100,6 +105,11 @@ try {
     $stmt->close();
 } catch (\Throwable $e) {
     error_log('[manage/requests.php] ' . $e->getMessage());
+    /* The Activity Log surfaces this so the curator sees the exact
+       cause inline, not just the generic banner (#695). */
+    logActivityError('admin.requests.list', 'song_request', '', $e, [
+        'filter' => $filter,
+    ]);
     $err = 'Could not load requests — check server logs for details.';
 }
 

@@ -318,6 +318,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     } catch (\Throwable $e) {
         error_log('[manage/organisations.php] ' . $e->getMessage());
+        /* Mirror to Activity Log so admins can see why an org-edit
+           save failed without server-log access (#695). */
+        logActivityError('admin.organisations.save', 'organisation',
+            (string)($_POST['id'] ?? ''), $e, [
+                'action' => $_POST['action'] ?? null,
+            ]);
         $error = $error ?: 'Database error — check server logs for details.';
     }
 }
@@ -337,6 +343,7 @@ try {
     $stmt->close();
 } catch (\Throwable $e) {
     error_log('[manage/organisations.php] ' . $e->getMessage());
+    logActivityError('admin.organisations.list', 'organisation', '', $e);
     $error = $error ?: 'Could not load organisations.';
 }
 
@@ -402,6 +409,8 @@ if ($editId > 0) {
         }
     } catch (\Throwable $e) {
         error_log('[manage/organisations.php] ' . $e->getMessage());
+        logActivityError('admin.organisations.edit_load', 'organisation',
+            (string)$editId, $e);
     }
 }
 
