@@ -1726,8 +1726,25 @@ function _bulkImport_upsertSongbook(\mysqli $db, string $abbr, string $name): st
         return 'existing';
     }
 
-    $ins = $db->prepare('INSERT INTO tblSongbooks (Abbreviation, Name, SongCount) VALUES (?, ?, 0)');
-    $ins->bind_param('ss', $abbr, $name);
+    /* Auto-colour the new songbook so its badge is visually distinct
+       from existing books on the home / songbooks tile grids (#677).
+       The shared palette helper lives under /manage/includes/ — we
+       require it lazily here so a deployment that hasn't run the
+       migration to add the helper file (it's part of the same PR
+       as this edit) doesn't 500 on existing imports. Best-effort —
+       on a require failure we save with an empty Colour and let
+       the theme default render. */
+    $colour = '';
+    $paletteFile = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook-palette.php';
+    if (is_file($paletteFile)) {
+        require_once $paletteFile;
+        if (function_exists('pickAutoSongbookColour')) {
+            $colour = pickAutoSongbookColour($db, $abbr);
+        }
+    }
+
+    $ins = $db->prepare('INSERT INTO tblSongbooks (Abbreviation, Name, Colour, SongCount) VALUES (?, ?, ?, 0)');
+    $ins->bind_param('sss', $abbr, $name, $colour);
     $ins->execute();
     $ins->close();
     return 'created';

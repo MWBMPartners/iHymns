@@ -17,6 +17,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook-palette.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -216,6 +217,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($e = $validateAbbr($abbr))   { $error = $e; break; }
                 if ($name === '')                { $error = 'Name is required.'; break; }
                 if ($e = $validateColour($colour)) { $error = $e; break; }
+
+                /* Auto-colour fallback (#677). When a curator leaves
+                   the Colour field blank, pick a palette colour the
+                   catalogue isn't already using so the new badge is
+                   visually distinct from neighbouring books. An
+                   explicit colour types into the field still wins —
+                   this only fires when $colour is empty after
+                   validation. */
+                if ($colour === '') {
+                    $colour = pickAutoSongbookColour($db, $abbr);
+                }
 
                 $stmt = $db->prepare('SELECT Id FROM tblSongbooks WHERE Abbreviation = ?');
                 $stmt->bind_param('s', $abbr);
