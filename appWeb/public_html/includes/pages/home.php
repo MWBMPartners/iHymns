@@ -118,6 +118,13 @@ $songbooks = $songData->getSongbooks();
             Songbooks
         </h2>
 
+        <!-- Language filter (#679). The partial silently returns
+             early if the catalogue spans only one language, so a
+             single-English deployment doesn't see a useless filter.
+             Pure client-side hide/show via the booted JS module
+             below. -->
+        <?php require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'songbook-language-filter.php'; ?>
+
         <!-- `row-cols-*` ladders the column count with the viewport so
              cards stop stretching on xl/xxl monitors: 2 → 3 → 4 → 5 → 6
              as the breakpoints unlock. Each child is just `.col`. -->
