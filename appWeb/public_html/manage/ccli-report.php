@@ -59,10 +59,16 @@ $db = getDbMysqli();
 $ccliFilter = $showAll ? '' : "AND s.Ccli <> ''";
 
 try {
+    /* SongbookAbbr is the actual column name on tblSongs (the
+       schema has used Abbreviation as the natural FK key since
+       the v0.10 PascalCase rename in #407). The earlier query
+       referenced s.SongbookId, which doesn't exist — every page
+       load 500'd into the catch-all and surfaced the generic
+       "see server logs" banner. (#712) */
     $stmt = $db->prepare(
         "SELECT s.SongId        AS song_id,
                 s.Title          AS title,
-                s.SongbookId     AS songbook,
+                s.SongbookAbbr   AS songbook,
                 s.Number         AS number,
                 s.Ccli           AS ccli,
                 s.Copyright      AS copyright,
@@ -86,8 +92,18 @@ try {
     $stmt->close();
 } catch (\Throwable $e) {
     error_log('[ccli-report] query failed: ' . $e->getMessage());
+    /* Surface in the in-app Activity Log so admins can self-diagnose
+       without server-log access (#695 + #712). */
+    logActivityError('admin.ccli_report.load', 'song', '', $e, [
+        'from' => $fromDate, 'to' => $toDate, 'show_all' => $showAll,
+    ]);
     $rows = [];
-    $queryError = 'Could not load usage data — see server logs.';
+    /* This page is gated to admin/global_admin so we surface the
+       exception detail inline — same rationale as credit-people.php
+       (#635 / #698 commit). Curators get to self-diagnose without
+       SSH access. */
+    $where = $e->getFile() ? (' (' . basename($e->getFile()) . ':' . $e->getLine() . ')') : '';
+    $queryError = 'Database error: ' . $e->getMessage() . $where;
 }
 
 /* ========================================================================
