@@ -637,6 +637,99 @@ paths:
                     nativeName: "Fran\u00E7ais"
                     textDirection: ltr
 
+  /api.php?action=scripts:
+    get:
+      operationId: listScripts
+      tags: [Languages]
+      summary: List available IETF BCP 47 scripts (#681 / #682)
+      description: |
+        Returns all active rows from `tblScripts` (ISO 15924). Used by
+        the IETF composite picker on the web admin and by native
+        clients that need to resolve a saved tag like `zh-Hans` into a
+        human-readable name.
+
+        Pre-migration deployments (where `tblScripts` doesn't exist
+        yet) get an empty list and a `note` field rather than a 500.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [scripts]
+      responses:
+        "200":
+          description: Script list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scripts:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Script"
+                  note:
+                    type: string
+                    description: Present only when the lookup table has not yet been created.
+              example:
+                scripts:
+                  - code: Latn
+                    name: Latin
+                    nativeName: Latin
+                  - code: Cyrl
+                    name: Cyrillic
+                    nativeName: "\u041A\u0438\u0440\u0438\u043B\u043B\u0438\u0446\u0430"
+                  - code: Hans
+                    name: Simplified Chinese
+                    nativeName: "\u7B80\u4F53\u5B57"
+
+  /api.php?action=regions:
+    get:
+      operationId: listRegions
+      tags: [Languages]
+      summary: List available IETF BCP 47 regions (#681 / #682)
+      description: |
+        Returns all active rows from `tblRegions` \u2014 ISO 3166-1 alpha-2
+        country codes plus M.49 numeric area codes for groupings like
+        `419` (Latin America & Caribbean). Same use case as
+        `action=scripts`: resolve a saved IETF tag's region subtag to
+        a human-readable name.
+
+        Pre-migration deployments get an empty list with a `note`.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [regions]
+      responses:
+        "200":
+          description: Region list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  regions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Region"
+                  note:
+                    type: string
+                    description: Present only when the lookup table has not yet been created.
+              example:
+                regions:
+                  - code: GB
+                    name: United Kingdom
+                  - code: US
+                    name: United States
+                  - code: BR
+                    name: Brazil
+                  - code: "419"
+                    name: Latin America and the Caribbean
+
   /api.php?action=song_translations:
     get:
       operationId: getSongTranslations
@@ -4848,7 +4941,14 @@ components:
 
     Songbook:
       type: object
-      description: A songbook / hymnal
+      description: |
+        A songbook / hymnal. The bibliographic + authority-control
+        fields (`websiteUrl` … `lcClass`) and `language` were added
+        across #672 / #673 / #681. They appear on every read path
+        whose backing `tblSongbooks` deployment has run the matching
+        migrations (`migrate-songbook-bibliographic` and
+        `migrate-songbook-language`); pre-migration deployments
+        simply omit the fields rather than returning nulls.
       properties:
         id:
           type: string
@@ -4862,6 +4962,101 @@ components:
           type: integer
           description: Number of songs in the songbook
           example: 650
+        colour:
+          type: string
+          nullable: true
+          description: 6-digit hex tile colour (#677). NULL means "use the auto-picked theme tone".
+          example: "#264a26"
+        isOfficial:
+          type: boolean
+          description: Whether this songbook is recognised as an official publication of an Adventist organisation (#502 / #670).
+          example: true
+        publisher:
+          type: string
+          nullable: true
+          description: Issuing publisher (free-text)
+          example: Pacific Press Publishing Association
+        publicationYear:
+          type: integer
+          nullable: true
+          description: Year of publication (4-digit Gregorian)
+          example: 1985
+        copyright:
+          type: string
+          nullable: true
+          description: Copyright statement
+          example: "© 1985 Review and Herald"
+        affiliation:
+          type: string
+          nullable: true
+          description: |
+            Issuing organisation, drawn from the curated registry
+            `tblSongbookAffiliations` (#670). Free-text fallback if
+            the registry doesn't carry the publisher yet.
+          example: General Conference of Seventh-day Adventists
+        language:
+          type: string
+          nullable: true
+          description: |
+            IETF BCP 47 tag for the songbook's primary language (#673
+            / #681). Composite — language[-script][-region]. May be
+            null if unknown / mixed.
+          example: en-GB
+        websiteUrl:
+          type: string
+          nullable: true
+          description: Official website (#672)
+          example: https://www.adventistmusic.org
+        internetArchiveUrl:
+          type: string
+          nullable: true
+          description: Internet Archive landing page for a digitised copy (#672)
+        wikipediaUrl:
+          type: string
+          nullable: true
+          description: Wikipedia article URL (#672)
+        wikidataId:
+          type: string
+          nullable: true
+          description: Wikidata QID (#672)
+          example: Q123456
+        oclcNumber:
+          type: string
+          nullable: true
+          description: OCLC WorldCat record number (#672)
+        ocnNumber:
+          type: string
+          nullable: true
+          description: OCLC OCN identifier (#672)
+        lcpNumber:
+          type: string
+          nullable: true
+          description: Library of Congress Permalink number (#672)
+        isbn:
+          type: string
+          nullable: true
+          description: ISBN-10 or ISBN-13 (#672)
+        arkId:
+          type: string
+          nullable: true
+          description: Archival Resource Key (ARK) (#672)
+        isniId:
+          type: string
+          nullable: true
+          description: International Standard Name Identifier (#672)
+        viafId:
+          type: string
+          nullable: true
+          description: Virtual International Authority File ID (#672)
+        lccn:
+          type: string
+          nullable: true
+          description: Library of Congress Control Number (#672)
+        lcClass:
+          type: string
+          nullable: true
+          description: Library of Congress Classification (#672)
+          example: M2117
 
     Stats:
       type: object
@@ -4902,6 +5097,44 @@ components:
           description: Text direction
           enum: [ltr, rtl]
           example: ltr
+
+    Script:
+      type: object
+      description: |
+        One row from `tblScripts` (ISO 15924). The `code` is the
+        canonical 4-letter Title Case identifier the IETF BCP 47
+        spec uses (#681).
+      properties:
+        code:
+          type: string
+          description: ISO 15924 script code (Title Case, 4 letters)
+          example: Latn
+        name:
+          type: string
+          description: Script name in English
+          example: Latin
+        nativeName:
+          type: string
+          description: Script name in its own writing system
+          example: Latin
+
+    Region:
+      type: object
+      description: |
+        One row from `tblRegions`. `code` is either the ISO 3166-1
+        alpha-2 country code (uppercase, 2 letters — e.g. `GB`) or a
+        UN M.49 numeric area code (3 digits — e.g. `419` = Latin
+        America & Caribbean). Either form is valid as the region
+        subtag of an IETF BCP 47 tag.
+      properties:
+        code:
+          type: string
+          description: ISO 3166-1 alpha-2 country code or 3-digit M.49 area code
+          example: GB
+        name:
+          type: string
+          description: Region name in English
+          example: United Kingdom
 
     SongTranslation:
       type: object
