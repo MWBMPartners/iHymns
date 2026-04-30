@@ -18,6 +18,10 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook-palette.php';
+/* Shared validators (#719 PR 2a) — same rules used by the admin_songbook_*
+   API endpoints in /api.php. Single source of truth so a tweak to the
+   abbrev / colour / IETF-tag grammar lands on both surfaces in one go. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_validation.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -258,77 +262,18 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
     exit;
 }
 
-/**
- * INSERT IGNORE the supplied affiliation name into the registry so
- * the typeahead surfaces it on the next save (#670). Silent no-op
- * when the table doesn't exist (pre-migration deployments) so the
- * songbook save path can't be broken by a half-applied schema. The
- * tblCreditPeople sync in the editor's save_song path uses the same
- * "best-effort registry sync" pattern (#545).
- *
- * @param ?string $name Affiliation name as typed; null/empty = no-op.
- */
+/* Local closures over $db that wrap the shared helpers in
+   includes/songbook_validation.php. The shared helpers are plain
+   functions (no captured state); these wrappers exist solely so the
+   call sites below can keep their existing `$registerAffiliation(...)`
+   / `$validateAbbr(...)` syntax without re-piping $db through every
+   call. (#719 PR 2a) */
 $registerAffiliation = function (?string $name) use ($db): void {
-    if ($name === null) return;
-    $trimmed = trim($name);
-    if ($trimmed === '') return;
-    /* Cap to the column width so a crafted form post can't crash
-       the INSERT. mb_substr is unicode-safe for languages whose
-       glyphs are multi-byte (e.g. denomination names in Cyrillic). */
-    $trimmed = mb_substr($trimmed, 0, 120);
-    try {
-        $stmt = $db->prepare('INSERT IGNORE INTO tblSongbookAffiliations (Name) VALUES (?)');
-        $stmt->bind_param('s', $trimmed);
-        $stmt->execute();
-        $stmt->close();
-    } catch (\Throwable $e) {
-        /* Most likely cause: the migration hasn't been run yet so the
-           table doesn't exist. The save itself is unaffected — this is
-           best-effort registry sync. */
-        error_log('[songbooks] registry sync skipped: ' . $e->getMessage());
-    }
+    registerSongbookAffiliation($db, $name);
 };
-
-/* Helpers */
-$validateAbbr = function (string $abbr): ?string {
-    $abbr = trim($abbr);
-    if ($abbr === '') return 'Abbreviation is required.';
-    if (strlen($abbr) > 10) return 'Abbreviation must be 10 characters or fewer.';
-    if (!preg_match('/^[A-Za-z0-9]+$/', $abbr)) return 'Abbreviation must be letters/numbers only (no spaces or punctuation).';
-    return null;
-};
-$validateColour = function (string $c): ?string {
-    if ($c === '') return null;
-    return preg_match('/^#[0-9A-Fa-f]{6}$/', $c) ? null : 'Colour must be a #RRGGBB hex value (or blank).';
-};
-
-/**
- * Validate an IETF BCP 47 language tag (#681). Empty is fine
- * (NULL = "not specified" for songbooks). Otherwise must match
- * the v1 grammar: lowercase 2-3 letter language, optional 4-letter
- * Title Case script, optional 2-letter UPPER region or 3-digit
- * numeric area code. Variants / extensions / private-use are out
- * of scope for v1 per the issue brief.
- *
- * Returns null if valid (empty or matching), an error message
- * string otherwise. Caller is responsible for calling mb_substr
- * to cap to the column width regardless — the regex doesn't bound
- * length on its own.
- */
-$validateBcp47 = function (string $tag): ?string {
-    if ($tag === '') return null;
-    if (strlen($tag) > 35) {
-        return 'Language tag must be 35 characters or fewer.';
-    }
-    /* The full grammar of BCP 47 is much richer; this regex covers
-       the in-scope subset (#681). Anything beyond is rejected so a
-       tampered POST can't smuggle private-use subtags into a column
-       the rest of the system assumes is well-formed. */
-    if (!preg_match('/^[a-z]{2,3}(-[A-Z][a-z]{3})?(-[A-Z]{2}|-[0-9]{3})?$/', $tag)) {
-        return 'Language tag must be a valid IETF BCP 47 form (e.g. en, pt-BR, zh-Hans-CN).';
-    }
-    return null;
-};
+$validateAbbr   = fn(string $abbr): ?string => validateSongbookAbbr($abbr);
+$validateColour = fn(string $c): ?string    => validateSongbookColour($c);
+$validateBcp47  = fn(string $tag): ?string  => validateSongbookBcp47($tag);
 
 /* ----- POST actions ----- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
