@@ -1237,6 +1237,46 @@ CREATE TABLE IF NOT EXISTS tblSongTagMap (
 
 
 -- ----------------------------------------------------------------------------
+-- tblBulkImportJobs (#676)
+-- Tracks long-running bulk_import_zip jobs so the browser can poll for
+-- progress and the persistent progress widget on every iHymns page can
+-- survive navigation. Created when an editor uploads a zip via
+-- /manage/editor/api.php?action=bulk_import_zip; the action saves the
+-- tmp file path here, returns {job_id} immediately, calls
+-- fastcgi_finish_request() to release the HTTP connection, then
+-- continues processing in the freed worker, updating ProcessedEntries
+-- + counts every N entries. The bulk_import_status endpoint reads
+-- this row.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblBulkImportJobs (
+    Id                       INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    UserId                   INT UNSIGNED NULL COMMENT 'editor who started the import; NULL if global_admin used a CLI invocation',
+    Filename                 VARCHAR(255) NOT NULL COMMENT 'Original upload filename (display only)',
+    TempPath                 VARCHAR(500) NOT NULL DEFAULT '' COMMENT 'Server-side path to the moved temp file; cleared on completion',
+    SizeBytes                BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Original upload size in bytes (display only)',
+    Status                   ENUM('queued','running','completed','failed') NOT NULL DEFAULT 'queued',
+    TotalEntries             INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Real .txt entries the worker has classified for processing',
+    ProcessedEntries         INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Counter the worker bumps every ~50 rows so the polling endpoint can render a percentage',
+    SongbooksCreatedJson     JSON NULL COMMENT 'Result summary — list of abbrevs created in this run',
+    SongbooksExistingJson    JSON NULL COMMENT 'Result summary — list of abbrevs that already existed',
+    SongsCreated             INT UNSIGNED NOT NULL DEFAULT 0,
+    SongsSkippedExisting     INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'INSERT-only contract: existing SongIds are left untouched',
+    SongsFailed              INT UNSIGNED NOT NULL DEFAULT 0,
+    ErrorsJson               JSON NULL COMMENT 'Per-entry [{entry, error}, …] from the parser / save path',
+    StartedAt                TIMESTAMP NULL DEFAULT NULL COMMENT 'When the worker began processing (post-fastcgi_finish_request)',
+    CompletedAt              TIMESTAMP NULL DEFAULT NULL,
+    CreatedAt                TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt                TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    /* Per-user lookup for the polling endpoint (always WHERE
+       UserId = ? AND Status IN (...)). */
+    INDEX idx_user_status (UserId, Status),
+    /* Ops-side audit: "show me jobs that have been running > 1h" */
+    INDEX idx_status_updated (Status, UpdatedAt)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
 -- tblNotifications
 -- In-app notification system for users (new songs, request status changes,
 -- system announcements, etc.).
