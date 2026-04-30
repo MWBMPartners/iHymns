@@ -1055,8 +1055,19 @@ $csrf = csrfToken();
                 </div>
                 <div class="col-sm-2">
                     <label class="form-label small">Colour (hex)</label>
-                    <input type="text" name="colour" class="form-control form-control-sm"
-                           pattern="#[0-9A-Fa-f]{6}" placeholder="#1a73e8">
+                    <?php
+                        /* Shared colour picker partial — native swatch
+                           bound to the hex text input (#715). */
+                        $name        = 'colour';
+                        $value       = '';
+                        $idPrefix    = 'create-songbook-colour';
+                        $placeholder = '#1a73e8';
+                        require __DIR__ . DIRECTORY_SEPARATOR
+                            . 'includes' . DIRECTORY_SEPARATOR
+                            . 'partials' . DIRECTORY_SEPARATOR
+                            . 'colour-picker.php';
+                        unset($name, $value, $idPrefix, $placeholder);
+                    ?>
                 </div>
                 <div class="col-sm-2">
                     <label class="form-label small">Display order</label>
@@ -1230,8 +1241,22 @@ $csrf = csrfToken();
                         <div class="row g-2 mb-3">
                             <div class="col-sm-6">
                                 <label class="form-label">Colour (hex)</label>
-                                <input type="text" class="form-control" name="colour" id="edit-colour"
-                                       pattern="#[0-9A-Fa-f]{6}" placeholder="#1a73e8">
+                                <?php
+                                    /* Shared colour picker partial (#715). The text
+                                       input keeps id="edit-colour" via the partial's
+                                       internal scheme — the JS that opens this modal
+                                       still sets the value via querySelector on
+                                       the .colour-picker-text class instead of by id. */
+                                    $name        = 'colour';
+                                    $value       = '';
+                                    $idPrefix    = 'edit-songbook-colour';
+                                    $placeholder = '#1a73e8';
+                                    require __DIR__ . DIRECTORY_SEPARATOR
+                                        . 'includes' . DIRECTORY_SEPARATOR
+                                        . 'partials' . DIRECTORY_SEPARATOR
+                                        . 'colour-picker.php';
+                                    unset($name, $value, $idPrefix, $placeholder);
+                                ?>
                             </div>
                             <div class="col-sm-6">
                                 <label class="form-label">Display order</label>
@@ -1448,7 +1473,26 @@ $csrf = csrfToken();
             document.getElementById('edit-id').value                = row.id;
             document.getElementById('edit-abbr-label').textContent  = row.abbreviation;
             document.getElementById('edit-name').value              = row.name;
-            document.getElementById('edit-colour').value            = row.colour || '';
+            /* The colour field is now wrapped in the shared colour-picker
+               partial (#715), which gives the text input the id
+               edit-songbook-colour-text and adds a sibling swatch.
+               Setting the text input's value also fires an `input` event
+               so the boot-script's text→swatch sync handler updates the
+               native picker preview to match. */
+            (function () {
+                const colourText   = document.getElementById('edit-songbook-colour-text');
+                const colourSwatch = document.querySelector(
+                    '[data-colour-picker-id="edit-songbook-colour"] .colour-picker-swatch'
+                );
+                const v = row.colour || '';
+                if (colourText) {
+                    colourText.value = v;
+                    colourText.dispatchEvent(new Event('input', { bubbles: true }));
+                }
+                if (colourSwatch && /^#[0-9A-Fa-f]{6}$/.test(v)) {
+                    colourSwatch.value = v.toLowerCase();
+                }
+            })();
             document.getElementById('edit-order').value             = row.display_order || 0;
 
             /* #502 metadata fields */
@@ -1516,6 +1560,16 @@ $csrf = csrfToken();
         if (createPicker) bootIetfLanguagePicker(createPicker);
         const editPicker   = document.querySelector('[data-ietf-picker-id="edit-songbook"]');
         if (editPicker)   window.editIetfPicker = bootIetfLanguagePicker(editPicker);
+    </script>
+
+    <!-- Colour picker boot (#715). Wires the native swatch ↔ hex
+         text two-way binding for every .colour-picker on the page —
+         currently the create form's Colour field + the edit modal's
+         Colour field. Both render via the shared
+         manage/includes/partials/colour-picker.php. -->
+    <script type="module">
+        import { bootColourPickers } from '/js/modules/colour-picker.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/colour-picker.js') ?>';
+        bootColourPickers();
     </script>
 
     <!-- Drag-and-drop reorder + Sort by Name/Abbr presets (#674).
