@@ -167,15 +167,53 @@ if ($shareDirPath && is_dir($shareDirPath)) {
 $sqliteExists = $sqliteDbPath && file_exists($sqliteDbPath);
 $sqliteSize   = $sqliteExists ? @filesize($sqliteDbPath) : 0;
 
-/* Overall green light: MySQL authoritative, no unimported shares, SQLite gone */
-$allGreen = (
-    $songDataJsonFallback === false
-    && $shareFileCount === 0
-    && count($unimportedShareIds) === 0
-    && !$sqliteExists
-    && ($tableCounts['tblSongs'] ?? 0) > 0
-    && ($tableCounts['tblUsers'] ?? 0) > 0
-);
+/* Build a precise list of what's blocking the disconnect (#710). The
+   earlier "Resolve the amber / red items above first" copy made
+   curators guess which row was the culprit — instead, enumerate
+   exactly what's still keeping MySQL non-authoritative. Each entry
+   includes a short reason + the section anchor so the warning links
+   straight to the row that needs attention. */
+$disconnectBlockers = [];
+if ($songDataJsonFallback !== false) {
+    $disconnectBlockers[] = [
+        'reason' => 'data_share/song_data/songs.json fallback is still active',
+        'anchor' => '#songs-json-fallback',
+    ];
+}
+if ($shareFileCount > 0 || count($unimportedShareIds) > 0) {
+    $disconnectBlockers[] = [
+        'reason' => sprintf(
+            '%d share JSON file(s) on disk%s',
+            $shareFileCount,
+            count($unimportedShareIds) > 0
+                ? ' (' . count($unimportedShareIds) . ' not yet imported)'
+                : ''
+        ),
+        'anchor' => '#shared-setlist-json',
+    ];
+}
+if ($sqliteExists) {
+    $disconnectBlockers[] = [
+        'reason' => 'Legacy SQLite database still on disk (' . basename($sqliteDbPath) . ', '
+                    . number_format((int)$sqliteSize) . ' bytes)',
+        'anchor' => '#legacy-sqlite',
+    ];
+}
+if (($tableCounts['tblSongs'] ?? 0) === 0) {
+    $disconnectBlockers[] = [
+        'reason' => 'tblSongs is empty — MySQL has no song data to fall back to',
+        'anchor' => '#table-tblSongs',
+    ];
+}
+if (($tableCounts['tblUsers'] ?? 0) === 0) {
+    $disconnectBlockers[] = [
+        'reason' => 'tblUsers is empty — no migrated user accounts',
+        'anchor' => '#table-tblUsers',
+    ];
+}
+
+/* Overall green light = no blockers. */
+$allGreen = empty($disconnectBlockers);
 
 function health_badge(string $state, string $label): string {
     $cls = match ($state) {
@@ -348,15 +386,29 @@ $csrf = csrfToken();
             </p>
             <?php if (!$allGreen): ?>
                 <div class="alert alert-warning py-2 small mb-3">
-                    Resolve the amber / red items above first. Disconnect is
-                    disabled until every surface is fully served by MySQL.
+                    <strong>Disconnect blocked by <?= count($disconnectBlockers) ?> item<?= count($disconnectBlockers) === 1 ? '' : 's' ?>:</strong>
+                    <ul class="mb-0 mt-1">
+                        <?php foreach ($disconnectBlockers as $b): ?>
+                            <li>
+                                <?= htmlspecialchars($b['reason']) ?>
+                                <?php if (!empty($b['anchor'])): ?>
+                                    <a href="<?= htmlspecialchars($b['anchor']) ?>" class="ms-1">[jump]</a>
+                                <?php endif; ?>
+                            </li>
+                        <?php endforeach; ?>
+                    </ul>
                 </div>
             <?php endif; ?>
             <form method="POST" onsubmit="return confirm('Disconnect legacy fallbacks by renaming them to *.disabled?')">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                 <input type="hidden" name="action"     value="disconnect_fallbacks">
                 <button type="submit" class="btn btn-danger btn-sm" <?= $allGreen ? '' : 'disabled' ?>>
-                    <i class="bi bi-plug me-1"></i>Disconnect legacy fallbacks
+                    <i class="bi bi-plug me-1"></i>
+                    <?php if ($allGreen): ?>
+                        Disconnect legacy fallbacks (all clear)
+                    <?php else: ?>
+                        Disconnect legacy fallbacks (<?= count($disconnectBlockers) ?> blocker<?= count($disconnectBlockers) === 1 ? '' : 's' ?> remaining)
+                    <?php endif; ?>
                 </button>
             </form>
         </div>

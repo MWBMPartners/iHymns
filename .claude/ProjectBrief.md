@@ -206,4 +206,10 @@ See `DEV_NOTES.md` for full setup guide including Apple, Android, and Fire OS.
 
 ---
 
-Last updated: 2026-04-30 — refreshed at the close of the #670–#681 / #687 / #676 / #682 / #699 batch (auto-colour, IETF BCP 47, bulk ZIP import, hygiene, multilingual scraper + cross-source integrity check)
+Last updated: 2026-04-30 — refreshed at the close of the #670–#681 / #687 / #676 / #682 / #699 batch + the second-cycle batch (#693–#695 urgent fixes, #699 Phase B/C, #682 hygiene tail, #695 tail, #705 monthly cron automation, #708/#710/#711/#712 bug-batch).
+
+Active in-flight items deferred from the second-cycle batch (will land in their own PRs):
+- **#706** — Songbook cascade-delete with two-step confirmation modal (admin/global_admin only). Issue filed; needs a transactional FK-aware DELETE chain across tblSongs.SongId-referencing tables.
+- **#707** — Org-admin role + per-org member/licence management at /manage/my-organisations. Issue filed; multi-PR scope.
+- **#709** — tblUserSetlists empty despite migrations + legacy JSON files not imported. Needs investigation into where legacy setlists were originally stored.
+- **#713** — Rolling Manage-area sweep tracker for catch-all-with-error_log-no-logActivityError pattern. Several pages threaded; the rest catalogued in the issue checklist.
