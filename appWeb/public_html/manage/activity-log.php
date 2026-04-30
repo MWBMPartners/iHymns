@@ -170,6 +170,13 @@ try {
     $stmt->close();
 } catch (\Throwable $e) {
     error_log('[manage/activity-log.php] ' . $e->getMessage());
+    /* If the Activity Log viewer itself can't load, recording an
+       Activity Log row about the failure is admittedly recursive —
+       but logActivityError() short-circuits if the table isn't
+       writable, so it's safe to call. (#713) */
+    if (function_exists('logActivityError')) {
+        logActivityError('admin.activity_log.list', 'activity_log', '', $e);
+    }
 }
 
 $totalPages = $total > 0 ? (int)ceil($total / $pageSize) : 1;

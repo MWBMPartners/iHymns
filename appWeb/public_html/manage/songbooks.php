@@ -732,7 +732,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->close();
                 $songCount = (int)($row[0] ?? 0);
                 if ($songCount > 0) {
-                    $error = "Cannot delete '{$abbr}': {$songCount} song(s) still reference it. Reassign them first.";
+                    $error = "Cannot delete '{$abbr}': {$songCount} song(s) still reference it. Reassign them first, OR use the cascade-delete option (admin/global_admin only).";
                     break;
                 }
 
@@ -749,6 +749,83 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ]);
 
                 $success = "Songbook '{$abbr}' deleted.";
+                break;
+            }
+
+            case 'delete_cascade': {
+                /* Cascade delete: removes a songbook AND every song in
+                   it AND every credit / chord / tag / translation / etc.
+                   that referenced those songs. Admin / global_admin only.
+                   Two-step typed-confirmation gated. (#706)
+
+                   Why this works without manually deleting from every
+                   child table: every FK to tblSongs.SongId is
+                   `ON DELETE CASCADE` (verified against schema.sql at
+                   commit time). MySQL handles the cascade automatically
+                   when we DELETE FROM tblSongs. The FK from
+                   tblSongs.SongbookAbbr → tblSongbooks.Abbreviation is
+                   `ON DELETE RESTRICT`, so we MUST delete the songs
+                   first; then the songbook row goes cleanly. */
+                if (!in_array(($currentUser['role'] ?? ''), ['admin', 'global_admin'], true)) {
+                    $error = 'Admin role required for cascade delete.';
+                    break;
+                }
+                $id = (int)($_POST['id'] ?? 0);
+                $stmt = $db->prepare('SELECT Abbreviation FROM tblSongbooks WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $abbr = (string)($row[0] ?? '');
+                if ($abbr === '') { $error = 'Songbook not found.'; break; }
+
+                /* Server-side typed-confirmation gate. The client side
+                   modal has the same check, but defence in depth. */
+                $typed = trim((string)($_POST['confirm_abbr'] ?? ''));
+                if ($typed !== $abbr) {
+                    $error = "Cascade delete cancelled — the typed confirmation must match the songbook abbreviation '{$abbr}' exactly.";
+                    break;
+                }
+
+                /* Count how many songs we're about to delete so we can
+                   report it in the success banner + Activity Log. */
+                $stmt = $db->prepare('SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?');
+                $stmt->bind_param('s', $abbr);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $songCount = (int)($row[0] ?? 0);
+
+                $db->begin_transaction();
+                try {
+                    /* DELETE the songs — cascades to every credit / tag /
+                       chord / translation / artist / request-resolved
+                       reference / etc. via the FK ON DELETE CASCADE rules. */
+                    $stmt = $db->prepare('DELETE FROM tblSongs WHERE SongbookAbbr = ?');
+                    $stmt->bind_param('s', $abbr);
+                    $stmt->execute();
+                    $stmt->close();
+
+                    /* Then the songbook row itself. */
+                    $stmt = $db->prepare('DELETE FROM tblSongbooks WHERE Id = ?');
+                    $stmt->bind_param('i', $id);
+                    $stmt->execute();
+                    $stmt->close();
+
+                    $db->commit();
+
+                    logActivity('songbook.delete_cascade', 'songbook', (string)$id, [
+                        'abbreviation' => $abbr,
+                        'song_count'   => $songCount,
+                    ]);
+
+                    $success = "Songbook '{$abbr}' deleted along with {$songCount} song"
+                             . ($songCount === 1 ? '' : 's')
+                             . ' and every credit / tag / chord / translation that referenced them.';
+                } catch (\Throwable $e) {
+                    $db->rollback();
+                    throw $e;
+                }
                 break;
             }
 
@@ -928,7 +1005,9 @@ try {
     $stmt->close();
 } catch (\Throwable $e) {
     error_log('[manage/songbooks.php] ' . $e->getMessage());
-    $error = $error ?: 'Could not load songbooks — check server logs for details.';
+    logActivityError('admin.songbooks.list', 'songbook', '', $e);
+    $where = $e->getFile() ? (' (' . basename($e->getFile()) . ':' . $e->getLine() . ')') : '';
+    $error = $error ?: 'Could not load songbooks: ' . $e->getMessage() . $where;
 }
 
 $csrf = csrfToken();
@@ -1079,15 +1158,33 @@ $csrf = csrfToken();
                                         title="Edit songbook">
                                     <i class="bi bi-pencil"></i>
                                 </button>
-                                <?php if ((int)$r['ActualSongCount'] === 0): ?>
+                                <?php
+                                    /* Three states for the delete button (#706):
+                                       1. No songs                          → enabled, plain delete modal
+                                       2. Has songs + admin/global_admin    → enabled, cascade modal (typed-confirm)
+                                       3. Has songs + editor                → disabled (current behaviour preserved) */
+                                    $songCnt = (int)$r['ActualSongCount'];
+                                    $isAdmin = in_array(($currentUser['role'] ?? ''), ['admin', 'global_admin'], true);
+                                ?>
+                                <?php if ($songCnt === 0): ?>
                                 <button type="button" class="btn btn-sm btn-outline-danger"
                                         onclick='openDeleteModal(<?= json_encode(['id' => (int)$r['Id'], 'abbreviation' => $r['Abbreviation']]) ?>)'
                                         title="Delete songbook (no songs reference it)">
                                     <i class="bi bi-trash"></i>
                                 </button>
+                                <?php elseif ($isAdmin): ?>
+                                <button type="button" class="btn btn-sm btn-outline-danger"
+                                        onclick='openCascadeDeleteModal(<?= json_encode([
+                                            'id' => (int)$r['Id'],
+                                            'abbreviation' => $r['Abbreviation'],
+                                            'song_count' => $songCnt,
+                                        ]) ?>)'
+                                        title="Cascade-delete: songbook + <?= $songCnt ?> song(s) + every reference to them">
+                                    <i class="bi bi-trash"></i>
+                                </button>
                                 <?php else: ?>
                                 <button type="button" class="btn btn-sm btn-outline-secondary" disabled
-                                        title="<?= (int)$r['ActualSongCount'] ?> song(s) still reference this abbreviation — reassign them first">
+                                        title="<?= $songCnt ?> song(s) still reference this abbreviation — admin/global_admin role required for cascade delete">
                                     <i class="bi bi-trash"></i>
                                 </button>
                                 <?php endif; ?>
@@ -1579,6 +1676,57 @@ $csrf = csrfToken();
         </div>
     </div>
 
+    <!-- Cascade-delete modal (#706) — admin / global_admin only.
+         Two-step confirmation: (1) the user reads the song count + scary
+         red text, (2) types the songbook abbreviation back into a field
+         that gates the Delete button. The submit button stays disabled
+         until window.cascadeDeleteAbbr === the typed value. -->
+    <div class="modal fade" id="cascadeDeleteModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
+                <form method="POST" id="cascadeDeleteForm">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="delete_cascade">
+                    <input type="hidden" name="id" id="cascade-delete-id">
+                    <div class="modal-header" style="border-color: var(--ih-border); background: rgba(220,53,69,0.15);">
+                        <h5 class="modal-title">
+                            <i class="bi bi-exclamation-triangle-fill me-2 text-danger"></i>
+                            Cascade delete — <code id="cascade-delete-abbr-label"></code>
+                        </h5>
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <p class="text-danger">
+                            <strong>This is destructive and cannot be undone.</strong>
+                        </p>
+                        <p>
+                            You're about to delete the songbook
+                            <code id="cascade-delete-abbr-display"></code>
+                            <strong>and every song in it</strong>
+                            (<span id="cascade-delete-song-count">0</span> songs)
+                            <strong>and every credit / chord / tag / translation</strong>
+                            that referenced those songs.
+                        </p>
+                        <hr>
+                        <p class="mb-2">To confirm, type the abbreviation
+                            <code id="cascade-delete-abbr-echo"></code>
+                            into the field below:
+                        </p>
+                        <input type="text" name="confirm_abbr" id="cascade-delete-confirm"
+                               class="form-control" autocomplete="off" placeholder="Abbreviation"
+                               oninput="window.cascadeDeleteSyncConfirm && window.cascadeDeleteSyncConfirm()">
+                    </div>
+                    <div class="modal-footer" style="border-color: var(--ih-border);">
+                        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-danger" id="cascade-delete-submit" disabled>
+                            <i class="bi bi-trash me-1"></i>Delete songbook + all songs
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
     <script>
         function openEditModal(row) {
             document.getElementById('edit-id').value                = row.id;
@@ -1652,6 +1800,31 @@ $csrf = csrfToken();
             document.getElementById('delete-abbr-label').textContent = row.abbreviation;
             new bootstrap.Modal(document.getElementById('deleteModal')).show();
         }
+
+        /* Cascade-delete modal opener (#706). Stashes the expected
+           abbreviation on window so the input's `oninput` handler can
+           gate the submit button until the typed value matches exactly. */
+        function openCascadeDeleteModal(row) {
+            window.cascadeDeleteAbbr = row.abbreviation;
+            document.getElementById('cascade-delete-id').value = row.id;
+            document.getElementById('cascade-delete-abbr-label').textContent   = row.abbreviation;
+            document.getElementById('cascade-delete-abbr-display').textContent = row.abbreviation;
+            document.getElementById('cascade-delete-abbr-echo').textContent    = row.abbreviation;
+            document.getElementById('cascade-delete-song-count').textContent   = row.song_count;
+            document.getElementById('cascade-delete-confirm').value            = '';
+            document.getElementById('cascade-delete-submit').disabled          = true;
+            new bootstrap.Modal(document.getElementById('cascadeDeleteModal')).show();
+        }
+
+        /* Submit-gate sync — called by the typed-confirm input's oninput.
+           The submit button only enables when the typed value matches the
+           expected abbreviation EXACTLY (case-sensitive). */
+        window.cascadeDeleteSyncConfirm = function () {
+            var typed   = document.getElementById('cascade-delete-confirm').value;
+            var expect  = window.cascadeDeleteAbbr || '';
+            var submit  = document.getElementById('cascade-delete-submit');
+            submit.disabled = typed !== expect;
+        };
     </script>
 
     <!-- Sortable table headers (#644). -->
