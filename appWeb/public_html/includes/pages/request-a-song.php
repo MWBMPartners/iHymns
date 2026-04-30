@@ -65,6 +65,20 @@ if ($_prefillNumber !== '') {
     $_prefillNumber = mb_substr($_prefillNumber, 0, 500);
 }
 
+/* Server-rendered confirmation / error banners (#711). When the form
+   submits via the no-JS fallback path (action= attribute on <form>),
+   the API endpoint redirects back here with ?submitted=1&id=N (success)
+   or ?error=… (failure). We render the banner server-side so the user
+   gets feedback whether or not the inline <script type="module"> ran.
+   The JS path keeps using its own fetch() flow + the d-none banners
+   below — both surfaces work independently. */
+$_serverSubmitted = isset($_GET['submitted']) && $_GET['submitted'] === '1';
+$_serverTrackingId = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+$_serverError      = isset($_GET['error']) ? trim((string)$_GET['error']) : '';
+if ($_serverError !== '') {
+    $_serverError = mb_substr($_serverError, 0, 200);
+}
+
 ?>
 <section class="page-request-a-song" aria-label="Request a song">
 
@@ -79,6 +93,22 @@ if ($_prefillNumber !== '') {
         personal data.
     </p>
 
+    <?php if ($_serverSubmitted): ?>
+        <div class="alert alert-success" role="alert">
+            <i class="fa-solid fa-check-circle me-1" aria-hidden="true"></i>
+            Thank you — your request has been received.
+            <?php if ($_serverTrackingId > 0): ?>
+                <span class="text-muted small">Reference: #<?= $_serverTrackingId ?></span>
+            <?php endif; ?>
+            <a href="/request" class="ms-2">Submit another</a>
+        </div>
+    <?php elseif ($_serverError !== ''): ?>
+        <div class="alert alert-danger" role="alert">
+            <i class="fa-solid fa-triangle-exclamation me-1" aria-hidden="true"></i>
+            <?= htmlspecialchars($_serverError, ENT_QUOTES, 'UTF-8') ?>
+        </div>
+    <?php endif; ?>
+
     <div id="request-success" class="alert alert-success d-none" role="alert">
         <i class="fa-solid fa-check-circle me-1" aria-hidden="true"></i>
         Thank you — your request has been received.
@@ -91,7 +121,16 @@ if ($_prefillNumber !== '') {
     </div>
     <div id="request-error" class="alert alert-danger d-none" role="alert"></div>
 
-    <form id="request-form" novalidate>
+    <!-- The action="…" + method="POST" attributes are the no-JS fallback
+         path (#711). The inline <script type="module"> below intercepts
+         the submit event and uses fetch() instead, so the JS path is
+         what runs in normal browsers. If the module fails to load (CSP,
+         network, syntax error, SW cache miss) the form still works:
+         browser POSTs the form-encoded body straight to the API, the
+         endpoint detects Content-Type=application/x-www-form-urlencoded
+         and redirects back here with ?submitted=1&id=… for the
+         server-rendered success banner above. -->
+    <form id="request-form" action="/api?action=song_request_submit" method="POST" novalidate>
         <div class="row g-3">
             <div class="col-md-8">
                 <label for="request-title" class="form-label">Song title <span class="text-danger">*</span></label>

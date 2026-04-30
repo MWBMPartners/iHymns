@@ -5478,7 +5478,18 @@ if ($action !== null) {
                 break;
             }
 
-            $body    = json_decode((string)file_get_contents('php://input'), true) ?? [];
+            /* Accept BOTH application/json AND application/x-www-form-urlencoded.
+               JS path uses JSON; the no-JS fallback (form action= attribute on
+               the /request page) submits form-encoded so it still works when
+               the page's <script type="module"> fails to load (#711). */
+            $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+            $isFormPost  = stripos($contentType, 'application/x-www-form-urlencoded') !== false
+                        || stripos($contentType, 'multipart/form-data')              !== false;
+            if ($isFormPost) {
+                $body = $_POST;
+            } else {
+                $body = json_decode((string)file_get_contents('php://input'), true) ?? [];
+            }
             $title   = trim((string)($body['title']    ?? ''));
             $book    = trim((string)($body['songbook'] ?? ''));
             $details = trim((string)($body['details']  ?? ''));
@@ -5486,22 +5497,41 @@ if ($action !== null) {
             $honey   = (string)($body['website']       ?? '');
             $ip      = $_SERVER['REMOTE_ADDR'] ?? '';
 
+            /* Helper that returns either JSON (JS path) or a 302 redirect to
+               /request?submitted=… (no-JS fallback). The redirect target shows
+               a server-rendered success banner so the user gets the same
+               feedback either way. (#711) */
+            $respondOk = function (int $trackingId) use ($isFormPost) {
+                if ($isFormPost) {
+                    header('Location: /request?submitted=1&id=' . $trackingId, true, 302);
+                    exit;
+                }
+                sendJson(['ok' => true, 'trackingId' => $trackingId]);
+            };
+            $respondErr = function (string $msg, int $code) use ($isFormPost) {
+                if ($isFormPost) {
+                    header('Location: /request?error=' . urlencode($msg), true, 302);
+                    exit;
+                }
+                sendJson(['error' => $msg], $code);
+            };
+
             /* Honeypot: real users leave this blank; bots fill every field. */
             if ($honey !== '') {
-                sendJson(['ok' => true, 'trackingId' => 0]); /* Silent success to not tip off the bot. */
+                $respondOk(0); /* Silent success to not tip off the bot. */
                 break;
             }
 
             if ($title === '') {
-                sendJson(['error' => 'A song title is required.'], 400);
+                $respondErr('A song title is required.', 400);
                 break;
             }
-            if (mb_strlen($title)   > 500)  { sendJson(['error' => 'Title too long.'],    400); break; }
-            if (mb_strlen($book)    > 100)  { sendJson(['error' => 'Songbook too long.'], 400); break; }
-            if (mb_strlen($details) > 2000) { sendJson(['error' => 'Details too long.'],  400); break; }
-            if (mb_strlen($email)   > 255)  { sendJson(['error' => 'Email too long.'],    400); break; }
+            if (mb_strlen($title)   > 500)  { $respondErr('Title too long.',    400); break; }
+            if (mb_strlen($book)    > 100)  { $respondErr('Songbook too long.', 400); break; }
+            if (mb_strlen($details) > 2000) { $respondErr('Details too long.',  400); break; }
+            if (mb_strlen($email)   > 255)  { $respondErr('Email too long.',    400); break; }
             if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
-                sendJson(['error' => 'Email address is not valid.'], 400);
+                $respondErr('Email address is not valid.', 400);
                 break;
             }
 
@@ -5517,7 +5547,7 @@ if ($action !== null) {
                 $row = $stmt->get_result()->fetch_row();
                 $stmt->close();
                 if ((int)($row[0] ?? 0) >= 5) {
-                    sendJson(['error' => 'You have submitted several requests recently. Please try again tomorrow.'], 429);
+                    $respondErr('You have submitted several requests recently. Please try again tomorrow.', 429);
                     break;
                 }
 
@@ -5525,10 +5555,15 @@ if ($action !== null) {
                 $authUser = getAuthenticatedUser();
                 $userId   = $authUser ? (int)$authUser['Id'] : null;
 
+                /* Status literal in single quotes — double quotes were
+                   used here originally and break under sql_mode='ANSI_QUOTES'
+                   where MySQL parses "pending" as a column reference rather
+                   than a string literal. Single quotes are the unambiguous
+                   form per SQL standard. (#711) */
                 $stmt = $db->prepare(
-                    'INSERT INTO tblSongRequests
+                    "INSERT INTO tblSongRequests
                         (Title, Songbook, Details, ContactEmail, UserId, IpAddress, Status)
-                     VALUES (?, ?, ?, ?, ?, ?, "pending")'
+                     VALUES (?, ?, ?, ?, ?, ?, 'pending')"
                 );
                 /* UserId(i nullable) — anonymous submissions OK. */
                 $stmt->bind_param('ssssis', $title, $book, $details, $email, $userId, $ip);
@@ -5547,11 +5582,11 @@ if ($action !== null) {
                     'authenticated'=> $userId !== null,
                 ]);
 
-                sendJson(['ok' => true, 'trackingId' => $trackingId]);
+                $respondOk($trackingId);
             } catch (\Throwable $e) {
                 error_log('[song_request_submit] ' . $e->getMessage());
                 logActivityError('song.request_submit', 'song_request', '', $e);
-                sendJson(['error' => 'Could not save your request. Please try again.'], 500);
+                $respondErr('Could not save your request. Please try again.', 500);
             }
             break;
 
