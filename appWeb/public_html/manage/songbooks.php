@@ -431,8 +431,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                    mysqli passes NULL correctly when a bound variable is null
                    even with type 's'. */
                 $orderInt = (int)($order ?: 0);
+                /* Type string is exactly 23 chars to match the 23 bound
+                   values: ssis (Abbr,Name,Order,Colour) + isssss
+                   (IsOfficial,Publisher,Year,Copyright,Affiliation) +
+                   s (Language) + 13 × s (bibliographic). The earlier
+                   24-char form had one stray trailing 's' which made
+                   PHP 8.5 mysqli throw "Number of variables doesn't
+                   match number of parameters" on every create —
+                   surfaced to the curator as the generic "Database
+                   error — check server logs" banner. (#694) */
                 $stmt->bind_param(
-                    'ssisisssssssssssssssssss',
+                    'ssisissssssssssssssssss',
                     $abbr, $name, $orderInt, $colour,
                     $isOfficial, $publisher, $pubYear, $copyright, $affiliation,
                     $language,
@@ -576,8 +585,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                                                         ----
                                                                          23 */
                     $orderInt = (int)($order ?: 0);
+                    /* Type string is exactly 23 chars to match the 23
+                       bound values: ssi (Name,Colour,Order) + issss
+                       (IsOfficial,Publisher,Year,Copyright,Affiliation) +
+                       s (Language) + 13 × s (bibliographic) + i (Id).
+                       The earlier 24-char form had one stray trailing
+                       's' so every PHP 8.5 mysqli execute() threw
+                       "Number of variables doesn't match number of
+                       parameters" — surfaced to the curator as the
+                       generic "Database error — check server logs"
+                       banner whenever they touched the new
+                       bibliographic / Language fields. (#694) */
                     $stmt->bind_param(
-                        'ssiisssssssssssssssssssi',
+                        'ssiissssssssssssssssssi',
                         $name, $colour, $orderInt,
                         $isOfficial, $publisher, $pubYear, $copyright, $affiliation,
                         $language,
