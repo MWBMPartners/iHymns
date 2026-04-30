@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: iHymns API
-  version: "0.25.0"
+  version: "0.50.0"
   description: |
     The iHymns API provides programmatic access to the iHymns hymn and song
     database. It powers the iHymns Progressive Web App (PWA), enabling song
