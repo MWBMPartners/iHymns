@@ -156,6 +156,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     } catch (\Throwable $e) {
         error_log('[manage/groups.php] ' . $e->getMessage());
+        logActivityError('admin.groups.save', 'group',
+            (string)($_POST['id'] ?? ''), $e, [
+                'action' => $_POST['action'] ?? null,
+            ]);
         $error = $error ?: 'Database error — check server logs for details.';
     }
 }
@@ -177,6 +181,7 @@ try {
     $stmt->close();
 } catch (\Throwable $e) {
     error_log('[manage/groups.php] ' . $e->getMessage());
+    logActivityError('admin.groups.list', 'group', '', $e);
     $error = $error ?: 'Could not load groups.';
 }
 
@@ -217,6 +222,7 @@ if ($editId > 0) {
         }
     } catch (\Throwable $e) {
         error_log('[manage/groups.php] ' . $e->getMessage());
+        logActivityError('admin.groups.edit_load', 'group', (string)$editId, $e);
     }
 }
 

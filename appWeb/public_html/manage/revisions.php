@@ -88,6 +88,7 @@ try {
     $stmt->close();
 } catch (\Throwable $e) {
     error_log('[manage revisions] ' . $e->getMessage());
+    logActivityError('admin.revisions.list', 'song_revision', '', $e);
     $rows = [];
 }
 

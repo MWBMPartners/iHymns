@@ -62,6 +62,7 @@ try {
     }
 } catch (\Throwable $e) {
     error_log('[missing-numbers] ' . $e->getMessage());
+    logActivityError('admin.missing_numbers.load', 'songbook', '', $e);
     $reports  = [];
     $loadError = 'Could not load the missing-numbers report — see server logs.';
 }
