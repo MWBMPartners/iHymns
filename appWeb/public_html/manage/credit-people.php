@@ -276,6 +276,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['action'] ?? '') === 
         exit;
     } catch (\Throwable $e) {
         error_log('[manage/credit-people.php] view_songs failed: ' . $e->getMessage());
+        logActivityError('admin.credit_people.view_songs', 'credit_person', '', $e);
         http_response_code(500);
         echo json_encode(['error' => 'Could not load songs.']);
         exit;
@@ -921,6 +922,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     } catch (\Throwable $e) {
         error_log('[manage/credit-people.php] action=' . $action . ': ' . $e->getMessage());
+        logActivityError('admin.credit_people.save', 'credit_person', '', $e, [
+            'action' => $action,
+        ]);
         if ($error === '') {
             /* This page is gated to global_admin — surfacing the
                actual exception message + file:line is a UX win and
