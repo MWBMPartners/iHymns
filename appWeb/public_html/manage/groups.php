@@ -309,12 +309,12 @@ $csrf = csrfToken();
                 <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a group</h2>
                 <div class="row g-2 mb-2">
                     <div class="col-sm-4">
-                        <label class="form-label small">Name</label>
-                        <input type="text" name="name" class="form-control form-control-sm" maxlength="100" required>
+                        <label class="form-label small" for="new-group-name">Name</label>
+                        <input type="text" name="name" id="new-group-name" class="form-control form-control-sm" maxlength="100" required>
                     </div>
                     <div class="col-sm-8">
-                        <label class="form-label small">Description</label>
-                        <input type="text" name="description" class="form-control form-control-sm">
+                        <label class="form-label small" for="new-group-description">Description</label>
+                        <input type="text" name="description" id="new-group-description" class="form-control form-control-sm">
                     </div>
                 </div>
                 <div class="d-flex flex-wrap gap-3">
