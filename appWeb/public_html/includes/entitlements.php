@@ -63,6 +63,14 @@ const ENTITLEMENTS = [
     'manage_organisations' => ['admin', 'global_admin'],
     'manage_credit_people' => ['admin', 'global_admin'],
 
+    /* Org-admin role (#707) — system-level grant that says "this role
+       MAY hold an admin/owner role on at least one organisation".
+       The actual page-level gate calls userHasOwnOrganisation() (below)
+       which reads tblOrganisationMembers to check whether THIS specific
+       user holds the role on any org. system-admin / global_admin
+       implicitly qualify because they can manage any org. */
+    'manage_own_organisation' => ['user', 'editor', 'admin', 'global_admin'],
+
     /* Content gating for regular users — per-song / per-songbook / per-user
        restrictions (tblContentRestrictions) and access-tier definitions
        (tblAccessTiers) that control lyrics / audio / MIDI / PDF / offline. */
@@ -301,4 +309,50 @@ function entitlementsFor(?string $role): array
         }
     }
     return $out;
+}
+
+/**
+ * Org-admin scope (#707) — list the organisation IDs this user holds
+ * an `admin` or `owner` role on (per tblOrganisationMembers).
+ *
+ * The two pieces:
+ *   - userIsOrgAdminOf($userId)      → list of OrgIds the user manages
+ *   - userHasOwnOrganisation($userId) → bool: are they admin/owner on ANY org?
+ *
+ * Page-level gate on /manage/my-organisations checks
+ * userHasOwnOrganisation(); row-level checks (when an action targets a
+ * specific org) call userIsOrgAdminOf() and require the target to be in
+ * the returned list. system-admin / global_admin shortcut to "all orgs"
+ * via the system role check before this helper runs.
+ *
+ * Best-effort against schema drift: if tblOrganisationMembers doesn't
+ * exist on a fresh deployment, both helpers return [] / false rather
+ * than 500'ing.
+ */
+function userIsOrgAdminOf(?int $userId): array
+{
+    if (!$userId || $userId <= 0) return [];
+    try {
+        $db = getDbMysqli();
+        $stmt = $db->prepare(
+            "SELECT OrgId FROM tblOrganisationMembers
+              WHERE UserId = ? AND Role IN ('admin', 'owner')"
+        );
+        $stmt->bind_param('i', $userId);
+        $stmt->execute();
+        $orgIds = [];
+        $res = $stmt->get_result();
+        while ($row = $res->fetch_row()) {
+            $orgIds[] = (int)$row[0];
+        }
+        $stmt->close();
+        return $orgIds;
+    } catch (\Throwable $_e) {
+        return [];
+    }
+}
+
+function userHasOwnOrganisation(?int $userId): bool
+{
+    return !empty(userIsOrgAdminOf($userId));
 }
