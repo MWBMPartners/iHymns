@@ -34,6 +34,11 @@ $stats = $songData->getStats();
         </span>
     </div>
 
+    <!-- Language filter (#679) — same partial as the home-page
+         Songbooks section. Silently returns early when the catalogue
+         spans only one language. -->
+    <?php require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'songbook-language-filter.php'; ?>
+
     <!-- Songbook Grid -->
     <div class="row g-3">
         <?php foreach ($songbooks as $index => $book): ?>

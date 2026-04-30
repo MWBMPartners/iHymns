@@ -524,6 +524,20 @@ export class Router {
                 .catch(err => console.error('[Router] home-page init failed:', err));
         }
 
+        /* Songbook language filter (#679). Booted on both /home and
+           /songbooks since the filter sits above the tile grid on
+           each. The module is idempotent so a quick navigation
+           home → songbooks → home doesn't double-bind handlers. The
+           partial that renders the <select> silently returns early
+           when the catalogue spans only one language, in which case
+           bootSongbookLanguageFilter is a no-op too (no selector
+           found). */
+        if (page === 'home' || page === 'songbooks') {
+            import('./songbook-language-filter.js')
+                .then(m => m.bootSongbookLanguageFilter())
+                .catch(err => console.error('[Router] songbook-language-filter init failed:', err));
+        }
+
         /* Initialise favourites list on favorites page */
         if (page === 'favorites') {
             this.app.favorites.loadFavoritesList();
