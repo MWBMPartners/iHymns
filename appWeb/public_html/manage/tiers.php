@@ -189,7 +189,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     } catch (\Throwable $e) {
         error_log('[manage/tiers.php] ' . $e->getMessage());
-        $error = $error ?: 'Database error — check server logs for details.';
+        logActivityError('admin.tiers.save', 'access_tier',
+            (string)($_POST['id'] ?? ''), $e, [
+                'action' => $_POST['action'] ?? null,
+            ]);
+        $where = $e->getFile() ? (' (' . basename($e->getFile()) . ':' . $e->getLine() . ')') : '';
+        $error = $error ?: 'Database error: ' . $e->getMessage() . $where;
     }
 }
 
@@ -212,7 +217,9 @@ try {
     $stmt->close();
 } catch (\Throwable $e) {
     error_log('[manage/tiers.php] ' . $e->getMessage());
-    $error = $error ?: 'Could not load tiers.';
+    logActivityError('admin.tiers.list', 'access_tier', '', $e);
+    $where = $e->getFile() ? (' (' . basename($e->getFile()) . ':' . $e->getLine() . ')') : '';
+    $error = $error ?: 'Could not load tiers: ' . $e->getMessage() . $where;
 }
 
 $csrf = csrfToken();

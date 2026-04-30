@@ -156,7 +156,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     } catch (\Throwable $e) {
         error_log('[manage/restrictions.php] ' . $e->getMessage());
-        $error = $error ?: 'Database error — check server logs for details.';
+        logActivityError('admin.restrictions.save', 'content_restriction',
+            (string)($_POST['id'] ?? ''), $e, [
+                'action' => $_POST['action'] ?? null,
+            ]);
+        /* Surface the actual exception inline — admin-gated, leaks no
+           user data (#713). */
+        $where = $e->getFile() ? (' (' . basename($e->getFile()) . ':' . $e->getLine() . ')') : '';
+        $error = $error ?: 'Database error: ' . $e->getMessage() . $where;
     }
 }
 
@@ -195,7 +202,9 @@ try {
     $stmt->close();
 } catch (\Throwable $e) {
     error_log('[manage/restrictions.php] ' . $e->getMessage());
-    $error = $error ?: 'Could not load restrictions.';
+    logActivityError('admin.restrictions.list', 'content_restriction', '', $e);
+    $where = $e->getFile() ? (' (' . basename($e->getFile()) . ':' . $e->getLine() . ')') : '';
+    $error = $error ?: 'Could not load restrictions: ' . $e->getMessage() . $where;
 }
 
 /* Summary counts per entity type for the header pills */
