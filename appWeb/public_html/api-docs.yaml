@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: iHymns API
-  version: "0.50.0"
+  version: "0.51.0"
   description: |
     The iHymns API provides programmatic access to the iHymns hymn and song
     database. It powers the iHymns Progressive Web App (PWA), enabling song
@@ -167,6 +167,14 @@ tags:
     description: Administrative endpoints for user, group, and content management
   - name: Admin — Restrictions
     description: Content-restriction rule engine (tier / org / platform / licence)
+  - name: Admin — Songbooks
+    description: |
+      Songbook curation surface (#719 PR 2a). CRUD parity with
+      `/manage/songbooks` so native clients (iOS / iPadOS / tvOS / Android
+      / FireOS) can manage hymnals without a webview. Validation is
+      shared with the web admin via `includes/songbook_validation.php`,
+      so a tweak to the abbreviation / colour / IETF BCP 47 grammar
+      lands on both surfaces in one go.
   - name: Admin — Revisions
     description: Review pending song revisions
   - name: Admin — Maintenance
@@ -4002,6 +4010,349 @@ paths:
         "200":
           description: Deleted
 
+  # ===========================================================================
+  # ADMIN — SONGBOOKS  (#719 PR 2a)
+  # CRUD parity with /manage/songbooks for native clients. Validation
+  # rules live in includes/songbook_validation.php and are shared with
+  # the web admin so abbreviation / colour / IETF BCP 47 grammar tweaks
+  # land on both surfaces in one go.
+  # ===========================================================================
+
+  /api.php?action=admin_songbook_create:
+    post:
+      operationId: adminSongbookCreate
+      tags: [Admin — Songbooks]
+      summary: Create a songbook
+      description: |
+        Mirrors the `create` POST on /manage/songbooks. Empty `colour`
+        triggers the auto-pick palette (#677); the resolved colour is
+        echoed back so the caller can render the badge immediately.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_songbook_create] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SongbookWriteInput"
+      responses:
+        "201":
+          description: Songbook created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:           { type: boolean, example: true }
+                  id:           { type: integer, description: New tblSongbooks.Id, example: 42 }
+                  abbreviation: { type: string,  example: CP }
+                  colour:       { type: string,  description: Resolved hex (auto-picked when blank), example: "#3B82F6" }
+        "400":
+          description: Validation error (abbreviation grammar, colour shape, BCP 47 tag, missing name)
+        "403":
+          description: Admin access required
+        "409":
+          description: Abbreviation already in use
+
+  /api.php?action=admin_songbook_update:
+    post:
+      operationId: adminSongbookUpdate
+      tags: [Admin — Songbooks]
+      summary: Update an existing songbook
+      description: |
+        Update name / colour / display_order / metadata, and optionally
+        rename the abbreviation. When `new_abbreviation` is set and
+        `rename_song_refs` is true, the call also updates every
+        `tblSongs.SongbookAbbr` that referenced the old key — atomic
+        within a single transaction.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_songbook_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/SongbookWriteInput"
+                - type: object
+                  required: [id]
+                  properties:
+                    id:
+                      type: integer
+                      description: tblSongbooks.Id of the row to update
+                    new_abbreviation:
+                      type: string
+                      description: New ASCII-alphanumeric abbreviation. Omit to keep the existing key.
+                    rename_song_refs:
+                      type: boolean
+                      default: false
+                      description: When renaming, also UPDATE tblSongs.SongbookAbbr to the new value.
+      responses:
+        "200":
+          description: Songbook updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:             { type: boolean, example: true }
+                  id:             { type: integer }
+                  abbreviation:   { type: string }
+                  fields_changed:
+                    type: array
+                    items: { type: string }
+                    description: Names of columns that actually changed value (Activity-Log diff key set).
+                  songs_renamed:  { type: boolean }
+        "400":
+          description: Validation error (missing id, missing name, bad colour, bad BCP 47 tag, bad new abbreviation)
+        "403":
+          description: Admin access required
+        "404":
+          description: Songbook id not found
+        "409":
+          description: Target new_abbreviation is already in use by another row
+
+  /api.php?action=admin_songbook_delete:
+    post:
+      operationId: adminSongbookDelete
+      tags: [Admin — Songbooks]
+      summary: Delete an empty songbook
+      description: |
+        Refuses if any song still references the abbreviation. Use
+        `admin_songbook_delete_cascade` for the destructive path.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_songbook_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer, description: tblSongbooks.Id }
+      responses:
+        "200":
+          description: Songbook deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:           { type: boolean, example: true }
+                  id:           { type: integer }
+                  abbreviation: { type: string }
+        "400":
+          description: Songbook id required
+        "403":
+          description: Admin access required
+        "404":
+          description: Songbook id not found
+        "422":
+          description: |
+            Refused — songs still reference the abbreviation. Response
+            includes `song_count` and `abbreviation` so the caller can
+            render an honest "reassign N songs first" prompt.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:        { type: string }
+                  song_count:   { type: integer }
+                  abbreviation: { type: string }
+                  hint:         { type: string }
+
+  /api.php?action=admin_songbook_delete_cascade:
+    post:
+      operationId: adminSongbookDeleteCascade
+      tags: [Admin — Songbooks]
+      summary: Cascade-delete a songbook + every song + every credit / tag / chord / translation
+      description: |
+        Destructive. Removes every song carrying this abbreviation
+        plus every credit / tag / chord / translation / artist row
+        that referenced those songs (via `ON DELETE CASCADE` FKs in
+        tblSongs's child tables). The songbook row itself is then
+        removed last. Server-side typed-confirmation gate mirrors the
+        web admin defence-in-depth check (#706).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_songbook_delete_cascade] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, confirm_abbreviation]
+              properties:
+                id:
+                  type: integer
+                  description: tblSongbooks.Id of the row to delete
+                confirm_abbreviation:
+                  type: string
+                  description: Must equal the songbook's `Abbreviation` exactly. Defence-in-depth gate.
+      responses:
+        "200":
+          description: Cascade delete completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:           { type: boolean, example: true }
+                  id:           { type: integer }
+                  abbreviation: { type: string }
+                  song_count:   { type: integer, description: Number of songs deleted as a side effect }
+        "400":
+          description: Missing id or confirm_abbreviation does not match
+        "403":
+          description: Admin / global_admin role required
+        "404":
+          description: Songbook id not found
+
+  /api.php?action=admin_songbooks_reorder:
+    post:
+      operationId: adminSongbooksReorder
+      tags: [Admin — Songbooks]
+      summary: Bulk-update DisplayOrder across the songbook list
+      description: |
+        Single transaction; one Activity-Log row for the whole bulk
+        operation rather than one per row.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_songbooks_reorder] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [display_order]
+              properties:
+                display_order:
+                  type: object
+                  description: |
+                    Map of `tblSongbooks.Id` (string) → integer order.
+                    Empty map is a 400.
+                  additionalProperties:
+                    type: integer
+                  example:
+                    "1": 0
+                    "2": 10
+                    "3": 20
+      responses:
+        "200":
+          description: Order saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:    { type: boolean, example: true }
+                  count: { type: integer, description: Number of rows updated }
+        "400":
+          description: Empty or malformed display_order map
+        "403":
+          description: Admin access required
+
+  /api.php?action=admin_songbooks_auto_colour_fill:
+    post:
+      operationId: adminSongbooksAutoColourFill
+      tags: [Admin — Songbooks]
+      summary: Auto-pick a palette colour for every songbook missing a #RRGGBB value
+      description: |
+        Walks `tblSongbooks`. Rows whose `Colour` is NULL, blank, or
+        not a `#RRGGBB` hex receive a freshly-picked palette colour
+        (see `manage/includes/songbook-palette.php`). Rows with a
+        valid hex are left alone. Idempotent.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_songbooks_auto_colour_fill] }
+      responses:
+        "200":
+          description: Auto-fill applied
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean, example: true }
+                  changed: { type: integer, description: Rows whose colour was assigned }
+                  mode:    { type: string,  enum: [fill] }
+        "403":
+          description: Admin / global_admin role required
+
+  /api.php?action=admin_songbooks_auto_colour_reassign:
+    post:
+      operationId: adminSongbooksAutoColourReassign
+      tags: [Admin — Songbooks]
+      summary: Reassign a fresh palette colour to every songbook (destructive)
+      description: |
+        Overwrites every `Colour`. Server-side typed-confirmation gate
+        mirrors the web admin's defence-in-depth check.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_songbooks_auto_colour_reassign] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm_phrase]
+              properties:
+                confirm_phrase:
+                  type: string
+                  enum: ["REASSIGN ALL"]
+                  description: Must equal the literal phrase `REASSIGN ALL`. Defence-in-depth gate.
+      responses:
+        "200":
+          description: Colours reassigned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean, example: true }
+                  changed: { type: integer, description: Rows whose colour was replaced }
+                  mode:    { type: string,  enum: [reassign] }
+        "400":
+          description: confirm_phrase does not match
+        "403":
+          description: Admin / global_admin role required
+
   /api.php?action=admin_pending_revisions:
     get:
       operationId: adminPendingRevisions
@@ -5057,6 +5408,129 @@ components:
           nullable: true
           description: Library of Congress Classification (#672)
           example: M2117
+
+    SongbookWriteInput:
+      type: object
+      description: |
+        Input shape for `admin_songbook_create` and the metadata half
+        of `admin_songbook_update` (#719 PR 2a). Snake_case JSON keys
+        map onto the same column set the web admin writes; validators
+        live in `includes/songbook_validation.php` and are shared with
+        `/manage/songbooks` so a tweak to the grammar lands on both
+        surfaces in one go.
+
+        - `abbreviation`: required on create, ignored on update (use
+          `new_abbreviation` for renames).
+        - `colour`: optional. Empty triggers the auto-pick palette
+          (#677); the resolved hex is echoed back on the response.
+        - `language`: optional IETF BCP 47 tag (#681). Format:
+          `lang[-Script][-Region]`, max 35 chars.
+        - All bibliographic identifier fields are nullable; an empty
+          string normalises to NULL on the server.
+      required: [abbreviation, name]
+      properties:
+        abbreviation:
+          type: string
+          maxLength: 10
+          pattern: "^[A-Za-z0-9]+$"
+          description: ASCII-alphanumeric natural key. Used by tblSongs.SongbookAbbr.
+          example: CP
+        name:
+          type: string
+          example: Christian Praise
+        display_order:
+          type: integer
+          default: 0
+          description: Sort key used by the songbook list UI.
+        colour:
+          type: string
+          pattern: "^#[0-9A-Fa-f]{6}$"
+          nullable: true
+          description: 7-char `#RRGGBB` hex. Empty/missing triggers the auto-pick palette (#677).
+          example: "#3B82F6"
+        is_official:
+          type: boolean
+          default: false
+          description: Recognised as an official Adventist publication (#502 / #670).
+        publisher:
+          type: string
+          nullable: true
+          example: Pacific Press Publishing Association
+        publication_year:
+          type: string
+          nullable: true
+          description: Year of publication. Stored as VARCHAR so non-numeric strings (e.g. "1985 / 2002 reprint") survive.
+          example: "1985"
+        copyright:
+          type: string
+          nullable: true
+          example: "© 1985 Review and Herald"
+        affiliation:
+          type: string
+          nullable: true
+          description: |
+            Issuing organisation. Free-text; the API also INSERT-IGNOREs
+            the value into `tblSongbookAffiliations` so the typeahead
+            surfaces it on the next save (#670).
+        language:
+          type: string
+          nullable: true
+          maxLength: 35
+          pattern: "^[a-z]{2,3}(-[A-Z][a-z]{3})?(-[A-Z]{2}|-[0-9]{3})?$"
+          description: IETF BCP 47 tag (#681). lang[-Script][-Region].
+          example: en-GB
+        website_url:
+          type: string
+          nullable: true
+          description: Official website (#672)
+        internet_archive_url:
+          type: string
+          nullable: true
+          description: Internet Archive landing page (#672)
+        wikipedia_url:
+          type: string
+          nullable: true
+          description: Wikipedia article URL (#672)
+        wikidata_id:
+          type: string
+          nullable: true
+          description: Wikidata QID (#672)
+        oclc_number:
+          type: string
+          nullable: true
+          description: OCLC WorldCat record number (#672)
+        ocn_number:
+          type: string
+          nullable: true
+          description: OCLC OCN identifier (#672)
+        lcp_number:
+          type: string
+          nullable: true
+          description: Library of Congress Permalink number (#672)
+        isbn:
+          type: string
+          nullable: true
+          description: ISBN-10 or ISBN-13 (#672)
+        ark_id:
+          type: string
+          nullable: true
+          description: Archival Resource Key (ARK) (#672)
+        isni_id:
+          type: string
+          nullable: true
+          description: International Standard Name Identifier (#672)
+        viaf_id:
+          type: string
+          nullable: true
+          description: Virtual International Authority File ID (#672)
+        lccn:
+          type: string
+          nullable: true
+          description: Library of Congress Control Number (#672)
+        lc_class:
+          type: string
+          nullable: true
+          description: Library of Congress Classification (#672)
 
     Stats:
       type: object
