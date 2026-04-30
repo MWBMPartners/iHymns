@@ -752,6 +752,78 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 break;
             }
 
+            case 'auto_colour_fill':
+            case 'auto_colour_reassign': {
+                /* Bulk auto-colour action (#716). Two modes:
+                     fill      — only rows where Colour IS NULL or '' get a
+                                 newly-picked palette colour. Existing values
+                                 left alone.
+                     reassign  — every row gets a fresh colour. Destructive,
+                                 hence the confirm-by-typing-REASSIGN-ALL gate
+                                 enforced both client-side AND server-side.
+                   Admin / global_admin only. */
+                if (!in_array(($currentUser['role'] ?? ''), ['admin', 'global_admin'], true)) {
+                    $error = 'Admin role required for the auto-colour bulk action.';
+                    break;
+                }
+                $mode = $action === 'auto_colour_reassign' ? 'reassign' : 'fill';
+                if ($mode === 'reassign') {
+                    /* Server-side typed-confirmation gate — even if the
+                       client-side disable was bypassed, the action only
+                       runs when the curator typed the literal phrase. */
+                    $typed = trim((string)($_POST['confirm_phrase'] ?? ''));
+                    if ($typed !== 'REASSIGN ALL') {
+                        $error = 'Reassign-all needs the phrase REASSIGN ALL typed exactly.';
+                        break;
+                    }
+                }
+                /* Walk every songbook abbreviation, pick a colour, write back.
+                   Uses pickAutoSongbookColour() which reads the in-use set
+                   from tblSongbooks AS WE WRITE — so each successive pick
+                   factors in the colours the loop has just assigned. */
+                $stmt = $db->prepare('SELECT Id, Abbreviation, Colour FROM tblSongbooks ORDER BY Id');
+                $stmt->execute();
+                $books = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+
+                $db->begin_transaction();
+                $changed = 0;
+                try {
+                    $up = $db->prepare('UPDATE tblSongbooks SET Colour = ? WHERE Id = ?');
+                    foreach ($books as $b) {
+                        $existing = trim((string)($b['Colour'] ?? ''));
+                        $needsAssign = $mode === 'reassign'
+                            ? true
+                            : !preg_match('/^#[0-9A-Fa-f]{6}$/', $existing);
+                        if (!$needsAssign) continue;
+                        $newColour = pickAutoSongbookColour($db, (string)$b['Abbreviation']);
+                        $bookId    = (int)$b['Id'];
+                        $up->bind_param('si', $newColour, $bookId);
+                        $up->execute();
+                        $changed++;
+                    }
+                    $up->close();
+                    $db->commit();
+
+                    logActivity(
+                        $mode === 'reassign'
+                            ? 'songbook.auto_colour_reassign'
+                            : 'songbook.auto_colour_fill',
+                        'songbook', '',
+                        ['count' => $changed, 'mode' => $mode]
+                    );
+                    $success = $mode === 'reassign'
+                        ? "Reassigned colours on {$changed} songbook"
+                          . ($changed === 1 ? '' : 's') . '.'
+                        : "Auto-coloured {$changed} songbook"
+                          . ($changed === 1 ? '' : 's') . ' that had no colour set.';
+                } catch (\Throwable $e) {
+                    $db->rollback();
+                    throw $e;
+                }
+                break;
+            }
+
             default:
                 $error = 'Unknown action.';
         }
@@ -1034,6 +1106,45 @@ $csrf = csrfToken();
                 <small class="text-muted ms-2">Lower numbers render first. Any non-negative integer is fine — gaps of 10 between rows give you room to slot in a new book later, but you can use 1, 2, 3, … or anything else (#672).</small>
             <?php endif; ?>
         </form>
+
+        <?php if (in_array(($currentUser['role'] ?? ''), ['admin', 'global_admin'], true)): ?>
+        <!-- Auto-colour bulk action panel (#716). Admin / global_admin only.
+             Two modes: fill (only rows with no colour set) and reassign
+             (every row, gated by typed-confirmation). -->
+        <div class="card-admin p-3 mb-4">
+            <h2 class="h6 mb-3"><i class="bi bi-palette me-2"></i>Auto-colour songbooks</h2>
+            <p class="small text-muted mb-3">
+                Pick palette colours from the active theme so the catalogue stays visually consistent. Existing curator-typed colours are preserved unless the destructive Reassign mode is used.
+            </p>
+            <div class="d-flex flex-wrap gap-2 align-items-end">
+                <form method="POST" class="d-inline-block"
+                      onsubmit="return confirm('Auto-colour every songbook that currently has no colour assigned?');">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="auto_colour_fill">
+                    <button type="submit" class="btn btn-amber btn-sm">
+                        <i class="bi bi-droplet-half me-1"></i>Fill missing colours
+                    </button>
+                </form>
+                <form method="POST" class="d-inline-flex align-items-end gap-2"
+                      onsubmit="
+                        if (this.querySelector('input[name=confirm_phrase]').value !== 'REASSIGN ALL') {
+                            alert('Type the phrase REASSIGN ALL to enable this destructive action.');
+                            return false;
+                        }
+                        return confirm('REASSIGN colours on EVERY songbook? Existing curator-typed values will be overwritten. This cannot be undone.');
+                      ">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="auto_colour_reassign">
+                    <input type="text" name="confirm_phrase" class="form-control form-control-sm"
+                           placeholder="Type: REASSIGN ALL" autocomplete="off"
+                           style="max-width: 11rem;">
+                    <button type="submit" class="btn btn-outline-danger btn-sm">
+                        <i class="bi bi-shuffle me-1"></i>Reassign all (destructive)
+                    </button>
+                </form>
+            </div>
+        </div>
+        <?php endif; ?>
 
         <!-- Create -->
         <form method="POST" class="card-admin p-3 mb-4">
