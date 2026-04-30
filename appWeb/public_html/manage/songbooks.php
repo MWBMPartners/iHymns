@@ -1005,7 +1005,9 @@ try {
     $stmt->close();
 } catch (\Throwable $e) {
     error_log('[manage/songbooks.php] ' . $e->getMessage());
-    $error = $error ?: 'Could not load songbooks — check server logs for details.';
+    logActivityError('admin.songbooks.list', 'songbook', '', $e);
+    $where = $e->getFile() ? (' (' . basename($e->getFile()) . ':' . $e->getLine() . ')') : '';
+    $error = $error ?: 'Could not load songbooks: ' . $e->getMessage() . $where;
 }
 
 $csrf = csrfToken();

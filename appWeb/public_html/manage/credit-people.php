@@ -1152,7 +1152,9 @@ try {
     $people = array_values($byName);
 } catch (\Throwable $e) {
     error_log('[manage/credit-people.php] load failed: ' . $e->getMessage());
-    $error = 'Could not load credit people — check server logs for details.';
+    logActivityError('admin.credit_people.list', 'credit_person', '', $e);
+    $where = $e->getFile() ? (' (' . basename($e->getFile()) . ':' . $e->getLine() . ')') : '';
+    $error = 'Could not load credit people: ' . $e->getMessage() . $where;
 }
 
 /* ----------------------------------------------------------------------
