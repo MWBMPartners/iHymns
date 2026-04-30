@@ -1627,8 +1627,24 @@ $csrf = csrfToken();
         const stripArticle = (s) =>
             (s || '').replace(/^\s*(the|an|a)\s+/i, '').toLowerCase();
 
+        /* "Miscellaneous" (abbreviation: Misc) is a catch-all for
+           orphan / outside-canon songs. It must always sit at the
+           bottom of every name- or abbr-sort regardless of direction
+           — otherwise it ends up among the M's (asc) or at the very
+           top (desc) and confuses curators. (#717) */
+        const isMiscRow = (tr) =>
+            (tr.dataset.sortAbbr || '').toLowerCase() === 'misc';
+
         const sortByKey = (keyFn, dir) => {
             const sorted = rows().sort((a, b) => {
+                /* Misc-pinned-bottom rule: any Misc row always sorts
+                   AFTER any non-Misc row. Two Misc rows fall back to
+                   the regular key compare (rare in practice — there's
+                   normally only one Misc songbook). */
+                const aMisc = isMiscRow(a);
+                const bMisc = isMiscRow(b);
+                if (aMisc && !bMisc) return 1;
+                if (!aMisc && bMisc) return -1;
                 const cmp = keyFn(a).localeCompare(keyFn(b));
                 return dir === 'asc' ? cmp : -cmp;
             });
