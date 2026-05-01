@@ -58,7 +58,21 @@ function getDbMysqli(): mysqli
     global $_mysqliConnection;
 
     if ($_mysqliConnection !== null) {
-        return $_mysqliConnection;
+        /* Verify the cached handle is still alive. The bulk migration
+           runner in /manage/setup-database.php iterates many migration
+           scripts in one PHP request, and it's easy for a script to
+           call $mysqli->close() on the singleton — every subsequent
+           caller would otherwise get back a closed handle and fail on
+           the first prepare(). Touching `thread_id` on a closed
+           connection throws under MYSQLI_REPORT_STRICT (set below);
+           catching that lets us null the cache and reconnect below
+           without a wasted MySQL ping round-trip. (#745) */
+        try {
+            $_ = $_mysqliConnection->thread_id;
+            return $_mysqliConnection;
+        } catch (\Throwable $_e) {
+            $_mysqliConnection = null;
+        }
     }
 
     /* Verify credentials are loaded */
