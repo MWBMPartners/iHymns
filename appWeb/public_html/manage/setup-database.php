@@ -218,6 +218,7 @@ if ($action !== '') {
         'songbook-language'      => 'migrate-songbook-language.php',
         'ietf-bcp47-language'    => 'migrate-ietf-bcp47-language.php',
         'bulk-import-jobs'       => 'migrate-bulk-import-jobs.php',
+        'backfill-legacy-songbook-languages' => 'migrate-backfill-legacy-songbook-languages.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -254,6 +255,7 @@ if ($action !== '') {
         'songbook-language',
         'ietf-bcp47-language',
         'bulk-import-jobs',
+        'backfill-legacy-songbook-languages',
         /* When you add a new migrate-*.php under appWeb/.sql/, ALSO add
            its action key to:
              1. $scriptMap above (action key → file)
@@ -987,6 +989,27 @@ if ($hasCredentials && defined('DB_HOST')) {
                         </p>
                         <a href="?action=bulk-import-jobs" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run Bulk Import Jobs Migration
+                        </a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">3q. Backfill legacy songbook languages (#735)</h5>
+                        <p class="card-text text-secondary small">
+                            Sets <code>Language='en'</code> on the 5 legacy English
+                            songbooks (CP, JP, MP, SDAH, CH) where it isn't already
+                            set. Required by the language filter (#734 / #736) — the
+                            filter renders only when ≥2 distinct primary subtags
+                            exist across songbooks UNION songs, so this baseline
+                            ensures the filter appears the moment any non-English
+                            songbook lands. Idempotent — re-running is safe; rows
+                            already set (e.g. <code>en-GB</code>, <code>en-US</code>)
+                            are not touched.
+                        </p>
+                        <a href="?action=backfill-legacy-songbook-languages" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run Legacy Songbook Language Backfill
                         </a>
                     </div>
                 </div>
