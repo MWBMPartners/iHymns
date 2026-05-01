@@ -42,32 +42,72 @@ if (!isset($songbooks) || !is_array($songbooks)) {
     $songbooks = [];
 }
 
-/* Build the de-duplicated language list. Each tblSongbooks row's
-   Language is a full BCP 47 tag (`pt-BR`, `zh-Hans-CN`, …); the
-   filter operates on the language subtag (the first component
-   before the hyphen) so "pt" matches both "pt-BR" and "pt-PT". The
-   keys of the map are the lowercase subtags, the values are the
-   display labels (uppercase code so the dropdown reads cleanly). */
+/* Build the de-duplicated language list. Each row's Language is a
+   full BCP 47 tag (`pt-BR`, `zh-Hans-CN`, …); the filter operates on
+   the primary subtag (the first component before the hyphen) so
+   "pt" matches both "pt-BR" and "pt-PT". The keys of the map are
+   the lowercase subtags, the values are the display labels
+   (uppercase code so the dropdown reads cleanly). */
 $languageOptions = [];
+
+/* Source 1 — songbook-level Language (the original #679 set). */
 foreach ($songbooks as $book) {
     $tag = (string)($book['language'] ?? '');
     if ($tag === '') continue;
     if (!preg_match('/^([a-z]{2,3})/i', $tag, $m)) continue;
     $sub = strtolower($m[1]);
-    /* Display label: ISO code uppercased + (optionally) the friendly
-       language name from the same row's data. We don't have the
-       resolved name here so we just show the code; the JS module
-       can later swap it for a friendly label fetched from
-       /api?action=languages if the host page wants that. */
     if (!isset($languageOptions[$sub])) {
         $languageOptions[$sub] = strtoupper($m[1]);
     }
 }
+
+/* Source 2 — song-level Language (#734). A song carries its own
+   Language independent of its songbook (e.g. a Spanish translation
+   of an English-primary songbook), so the catalogue can be
+   multilingual even when every tblSongbooks row is in one language.
+   Best-effort: probe column existence first so a pre-#673 deployment
+   doesn't 500 on the SELECT. Cheap because the SELECT pulls only
+   distinct primary subtags via SUBSTRING_INDEX. */
+try {
+    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'db_mysql.php';
+    $db = getDbMysqli();
+    $probe = $db->prepare(
+        "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'tblSongs'
+            AND COLUMN_NAME  = 'Language' LIMIT 1"
+    );
+    $probe->execute();
+    $hasSongLangCol = $probe->get_result()->fetch_row() !== null;
+    $probe->close();
+    if ($hasSongLangCol) {
+        $stmt = $db->prepare(
+            "SELECT DISTINCT LOWER(SUBSTRING_INDEX(Language, '-', 1)) AS sub
+               FROM tblSongs
+              WHERE Language IS NOT NULL AND Language <> ''"
+        );
+        $stmt->execute();
+        $res = $stmt->get_result();
+        while ($row = $res->fetch_row()) {
+            $sub = (string)$row[0];
+            if (!preg_match('/^[a-z]{2,3}$/', $sub)) continue;
+            if (!isset($languageOptions[$sub])) {
+                $languageOptions[$sub] = strtoupper($sub);
+            }
+        }
+        $stmt->close();
+    }
+} catch (\Throwable $_e) {
+    /* Best-effort. If the DB read fails (pre-migration deployment,
+       missing tblSongs, etc.) just fall back to the songbook-only
+       set computed above. */
+}
+
 ksort($languageOptions);
 
-/* Don't render the filter at all if every songbook is in the same
-   language (or none have a Language set). The filter is only useful
-   when the catalogue actually spans multiple languages. */
+/* Don't render the filter at all if every songbook+song is in the
+   same language (or none have a Language set). The filter is only
+   useful when the catalogue actually spans multiple languages. */
 if (count($languageOptions) <= 1) {
     return;
 }
