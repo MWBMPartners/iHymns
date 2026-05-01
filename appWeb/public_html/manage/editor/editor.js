@@ -2989,8 +2989,24 @@ function autoSaveSongsPerSong(ids) {
                 body: JSON.stringify(song),
             }).then(function (res) {
                 return res.json().then(function (data) {
-                    if (res.ok && data.ok) saved.push(id);
-                    else failed.push({ id: id, error: data.error || ('HTTP ' + res.status) });
+                    if (res.ok && data.ok) {
+                        saved.push(id);
+                    } else {
+                        /* Compose a maximally-useful error string. The
+                           API ships error_detail (and optionally
+                           mysqli_code / error_class) for admin /
+                           global_admin users — surface those inline so
+                           the failure self-diagnoses without a server-
+                           shell trip. (#759) */
+                        var msg = data.error || ('HTTP ' + res.status);
+                        if (data.error_detail) {
+                            msg += ' — ' + data.error_detail;
+                            if (data.mysqli_code) {
+                                msg += ' [mysqli ' + data.mysqli_code + ']';
+                            }
+                        }
+                        failed.push({ id: id, error: msg });
+                    }
                 });
             }).catch(function (err) {
                 failed.push({ id: id, error: err.message });
