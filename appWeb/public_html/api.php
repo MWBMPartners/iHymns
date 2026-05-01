@@ -60,6 +60,9 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    /manage/songbooks.php so a tweak to abbrev / colour / IETF-tag
    grammar lands on the web admin and the API surface in one go. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_validation.php';
+/* Shared organisation helpers (#719 PR 2c). ORG_MEMBER_ROLES +
+   slugifyOrganisationName() + userCanActOnOrg() row-level gate. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'organisation_validation.php';
 
 /* =========================================================================
  * CSRF DEFENCE POLICY (#293 / B15)
@@ -7603,6 +7606,863 @@ if ($action !== null) {
                 logActivityError('api.admin.tier.delete', 'access_tier', (string)$id, $e);
                 error_log('[admin_tier_delete] ' . $e->getMessage());
                 sendJson(['error' => 'Could not delete tier.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * ORGANISATIONS — system-admin CRUD parity (#719 PR 2c)
+         *
+         * Mirrors /manage/organisations.php POST handlers. The existing
+         * `organisation_create` endpoint (any authenticated user, creator
+         * becomes owner) covers the create case from a different angle —
+         * the system-admin equivalent there is just "create then assign
+         * the owner externally" so it's not duplicated here.
+         *
+         * All endpoints below require admin / global_admin role.
+         * Activity-log verb prefix is `api.admin.organisation.*`.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: update an organisation (system-admin)
+         * POST body: {
+         *   id, name, slug?, parent_org_id?, description?,
+         *   licence_type, licence_number?, is_active?,
+         *   additional_licences?: [keys]
+         * }
+         * Mirrors the multi-licence sync from /manage/organisations.php:
+         * the submitted set replaces tblOrganisationLicences for the
+         * org, with the primary licence_type folded in to keep the two
+         * surfaces coherent.
+         * ----------------------------------------------------------------- */
+        case 'admin_organisation_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body        = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id          = (int)($body['id'] ?? 0);
+            $name        = trim((string)($body['name']           ?? ''));
+            $slugInput   = trim((string)($body['slug']           ?? ''));
+            $parent      = (int)($body['parent_org_id']          ?? 0);
+            $desc        = trim((string)($body['description']    ?? ''));
+            $licenceType = (string)($body['licence_type']        ?? 'none');
+            $licenceNum  = trim((string)($body['licence_number'] ?? ''));
+            $active      = !empty($body['is_active']) ? 1 : 0;
+
+            /* Same primary-licence allowlist organisations.php uses
+               (4 keys with `none` as the "no primary" sentinel). The
+               additional_licences set is validated against this same
+               keylist before INSERT. */
+            $licenceKeys = ['none', 'ihymns_basic', 'ihymns_pro', 'ccli'];
+
+            if ($id <= 0)                                  { sendJson(['error' => 'Organisation id required.'], 400); break; }
+            if ($name === '')                              { sendJson(['error' => 'Name is required.'], 400); break; }
+            $slug = $slugInput !== '' ? slugifyOrganisationName($slugInput) : slugifyOrganisationName($name);
+            if ($slug === '')                              { sendJson(['error' => 'Slug could not be derived — supply one explicitly.'], 400); break; }
+            if (!in_array($licenceType, $licenceKeys, true)) { sendJson(['error' => 'Unknown licence type.'], 400); break; }
+            if ($parent === $id)                           { sendJson(['error' => 'An organisation cannot be its own parent.'], 400); break; }
+
+            try {
+                $db = getDbMysqli();
+
+                $stmt = $db->prepare('SELECT Id FROM tblOrganisations WHERE Slug = ? AND Id <> ?');
+                $stmt->bind_param('si', $slug, $id);
+                $stmt->execute();
+                $dup = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($dup) {
+                    sendJson(['error' => 'That slug is already in use.'], 409);
+                    break;
+                }
+
+                $beforeStmt = $db->prepare(
+                    'SELECT Name, Slug, ParentOrgId, Description, LicenceType, LicenceNumber, IsActive
+                       FROM tblOrganisations WHERE Id = ?'
+                );
+                $beforeStmt->bind_param('i', $id);
+                $beforeStmt->execute();
+                $beforeOrg = $beforeStmt->get_result()->fetch_assoc() ?: null;
+                $beforeStmt->close();
+                if ($beforeOrg === null) {
+                    sendJson(['error' => 'Organisation not found.'], 404);
+                    break;
+                }
+
+                $parentOrNull = $parent ?: null;
+                $stmt = $db->prepare(
+                    'UPDATE tblOrganisations
+                        SET Name = ?, Slug = ?, ParentOrgId = ?, Description = ?,
+                            LicenceType = ?, LicenceNumber = ?, IsActive = ?
+                      WHERE Id = ?'
+                );
+                $stmt->bind_param(
+                    'ssisssii',
+                    $name, $slug, $parentOrNull, $desc, $licenceType, $licenceNum, $active, $id
+                );
+                $stmt->execute();
+                $stmt->close();
+
+                /* Multi-licence sync (#640) — the submitted additional
+                   set REPLACES tblOrganisationLicences for the org; the
+                   primary licence_type is also folded in so the two
+                   surfaces stay coherent. Wrapped in a try/catch so a
+                   pre-migration deployment (no tblOrganisationLicences)
+                   silently no-ops the join writes. */
+                try {
+                    $picked = (array)($body['additional_licences'] ?? []);
+                    $picked = array_values(array_unique(array_filter(
+                        array_map('strval', $picked),
+                        static fn($k) => $k !== '' && $k !== 'none'
+                    )));
+                    if ($licenceType !== '' && $licenceType !== 'none' && !in_array($licenceType, $picked, true)) {
+                        $picked[] = $licenceType;
+                    }
+                    $picked = array_values(array_intersect($picked, $licenceKeys));
+
+                    $del = $db->prepare('DELETE FROM tblOrganisationLicences WHERE OrganisationId = ?');
+                    $del->bind_param('i', $id);
+                    $del->execute();
+                    $del->close();
+
+                    if (!empty($picked)) {
+                        $ins = $db->prepare(
+                            'INSERT INTO tblOrganisationLicences
+                                (OrganisationId, LicenceType, LicenceNumber)
+                             VALUES (?, ?, ?)'
+                        );
+                        foreach ($picked as $key) {
+                            $num = ($key === $licenceType && $licenceNum !== '') ? $licenceNum : null;
+                            $ins->bind_param('iss', $id, $key, $num);
+                            $ins->execute();
+                        }
+                        $ins->close();
+                    }
+                } catch (\Throwable $_e) {
+                    /* tblOrganisationLicences not yet created — silent no-op. */
+                }
+
+                $afterOrg = [
+                    'Name' => $name, 'Slug' => $slug,
+                    'ParentOrgId' => $parent ?: null, 'Description' => $desc,
+                    'LicenceType' => $licenceType, 'LicenceNumber' => $licenceNum,
+                    'IsActive' => $active,
+                ];
+                $changed = [];
+                foreach ($afterOrg as $k => $v) {
+                    if ((string)($beforeOrg[$k] ?? '') !== (string)$v) $changed[] = $k;
+                }
+                logActivity('api.admin.organisation.edit', 'organisation', (string)$id, [
+                    'fields' => $changed,
+                    'before' => array_intersect_key($beforeOrg, array_flip($changed)),
+                    'after'  => array_intersect_key($afterOrg,  array_flip($changed)),
+                ]);
+
+                sendJson([
+                    'ok'             => true,
+                    'id'             => $id,
+                    'slug'           => $slug,
+                    'fields_changed' => $changed,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.organisation.edit', 'organisation', (string)$id, $e);
+                error_log('[admin_organisation_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update organisation.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete an organisation
+         * POST body: { id }
+         * Refuses with 422 if any member is still listed OR any sub-org
+         * still references this row as ParentOrgId.
+         * ----------------------------------------------------------------- */
+        case 'admin_organisation_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) {
+                sendJson(['error' => 'Organisation id required.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('SELECT Name FROM tblOrganisations WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $name = (string)($row[0] ?? '');
+                if ($name === '') {
+                    sendJson(['error' => 'Organisation not found.'], 404);
+                    break;
+                }
+
+                $stmt = $db->prepare('SELECT COUNT(*) FROM tblOrganisationMembers WHERE OrgId = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $members = (int)($row[0] ?? 0);
+                if ($members > 0) {
+                    sendJson([
+                        'error'        => "Cannot delete '{$name}': {$members} member(s) still listed.",
+                        'member_count' => $members,
+                        'name'         => $name,
+                        'hint'         => 'Remove every member first.',
+                    ], 422);
+                    break;
+                }
+
+                $stmt = $db->prepare('SELECT COUNT(*) FROM tblOrganisations WHERE ParentOrgId = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $children = (int)($row[0] ?? 0);
+                if ($children > 0) {
+                    sendJson([
+                        'error'         => "Cannot delete '{$name}': {$children} sub-organisation(s) still reference it as parent.",
+                        'child_count'   => $children,
+                        'name'          => $name,
+                        'hint'          => 'Reparent or delete the sub-organisations first.',
+                    ], 422);
+                    break;
+                }
+
+                $stmt = $db->prepare('DELETE FROM tblOrganisations WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.admin.organisation.delete', 'organisation', (string)$id, ['name' => $name]);
+                sendJson(['ok' => true, 'id' => $id, 'name' => $name]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.organisation.delete', 'organisation', (string)$id, $e);
+                error_log('[admin_organisation_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete organisation.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: add a member to an organisation
+         * POST body: { org_id, user_id, member_role? }
+         * INSERT … ON DUPLICATE KEY UPDATE so a re-add is a role change.
+         * ----------------------------------------------------------------- */
+        case 'admin_organisation_member_add': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId  = (int)($body['org_id']  ?? 0);
+            $userId = (int)($body['user_id'] ?? 0);
+            $role   = (string)($body['member_role'] ?? 'member');
+
+            if ($orgId <= 0 || $userId <= 0) {
+                sendJson(['error' => 'org_id and user_id required.'], 400);
+                break;
+            }
+            if (!in_array($role, ORG_MEMBER_ROLES, true)) {
+                sendJson(['error' => 'Unknown member role.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare(
+                    'INSERT INTO tblOrganisationMembers (UserId, OrgId, Role)
+                     VALUES (?, ?, ?)
+                     ON DUPLICATE KEY UPDATE Role = VALUES(Role)'
+                );
+                $stmt->bind_param('iis', $userId, $orgId, $role);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.admin.organisation.member_add', 'organisation', (string)$orgId, [
+                    'user_id' => $userId,
+                    'role'    => $role,
+                ]);
+
+                sendJson(['ok' => true, 'org_id' => $orgId, 'user_id' => $userId, 'role' => $role]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.organisation.member_add', 'organisation', (string)$orgId, $e, [
+                    'user_id' => $userId,
+                ]);
+                error_log('[admin_organisation_member_add] ' . $e->getMessage());
+                sendJson(['error' => 'Could not add member.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: change a member's role within an organisation
+         * POST body: { org_id, user_id, member_role }
+         * ----------------------------------------------------------------- */
+        case 'admin_organisation_member_role_change': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId  = (int)($body['org_id']  ?? 0);
+            $userId = (int)($body['user_id'] ?? 0);
+            $role   = (string)($body['member_role'] ?? 'member');
+
+            if ($orgId <= 0 || $userId <= 0) {
+                sendJson(['error' => 'org_id and user_id required.'], 400);
+                break;
+            }
+            if (!in_array($role, ORG_MEMBER_ROLES, true)) {
+                sendJson(['error' => 'Unknown member role.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare(
+                    'UPDATE tblOrganisationMembers SET Role = ? WHERE OrgId = ? AND UserId = ?'
+                );
+                $stmt->bind_param('sii', $role, $orgId, $userId);
+                $stmt->execute();
+                $changed = $stmt->affected_rows;
+                $stmt->close();
+
+                if ($changed === 0) {
+                    sendJson(['error' => 'Member not found in this organisation.'], 404);
+                    break;
+                }
+
+                logActivity('api.admin.organisation.member_role_change', 'organisation', (string)$orgId, [
+                    'user_id' => $userId,
+                    'role'    => $role,
+                ]);
+
+                sendJson(['ok' => true, 'org_id' => $orgId, 'user_id' => $userId, 'role' => $role]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.organisation.member_role_change', 'organisation', (string)$orgId, $e, [
+                    'user_id' => $userId,
+                ]);
+                error_log('[admin_organisation_member_role_change] ' . $e->getMessage());
+                sendJson(['error' => 'Could not change member role.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: remove a member from an organisation
+         * POST body: { org_id, user_id }
+         * ----------------------------------------------------------------- */
+        case 'admin_organisation_member_remove': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId  = (int)($body['org_id']  ?? 0);
+            $userId = (int)($body['user_id'] ?? 0);
+
+            if ($orgId <= 0 || $userId <= 0) {
+                sendJson(['error' => 'org_id and user_id required.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('DELETE FROM tblOrganisationMembers WHERE OrgId = ? AND UserId = ?');
+                $stmt->bind_param('ii', $orgId, $userId);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.admin.organisation.member_remove', 'organisation', (string)$orgId, [
+                    'user_id' => $userId,
+                ]);
+
+                sendJson(['ok' => true, 'org_id' => $orgId, 'user_id' => $userId]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.organisation.member_remove', 'organisation', (string)$orgId, $e, [
+                    'user_id' => $userId,
+                ]);
+                error_log('[admin_organisation_member_remove] ' . $e->getMessage());
+                sendJson(['error' => 'Could not remove member.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * MY ORGANISATIONS — org-admin CRUD parity (#719 PR 2c)
+         *
+         * Mirrors /manage/my-organisations.php POST handlers (PR #726).
+         * Auth model:
+         *   1. Bearer-token authenticated.
+         *   2. Row-level gate: caller must be system admin OR hold an
+         *      admin/owner row on tblOrganisationMembers for the target
+         *      org. The userCanActOnOrg() helper enforces this — fail
+         *      returns 403 with the exact same wording as the web admin.
+         *
+         * Activity-log verb prefix: `api.org_admin.*`. Mirrors the
+         * `org_admin.*` prefix the web admin writes so the timeline
+         * reads as a unified surface.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Org-admin: add a member by username or email
+         * POST body: { org_id, user_identifier, member_role? }
+         * Free-text identifier (username or email) — the API resolves it
+         * to a tblUsers.Id so curators can paste either form.
+         * ----------------------------------------------------------------- */
+        case 'org_admin_member_add': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $body       = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId      = (int)($body['org_id'] ?? 0);
+            $identifier = trim((string)($body['user_identifier'] ?? ''));
+            $role       = (string)($body['member_role'] ?? 'member');
+
+            if (!userCanActOnOrg($authUser, $orgId)) {
+                sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                break;
+            }
+            if ($identifier === '') {
+                sendJson(['error' => 'user_identifier (username or email) required.'], 400);
+                break;
+            }
+            if (!in_array($role, ORG_MEMBER_ROLES, true)) {
+                sendJson(['error' => 'Unknown member role.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare(
+                    'SELECT Id FROM tblUsers WHERE Username = ? OR Email = ? LIMIT 1'
+                );
+                $stmt->bind_param('ss', $identifier, $identifier);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                if (!$row) {
+                    sendJson(['error' => "User '{$identifier}' not found."], 404);
+                    break;
+                }
+                $targetUserId = (int)$row['Id'];
+
+                $stmt = $db->prepare(
+                    'INSERT INTO tblOrganisationMembers (UserId, OrgId, Role)
+                     VALUES (?, ?, ?)
+                     ON DUPLICATE KEY UPDATE Role = VALUES(Role)'
+                );
+                $stmt->bind_param('iis', $targetUserId, $orgId, $role);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.org_admin.member_add', 'organisation', (string)$orgId, [
+                    'user_id'    => $targetUserId,
+                    'identifier' => $identifier,
+                    'role'       => $role,
+                ]);
+
+                sendJson([
+                    'ok'      => true,
+                    'org_id'  => $orgId,
+                    'user_id' => $targetUserId,
+                    'role'    => $role,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.member_add', 'organisation', (string)$orgId, $e, [
+                    'identifier' => $identifier,
+                ]);
+                error_log('[org_admin_member_add] ' . $e->getMessage());
+                sendJson(['error' => 'Could not add member.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Org-admin: change a member's role
+         * POST body: { org_id, user_id, member_role }
+         * ----------------------------------------------------------------- */
+        case 'org_admin_member_role_change': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $body         = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId        = (int)($body['org_id']  ?? 0);
+            $targetUserId = (int)($body['user_id'] ?? 0);
+            $role         = (string)($body['member_role'] ?? 'member');
+
+            if (!userCanActOnOrg($authUser, $orgId)) {
+                sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                break;
+            }
+            if ($targetUserId <= 0) {
+                sendJson(['error' => 'user_id required.'], 400);
+                break;
+            }
+            if (!in_array($role, ORG_MEMBER_ROLES, true)) {
+                sendJson(['error' => 'Unknown member role.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare(
+                    'UPDATE tblOrganisationMembers SET Role = ? WHERE OrgId = ? AND UserId = ?'
+                );
+                $stmt->bind_param('sii', $role, $orgId, $targetUserId);
+                $stmt->execute();
+                $changed = $stmt->affected_rows;
+                $stmt->close();
+
+                if ($changed === 0) {
+                    sendJson(['error' => 'Member not found in this organisation.'], 404);
+                    break;
+                }
+
+                logActivity('api.org_admin.member_role_change', 'organisation', (string)$orgId, [
+                    'user_id' => $targetUserId,
+                    'role'    => $role,
+                ]);
+
+                sendJson(['ok' => true, 'org_id' => $orgId, 'user_id' => $targetUserId, 'role' => $role]);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.member_role_change', 'organisation', (string)$orgId, $e, [
+                    'user_id' => $targetUserId,
+                ]);
+                error_log('[org_admin_member_role_change] ' . $e->getMessage());
+                sendJson(['error' => 'Could not change member role.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Org-admin: remove a member
+         * POST body: { org_id, user_id }
+         * Self-removal guard mirrors the web admin: an org admin cannot
+         * remove themselves (have to ask a sibling admin / owner /
+         * system admin) — prevents accidental lockout.
+         * ----------------------------------------------------------------- */
+        case 'org_admin_member_remove': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $body         = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId        = (int)($body['org_id']  ?? 0);
+            $targetUserId = (int)($body['user_id'] ?? 0);
+
+            if (!userCanActOnOrg($authUser, $orgId)) {
+                sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                break;
+            }
+            if ($targetUserId <= 0) {
+                sendJson(['error' => 'user_id required.'], 400);
+                break;
+            }
+
+            $actingId    = (int)($authUser['Id']   ?? 0);
+            $isSysAdmin  = in_array((string)($authUser['Role'] ?? ''), ['admin', 'global_admin'], true);
+            if ($targetUserId === $actingId && !$isSysAdmin) {
+                sendJson([
+                    'error' => 'You cannot remove yourself from an organisation. Ask a co-admin or system admin to remove you.',
+                ], 403);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('DELETE FROM tblOrganisationMembers WHERE OrgId = ? AND UserId = ?');
+                $stmt->bind_param('ii', $orgId, $targetUserId);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.org_admin.member_remove', 'organisation', (string)$orgId, [
+                    'user_id' => $targetUserId,
+                ]);
+
+                sendJson(['ok' => true, 'org_id' => $orgId, 'user_id' => $targetUserId]);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.member_remove', 'organisation', (string)$orgId, $e, [
+                    'user_id' => $targetUserId,
+                ]);
+                error_log('[org_admin_member_remove] ' . $e->getMessage());
+                sendJson(['error' => 'Could not remove member.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Org-admin: add (or upsert) a licence row
+         * POST body: {
+         *   org_id, licence_type, licence_number?,
+         *   expires_at?, is_active?, notes?
+         * }
+         * INSERT … ON DUPLICATE KEY UPDATE — the unique key is
+         * (OrganisationId, LicenceType) so re-adding the same type for
+         * the same org is an update of number/expiry/notes.
+         * ----------------------------------------------------------------- */
+        case 'org_admin_licence_add': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $body          = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId         = (int)($body['org_id'] ?? 0);
+            $licenceType   = (string)($body['licence_type']   ?? '');
+            $licenceNumber = trim((string)($body['licence_number'] ?? ''));
+            $expiresAt     = trim((string)($body['expires_at']    ?? '')) ?: null;
+            $isActive      = !empty($body['is_active']) ? 1 : 0;
+            $notes         = trim((string)($body['notes']         ?? '')) ?: null;
+
+            /* Same per-row licence-type allowlist /manage/my-organisations
+               uses (5 keys). Distinct from the system-admin update path
+               which uses the 4-key primary set with `none` sentinel. */
+            $licenceKeys = ['ccli', 'mrl', 'ihymns_basic', 'ihymns_pro', 'custom'];
+
+            if (!userCanActOnOrg($authUser, $orgId)) {
+                sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                break;
+            }
+            if (!in_array($licenceType, $licenceKeys, true)) {
+                sendJson(['error' => 'Unknown licence type.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare(
+                    'INSERT INTO tblOrganisationLicences
+                        (OrganisationId, LicenceType, LicenceNumber, IsActive, ExpiresAt, Notes)
+                     VALUES (?, ?, ?, ?, ?, ?)
+                     ON DUPLICATE KEY UPDATE
+                        LicenceNumber = VALUES(LicenceNumber),
+                        IsActive      = VALUES(IsActive),
+                        ExpiresAt     = VALUES(ExpiresAt),
+                        Notes         = VALUES(Notes)'
+                );
+                $stmt->bind_param('ississ',
+                    $orgId, $licenceType, $licenceNumber, $isActive, $expiresAt, $notes);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.org_admin.licence_add', 'organisation', (string)$orgId, [
+                    'licence_type'   => $licenceType,
+                    'licence_number' => $licenceNumber,
+                    'is_active'      => (bool)$isActive,
+                ]);
+
+                sendJson(['ok' => true, 'org_id' => $orgId, 'licence_type' => $licenceType]);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.licence_add', 'organisation', (string)$orgId, $e, [
+                    'licence_type' => $licenceType,
+                ]);
+                error_log('[org_admin_licence_add] ' . $e->getMessage());
+                sendJson(['error' => 'Could not save licence.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Org-admin: change an existing licence row
+         * POST body: {
+         *   org_id, licence_id,
+         *   licence_number?, expires_at?, is_active?, notes?
+         * }
+         * Belt-and-braces: confirms the licence row actually belongs to
+         * the org we already authorised on. Stops a crafted POST that
+         * mixes a licence_id from one org with an org_id the user CAN
+         * admin.
+         * ----------------------------------------------------------------- */
+        case 'org_admin_licence_change': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $body          = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId         = (int)($body['org_id']     ?? 0);
+            $licenceId     = (int)($body['licence_id'] ?? 0);
+            $licenceNumber = trim((string)($body['licence_number'] ?? ''));
+            $expiresAt     = trim((string)($body['expires_at']    ?? '')) ?: null;
+            $isActive      = !empty($body['is_active']) ? 1 : 0;
+            $notes         = trim((string)($body['notes']         ?? '')) ?: null;
+
+            if (!userCanActOnOrg($authUser, $orgId)) {
+                sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                break;
+            }
+            if ($licenceId <= 0) {
+                sendJson(['error' => 'licence_id required.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare(
+                    'SELECT 1 FROM tblOrganisationLicences WHERE Id = ? AND OrganisationId = ?'
+                );
+                $stmt->bind_param('ii', $licenceId, $orgId);
+                $stmt->execute();
+                $owns = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if (!$owns) {
+                    sendJson(['error' => 'Licence row does not belong to that organisation.'], 404);
+                    break;
+                }
+
+                $stmt = $db->prepare(
+                    'UPDATE tblOrganisationLicences
+                        SET LicenceNumber = ?, IsActive = ?, ExpiresAt = ?, Notes = ?
+                      WHERE Id = ?'
+                );
+                $stmt->bind_param('sissi', $licenceNumber, $isActive, $expiresAt, $notes, $licenceId);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.org_admin.licence_change', 'organisation', (string)$orgId, [
+                    'licence_id'     => $licenceId,
+                    'licence_number' => $licenceNumber,
+                    'is_active'      => (bool)$isActive,
+                ]);
+
+                sendJson(['ok' => true, 'org_id' => $orgId, 'licence_id' => $licenceId]);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.licence_change', 'organisation', (string)$orgId, $e, [
+                    'licence_id' => $licenceId,
+                ]);
+                error_log('[org_admin_licence_change] ' . $e->getMessage());
+                sendJson(['error' => 'Could not change licence.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Org-admin: remove a licence row
+         * POST body: { org_id, licence_id }
+         * Same belt-and-braces ownership check as licence_change.
+         * ----------------------------------------------------------------- */
+        case 'org_admin_licence_remove': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $body      = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId     = (int)($body['org_id']     ?? 0);
+            $licenceId = (int)($body['licence_id'] ?? 0);
+
+            if (!userCanActOnOrg($authUser, $orgId)) {
+                sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                break;
+            }
+            if ($licenceId <= 0) {
+                sendJson(['error' => 'licence_id required.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare(
+                    'SELECT 1 FROM tblOrganisationLicences WHERE Id = ? AND OrganisationId = ?'
+                );
+                $stmt->bind_param('ii', $licenceId, $orgId);
+                $stmt->execute();
+                $owns = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if (!$owns) {
+                    sendJson(['error' => 'Licence row does not belong to that organisation.'], 404);
+                    break;
+                }
+
+                $stmt = $db->prepare('DELETE FROM tblOrganisationLicences WHERE Id = ?');
+                $stmt->bind_param('i', $licenceId);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.org_admin.licence_remove', 'organisation', (string)$orgId, [
+                    'licence_id' => $licenceId,
+                ]);
+
+                sendJson(['ok' => true, 'org_id' => $orgId, 'licence_id' => $licenceId]);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.licence_remove', 'organisation', (string)$orgId, $e, [
+                    'licence_id' => $licenceId,
+                ]);
+                error_log('[org_admin_licence_remove] ' . $e->getMessage());
+                sendJson(['error' => 'Could not remove licence.'], 500);
             }
             break;
         }
