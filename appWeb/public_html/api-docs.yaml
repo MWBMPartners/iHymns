@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: iHymns API
-  version: "0.54.0"
+  version: "0.55.0"
   description: |
     The iHymns API provides programmatic access to the iHymns hymn and song
     database. It powers the iHymns Progressive Web App (PWA), enabling song
@@ -3981,6 +3981,484 @@ paths:
         "409":
           description: This revision has no prior state (it's the initial create)
 
+  /manage/editor/api.php?action=save:
+    post:
+      operationId: editorSaveAll
+      tags: [Editor API]
+      summary: Legacy full-corpus save — TRUNCATE + bulk INSERT
+      description: |
+        TRUNCATEs `tblSongs` / `tblSongbooks` and the five song-credit
+        tables, then re-inserts everything from the posted JSON. Used
+        by the bulk-import paths and the editor's "save all" button.
+        Per-song validation is soft on this path — a malformed IETF
+        BCP 47 tag (#681) falls back to `en` rather than aborting the
+        whole corpus save. Use `save_song` for the per-song
+        UPSERT-with-revision flow.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [meta, songbooks, songs]
+              properties:
+                meta:
+                  type: object
+                  description: Free-form metadata block (version, generated_at, …).
+                songbooks:
+                  type: array
+                  items:
+                    type: object
+                    required: [id, name]
+                    properties:
+                      id:        { type: string, description: Songbook abbreviation. }
+                      name:      { type: string }
+                      songCount: { type: integer }
+                songs:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/EditorSongInput"
+      responses:
+        "200":
+          description: Save succeeded; counts echoed back
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:   { type: boolean, example: true }
+                  songs:     { type: integer }
+                  songbooks: { type: integer }
+        "400":
+          description: Invalid JSON, missing top-level keys, or empty body
+        "405":
+          description: GET issued — POST required
+        "500":
+          description: Save failed (transaction rolled back). Details in server log.
+
+  /manage/editor/api.php?action=get_translations:
+    get:
+      operationId: editorGetTranslations
+      tags: [Editor API]
+      summary: Translation links for one song (#352)
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [get_translations] }
+        - name: id
+          in: query
+          required: true
+          description: Source SongId.
+          schema: { type: string, example: CP-0202 }
+      responses:
+        "200":
+          description: Translations of the source song, sorted by language
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  translations:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:          { type: integer }
+                        songId:      { type: string, description: TranslatedSongId. }
+                        language:    { type: string }
+                        translator:  { type: string, nullable: true }
+                        verified:    { type: boolean }
+                        title:       { type: string }
+                        number:      { type: integer }
+        "400":
+          description: Missing id
+
+  /manage/editor/api.php?action=add_translation:
+    post:
+      operationId: editorAddTranslation
+      tags: [Editor API]
+      summary: Add (or upsert) a translation link
+      description: |
+        INSERT … ON DUPLICATE KEY UPDATE on the unique
+        (`SourceSongId`, `TargetLanguage`) index — re-adding
+        for the same source/language updates the
+        `TranslatedSongId` + `Translator` in place.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sourceSongId, translatedSongId, language]
+              properties:
+                sourceSongId:     { type: string, example: CP-0202 }
+                translatedSongId: { type: string, example: ZH-0027 }
+                language:         { type: string, description: BCP 47 tag of the translated row. }
+                translator:       { type: string, nullable: true }
+      responses:
+        "200":
+          description: Saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+        "400":
+          description: Missing fields, or sourceSongId == translatedSongId
+        "405":
+          description: GET issued — POST required
+
+  /manage/editor/api.php?action=remove_translation:
+    post:
+      operationId: editorRemoveTranslation
+      tags: [Editor API]
+      summary: Remove one translation-link row by id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer, description: tblSongTranslations.Id }
+      responses:
+        "200":
+          description: Removed (or already absent)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  deleted: { type: integer, description: Affected rows (0 if id didn't exist). }
+        "400":
+          description: Missing or non-positive id
+
+  /manage/editor/api.php?action=song_tags:
+    get:
+      operationId: editorSongTags
+      tags: [Editor API]
+      summary: Tags currently on one song (#496)
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song_tags] }
+        - name: id
+          in: query
+          required: true
+          description: SongId.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Tag list, alphabetical by name
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tags:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:          { type: integer }
+                        name:        { type: string }
+                        slug:        { type: string }
+                        description: { type: string, nullable: true }
+        "400":
+          description: Missing id
+
+  /manage/editor/api.php?action=tag_search:
+    get:
+      operationId: editorTagSearch
+      tags: [Editor API]
+      summary: Tag-name autocomplete (#496)
+      description: |
+        Empty `q` returns the most-used tags (the empty-state list).
+        Otherwise `LIKE %q%` on `tblSongTags.Name`. `usage` is the
+        number of songs currently carrying the tag, so popular tags
+        sort first and curators don't accidentally coin a
+        near-duplicate.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [tag_search] }
+        - name: q
+          in: query
+          required: false
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 20, default: 10 }
+      responses:
+        "200":
+          description: Suggestion list, sorted by usage DESC then name ASC
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:    { type: integer }
+                        name:  { type: string }
+                        slug:  { type: string }
+                        usage: { type: integer, description: Number of songs currently carrying this tag. }
+
+  /manage/editor/api.php?action=credit_search:
+    get:
+      operationId: editorCreditSearch
+      tags: [Editor API]
+      summary: Live-search credit names across the 5 song-credit tables (#545)
+      description: |
+        UNION ALL across `tblSongWriters` / `tblSongComposers` /
+        `tblSongArrangers` / `tblSongAdaptors` / `tblSongTranslators`,
+        grouping by name so the same person from multiple roles
+        collapses to a single suggestion with combined usage and the
+        list of kinds they appear in. When `kind=any` (the default),
+        also surfaces names from the `tblCreditPeople` registry that
+        no song currently cites — those land with `usage=0` and a
+        `kinds=["registry"]` marker.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [credit_search] }
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+        - name: kind
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [any, writer, composer, arranger, adaptor, translator]
+            default: any
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+      responses:
+        "200":
+          description: Suggestions, sorted by usage DESC then name ASC
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:  { type: string }
+                        usage: { type: integer }
+                        kinds:
+                          type: array
+                          items:
+                            type: string
+                            enum: [writer, composer, arranger, adaptor, translator, registry]
+        "400":
+          description: Unknown kind
+
+  /manage/editor/api.php?action=user_search:
+    get:
+      operationId: editorUserSearch
+      tags: [Editor API]
+      summary: Live-search users by display name or username (#498)
+      description: |
+        `LIKE %q%` against `DisplayName` OR `Username`. Used by the
+        `/manage/restrictions` name-first picker to resolve a
+        human-friendly label to the canonical `tblUsers.Id` on save.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [user_search] }
+        - name: q
+          in: query
+          required: false
+          description: Empty string → empty suggestions list (no implicit "show all users" fallback).
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 20, default: 10 }
+      responses:
+        "200":
+          description: Suggestion list, alphabetic by display name
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:    { type: integer }
+                        label: { type: string, description: DisplayName, falling back to Username. }
+                        hint:  { type: string, description: "Format: `@<username> · <role>`" }
+
+  /manage/editor/api.php?action=org_search:
+    get:
+      operationId: editorOrgSearch
+      tags: [Editor API]
+      summary: Live-search organisations by name or slug (#498)
+      description: |
+        Active organisations only. Empty `q` returns the alphabetised
+        list of every active org (capped at `limit`). Otherwise
+        `LIKE %q%` against `Name` OR `Slug`.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_search] }
+        - name: q
+          in: query
+          required: false
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+      responses:
+        "200":
+          description: Suggestion list, alphabetic by name
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:    { type: integer }
+                        label: { type: string, description: Organisation name. }
+                        hint:  { type: string, description: "Format: `licence: <type> · slug: <slug>`" }
+
+  /manage/editor/api.php?action=bulk_import_zip:
+    post:
+      operationId: editorBulkImportZip
+      tags: [Editor API]
+      summary: Bulk-load songs and songbooks from a ZIP (#664, #676)
+      description: |
+        Multipart upload, single field `zip`. The archive is expected
+        to mirror the `.SourceSongData/` folder layout: one folder
+        per songbook named `<Hymnal Name> [<ABBREV>]/` holding one
+        `.txt` file per song named
+        `<#> (<ABBREV>) - <Title>.txt` in the established source
+        format (title line, blank, alternating section markers +
+        lyric blocks).
+
+        Async by default when `tblBulkImportJobs` exists (#676): the
+        endpoint returns a `job_id` immediately and the import runs
+        in a freed worker; poll `bulk_import_status` for progress.
+        Pre-migration deployments fall back to the synchronous path
+        and respond with the legacy summary shape.
+
+        **INSERT-ONLY:** the import never overwrites existing
+        `tblSongbooks` / `tblSongs`. Pre-flight existence checks +
+        three-counter response shape (`songs_created` /
+        `songs_skipped_existing` / `songs_failed`).
+
+        Auth: editor+ via the `/manage/` PHP session. Per-user
+        quota + 100 MB hard size cap.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [zip]
+              properties:
+                zip:
+                  type: string
+                  format: binary
+                  description: A `.zip` archive ≤ 100 MB.
+      responses:
+        "200":
+          description: |
+            Two possible shapes depending on async readiness.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    title: AsyncJobAccepted
+                    description: Returned when tblBulkImportJobs is migrated.
+                    properties:
+                      ok:        { type: boolean, example: true }
+                      async:     { type: boolean, example: true }
+                      job_id:    { type: integer, description: Pass to bulk_import_status to poll. }
+                      status:    { type: string, enum: [queued] }
+                      poll_url:
+                        type: string
+                        example: "/manage/editor/api?action=bulk_import_status&job_id=42"
+                  - $ref: "#/components/schemas/EditorBulkImportSummary"
+        "400":
+          description: No file received, or upload error from PHP (`phpError` echoes UPLOAD_ERR_*)
+        "405":
+          description: GET issued — POST multipart required
+        "413":
+          description: Uploaded zip exceeds the 100 MB import limit
+        "500":
+          description: Server is missing the PHP zip extension, or import threw
+
+  /manage/editor/api.php?action=bulk_import_status:
+    get:
+      operationId: editorBulkImportStatus
+      tags: [Editor API]
+      summary: Poll one async bulk-import job (#676)
+      description: |
+        Auth: editor+ AND the row's `UserId` must equal the caller's
+        — one curator can only poll their own jobs even though
+        `/manage/editor/api.php` is a shared endpoint.
+
+        Pre-migration deployments (no `tblBulkImportJobs`) return
+        404 with `migration_needed: true` so the frontend can fall
+        back to the synchronous flow without surprising the user.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [bulk_import_status] }
+        - name: job_id
+          in: query
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Job snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:  { type: boolean, example: true }
+                  job:
+                    $ref: "#/components/schemas/EditorBulkImportJob"
+        "400":
+          description: Missing job_id
+        "404":
+          description: |
+            Either job not found / not owned by the caller, or
+            `tblBulkImportJobs` doesn't exist (response includes
+            `migration_needed: true`).
+
   # ===========================================================================
   # SONG METADATA  (per-song detail surfaces)
   # ===========================================================================
@@ -7914,6 +8392,133 @@ components:
               status:
                 type: string
                 enum: [pending, partial, applied]
+
+    # -------------------------------------------------------------------------
+    # Editor-API shared shapes (#719 PR 3)
+    # -------------------------------------------------------------------------
+
+    EditorSongInput:
+      type: object
+      description: |
+        One song row in the editor's full-corpus payload (`save`).
+        Same shape `save_song` accepts for a single-song UPSERT —
+        `save` runs the array straight through. Empty / missing
+        `tuneName` and `iswc` (#497) normalise to NULL on the
+        server. `language` (#681) accepts the v1 IETF BCP 47 grammar
+        (`lang[-Script][-Region]`); malformed tags fall back to `en`
+        on the bulk path.
+      required: [id, title]
+      properties:
+        id:
+          type: string
+          description: SongId, e.g. CP-0202.
+        number:
+          type: integer
+          nullable: true
+          description: Null for `Misc` songs or when empty (#392).
+        title:        { type: string }
+        songbook:     { type: string, description: Songbook abbreviation. }
+        songbookName: { type: string }
+        language:     { type: string, example: en }
+        copyright:    { type: string }
+        tuneName:
+          type: string
+          nullable: true
+          description: Optional tune name (#497). Empty / whitespace-only normalises to NULL on the server.
+        ccli:         { type: string }
+        iswc:
+          type: string
+          nullable: true
+          description: International Standard Musical Work Code (#497).
+        verified:           { type: boolean }
+        lyricsPublicDomain: { type: boolean }
+        musicPublicDomain:  { type: boolean }
+        hasAudio:           { type: boolean }
+        hasSheetMusic:      { type: boolean }
+        writers:     { type: array, items: { type: string } }
+        composers:   { type: array, items: { type: string } }
+        arrangers:   { type: array, items: { type: string } }
+        adaptors:    { type: array, items: { type: string } }
+        translators: { type: array, items: { type: string } }
+        artists:
+          type: array
+          items: { type: string }
+          description: |
+            Performance-recording artists (#587). Silently skipped on
+            partly-migrated installs without `tblSongArtists`.
+        components:
+          type: array
+          items:
+            type: object
+            properties:
+              type:  { type: string, example: verse }
+              cNum:  { type: integer }
+              lines: { type: array, items: { type: string } }
+        translations:
+          type: array
+          description: Translation links for the legacy bulk save path. Each entry adds a tblSongTranslations row.
+          items:
+            type: object
+            properties:
+              songId:   { type: string, description: TranslatedSongId. }
+              language: { type: string }
+
+    EditorBulkImportSummary:
+      type: object
+      description: |
+        Synchronous-fallback response from `bulk_import_zip` on
+        deployments without `tblBulkImportJobs`. Mirrors the same
+        counter shape the async job exposes via `bulk_import_status`,
+        minus the per-row tracking fields.
+      properties:
+        songs_created:           { type: integer }
+        songs_skipped_existing:  { type: integer, description: Existing rows are NEVER overwritten. }
+        songs_failed:            { type: integer }
+        songbooks_created:       { type: array, items: { type: string } }
+        songbooks_existing:      { type: array, items: { type: string } }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              entry: { type: string }
+              error: { type: string }
+
+    EditorBulkImportJob:
+      type: object
+      description: |
+        One row of `tblBulkImportJobs` (#676) as returned by
+        `bulk_import_status`. Job rows are scoped per user — a
+        curator can only poll their own.
+      properties:
+        id:                      { type: integer }
+        status:
+          type: string
+          enum: [queued, running, completed, failed]
+        filename:                { type: string }
+        size_bytes:              { type: integer }
+        total_entries:           { type: integer }
+        processed_entries:       { type: integer }
+        percent:
+          type: number
+          format: float
+          description: Rounded to one decimal place. Zero before the worker starts.
+        songs_created:           { type: integer }
+        songs_skipped_existing:  { type: integer }
+        songs_failed:            { type: integer }
+        songbooks_created:       { type: array, items: { type: string } }
+        songbooks_existing:      { type: array, items: { type: string } }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              entry: { type: string }
+              error: { type: string }
+        started_at:    { type: string, nullable: true, format: date-time }
+        completed_at:  { type: string, nullable: true, format: date-time }
+        created_at:    { type: string, format: date-time }
+        updated_at:    { type: string, format: date-time }
 
     # -------------------------------------------------------------------------
     # Generic response models
