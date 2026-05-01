@@ -24,6 +24,44 @@ export class UserAuth {
      */
     constructor(app) {
         this.app = app;
+        /* Public app capabilities (#766). Populated lazily by
+           _ensureAppStatus(); the auth modal reads this to decide
+           whether to promote the email-login path. Defaults to
+           emailLoginEnabled=true so a transient /api?action=app_status
+           failure doesn't lock email-only deployments out — the
+           server-side endpoint still 503s if the request actually
+           hits with no email service. */
+        this._appStatus = null;
+        this._appStatusPromise = null;
+    }
+
+    /**
+     * Lazily fetch and cache /api?action=app_status. Used by
+     * showAuthModal to decide whether to promote the email login
+     * path (#766). Returns the cached object on subsequent calls.
+     * Best-effort — failures resolve to a permissive default so
+     * a transient outage doesn't change the modal's shape.
+     *
+     * @returns {Promise<object>}
+     */
+    async _ensureAppStatus() {
+        if (this._appStatus) return this._appStatus;
+        if (this._appStatusPromise) return this._appStatusPromise;
+        this._appStatusPromise = (async () => {
+            try {
+                const r = await fetch('/api?action=app_status', {
+                    credentials: 'same-origin',
+                });
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                this._appStatus = await r.json();
+            } catch (_e) {
+                /* Permissive default — keep current behaviour. The
+                   server-side 503 is still the safety net. */
+                this._appStatus = { emailLoginEnabled: true };
+            }
+            return this._appStatus;
+        })();
+        return this._appStatusPromise;
     }
 
     /* =====================================================================
@@ -915,12 +953,40 @@ export class UserAuth {
         /* Promote magic-link email as the primary sign-in path (#395).
            For the login flow we hide the password form and reveal the
            email section on open. Users can click "Sign in with a password
-           instead" to fall back to the username/password form. */
+           instead" to fall back to the username/password form.
+
+           BUT only when the deployment actually has an email service
+           configured (#766). On a fresh install with no SMTP set up,
+           emailLoginEnabled comes back false from /api?action=app_status
+           and we leave the password form visible. The "Sign in with
+           email instead" toggle is removed entirely so the user isn't
+           offered a path that can't work. We resolve the flag
+           asynchronously and apply the layout once it lands. The
+           modal opens in the password-form default until then; the
+           snap from "no email path" to "email path promoted" only
+           happens on the very first open and only if the flag flips
+           — subsequent opens hit the cached value with no flicker. */
         if (mode === 'login') {
-            modal.querySelector('#auth-form').style.display = 'none';
-            modal.querySelector('#auth-email-section')?.classList.remove('d-none');
-            modal.querySelector('#auth-toggle').style.display = 'none';
-            modal.querySelector('#auth-forgot-link-wrapper').style.display = 'none';
+            this._ensureAppStatus().then((status) => {
+                const emailEnabled = status?.emailLoginEnabled !== false;
+                if (emailEnabled) {
+                    modal.querySelector('#auth-form').style.display = 'none';
+                    modal.querySelector('#auth-email-section')?.classList.remove('d-none');
+                    modal.querySelector('#auth-toggle').style.display = 'none';
+                    modal.querySelector('#auth-forgot-link-wrapper').style.display = 'none';
+                } else {
+                    /* Email service unconfigured — strip every entry
+                       point that would lead the user there. */
+                    const emailSection = modal.querySelector('#auth-email-section');
+                    if (emailSection) emailSection.remove();
+                    const emailToggle = modal.querySelector('#auth-email-toggle-wrapper');
+                    if (emailToggle) emailToggle.remove();
+                    /* Keep the password form, the registration toggle
+                       and the forgot-password link visible — those all
+                       work without email (the forgot flow uses an
+                       admin-issued reset token, not email). */
+                }
+            });
         }
 
         /* Toggle between login and register */
