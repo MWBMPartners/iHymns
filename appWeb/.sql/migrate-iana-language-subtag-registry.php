@@ -465,55 +465,117 @@ _migIana_out(sprintf(
     count($cldrLanguages), count($cldrScripts), count($cldrTerritories), count($cldrVariants)
 ));
 
-/* tblLanguages — UPDATE Name to the CLDR English form. */
-$stmt = $db->prepare("UPDATE tblLanguages SET Name = ? WHERE Code = ? AND Name <> ?");
-$langOverlay = 0;
-foreach ($cldrLanguages as $code => $name) {
-    /* Skip CLDR's "alt" forms which arrive as keys with -alt-* suffix. */
-    if (strpos($code, '-alt-') !== false) continue;
-    $codeLc = strtolower($code);
-    $stmt->bind_param('sss', $name, $codeLc, $name);
-    $stmt->execute();
-    if ($stmt->affected_rows > 0) $langOverlay++;
-}
-$stmt->close();
-_migIana_out("[cldr ] tblLanguages.Name overlaid on {$langOverlay} row(s).");
+/* CLDR overlay helper. The four overlay loops (#746) used to share
+   the same shape with subtle differences (codes lowercased for
+   languages + variants, kept-as-is for scripts + regions). Sharing
+   the logic via a helper means:
 
-/* tblLanguageScripts — UPDATE Name. */
-$stmt = $db->prepare("UPDATE tblLanguageScripts SET Name = ? WHERE Code = ? AND Name <> ?");
-$scriptOverlay = 0;
-foreach ($cldrScripts as $code => $name) {
-    if (strpos($code, '-alt-') !== false) continue;
-    $stmt->bind_param('sss', $name, $code, $name);
-    $stmt->execute();
-    if ($stmt->affected_rows > 0) $scriptOverlay++;
-}
-$stmt->close();
-_migIana_out("[cldr ] tblLanguageScripts.Name overlaid on {$scriptOverlay} row(s).");
+     - per-row try/catch logs the offending Code if a single row
+       fails, instead of aborting the whole import on the first
+       mysqli_sql_exception (the bug behind #746);
+     - each loop emits a "starting" + "done" summary so the operator
+       sees partial progress in the output panel even on failure;
+     - the helper falls back to skipping (rather than throwing) when
+       the prepared statement itself can't be built — cheap defence
+       against a future CLDR refresh shipping a row whose payload the
+       schema can't represent. */
+$_cldrOverlay = static function (
+    mysqli $db,
+    string $table,
+    array  $entries,
+    bool   $lowercaseCode
+): array {
+    $updated = 0;
+    $skippedAlt = 0;
+    $errors = [];
 
-/* tblRegions — UPDATE Name. */
-$stmt = $db->prepare("UPDATE tblRegions SET Name = ? WHERE Code = ? AND Name <> ?");
-$regionOverlay = 0;
-foreach ($cldrTerritories as $code => $name) {
-    if (strpos($code, '-alt-') !== false) continue;
-    $stmt->bind_param('sss', $name, $code, $name);
-    $stmt->execute();
-    if ($stmt->affected_rows > 0) $regionOverlay++;
-}
-$stmt->close();
-_migIana_out("[cldr ] tblRegions.Name overlaid on {$regionOverlay} row(s).");
+    /* The prepare itself can throw under MYSQLI_REPORT_STRICT — wrap
+       it so a failure on one table doesn't prevent the others from
+       running. */
+    try {
+        $stmt = $db->prepare("UPDATE {$table} SET Name = ? WHERE Code = ? AND Name <> ?");
+    } catch (\Throwable $e) {
+        return [
+            'updated' => 0, 'skipped_alt' => 0,
+            'errors' => [['*', 'prepare failed: ' . $e->getMessage()]],
+        ];
+    }
 
-/* tblLanguageVariants — UPDATE Name. */
-$stmt = $db->prepare("UPDATE tblLanguageVariants SET Name = ? WHERE Code = ? AND Name <> ?");
-$variantOverlay = 0;
-foreach ($cldrVariants as $code => $name) {
-    if (strpos($code, '-alt-') !== false) continue;
-    $codeLc = strtolower($code);
-    $stmt->bind_param('sss', $name, $codeLc, $name);
-    $stmt->execute();
-    if ($stmt->affected_rows > 0) $variantOverlay++;
-}
-$stmt->close();
-_migIana_out("[cldr ] tblLanguageVariants.Name overlaid on {$variantOverlay} row(s).");
+    foreach ($entries as $code => $name) {
+        /* Skip CLDR's "alt" forms (keys with -alt-* suffix). They're
+           legitimate alternative display strings that we don't want
+           to overlay onto the canonical Code row. */
+        if (strpos((string)$code, '-alt-') !== false) {
+            $skippedAlt++;
+            continue;
+        }
+        $codeKey = $lowercaseCode ? strtolower((string)$code) : (string)$code;
+        try {
+            $stmt->bind_param('sss', $name, $codeKey, $name);
+            $stmt->execute();
+            if ($stmt->affected_rows > 0) {
+                $updated++;
+            }
+        } catch (\Throwable $e) {
+            /* Single-row failure — log the code and continue. The
+               error list is bounded to 10 entries so a wholesale
+               failure mode doesn't fill the output panel; the count
+               in the summary line catches the rest. */
+            if (count($errors) < 10) {
+                $errors[] = [$codeKey, $e->getMessage()];
+            }
+        }
+    }
+    $stmt->close();
+
+    return [
+        'updated'     => $updated,
+        'skipped_alt' => $skippedAlt,
+        'errors'      => $errors,
+    ];
+};
+
+$_logCldrOverlay = static function (string $table, int $totalEntries) {
+    _migIana_out("[cldr ] {$table}.Name overlay — starting on {$totalEntries} CLDR row(s)…");
+};
+$_logCldrSummary = static function (string $table, array $stats) {
+    $u = (int)$stats['updated'];
+    $s = (int)$stats['skipped_alt'];
+    $e = count($stats['errors']);
+    $line = "[cldr ] {$table}.Name overlaid on {$u} row(s)";
+    if ($s > 0) $line .= "; {$s} alt-form key(s) skipped";
+    if ($e > 0) $line .= "; {$e} per-row error(s) (sample below)";
+    $line .= '.';
+    _migIana_out($line);
+    if ($e > 0) {
+        foreach ($stats['errors'] as [$code, $msg]) {
+            _migIana_out("         [skip] code='{$code}' — {$msg}");
+        }
+    }
+};
+
+/* tblLanguages — UPDATE Name to the CLDR English form. Languages
+   keys are lowercased to match the IANA-seeded primary key. */
+$_logCldrOverlay('tblLanguages', count($cldrLanguages));
+$_logCldrSummary('tblLanguages',
+    $_cldrOverlay($db, 'tblLanguages', $cldrLanguages, true));
+
+/* tblLanguageScripts — UPDATE Name. ISO 15924 script codes are
+   Title-case (Latn, Cyrl) and we keep them as-is. */
+$_logCldrOverlay('tblLanguageScripts', count($cldrScripts));
+$_logCldrSummary('tblLanguageScripts',
+    $_cldrOverlay($db, 'tblLanguageScripts', $cldrScripts, false));
+
+/* tblRegions — UPDATE Name. ISO 3166-1 region codes are UPPERCASE
+   (GB, US) and we keep them as-is. */
+$_logCldrOverlay('tblRegions', count($cldrTerritories));
+$_logCldrSummary('tblRegions',
+    $_cldrOverlay($db, 'tblRegions', $cldrTerritories, false));
+
+/* tblLanguageVariants — UPDATE Name. Variant subtags (1996,
+   fonipa, valencia) are lowercase per IANA grammar. */
+$_logCldrOverlay('tblLanguageVariants', count($cldrVariants));
+$_logCldrSummary('tblLanguageVariants',
+    $_cldrOverlay($db, 'tblLanguageVariants', $cldrVariants, true));
 
 _migIana_out('IANA Language Subtag Registry import — finished.');
