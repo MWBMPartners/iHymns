@@ -3318,11 +3318,19 @@ function addNewSong() {
     /* Generate a simple unique ID (timestamp + random suffix). */
     var newId = 'song-' + Date.now() + '-' + Math.random().toString(36).substring(2, 8);
 
-    /* Build the blank song object with all required fields. */
+    /* Build the blank song object with all required fields. The
+       Song Number starts as null rather than (songs.length + 1) —
+       the curator may be adding a song to an unofficial / Misc
+       songbook where there's no per-songbook number, or simply
+       hasn't picked a songbook yet. selectSong() coerces null →
+       empty string when populating the input, so the placeholder
+       'e.g. 42' shows in greyed form and the curator has to enter
+       a real value (which the validator then enforces only when
+       the chosen songbook is IsOfficial=1, per #392 / PR #740). */
     var newSong = {
         id: newId,
         title: 'New Song',
-        number: songData.songs.length + 1,
+        number: null,
         songbook: '',
         songbookName: '',
         language: 'en',
