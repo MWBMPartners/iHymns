@@ -60,7 +60,7 @@ $idSafe = preg_replace('/[^a-z0-9-]/i', '-', $idPrefix);
     </label>
 
     <div class="row g-2">
-        <div class="col-md-5">
+        <div class="col-md-4">
             <label class="form-label small text-muted"
                    for="<?= htmlspecialchars($idSafe, ENT_QUOTES, 'UTF-8') ?>-lang">
                 Language
@@ -72,7 +72,7 @@ $idSafe = preg_replace('/[^a-z0-9-]/i', '-', $idPrefix);
                    autocomplete="off"
                    placeholder="English">
         </div>
-        <div class="col-md-3">
+        <div class="col-md-2">
             <label class="form-label small text-muted"
                    for="<?= htmlspecialchars($idSafe, ENT_QUOTES, 'UTF-8') ?>-script">
                 Script
@@ -84,7 +84,7 @@ $idSafe = preg_replace('/[^a-z0-9-]/i', '-', $idPrefix);
                    autocomplete="off"
                    placeholder="e.g. Latin">
         </div>
-        <div class="col-md-4">
+        <div class="col-md-3">
             <label class="form-label small text-muted"
                    for="<?= htmlspecialchars($idSafe, ENT_QUOTES, 'UTF-8') ?>-region">
                 Region
@@ -95,6 +95,22 @@ $idSafe = preg_replace('/[^a-z0-9-]/i', '-', $idPrefix);
                    list="ietf-region-list-<?= htmlspecialchars($idSafe, ENT_QUOTES, 'UTF-8') ?>"
                    autocomplete="off"
                    placeholder="e.g. United Kingdom">
+        </div>
+        <!-- Variant subtag — IANA tblLanguageVariants (e.g. 1996,
+             fonipa, valencia). Optional; rare in worship metadata
+             but the registry has ~140 valid entries and the picker
+             grew its IETF surface to support them. -->
+        <div class="col-md-3">
+            <label class="form-label small text-muted"
+                   for="<?= htmlspecialchars($idSafe, ENT_QUOTES, 'UTF-8') ?>-variant">
+                Variant
+            </label>
+            <input type="text"
+                   class="form-control form-control-sm ietf-picker-variant"
+                   id="<?= htmlspecialchars($idSafe, ENT_QUOTES, 'UTF-8') ?>-variant"
+                   list="ietf-variant-list-<?= htmlspecialchars($idSafe, ENT_QUOTES, 'UTF-8') ?>"
+                   autocomplete="off"
+                   placeholder="e.g. 1996, fonipa">
         </div>
     </div>
 
@@ -116,4 +132,5 @@ $idSafe = preg_replace('/[^a-z0-9-]/i', '-', $idPrefix);
     <datalist id="ietf-lang-list-<?= htmlspecialchars($idSafe, ENT_QUOTES, 'UTF-8') ?>"></datalist>
     <datalist id="ietf-script-list-<?= htmlspecialchars($idSafe, ENT_QUOTES, 'UTF-8') ?>"></datalist>
     <datalist id="ietf-region-list-<?= htmlspecialchars($idSafe, ENT_QUOTES, 'UTF-8') ?>"></datalist>
+    <datalist id="ietf-variant-list-<?= htmlspecialchars($idSafe, ENT_QUOTES, 'UTF-8') ?>"></datalist>
 </div>

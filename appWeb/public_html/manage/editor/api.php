@@ -102,7 +102,20 @@ function _ietfBcp47Validate(string $raw)
     $tag = trim($raw);
     if ($tag === '') return null;
     if (strlen($tag) > 35) return false;
-    if (!preg_match('/^[a-z]{2,3}(-[A-Z][a-z]{3})?(-[A-Z]{2}|-[0-9]{3})?$/', $tag)) {
+    /* Subtag breakdown:
+       - language:  2-3 lowercase letters (ISO 639-1 / 639-3)
+       - script:    optional 4-letter Title-case (ISO 15924)
+       - region:    optional 2-letter UPPERCASE (ISO 3166-1) or 3-digit (UN M.49)
+       - variant*:  zero or more — each is 5-8 alphanumeric, OR 4 chars
+                    starting with a digit (the IANA grammar covers
+                    ʻfonipaʼ, ʻvalenciaʼ, and digit-prefixed forms
+                    like ʻ1996ʼ for German post-1996 orthography).
+       Variants land last; extensions and private-use are still out
+       of scope for the picker. */
+    if (!preg_match(
+        '/^[a-z]{2,3}(-[A-Z][a-z]{3})?(-[A-Z]{2}|-[0-9]{3})?(-([a-zA-Z0-9]{5,8}|[0-9][a-zA-Z0-9]{3}))*$/',
+        $tag
+    )) {
         return false;
     }
     return $tag;

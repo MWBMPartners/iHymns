@@ -2,11 +2,13 @@
  * IETF BCP 47 language picker (#681)
  *
  * One module, two surfaces: the songbook editor's create-form +
- * edit-modal, and the song editor's Metadata tab. Renders three
- * text inputs (Language, Script, Region) — each with its own
- * datalist — plus a live "IETF tag:" preview and a hidden
+ * edit-modal, and the song editor's Metadata tab. Renders four
+ * text inputs (Language, Script, Region, Variant) — each with its
+ * own datalist — plus a live "IETF tag:" preview and a hidden
  * <input> that holds the composed tag for the form's existing
- * save handler.
+ * save handler. The variant subtag is optional and was added as a
+ * follow-up to #681 once tblLanguageVariants (#738) shipped — see
+ * the variant block in bootIetfLanguagePicker() below.
  *
  * The picker degrades gracefully:
  *   - If the typeahead endpoints fail, the user can still type a
@@ -37,60 +39,93 @@
    into a single request. */
 const DEBOUNCE_MS = 200;
 
-/* The endpoints that back the three inputs. All on /manage/songbooks
-   today; the editor surface (B6) reuses the same endpoints rather
-   than duplicating onto /manage/editor/api.php. */
-const LANG_URL   = '/api?action=languages';   // public — already exists
-const SCRIPT_URL = '/manage/songbooks?action=script_search';
-const REGION_URL = '/manage/songbooks?action=region_search';
+/* The endpoints that back the four inputs. The first three are on
+   /manage/songbooks; the variant endpoint is on the public /api
+   since the variant catalogue is small (~140 rows) and admins
+   already use it from the editor surface. */
+const LANG_URL    = '/api?action=languages';   // public — already exists
+const SCRIPT_URL  = '/manage/songbooks?action=script_search';
+const REGION_URL  = '/manage/songbooks?action=region_search';
+const VARIANT_URL = '/api?action=variants';    // public — added with #738
 
 /**
- * Tokenise a BCP 47 tag into its three subtags.
+ * Tokenise a BCP 47 tag into its four subtags.
  * Examples:
- *   "en"          → { lang: "en",  script: "",     region: "" }
- *   "pt-BR"       → { lang: "pt",  script: "",     region: "BR" }
- *   "zh-Hans"     → { lang: "zh",  script: "Hans", region: "" }
- *   "zh-Hans-CN"  → { lang: "zh",  script: "Hans", region: "CN" }
- *   "419"         → invalid → falls through with lang=""
+ *   "en"                  → { lang: "en",  script: "",     region: "",   variants: [] }
+ *   "pt-BR"               → { lang: "pt",  script: "",     region: "BR", variants: [] }
+ *   "zh-Hans"             → { lang: "zh",  script: "Hans", region: "",   variants: [] }
+ *   "zh-Hans-CN"          → { lang: "zh",  script: "Hans", region: "CN", variants: [] }
+ *   "de-1996"             → { lang: "de",  script: "",     region: "",   variants: ["1996"] }
+ *   "ca-ES-valencia"      → { lang: "ca",  script: "",     region: "ES", variants: ["valencia"] }
+ *   "fr-CA-1694acad"      → { lang: "fr",  script: "",     region: "CA", variants: ["1694acad"] }
+ *   "419"                 → invalid → falls through with lang=""
  *
  * The script subtag is uniquely 4 chars Title Case; the region
- * subtag is uniquely 2 chars upper or 3-digit. Anything else after
- * the language is ignored for v1 (variants, extensions, private-use
- * — out of scope per #681).
+ * subtag is uniquely 2 chars upper or 3-digit. Variant subtags are
+ * 5-8 alphanumeric chars OR 4 chars starting with a digit (e.g.
+ * "1996"). Multiple variants are allowed per IANA grammar.
+ * Extensions and private-use are still out of scope.
  */
 export function decomposeTag(tag) {
     const parts = (tag || '').trim().split('-');
     if (!parts.length || !/^[a-z]{2,3}$/i.test(parts[0])) {
-        return { lang: '', script: '', region: '' };
+        return { lang: '', script: '', region: '', variants: [] };
     }
     let lang = parts[0].toLowerCase();
     let script = '';
     let region = '';
+    const variants = [];
     for (let i = 1; i < parts.length; i++) {
         const p = parts[i];
-        if (!script && /^[A-Za-z]{4}$/.test(p)) {
-            /* Title-case the script subtag (Latn, Cyrl, …). */
+        if (!script && !region && variants.length === 0 && /^[A-Za-z]{4}$/.test(p)) {
+            /* Title-case the script subtag (Latn, Cyrl, …). Only
+               recognise it before any variant has appeared so a
+               4-char variant later in the tag (e.g. an alphanum
+               variant) doesn't accidentally promote into Script. */
             script = p.charAt(0).toUpperCase() + p.slice(1).toLowerCase();
-        } else if (!region && (/^[A-Za-z]{2}$/.test(p) || /^[0-9]{3}$/.test(p))) {
+        } else if (!region && variants.length === 0 && (/^[A-Za-z]{2}$/.test(p) || /^[0-9]{3}$/.test(p))) {
             region = /^[0-9]+$/.test(p) ? p : p.toUpperCase();
+        } else if (/^[a-zA-Z0-9]{5,8}$/.test(p) || /^[0-9][a-zA-Z0-9]{3}$/.test(p)) {
+            /* Variant subtag — IANA grammar allows multiple. */
+            variants.push(p.toLowerCase());
         }
     }
-    return { lang, script, region };
+    return { lang, script, region, variants };
 }
 
 /**
- * Compose three subtags back into a BCP 47 tag. Empties drop out:
- *   compose("en", "",     "GB")  → "en-GB"
- *   compose("pt", "",     "BR")  → "pt-BR"
- *   compose("zh", "Hans", "")    → "zh-Hans"
- *   compose("",   "Latn", "GB")  → ""    (no language → no tag)
+ * Compose four subtags back into a BCP 47 tag. Empties drop out.
+ * Variants accept either a single string or an array of strings;
+ * empty / falsy entries are filtered out so callers can pass an
+ * unparsed user input without pre-processing.
+ *
+ *   compose("en", "",     "GB",  "")          → "en-GB"
+ *   compose("pt", "",     "BR",  "")          → "pt-BR"
+ *   compose("zh", "Hans", "",    "")          → "zh-Hans"
+ *   compose("de", "",     "",    "1996")      → "de-1996"
+ *   compose("ca", "",     "ES",  "valencia")  → "ca-ES-valencia"
+ *   compose("",   "Latn", "GB",  "")          → ""    (no language → no tag)
  */
-export function composeTag(lang, script, region) {
+export function composeTag(lang, script, region, variants) {
     if (!lang) return '';
+    /* Normalise the variants argument so callers can pass either
+       a string ("valencia"), a hyphen-joined string ("valencia-1901"),
+       or an array (["valencia", "1901"]). */
+    let variantList = [];
+    if (Array.isArray(variants)) {
+        variantList = variants;
+    } else if (typeof variants === 'string' && variants.trim() !== '') {
+        variantList = variants.trim().split(/[\s,-]+/);
+    }
+    variantList = variantList
+        .map(v => (v || '').trim().toLowerCase())
+        .filter(Boolean);
+
     return [
         lang.toLowerCase(),
         script ? script.charAt(0).toUpperCase() + script.slice(1).toLowerCase() : '',
         region ? (/^[0-9]+$/.test(region) ? region : region.toUpperCase()) : '',
+        ...variantList,
     ].filter(Boolean).join('-');
 }
 
@@ -174,15 +209,22 @@ export function bootIetfLanguagePicker(rootEl) {
     if (!rootEl || rootEl.dataset.ietfPickerBooted === '1') return null;
     rootEl.dataset.ietfPickerBooted = '1';
 
-    const langInput   = rootEl.querySelector('.ietf-picker-language');
-    const scriptInput = rootEl.querySelector('.ietf-picker-script');
-    const regionInput = rootEl.querySelector('.ietf-picker-region');
-    const tagPreview  = rootEl.querySelector('.ietf-tag-preview');
-    const tagDisplay  = rootEl.querySelector('.ietf-tag-display');
-    const tagOutput   = rootEl.querySelector('.ietf-tag-output');
-    const langList    = document.getElementById(langInput?.getAttribute('list'));
-    const scriptList  = document.getElementById(scriptInput?.getAttribute('list'));
-    const regionList  = document.getElementById(regionInput?.getAttribute('list'));
+    const langInput    = rootEl.querySelector('.ietf-picker-language');
+    const scriptInput  = rootEl.querySelector('.ietf-picker-script');
+    const regionInput  = rootEl.querySelector('.ietf-picker-region');
+    /* Variant input is optional in the markup — older callers that
+       haven't bumped to the new partial don't render it, and the
+       module degrades to the historical 3-input behaviour. */
+    const variantInput = rootEl.querySelector('.ietf-picker-variant');
+    const tagPreview   = rootEl.querySelector('.ietf-tag-preview');
+    const tagDisplay   = rootEl.querySelector('.ietf-tag-display');
+    const tagOutput    = rootEl.querySelector('.ietf-tag-output');
+    const langList     = document.getElementById(langInput?.getAttribute('list'));
+    const scriptList   = document.getElementById(scriptInput?.getAttribute('list'));
+    const regionList   = document.getElementById(regionInput?.getAttribute('list'));
+    const variantList  = variantInput
+        ? document.getElementById(variantInput.getAttribute('list'))
+        : null;
 
     if (!langInput || !scriptInput || !regionInput || !tagOutput) return null;
 
@@ -221,35 +263,51 @@ export function bootIetfLanguagePicker(rootEl) {
         }, DEBOUNCE_MS);
     };
 
+    /* Variants — the public /api?action=variants endpoint returns
+       the full active list (small, ~140 rows on the IANA registry)
+       so we load once on first focus and don't re-fetch per
+       keystroke. Same shape as loadLanguages above. */
+    const loadVariants = async () => {
+        if (!variantInput || !variantList) return;
+        const data = await lookup('all-variants',
+            () => fetchJson(VARIANT_URL));
+        rebuildDatalist(variantList, data?.variants || [],
+            'code', 'name');
+    };
+
     /* Compose a human-readable display from whatever's typed into
-       the three inputs. The values ARE the human names (the
+       the four inputs. The values ARE the human names (the
        datalist <option value="..."> stores the friendly name and
        data-code holds the code). So the input.value IS the display
        string for that subtag — we just compose them with the
        right punctuation. (#738) */
     const composeHumanDisplay = () => {
-        const lang   = (langInput.value   || '').trim();
-        const script = (scriptInput.value || '').trim();
-        const region = (regionInput.value || '').trim();
+        const lang    = (langInput.value    || '').trim();
+        const script  = (scriptInput.value  || '').trim();
+        const region  = (regionInput.value  || '').trim();
+        const variant = (variantInput?.value || '').trim();
         if (!lang) return '';
-        const qualifiers = [script, region].filter(Boolean);
+        const qualifiers = [script, region, variant].filter(Boolean);
         if (qualifiers.length === 0) return lang;
         return `${lang} (${qualifiers.join(', ')})`;
     };
 
     /* Update the live preview + hidden form field whenever any of
-       the three inputs change. Reads the canonical code from the
+       the four inputs change. Reads the canonical code from the
        datalist's selected <option>; falls through to typed text. */
     const refreshTag = () => {
-        const langCode   = resolveCode(langInput,   langList);
-        const scriptCode = resolveCode(scriptInput, scriptList);
-        const regionCode = resolveCode(regionInput, regionList);
-        const tag = composeTag(langCode, scriptCode, regionCode);
+        const langCode    = resolveCode(langInput,    langList);
+        const scriptCode  = resolveCode(scriptInput,  scriptList);
+        const regionCode  = resolveCode(regionInput,  regionList);
+        const variantCode = variantInput
+            ? resolveCode(variantInput, variantList)
+            : '';
+        const tag = composeTag(langCode, scriptCode, regionCode, variantCode);
         tagOutput.value = tag;
         if (tagPreview) tagPreview.textContent = tag || '—';
         /* Human-readable composed form: "Spanish (Mexico)" /
-           "Chinese (Simplified, China)". Empty when no language is
-           selected. (#738) */
+           "Chinese (Simplified, China)" / "Catalan (Spain, valencia)".
+           Empty when no language is selected. (#738) */
         if (tagDisplay) {
             const human = composeHumanDisplay();
             tagDisplay.textContent = human ? `→ ${human}` : '';
@@ -260,10 +318,12 @@ export function bootIetfLanguagePicker(rootEl) {
        typing AND the eventual canonical-code resolution after the
        user picks from the datalist (which fires `input` not
        `change`). */
-    [langInput, scriptInput, regionInput].forEach(input => {
-        input.addEventListener('input', refreshTag);
-        input.addEventListener('blur',  refreshTag);
-    });
+    [langInput, scriptInput, regionInput, variantInput]
+        .filter(Boolean)
+        .forEach(input => {
+            input.addEventListener('input', refreshTag);
+            input.addEventListener('blur',  refreshTag);
+        });
 
     /* Lazy-load each list on first focus so opening a row that
        doesn't exercise the picker doesn't pay the network cost. */
@@ -274,6 +334,9 @@ export function bootIetfLanguagePicker(rootEl) {
     regionInput.addEventListener('input', () => {
         if (regionInput.value.trim()) lookupRegions(regionInput.value.trim());
     });
+    if (variantInput) {
+        variantInput.addEventListener('focus', loadVariants, { once: true });
+    }
 
     /**
      * Decompose a saved BCP 47 tag and pre-fill the inputs. Used
@@ -281,7 +344,7 @@ export function bootIetfLanguagePicker(rootEl) {
      * partial is shared between rows in the modal.
      */
     const setTag = async (tag) => {
-        const { lang, script, region } = decomposeTag(tag);
+        const { lang, script, region, variants } = decomposeTag(tag);
 
         /* Preload the languages list so we can resolve the code →
            name BEFORE the user opens the dropdown. */
@@ -327,6 +390,27 @@ export function bootIetfLanguagePicker(rootEl) {
             rebuildDatalist(regionList, data?.suggestions || [], 'code', 'name');
         } else {
             regionInput.value = '';
+        }
+
+        /* Variants: load the full list once so the typeahead is
+           populated; pre-fill the input with the first variant's
+           friendly name (or the raw code if the list misses). The UI
+           is single-input so we surface only the first variant — IANA
+           grammar allows multiples but they're vanishingly rare and a
+           single-input keeps the form compact. The hidden tagOutput
+           still preserves any extra variants from the saved tag via
+           refreshTag()'s call to composeTag(), which accepts an array. */
+        if (variantInput) {
+            if (variants.length > 0) {
+                await loadVariants();
+                const first = variants[0];
+                const opt = Array.from(variantList?.options || []).find(
+                    o => (o.dataset.code || '').toLowerCase() === first
+                );
+                variantInput.value = opt ? opt.value : first;
+            } else {
+                variantInput.value = '';
+            }
         }
 
         refreshTag();
