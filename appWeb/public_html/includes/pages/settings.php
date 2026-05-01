@@ -443,6 +443,41 @@ declare(strict_types=1);
     </div>
 
     <!-- ============================================================
+         LANGUAGE PREFERENCES SECTION (#736)
+         ============================================================ -->
+    <div class="card card-settings mb-3">
+        <div class="card-body">
+            <h2 class="h6 mb-3">
+                <i class="fa-solid fa-language me-2" aria-hidden="true"></i>
+                Language Preferences
+            </h2>
+
+            <p class="small text-muted mb-3">
+                Choose which languages you want to see across songbooks
+                and song listings. Songbooks and songs without a
+                language tag always remain visible.
+                <?php if (!empty($currentUser)): ?>
+                Your selection saves to your account and syncs across
+                devices.
+                <?php else: ?>
+                <a href="/login" data-navigate="login">Sign in</a> to
+                sync your selection across devices.
+                <?php endif; ?>
+            </p>
+
+            <div data-settings-language-filter
+                 aria-label="Show only these languages"
+                 class="mb-2">
+                <!-- Populated client-side by /js/modules/settings-language-filter.js -->
+                <p class="small text-muted">
+                    <i class="fa-solid fa-spinner fa-spin me-1" aria-hidden="true"></i>
+                    Loading available languages…
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================================================
          ACCESSIBILITY SECTION
          ============================================================ -->
     <div class="card card-settings mb-3">

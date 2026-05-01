@@ -70,6 +70,12 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    scanner + comparer used by admin_schema_audit and
    admin_migrations_status read endpoints. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'schema_audit.php';
+/* Language filter helper (#736). Resolves the active preferred-
+   language subtag list for the current request (via ?lang= query
+   param, X-Preferred-Languages header, or tblUsers.PreferredLanguagesJson)
+   and provides applyLanguageFilterSql() / makeLanguageFilterPredicate()
+   helpers for endpoints to filter song / songbook results. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'language_filter.php';
 
 /* =========================================================================
  * CSRF DEFENCE POLICY (#293 / B15)
@@ -322,6 +328,15 @@ if ($action !== null) {
 
             $results = $songData->searchSongs($query, $bookId, $limit);
 
+            /* Language filter (#736). Apply the active preferred-subtag
+               set in-memory so search results respect the user's
+               saved preference / current dropdown selection. Untagged
+               songs always pass. */
+            $_langPred = makeLanguageFilterPredicate(
+                resolvePreferredLanguagesForRequest(getAuthenticatedUser())
+            );
+            $results = array_values(array_filter($results, $_langPred));
+
             /* Fire-and-forget search-query logging (#404). Silently no-ops
                if the table is missing (fresh installs before the schema
                ALTER has been applied). */
@@ -409,14 +424,18 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
-         * Get all songbooks
+         * Get all songbooks (filtered by user's preferred languages, #736)
          * ----------------------------------------------------------------- */
         case 'songbooks':
-            sendJson(['songbooks' => $songData->getSongbooks()]);
+            $_books = $songData->getSongbooks();
+            $_langPred = makeLanguageFilterPredicate(
+                resolvePreferredLanguagesForRequest(getAuthenticatedUser())
+            );
+            sendJson(['songbooks' => array_values(array_filter($_books, $_langPred))]);
             break;
 
         /* -----------------------------------------------------------------
-         * Get songs list (with optional songbook filter)
+         * Get songs list (with optional songbook filter, language filter #736)
          * Parameters: songbook (optional)
          * ----------------------------------------------------------------- */
         case 'songs':
@@ -426,6 +445,10 @@ if ($action !== null) {
             }
 
             $songs = $songData->getSongs($bookId);
+            $_langPred = makeLanguageFilterPredicate(
+                resolvePreferredLanguagesForRequest(getAuthenticatedUser())
+            );
+            $songs = array_values(array_filter($songs, $_langPred));
             sendJson([
                 'songs' => array_map('songToSummary', $songs),
                 'total' => count($songs),
@@ -3612,17 +3635,25 @@ if ($action !== null) {
                    title + songbook metadata the home-page renderer needs.
                    Songs that have been deleted since they were viewed
                    drop out of the list naturally (#546). */
+                /* Language filter (#736). s.Language pulled into the
+                   SELECT so the in-memory predicate can read it
+                   without a second round-trip. The filter is
+                   applied AFTER the LIMIT here, so the visible
+                   set may be < limit when the catalogue spans
+                   languages the user has filtered out — that's an
+                   acceptable trade-off for a "popular" list. */
                 $stmt = $db->prepare(
                     'SELECT h.SongId        AS songId,
                             s.Title         AS title,
                             s.Number        AS number,
                             s.SongbookAbbr  AS songbook,
                             s.SongbookName  AS songbookName,
+                            s.Language      AS language,
                             COUNT(*)        AS views
                      FROM tblSongHistory h
                      JOIN tblSongs s ON s.SongId = h.SongId
                      WHERE h.ViewedAt > DATE_SUB(NOW(), INTERVAL ? DAY)
-                     GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, s.SongbookName
+                     GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, s.SongbookName, s.Language
                      ORDER BY views DESC
                      LIMIT ?'
                 );
@@ -3635,6 +3666,11 @@ if ($action !== null) {
                     $ps['views'] = (int)$ps['views'];
                 }
                 unset($ps);
+
+                $_langPred = makeLanguageFilterPredicate(
+                    resolvePreferredLanguagesForRequest(getAuthenticatedUser())
+                );
+                $songs = array_values(array_filter($songs, $_langPred));
 
                 sendJson(['songs' => $songs, 'period' => $period]);
             } catch (\Throwable $e) {
@@ -3678,11 +3714,12 @@ if ($action !== null) {
                             s.Number        AS number,
                             s.SongbookAbbr  AS songbook,
                             s.SongbookName  AS songbookName,
+                            s.Language      AS language,
                             MAX(h.ViewedAt) AS viewedAt
                      FROM tblSongHistory h
                      JOIN tblSongs s ON s.SongId = h.SongId
                      WHERE h.UserId = ?
-                     GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, s.SongbookName
+                     GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, s.SongbookName, s.Language
                      ORDER BY MAX(h.ViewedAt) DESC
                      LIMIT 50'
                 );
@@ -3691,6 +3728,12 @@ if ($action !== null) {
                 $stmt->execute();
                 $history = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
                 $stmt->close();
+                /* Language filter (#736) — apply in-memory after the
+                   LIMIT, same trade-off as popular_songs. */
+                $_langPred = makeLanguageFilterPredicate(
+                    resolvePreferredLanguagesForRequest($authUser)
+                );
+                $history = array_values(array_filter($history, $_langPred));
                 sendJson(['history' => $history]);
             } catch (\Throwable $e) {
                 error_log('[api/song_history] ' . $e->getMessage());
@@ -3948,6 +3991,148 @@ if ($action !== null) {
             $stmt->close();
 
             sendJson(['ok' => true]);
+            break;
+
+        /* =================================================================
+         * USER PREFERRED LANGUAGES (#736)
+         *
+         * Per-account persistence of the language-filter selection so a
+         * signed-in user's choice syncs across devices. Anonymous users
+         * keep using localStorage on the SPA side; the SPA can also pass
+         * the choice via the X-Preferred-Languages header on every fetch
+         * to get the same server-side filter as authenticated users
+         * (see resolvePreferredLanguagesForRequest() in language_filter.php).
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Get the authenticated user's saved preferred-language subtags
+         * Requires: Bearer token
+         *
+         * Response: { subtags: ["en","es"] }   (empty array = no filter)
+         * ----------------------------------------------------------------- */
+        case 'user_preferred_languages':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                /* Probe the column so a pre-#736 deployment returns
+                   an empty list rather than 500ing the request. */
+                $probe = $db->prepare(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                      WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME   = 'tblUsers'
+                        AND COLUMN_NAME  = 'PreferredLanguagesJson' LIMIT 1"
+                );
+                $probe->execute();
+                $hasCol = $probe->get_result()->fetch_row() !== null;
+                $probe->close();
+                if (!$hasCol) {
+                    sendJson([
+                        'subtags'          => [],
+                        'migration_needed' => true,
+                    ]);
+                    break;
+                }
+
+                $stmt = $db->prepare(
+                    'SELECT PreferredLanguagesJson FROM tblUsers WHERE Id = ?'
+                );
+                $authUserId = (int)$authUser['Id'];
+                $stmt->bind_param('i', $authUserId);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $raw = $row[0] ?? null;
+                $subtags = [];
+                if ($raw) {
+                    $decoded = json_decode($raw, true);
+                    if (is_array($decoded)) {
+                        $subtags = parsePreferredLanguageSubtags(
+                            implode(',', array_map('strval', $decoded))
+                        );
+                    }
+                }
+                sendJson(['subtags' => $subtags]);
+            } catch (\Throwable $e) {
+                error_log('[user_preferred_languages] ' . $e->getMessage());
+                sendJson(['error' => 'Could not load preferred languages.'], 500);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
+         * Save the authenticated user's preferred-language subtags
+         * POST body: { "subtags": ["en","es"] }   (empty array = no filter)
+         * Requires: Bearer token
+         *
+         * Server-side normalisation: invalid subtags are dropped, the
+         * list is lowercased, primary-subtag-only, and deduplicated
+         * (parsePreferredLanguageSubtags). Empty array clears the
+         * filter (returns the saved value as []).
+         * ----------------------------------------------------------------- */
+        case 'user_preferred_languages_save':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $rawList = $body['subtags'] ?? [];
+            if (!is_array($rawList)) {
+                sendJson(['error' => 'subtags must be an array.'], 400);
+                break;
+            }
+
+            /* Run through the canonical parser so the saved value is
+               always a clean primary-subtag list. Invalid entries
+               are dropped silently. */
+            $clean = parsePreferredLanguageSubtags(
+                implode(',', array_map('strval', $rawList))
+            );
+
+            try {
+                $db = getDbMysqli();
+                $probe = $db->prepare(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                      WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME   = 'tblUsers'
+                        AND COLUMN_NAME  = 'PreferredLanguagesJson' LIMIT 1"
+                );
+                $probe->execute();
+                $hasCol = $probe->get_result()->fetch_row() !== null;
+                $probe->close();
+                if (!$hasCol) {
+                    sendJson([
+                        'error'            => 'Migration not yet applied on this deployment.',
+                        'migration_needed' => true,
+                    ], 503);
+                    break;
+                }
+
+                /* Empty array → store NULL so the column reads as
+                   "no filter set" rather than "filter set to empty
+                   set" (which would mean "show nothing"). */
+                $store = empty($clean) ? null : json_encode(array_values($clean));
+                $stmt = $db->prepare(
+                    'UPDATE tblUsers SET PreferredLanguagesJson = ?, UpdatedAt = NOW() WHERE Id = ?'
+                );
+                $authUserId = (int)$authUser['Id'];
+                $stmt->bind_param('si', $store, $authUserId);
+                $stmt->execute();
+                $stmt->close();
+                sendJson(['ok' => true, 'subtags' => $clean]);
+            } catch (\Throwable $e) {
+                error_log('[user_preferred_languages_save] ' . $e->getMessage());
+                sendJson(['error' => 'Could not save preferred languages.'], 500);
+            }
             break;
 
         /* =================================================================
