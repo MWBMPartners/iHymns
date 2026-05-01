@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: iHymns API
-  version: "0.52.0"
+  version: "0.53.0"
   description: |
     The iHymns API provides programmatic access to the iHymns hymn and song
     database. It powers the iHymns Progressive Web App (PWA), enabling song
@@ -199,6 +199,23 @@ tags:
       `includes/access_tier_validation.php` so a new capability is a
       one-line schema + const change — no surface-specific bind_param
       edits needed.
+  - name: Admin — Organisations
+    description: |
+      System-admin organisation CRUD parity (#719 PR 2c). Mirrors
+      `/manage/organisations`. Existing `organisation_create` covers
+      creation from any authenticated user (creator becomes owner);
+      these endpoints add update / delete / member curation to
+      complete the surface.
+  - name: Org-admin
+    description: |
+      Org-admin endpoints (#719 PR 2c, #707, #726). Authenticated
+      users who hold an `admin` or `owner` row in
+      `tblOrganisationMembers` can manage their own org's members
+      and licences without needing system-admin role. Row-level gate
+      via `userCanActOnOrg()` in
+      `includes/organisation_validation.php` — every endpoint
+      refuses cross-org POSTs at the server side regardless of how
+      the caller mounted the request.
   - name: Admin — Revisions
     description: Review pending song revisions
   - name: Admin — Maintenance
@@ -5114,6 +5131,403 @@ paths:
         "200":
           description: Org list with member counts + licence tier
 
+  # ===========================================================================
+  # ADMIN — ORGANISATIONS  (#719 PR 2c)
+  # System-admin CRUD parity with /manage/organisations. The existing
+  # organisation_create endpoint covers the create case; these complete
+  # the update / delete / member curation surface.
+  # ===========================================================================
+
+  /api.php?action=admin_organisation_update:
+    post:
+      operationId: adminOrganisationUpdate
+      tags: [Admin — Organisations]
+      summary: Update an organisation (system-admin)
+      description: |
+        Mirrors the multi-licence sync from `/manage/organisations`:
+        the submitted `additional_licences` set REPLACES
+        `tblOrganisationLicences` for the org, with `licence_type`
+        folded in so the primary + per-row views stay coherent.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_organisation_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminOrganisationUpdateInput"
+      responses:
+        "200":
+          description: Organisation updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:             { type: boolean, example: true }
+                  id:             { type: integer }
+                  slug:           { type: string }
+                  fields_changed:
+                    type: array
+                    items: { type: string }
+        "400":
+          description: Validation error (missing id/name/slug, parent loop, unknown licence_type)
+        "403":
+          description: Admin access required
+        "404":
+          description: Organisation not found
+        "409":
+          description: Slug already in use
+
+  /api.php?action=admin_organisation_delete:
+    post:
+      operationId: adminOrganisationDelete
+      tags: [Admin — Organisations]
+      summary: Delete an organisation (system-admin)
+      description: Refuses with 422 if any member is still listed OR any sub-org references it as parent.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_organisation_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Organisation deleted
+        "400":
+          description: Missing id
+        "403":
+          description: Admin access required
+        "404":
+          description: Organisation not found
+        "422":
+          description: |
+            Refused — members or sub-orgs remain. Response includes
+            either `member_count` or `child_count`, plus `name` and
+            `hint`.
+
+  /api.php?action=admin_organisation_member_add:
+    post:
+      operationId: adminOrganisationMemberAdd
+      tags: [Admin — Organisations]
+      summary: Add (or upsert) a member by user_id (system-admin)
+      description: INSERT … ON DUPLICATE KEY UPDATE — re-adding is a role change.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_organisation_member_add] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminOrgMemberInput"
+      responses:
+        "200":
+          description: Member added or role updated
+        "400":
+          description: Missing org_id / user_id, or unknown role
+        "403":
+          description: Admin access required
+
+  /api.php?action=admin_organisation_member_role_change:
+    post:
+      operationId: adminOrganisationMemberRoleChange
+      tags: [Admin — Organisations]
+      summary: Change a member's role within an organisation (system-admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_organisation_member_role_change] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminOrgMemberInput"
+      responses:
+        "200":
+          description: Role changed
+        "400":
+          description: Missing fields or unknown role
+        "403":
+          description: Admin access required
+        "404":
+          description: Member not found in this organisation
+
+  /api.php?action=admin_organisation_member_remove:
+    post:
+      operationId: adminOrganisationMemberRemove
+      tags: [Admin — Organisations]
+      summary: Remove a member from an organisation (system-admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_organisation_member_remove] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [org_id, user_id]
+              properties:
+                org_id:  { type: integer }
+                user_id: { type: integer }
+      responses:
+        "200":
+          description: Member removed
+        "400":
+          description: Missing org_id / user_id
+        "403":
+          description: Admin access required
+
+  # ===========================================================================
+  # ORG-ADMIN  (#719 PR 2c, #707, #726)
+  # Org-admin endpoints — for users holding admin/owner role on
+  # tblOrganisationMembers for the target org. Row-level gate via
+  # userCanActOnOrg() in includes/organisation_validation.php.
+  # ===========================================================================
+
+  /api.php?action=org_admin_member_add:
+    post:
+      operationId: orgAdminMemberAdd
+      tags: [Org-admin]
+      summary: Add (or upsert) a member by username or email
+      description: |
+        Free-text identifier — the API resolves Username OR Email
+        to the matching `tblUsers.Id`. INSERT … ON DUPLICATE KEY
+        UPDATE so re-adding is a role change.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_admin_member_add] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [org_id, user_identifier]
+              properties:
+                org_id:          { type: integer }
+                user_identifier:
+                  type: string
+                  description: Username OR email — first match wins.
+                member_role:
+                  type: string
+                  enum: [member, admin, owner]
+                  default: member
+      responses:
+        "200":
+          description: Member added or role updated
+        "400":
+          description: Missing org_id / user_identifier, or unknown role
+        "401":
+          description: Not authenticated
+        "403":
+          description: Not authorised on this organisation (row-level gate)
+        "404":
+          description: User identifier not found
+
+  /api.php?action=org_admin_member_role_change:
+    post:
+      operationId: orgAdminMemberRoleChange
+      tags: [Org-admin]
+      summary: Change a member's role
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_admin_member_role_change] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminOrgMemberInput"
+      responses:
+        "200":
+          description: Role changed
+        "400":
+          description: Missing fields or unknown role
+        "401":
+          description: Not authenticated
+        "403":
+          description: Not authorised on this organisation
+        "404":
+          description: Member not found in this organisation
+
+  /api.php?action=org_admin_member_remove:
+    post:
+      operationId: orgAdminMemberRemove
+      tags: [Org-admin]
+      summary: Remove a member
+      description: |
+        Self-removal guard mirrors the web admin: an org admin
+        cannot remove themselves (have to ask a co-admin or system
+        admin) — prevents accidental lockout. System admins are
+        exempt.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_admin_member_remove] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [org_id, user_id]
+              properties:
+                org_id:  { type: integer }
+                user_id: { type: integer }
+      responses:
+        "200":
+          description: Member removed
+        "400":
+          description: Missing org_id / user_id
+        "401":
+          description: Not authenticated
+        "403":
+          description: |
+            Not authorised on this organisation, or attempted
+            self-removal as non-system admin.
+
+  /api.php?action=org_admin_licence_add:
+    post:
+      operationId: orgAdminLicenceAdd
+      tags: [Org-admin]
+      summary: Add (or upsert) a licence row
+      description: |
+        INSERT … ON DUPLICATE KEY UPDATE keyed on (OrganisationId,
+        LicenceType) — re-adding the same type for the same org
+        updates number / expiry / notes / is_active in place.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_admin_licence_add] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgAdminLicenceAddInput"
+      responses:
+        "200":
+          description: Licence saved (created or updated)
+        "400":
+          description: Missing org_id, or unknown licence_type
+        "401":
+          description: Not authenticated
+        "403":
+          description: Not authorised on this organisation
+
+  /api.php?action=org_admin_licence_change:
+    post:
+      operationId: orgAdminLicenceChange
+      tags: [Org-admin]
+      summary: Change an existing licence row
+      description: |
+        Belt-and-braces ownership check: confirms the licence_id
+        actually belongs to the org_id the caller is authorised
+        on. Stops a crafted POST that mixes a licence_id from one
+        org with an org_id the caller CAN admin.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_admin_licence_change] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgAdminLicenceChangeInput"
+      responses:
+        "200":
+          description: Licence updated
+        "400":
+          description: Missing licence_id
+        "401":
+          description: Not authenticated
+        "403":
+          description: Not authorised on this organisation
+        "404":
+          description: Licence row does not belong to that organisation
+
+  /api.php?action=org_admin_licence_remove:
+    post:
+      operationId: orgAdminLicenceRemove
+      tags: [Org-admin]
+      summary: Remove a licence row
+      description: Same belt-and-braces ownership check as `org_admin_licence_change`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_admin_licence_remove] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [org_id, licence_id]
+              properties:
+                org_id:     { type: integer }
+                licence_id: { type: integer }
+      responses:
+        "200":
+          description: Licence removed
+        "400":
+          description: Missing licence_id
+        "401":
+          description: Not authenticated
+        "403":
+          description: Not authorised on this organisation
+        "404":
+          description: Licence row does not belong to that organisation
+
   /api.php?action=admin_songbook_health:
     get:
       operationId: adminSongbookHealth
@@ -6748,6 +7162,126 @@ components:
           type: string
         caps:
           $ref: "#/components/schemas/AdminTierCapabilities"
+
+    # -------------------------------------------------------------------------
+    # Organisation write-input shapes (#719 PR 2c)
+    # -------------------------------------------------------------------------
+
+    AdminOrganisationUpdateInput:
+      type: object
+      description: |
+        Input for `admin_organisation_update`. Mirrors the system
+        admin's update form on `/manage/organisations`.
+        `additional_licences` REPLACES the current
+        `tblOrganisationLicences` set for the org; the primary
+        `licence_type` is folded in automatically so the two
+        surfaces stay coherent.
+      required: [id, name, licence_type]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+          maxLength: 255
+        slug:
+          type: string
+          description: |
+            Optional override. When omitted the API derives one
+            from `name` via the same lowercase + non-alphanum-→hyphen
+            transform `/manage/organisations` uses.
+        parent_org_id:
+          type: integer
+          nullable: true
+          description: Cannot equal `id` (an organisation cannot be its own parent).
+        description:
+          type: string
+        licence_type:
+          type: string
+          enum: [none, ihymns_basic, ihymns_pro, ccli]
+          default: none
+        licence_number:
+          type: string
+        is_active:
+          type: boolean
+          default: false
+        additional_licences:
+          type: array
+          items:
+            type: string
+            enum: [ihymns_basic, ihymns_pro, ccli]
+          description: |
+            Replaces the current `tblOrganisationLicences` set for
+            this org. The primary `licence_type` is folded in
+            automatically — no need to repeat it here.
+
+    AdminOrgMemberInput:
+      type: object
+      description: |
+        Shared input shape for `admin_organisation_member_add`,
+        `admin_organisation_member_role_change`, and
+        `org_admin_member_role_change`. The org-admin variant uses
+        the same body shape with the row-level
+        `userCanActOnOrg()` gate applied at the server.
+      required: [org_id, user_id]
+      properties:
+        org_id:
+          type: integer
+        user_id:
+          type: integer
+        member_role:
+          type: string
+          enum: [member, admin, owner]
+          default: member
+
+    OrgAdminLicenceAddInput:
+      type: object
+      description: |
+        Input for `org_admin_licence_add`. Per-row licence shape;
+        a separate row is created for each licence type the org
+        holds. Distinct from the system-admin update path which
+        uses the 4-key primary set with `none` sentinel — the
+        per-row surface accepts `mrl` and `custom` but not `none`.
+      required: [org_id, licence_type]
+      properties:
+        org_id:
+          type: integer
+        licence_type:
+          type: string
+          enum: [ccli, mrl, ihymns_basic, ihymns_pro, custom]
+        licence_number:
+          type: string
+        expires_at:
+          type: string
+          format: date
+          nullable: true
+        is_active:
+          type: boolean
+          default: false
+        notes:
+          type: string
+          nullable: true
+
+    OrgAdminLicenceChangeInput:
+      type: object
+      description: Input for `org_admin_licence_change`. licence_type is immutable on a row — to switch types, remove and re-add.
+      required: [org_id, licence_id]
+      properties:
+        org_id:
+          type: integer
+        licence_id:
+          type: integer
+        licence_number:
+          type: string
+        expires_at:
+          type: string
+          format: date
+          nullable: true
+        is_active:
+          type: boolean
+          default: false
+        notes:
+          type: string
+          nullable: true
 
     # -------------------------------------------------------------------------
     # Generic response models
