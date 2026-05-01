@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: iHymns API
-  version: "0.53.0"
+  version: "0.54.0"
   description: |
     The iHymns API provides programmatic access to the iHymns hymn and song
     database. It powers the iHymns Progressive Web App (PWA), enabling song
@@ -216,6 +216,29 @@ tags:
       `includes/organisation_validation.php` — every endpoint
       refuses cross-org POSTs at the server side regardless of how
       the caller mounted the request.
+  - name: Admin — Credit People
+    description: |
+      Credit-people CRUD parity (#719 PR 2d, #545). Catalogue-wide
+      management of the people credited on songs across
+      `tblSongWriters` / `tblSongComposers` / `tblSongArrangers` /
+      `tblSongAdaptors` / `tblSongTranslators`. Helpers (link-type
+      catalogue, IPI normaliser, flag-columns probe) live in
+      `includes/credit_people_helpers.php` and are shared with
+      `/manage/credit-people`.
+  - name: Admin — Analytics
+    description: |
+      Read-only analytics endpoints. Two of the three
+      `/manage/analytics` panels are already covered by
+      `popular_songs` (top_songs + top_books); this surface adds
+      the search-query reporting needed for parity.
+  - name: Admin — Diagnostics
+    description: |
+      Operational diagnostic read endpoints (#719 PR 2d). Mirror the
+      payloads `/manage/data-health`, `/manage/schema-audit`, and
+      `/manage/setup-database` render. Designed for tooling clients
+      (CI, monitoring, dashboards) — pure read paths with no
+      mutations. Schema-audit + migrations-status reuse the parser
+      / scanner / comparer in `includes/schema_audit.php`.
   - name: Admin — Revisions
     description: Review pending song revisions
   - name: Admin — Maintenance
@@ -5528,6 +5551,423 @@ paths:
         "404":
           description: Licence row does not belong to that organisation
 
+  # ===========================================================================
+  # ADMIN — CREDIT PEOPLE  (#719 PR 2d, #545)
+  # Catalogue-wide CRUD over the people credited on songs across the
+  # five song-credit tables + the tblCreditPeople registry.
+  # ===========================================================================
+
+  /api.php?action=admin_credit_person_add:
+    post:
+      operationId: adminCreditPersonAdd
+      tags: [Admin — Credit People]
+      summary: Add a registry entry (with optional links + IPI rows)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_credit_person_add] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminCreditPersonInput"
+      responses:
+        "201":
+          description: Person added
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:   { type: boolean, example: true }
+                  id:   { type: integer }
+                  name: { type: string }
+        "400":
+          description: Validation error (missing name, name too long, bad birth/death date)
+        "403":
+          description: Admin access required
+        "409":
+          description: A person with that name is already registered
+
+  /api.php?action=admin_credit_person_update:
+    post:
+      operationId: adminCreditPersonUpdate
+      tags: [Admin — Credit People]
+      summary: Update biographical metadata + replace child rows
+      description: |
+        The Name column is NOT changed by this endpoint — renames have
+        their own endpoint (`admin_credit_person_rename`) because their
+        blast radius is cross-table. If the body's `name` field differs
+        from the stored name we reject with **400**.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_credit_person_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/AdminCreditPersonInput"
+                - type: object
+                  required: [id]
+                  properties:
+                    id: { type: integer }
+      responses:
+        "200":
+          description: Person updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:             { type: boolean, example: true }
+                  id:             { type: integer }
+                  name:           { type: string }
+                  fields_changed:
+                    type: array
+                    items: { type: string }
+        "400":
+          description: Validation error or name field doesn't match (use rename instead)
+        "403":
+          description: Admin access required
+        "404":
+          description: Person not found
+
+  /api.php?action=admin_credit_person_rename:
+    post:
+      operationId: adminCreditPersonRename
+      tags: [Admin — Credit People]
+      summary: Rename a credit person — cascades across all 5 song-credit tables
+      description: |
+        Cascades the new name across `tblSongWriters` /
+        `tblSongComposers` / `tblSongArrangers` / `tblSongAdaptors` /
+        `tblSongTranslators` AND the registry row inside one
+        transaction. Refuses with **409** if the new name already
+        belongs to a different registry row (caller should use
+        `admin_credit_person_merge`).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_credit_person_rename] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, new_name]
+              properties:
+                id:       { type: integer }
+                new_name: { type: string, maxLength: 255 }
+      responses:
+        "200":
+          description: Renamed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:                   { type: boolean, example: true }
+                  id:                   { type: integer }
+                  old_name:             { type: string }
+                  new_name:             { type: string }
+                  song_credit_renames:  { type: integer, description: Total rows updated across the 5 song-credit tables }
+        "400":
+          description: Missing fields, name too long, or new_name same as old
+        "403":
+          description: Admin access required
+        "404":
+          description: Person not found
+        "409":
+          description: Another registry row already uses that name (use merge)
+
+  /api.php?action=admin_credit_person_merge:
+    post:
+      operationId: adminCreditPersonMerge
+      tags: [Admin — Credit People]
+      summary: Collapse two registry entries into one
+      description: |
+        Re-points every song-credit row from the source name to the
+        target name across all five song-credit tables, migrates the
+        chosen child rows from source → target, then deletes the
+        source registry row. The FK ON DELETE CASCADE on
+        `tblCreditPersonLinks` / `tblCreditPersonIPI` drops any
+        child rows the caller chose not to migrate.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_credit_person_merge] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source_id, target_id]
+              properties:
+                source_id:
+                  type: integer
+                  description: Registry row to absorb. Must be different from target_id.
+                target_id:
+                  type: integer
+                  description: Surviving registry row. The target's name + biographical fields are preserved.
+                keep_link_ids:
+                  type: array
+                  items: { type: integer }
+                  description: tblCreditPersonLinks.Id values from the source side to migrate. Anything not listed gets dropped via the cascade.
+                keep_ipi_ids:
+                  type: array
+                  items: { type: integer }
+                  description: tblCreditPersonIPI.Id values from the source side to migrate.
+      responses:
+        "200":
+          description: Merge completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:                  { type: boolean, example: true }
+                  source_id:           { type: integer }
+                  target_id:           { type: integer }
+                  source_name:         { type: string }
+                  target_name:         { type: string }
+                  song_credit_renames: { type: integer }
+                  links_kept:          { type: integer }
+                  links_dropped:       { type: integer }
+                  ipi_kept:            { type: integer }
+                  ipi_dropped:         { type: integer }
+        "400":
+          description: Missing source_id / target_id, or they're equal
+        "403":
+          description: Admin access required
+        "404":
+          description: Source or target person not found
+
+  /api.php?action=admin_credit_person_delete:
+    post:
+      operationId: adminCreditPersonDelete
+      tags: [Admin — Credit People]
+      summary: Remove a registry row (force flag for in-use names)
+      description: |
+        Refuses with **422** + `usage_count` if any song-credit table
+        still cites the name AND `force` is not set. With `force=true`
+        the registry row is removed even when song credits still
+        reference the name — the credits stay; only the registry
+        row goes.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_credit_person_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id:    { type: integer }
+                force:
+                  type: boolean
+                  default: false
+                  description: When true, deletes the registry row even if song credits still cite the name.
+      responses:
+        "200":
+          description: Person deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:           { type: boolean, example: true }
+                  id:           { type: integer }
+                  name:         { type: string }
+                  usage_count:  { type: integer }
+                  forced:       { type: boolean }
+        "400":
+          description: Missing id
+        "403":
+          description: Admin access required
+        "404":
+          description: Person not found
+        "422":
+          description: |
+            Refused — song credits still cite the name and `force` is
+            not set. Response includes `usage_count`, `name`, `hint`.
+
+  # ===========================================================================
+  # ADMIN — ANALYTICS  (#719 PR 2d)
+  # ===========================================================================
+
+  /api.php?action=admin_analytics_searches:
+    get:
+      operationId: adminAnalyticsSearches
+      tags: [Admin — Analytics]
+      summary: Top + zero-result search queries
+      description: |
+        Mirrors the search-query panel on `/manage/analytics`. Two
+        lists in one response: the most-frequent queries (`top`) and
+        the most-frequent zero-result queries (`zero`). Returns
+        **503** when `tblSearchQueries` doesn't exist yet (pre-#404
+        deployment).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_analytics_searches] }
+        - name: range
+          in: query
+          required: false
+          schema: { type: integer, enum: [7, 30, 90], default: 30 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 15 }
+      responses:
+        "200":
+          description: Search-query analytics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  range_days: { type: integer }
+                  since:      { type: string, format: date-time }
+                  top:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        query:     { type: string }
+                        hits:      { type: integer }
+                        top_count: { type: integer, description: Highest ResultCount seen for this query in the window }
+                  zero:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        query: { type: string }
+                        hits:  { type: integer }
+        "403":
+          description: Admin access required
+        "503":
+          description: tblSearchQueries not yet created — run /manage/setup-database
+
+  # ===========================================================================
+  # ADMIN — DIAGNOSTICS  (#719 PR 2d)
+  # Pure read endpoints designed for tooling clients (CI, monitoring,
+  # dashboards). Mirror the payloads /manage/data-health,
+  # /manage/schema-audit, and /manage/setup-database render.
+  # ===========================================================================
+
+  /api.php?action=admin_data_health:
+    get:
+      operationId: adminDataHealth
+      tags: [Admin — Diagnostics]
+      summary: Table-row counts + legacy-fallback state
+      description: |
+        Mirrors the `/manage/data-health` panel. Returns counts for
+        the canonical tables, the SongData JSON-fallback flag, the
+        share-directory file count vs DB row count, and whether the
+        legacy SQLite database is still on disk.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_data_health] }
+      responses:
+        "200":
+          description: Data-health snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminDataHealthResponse"
+        "403":
+          description: Admin access required
+        "503":
+          description: Database unreachable (response includes detail)
+
+  /api.php?action=admin_schema_audit:
+    get:
+      operationId: adminSchemaAudit
+      tags: [Admin — Diagnostics]
+      summary: schema.sql vs live DB drift report
+      description: |
+        Mirrors `/manage/schema-audit`. Compares schema.sql declarations
+        against `INFORMATION_SCHEMA.COLUMNS` and the migration
+        coverage discovered by walking every `migrate-*.php` under
+        `appWeb/.sql/`. Per-column status enum: `ok` | `missing` |
+        `uncovered` | `orphan`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_schema_audit] }
+      responses:
+        "200":
+          description: Audit result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminSchemaAuditResponse"
+        "403":
+          description: Admin access required
+
+  /api.php?action=admin_migrations_status:
+    get:
+      operationId: adminMigrationsStatus
+      tags: [Admin — Diagnostics]
+      summary: Per-migration applied/partial/pending status
+      description: |
+        Walks every `migrate-*.php` under `appWeb/.sql/`, derives the
+        set of (table, column) declarations each one is responsible
+        for (literal ALTER, CREATE TABLE blocks, `@migration-adds`
+        doctags), and reports an `applied|partial|pending` status
+        per file by checking each declared column against the live
+        `INFORMATION_SCHEMA`. No central registry — state is derived
+        from the schema.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_migrations_status] }
+      responses:
+        "200":
+          description: Status report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminMigrationsStatusResponse"
+        "403":
+          description: Admin access required
+
   /api.php?action=admin_songbook_health:
     get:
       operationId: adminSongbookHealth
@@ -7282,6 +7722,198 @@ components:
         notes:
           type: string
           nullable: true
+
+    # -------------------------------------------------------------------------
+    # Credit-people write-input + diagnostics shapes (#719 PR 2d)
+    # -------------------------------------------------------------------------
+
+    CreditPersonLink:
+      type: object
+      description: |
+        One row of the per-person external-link sub-form. Unknown
+        `type` keys are silently coerced to `other` server-side —
+        keeps the API forward-compatible with future picker
+        categories.
+      required: [url]
+      properties:
+        type:
+          type: string
+          description: Link type key from CREDIT_PERSON_LINK_TYPE_CATALOGUE (e.g. `wikipedia`, `spotify`, `youtube`). Unknown keys → `other`.
+          default: other
+        url:
+          type: string
+        label:
+          type: string
+          nullable: true
+        sort_order:
+          type: integer
+          default: 0
+
+    CreditPersonIpi:
+      type: object
+      description: One row of the per-person IPI Name Number sub-form.
+      required: [number]
+      properties:
+        number:
+          type: string
+          description: IPI Name Number (CISAC).
+        name_used:
+          type: string
+          nullable: true
+          description: Name variant the IPI is registered under, if it differs from the canonical name.
+        notes:
+          type: string
+          nullable: true
+
+    AdminCreditPersonInput:
+      type: object
+      description: |
+        Shared input for `admin_credit_person_add` and the metadata
+        half of `admin_credit_person_update`. Add `id` (required)
+        for the latter via `allOf` composition.
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 255
+        notes:
+          type: string
+          nullable: true
+        birth_place:
+          type: string
+          nullable: true
+        birth_date:
+          type: string
+          nullable: true
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+          description: YYYY-MM-DD if supplied.
+        death_place:
+          type: string
+          nullable: true
+        death_date:
+          type: string
+          nullable: true
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+        is_special_case:
+          type: boolean
+          default: false
+          description: Mutually exclusive with `is_group`. If both arrive, `is_special_case` wins.
+        is_group:
+          type: boolean
+          default: false
+        links:
+          type: array
+          items:
+            $ref: "#/components/schemas/CreditPersonLink"
+        ipi:
+          type: array
+          items:
+            $ref: "#/components/schemas/CreditPersonIpi"
+
+    AdminDataHealthResponse:
+      type: object
+      description: Snapshot returned by `admin_data_health`. Mirrors the panel `/manage/data-health` renders.
+      properties:
+        database_up:
+          type: boolean
+        table_counts:
+          type: object
+          description: |
+            Map of canonical table name → row count. `null` when the
+            table doesn't exist on this deployment (fresh install
+            before migrations).
+          additionalProperties:
+            type: integer
+            nullable: true
+        songs_json_fallback:
+          type: boolean
+          nullable: true
+          description: True when `SongData` is currently reading from songs.json instead of MySQL. `null` if the probe couldn't run.
+        songs_json_note:
+          type: string
+          nullable: true
+          description: Diagnostic note when the SongData probe threw (e.g. corrupt songs.json).
+        share_dir:
+          type: object
+          properties:
+            configured:        { type: boolean, description: True when APP_SETLIST_SHARE_DIR is defined. }
+            present:           { type: boolean, description: True when the directory actually exists on disk. }
+            file_count:        { type: integer, nullable: true }
+            unimported_count:  { type: integer, description: Files on disk that don't have a matching tblSharedSetlists row. }
+            unimported_ids:
+              type: array
+              items: { type: string }
+        legacy_sqlite:
+          type: object
+          properties:
+            present:    { type: boolean }
+            size_bytes: { type: integer }
+
+    AdminSchemaAuditRow:
+      type: object
+      properties:
+        col:
+          type: string
+          description: Column name.
+        status:
+          type: string
+          enum: [ok, missing, uncovered, orphan]
+          description: |
+            - `ok` — declared in schema.sql AND present in DB.
+            - `missing` — in schema.sql, not in DB, but a migration would add it.
+            - `uncovered` — in schema.sql, not in DB, no migration adds it (latent bomb).
+            - `orphan` — in DB, not in schema.sql.
+        migration:
+          type: string
+          nullable: true
+          description: Filename(s) of migrate-*.php that would add this column (set on `missing` rows only).
+
+    AdminSchemaAuditResponse:
+      type: object
+      description: Result of `admin_schema_audit`. Mirrors `/manage/schema-audit`.
+      properties:
+        summary:
+          type: object
+          properties:
+            ok:        { type: integer }
+            missing:   { type: integer }
+            uncovered: { type: integer }
+            orphan:    { type: integer }
+        by_table:
+          type: object
+          description: Map of table name → list of per-column audit rows.
+          additionalProperties:
+            type: array
+            items:
+              $ref: "#/components/schemas/AdminSchemaAuditRow"
+
+    AdminMigrationsStatusResponse:
+      type: object
+      description: Result of `admin_migrations_status`. Per-migration applied / partial / pending status derived from `INFORMATION_SCHEMA`.
+      properties:
+        summary:
+          type: object
+          properties:
+            pending: { type: integer }
+            partial: { type: integer }
+            applied: { type: integer }
+        migrations:
+          type: array
+          items:
+            type: object
+            properties:
+              file:
+                type: string
+                description: Migration script filename (basename only).
+              declared_columns:
+                type: integer
+                description: Total (table, column) pairs this migration is responsible for, derived from ALTER ADD COLUMN statements + CREATE TABLE blocks + `@migration-adds` doctags.
+              applied_columns:
+                type: integer
+                description: How many of those columns currently exist in INFORMATION_SCHEMA.COLUMNS.
+              status:
+                type: string
+                enum: [pending, partial, applied]
 
     # -------------------------------------------------------------------------
     # Generic response models
