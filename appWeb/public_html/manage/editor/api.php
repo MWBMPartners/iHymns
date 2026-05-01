@@ -840,9 +840,42 @@ switch ($action) {
             }
             http_response_code(500);
             error_log('[editor save_song] ' . $e->getMessage());
-            /* Do not expose DB internals to the client — the details are
-               in the server error log for admins to inspect. */
-            echo json_encode(['error' => 'Failed to save song. Check server logs for details.']);
+
+            /* Capture the failure in tblActivityLog as a Result='error'
+               row so curators reviewing the audit log see a record of
+               the failed save alongside successful ones (#759). The
+               helper is best-effort — a logging failure must not
+               compound the original error. */
+            if (function_exists('logActivityError')) {
+                $mysqliCode = ($e instanceof \mysqli_sql_exception) ? $e->getCode() : null;
+                logActivityError(
+                    'song.save_failed',
+                    'song',
+                    $songId,
+                    $e,
+                    [
+                        'action'        => $action,
+                        'songbook'      => $songbookAbbr,
+                        'mysqli_code'   => $mysqliCode,
+                    ]
+                );
+            }
+
+            /* Surface the underlying error to admin / global_admin
+               users so they can self-diagnose without server-shell
+               access. Lower-privilege users still see the generic
+               message — DB internals are not for general consumption.
+               (#759) */
+            $payload = ['error' => 'Failed to save song. Check server logs for details.'];
+            $role    = $currentUser['role'] ?? null;
+            if (in_array($role, ['admin', 'global_admin'], true)) {
+                $payload['error_detail'] = $e->getMessage();
+                $payload['error_class']  = get_class($e);
+                if ($e instanceof \mysqli_sql_exception) {
+                    $payload['mysqli_code'] = $e->getCode();
+                }
+            }
+            echo json_encode($payload);
         }
         break;
 
