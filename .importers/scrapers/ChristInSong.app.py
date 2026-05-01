@@ -135,6 +135,67 @@ DEFAULT_OUTPUT_DIR = "./.SourceSongData"
 DELAY_SECONDS = 0.5
 
 
+# Language-name lookup for the output-folder suffix (#780). Each entry
+# in HYMNALS carries a `lang` field (BCP 47 primary subtag) and we
+# compose the subdir as "<Title> [<ABBR>]_<LanguageName>-<lang>" so
+# a curator (and the bulk-import handler) can read the language
+# straight off disk without a separate manifest lookup. Fallback for
+# an unknown code is the code itself uppercased — keeps the suffix
+# non-empty rather than degrading to the legacy shape.
+LANG_NAMES = {
+    "en":  "English",     "es":  "Spanish",     "pt":  "Portuguese",
+    "fr":  "French",      "it":  "Italian",     "de":  "German",
+    "nl":  "Dutch",       "ru":  "Russian",     "uk":  "Ukrainian",
+    "pl":  "Polish",      "bg":  "Bulgarian",   "mk":  "Macedonian",
+    "hr":  "Croatian",    "sl":  "Slovenian",   "sk":  "Slovak",
+    "cs":  "Czech",       "ro":  "Romanian",    "el":  "Greek",
+    "tr":  "Turkish",     "ar":  "Arabic",      "he":  "Hebrew",
+    "fa":  "Persian",     "hi":  "Hindi",       "bn":  "Bengali",
+    "ta":  "Tamil",       "ml":  "Malayalam",   "te":  "Telugu",
+    "zh":  "Chinese",     "ja":  "Japanese",    "ko":  "Korean",
+    "vi":  "Vietnamese",  "th":  "Thai",        "id":  "Indonesian",
+    "ms":  "Malay",       "tl":  "Tagalog",     "sw":  "Swahili",
+    "rw":  "Kinyarwanda", "to":  "Tonga",       "tn":  "Tswana",
+    "st":  "Sotho",       "ny":  "Chichewa",    "sn":  "Shona",
+    "ve":  "Venda",       "nd":  "Northern Ndebele",
+    "xh":  "Xhosa",       "ts":  "Xitsonga",    "ki":  "Kikuyu",
+    "guz": "Gusii",       "luo": "Luo",         "tum": "Tumbuka",
+    "nso": "Sepedi",      "bem": "Bemba",       "tw":  "Twi",
+    "yo":  "Yoruba",      "ig":  "Igbo",        "ha":  "Hausa",
+    "am":  "Amharic",     "mg":  "Malagasy",
+}
+
+
+def language_label(code):
+    """
+    Look up the English display name for a BCP 47 primary subtag.
+    Returns the code itself uppercased when unknown — better to keep
+    the folder suffix non-empty than to silently degrade. (#780)
+    """
+    if not code:
+        return ""
+    return LANG_NAMES.get(code, code.upper())
+
+
+def compose_subdir(title, abbrev, lang_code):
+    """
+    Build the output sub-directory name (#780):
+
+        "<Title> [<ABBR>]_<LanguageName>-<lang>"
+
+    e.g. "Christ in Song [CIS]_English-en"
+         "Himnario Adventista [HA]_Spanish-es"
+
+    When lang_code is empty/None we fall back to the legacy shape so
+    a manifest entry without a language stays valid.
+    """
+    base = f"{title} [{abbrev}]"
+    if not lang_code:
+        return base
+    label = language_label(lang_code)
+    return f"{base}_{label}-{lang_code}"
+
+
 # ---------------------------------------------------------------------------
 # Hymnal manifest — maps each CIS hymnal key to the iHymns-side metadata
 # we need (display name, abbreviation for filenames, ISO language code,
@@ -445,9 +506,11 @@ def scrape_hymnal(key, output_dir, force, refrain_override=None, pad_width=3):
     enc_dir    = urllib.parse.quote(directory, safe="")
     json_url   = f"{RAW_BASE}/{enc_dir}/{key}.json"
 
-    # Output folder name follows the spec given in the issue brief:
-    # "<Hymnal Name> [<abbrev>]"
-    book_dir   = os.path.join(output_dir, f"{title} [{abbrev}]")
+    # Output folder name now embeds the language (#780):
+    #   "<Hymnal Name> [<abbrev>]_<LanguageName>-<lang>"
+    # e.g. "Himnario Adventista [HA]_Spanish-es"
+    # Falls through to the legacy "<Title> [<abbrev>]" shape if lang is empty.
+    book_dir   = os.path.join(output_dir, compose_subdir(title, abbrev, info.get("lang", "")))
     os.makedirs(book_dir, exist_ok=True)
 
     print(f"\n{'='*60}")
