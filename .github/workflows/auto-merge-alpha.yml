@@ -57,11 +57,16 @@ jobs:
     # Skip drafts — auto-merge cannot be enabled on draft PRs.
     if: github.event.pull_request.draft == false
     steps:
-      - name: Enable auto-merge (squash)
+      - name: Enable auto-merge (squash, delete branch on merge)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
-        run: gh pr merge --auto --squash "$PR_URL"
+        # --delete-branch is explicit: gh's --auto path doesn't propagate
+        # the repo-level delete_branch_on_merge setting through to the
+        # GraphQL enablePullRequestAutoMerge mutation. Without this flag
+        # every auto-merged PR's head branch sticks around after merge,
+        # which is exactly the regression behind #750.
+        run: gh pr merge --auto --squash --delete-branch "$PR_URL"
 
       # ---------------------------------------------------------------------
       # Bridge GitHub's GITHUB_TOKEN anti-recursion rule (#551).
