@@ -11,6 +11,10 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* Shared org-validation include (#719 PR 2c) — exports the
+   ORG_MEMBER_ROLES const + slugifyOrganisationName(). Same helpers
+   used by the admin_organisation_* and org_admin_* API endpoints. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'organisation_validation.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -39,13 +43,11 @@ $LICENCE_TYPES  = [
     'ccli'         => ['label' => 'CCLI',          'description' => 'Christian Copyright Licensing International licence'],
 ];
 $LICENCE_TYPE_KEYS = array_keys($LICENCE_TYPES);
-$MEMBER_ROLES   = ['member', 'admin', 'owner'];
-
-$slugify = function (string $s): string {
-    $s = strtolower(trim($s));
-    $s = preg_replace('/[^a-z0-9]+/', '-', $s);
-    return trim((string)$s, '-');
-};
+/* Member roles + slugify lifted into includes/organisation_validation.php
+   (#719 PR 2c). Closure kept as a thin wrapper so existing call sites
+   below keep working unchanged. */
+$MEMBER_ROLES = ORG_MEMBER_ROLES;
+$slugify      = fn(string $s): string => slugifyOrganisationName($s);
 
 /* ----- POST actions ----- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {

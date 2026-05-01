@@ -25,6 +25,11 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+/* Shared org helpers (#719 PR 2c) — ORG_MEMBER_ROLES + userCanActOnOrg().
+   The local $canActOnOrg closure below remains for the page's session
+   shape; the API layer uses userCanActOnOrg() with the bearer-token
+   user shape. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'organisation_validation.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -70,10 +75,10 @@ $db = getDbMysqli();
 $error   = '';
 $success = '';
 
-/* Member-role + licence-type allowlists. Match the values
-   organisations.php uses so member rows + licence rows from this
-   page are interchangeable with the system-admin page. */
-$MEMBER_ROLES = ['member', 'admin', 'owner'];
+/* Member-role allowlist now from the shared include (#719 PR 2c).
+   Licence-type list stays page-local — this surface accepts a
+   different set than organisations.php (per-row vs primary-type). */
+$MEMBER_ROLES  = ORG_MEMBER_ROLES;
 $LICENCE_TYPES = ['ccli', 'mrl', 'ihymns_basic', 'ihymns_pro', 'custom'];
 
 /* Resolve which org IDs to show.
