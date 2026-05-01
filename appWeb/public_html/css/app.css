@@ -568,10 +568,10 @@ body.banner-visible.search-open .main-content {
         padding-bottom: env(safe-area-inset-bottom, 0px);
     }
 
-    /* Reading progress bar — account for taller header in standalone mode (#350) */
-    .reading-progress-bar {
-        top: calc(var(--header-height, 56px) + env(safe-area-inset-top, 0px));
-    }
+    /* Reading progress bar — the base rule already uses
+       env(safe-area-inset-top) so the bar sits flush below the
+       Dynamic Island / camera area in standalone PWA mode. No
+       override needed here. (#350) */
 
     .compare-header {
         padding-top: max(0.75rem, env(safe-area-inset-top, 0px));
@@ -2127,28 +2127,38 @@ body.reduce-motion .shortcuts-overlay {
    ========================================================================== */
 
 .reading-progress-bar {
-    position: sticky;
-    top: var(--header-height, 56px);
+    /* position: fixed (not sticky) — sticky breaks under any
+       transformed ancestor, and #page-content has a transform on it
+       for the page-transition animation (#149). The JS module
+       inserts the bar directly under <body> for the same reason —
+       body has no transform, so the fixed positioning is reliable.
+       env(safe-area-inset-top) keeps the bar flush below a notch /
+       Dynamic Island / camera punch-hole when installed as a PWA;
+       outside standalone mode it defaults to 0. (#350) */
+    position: fixed;
+    top: env(safe-area-inset-top, 0px);
     left: 0;
     width: 0;
     height: 3px;
     background: var(--bs-primary, #6366f1);
-    z-index: 1020;
+    z-index: 1030;
     transition: width 80ms linear;
     border-radius: 0 2px 2px 0;
+    pointer-events: none;
 }
 
-/* Songbook-specific accent colours */
-.reading-progress-bar[data-songbook="CP"] { background: var(--songbook-CP, #6366f1); }
-.reading-progress-bar[data-songbook="JP"] { background: var(--songbook-JP, #ec4899); }
-.reading-progress-bar[data-songbook="MP"] { background: var(--songbook-MP, #f59e0b); }
-.reading-progress-bar[data-songbook="SDAH"] { background: var(--songbook-SDAH, #ef4444); }
-.reading-progress-bar[data-songbook="CH"] { background: var(--songbook-CH, #8b5cf6); }
-
-/* In presentation mode, stick to top of screen (no header) */
-body.presentation-active .reading-progress-bar {
-    top: 0;
-}
+/* Built-in-songbook accent colours. The runtime colour from
+   tblSongbooks.Colour wins via inline style set in
+   js/modules/reading-progress.js — these data-attribute selectors
+   are the legacy fallback for the original 5 abbreviations + Misc.
+   Custom songbooks created via /manage/songbooks rely on the inline
+   style and don't need a CSS rule here. */
+.reading-progress-bar[data-songbook="CP"]   { background: var(--songbook-CP-solid,   #6366f1); }
+.reading-progress-bar[data-songbook="JP"]   { background: var(--songbook-JP-solid,   #ec4899); }
+.reading-progress-bar[data-songbook="MP"]   { background: var(--songbook-MP-solid,   #14b8a6); }
+.reading-progress-bar[data-songbook="SDAH"] { background: var(--songbook-SDAH-solid, #f59e0b); }
+.reading-progress-bar[data-songbook="CH"]   { background: var(--songbook-CH-solid,   #ef4444); }
+.reading-progress-bar[data-songbook="Misc"] { background: var(--songbook-Misc-solid, #8b5cf6); }
 
 /* Respect reduce-motion */
 body.reduce-motion .reading-progress-bar {

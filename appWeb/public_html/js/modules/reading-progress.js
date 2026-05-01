@@ -62,17 +62,33 @@ export class ReadingProgress {
         this.bar.setAttribute('aria-valuemax', '100');
         this.bar.setAttribute('aria-valuenow', '0');
 
-        /* Apply songbook accent colour if available */
-        const songbook = songPage.dataset.songbook;
+        /* Apply songbook accent colour. Three sources, in priority order:
+           1) data-songbook-color on the article — the runtime colour
+              fetched by song.php from tblSongbooks.Colour. Works for
+              every songbook, including custom ones created via
+              /manage/songbooks whose abbreviation isn't in the
+              hardcoded --songbook-{ABBR} CSS variable set.
+           2) data-songbook abbreviation, exposed via the
+              [data-songbook="…"] CSS rules in app.css for the legacy
+              built-in songbooks (CP/JP/MP/SDAH/CH/Misc).
+           3) The CSS default (--bs-primary). */
+        const songbook       = songPage.dataset.songbook;
+        const songbookColour = songPage.dataset.songbookColor;
+        if (songbookColour) {
+            this.bar.style.background = songbookColour;
+        }
         if (songbook) {
             this.bar.dataset.songbook = songbook;
         }
 
-        /* Insert at the very top of the main content area */
-        const content = document.getElementById('page-content');
-        if (content) {
-            content.insertBefore(this.bar, content.firstChild);
-        }
+        /* Insert directly under <body> rather than inside #page-content.
+           #page-content has a transform on it for the page-transition
+           animation (#149), and a transformed ancestor establishes a
+           new containing block for position:sticky/fixed — sticking
+           the bar inside the transitioning page instead of to the
+           viewport. Body has no transform, so position:fixed pins
+           reliably to the top of the viewport. */
+        document.body.appendChild(this.bar);
     }
 
     /** Update the progress bar width based on scroll position */
