@@ -63,6 +63,13 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 /* Shared organisation helpers (#719 PR 2c). ORG_MEMBER_ROLES +
    slugifyOrganisationName() + userCanActOnOrg() row-level gate. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'organisation_validation.php';
+/* Shared credit-people helpers (#719 PR 2d). Link-type catalogue +
+   normalisers + flag-columns probe. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'credit_people_helpers.php';
+/* Shared schema-audit helpers (#719 PR 2d). Parser + migration
+   scanner + comparer used by admin_schema_audit and
+   admin_migrations_status read endpoints. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'schema_audit.php';
 
 /* =========================================================================
  * CSRF DEFENCE POLICY (#293 / B15)
@@ -8463,6 +8470,1053 @@ if ($action !== null) {
                 ]);
                 error_log('[org_admin_licence_remove] ' . $e->getMessage());
                 sendJson(['error' => 'Could not remove licence.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * CREDIT PEOPLE — admin CRUD parity (#719 PR 2d)
+         *
+         * Mirrors /manage/credit-people.php POST handlers (#545). Every
+         * mutating endpoint runs inside $db->begin_transaction() so a
+         * partial failure (e.g. a child-row INSERT failing after the
+         * parent UPDATE landed) rolls back cleanly.
+         *
+         * Activity-log verb prefix is `api.admin.credit_person.*` —
+         * distinguishes API-driven changes from web-UI changes (which
+         * write `credit_person.*`) so /manage/activity-log shows both
+         * sides clearly.
+         *
+         * Validation rules (link-type allowlist, IPI shape) live in
+         * includes/credit_people_helpers.php — the same file
+         * /manage/credit-people uses.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: add a new credit-person registry row
+         * POST body: {
+         *   name (required), notes?, birth_place?, birth_date?,
+         *   death_place?, death_date?, is_special_case?, is_group?,
+         *   links?: [{type,url,label,sort_order}], ipi?: [{number,name_used,notes}]
+         * }
+         * Birth/death dates must be YYYY-MM-DD if supplied.
+         * ----------------------------------------------------------------- */
+        case 'admin_credit_person_add': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $name        = trim((string)($body['name']         ?? ''));
+            $notesRaw    = trim((string)($body['notes']        ?? ''));
+            $birthPlace  = trim((string)($body['birth_place']  ?? '')) ?: null;
+            $birthDate   = trim((string)($body['birth_date']   ?? '')) ?: null;
+            $deathPlace  = trim((string)($body['death_place']  ?? '')) ?: null;
+            $deathDate   = trim((string)($body['death_date']   ?? '')) ?: null;
+            $notes       = $notesRaw !== '' ? $notesRaw : null;
+            $links       = normaliseCreditPersonLinks($body['links'] ?? null);
+            $ipi         = normaliseCreditPersonIpi($body['ipi']     ?? null);
+            $isSpecialCase = !empty($body['is_special_case']) ? 1 : 0;
+            $isGroup       = !empty($body['is_group'])        ? 1 : 0;
+            /* Mutually exclusive in the UI; if both arrive we prefer
+               special-case (more constraining). */
+            if ($isSpecialCase && $isGroup) { $isGroup = 0; }
+
+            if ($name === '')           { sendJson(['error' => 'Name is required.'], 400); break; }
+            if (mb_strlen($name) > 255) { sendJson(['error' => 'Name must be 255 characters or fewer.'], 400); break; }
+            if ($birthDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $birthDate)) {
+                sendJson(['error' => 'birth_date must be YYYY-MM-DD.'], 400); break;
+            }
+            if ($deathDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $deathDate)) {
+                sendJson(['error' => 'death_date must be YYYY-MM-DD.'], 400); break;
+            }
+
+            try {
+                $db = getDbMysqli();
+
+                $stmt = $db->prepare('SELECT Id FROM tblCreditPeople WHERE Name = ?');
+                $stmt->bind_param('s', $name);
+                $stmt->execute();
+                $exists = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($exists) {
+                    sendJson(['error' => "A person with the name '{$name}' is already registered."], 409);
+                    break;
+                }
+
+                $db->begin_transaction();
+                try {
+                    /* #630 — flag columns may not exist on a partly-
+                       migrated install. Skip them when absent. */
+                    $hasFlagsCols = creditPeopleFlagsColumnsExist($db);
+                    if ($hasFlagsCols) {
+                        $stmt = $db->prepare(
+                            'INSERT INTO tblCreditPeople
+                                (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate, IsSpecialCase, IsGroup)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+                        );
+                        $stmt->bind_param('ssssssii',
+                            $name, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
+                            $isSpecialCase, $isGroup
+                        );
+                    } else {
+                        $stmt = $db->prepare(
+                            'INSERT INTO tblCreditPeople
+                                (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate)
+                             VALUES (?, ?, ?, ?, ?, ?)'
+                        );
+                        $stmt->bind_param('ssssss',
+                            $name, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate
+                        );
+                    }
+                    $stmt->execute();
+                    $newId = (int)$db->insert_id;
+                    $stmt->close();
+
+                    if ($links) {
+                        $linkStmt = $db->prepare(
+                            'INSERT INTO tblCreditPersonLinks
+                                (CreditPersonId, LinkType, Url, Label, SortOrder)
+                             VALUES (?, ?, ?, ?, ?)'
+                        );
+                        foreach ($links as $l) {
+                            $linkStmt->bind_param('isssi',
+                                $newId, $l['type'], $l['url'], $l['label'], $l['sort_order']);
+                            $linkStmt->execute();
+                        }
+                        $linkStmt->close();
+                    }
+                    if ($ipi) {
+                        $ipiStmt = $db->prepare(
+                            'INSERT INTO tblCreditPersonIPI
+                                (CreditPersonId, IPINumber, NameUsed, Notes)
+                             VALUES (?, ?, ?, ?)'
+                        );
+                        foreach ($ipi as $r) {
+                            $ipiStmt->bind_param('isss',
+                                $newId, $r['number'], $r['name_used'], $r['notes']);
+                            $ipiStmt->execute();
+                        }
+                        $ipiStmt->close();
+                    }
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                logActivity('api.admin.credit_person.add', 'credit_person', (string)$newId, [
+                    'name'       => $name,
+                    'fields'     => array_filter([
+                        'birth_place' => $birthPlace,
+                        'birth_date'  => $birthDate,
+                        'death_place' => $deathPlace,
+                        'death_date'  => $deathDate,
+                        'notes'       => $notes,
+                    ], static fn($v) => $v !== null),
+                    'link_count' => count($links),
+                    'ipi_count'  => count($ipi),
+                ]);
+
+                sendJson([
+                    'ok'   => true,
+                    'id'   => $newId,
+                    'name' => $name,
+                ], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.credit_person.add', 'credit_person', '', $e, ['name' => $name]);
+                error_log('[admin_credit_person_add] ' . $e->getMessage());
+                sendJson(['error' => 'Could not add person.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: update an existing credit-person registry row
+         * POST body: { id (required), name, notes?, biographical
+         *              fields, is_special_case?, is_group?,
+         *              links?, ipi? }
+         * The Name column is NOT changed here — renames have their own
+         * endpoint because their blast radius is cross-table. If the
+         * body's name field differs from the stored name we reject
+         * with 400 and direct the caller to admin_credit_person_rename.
+         * ----------------------------------------------------------------- */
+        case 'admin_credit_person_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id          = (int)($body['id']           ?? 0);
+            $name        = trim((string)($body['name']         ?? ''));
+            $notesRaw    = trim((string)($body['notes']        ?? ''));
+            $birthPlace  = trim((string)($body['birth_place']  ?? '')) ?: null;
+            $birthDate   = trim((string)($body['birth_date']   ?? '')) ?: null;
+            $deathPlace  = trim((string)($body['death_place']  ?? '')) ?: null;
+            $deathDate   = trim((string)($body['death_date']   ?? '')) ?: null;
+            $notes       = $notesRaw !== '' ? $notesRaw : null;
+            $links       = normaliseCreditPersonLinks($body['links'] ?? null);
+            $ipi         = normaliseCreditPersonIpi($body['ipi']     ?? null);
+            $isSpecialCase = !empty($body['is_special_case']) ? 1 : 0;
+            $isGroup       = !empty($body['is_group'])        ? 1 : 0;
+            if ($isSpecialCase && $isGroup) { $isGroup = 0; }
+
+            if ($id <= 0)               { sendJson(['error' => 'Person id required.'], 400); break; }
+            if ($name === '')           { sendJson(['error' => 'Name is required.'], 400); break; }
+            if ($birthDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $birthDate)) {
+                sendJson(['error' => 'birth_date must be YYYY-MM-DD.'], 400); break;
+            }
+            if ($deathDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $deathDate)) {
+                sendJson(['error' => 'death_date must be YYYY-MM-DD.'], 400); break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare(
+                    'SELECT Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate
+                       FROM tblCreditPeople WHERE Id = ?'
+                );
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $beforeRow = $stmt->get_result()->fetch_assoc() ?: null;
+                $stmt->close();
+                if ($beforeRow === null) {
+                    sendJson(['error' => 'Person not found.'], 404);
+                    break;
+                }
+                if ((string)$beforeRow['Name'] !== $name) {
+                    sendJson([
+                        'error' => 'Use admin_credit_person_rename to change a person\'s name — the change cascades to every song that cites them.',
+                    ], 400);
+                    break;
+                }
+
+                $db->begin_transaction();
+                try {
+                    if (creditPeopleFlagsColumnsExist($db)) {
+                        $stmt = $db->prepare(
+                            'UPDATE tblCreditPeople
+                                SET Notes = ?, BirthPlace = ?, BirthDate = ?,
+                                    DeathPlace = ?, DeathDate = ?,
+                                    IsSpecialCase = ?, IsGroup = ?
+                              WHERE Id = ?'
+                        );
+                        $stmt->bind_param('sssssiii',
+                            $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
+                            $isSpecialCase, $isGroup, $id);
+                    } else {
+                        $stmt = $db->prepare(
+                            'UPDATE tblCreditPeople
+                                SET Notes = ?, BirthPlace = ?, BirthDate = ?,
+                                    DeathPlace = ?, DeathDate = ?
+                              WHERE Id = ?'
+                        );
+                        $stmt->bind_param('sssssi',
+                            $notes, $birthPlace, $birthDate, $deathPlace, $deathDate, $id);
+                    }
+                    $stmt->execute();
+                    $stmt->close();
+
+                    /* Child rows: DELETE then INSERT — simpler than
+                       diffing and the per-person row counts are small
+                       (typically < 10 each). The child Ids change as a
+                       side effect, but no other table references them. */
+                    $del = $db->prepare('DELETE FROM tblCreditPersonLinks WHERE CreditPersonId = ?');
+                    $del->bind_param('i', $id);
+                    $del->execute();
+                    $del->close();
+                    if ($links) {
+                        $linkStmt = $db->prepare(
+                            'INSERT INTO tblCreditPersonLinks
+                                (CreditPersonId, LinkType, Url, Label, SortOrder)
+                             VALUES (?, ?, ?, ?, ?)'
+                        );
+                        foreach ($links as $l) {
+                            $linkStmt->bind_param('isssi',
+                                $id, $l['type'], $l['url'], $l['label'], $l['sort_order']);
+                            $linkStmt->execute();
+                        }
+                        $linkStmt->close();
+                    }
+
+                    $del = $db->prepare('DELETE FROM tblCreditPersonIPI WHERE CreditPersonId = ?');
+                    $del->bind_param('i', $id);
+                    $del->execute();
+                    $del->close();
+                    if ($ipi) {
+                        $ipiStmt = $db->prepare(
+                            'INSERT INTO tblCreditPersonIPI
+                                (CreditPersonId, IPINumber, NameUsed, Notes)
+                             VALUES (?, ?, ?, ?)'
+                        );
+                        foreach ($ipi as $r) {
+                            $ipiStmt->bind_param('isss',
+                                $id, $r['number'], $r['name_used'], $r['notes']);
+                            $ipiStmt->execute();
+                        }
+                        $ipiStmt->close();
+                    }
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                $afterRow = [
+                    'Notes'      => $notes,
+                    'BirthPlace' => $birthPlace,
+                    'BirthDate'  => $birthDate,
+                    'DeathPlace' => $deathPlace,
+                    'DeathDate'  => $deathDate,
+                ];
+                $changed = [];
+                foreach ($afterRow as $k => $v) {
+                    if ((string)($beforeRow[$k] ?? '') !== (string)($v ?? '')) {
+                        $changed[] = $k;
+                    }
+                }
+
+                logActivity('api.admin.credit_person.update', 'credit_person', (string)$id, [
+                    'name'       => $name,
+                    'fields'     => $changed,
+                    'before'     => array_intersect_key($beforeRow, array_flip($changed)),
+                    'after'      => array_intersect_key($afterRow,  array_flip($changed)),
+                    'link_count' => count($links),
+                    'ipi_count'  => count($ipi),
+                ]);
+
+                sendJson([
+                    'ok'             => true,
+                    'id'             => $id,
+                    'name'           => $name,
+                    'fields_changed' => $changed,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.credit_person.update', 'credit_person', (string)$id, $e);
+                error_log('[admin_credit_person_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update person.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: rename a credit-person — cascades across the five
+         * song-credit tables AND the registry row inside one transaction.
+         * POST body: { id, new_name }
+         * Refuses with 409 if the new name already belongs to a different
+         * registry row (caller should use admin_credit_person_merge).
+         * ----------------------------------------------------------------- */
+        case 'admin_credit_person_rename': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body    = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id      = (int)($body['id']       ?? 0);
+            $newName = trim((string)($body['new_name'] ?? ''));
+
+            if ($id <= 0)                  { sendJson(['error' => 'Person id required.'], 400); break; }
+            if ($newName === '')           { sendJson(['error' => 'new_name is required.'], 400); break; }
+            if (mb_strlen($newName) > 255) { sendJson(['error' => 'new_name must be 255 characters or fewer.'], 400); break; }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('SELECT Name FROM tblCreditPeople WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $oldName = (string)($row[0] ?? '');
+                if ($oldName === '')        { sendJson(['error' => 'Person not found.'], 404); break; }
+                if ($oldName === $newName)  { sendJson(['error' => 'new_name is the same as the current name.'], 400); break; }
+
+                $stmt = $db->prepare('SELECT Id FROM tblCreditPeople WHERE Name = ? AND Id <> ?');
+                $stmt->bind_param('si', $newName, $id);
+                $stmt->execute();
+                $clash = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($clash) {
+                    sendJson([
+                        'error' => "Another registry row already uses '{$newName}'. Use admin_credit_person_merge to combine them.",
+                    ], 409);
+                    break;
+                }
+
+                $db->begin_transaction();
+                $affected = [];
+                try {
+                    /* Cascade across the five song-credit tables. */
+                    $tables = [
+                        'tblSongWriters', 'tblSongComposers', 'tblSongArrangers',
+                        'tblSongAdaptors', 'tblSongTranslators',
+                    ];
+                    foreach ($tables as $tbl) {
+                        $stmt = $db->prepare("UPDATE {$tbl} SET Name = ? WHERE Name = ?");
+                        $stmt->bind_param('ss', $newName, $oldName);
+                        $stmt->execute();
+                        $affected[$tbl] = $stmt->affected_rows;
+                        $stmt->close();
+                    }
+                    $stmt = $db->prepare('UPDATE tblCreditPeople SET Name = ? WHERE Id = ?');
+                    $stmt->bind_param('si', $newName, $id);
+                    $stmt->execute();
+                    $stmt->close();
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                $totalRenamed = array_sum($affected);
+                logActivity('api.admin.credit_person.rename', 'credit_person', (string)$id, [
+                    'before'   => ['name' => $oldName],
+                    'after'    => ['name' => $newName],
+                    'affected' => [
+                        'writers'     => $affected['tblSongWriters'],
+                        'composers'   => $affected['tblSongComposers'],
+                        'arrangers'   => $affected['tblSongArrangers'],
+                        'adaptors'    => $affected['tblSongAdaptors'],
+                        'translators' => $affected['tblSongTranslators'],
+                    ],
+                ]);
+
+                sendJson([
+                    'ok'                  => true,
+                    'id'                  => $id,
+                    'old_name'            => $oldName,
+                    'new_name'            => $newName,
+                    'song_credit_renames' => $totalRenamed,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.credit_person.rename', 'credit_person', (string)$id, $e);
+                error_log('[admin_credit_person_rename] ' . $e->getMessage());
+                sendJson(['error' => 'Could not rename person.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: merge two registry entries
+         * POST body: {
+         *   source_id, target_id,
+         *   keep_link_ids?: [int], keep_ipi_ids?: [int]
+         * }
+         * Re-points every song-credit row from source name → target name,
+         * migrates the chosen child rows from source → target, then
+         * deletes the source registry row (FK cascade drops any child
+         * rows the caller chose not to migrate).
+         * ----------------------------------------------------------------- */
+        case 'admin_credit_person_merge': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body      = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $sourceId  = (int)($body['source_id'] ?? 0);
+            $targetId  = (int)($body['target_id'] ?? 0);
+            $keepLinks = array_map('intval', (array)($body['keep_link_ids'] ?? []));
+            $keepIpi   = array_map('intval', (array)($body['keep_ipi_ids']  ?? []));
+
+            if ($sourceId <= 0 || $targetId <= 0) {
+                sendJson(['error' => 'source_id and target_id required.'], 400);
+                break;
+            }
+            if ($sourceId === $targetId) {
+                sendJson(['error' => 'Source and target must be different people.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('SELECT Id, Name FROM tblCreditPeople WHERE Id IN (?, ?)');
+                $stmt->bind_param('ii', $sourceId, $targetId);
+                $stmt->execute();
+                $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+                $byId = [];
+                foreach ($rows as $r) { $byId[(int)$r['Id']] = (string)$r['Name']; }
+                if (!isset($byId[$sourceId])) { sendJson(['error' => 'Source person not found.'], 404); break; }
+                if (!isset($byId[$targetId])) { sendJson(['error' => 'Target person not found.'], 404); break; }
+                $sourceName = $byId[$sourceId];
+                $targetName = $byId[$targetId];
+
+                $db->begin_transaction();
+                $affected     = [];
+                $linksKept    = 0;
+                $linksDropped = 0;
+                $ipiKept      = 0;
+                $ipiDropped   = 0;
+                try {
+                    /* Re-point song-credit rows: source → target across
+                       all five tables. */
+                    $tables = [
+                        'tblSongWriters', 'tblSongComposers', 'tblSongArrangers',
+                        'tblSongAdaptors', 'tblSongTranslators',
+                    ];
+                    foreach ($tables as $tbl) {
+                        $stmt = $db->prepare("UPDATE {$tbl} SET Name = ? WHERE Name = ?");
+                        $stmt->bind_param('ss', $targetName, $sourceName);
+                        $stmt->execute();
+                        $affected[$tbl] = $stmt->affected_rows;
+                        $stmt->close();
+                    }
+
+                    /* Migrate the chosen child rows from source → target.
+                       Anything not in keep_link_ids / keep_ipi_ids gets
+                       dropped via the cascade when the source row is
+                       deleted below. */
+                    $stmt = $db->prepare('SELECT Id FROM tblCreditPersonLinks WHERE CreditPersonId = ?');
+                    $stmt->bind_param('i', $sourceId);
+                    $stmt->execute();
+                    $sourceLinkIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
+                    $stmt->close();
+
+                    $stmt = $db->prepare('SELECT Id FROM tblCreditPersonIPI WHERE CreditPersonId = ?');
+                    $stmt->bind_param('i', $sourceId);
+                    $stmt->execute();
+                    $sourceIpiIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
+                    $stmt->close();
+
+                    if ($keepLinks && $sourceLinkIds) {
+                        $toMove = array_intersect($keepLinks, array_map('intval', $sourceLinkIds));
+                        if ($toMove) {
+                            $upd = $db->prepare(
+                                'UPDATE tblCreditPersonLinks SET CreditPersonId = ? WHERE Id = ? AND CreditPersonId = ?'
+                            );
+                            foreach ($toMove as $lid) {
+                                $upd->bind_param('iii', $targetId, $lid, $sourceId);
+                                $upd->execute();
+                                $linksKept += $upd->affected_rows;
+                            }
+                            $upd->close();
+                        }
+                    }
+                    $linksDropped = max(0, count($sourceLinkIds) - $linksKept);
+
+                    if ($keepIpi && $sourceIpiIds) {
+                        $toMove = array_intersect($keepIpi, array_map('intval', $sourceIpiIds));
+                        if ($toMove) {
+                            $upd = $db->prepare(
+                                'UPDATE tblCreditPersonIPI SET CreditPersonId = ? WHERE Id = ? AND CreditPersonId = ?'
+                            );
+                            foreach ($toMove as $iid) {
+                                $upd->bind_param('iii', $targetId, $iid, $sourceId);
+                                $upd->execute();
+                                $ipiKept += $upd->affected_rows;
+                            }
+                            $upd->close();
+                        }
+                    }
+                    $ipiDropped = max(0, count($sourceIpiIds) - $ipiKept);
+
+                    /* Drop the source registry row. Cascade removes
+                       any child rows we chose not to migrate. */
+                    $stmt = $db->prepare('DELETE FROM tblCreditPeople WHERE Id = ?');
+                    $stmt->bind_param('i', $sourceId);
+                    $stmt->execute();
+                    $stmt->close();
+
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                $totalRenamed = array_sum($affected);
+                logActivity('api.admin.credit_person.merge', 'credit_person', (string)$targetId, [
+                    'source'     => ['id' => $sourceId, 'name' => $sourceName],
+                    'target'     => ['id' => $targetId, 'name' => $targetName],
+                    'affected'   => [
+                        'writers'     => $affected['tblSongWriters'],
+                        'composers'   => $affected['tblSongComposers'],
+                        'arrangers'   => $affected['tblSongArrangers'],
+                        'adaptors'    => $affected['tblSongAdaptors'],
+                        'translators' => $affected['tblSongTranslators'],
+                    ],
+                    'child_rows' => [
+                        'links_kept'    => $linksKept,
+                        'links_dropped' => $linksDropped,
+                        'ipi_kept'      => $ipiKept,
+                        'ipi_dropped'   => $ipiDropped,
+                    ],
+                ]);
+
+                sendJson([
+                    'ok'                  => true,
+                    'source_id'           => $sourceId,
+                    'target_id'           => $targetId,
+                    'source_name'         => $sourceName,
+                    'target_name'         => $targetName,
+                    'song_credit_renames' => $totalRenamed,
+                    'links_kept'          => $linksKept,
+                    'links_dropped'       => $linksDropped,
+                    'ipi_kept'            => $ipiKept,
+                    'ipi_dropped'         => $ipiDropped,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.credit_person.merge', 'credit_person', (string)$targetId, $e, [
+                    'source_id' => $sourceId,
+                ]);
+                error_log('[admin_credit_person_merge] ' . $e->getMessage());
+                sendJson(['error' => 'Could not merge people.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete a registry row
+         * POST body: { id, force? }
+         * Refuses with 422 + usage_count if any song-credit table still
+         * cites the name AND force is not set. With force=true the
+         * registry row is removed even if song credits still reference
+         * the name (the credits stay — only the registry row goes).
+         * ----------------------------------------------------------------- */
+        case 'admin_credit_person_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body  = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id    = (int)($body['id'] ?? 0);
+            $force = !empty($body['force']);
+            if ($id <= 0) {
+                sendJson(['error' => 'Person id required.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('SELECT Name FROM tblCreditPeople WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $name = (string)($row[0] ?? '');
+                if ($name === '') {
+                    sendJson(['error' => 'Person not found.'], 404);
+                    break;
+                }
+
+                /* Single round-trip count across all five song-credit
+                   tables. */
+                $stmt = $db->prepare(
+                    "SELECT (
+                        (SELECT COUNT(*) FROM tblSongWriters     WHERE Name = ?) +
+                        (SELECT COUNT(*) FROM tblSongComposers   WHERE Name = ?) +
+                        (SELECT COUNT(*) FROM tblSongArrangers   WHERE Name = ?) +
+                        (SELECT COUNT(*) FROM tblSongAdaptors    WHERE Name = ?) +
+                        (SELECT COUNT(*) FROM tblSongTranslators WHERE Name = ?)
+                     ) AS total"
+                );
+                $stmt->bind_param('sssss', $name, $name, $name, $name, $name);
+                $stmt->execute();
+                $usage = (int)($stmt->get_result()->fetch_row()[0] ?? 0);
+                $stmt->close();
+
+                if ($usage > 0 && !$force) {
+                    sendJson([
+                        'error'        => "Cannot delete '{$name}': {$usage} song-credit row(s) still cite this name.",
+                        'usage_count'  => $usage,
+                        'name'         => $name,
+                        'hint'         => 'Pass force=true to delete the registry row anyway — the song credits stay.',
+                    ], 422);
+                    break;
+                }
+
+                $stmt = $db->prepare('DELETE FROM tblCreditPeople WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.admin.credit_person.delete', 'credit_person', (string)$id, [
+                    'name'        => $name,
+                    'had_credits' => $usage > 0,
+                    'force'       => $force,
+                ]);
+
+                sendJson([
+                    'ok'           => true,
+                    'id'           => $id,
+                    'name'         => $name,
+                    'usage_count'  => $usage,
+                    'forced'       => $force,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.credit_person.delete', 'credit_person', (string)$id, $e);
+                error_log('[admin_credit_person_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete person.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * ADMIN ANALYTICS — search-query reporting (#719 PR 2d)
+         *
+         * Mirrors the Top search queries / Zero-result panels on
+         * /manage/analytics. The other two analytics verbs
+         * (`top_songs` / `top_books`) are already covered by the
+         * existing `popular_songs` endpoint; this fills the search-side
+         * gap.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: top + zero-result search queries
+         * GET ?action=admin_analytics_searches&range=7|30|90&limit=15
+         * Default range = 30 days, limit = 15.
+         * ----------------------------------------------------------------- */
+        case 'admin_analytics_searches': {
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $range = (int)($_GET['range'] ?? 30);
+            if (!in_array($range, [7, 30, 90], true)) { $range = 30; }
+            $limit = (int)($_GET['limit'] ?? 15);
+            if ($limit < 1 || $limit > 100)           { $limit = 15; }
+            $since = (new DateTime("-{$range} days"))->format('Y-m-d H:i:s');
+
+            $top  = [];
+            $zero = [];
+            try {
+                $db = getDbMysqli();
+
+                $stmt = $db->prepare(
+                    'SELECT Query AS query, COUNT(*) AS hits, MAX(ResultCount) AS top_count
+                       FROM tblSearchQueries
+                      WHERE SearchedAt >= ? AND Query <> ""
+                      GROUP BY Query
+                      ORDER BY hits DESC
+                      LIMIT ?'
+                );
+                $stmt->bind_param('si', $since, $limit);
+                $stmt->execute();
+                $top = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+
+                $stmt = $db->prepare(
+                    'SELECT Query AS query, COUNT(*) AS hits
+                       FROM tblSearchQueries
+                      WHERE SearchedAt >= ? AND ResultCount = 0 AND Query <> ""
+                      GROUP BY Query
+                      ORDER BY hits DESC
+                      LIMIT ?'
+                );
+                $stmt->bind_param('si', $since, $limit);
+                $stmt->execute();
+                $zero = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+
+                /* Coerce numeric fields from string (mysqli_result default)
+                   so JSON consumers don't have to parseInt. */
+                foreach ($top as &$r) {
+                    $r['hits']      = (int)$r['hits'];
+                    $r['top_count'] = $r['top_count'] !== null ? (int)$r['top_count'] : 0;
+                }
+                unset($r);
+                foreach ($zero as &$r) { $r['hits'] = (int)$r['hits']; }
+                unset($r);
+            } catch (\Throwable $e) {
+                /* tblSearchQueries may not exist on a pre-#404 deploy.
+                   Surface as 503 so the caller knows it's a setup issue
+                   rather than malformed input. */
+                error_log('[admin_analytics_searches] ' . $e->getMessage());
+                sendJson([
+                    'error' => 'Search analytics not yet available — tblSearchQueries may not be created.',
+                    'note'  => 'Run /manage/setup-database to apply the search-query migration.',
+                ], 503);
+                break;
+            }
+
+            sendJson([
+                'range_days' => $range,
+                'since'      => $since,
+                'top'        => $top,
+                'zero'       => $zero,
+            ]);
+            break;
+        }
+
+        /* =================================================================
+         * READ-SIDE DIAGNOSTICS (#719 PR 2d)
+         *
+         * Three operational endpoints natives + tooling clients (CI,
+         * monitoring) probably want. All admin / global_admin gated.
+         * Pure read paths; no mutations.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: data-health snapshot
+         * GET ?action=admin_data_health
+         * Returns table-row counts for the canonical tables, plus the
+         * legacy-fallback state (songs.json fallback active? share JSON
+         * file count vs DB row count? legacy SQLite present?). Mirrors
+         * /manage/data-health's panel.
+         * ----------------------------------------------------------------- */
+        case 'admin_data_health': {
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            /* Same allowlist /manage/data-health uses. Hard-coded so a
+               future tweak to the canonical-table list lands once and
+               both surfaces pick it up by reading this constant. */
+            $healthTables = [
+                'tblSongs', 'tblSongbooks', 'tblUsers', 'tblUserSetlists',
+                'tblSharedSetlists', 'tblSongRequests', 'tblSongRevisions',
+                'tblUserGroups', 'tblOrganisations',
+            ];
+
+            try {
+                $db = getDbMysqli();
+            } catch (\Throwable $dbErr) {
+                sendJson([
+                    'error'         => 'Database unreachable.',
+                    'database_up'   => false,
+                    'detail'        => $dbErr->getMessage(),
+                ], 503);
+                break;
+            }
+
+            $tableCounts = [];
+            foreach ($healthTables as $tbl) {
+                try {
+                    /* Allowlist guard: $tbl came from the literal array
+                       above, but a belt-and-braces in_array check makes
+                       the safety provable at the query site without
+                       tracing control flow. */
+                    if (!in_array($tbl, $healthTables, true)) { continue; }
+                    $stmt = $db->prepare('SELECT COUNT(*) FROM `' . $tbl . '`');
+                    $stmt->execute();
+                    $row = $stmt->get_result()->fetch_row();
+                    $tableCounts[$tbl] = (int)($row[0] ?? 0);
+                    $stmt->close();
+                } catch (\Throwable $_e) {
+                    /* Table missing on a fresh deploy is expected;
+                       represent as null. */
+                    $tableCounts[$tbl] = null;
+                }
+            }
+
+            /* SongData JSON fallback probe — non-fatal on partly-loaded
+               configs. The probe runs the SongData constructor which
+               may throw when songs.json is corrupt; we surface the
+               exception text in `note` rather than failing the whole
+               response. */
+            $songDataJsonFallback = null;
+            $songDataNote         = null;
+            try {
+                if (class_exists('\\SongData')) {
+                    $probe = new \SongData();
+                    $songDataJsonFallback = $probe->isJsonFallback();
+                }
+            } catch (\Throwable $sdErr) {
+                $songDataNote = 'SongData probe failed: ' . $sdErr->getMessage();
+            }
+
+            /* Legacy share-directory + SQLite presence checks. Defined
+               constants come from config.php; treat absence as "not
+               configured" rather than a 500. */
+            $songsJsonPath = defined('APP_DATA_FILE')          ? APP_DATA_FILE          : '';
+            $shareDirPath  = defined('APP_SETLIST_SHARE_DIR')  ? APP_SETLIST_SHARE_DIR  : '';
+            $sqliteDbPath  = defined('APP_ROOT')
+                ? dirname(APP_ROOT) . DIRECTORY_SEPARATOR . 'data_share' . DIRECTORY_SEPARATOR . 'SQLite'
+                  . DIRECTORY_SEPARATOR . 'ihymns.db'
+                : '';
+
+            $shareFileCount      = null;
+            $unimportedShareIds  = [];
+            if ($shareDirPath && is_dir($shareDirPath)) {
+                $files = glob($shareDirPath . DIRECTORY_SEPARATOR . '*.json') ?: [];
+                $shareFileCount = count($files);
+                if ($shareFileCount > 0 && isset($tableCounts['tblSharedSetlists'])) {
+                    $idsOnDisk = array_filter(array_map(
+                        fn($f) => preg_match('/^[a-f0-9]{6,32}$/i', basename($f, '.json'))
+                                    ? basename($f, '.json') : null,
+                        $files
+                    ));
+                    try {
+                        $stmt = $db->prepare('SELECT ShareId FROM tblSharedSetlists');
+                        $stmt->execute();
+                        $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                        $stmt->close();
+                        $inDb = array_fill_keys(array_column($rows, 'ShareId'), true);
+                        foreach ($idsOnDisk as $id) {
+                            if (!isset($inDb[$id])) $unimportedShareIds[] = $id;
+                        }
+                    } catch (\Throwable $_e) {
+                        /* tblSharedSetlists missing — leave unimported list empty. */
+                    }
+                }
+            }
+            $sqliteExists = $sqliteDbPath && file_exists($sqliteDbPath);
+            $sqliteSize   = $sqliteExists ? (int)@filesize($sqliteDbPath) : 0;
+
+            sendJson([
+                'database_up'           => true,
+                'table_counts'          => $tableCounts,
+                'songs_json_fallback'   => $songDataJsonFallback,
+                'songs_json_note'       => $songDataNote,
+                'share_dir' => [
+                    'configured'        => $shareDirPath !== '',
+                    'present'           => $shareDirPath !== '' && is_dir($shareDirPath),
+                    'file_count'        => $shareFileCount,
+                    'unimported_count'  => count($unimportedShareIds),
+                    'unimported_ids'    => $unimportedShareIds,
+                ],
+                'legacy_sqlite' => [
+                    'present'   => $sqliteExists,
+                    'size_bytes'=> $sqliteSize,
+                ],
+            ]);
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: schema-audit JSON
+         * GET ?action=admin_schema_audit
+         * Mirrors /manage/schema-audit's diff payload — schema.sql vs
+         * live DB vs migration coverage. Returns the same {byTable, summary}
+         * shape the page consumes.
+         * ----------------------------------------------------------------- */
+        case 'admin_schema_audit': {
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $schemaSrc = dirname(__DIR__, 1) . DIRECTORY_SEPARATOR . '.sql' . DIRECTORY_SEPARATOR . 'schema.sql';
+            $sqlDir    = dirname(__DIR__, 1) . DIRECTORY_SEPARATOR . '.sql';
+
+            try {
+                $db = getDbMysqli();
+                if (!is_readable($schemaSrc)) {
+                    throw new \RuntimeException('schema.sql not readable at ' . $schemaSrc);
+                }
+                $schemaSql  = (string)file_get_contents($schemaSrc);
+                $schemaCols = schemaAuditParseSchema($schemaSql);
+                if (!$schemaCols) {
+                    throw new \RuntimeException('Parsed zero tables from schema.sql — parser broken or file shape changed.');
+                }
+                $migrations = schemaAuditScanMigrations($sqlDir);
+                $dbCols     = schemaAuditReadDb($db);
+                $audit      = schemaAuditCompare($schemaCols, $dbCols, $migrations);
+
+                sendJson([
+                    'summary'  => $audit['summary'],
+                    'by_table' => $audit['byTable'],
+                ]);
+            } catch (\Throwable $e) {
+                error_log('[admin_schema_audit] ' . $e->getMessage());
+                sendJson(['error' => 'Schema audit failed: ' . $e->getMessage()], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: migrations status
+         * GET ?action=admin_migrations_status
+         * Walks every migrate-*.php under appWeb/.sql/, matches each
+         * declared (table, column) against the live DB, and reports
+         * an applied|partial|pending status per migration. Designed
+         * for tooling clients (CI, monitoring) — derives state from
+         * the schema rather than maintaining a separate registry.
+         * ----------------------------------------------------------------- */
+        case 'admin_migrations_status': {
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $sqlDir = dirname(__DIR__, 1) . DIRECTORY_SEPARATOR . '.sql';
+
+            try {
+                $db = getDbMysqli();
+                $migrations = schemaAuditScanMigrations($sqlDir);
+                $dbCols     = schemaAuditReadDb($db);
+
+                /* Invert: [tbl.col => [files...]] becomes [file => [(tbl,col), ...]]. */
+                $byFile = [];
+                foreach ($migrations as $key => $files) {
+                    [$tbl, $col] = explode('.', $key, 2);
+                    foreach ($files as $f) {
+                        $byFile[$f][] = ['table' => $tbl, 'column' => $col];
+                    }
+                }
+
+                $report = [];
+                foreach ($byFile as $file => $declared) {
+                    $applied = 0;
+                    foreach ($declared as $d) {
+                        if (in_array($d['column'], $dbCols[$d['table']] ?? [], true)) {
+                            $applied++;
+                        }
+                    }
+                    $total  = count($declared);
+                    $status = $applied === 0       ? 'pending'
+                            : ($applied === $total ? 'applied' : 'partial');
+                    $report[] = [
+                        'file'             => $file,
+                        'declared_columns' => $total,
+                        'applied_columns'  => $applied,
+                        'status'           => $status,
+                    ];
+                }
+
+                /* Stable sort: pending first, then partial, then applied;
+                   alphabetic within each group so the report reads as a
+                   "what to run next" punchlist. */
+                usort($report, function (array $a, array $b): int {
+                    $rank = ['pending' => 0, 'partial' => 1, 'applied' => 2];
+                    return $rank[$a['status']] <=> $rank[$b['status']]
+                         ?: strcmp($a['file'], $b['file']);
+                });
+
+                $summary = ['pending' => 0, 'partial' => 0, 'applied' => 0];
+                foreach ($report as $r) { $summary[$r['status']]++; }
+
+                sendJson([
+                    'summary'    => $summary,
+                    'migrations' => $report,
+                ]);
+            } catch (\Throwable $e) {
+                error_log('[admin_migrations_status] ' . $e->getMessage());
+                sendJson(['error' => 'Could not derive migrations status: ' . $e->getMessage()], 500);
             }
             break;
         }

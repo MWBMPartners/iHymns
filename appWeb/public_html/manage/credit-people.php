@@ -42,6 +42,11 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* Shared credit-people helpers (#719 PR 2d) — link-type catalogue +
+   normalisers + flag-columns-exist probe. Same helpers used by the
+   admin_credit_person_* API endpoints in /api.php so a tweak to the
+   link-type set or the row-shape rules lands on both surfaces. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'credit_people_helpers.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -82,128 +87,26 @@ $logCreditPerson = static function (string $action, string $entityId, array $det
 };
 
 /* ----------------------------------------------------------------------
- * Helpers — link / IPI sub-form normalisation
+ * Helpers — link / IPI sub-form normalisation (#719 PR 2d)
  *
- * The Add and Update_person actions both accept arrays of links and
- * IPI numbers in the POST body, posted as `links[i][type|url|label]`
- * and `ipi[i][number|name_used|notes]`. Empty rows (no URL / no
- * IPI number) are silently dropped. Returns a clean array of
- * row-shaped arrays ready to INSERT.
+ * The link-type catalogue, the two normalisers, and the
+ * flag-columns-exist probe now live in
+ * /includes/credit_people_helpers.php. The closures kept here are
+ * thin wrappers so the existing call sites below ($normaliseLinks,
+ * $normaliseIpi, _cpFlagsColumnsExist) keep working unchanged.
  * ---------------------------------------------------------------------- */
-/**
- * Curated link-type registry (#586).
- *
- * Replaces the seven-item hard-coded set with a grouped catalogue of
- * well-known providers — Wikipedia, Wikidata, MusicBrainz, the
- * streaming services (Spotify / Apple Music / YouTube Music / …) and
- * the major social networks. The picker in the modal is built from
- * this array via <optgroup>; the server-side validator accepts any
- * key from the flat list. "Other" is always allowed and stays as the
- * free-text fallback.
- *
- * Adding a new provider: append it under its category. The picker
- * UI and the validator both update automatically. Legacy LinkType
- * values stored in the DB before #586 (e.g. 'wikipedia', 'official')
- * remain valid because they still appear in the catalogue under the
- * General category — no data migration needed.
- */
-$LINK_TYPE_CATALOGUE = [
-    'General' => [
-        'official'      => 'Official website',
-        'wikipedia'     => 'Wikipedia',
-        'wikidata'      => 'Wikidata',
-        'musicbrainz'   => 'MusicBrainz',
-        'discogs'       => 'Discogs',
-        'imslp'         => 'IMSLP',
-        'hymnary'       => 'Hymnary',
-    ],
-    'Music streaming / stores' => [
-        'spotify'       => 'Spotify',
-        'apple_music'   => 'Apple Music',
-        'youtube_music' => 'YouTube Music',
-        'amazon_music'  => 'Amazon Music',
-        'tidal'         => 'Tidal',
-        'qobuz'         => 'Qobuz',
-        'pandora'       => 'Pandora',
-        'bandcamp'      => 'Bandcamp',
-        'soundcloud'    => 'SoundCloud',
-    ],
-    'Social media' => [
-        'facebook'      => 'Facebook',
-        'instagram'     => 'Instagram',
-        'twitter'       => 'Twitter / X',
-        'tiktok'        => 'TikTok',
-        'youtube'       => 'YouTube',
-        'snapchat'      => 'Snapchat',
-        'threads'       => 'Threads',
-        'mastodon'      => 'Mastodon',
-    ],
-    'Other' => [
-        'other'         => 'Other (free text)',
-    ],
-];
-/* Flat lookup used by the validator + by the JS-side serialiser. */
-$LINK_TYPE_KEYS = array_keys(array_merge(...array_values($LINK_TYPE_CATALOGUE)));
+$LINK_TYPE_CATALOGUE = CREDIT_PERSON_LINK_TYPE_CATALOGUE;
+$LINK_TYPE_KEYS      = CREDIT_PERSON_LINK_TYPE_KEYS;
+$normaliseLinks      = static fn(mixed $raw): array => normaliseCreditPersonLinks($raw);
+$normaliseIpi        = static fn(mixed $raw): array => normaliseCreditPersonIpi($raw);
 
-/**
- * Cached check for the IsSpecialCase / IsGroup columns from #584/#585
- * (closes #630). Both columns ship together via migrate-credit-people-
- * flags.php, so detecting one is sufficient to assume both. The result
- * is cached for the request lifetime via a static so the add / update_
- * person paths don't pay the INFORMATION_SCHEMA round-trip twice.
- */
+/* Wrapper kept under the original snake_case private-prefix name so
+   existing call sites in this file keep working without further
+   touch-up. */
 function _cpFlagsColumnsExist(\mysqli $db): bool
 {
-    static $cached = null;
-    if ($cached !== null) return $cached;
-    $stmt = $db->prepare(
-        "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
-          WHERE TABLE_SCHEMA = DATABASE()
-            AND TABLE_NAME   = 'tblCreditPeople'
-            AND COLUMN_NAME  = 'IsSpecialCase' LIMIT 1"
-    );
-    $stmt->execute();
-    $cached = $stmt->get_result()->fetch_row() !== null;
-    $stmt->close();
-    return $cached;
+    return creditPeopleFlagsColumnsExist($db);
 }
-
-$normaliseLinks = static function (mixed $raw) use ($LINK_TYPE_KEYS): array {
-    if (!is_array($raw)) return [];
-    $out = [];
-    foreach ($raw as $i => $row) {
-        if (!is_array($row)) continue;
-        $url = trim((string)($row['url'] ?? ''));
-        if ($url === '') continue;
-        $type = trim((string)($row['type']  ?? 'other'));
-        /* Unknown types collapse to 'other' rather than 500ing —
-           keeps a forward-compatible UI where a future picker
-           category gets dropped to a sane bucket on older servers. */
-        if (!in_array($type, $LINK_TYPE_KEYS, true)) { $type = 'other'; }
-        $out[] = [
-            'type'       => $type,
-            'url'        => $url,
-            'label'      => trim((string)($row['label'] ?? '')) ?: null,
-            'sort_order' => (int)($row['sort_order'] ?? $i),
-        ];
-    }
-    return $out;
-};
-$normaliseIpi = static function (mixed $raw): array {
-    if (!is_array($raw)) return [];
-    $out = [];
-    foreach ($raw as $row) {
-        if (!is_array($row)) continue;
-        $num = trim((string)($row['number'] ?? ''));
-        if ($num === '') continue;
-        $out[] = [
-            'number'    => $num,
-            'name_used' => trim((string)($row['name_used'] ?? '')) ?: null,
-            'notes'     => trim((string)($row['notes']     ?? '')) ?: null,
-        ];
-    }
-    return $out;
-};
 
 /* ----------------------------------------------------------------------
  * GET endpoint — view_songs JSON
