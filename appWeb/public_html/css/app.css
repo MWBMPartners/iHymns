@@ -2197,6 +2197,21 @@ body.reduce-motion .shortcuts-overlay {
 .lock-chip-global-admin { color: #ef4444; }
 .lock-chip-admin        { color: #f59e0b; }
 
+/* Corner placement for the dashboard tile / setup-database card variant
+   (#785). The inline-after-label form (above) is still used by the
+   admin sidebar + offcanvas; the corner form sits absolute in the
+   top-right of a position:relative parent. Slightly larger so it
+   reads at a glance without crowding the card heading. */
+.lock-chip-corner {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+    margin-left: 0;
+    font-size: 1rem;
+    line-height: 1;
+    z-index: 2;
+}
+
 /* In high-contrast mode the chip needs a slightly bolder outline so
    the colour difference reads at a glance. */
 [data-ihymns-theme="high-contrast"] .lock-chip-global-admin {
@@ -2987,24 +3002,38 @@ body.reduce-motion .related-songs-chevron {
    button rendered) the badge stays in the top-right too — visually
    consistent across surfaces. */
 .songbook-tile-language-badge {
+    /* Match the download-cloud button's chrome (#785). The download
+       button uses Bootstrap's btn-sm + btn-outline-secondary — same
+       padding, border-radius, border colour and weight. The two
+       controls now read as a matched pair in the tile's top-right
+       cluster instead of one being a tiny pill and the other a full
+       button. */
     position: absolute;
     top: 0.45rem;
     right: 2.5rem;
     z-index: 2;
-    /* Compact pill so a 2-letter code reads at a glance without
-       crowding neighbouring elements. */
-    padding: 0.1rem 0.4rem;
+    /* Bootstrap btn-sm dimensions: padding 0.25rem 0.5rem; line-height 1.5;
+       font-size 0.875rem. We keep the font slightly tighter (0.7rem) so a
+       2-letter ISO code stays compact, but the box is identical to the
+       sibling btn-outline-secondary download icon so they line up. */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 2rem;
+    height: 1.75rem;
+    padding: 0 0.5rem;
     border-radius: 0.25rem;
-    font-size: 0.65rem;
+    font-size: 0.7rem;
     font-weight: 700;
     letter-spacing: 0.04em;
     text-transform: uppercase;
-    background: var(--surface-elevated);
-    color: var(--text-secondary);
-    /* Subtle border so the badge stays visible when it overlaps a
-       light section of a coloured songbook icon background. */
-    border: 1px solid var(--card-border);
     line-height: 1;
+    /* Match btn-outline-secondary: transparent background, the same
+       border colour family, secondary text. Hover doesn't change
+       (this badge isn't clickable; it's purely informational). */
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--card-border);
 }
 /* On the /songbooks full-cards surface there's no download button,
    so the badge can hug the top-right corner. The card has
