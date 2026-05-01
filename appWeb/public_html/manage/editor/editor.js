@@ -1884,17 +1884,16 @@ function addSongTag(song, tagName) {
     if (!song || !song.id || !tagName || !tagName.trim()) return;
     tagName = tagName.trim();
 
-    /* Block tag-add on songs that haven't been saved yet (#770).
-       Brand-new songs from Add carry a synthetic
-       `song-<ts>-<rand>` id and won't have a corresponding row in
-       tblSongs — the bulk_tag handler's INSERT into tblSongTagMap
-       would silently skip due to the foreign-key constraint, the
-       API would still respond {added: 0}, and the success toast
-       would mislead the curator into thinking it stuck. */
-    if (typeof song.id === 'string' && song.id.indexOf('song-') === 0) {
-        showToast('Save the song first, then add tags. (Tags need a saved song to attach to.)', 'warning');
-        return;
-    }
+    /* Pre-flight guard removed (#788). The earlier version refused
+       any song whose id started with "song-" on the assumption it
+       was a brand-new in-memory id from Add. That assumption is
+       wrong — songs in unofficial / Misc songbooks have a synthetic
+       `song-<ts>-<rand>` SongId as their CANONICAL persisted id
+       (#392 / PR #740), not a "this isn't saved yet" marker. The
+       server-side detection below (data.added === 0 → friendly
+       "Save the song first" toast) is the correct way to spot a
+       genuinely-unsaved song; the prefix check was just blocking
+       every saved Misc song from being tagged. */
 
     /* Optimistic update: append the chip locally so the UI feels
        snappy, then re-fetch on completion to pick up the real row
