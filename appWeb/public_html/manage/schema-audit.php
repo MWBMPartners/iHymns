@@ -32,300 +32,48 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* Schema-audit parser / scanner / comparer extracted to a shared
+   include (#719 PR 2d) so the new admin_schema_audit and
+   admin_migrations_status API endpoints can call them. The
+   _schemaAudit_* wrappers below keep this file's existing call
+   sites working unchanged. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'schema_audit.php';
 
 requireGlobalAdmin();
 $currentUser = getCurrentUser();
 $activePage  = 'schema-audit';
 
 /* =========================================================================
- * AUDIT HELPERS
+ * AUDIT HELPERS — thin wrappers around the shared include.
  *
- * Self-contained inside this file for v1; if v2 grows run-buttons or
- * other admin pages need the same parsers, extract to includes/.
+ * Implementations live in /includes/schema_audit.php (#719 PR 2d).
+ * Wrappers kept under the original `_schemaAudit_*` names so existing
+ * call sites further down this file keep working unchanged.
  * ========================================================================= */
 
-/**
- * Parse `schema.sql` into a `[tableName => [columnName, ...]]` map.
- *
- * Doesn't try to be a full SQL parser — leans on the file's consistent
- * shape: every table is `CREATE TABLE IF NOT EXISTS tblX (` … `) ENGINE=…;`
- * with one column or constraint per line. Column lines start with the
- * column identifier; table-level constraint lines start with one of
- * PRIMARY KEY / INDEX / UNIQUE / KEY / FOREIGN / CONSTRAINT.
- */
 function _schemaAudit_parseSchema(string $schemaSql): array
 {
-    $tables = [];
-
-    /* `s` flag so `.` matches newlines inside the parenthesised body. */
-    $matched = preg_match_all(
-        '/CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+(tbl\w+)\s*\((.*?)\)\s*ENGINE\s*=/is',
-        $schemaSql,
-        $matches,
-        PREG_SET_ORDER
-    );
-    if ($matched === false || $matched === 0) {
-        return $tables;
-    }
-
-    foreach ($matches as $m) {
-        $tableName = $m[1];
-        $body      = $m[2];
-
-        /* Strip multi-line block comments first — otherwise lines inside
-           a /* … *\/ block (which themselves don't start with /* on the
-           current line) get read as phantom column declarations. The
-           previous parser flagged "fill" + "catalogue" as uncovered
-           columns because they appeared at the start of body-comment
-           lines on tblSongbooks. (#722 parser fix) */
-        $body = preg_replace('/\/\*.*?\*\//s', '', $body);
-
-        /* Split into top-level segments at commas, ignoring commas
-           inside parentheses (so ENUM('success','failure','error') stays
-           in one segment, not three). Each segment is exactly one column
-           declaration OR one table-level constraint — irrespective of
-           how many lines it spans. The previous newline-based split read
-           the SECOND line of multi-line column declarations as a
-           phantom column (e.g. the "COMMENT '...'" continuation of
-           tblActivityLog.Result was flagged as a column called COMMENT). */
-        $segments = [];
-        $depth = 0;
-        $buf   = '';
-        for ($i = 0, $n = strlen($body); $i < $n; $i++) {
-            $ch = $body[$i];
-            if ($ch === "'" ) {
-                /* Skip over string literal — quotes can wrap commas. */
-                $buf .= $ch;
-                $i++;
-                while ($i < $n) {
-                    $buf .= $body[$i];
-                    if ($body[$i] === "'" && (($i + 1) >= $n || $body[$i + 1] !== "'")) break;
-                    $i++;
-                }
-                continue;
-            }
-            if ($ch === '(') $depth++;
-            if ($ch === ')') $depth--;
-            if ($ch === ',' && $depth === 0) {
-                $segments[] = $buf;
-                $buf = '';
-                continue;
-            }
-            $buf .= $ch;
-        }
-        if (trim($buf) !== '') {
-            $segments[] = $buf;
-        }
-
-        $columns = [];
-        foreach ($segments as $segment) {
-            /* Strip line comments + collapse whitespace so the leading
-               keyword check sees the segment cleanly. */
-            $segment = preg_replace('/--[^\n]*/', '', $segment);
-            $segment = trim(preg_replace('/\s+/', ' ', $segment));
-            if ($segment === '') continue;
-
-            /* Skip table-level constraints (PRIMARY KEY / INDEX / etc.). */
-            if (preg_match(
-                '/^(PRIMARY\s+KEY|INDEX|UNIQUE|KEY|CONSTRAINT|FOREIGN\s+KEY|FULLTEXT|SPATIAL)\b/i',
-                $segment
-            )) {
-                continue;
-            }
-            /* Column declaration: starts with Name (optionally backtick-quoted)
-               followed by a type. */
-            if (preg_match('/^`?([A-Za-z_][A-Za-z0-9_]*)`?\s+/', $segment, $cm)) {
-                $columns[] = $cm[1];
-            }
-        }
-
-        $tables[$tableName] = $columns;
-    }
-
-    return $tables;
+    return schemaAuditParseSchema($schemaSql);
 }
 
-/**
- * Scan every `migrate-*.php` in `appWeb/.sql/` for the columns each one
- * adds, returning `[tblName.colName => [migrationFile, …]]`.
- *
- * Three signals, merged:
- *
- *   1. Literal `ALTER TABLE tblXxx ADD COLUMN <Name>` strings — works
- *      for migrations like `migrate-songbook-meta.php` whose ALTERs
- *      are baked into a `$steps` array as full SQL strings. Multiline-
- *      aware so newline-broken ALTERs are still caught.
- *
- *   2. `CREATE TABLE [IF NOT EXISTS] tblXxx (…)` blocks — picks up
- *      migrations that introduce a brand-new table (e.g.
- *      `migrate-account-sync.php` Step 2 creates `tblSharedSetlists`).
- *      Every column inside the parens gets attributed to the migration.
- *
- *   3. Docblock convention: `@migration-adds tblXxx.colName` — for
- *      migrations like `migrate-account-sync.php` Step 1b that build
- *      their ALTER strings dynamically from a `[name, definition]`
- *      data structure (where the column name is a PHP variable
- *      interpolation and a literal regex can't see it). Each
- *      `@migration-adds` line declares one column the migration is
- *      responsible for. One line per column; multiple per file allowed.
- */
 function _schemaAudit_scanMigrations(string $sqlDir): array
 {
-    $coverage = [];
-    $files = glob($sqlDir . DIRECTORY_SEPARATOR . 'migrate-*.php') ?: [];
-
-    foreach ($files as $file) {
-        $contents = @file_get_contents($file);
-        if ($contents === false) {
-            continue;
-        }
-        $base = basename($file);
-
-        /* Signal 1 — literal ALTER … ADD COLUMN strings */
-        if (preg_match_all(
-            '/ALTER\s+TABLE\s+(tbl\w+)\s+ADD\s+COLUMN\s+`?([A-Za-z_][A-Za-z0-9_]*)`?/is',
-            $contents,
-            $matches,
-            PREG_SET_ORDER
-        )) {
-            foreach ($matches as $m) {
-                $coverage[$m[1] . '.' . $m[2]][] = $base;
-            }
-        }
-
-        /* Signal 2 — CREATE TABLE blocks inside the migration. Reuses
-           the same parser the schema-audit page applies to schema.sql,
-           since the column-line shape is identical. */
-        $createTableCols = _schemaAudit_parseSchema($contents);
-        foreach ($createTableCols as $tbl => $cols) {
-            foreach ($cols as $col) {
-                $coverage[$tbl . '.' . $col][] = $base;
-            }
-        }
-
-        /* Signal 3 — @migration-adds doctag */
-        if (preg_match_all(
-            '/@migration-adds\s+(tbl\w+)\.([A-Za-z_][A-Za-z0-9_]*)/i',
-            $contents,
-            $matches,
-            PREG_SET_ORDER
-        )) {
-            foreach ($matches as $m) {
-                $coverage[$m[1] . '.' . $m[2]][] = $base;
-            }
-        }
-    }
-
-    /* De-dupe filenames per column (a migration may carry the doctag
-       AND a literal ALTER for the same column — only credit it once). */
-    foreach ($coverage as $k => $files) {
-        $coverage[$k] = array_values(array_unique($files));
-    }
-
-    return $coverage;
+    return schemaAuditScanMigrations($sqlDir);
 }
 
-/**
- * Read every `tblXxx` column the live database currently has.
- * One INFORMATION_SCHEMA roundtrip; cheap.
- *
- * @return array<string, string[]> tableName => [columnName, …]
- */
 function _schemaAudit_readDb(\mysqli $db): array
 {
-    $sql = "SELECT TABLE_NAME, COLUMN_NAME
-              FROM INFORMATION_SCHEMA.COLUMNS
-             WHERE TABLE_SCHEMA = DATABASE()
-               AND TABLE_NAME LIKE 'tbl%'
-             ORDER BY TABLE_NAME, ORDINAL_POSITION";
-    $tables = [];
-    $stmt = $db->prepare($sql);
-    $stmt->execute();
-    foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $row) {
-        $tables[$row['TABLE_NAME']][] = $row['COLUMN_NAME'];
-    }
-    $stmt->close();
-    return $tables;
+    return schemaAuditReadDb($db);
 }
 
-/**
- * Compare the three sources and return per-table rows + a summary count
- * of each status across the whole database.
- *
- * @return array{
- *   byTable: array<string, array<int, array{col:string,status:string,migration:?string}>>,
- *   summary: array{ok:int,missing:int,uncovered:int,orphan:int}
- * }
- */
 function _schemaAudit_compare(array $schemaCols, array $dbCols, array $migrations): array
 {
-    $byTable = [];
-    $summary = ['ok' => 0, 'missing' => 0, 'uncovered' => 0, 'orphan' => 0];
-
-    /* Tables declared in schema.sql */
-    foreach ($schemaCols as $tbl => $cols) {
-        $rows       = [];
-        $dbColsHere = $dbCols[$tbl] ?? [];
-
-        foreach ($cols as $col) {
-            $key = $tbl . '.' . $col;
-            $inDb  = in_array($col, $dbColsHere, true);
-            $inMig = isset($migrations[$key]);
-
-            if ($inDb) {
-                $rows[] = ['col' => $col, 'status' => 'ok', 'migration' => null];
-                $summary['ok']++;
-            } elseif ($inMig) {
-                $rows[] = ['col' => $col, 'status' => 'missing', 'migration' => implode(', ', $migrations[$key])];
-                $summary['missing']++;
-            } else {
-                $rows[] = ['col' => $col, 'status' => 'uncovered', 'migration' => null];
-                $summary['uncovered']++;
-            }
-        }
-
-        /* Orphans = columns in DB but not in schema for this table */
-        foreach ($dbColsHere as $dbCol) {
-            if (!in_array($dbCol, $cols, true)) {
-                $rows[] = ['col' => $dbCol, 'status' => 'orphan', 'migration' => null];
-                $summary['orphan']++;
-            }
-        }
-
-        $byTable[$tbl] = $rows;
-    }
-
-    /* Tables in DB but not in schema.sql at all — every column is an orphan. */
-    foreach ($dbCols as $tbl => $cols) {
-        if (isset($schemaCols[$tbl])) {
-            continue;
-        }
-        $rows = [];
-        foreach ($cols as $col) {
-            $rows[] = ['col' => $col, 'status' => 'orphan', 'migration' => null];
-            $summary['orphan']++;
-        }
-        $byTable[$tbl] = $rows;
-    }
-
-    /* Stable sort: tables with any non-OK rows first, then alphabetically. */
-    uksort($byTable, function (string $a, string $b) use ($byTable) {
-        $aDirty = _schemaAudit_tableHasIssues($byTable[$a]) ? 0 : 1;
-        $bDirty = _schemaAudit_tableHasIssues($byTable[$b]) ? 0 : 1;
-        return $aDirty <=> $bDirty ?: strcmp($a, $b);
-    });
-
-    return ['byTable' => $byTable, 'summary' => $summary];
+    return schemaAuditCompare($schemaCols, $dbCols, $migrations);
 }
 
 function _schemaAudit_tableHasIssues(array $rows): bool
 {
-    foreach ($rows as $r) {
-        if ($r['status'] !== 'ok') {
-            return true;
-        }
-    }
-    return false;
+    return schemaAuditTableHasIssues($rows);
 }
 
 function _schemaAudit_statusBadge(string $status): string
