@@ -37,6 +37,19 @@ $songNumber    = ($rawSongNumber === null || $rawSongNumber === '') ? null : (in
 $songTitle   = toTitleCase($song['title'] ?? 'Untitled');
 $songbook    = $song['songbook'] ?? '';
 $bookName    = $song['songbookName'] ?? '';
+/* Songbook colour for the reading-progress bar (#109). Fetched here
+   instead of leaving it to a CSS variable lookup so custom songbooks
+   created via /manage/songbooks (whose abbreviation isn't in the
+   hardcoded --songbook-{ABBR} CSS-var set) still get their assigned
+   colour on the bar. Empty string means "let the bar fall back to
+   the default accent". */
+$songbookColour = '';
+if ($songbook !== '') {
+    $bookData = $songData->getSongbook($songbook);
+    if (is_array($bookData) && !empty($bookData['colour'])) {
+        $songbookColour = trim((string)$bookData['colour']);
+    }
+}
 $writers     = $song['writers']     ?? [];
 $composers   = $song['composers']   ?? [];
 $arrangers   = $song['arrangers']   ?? [];   /* #497 */
@@ -142,7 +155,7 @@ unset($_t);
 <!-- ================================================================
      SONG PAGE — Full lyrics and metadata
      ================================================================ -->
-<article class="page-song" aria-label="<?= htmlspecialchars($songTitle) ?>" data-song-id="<?= htmlspecialchars($song['id']) ?>" data-songbook="<?= htmlspecialchars($songbook) ?>" data-song-number="<?= (int)$songNumber ?>"<?php if (!empty($song['capo'])): ?> data-capo="<?= (int)$song['capo'] ?>"<?php endif; ?><?php if (!empty($song['key'])): ?> data-key="<?= htmlspecialchars($song['key']) ?>"<?php endif; ?>>
+<article class="page-song" aria-label="<?= htmlspecialchars($songTitle) ?>" data-song-id="<?= htmlspecialchars($song['id']) ?>" data-songbook="<?= htmlspecialchars($songbook) ?>"<?php if ($songbookColour !== ''): ?> data-songbook-color="<?= htmlspecialchars($songbookColour) ?>"<?php endif; ?> data-song-number="<?= (int)$songNumber ?>"<?php if (!empty($song['capo'])): ?> data-capo="<?= (int)$song['capo'] ?>"<?php endif; ?><?php if (!empty($song['key'])): ?> data-key="<?= htmlspecialchars($song['key']) ?>"<?php endif; ?>>
 
     <!-- Breadcrumb navigation with schema.org markup (#151) -->
     <nav aria-label="Breadcrumb" class="mb-3">
