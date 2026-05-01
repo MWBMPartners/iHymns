@@ -225,6 +225,7 @@ if ($action !== '') {
         'tag-titlecase'     => 'migrate-tag-titlecase.php',
         'tblsongs-number-nullable' => 'migrate-tblsongs-number-nullable.php',
         'multi-language-tables'    => 'migrate-multi-language-tables.php',
+        'parent-songbooks'         => 'migrate-parent-songbooks.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -268,6 +269,7 @@ if ($action !== '') {
         'tag-titlecase',
         'tblsongs-number-nullable',
         'multi-language-tables',
+        'parent-songbooks',
         /* When you add a new migrate-*.php under appWeb/.sql/, ALSO add
            its action key to:
              1. $scriptMap above (action key → file)
@@ -1050,6 +1052,29 @@ if ($hasCredentials && defined('DB_HOST')) {
                             CLDR JSON files, overwrites the bundled snapshots,
                             then re-runs the import.
                         </p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">3x. Parent Songbooks (#782 phase A)</h5>
+                        <p class="card-text text-secondary small">
+                            Adds <code>tblSongbooks.ParentSongbookId</code> +
+                            <code>ParentRelationship</code> for hierarchical
+                            relationships (translations / editions /
+                            abridgements), plus <code>tblSongbookSeries</code>
+                            + <code>tblSongbookSeriesMembership</code> for
+                            peer-to-peer collections (Songs of Fellowship
+                            volumes, themed compilations). Both shapes
+                            coexist — a row can carry a parent FK AND series
+                            memberships. Schema only; phases B-E (admin
+                            picker, public display, helpers, bulk-import
+                            auto-link) are tracked in #782. Idempotent.
+                        </p>
+                        <a href="?action=parent-songbooks" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run Parent Songbooks Migration
+                        </a>
                     </div>
                 </div>
             </div>
