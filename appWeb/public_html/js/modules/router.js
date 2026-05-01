@@ -41,6 +41,18 @@ export class Router {
 
         /** @type {AbortController|null} For cancelling in-flight AJAX requests */
         this.abortController = null;
+
+        /** @type {number} Monotonic counter stored in history.state so
+         *  we can detect navigation direction on popstate. Each forward
+         *  navigation pushes counter+1; back navigation lands on a
+         *  smaller counter, forward (re-)navigation on a larger one.
+         *  (#752) */
+        this._navCounter = 0;
+
+        /** @type {Map<string, number>} Per-path scroll positions.
+         *  Saved on navigation, restored on popstate when the user
+         *  goes back to a previously-seen page. (#752) */
+        this._scrollByPath = new Map();
     }
 
     /**
@@ -50,9 +62,41 @@ export class Router {
         /* Handle magic link login before any routing (#magic-link) */
         this._handleMagicLink();
 
-        /* Handle browser back/forward navigation */
-        window.addEventListener('popstate', () => {
-            this.handleCurrentRoute();
+        /* Seed the initial history entry with a navigation counter so
+           direction detection works from the first popstate. If we
+           don't seed, the very first back-navigation lands on a state
+           with no counter and the direction lookup falls through to
+           the "forward" default. (#752) */
+        if (!window.history.state || typeof window.history.state.counter !== 'number') {
+            window.history.replaceState(
+                { ...(window.history.state || {}), path: window.location.pathname, counter: this._navCounter },
+                '',
+                window.location.pathname + window.location.search
+            );
+        } else {
+            this._navCounter = window.history.state.counter;
+        }
+
+        /* Handle browser back/forward navigation. The popstate event's
+           target state carries the counter we set when navigate()
+           pushed it; comparing against our local counter tells us
+           which direction the user moved.
+
+           We save the OUTGOING path's scroll position before
+           handleCurrentRoute updates this.currentPath so a
+           back-then-forward cycle can restore the user to where they
+           were on each side. */
+        window.addEventListener('popstate', (e) => {
+            const newCounter = (e.state && typeof e.state.counter === 'number')
+                ? e.state.counter
+                : 0;
+            const direction = newCounter < this._navCounter ? 'back' : 'forward';
+            this._navCounter = newCounter;
+            document.body.dataset.navDirection = direction;
+            if (this.currentPath) {
+                this._scrollByPath.set(this.currentPath, window.scrollY || 0);
+            }
+            this.handleCurrentRoute({ isPopstate: true });
         });
     }
 
@@ -72,19 +116,29 @@ export class Router {
         /* Don't reload if already on this path */
         if (path === this.currentPath) return;
 
-        /* Push new state to browser history */
-        window.history.pushState({ path }, '', path);
+        /* Save current scroll position before leaving this page so
+           popstate-back can restore it. (#752) */
+        if (this.currentPath) {
+            this._scrollByPath.set(this.currentPath, window.scrollY || 0);
+        }
+
+        /* Push new state to browser history with an incremented
+           counter so popstate can detect direction. (#752) */
+        this._navCounter += 1;
+        window.history.pushState({ path, counter: this._navCounter }, '', path);
+        document.body.dataset.navDirection = 'forward';
 
         /* Load the page content */
-        await this.handleCurrentRoute();
+        await this.handleCurrentRoute({ isPopstate: false });
     }
 
     /**
      * Handle the current URL route — determine which page to load
      * and fetch its content from the API.
      */
-    async handleCurrentRoute() {
+    async handleCurrentRoute(opts = {}) {
         const path = window.location.pathname || '/';
+        const previousPath = this.currentPath;
         this.currentPath = path;
 
         /* Parse the route into an API request */
@@ -140,9 +194,28 @@ export class Router {
         /* Run post-load hooks (e.g., initialise favourites on song pages) */
         this.afterPageLoad(page, params);
 
-        /* Scroll to top on navigation */
+        /* Scroll handling. On popstate-back / forward to a previously-
+           seen path, restore the saved scroll position with a smooth
+           scroll. On forward navigation (or when no saved position
+           exists), jump to the top instantly. (#752) */
+        const saved = opts.isPopstate ? this._scrollByPath.get(path) : undefined;
         document.getElementById('main-content')?.scrollTo(0, 0);
-        window.scrollTo(0, 0);
+        if (typeof saved === 'number' && saved > 0) {
+            /* Two rAFs so the page-entering transform has a chance to
+               settle before we scroll — otherwise the browser scrolls
+               into a transformed coordinate system. */
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    window.scrollTo({
+                        top: saved,
+                        left: 0,
+                        behavior: document.body.classList.contains('reduce-motion') ? 'auto' : 'smooth',
+                    });
+                });
+            });
+        } else {
+            window.scrollTo(0, 0);
+        }
     }
 
     /**
