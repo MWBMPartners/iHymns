@@ -20,6 +20,11 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* Shared tier-validation include (#719 PR 2b) — exports the TIER_CAPS
+   const + validateTierName() / validateTierLevel(). Same helpers used
+   by the new admin_tier_* API endpoints in /api.php so a tweak to the
+   capability set or the name grammar lands on both surfaces. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'access_tier_validation.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -37,33 +42,10 @@ $error   = '';
 $success = '';
 $db      = getDbMysqli();
 
-/* Ordered list of capability columns — used for both the table header
-   and as the authoritative input/update list, so adding a new capability
-   on the schema is a one-line change here. */
-const TIER_CAPS = [
-    'CanViewLyrics'      => ['Lyrics',       'View song lyrics'],
-    'CanViewCopyrighted' => ['Copyrighted',  'View copyrighted songs'],
-    'CanPlayAudio'       => ['Audio',        'Play MIDI / audio in-app'],
-    'CanDownloadMidi'    => ['MIDI',         'Download MIDI files'],
-    'CanDownloadPdf'     => ['PDF',          'Download sheet-music PDFs'],
-    'CanOfflineSave'     => ['Offline',      'Save songs for offline use'],
-    'RequiresCcli'       => ['Needs CCLI',   'Tier requires a valid CCLI licence number'],
-];
-
-/* Name is the machine-key for a tier (e.g. 'public', 'free', 'mwbm-insiders').
-   Allow letters (both cases), digits, hyphen and underscore (#639). The
-   five reserved tiers stay lowercase because TIER_LEVELS / validTiers in
-   ccli_validator.php + api.php are still hand-rolled lowercase maps;
-   custom-named tiers above level 0 get their level from the row itself
-   (tblAccessTiers.Level), so mixed-case names like 'MWBMInsiders' work
-   correctly through the SELECT-by-Name path. */
-$validName = function (string $n): ?string {
-    $n = trim($n);
-    if ($n === '')                            return 'Name is required.';
-    if (strlen($n) > 30)                      return 'Name must be 30 characters or fewer.';
-    if (!preg_match('/^[A-Za-z0-9_-]+$/', $n)) return 'Name must be letters, digits, hyphen or underscore.';
-    return null;
-};
+/* TIER_CAPS const + validateTierName() / validateTierLevel() now
+   live in access_tier_validation.php (#719 PR 2b). Closure kept as a
+   thin wrapper so the existing call sites below continue to work. */
+$validName = fn(string $n): ?string => validateTierName($n);
 
 /* ----- POST actions ----- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
