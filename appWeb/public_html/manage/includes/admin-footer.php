@@ -92,3 +92,29 @@ if (!empty($GLOBALS['_adminLayoutOpen'])):
     bootBulkImportProgressWidget();
 </script>
 
+<?php
+    /* Reading-progress bar on every /manage/* page (#751). The public
+       site wires this through its router on every navigation;
+       /manage/* pages are full-page reloads, so we boot the module
+       once on DOMContentLoaded. The module is shared with the public
+       site (single source of truth) and the bar's mechanics are
+       identical: position:fixed at the top of the viewport, fills as
+       the user scrolls, hidden on short pages, defaults to
+       --bs-primary on admin pages where there's no songbook context. */
+    $_readingProgressPath = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'reading-progress.js';
+    $_readingProgressVersion = is_file($_readingProgressPath) ? (string)filemtime($_readingProgressPath) : '1';
+?>
+<script type="module">
+    import { ReadingProgress }
+        from '/js/modules/reading-progress.js?v=<?= htmlspecialchars($_readingProgressVersion, ENT_QUOTES) ?>';
+    /* Standalone instance — no parent app on /manage/* surfaces, so we
+       pass null. The module only reads `this.app` for hooks the admin
+       surface doesn't use. */
+    const rp = new ReadingProgress(null);
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => rp.initOnAnyPage());
+    } else {
+        rp.initOnAnyPage();
+    }
+</script>
+

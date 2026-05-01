@@ -428,6 +428,15 @@ export class Router {
            that already have handlers. */
         import('./offline-ui.js').then(m => m.bootOfflineUi()).catch(() => {});
 
+        /* Reading-progress bar on every scrollable page (#751). Was
+           song-only originally (#109); the module's short-page
+           short-circuit handles non-scrollable pages cleanly so
+           there's no need to gate per-page-type here. Songbook colour
+           still inherits from .page-song / .page-songbook when
+           present; everywhere else the CSS default (--bs-primary)
+           applies. */
+        this.app.readingProgress.initOnAnyPage();
+
         /* Initialise favourites state on song pages */
         if (page === 'song') {
             this.app.favorites.initSongPage();
@@ -437,7 +446,10 @@ export class Router {
             this.app.display.initSongPage();
             this.app.compare.initSongPage();
             this.app.transpose.initSongPage();
-            this.app.readingProgress.initSongPage();
+            /* readingProgress.initOnAnyPage() already ran at the top
+               of afterPageLoad — covers every page including song.
+               Removing the song-specific re-call avoids a redundant
+               cleanup-then-recreate cycle. (#751) */
 
             /* Audio button — hide if the browser can't actually play
                our MIDI-via-Tone.js pipeline (#602). The audio module
