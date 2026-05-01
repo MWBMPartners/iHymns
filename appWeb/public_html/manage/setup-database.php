@@ -223,6 +223,7 @@ if ($action !== '') {
         'iana-language-subtag-registry' => 'migrate-iana-language-subtag-registry.php',
         'cldr-native-names' => 'migrate-cldr-native-names.php',
         'tag-titlecase'     => 'migrate-tag-titlecase.php',
+        'tblsongs-number-nullable' => 'migrate-tblsongs-number-nullable.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -264,6 +265,7 @@ if ($action !== '') {
         'iana-language-subtag-registry',
         'cldr-native-names',
         'tag-titlecase',
+        'tblsongs-number-nullable',
         /* When you add a new migrate-*.php under appWeb/.sql/, ALSO add
            its action key to:
              1. $scriptMap above (action key → file)
@@ -1046,6 +1048,25 @@ if ($hasCredentials && defined('DB_HOST')) {
                             CLDR JSON files, overwrites the bundled snapshots,
                             then re-runs the import.
                         </p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">3v. tblSongs.Number nullable (#783)</h5>
+                        <p class="card-text text-secondary small">
+                            Aligns the schema with the post-#392 policy that lets
+                            songs in unofficial songbooks (Misc, custom collections)
+                            persist <code>Number</code> as <code>NULL</code>. Without
+                            this, the save_song handler's intentional NULL-bind
+                            raises mysqli error 1048 (\"Column 'Number' cannot be
+                            null\") on every Misc save. Idempotent — INFORMATION_SCHEMA
+                            probe; skips when already nullable.
+                        </p>
+                        <a href="?action=tblsongs-number-nullable" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run tblSongs.Number Nullable Migration
+                        </a>
                     </div>
                 </div>
             </div>
