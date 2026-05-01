@@ -62,6 +62,11 @@ const ENTITLEMENTS = [
     'manage_user_groups'   => ['admin', 'global_admin'],
     'manage_organisations' => ['admin', 'global_admin'],
     'manage_credit_people' => ['admin', 'global_admin'],
+    /* Reference data — IETF BCP 47 language registry (tblLanguages).
+       Mostly seeded from the IANA registry (#738) but admins occasionally
+       need to add a private-use code, fix a NativeName, or deactivate a
+       deprecated subtag without dropping the row. */
+    'manage_languages'     => ['admin', 'global_admin'],
 
     /* Org-admin role (#707) — system-level grant that says "this role
        MAY hold an admin/owner role on at least one organisation".
