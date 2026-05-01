@@ -121,6 +121,12 @@ $sections = [
         'group' => 'People',
     ],
     [
+        'id'    => 'my-organisations',
+        'icon'  => 'bi-building-check',
+        'title' => 'My Organisations',
+        'group' => 'People',
+    ],
+    [
         'id'    => 'entitlements',
         'icon'  => 'bi-key',
         'title' => 'Entitlements',
@@ -160,6 +166,12 @@ $sections = [
         'id'    => 'setup-database',
         'icon'  => 'bi-database-gear',
         'title' => 'Database Setup',
+        'group' => 'Operations',
+    ],
+    [
+        'id'    => 'native-api',
+        'icon'  => 'bi-broadcast',
+        'title' => 'Native API surface',
         'group' => 'Operations',
     ],
     [
@@ -594,11 +606,29 @@ foreach ($sections as $s) {
                     <p>
                         Abbreviations are the natural key, so renaming is opt-in: you must tick the <strong>"Also rename song references"</strong> checkbox to cascade the rename to every song that uses it. Without that checkbox, songs keep the old abbreviation and orphan from the renamed songbook.
                     </p>
+                    <h3 class="h6">Colour picker</h3>
+                    <p>
+                        The <strong>Colour</strong> field accepts a 7-char <code>#RRGGBB</code> hex value (#715). The browser-native colour picker writes the canonical lower-case hex back into the text field when you confirm a swatch — handy if you want to copy the value into another tool. Leave the field blank to let the system auto-pick a tone the catalogue isn't already using; the next save fills the field in for you.
+                    </p>
+                    <h3 class="h6">Auto-colour bulk action</h3>
+                    <p>
+                        Two destructive-but-recoverable buttons live at the top of the songbook list (#716):
+                    </p>
+                    <dl class="actions">
+                        <dt>Auto-fill blank colours</dt>
+                        <dd>Walks every songbook; rows with NULL or non-<code>#RRGGBB</code> colours get a fresh palette pick. Existing valid hex values are left alone — idempotent, safe to re-run.</dd>
+                        <dt>Reassign every colour</dt>
+                        <dd>Overwrites every <code>Colour</code> value, regardless of whether it was set already. Gated by typing the literal phrase <strong>REASSIGN ALL</strong> — defence-in-depth so a stray click never re-themes the whole catalogue.</dd>
+                    </dl>
+                    <h3 class="h6">Cascade delete</h3>
+                    <p>
+                        The default Delete refuses if any song still references the songbook abbreviation. Admin / global_admin can use <strong>Cascade delete</strong> instead, which removes the songbook AND every song in it AND every credit / tag / chord / translation that referenced those songs (#706). Server-side typed-confirmation gate: the curator must type the songbook abbreviation exactly. The FK chain handles the rest atomically.
+                    </p>
                     <div class="gotcha small">
-                        <strong>Gotcha:</strong> Deleting a songbook does <em>not</em> delete its songs. The UI refuses if any song still references its abbreviation; reassign or delete those songs first.
+                        <strong>Gotcha:</strong> Deleting a songbook does <em>not</em> delete its songs unless you use Cascade delete. The standard UI refuses if any song still references its abbreviation; reassign or delete those songs first.
                     </div>
                     <div class="gotcha small">
-                        <strong>Tip:</strong> The home-page tile grid (#678) shows official hymnals first, with a language filter (#679) that hides languages on demand. Songbooks without a Language field always show — useful for catch-all collections you don't want to risk filtering away.
+                        <strong>Tip:</strong> The home-page tile grid (#678) shows official hymnals first, with a language filter (#679) that hides languages on demand. The <strong>Misc</strong> pseudo-songbook is always pinned to the bottom of the grid (#717) regardless of <code>DisplayOrder</code> — it's a catch-all and should never out-rank a curated hymnal. Songbooks without a Language field always show — useful for catch-all collections you don't want to risk filtering away.
                     </div>
                 </section>
 
@@ -755,6 +785,44 @@ foreach ($sections as $s) {
                     </div>
                 </section>
 
+                <section id="my-organisations" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-building-check me-2"></i>My Organisations</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-secondary">org admin</span>
+                        <span class="badge bg-secondary">org owner</span>
+                        <span class="badge bg-warning text-dark">admin</span>
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <p>
+                        The org-admin surface (#707, #726). Visible to anyone who holds an <code>admin</code> or <code>owner</code> row in <code>tblOrganisationMembers</code> for at least one organisation — they don't need system-admin role to see this page. System admins see it too, scoped to every org.
+                    </p>
+                    <h3 class="h6">What it does</h3>
+                    <ul>
+                        <li>Lists every organisation the current user can manage.</li>
+                        <li>For each, shows the member roster with role badges and the licence rows on file.</li>
+                        <li>Inline forms for the six edit actions described below — you don't need <code>/manage/organisations</code> for routine org-admin work.</li>
+                    </ul>
+                    <h3 class="h6">Member actions</h3>
+                    <dl class="actions">
+                        <dt>Add member</dt><dd>Free-text identifier — type a username OR an email, the server resolves to a <code>tblUsers.Id</code>. New member rows pick a sub-role (<em>member</em> / <em>admin</em> / <em>owner</em>).</dd>
+                        <dt>Change member role</dt><dd>Inline picker per row.</dd>
+                        <dt>Remove member</dt><dd>You can't remove yourself unless you're also a system admin — prevents accidental org lock-out. Ask a co-admin.</dd>
+                    </dl>
+                    <h3 class="h6">Licence actions</h3>
+                    <dl class="actions">
+                        <dt>Add licence</dt><dd>Per-row licence types: <code>ccli</code>, <code>mrl</code>, <code>ihymns_basic</code>, <code>ihymns_pro</code>, <code>custom</code>. INSERT-on-conflict-UPDATE so re-adding the same type updates number / expiry / notes in place.</dd>
+                        <dt>Change licence</dt><dd>Edit number, expiry date, active flag, notes. Type is immutable on a row — to switch types, remove and re-add.</dd>
+                        <dt>Remove licence</dt><dd>Drops the row. Belt-and-braces ownership check on the server.</dd>
+                    </dl>
+                    <h3 class="h6">Row-level gate</h3>
+                    <p>
+                        Every action runs <code>userCanActOnOrg($userId, $orgId)</code> server-side before any mutation, regardless of whether the call came from the form or a crafted POST. A licence_id from one org can never be edited via an org_id you happen to admin elsewhere.
+                    </p>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> System admins (<em>admin</em> / <em>global_admin</em>) bypass the row-level gate by default. The audit log records the action under <code>org_admin.&lt;verb&gt;</code> regardless, so the timeline reads as one surface.
+                    </div>
+                </section>
+
                 <section id="entitlements" class="help-section card-admin mb-4">
                     <h2><i class="bi bi-key me-2"></i>Entitlements</h2>
                     <p class="role-badges">
@@ -853,6 +921,13 @@ foreach ($sections as $s) {
                     </ul>
                     <h3 class="h6">CSV export</h3>
                     <p class="small">Respects every active filter; capped at 10 000 rows per download.</p>
+                    <h3 class="h6">Error capture (#695)</h3>
+                    <p>
+                        Server-side exceptions raised by admin POST handlers (the &ldquo;Database error — check server logs&rdquo; banner) are mirrored into the activity log with <code>Result='error'</code> and the exception message + class in the <code>Details</code> column. The viewer's <strong>Result = error</strong> filter is a one-click triage list — you no longer need SSH to see why a save failed.
+                    </p>
+                    <p class="small text-muted">
+                        Verb prefix convention: web admin writes <code>&lt;entity&gt;.&lt;verb&gt;</code> (e.g. <code>songbook.create</code>, <code>org.member_add</code>); the public-API surfaces use <code>api.admin.&lt;entity&gt;.&lt;verb&gt;</code> (e.g. <code>api.admin.songbook.create</code>) so timeline readers can tell which surface drove the change.
+                    </p>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Rows are immutable. There's no edit, no delete &mdash; that's the whole point of an audit log.
                     </div>
@@ -898,6 +973,13 @@ foreach ($sections as $s) {
                     <p>
                         Re-run <strong>Install schema</strong> if anything changed in <code>schema.sql</code> (it's safe), then run only the migrations that <a href="#schema-audit">Schema Audit</a> flagged as missing. Migrations are idempotent &mdash; running one that's already been applied just reports &ldquo;[skip]&rdquo; for everything.
                     </p>
+                    <h3 class="h6">Apply all pending migrations (#577)</h3>
+                    <p>
+                        The <strong>Apply all pending migrations</strong> button runs every <code>migrate-*.php</code> script in deployment order. Each script is already idempotent, so re-running the bulk action after some have been applied is safe — they no-op individually.
+                    </p>
+                    <p class="small">
+                        If a migration fails mid-run, the dashboard captures the first-failing step and surfaces it in a prominent banner <em>above</em> the (sometimes long, scrollable) output panel (#720), so you don't miss the FAILED line in the noise. Fix the underlying issue and re-run — the steps that succeeded earlier no-op the second time.
+                    </p>
                     <h3 class="h6">Backups</h3>
                     <ul>
                         <li><strong>Backup</strong> downloads a SQL dump of the entire database. Keep at least one before running unfamiliar migrations.</li>
@@ -913,6 +995,41 @@ foreach ($sections as $s) {
                     </div>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Restore overwrites everything. There is no &ldquo;merge&rdquo; option.
+                    </div>
+                </section>
+
+                <section id="native-api" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-broadcast me-2"></i>Native API surface</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-warning text-dark">admin</span>
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <p>
+                        Every admin verb on this site is also reachable via the public REST API at <code>/api.php?action=&lt;verb&gt;</code> (#719). Native clients (Apple, Android, FireOS) and tooling clients (CI, monitoring, dashboards) can drive the same surfaces the web admin uses without a webview or a separate auth flow.
+                    </p>
+                    <h3 class="h6">Auth</h3>
+                    <p>
+                        Bearer-token auth via the <code>Authorization: Bearer &lt;token&gt;</code> header. Tokens are issued by the existing email-magic-link or password login flows and live on <code>tblApiTokens</code>. POSTs also need <code>X-Requested-With: XMLHttpRequest</code> as a CSRF defence (#293). Same role gates as the web admin — <code>admin</code> / <code>global_admin</code> for system-wide write verbs, plus the row-level <code>userCanActOnOrg()</code> check for org-admin endpoints.
+                    </p>
+                    <h3 class="h6">What's covered</h3>
+                    <ul>
+                        <li><strong>Songbooks</strong> — create / update / delete / cascade-delete / reorder / auto-colour fill / auto-colour reassign (PR 2a).</li>
+                        <li><strong>Users + Groups + Tiers</strong> — full CRUD plus role / activate / password-reset / member-add-remove (PR 2b).</li>
+                        <li><strong>Organisations + My Organisations</strong> — system-admin updates plus the six org-admin verbs from this surface (PR 2c).</li>
+                        <li><strong>Credit People</strong> — add / update / rename / merge / delete with the same cascade and confirmation gates (PR 2d).</li>
+                        <li><strong>Analytics + Diagnostics</strong> — top searches, data health snapshot, schema-audit report, per-migration applied/partial/pending status (PR 2d).</li>
+                        <li><strong>Editor</strong> — load / save / save_song / bulk_tag / list_revisions / restore_revision / get_translations / add_translation / remove_translation / song_tags / tag_search / credit_search / user_search / org_search / bulk_import_zip / bulk_import_status (PR 3 docs).</li>
+                    </ul>
+                    <h3 class="h6">OpenAPI spec</h3>
+                    <p>
+                        Every endpoint is documented in <a href="/api-docs.yaml"><code>/api-docs.yaml</code></a> as a single OpenAPI 3.0 file. Swagger UI / Stoplight / Redoc all render it cleanly. The spec is the source of truth for the request / response shapes — the web admin uses the helpers underneath, the native clients hit the documented endpoints, both stay in sync because the validators live in shared <code>includes/</code> files.
+                    </p>
+                    <h3 class="h6">Activity-log surface prefix</h3>
+                    <p class="small">
+                        API-driven changes write under <code>api.admin.&lt;entity&gt;.&lt;verb&gt;</code> (e.g. <code>api.admin.songbook.create</code>, <code>api.org_admin.licence_change</code>). The <a href="#activity-log">Activity Log</a> viewer can show both surfaces side-by-side; the prefix tells you which.
+                    </p>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> Status codes follow REST: 400 (validation), 401, 403 (role gate or row-level refusal), 404, 405 (wrong method), 409 (duplicate key), 422 (cannot delete because dependents exist). Native UIs can render the right toast without parsing the error string.
                     </div>
                 </section>
 
