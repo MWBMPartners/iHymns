@@ -220,6 +220,7 @@ if ($action !== '') {
         'bulk-import-jobs'       => 'migrate-bulk-import-jobs.php',
         'backfill-legacy-songbook-languages' => 'migrate-backfill-legacy-songbook-languages.php',
         'user-preferred-languages' => 'migrate-user-preferred-languages.php',
+        'iana-language-subtag-registry' => 'migrate-iana-language-subtag-registry.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -258,6 +259,7 @@ if ($action !== '') {
         'bulk-import-jobs',
         'backfill-legacy-songbook-languages',
         'user-preferred-languages',
+        'iana-language-subtag-registry',
         /* When you add a new migrate-*.php under appWeb/.sql/, ALSO add
            its action key to:
              1. $scriptMap above (action key → file)
@@ -998,6 +1000,47 @@ if ($hasCredentials && defined('DB_HOST')) {
             <div class="col-md-6">
                 <div class="card bg-dark border-secondary h-100">
                     <div class="card-body">
+                        <h5 class="card-title">3s. IETF BCP 47 reference data (#738)</h5>
+                        <p class="card-text text-secondary small">
+                            Imports the IANA Language Subtag Registry and CLDR
+                            English display names — every language (~8,000),
+                            script (~225), region (~305), and variant (~140)
+                            subtag the IETF BCP 47 standard recognises. Uses
+                            bundled snapshots in <code>appWeb/.sql/data/</code>;
+                            the picker autocomplete works completely offline
+                            once applied.
+                        </p>
+                        <p class="card-text text-secondary small">
+                            Schema work (idempotent): renames
+                            <code>tblScripts</code> →
+                            <code>tblLanguageScripts</code> for clarity, adds
+                            <code>tblLanguageVariants</code>, adds
+                            <code>tblLanguages.Scope</code>. Re-running picks
+                            up new rows from a refreshed snapshot without
+                            touching curator-flagged ones.
+                        </p>
+                        <div class="d-flex gap-2 flex-wrap">
+                            <a href="?action=iana-language-subtag-registry" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                                Run IANA + CLDR Import
+                            </a>
+                            <button type="button"
+                                    class="btn btn-outline-warning btn-action <?= $hasCredentials ? '' : 'disabled' ?>"
+                                    data-action="refresh-iana-cldr">
+                                <i class="bi bi-cloud-download me-1" aria-hidden="true"></i>
+                                Refresh from IANA + CLDR (live)
+                            </button>
+                        </div>
+                        <p class="card-text small text-muted mt-2 mb-0" data-iana-refresh-status>
+                            Live refresh fetches the latest IANA registry and
+                            CLDR JSON files, overwrites the bundled snapshots,
+                            then re-runs the import.
+                        </p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
                         <h5 class="card-title">3r. User preferred languages column (#736)</h5>
                         <p class="card-text text-secondary small">
                             Adds <code>tblUsers.PreferredLanguagesJson</code> so a
@@ -1291,6 +1334,69 @@ if ($hasCredentials && defined('DB_HOST')) {
         <?php endif; ?>
     </p>
 </div>
+
+<script>
+/* IANA + CLDR live refresh button (#738).
+   Posts to /api?action=admin_refresh_iana_cldr, swaps the status
+   line for a live progress / result message, and on success
+   reloads the page so the operator can re-run the per-card
+   import button to verify counts. Global-admin-only endpoint;
+   the button is disabled when DB credentials aren't configured. */
+(() => {
+    const btn = document.querySelector('button[data-action="refresh-iana-cldr"]');
+    const status = document.querySelector('[data-iana-refresh-status]');
+    if (!btn || !status) return;
+
+    btn.addEventListener('click', async () => {
+        if (btn.classList.contains('disabled') || btn.disabled) return;
+        if (!confirm(
+            'Fetch the latest IANA Language Subtag Registry and CLDR English ' +
+            'JSON from the live URLs? This will overwrite the bundled snapshots ' +
+            'in appWeb/.sql/data/ and re-run the import migration.'
+        )) return;
+
+        btn.disabled = true;
+        const original = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Refreshing…';
+        status.textContent = 'Fetching IANA + CLDR snapshots from upstream and re-running the import…';
+        status.classList.remove('text-danger', 'text-success');
+
+        let token = null;
+        try { token = localStorage.getItem('ihymns_auth_token'); } catch (_e) {}
+
+        try {
+            const resp = await fetch('/api?action=admin_refresh_iana_cldr', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    ...(token ? { 'Authorization': 'Bearer ' + token } : {}),
+                },
+                body: '{}',
+            });
+            const j = await resp.json();
+            if (!resp.ok) {
+                status.classList.add('text-danger');
+                status.textContent = 'Refresh failed: ' + (j.error || resp.status) +
+                    (j.failed ? ' (failed: ' + j.failed.join(', ') + ')' : '');
+                btn.disabled = false;
+                btn.innerHTML = original;
+                return;
+            }
+            status.classList.add('text-success');
+            status.textContent = 'Refreshed: ' + (j.fetched || []).join(', ') +
+                '. Migration re-applied. Reloading…';
+            setTimeout(() => location.reload(), 1500);
+        } catch (err) {
+            status.classList.add('text-danger');
+            status.textContent = 'Network error: ' + err.message;
+            btn.disabled = false;
+            btn.innerHTML = original;
+        }
+    });
+})();
+</script>
 
 <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>

@@ -830,26 +830,28 @@ CREATE TABLE IF NOT EXISTS tblUserFavorites (
 -- Reference table for supported languages. Uses ISO 639-1 codes.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblLanguages (
-    Code            VARCHAR(10)     NOT NULL PRIMARY KEY COMMENT 'ISO 639-1 code (e.g. en, fr, es)',
-    Name            VARCHAR(100)    NOT NULL COMMENT 'English name (e.g. French)',
-    NativeName      VARCHAR(100)    NOT NULL DEFAULT '' COMMENT 'Native name (e.g. Français)',
+    Code            VARCHAR(35)     NOT NULL PRIMARY KEY COMMENT 'IANA language subtag (ISO 639-1/2/3 + extensions; widened from 10 → 35 in #738)',
+    Name            VARCHAR(250)    NOT NULL COMMENT 'English name (CLDR-polished form preferred over raw IANA Description)',
+    NativeName      VARCHAR(250)    NOT NULL DEFAULT '' COMMENT 'Native name (e.g. Français)',
     TextDirection   VARCHAR(3)      NOT NULL DEFAULT 'ltr' COMMENT 'ltr or rtl',
+    Scope           ENUM('individual','macrolanguage','collection','private-use','special') NOT NULL DEFAULT 'individual' COMMENT 'IANA Scope; macrolanguages (zh, ar, fa) outrank narrower variants in the picker (#738)',
     IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- ----------------------------------------------------------------------------
--- tblScripts (#681)
+-- tblLanguageScripts (#681 / renamed in #738 from tblScripts)
 -- Reference table for ISO 15924 four-letter script codes (e.g. Latn, Cyrl,
 -- Hans, Hant, Arab). Used as the optional second subtag in an IETF BCP 47
 -- language tag (e.g. zh-Hans, sr-Latn). Curators pick from this list via the
--- songbook + song editors' composite IETF language picker.
+-- songbook + song editors' composite IETF language picker. Renamed for
+-- clarity — "Scripts" alone reads as mini-programs/processors.
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblScripts (
+CREATE TABLE IF NOT EXISTS tblLanguageScripts (
     Code            VARCHAR(4)      NOT NULL PRIMARY KEY COMMENT 'ISO 15924 four-letter code (Title Case: Latn, Cyrl, Hans, …)',
-    Name            VARCHAR(100)    NOT NULL COMMENT 'English name (e.g. Latin, Cyrillic, Han Simplified)',
-    NativeName      VARCHAR(100)    NOT NULL DEFAULT '' COMMENT 'Native or contextual name where useful (e.g. 简体)',
+    Name            VARCHAR(150)    NOT NULL COMMENT 'English name (CLDR-polished where available)',
+    NativeName      VARCHAR(150)    NOT NULL DEFAULT '' COMMENT 'Native or contextual name where useful (e.g. 简体)',
     IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -864,7 +866,21 @@ CREATE TABLE IF NOT EXISTS tblScripts (
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblRegions (
     Code            VARCHAR(3)      NOT NULL PRIMARY KEY COMMENT 'ISO 3166-1 alpha-2 (uppercase) or M.49 numeric area code',
-    Name            VARCHAR(150)    NOT NULL COMMENT 'English name (e.g. United Kingdom, Brazil)',
+    Name            VARCHAR(150)    NOT NULL COMMENT 'English name (CLDR-polished where available)',
+    IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblLanguageVariants (#738)
+-- Reference table for IANA variant subtags (5-8 chars, e.g. 1996 for German
+-- post-1996 orthography, fonipa for IPA phonetics, valencia for Valencian).
+-- Used as the optional fourth subtag in an IETF BCP 47 language tag.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblLanguageVariants (
+    Code            VARCHAR(8)      NOT NULL PRIMARY KEY COMMENT 'IANA variant subtag (5-8 chars)',
+    Name            VARCHAR(250)    NOT NULL COMMENT 'English name (CLDR-polished where available; raw IANA Description otherwise)',
     IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

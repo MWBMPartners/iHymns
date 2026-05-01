@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: iHymns API
-  version: "0.56.0"
+  version: "0.57.0"
   description: |
     The iHymns API provides programmatic access to the iHymns hymn and song
     database. It powers the iHymns Progressive Web App (PWA), enabling song
@@ -801,6 +801,117 @@ paths:
                     name: Brazil
                   - code: "419"
                     name: Latin America and the Caribbean
+
+  /api.php?action=variants:
+    get:
+      operationId: listLanguageVariants
+      tags: [Languages]
+      summary: List IETF BCP 47 language variants (#738)
+      description: |
+        Returns all active rows from `tblLanguageVariants` — IANA
+        variant subtags (5-8 chars). Examples: `1996` for German
+        post-1996 orthography, `fonipa` for IPA phonetics,
+        `valencia` for the Valencian variant of Catalan.
+
+        Used as the optional fourth subtag in an IETF BCP 47
+        language tag. Most worship-app catalogues won't reference
+        variant subtags directly, but the endpoint is provided for
+        completeness so a curator hand-tagging an academic edition
+        of a hymnal has the full vocabulary available.
+
+        Pre-migration deployments (where `tblLanguageVariants`
+        doesn't exist) get an empty list with a `note`.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [variants]
+      responses:
+        "200":
+          description: Variant list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  variants:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        code: { type: string, example: "1996" }
+                        name: { type: string, example: "German orthography of 1996" }
+                  note:
+                    type: string
+                    description: Present only when the lookup table has not yet been created.
+
+  /api.php?action=admin_refresh_iana_cldr:
+    post:
+      operationId: adminRefreshIanaCldr
+      tags: [Admin — Diagnostics]
+      summary: Refresh IETF BCP 47 reference data from upstream IANA + CLDR (#738)
+      description: |
+        Fetches the latest IANA Language Subtag Registry from
+        `https://www.iana.org/assignments/language-subtag-registry`
+        plus the CLDR English locale-display-names JSON files from
+        the unicode-org/cldr-json GitHub mirror, overwrites the
+        bundled snapshots in `appWeb/.sql/data/`, and re-runs the
+        import migration. Returns the migration's per-table delta
+        counts in the response.
+
+        Global-admin only. Requires same-origin POST with
+        `X-Requested-With: XMLHttpRequest`. Server-side outbound
+        HTTPS connectivity to iana.org and raw.githubusercontent.com
+        is required. If any of the 5 source URLs fails, the bundled
+        snapshots are NOT touched and the call returns 502 with the
+        list of failed files.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_refresh_iana_cldr] }
+      responses:
+        "200":
+          description: Refresh succeeded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  fetched:
+                    type: array
+                    items: { type: string }
+                    description: Per-file size summaries (`filename (12345 bytes)`).
+                  migrationLog:
+                    type: string
+                    description: Captured stdout from the import migration — per-step `[seed]` / `[cldr]` / `[skip]` lines.
+        "403":
+          description: Global admin access required
+        "405":
+          description: POST method required
+        "500":
+          description: Snapshot directory not writable, or migration re-run failed after the fetch
+        "502":
+          description: |
+            One or more source fetches failed. Response includes
+            `fetched` (the ones that did succeed) and `failed` (the
+            ones that didn't).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:   { type: string }
+                  fetched: { type: array, items: { type: string } }
+                  failed:  { type: array, items: { type: string } }
+                  hint:    { type: string }
 
   /api.php?action=song_translations:
     get:
