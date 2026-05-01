@@ -522,6 +522,52 @@ function logout(bool $logEvent = true): void
         logActivity('auth.logout', 'user', (string)$userId, [], 'success', $userId);
     }
 
+    /* Also invalidate any `ihymns_auth` API-token cookie that the
+       main-site sign-in flow set (#764). Without this, the
+       isAuthenticated() fallback in this same file calls
+       adoptApiTokenSession(), which reads the still-valid cookie,
+       looks up tblApiTokens, and re-seeds $_SESSION — so /manage/login
+       would adopt the token immediately after logout() destroys the
+       session and bounce the user straight back to /manage/.
+
+       Three things have to happen:
+         1. DELETE the row in tblApiTokens (otherwise the cookie value
+            keeps working on a future request that re-presents it).
+         2. Clear the cookie so the browser doesn't keep sending it.
+         3. Be tolerant: a missing tblApiTokens table or DB outage
+            must not block the rest of the logout. */
+    $tokenCookie = (string)($_COOKIE['ihymns_auth'] ?? '');
+    if ($tokenCookie !== '' && preg_match('/^[a-f0-9]{64}$/i', $tokenCookie)) {
+        try {
+            if (function_exists('getDbMysqli')) {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE Token = ?');
+                if ($stmt) {
+                    $tokenHash = hash('sha256', $tokenCookie);
+                    $stmt->bind_param('s', $tokenHash);
+                    $stmt->execute();
+                    $stmt->close();
+                }
+            }
+        } catch (\Throwable $e) {
+            error_log('[manage logout] tblApiTokens delete failed: ' . $e->getMessage());
+        }
+    }
+    if (!empty($_COOKIE['ihymns_auth']) && !headers_sent()) {
+        $host  = preg_replace('/:\d+$/', '', (string)($_SERVER['HTTP_HOST'] ?? ''));
+        $https = !empty($_SERVER['HTTPS'])
+              || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+        setcookie('ihymns_auth', '', [
+            'expires'  => time() - 3600,
+            'path'     => '/',
+            'domain'   => $host,
+            'secure'   => $https,
+            'httponly' => true,
+            'samesite' => 'Lax',
+        ]);
+        unset($_COOKIE['ihymns_auth']);
+    }
+
     $_SESSION = [];
 
     if (ini_get('session.use_cookies')) {
