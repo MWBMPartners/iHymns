@@ -39,12 +39,14 @@ $error   = '';
 $success = '';
 $db      = getDbMysqli();
 
-/* ---- GET ?action=script_search&q=… (#681) ------------------------------
+/* ---- GET ?action=script_search&q=… (#681 / renamed table in #738) ------
  * JSON typeahead for the IETF BCP 47 picker's Script field. Matches
- * substring (LIKE %q%) against tblScripts.Name OR tblScripts.Code so
- * a curator can search either by friendly name ("Latin") or by ISO
- * 15924 code ("Latn"). Empty query → empty list; pre-migration
- * deployments → empty list with a `note` rather than a 500.
+ * substring (LIKE %q%) against tblLanguageScripts.Name OR
+ * tblLanguageScripts.Code so a curator can search either by friendly
+ * name ("Latin") or by ISO 15924 code ("Latn"). Empty query → empty
+ * list; pre-migration deployments → empty list with a `note` rather
+ * than a 500. Probes BOTH the new and legacy names so a deployment
+ * mid-migration (rename pending) still serves suggestions.
  * ----------------------------------------------------------------------- */
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
     && ($_GET['action'] ?? '') === 'script_search'
@@ -58,35 +60,43 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
         exit;
     }
 
-    $hasTable = false;
+    $tableName = '';
     try {
-        $probe = $db->prepare(
-            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblScripts' LIMIT 1"
-        );
-        $probe->execute();
-        $hasTable = $probe->get_result()->fetch_row() !== null;
-        $probe->close();
+        /* Prefer the renamed table (#738); fall back to the legacy
+           name if a deployment hasn't applied the rename yet. */
+        foreach (['tblLanguageScripts', 'tblScripts'] as $candidate) {
+            $probe = $db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1"
+            );
+            $probe->bind_param('s', $candidate);
+            $probe->execute();
+            $found = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+            if ($found) { $tableName = $candidate; break; }
+        }
     } catch (\Throwable $e) {
         error_log('[script_search] probe failed: ' . $e->getMessage());
     }
-    if (!$hasTable) {
+    if ($tableName === '') {
         echo json_encode([
             'suggestions' => [],
-            'note'        => 'tblScripts not yet created — run /manage/setup-database',
+            'note'        => 'tblLanguageScripts not yet created — run /manage/setup-database',
         ]);
         exit;
     }
 
     try {
         $like = '%' . $q . '%';
+        /* Identifier built from the allowlisted probe above — never
+           user input, so no SQL injection surface. */
         $stmt = $db->prepare(
-            'SELECT Code AS code, Name AS name, NativeName AS nativeName
-               FROM tblScripts
+            "SELECT Code AS code, Name AS name, NativeName AS nativeName
+               FROM {$tableName}
               WHERE IsActive = 1
                 AND (Name LIKE ? OR Code LIKE ?)
               ORDER BY Name ASC
-              LIMIT ?'
+              LIMIT ?"
         );
         $stmt->bind_param('ssi', $like, $like, $limit);
         $stmt->execute();

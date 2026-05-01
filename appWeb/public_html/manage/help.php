@@ -506,7 +506,10 @@ foreach ($sections as $s) {
                         <li><strong>Region</strong> (optional) — e.g. <em>United Kingdom</em> for British English (<code>en-GB</code>) vs. <em>United States</em> for American English (<code>en-US</code>).</li>
                     </ul>
                     <p>
-                        The "IETF tag:" line below the picker shows the composed tag live as you type. The full ISO 15924 / ISO 3166-1 vocabulary is loaded from <code>tblScripts</code> + <code>tblRegions</code> (seeded by Database Setup card 3o), so the picker stays in sync with the songbook editor's identical picker — one source of truth across both surfaces.
+                        The "IETF tag:" line below the picker shows the composed tag live as you type, with a human-readable rendering next to it (e.g. <em>"Spanish (Mexico)"</em> for <code>es-MX</code>). The full ISO 639 / ISO 15924 / ISO 3166-1 vocabulary is loaded from <code>tblLanguages</code> + <code>tblLanguageScripts</code> + <code>tblRegions</code> + <code>tblLanguageVariants</code> — every IANA-registered subtag — so the picker stays in sync with the songbook editor's identical picker. One source of truth across both surfaces. (#681 / #738)
+                    </p>
+                    <p class="small text-muted mb-2">
+                        The full IANA Language Subtag Registry plus CLDR English display names ship as bundled snapshots in <code>appWeb/.sql/data/</code>. <a href="/manage/setup-database#bcp47">Database Setup → "Refresh BCP 47 reference data"</a> has a live-fetch button if you need to pull the latest IANA / CLDR updates.
                     </p>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Closing the tab while there are unsaved changes loses them — auto-save catches most things, but treat Save as the source of truth.

@@ -178,6 +178,7 @@ export function bootIetfLanguagePicker(rootEl) {
     const scriptInput = rootEl.querySelector('.ietf-picker-script');
     const regionInput = rootEl.querySelector('.ietf-picker-region');
     const tagPreview  = rootEl.querySelector('.ietf-tag-preview');
+    const tagDisplay  = rootEl.querySelector('.ietf-tag-display');
     const tagOutput   = rootEl.querySelector('.ietf-tag-output');
     const langList    = document.getElementById(langInput?.getAttribute('list'));
     const scriptList  = document.getElementById(scriptInput?.getAttribute('list'));
@@ -220,6 +221,22 @@ export function bootIetfLanguagePicker(rootEl) {
         }, DEBOUNCE_MS);
     };
 
+    /* Compose a human-readable display from whatever's typed into
+       the three inputs. The values ARE the human names (the
+       datalist <option value="..."> stores the friendly name and
+       data-code holds the code). So the input.value IS the display
+       string for that subtag — we just compose them with the
+       right punctuation. (#738) */
+    const composeHumanDisplay = () => {
+        const lang   = (langInput.value   || '').trim();
+        const script = (scriptInput.value || '').trim();
+        const region = (regionInput.value || '').trim();
+        if (!lang) return '';
+        const qualifiers = [script, region].filter(Boolean);
+        if (qualifiers.length === 0) return lang;
+        return `${lang} (${qualifiers.join(', ')})`;
+    };
+
     /* Update the live preview + hidden form field whenever any of
        the three inputs change. Reads the canonical code from the
        datalist's selected <option>; falls through to typed text. */
@@ -230,6 +247,13 @@ export function bootIetfLanguagePicker(rootEl) {
         const tag = composeTag(langCode, scriptCode, regionCode);
         tagOutput.value = tag;
         if (tagPreview) tagPreview.textContent = tag || '—';
+        /* Human-readable composed form: "Spanish (Mexico)" /
+           "Chinese (Simplified, China)". Empty when no language is
+           selected. (#738) */
+        if (tagDisplay) {
+            const human = composeHumanDisplay();
+            tagDisplay.textContent = human ? `→ ${human}` : '';
+        }
     };
 
     /* Wire input + blur events on every input so the preview tracks

@@ -100,6 +100,7 @@ $idSafe = preg_replace('/[^a-z0-9-]/i', '-', $idPrefix);
 
     <div class="form-text small mt-1">
         IETF tag: <code class="ietf-tag-preview"><?= htmlspecialchars($tag !== '' ? $tag : '—', ENT_QUOTES, 'UTF-8') ?></code>
+        <span class="ietf-tag-display ms-2 fst-italic"></span>
         <span class="text-muted ms-2"><?= htmlspecialchars($help, ENT_QUOTES, 'UTF-8') ?></span>
     </div>
 

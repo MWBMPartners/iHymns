@@ -1988,16 +1988,53 @@ if ($action !== null) {
 
         /* -----------------------------------------------------------------
          * Get all available languages
+         *
+         * After #738 the catalogue contains every IANA language subtag
+         * (~8,000 rows). The picker still needs the most-common ones
+         * to surface first, so we sort by:
+         *   1. Scope: macrolanguages (zh, ar, fa, ms, …) before
+         *      individual / collection / private-use / special.
+         *   2. Name length: short names ("Spanish") before long ones
+         *      ("Spanish Sign Language") so the common form wins.
+         *   3. Name alphabetic for everything else.
+         *
+         * The Scope column was added by #738; older deployments may
+         * not have it yet, so we probe and fall back to plain
+         * alphabetic sort if absent.
          * ----------------------------------------------------------------- */
         case 'languages':
             $db = getDbMysqli();
-            $stmt = $db->prepare(
-                'SELECT Code AS code, Name AS name, NativeName AS nativeName,
-                        TextDirection AS textDirection
-                 FROM tblLanguages
-                 WHERE IsActive = 1
-                 ORDER BY Name ASC'
-            );
+            /* Probe Scope column once — pre-#738 deployments fall
+               back to a plain alphabetic ORDER BY. */
+            $hasScope = false;
+            try {
+                $probe = $db->prepare(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                      WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME = 'tblLanguages'
+                        AND COLUMN_NAME = 'Scope' LIMIT 1"
+                );
+                $probe->execute();
+                $hasScope = $probe->get_result()->fetch_row() !== null;
+                $probe->close();
+            } catch (\Throwable $_e) { /* probe failed → no Scope */ }
+
+            if ($hasScope) {
+                $sql = "SELECT Code AS code, Name AS name, NativeName AS nativeName,
+                               TextDirection AS textDirection, Scope AS scope
+                          FROM tblLanguages
+                         WHERE IsActive = 1
+                         ORDER BY (Scope = 'macrolanguage') DESC,
+                                  CHAR_LENGTH(Name) ASC,
+                                  Name ASC";
+            } else {
+                $sql = "SELECT Code AS code, Name AS name, NativeName AS nativeName,
+                               TextDirection AS textDirection
+                          FROM tblLanguages
+                         WHERE IsActive = 1
+                         ORDER BY Name ASC";
+            }
+            $stmt = $db->prepare($sql);
             $stmt->execute();
             $languages = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
             $stmt->close();
@@ -2005,43 +2042,51 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
-         * Get all available IETF BCP 47 scripts (#681 / #682)
+         * Get all available IETF BCP 47 scripts (#681 / #682, renamed
+         * source table in #738)
          *
          * Mirrors `action=languages`: returns the full active list of
-         * ISO 15924 script codes from tblScripts so native clients
-         * (Apple / Android / FireOS) can render the same composite
-         * IETF picker the web admin already uses. The admin-only
-         * `action=script_search` typeahead on /manage/songbooks?
-         * is the prefix-search variant; this endpoint is a one-shot
-         * dump suitable for caching client-side. Pre-migration: empty
-         * list with a `note` rather than a 500.
+         * ISO 15924 script codes from tblLanguageScripts so native
+         * clients (Apple / Android / FireOS) can render the same
+         * composite IETF picker the web admin already uses. The
+         * admin-only `action=script_search` typeahead on
+         * /manage/songbooks? is the prefix-search variant; this
+         * endpoint is a one-shot dump suitable for caching client-side.
+         * Probes BOTH the new and legacy table names so a deployment
+         * that hasn't applied #738 yet still serves results.
+         * Pre-migration: empty list with a `note` rather than a 500.
          * ----------------------------------------------------------------- */
         case 'scripts':
             $db = getDbMysqli();
-            $hasTable = false;
+            $tableName = '';
             try {
-                $probe = $db->prepare(
-                    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblScripts' LIMIT 1"
-                );
-                $probe->execute();
-                $hasTable = $probe->get_result()->fetch_row() !== null;
-                $probe->close();
+                foreach (['tblLanguageScripts', 'tblScripts'] as $candidate) {
+                    $probe = $db->prepare(
+                        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1"
+                    );
+                    $probe->bind_param('s', $candidate);
+                    $probe->execute();
+                    $found = $probe->get_result()->fetch_row() !== null;
+                    $probe->close();
+                    if ($found) { $tableName = $candidate; break; }
+                }
             } catch (\Throwable $_e) { /* probe failure → empty list */ }
 
-            if (!$hasTable) {
+            if ($tableName === '') {
                 sendJson([
                     'scripts' => [],
-                    'note'    => 'tblScripts not yet created — run /manage/setup-database',
+                    'note'    => 'tblLanguageScripts not yet created — run /manage/setup-database',
                 ]);
                 break;
             }
 
+            /* Identifier from the allowlisted probe — never user input. */
             $stmt = $db->prepare(
-                'SELECT Code AS code, Name AS name, NativeName AS nativeName
-                 FROM tblScripts
+                "SELECT Code AS code, Name AS name, NativeName AS nativeName
+                 FROM {$tableName}
                  WHERE IsActive = 1
-                 ORDER BY Name ASC'
+                 ORDER BY Name ASC"
             );
             $stmt->execute();
             $scripts = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -2089,6 +2134,49 @@ if ($action !== null) {
             $regions = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
             $stmt->close();
             sendJson(['regions' => $regions]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Get all available IETF BCP 47 language variants (#738)
+         *
+         * Same shape as `action=scripts` / `action=regions` for
+         * tblLanguageVariants — IANA variant subtags (5-8 chars,
+         * e.g. `1996` for German post-1996 orthography, `fonipa` for
+         * IPA phonetics, `valencia` for Valencian). Used as the
+         * optional fourth subtag in an IETF BCP 47 language tag.
+         * Pre-migration: empty list with a `note`.
+         * ----------------------------------------------------------------- */
+        case 'variants':
+            $db = getDbMysqli();
+            $hasTable = false;
+            try {
+                $probe = $db->prepare(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblLanguageVariants' LIMIT 1"
+                );
+                $probe->execute();
+                $hasTable = $probe->get_result()->fetch_row() !== null;
+                $probe->close();
+            } catch (\Throwable $_e) { /* probe failure → empty list */ }
+
+            if (!$hasTable) {
+                sendJson([
+                    'variants' => [],
+                    'note'     => 'tblLanguageVariants not yet created — run /manage/setup-database',
+                ]);
+                break;
+            }
+
+            $stmt = $db->prepare(
+                'SELECT Code AS code, Name AS name
+                 FROM tblLanguageVariants
+                 WHERE IsActive = 1
+                 ORDER BY Name ASC'
+            );
+            $stmt->execute();
+            $variants = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+            sendJson(['variants' => $variants]);
             break;
 
         /* -----------------------------------------------------------------
@@ -9703,6 +9791,112 @@ if ($action !== null) {
                 error_log('[admin_migrations_status] ' . $e->getMessage());
                 sendJson(['error' => 'Could not derive migrations status: ' . $e->getMessage()], 500);
             }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: refresh IANA Language Subtag Registry + CLDR English (#738)
+         *
+         * Fetches the live IANA registry + CLDR English JSON files,
+         * overwrites the bundled snapshots in appWeb/.sql/data/, then
+         * re-runs migrate-iana-language-subtag-registry.php so the
+         * picker tables pick up new rows. Reports per-table counts in
+         * the response.
+         *
+         * Global-admin only. POST + X-Requested-With per the standard
+         * CSRF guard.
+         * ----------------------------------------------------------------- */
+        case 'admin_refresh_iana_cldr': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || ($authUser['Role'] ?? '') !== 'global_admin') {
+                sendJson(['error' => 'Global admin access required.'], 403);
+                break;
+            }
+
+            $dataDir = dirname(__DIR__, 1) . DIRECTORY_SEPARATOR . '.sql' . DIRECTORY_SEPARATOR . 'data';
+            if (!is_dir($dataDir) || !is_writable($dataDir)) {
+                sendJson([
+                    'error' => "Snapshot directory not writable: {$dataDir}",
+                ], 500);
+                break;
+            }
+
+            /* Live URLs. The CLDR base hits the unicode-org/cldr-json
+               GitHub mirror raw content; IANA serves the registry as
+               a stable URL. Both are publicly fetchable, no auth. */
+            $sources = [
+                'iana-language-subtag-registry.txt'
+                    => 'https://www.iana.org/assignments/language-subtag-registry',
+                'cldr-en-languages.json'
+                    => 'https://raw.githubusercontent.com/unicode-org/cldr-json/main/cldr-json/cldr-localenames-full/main/en/languages.json',
+                'cldr-en-scripts.json'
+                    => 'https://raw.githubusercontent.com/unicode-org/cldr-json/main/cldr-json/cldr-localenames-full/main/en/scripts.json',
+                'cldr-en-territories.json'
+                    => 'https://raw.githubusercontent.com/unicode-org/cldr-json/main/cldr-json/cldr-localenames-full/main/en/territories.json',
+                'cldr-en-variants.json'
+                    => 'https://raw.githubusercontent.com/unicode-org/cldr-json/main/cldr-json/cldr-localenames-full/main/en/variants.json',
+            ];
+
+            $fetched = [];
+            $failed  = [];
+            foreach ($sources as $filename => $url) {
+                $ctx = stream_context_create([
+                    'http' => [
+                        'timeout'        => 30,
+                        'follow_location' => 1,
+                        'header'         => "User-Agent: iHymns-IANA-Refresh/1.0\r\n",
+                    ],
+                ]);
+                $body = @file_get_contents($url, false, $ctx);
+                if ($body === false || strlen($body) < 100) {
+                    $failed[] = $filename;
+                    continue;
+                }
+                $target = $dataDir . DIRECTORY_SEPARATOR . $filename;
+                if (@file_put_contents($target, $body) === false) {
+                    $failed[] = $filename . ' (write failed)';
+                    continue;
+                }
+                $fetched[] = $filename . ' (' . number_format(strlen($body)) . ' bytes)';
+            }
+
+            if (!empty($failed)) {
+                sendJson([
+                    'error'   => 'One or more source fetches failed.',
+                    'fetched' => $fetched,
+                    'failed'  => $failed,
+                    'hint'    => 'Check server outbound HTTPS connectivity. The bundled snapshots remain in place; pre-existing data is untouched.',
+                ], 502);
+                break;
+            }
+
+            /* Snapshots refreshed. Now re-run the migration so the DB
+               picks up new rows. Run as a sub-process include so the
+               migration's "echo" output is captured in our response
+               instead of streaming through. */
+            ob_start();
+            try {
+                define('IHYMNS_SETUP_DASHBOARD', true);
+                require __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . '.sql' . DIRECTORY_SEPARATOR . 'migrate-iana-language-subtag-registry.php';
+                $migOutput = ob_get_clean();
+            } catch (\Throwable $e) {
+                ob_end_clean();
+                sendJson([
+                    'error'   => 'Snapshots refreshed but migration re-run failed: ' . $e->getMessage(),
+                    'fetched' => $fetched,
+                ], 500);
+                break;
+            }
+
+            sendJson([
+                'ok'             => true,
+                'fetched'        => $fetched,
+                'migrationLog'   => $migOutput,
+            ]);
             break;
         }
 
