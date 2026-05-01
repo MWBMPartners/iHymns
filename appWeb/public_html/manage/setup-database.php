@@ -221,6 +221,7 @@ if ($action !== '') {
         'backfill-legacy-songbook-languages' => 'migrate-backfill-legacy-songbook-languages.php',
         'user-preferred-languages' => 'migrate-user-preferred-languages.php',
         'iana-language-subtag-registry' => 'migrate-iana-language-subtag-registry.php',
+        'cldr-native-names' => 'migrate-cldr-native-names.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -260,6 +261,7 @@ if ($action !== '') {
         'backfill-legacy-songbook-languages',
         'user-preferred-languages',
         'iana-language-subtag-registry',
+        'cldr-native-names',
         /* When you add a new migrate-*.php under appWeb/.sql/, ALSO add
            its action key to:
              1. $scriptMap above (action key → file)
@@ -1035,6 +1037,28 @@ if ($hasCredentials && defined('DB_HOST')) {
                             CLDR JSON files, overwrites the bundled snapshots,
                             then re-runs the import.
                         </p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">3t. CLDR Native Names overlay</h5>
+                        <p class="card-text text-secondary small">
+                            Backfills <code>tblLanguages.NativeName</code> with each
+                            language's self-name — the form a speaker would write in
+                            their own locale ("Deutsch", "日本語", "Tshivenḓa", "العربية").
+                            Sourced from <code>appWeb/.sql/data/cldr-native-names.json</code>
+                            (~316 entries, generated from
+                            <code>cldr-localenames-full</code>; rebuild with
+                            <code>tools/fetch-cldr-native-names.sh</code>). Once applied,
+                            the IETF picker (#681 / #685) shows e.g. "German (Deutsch) — de"
+                            instead of just "German — de". Idempotent — re-running
+                            no-ops on rows whose <code>NativeName</code> already matches.
+                        </p>
+                        <a href="?action=cldr-native-names" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run CLDR Native Names Overlay
+                        </a>
                     </div>
                 </div>
             </div>
