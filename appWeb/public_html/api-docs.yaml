@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: iHymns API
-  version: "0.55.0"
+  version: "0.56.0"
   description: |
     The iHymns API provides programmatic access to the iHymns hymn and song
     database. It powers the iHymns Progressive Web App (PWA), enabling song
@@ -3431,6 +3431,110 @@ paths:
                   preferences:
                     type: object
                     additionalProperties: { type: string }
+
+  # ===========================================================================
+  # USER PREFERRED LANGUAGES  (#736)
+  #
+  # Per-account persistence of the language-filter selection so a
+  # signed-in user's choice syncs across devices. Anonymous users
+  # keep using localStorage on the SPA side (the SPA also passes the
+  # choice via `X-Preferred-Languages` on every fetch so the server
+  # filter applies to anonymous requests too).
+  # ===========================================================================
+
+  /api.php?action=user_preferred_languages:
+    get:
+      operationId: getUserPreferredLanguages
+      tags: [Preferences]
+      summary: Get the authenticated user's saved language-filter subtag list
+      description: |
+        Returns the user's saved primary language subtags, or `[]` if
+        no filter has been set. On a pre-#736 deployment (the
+        `tblUsers.PreferredLanguagesJson` column is absent), the
+        response includes `migration_needed: true` and an empty list
+        so the client can render the picker without a filter applied.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [user_preferred_languages] }
+      responses:
+        "200":
+          description: Saved subtag list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subtags:
+                    type: array
+                    items:
+                      type: string
+                      pattern: '^[a-z]{2,3}$'
+                    example: ["en", "es"]
+                  migration_needed:
+                    type: boolean
+                    description: Present and true on pre-#736 deployments only.
+        "401":
+          description: Not authenticated
+
+  /api.php?action=user_preferred_languages_save:
+    post:
+      operationId: saveUserPreferredLanguages
+      tags: [Preferences]
+      summary: Save the authenticated user's language-filter subtag list
+      description: |
+        Server-side normalisation: invalid subtags are dropped, the
+        list is lowercased, primary-subtag-only, deduplicated, and
+        sorted (`parsePreferredLanguageSubtags` in
+        `includes/language_filter.php`). An empty array clears the
+        filter — the column is set to `NULL` to distinguish "no
+        filter set" from "filter set to empty set" (which would
+        mean "show nothing").
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [user_preferred_languages_save] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subtags]
+              properties:
+                subtags:
+                  type: array
+                  items:
+                    type: string
+                    description: Any BCP 47 tag — only the primary subtag is kept after normalisation.
+                  example: ["en", "es-MX", "pt-BR"]
+      responses:
+        "200":
+          description: Saved (canonical normalised list returned)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean, example: true }
+                  subtags:
+                    type: array
+                    items: { type: string }
+                    example: ["en", "es", "pt"]
+        "400":
+          description: subtags must be an array
+        "401":
+          description: Not authenticated
+        "503":
+          description: |
+            Migration not yet applied on this deployment — response
+            includes `migration_needed: true`.
 
   # ===========================================================================
   # SETLISTS — SCHEDULING (#398)

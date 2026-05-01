@@ -112,24 +112,36 @@ if (count($languageOptions) <= 1) {
     return;
 }
 ?>
-<div class="songbook-language-filter mb-3 d-flex align-items-center gap-2"
+<div class="songbook-language-filter mb-3"
      data-songbook-language-filter
-     aria-label="Filter songbooks by language">
-    <label class="form-label small mb-0 me-1" for="songbook-language-filter-select">
-        <i class="bi bi-translate me-1" aria-hidden="true"></i>
-        Filter by language:
-    </label>
-    <select class="form-select form-select-sm js-songbook-language-filter"
-            id="songbook-language-filter-select"
-            style="max-width: 14rem;">
-        <option value="">All languages</option>
-        <?php foreach ($languageOptions as $sub => $label): ?>
-            <option value="<?= htmlspecialchars($sub, ENT_QUOTES, 'UTF-8') ?>">
-                <?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8') ?>
-            </option>
-        <?php endforeach; ?>
-    </select>
+     aria-label="Filter songbooks and songs by language">
+    <div class="d-flex align-items-center flex-wrap gap-2 mb-1">
+        <span class="form-label small mb-0 me-1">
+            <i class="bi bi-translate me-1" aria-hidden="true"></i>
+            Show languages:
+        </span>
+        <div class="btn-group btn-group-sm flex-wrap" role="group" aria-label="Language filter options">
+            <input type="checkbox" class="btn-check js-songbook-language-filter-all"
+                   id="songbook-language-filter-all" autocomplete="off" checked>
+            <label class="btn btn-outline-info" for="songbook-language-filter-all">All</label>
+            <?php foreach ($languageOptions as $sub => $label): ?>
+                <?php $id = 'songbook-language-filter-' . htmlspecialchars($sub, ENT_QUOTES, 'UTF-8'); ?>
+                <input type="checkbox" class="btn-check js-songbook-language-filter-option"
+                       id="<?= $id ?>"
+                       value="<?= htmlspecialchars($sub, ENT_QUOTES, 'UTF-8') ?>"
+                       autocomplete="off">
+                <label class="btn btn-outline-info" for="<?= $id ?>">
+                    <?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8') ?>
+                </label>
+            <?php endforeach; ?>
+        </div>
+    </div>
     <small class="text-muted">
-        Songbooks without a language set always remain visible.
+        Songbooks and songs without a language set always remain visible.
+        <?php if (!empty($currentUser)): ?>
+        Your selection is saved to your account and syncs across devices.
+        <?php else: ?>
+        Sign in to save your selection across devices.
+        <?php endif; ?>
     </small>
 </div>

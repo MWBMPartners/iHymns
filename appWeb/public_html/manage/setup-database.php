@@ -219,6 +219,7 @@ if ($action !== '') {
         'ietf-bcp47-language'    => 'migrate-ietf-bcp47-language.php',
         'bulk-import-jobs'       => 'migrate-bulk-import-jobs.php',
         'backfill-legacy-songbook-languages' => 'migrate-backfill-legacy-songbook-languages.php',
+        'user-preferred-languages' => 'migrate-user-preferred-languages.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -256,6 +257,7 @@ if ($action !== '') {
         'ietf-bcp47-language',
         'bulk-import-jobs',
         'backfill-legacy-songbook-languages',
+        'user-preferred-languages',
         /* When you add a new migrate-*.php under appWeb/.sql/, ALSO add
            its action key to:
              1. $scriptMap above (action key → file)
@@ -989,6 +991,25 @@ if ($hasCredentials && defined('DB_HOST')) {
                         </p>
                         <a href="?action=bulk-import-jobs" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run Bulk Import Jobs Migration
+                        </a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">3r. User preferred languages column (#736)</h5>
+                        <p class="card-text text-secondary small">
+                            Adds <code>tblUsers.PreferredLanguagesJson</code> so a
+                            signed-in user can save their language-filter choice
+                            to their account and have it sync across devices.
+                            Stored as a JSON array of IETF BCP 47 primary
+                            subtags (e.g. <code>["en","es"]</code>); NULL or
+                            <code>[]</code> means "show all languages".
+                            Idempotent — safe to re-run.
+                        </p>
+                        <a href="?action=user-preferred-languages" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run User Preferred Languages Migration
                         </a>
                     </div>
                 </div>

@@ -185,18 +185,35 @@ declare(strict_types=1);
             <div id="help-language-filter" class="accordion-collapse collapse" data-bs-parent="#help-accordion">
                 <div class="accordion-body">
                     <p>
-                        The home-page tile grid groups songbooks by language — English, Portuguese, Mandarin,
-                        and so on (#679). The <strong>language filter</strong> at the top lets you hide languages
-                        you don't need so the grid only shows what you can use.
+                        Pick one or more languages to <strong>show</strong> across the catalogue —
+                        the rest are hidden. Untagged songbooks and untagged songs are always
+                        shown, regardless of what you've selected.
                     </p>
+                    <h3 class="h6">Where to set it</h3>
                     <ul>
-                        <li>Tap the language pill at the top of the home page.</li>
-                        <li>Tick / un-tick the languages you want to show.</li>
-                        <li>The grid updates immediately. Your choice is remembered locally per device.</li>
+                        <li><strong>Ad-hoc:</strong> the chip group at the top of the home page and <em>Songbooks</em> page.</li>
+                        <li><strong>Persistent:</strong> the <em>Language Preferences</em> section on the <a href="/settings" data-navigate="settings">Settings</a> page.</li>
                     </ul>
+                    <h3 class="h6">What it filters</h3>
+                    <ul>
+                        <li><strong>Songbook tiles</strong> on the home grid + <em>Songbooks</em> page.</li>
+                        <li><strong>Search results</strong> — songs in unselected languages don't appear.</li>
+                        <li><strong>Song lists</strong> inside a songbook detail page.</li>
+                        <li><strong>Popular songs</strong> + <strong>recently viewed</strong> blocks on the home page.</li>
+                    </ul>
+                    <h3 class="h6">Sync across devices</h3>
+                    <p>
+                        If you're <a href="/login" data-navigate="login">signed in</a>, your
+                        choice saves to your account and follows you to every device — the
+                        web app, the iOS / iPadOS / tvOS / Android / Fire OS native apps.
+                        Anonymous users get per-device persistence via local storage.
+                    </p>
                     <p class="small text-muted mb-0">
-                        Songbooks without a language tag (e.g. mixed-language collections) always show, regardless
-                        of the filter — the filter is additive, not exclusive.
+                        Matching uses the primary language subtag — picking <code>en</code>
+                        matches <code>en</code>, <code>en-GB</code>, <code>en-US</code>, etc.
+                        The filter only appears when the catalogue spans at least two
+                        distinct languages — until then, it stays hidden because there's
+                        nothing to filter.
                     </p>
                 </div>
             </div>

@@ -538,6 +538,23 @@ export class Router {
                 .catch(err => console.error('[Router] songbook-language-filter init failed:', err));
         }
 
+        /* Settings page — language preferences picker (#736). The
+           settings page hosts a duplicate of the language filter UI
+           inside the Language Preferences section, so the user can
+           adjust their preference from a non-grid context. The
+           module is idempotent. */
+        if (page === 'settings') {
+            import('./settings-language-filter.js')
+                .then(m => m.bootSettingsLanguageFilter())
+                .catch(err => console.error('[Router] settings-language-filter init failed:', err));
+            /* Also boot the songbook-filter module so the global
+               fetch-header patch + saved subtag list propagation
+               applies even when the home grid isn't on screen. */
+            import('./songbook-language-filter.js')
+                .then(m => m.bootSongbookLanguageFilter())
+                .catch(() => { /* non-critical */ });
+        }
+
         /* Persistent bulk-import progress widget (#676). Booted on
            every SPA navigation so a curator who started an import
            on /manage/editor and switched to the public app still

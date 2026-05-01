@@ -628,7 +628,7 @@ foreach ($sections as $s) {
                         <strong>Gotcha:</strong> Deleting a songbook does <em>not</em> delete its songs unless you use Cascade delete. The standard UI refuses if any song still references its abbreviation; reassign or delete those songs first.
                     </div>
                     <div class="gotcha small">
-                        <strong>Tip:</strong> The home-page tile grid (#678) shows official hymnals first, with a language filter (#679) that hides languages on demand. The <strong>Misc</strong> pseudo-songbook is always pinned to the bottom of the grid (#717) regardless of <code>DisplayOrder</code> — it's a catch-all and should never out-rank a curated hymnal. Songbooks without a Language field always show — useful for catch-all collections you don't want to risk filtering away.
+                        <strong>Tip:</strong> The home-page tile grid (#678) shows official hymnals first, with a language filter (#679 / #736 v2) that lets users pick which languages to <em>show</em> across both songbook tiles AND individual song listings (search, popular, recently-viewed). Multi-select is supported; signed-in users get the choice persisted to their account and synced across devices. The <strong>Misc</strong> pseudo-songbook is always pinned to the bottom of the grid (#717) regardless of <code>DisplayOrder</code> — it's a catch-all and should never out-rank a curated hymnal. Songbooks AND songs without a Language field always show, regardless of the filter — useful for catch-all collections.
                     </div>
                 </section>
 
