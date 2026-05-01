@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: iHymns API
-  version: "0.51.0"
+  version: "0.52.0"
   description: |
     The iHymns API provides programmatic access to the iHymns hymn and song
     database. It powers the iHymns Progressive Web App (PWA), enabling song
@@ -175,6 +175,30 @@ tags:
       shared with the web admin via `includes/songbook_validation.php`,
       so a tweak to the abbreviation / colour / IETF BCP 47 grammar
       lands on both surfaces in one go.
+  - name: Admin — Users
+    description: |
+      User CRUD parity (#719 PR 2b). Mirrors `/manage/users` so native
+      clients can create / update / rename / role-change / activate /
+      reset-password / delete user accounts. Mutations route through
+      the helpers in `manage/includes/auth.php`, which write the
+      canonical activity-log rows under `user.create`,
+      `auth.role_change`, `auth.username_change`, `user.activate`,
+      `user.deactivate`. Hierarchy gates mirror the web admin: an
+      admin can never act on a peer or superior unless they're
+      `global_admin`, never promote above their own level, never
+      delete or deactivate their own account.
+  - name: Admin — Groups
+    description: |
+      User-group CRUD parity (#719 PR 2b). Mirrors `/manage/groups`.
+      Each user belongs to at most one group via `tblUsers.GroupId`;
+      the `admin_group_member_*` endpoints toggle that FK.
+  - name: Admin — Tiers
+    description: |
+      Access-tier CRUD parity (#719 PR 2b). Mirrors `/manage/tiers`.
+      Capability-column list (`TIER_CAPS`) lives in
+      `includes/access_tier_validation.php` so a new capability is a
+      one-line schema + const change — no surface-specific bind_param
+      edits needed.
   - name: Admin — Revisions
     description: Review pending song revisions
   - name: Admin — Maintenance
@@ -2153,6 +2177,623 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+  # ===========================================================================
+  # ADMIN — USERS  (#719 PR 2b)
+  # CRUD parity with /manage/users for native clients. The mutation
+  # routes through helpers in manage/includes/auth.php; activity-log
+  # rows land under the canonical `user.*` / `auth.*` verbs.
+  # ===========================================================================
+
+  /api.php?action=admin_user_create:
+    post:
+      operationId: adminUserCreate
+      tags: [Admin — Users]
+      summary: Create a user
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_user_create] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminUserCreateInput"
+      responses:
+        "201":
+          description: User created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:       { type: boolean, example: true }
+                  id:       { type: integer }
+                  username: { type: string }
+                  role:     { type: string }
+        "400":
+          description: Validation error (username too short, password too short, invalid role)
+        "403":
+          description: |
+            Admin access required, or hierarchy gate (cannot promote
+            above your own level; only `global_admin` can assign
+            `global_admin`).
+        "409":
+          description: Username already taken
+
+  /api.php?action=admin_user_update:
+    post:
+      operationId: adminUserUpdate
+      tags: [Admin — Users]
+      summary: Update a user's profile (display name + email)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_user_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminUserProfileInput"
+      responses:
+        "200":
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:       { type: boolean, example: true }
+                  id:       { type: integer }
+                  username: { type: string }
+        "400":
+          description: Missing user_id or display_name
+        "403":
+          description: Admin access required, or hierarchy gate
+        "404":
+          description: User id not found
+
+  /api.php?action=admin_user_rename:
+    post:
+      operationId: adminUserRename
+      tags: [Admin — Users]
+      summary: Change a user's username
+      description: |
+        Username uniqueness check is case-insensitive
+        (utf8mb4_unicode_ci) but the curator's chosen casing is
+        preserved on disk. Cascades automatically — every FK to
+        `tblUsers.Id` is keyed by `Id`, not `Username`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_user_rename] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, new_username]
+              properties:
+                user_id:      { type: integer }
+                new_username:
+                  type: string
+                  minLength: 3
+                  maxLength: 100
+                  pattern: "^[A-Za-z0-9_.\\-]+$"
+      responses:
+        "200":
+          description: User renamed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:           { type: boolean, example: true }
+                  id:           { type: integer }
+                  old_username: { type: string }
+                  new_username: { type: string }
+        "400":
+          description: Bad shape (length / charset)
+        "403":
+          description: Admin access required, or hierarchy gate
+        "404":
+          description: User id not found
+        "409":
+          description: Username already taken
+
+  /api.php?action=admin_user_role_change:
+    post:
+      operationId: adminUserRoleChange
+      tags: [Admin — Users]
+      summary: Change a user's role
+      description: |
+        Hierarchy gates enforced by `updateUserRole()` in
+        `manage/includes/auth.php`. Cannot promote above your own
+        level, cannot demote a peer or superior unless you're
+        `global_admin`, only `global_admin` can assign `global_admin`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_user_role_change] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, new_role]
+              properties:
+                user_id: { type: integer }
+                new_role:
+                  type: string
+                  enum: [user, editor, admin, global_admin]
+      responses:
+        "200":
+          description: Role changed
+        "400":
+          description: Missing user_id or new_role
+        "403":
+          description: Hierarchy violation
+        "404":
+          description: User id not found
+
+  /api.php?action=admin_user_toggle_active:
+    post:
+      operationId: adminUserToggleActive
+      tags: [Admin — Users]
+      summary: Toggle a user's active state
+      description: |
+        Deactivation also drops every API token for the user
+        (defence-in-depth — they can't keep using a stolen token
+        after the suspension). Cannot deactivate yourself.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_user_toggle_active] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id: { type: integer }
+      responses:
+        "200":
+          description: Active state toggled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:        { type: boolean, example: true }
+                  id:        { type: integer }
+                  is_active: { type: boolean }
+        "403":
+          description: Cannot deactivate self, or hierarchy gate
+        "404":
+          description: User id not found
+
+  /api.php?action=admin_user_password_reset:
+    post:
+      operationId: adminUserPasswordReset
+      tags: [Admin — Users]
+      summary: Reset a user's password
+      description: |
+        Self-reset is permitted (mirrors `/manage/users`). Otherwise
+        the target must be below the acting user's role level.
+        bcrypt cost-12 hashing is performed inside
+        `changeUserPassword()`; the plaintext never touches the
+        activity log.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_user_password_reset] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, new_password]
+              properties:
+                user_id:      { type: integer }
+                new_password:
+                  type: string
+                  format: password
+                  minLength: 8
+      responses:
+        "200":
+          description: Password reset
+        "400":
+          description: Password too short, or missing user_id
+        "403":
+          description: Hierarchy gate
+        "404":
+          description: User id not found
+
+  /api.php?action=admin_user_delete:
+    post:
+      operationId: adminUserDelete
+      tags: [Admin — Users]
+      summary: Permanently delete a user
+      description: |
+        Hard delete via `deleteUser()` in
+        `manage/includes/auth.php`. Cannot delete yourself; cannot
+        delete a peer or superior unless `global_admin`. FK cascades
+        clean up tokens, setlists, etc.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_user_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id: { type: integer }
+      responses:
+        "200":
+          description: User deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:       { type: boolean, example: true }
+                  id:       { type: integer }
+                  username: { type: string }
+        "403":
+          description: Cannot delete self, or hierarchy gate
+        "404":
+          description: User id not found
+
+  # ===========================================================================
+  # ADMIN — GROUPS  (#719 PR 2b)
+  # ===========================================================================
+
+  /api.php?action=admin_group_create:
+    post:
+      operationId: adminGroupCreate
+      tags: [Admin — Groups]
+      summary: Create a user group
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_group_create] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminGroupWriteInput"
+      responses:
+        "201":
+          description: Group created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:   { type: boolean, example: true }
+                  id:   { type: integer }
+                  name: { type: string }
+        "400":
+          description: Missing name, or name too long
+        "403":
+          description: Admin access required
+        "409":
+          description: Group name already in use
+
+  /api.php?action=admin_group_update:
+    post:
+      operationId: adminGroupUpdate
+      tags: [Admin — Groups]
+      summary: Update a user group
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_group_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/AdminGroupWriteInput"
+                - type: object
+                  required: [id]
+                  properties:
+                    id: { type: integer }
+      responses:
+        "200":
+          description: Group updated
+        "400":
+          description: Missing id or name
+        "403":
+          description: Admin access required
+        "404":
+          description: Group id not found
+        "409":
+          description: Another group already uses that name
+
+  /api.php?action=admin_group_delete:
+    post:
+      operationId: adminGroupDelete
+      tags: [Admin — Groups]
+      summary: Delete an empty user group
+      description: Refuses with 422 if any user is still a member.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_group_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Group deleted
+        "400":
+          description: Missing id
+        "403":
+          description: Admin access required
+        "404":
+          description: Group id not found
+        "422":
+          description: |
+            Refused — group still has members. Response includes
+            `member_count`, `name`, and `hint` so the caller can
+            render an honest "move users first" prompt.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:        { type: string }
+                  member_count: { type: integer }
+                  name:         { type: string }
+                  hint:         { type: string }
+
+  /api.php?action=admin_group_member_add:
+    post:
+      operationId: adminGroupMemberAdd
+      tags: [Admin — Groups]
+      summary: Move a user into a group (sets tblUsers.GroupId)
+      description: |
+        A user belongs to at most one group at a time, so calling
+        this also moves them out of whatever group they were in.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_group_member_add] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [group_id, user_id]
+              properties:
+                group_id: { type: integer }
+                user_id:  { type: integer }
+      responses:
+        "200":
+          description: Membership set
+        "400":
+          description: Missing group_id or user_id
+        "403":
+          description: Admin access required
+        "404":
+          description: Group or user not found
+
+  /api.php?action=admin_group_member_remove:
+    post:
+      operationId: adminGroupMemberRemove
+      tags: [Admin — Groups]
+      summary: Remove a user from their group (clears tblUsers.GroupId)
+      description: |
+        Drops the FK to NULL — a user belongs to at most one group,
+        so the previous group_id isn't required from the caller.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_group_member_remove] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id: { type: integer }
+      responses:
+        "200":
+          description: Membership cleared (or already absent)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:             { type: boolean, example: true }
+                  user_id:        { type: integer }
+                  previous_group:
+                    type: integer
+                    nullable: true
+                    description: The group_id the user was in before this call (null if they weren't in any).
+        "400":
+          description: Missing user_id
+        "403":
+          description: Admin access required
+        "404":
+          description: User id not found
+
+  # ===========================================================================
+  # ADMIN — TIERS  (#719 PR 2b)
+  # ===========================================================================
+
+  /api.php?action=admin_tier_create:
+    post:
+      operationId: adminTierCreate
+      tags: [Admin — Tiers]
+      summary: Create an access tier
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_tier_create] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminTierCreateInput"
+      responses:
+        "201":
+          description: Tier created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:   { type: boolean, example: true }
+                  id:   { type: integer }
+                  name: { type: string }
+        "400":
+          description: Validation error (name shape, level bounds, missing display_name)
+        "403":
+          description: Admin access required
+        "409":
+          description: Tier name already in use
+
+  /api.php?action=admin_tier_update:
+    post:
+      operationId: adminTierUpdate
+      tags: [Admin — Tiers]
+      summary: Update an access tier
+      description: |
+        Machine `name` is intentionally immutable — too many
+        `tblUsers.AccessTier` rows reference it for a casual
+        rename. Use a manual SQL migration if a rename is genuinely
+        needed.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_tier_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminTierUpdateInput"
+      responses:
+        "200":
+          description: Tier updated
+        "400":
+          description: Validation error
+        "403":
+          description: Admin access required
+        "404":
+          description: Tier id not found
+
+  /api.php?action=admin_tier_delete:
+    post:
+      operationId: adminTierDelete
+      tags: [Admin — Tiers]
+      summary: Delete an unused access tier
+      description: Refuses with 422 if any user is still on the tier.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_tier_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Tier deleted
+        "400":
+          description: Missing id
+        "403":
+          description: Admin access required
+        "404":
+          description: Tier id not found
+        "422":
+          description: |
+            Refused — users are still on this tier. Response includes
+            `user_count`, `name`, and `hint`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:      { type: string }
+                  user_count: { type: integer }
+                  name:       { type: string }
+                  hint:       { type: string }
 
   /api.php?action=admin_activity_log:
     get:
@@ -5982,6 +6623,131 @@ components:
           type: string
           nullable: true
           description: Username of the actor
+
+    # -------------------------------------------------------------------------
+    # Admin write-input shapes (#719 PR 2b)
+    # -------------------------------------------------------------------------
+
+    AdminUserCreateInput:
+      type: object
+      description: |
+        Input for `admin_user_create`. The mutation routes through
+        `createUser()` in `manage/includes/auth.php`, which hashes
+        the password with bcrypt before insert and writes the
+        canonical `user.create` activity-log row.
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 100
+          description: Case preserved on disk; uniqueness check is case-insensitive (utf8mb4_unicode_ci).
+        password:
+          type: string
+          minLength: 8
+          format: password
+        display_name:
+          type: string
+          description: Defaults to `username` when blank.
+        role:
+          type: string
+          enum: [user, editor, admin, global_admin]
+          default: editor
+          description: |
+            Hierarchy gate: can never exceed the acting user's role
+            level; only `global_admin` can assign `global_admin`.
+        email:
+          type: string
+          format: email
+
+    AdminUserProfileInput:
+      type: object
+      description: Input for `admin_user_update` (display name + email only).
+      required: [user_id, display_name]
+      properties:
+        user_id:    { type: integer }
+        display_name: { type: string }
+        email:      { type: string, format: email }
+
+    AdminGroupWriteInput:
+      type: object
+      description: |
+        Input for `admin_group_create` and the metadata half of
+        `admin_group_update`. Add `id` (required) for the latter.
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 100
+        description:
+          type: string
+        access_alpha: { type: boolean, default: false }
+        access_beta:  { type: boolean, default: false }
+        access_rc:    { type: boolean, default: false }
+        access_rtw:   { type: boolean, default: false }
+
+    AdminTierCapabilities:
+      type: object
+      description: |
+        Capability flags keyed by exact `tblAccessTiers` column
+        name. Unknown keys are ignored; missing keys default to
+        false. The list mirrors `TIER_CAPS` in
+        `includes/access_tier_validation.php` so a new capability
+        is a one-line schema + const change.
+      properties:
+        CanViewLyrics:      { type: boolean, default: false }
+        CanViewCopyrighted: { type: boolean, default: false }
+        CanPlayAudio:       { type: boolean, default: false }
+        CanDownloadMidi:    { type: boolean, default: false }
+        CanDownloadPdf:     { type: boolean, default: false }
+        CanOfflineSave:     { type: boolean, default: false }
+        RequiresCcli:       { type: boolean, default: false }
+
+    AdminTierCreateInput:
+      type: object
+      description: Input for `admin_tier_create`.
+      required: [name, display_name, level]
+      properties:
+        name:
+          type: string
+          maxLength: 30
+          pattern: "^[A-Za-z0-9_-]+$"
+          description: Machine key. Letters / digits / hyphen / underscore. Case preserved.
+          example: mwbm-insiders
+        display_name:
+          type: string
+          example: MWBM Insiders
+        level:
+          type: integer
+          minimum: 0
+          maximum: 1000
+          description: Higher level = more permissions. Bounded so a typo can't elevate one tier above the rest.
+        description:
+          type: string
+        caps:
+          $ref: "#/components/schemas/AdminTierCapabilities"
+
+    AdminTierUpdateInput:
+      type: object
+      description: |
+        Input for `admin_tier_update`. The machine `name` is
+        intentionally immutable — too many `tblUsers.AccessTier`
+        rows reference it for a casual rename. Use a manual SQL
+        migration if a rename is genuinely needed.
+      required: [id, display_name, level]
+      properties:
+        id:
+          type: integer
+        display_name:
+          type: string
+        level:
+          type: integer
+          minimum: 0
+          maximum: 1000
+        description:
+          type: string
+        caps:
+          $ref: "#/components/schemas/AdminTierCapabilities"
 
     # -------------------------------------------------------------------------
     # Generic response models
