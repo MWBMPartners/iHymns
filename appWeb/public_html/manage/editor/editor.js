@@ -453,6 +453,43 @@ function getSelectedSongbookFilter() {
 }
 
 /**
+ * updateNumberLabelRequiredness(abbr)
+ * -----------------------------------
+ * Toggles the red `*` and the "Optional — this songbook is unofficial"
+ * hint next to the Song Number input based on whether the songbook
+ * `abbr` carries IsOfficial=1 in songData.songbooks. Required for
+ * official songbooks (SDAH, ACH, …); optional for unofficial ones
+ * (Misc, custom collections). #392.
+ *
+ * @param {string} abbr Songbook abbreviation (or empty string).
+ */
+function updateNumberLabelRequiredness(abbr) {
+    var star  = document.getElementById('edit-number-required');
+    var hint  = document.getElementById('edit-number-hint');
+    var input = document.getElementById('edit-number');
+    if (!star || !hint || !input) return;
+
+    /* No songbook selected: hide both — there's nothing to require yet. */
+    var trimmed = (abbr || '').trim();
+    if (trimmed === '') {
+        star.hidden = true;
+        hint.hidden = true;
+        input.removeAttribute('aria-required');
+        return;
+    }
+
+    var sb = (songData.songbooks || []).find(function (s) { return s.id === trimmed; });
+    var isOfficial = !!(sb && sb.isOfficial);
+    star.hidden = !isOfficial;
+    hint.hidden = isOfficial;
+    if (isOfficial) {
+        input.setAttribute('aria-required', 'true');
+    } else {
+        input.removeAttribute('aria-required');
+    }
+}
+
+/**
  * populateSongbookFilterDropdown()
  * --------------------------------
  * Fills the songbook filter <select> (and the metadata songbook dropdown)
@@ -517,6 +554,9 @@ function selectSong(songId) {
     setVal('edit-title', song.title || '');
     setVal('edit-number', song.number || '');
     setVal('edit-songbook', song.songbook || '');
+    /* Show/hide the red `*` next to "Song Number" based on the loaded
+       song's songbook IsOfficial flag (#392). */
+    updateNumberLabelRequiredness(song.songbook || '');
     setVal('edit-ccli', song.ccli || '');
     setVal('edit-iswc', song.iswc || '');            /* #497 */
     setVal('edit-tune-name', song.tuneName || '');   /* #497 */
@@ -620,6 +660,11 @@ function bindMetadataListeners() {
                 if (field.key === 'songbook') {
                     var sb = songData.songbooks.find(function (s) { return s.id === el.value; });
                     song.songbookName = sb ? sb.name : el.value;
+                    /* Re-evaluate the Song Number `*` requirement (#392).
+                       Switching from an official songbook to an unofficial
+                       one (or vice-versa) should immediately update the
+                       label so the user sees the rule applied to them. */
+                    updateNumberLabelRequiredness(el.value);
                 }
 
                 /* Mark this song as modified. */
@@ -2315,6 +2360,17 @@ function validateSongData() {
     /* Accumulator for error messages. */
     var errors = [];
 
+    /* IsOfficial lookup by songbook abbreviation. Songs in non-
+       official songbooks (Misc, custom collections, etc.) don't
+       have a meaningful per-songbook number — the internal Song ID
+       (`song-<ts>-<rand>`) is the cross-record link instead. Per
+       #392 / #738 follow-up: number is required ONLY when the
+       songbook is flagged IsOfficial=1. */
+    var officialByAbbr = (songData.songbooks || []).reduce(function (map, b) {
+        if (b && typeof b.id === 'string') map[b.id] = !!b.isOfficial;
+        return map;
+    }, Object.create(null));
+
     /* Iterate over every song. */
     songData.songs.forEach(function (song, i) {
         /* Build a label for this song to make errors identifiable. */
@@ -2330,14 +2386,18 @@ function validateSongData() {
             errors.push(label + ': missing or empty "title".');
         }
 
-        /* number is required (can be string or number, but must exist). */
-        if (song.number == null || String(song.number).trim() === '') {
-            errors.push(label + ': missing "number".');
-        }
-
         /* songbook is required. */
         if (!song.songbook || typeof song.songbook !== 'string' || song.songbook.trim() === '') {
             errors.push(label + ': missing or empty "songbook".');
+        }
+
+        /* number is required only when the song's songbook is flagged
+           IsOfficial=1. Unofficial songbooks (Misc and any other
+           custom collection) keep number as nullable since their
+           songs typically aren't numbered in the source. (#392) */
+        var isOfficial = !!officialByAbbr[(song.songbook || '').trim()];
+        if (isOfficial && (song.number == null || String(song.number).trim() === '')) {
+            errors.push(label + ': missing "number" (required for official songbooks).');
         }
 
         /* components must be a non-empty array. */
@@ -2364,6 +2424,12 @@ function validateSongData() {
 function validateSongsByIds(ids) {
     var wanted = new Set(ids);
     var errors = [];
+    /* Same IsOfficial map as validateSongData() — number is required
+       only when the song's songbook is flagged IsOfficial=1. (#392) */
+    var officialByAbbr = (songData.songbooks || []).reduce(function (map, b) {
+        if (b && typeof b.id === 'string') map[b.id] = !!b.isOfficial;
+        return map;
+    }, Object.create(null));
     (songData.songs || []).forEach(function (song, i) {
         if (!wanted.has(song.id)) return;
         var label = 'Song ' + (song.id || '[' + i + ']') +
@@ -2374,11 +2440,12 @@ function validateSongsByIds(ids) {
         if (!song.title || typeof song.title !== 'string' || song.title.trim() === '') {
             errors.push(label + ': missing or empty "title".');
         }
-        if (song.number == null || String(song.number).trim() === '') {
-            errors.push(label + ': missing "number".');
-        }
         if (!song.songbook || typeof song.songbook !== 'string' || song.songbook.trim() === '') {
             errors.push(label + ': missing or empty "songbook".');
+        }
+        var isOfficial = !!officialByAbbr[(song.songbook || '').trim()];
+        if (isOfficial && (song.number == null || String(song.number).trim() === '')) {
+            errors.push(label + ': missing "number" (required for official songbooks).');
         }
         if (!Array.isArray(song.components) || song.components.length === 0) {
             errors.push(label + ': must have at least one component.');
@@ -3111,6 +3178,9 @@ function clearEditForm() {
     setVal('edit-title', '');
     setVal('edit-number', '');
     setVal('edit-songbook', '');
+    /* Reset the Song Number `*` indicator now that no songbook is
+       selected (#392). */
+    updateNumberLabelRequiredness('');
     setVal('edit-ccli', '');
     setVal('edit-iswc', '');           /* #497 */
     setVal('edit-tune-name', '');      /* #497 */

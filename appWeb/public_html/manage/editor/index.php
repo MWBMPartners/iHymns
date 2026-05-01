@@ -537,7 +537,9 @@ $currentUser = getCurrentUser();
                              own full-width line. -->
                         <div class="row g-2 mb-3">
                             <div class="col-md-2">
-                                <label for="edit-number" class="form-label">Song Number</label>
+                                <label for="edit-number" class="form-label">
+                                    Song Number<span id="edit-number-required" class="text-danger ms-1" hidden aria-hidden="true">*</span>
+                                </label>
                                 <input
                                     type="number"
                                     class="form-control"
@@ -546,6 +548,13 @@ $currentUser = getCurrentUser();
                                     min="1"
                                     max="9999"
                                 >
+                                <!-- Toggled by editor.js when the selected songbook
+                                     is unofficial (Misc, custom collections); songs
+                                     in those songbooks don't have a per-songbook
+                                     number and the internal Song ID is the link. #392 -->
+                                <div id="edit-number-hint" class="form-text" hidden>
+                                    Optional — this songbook is unofficial.
+                                </div>
                             </div>
                             <div class="col-md-5">
                                 <label for="edit-songbook" class="form-label">Songbook</label>

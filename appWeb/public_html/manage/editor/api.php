@@ -263,10 +263,17 @@ switch ($action) {
             $stmtSongbook = $db->prepare(
                 "INSERT INTO tblSongbooks (Abbreviation, Name, SongCount) VALUES (?, ?, ?)"
             );
+            /* Build an IsOfficial lookup keyed by abbreviation so the
+               per-song INSERT below can null out Number for any song
+               whose songbook is unofficial (Misc and any custom
+               collection). #392. The payload's `isOfficial` is sourced
+               from SongData::getSongbooks() and is always boolean. */
+            $officialByAbbr = [];
             foreach ($data['songbooks'] as $book) {
                 $abbr  = $book['id'];
                 $name  = $book['name'];
                 $count = (int)($book['songCount'] ?? 0);
+                $officialByAbbr[$abbr] = !empty($book['isOfficial']);
                 $stmtSongbook->bind_param('ssi', $abbr, $name, $count);
                 $stmtSongbook->execute();
             }
@@ -304,10 +311,13 @@ switch ($action) {
                 $songId       = $song['id'];
                 $songbookAbbr = $song['songbook'];
 
-                /* Misc songs (and anything without a meaningful number)
-                   persist Number as NULL (#392). */
-                $rawNumber = $song['number'] ?? null;
-                $number    = ($songbookAbbr === 'Misc' || $rawNumber === null || $rawNumber === '' || (int)$rawNumber <= 0)
+                /* Songs in non-official songbooks (Misc, custom
+                   collections) persist Number as NULL — and so does
+                   anything missing/zero/negative. The internal SongId
+                   ties the record together. #392. */
+                $rawNumber  = $song['number'] ?? null;
+                $isOfficial = !empty($officialByAbbr[$songbookAbbr]);
+                $number     = (!$isOfficial || $rawNumber === null || $rawNumber === '' || (int)$rawNumber <= 0)
                     ? null
                     : (int)$rawNumber;
 
@@ -575,9 +585,29 @@ switch ($action) {
         $songId       = (string)$song['id'];
         $songbookAbbr = (string)($song['songbook'] ?? '');
 
-        /* Misc (or any missing value) persists Number as NULL (#392). */
+        /* Probe tblSongbooks for IsOfficial so songs in unofficial
+           songbooks (Misc, custom collections) can persist Number as
+           NULL while songs in official songbooks keep the per-songbook
+           number. The probe happens here (outside the transaction
+           below) because the songbook row is read-only context. #392. */
+        $isOfficialSongbook = false;
+        if ($songbookAbbr !== '') {
+            $probe = getDbMysqli()->prepare(
+                'SELECT IsOfficial FROM tblSongbooks WHERE Abbreviation = ? LIMIT 1'
+            );
+            $probe->bind_param('s', $songbookAbbr);
+            $probe->execute();
+            $row = $probe->get_result()->fetch_assoc();
+            $probe->close();
+            $isOfficialSongbook = (bool)($row['IsOfficial'] ?? false);
+        }
+
+        /* Songs in non-official songbooks (Misc, custom collections)
+           persist Number as NULL — and so does anything missing or
+           non-positive. The internal SongId is the cross-record link
+           in that case. #392. */
         $rawNumber = $song['number'] ?? null;
-        $number    = ($songbookAbbr === 'Misc' || $rawNumber === null || $rawNumber === '' || (int)$rawNumber <= 0)
+        $number    = (!$isOfficialSongbook || $rawNumber === null || $rawNumber === '' || (int)$rawNumber <= 0)
             ? null
             : (int)$rawNumber;
 
