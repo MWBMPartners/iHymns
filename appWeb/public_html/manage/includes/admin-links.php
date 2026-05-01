@@ -39,6 +39,7 @@ $_adminLinks = [
     ['songbooks',       '/manage/songbooks',       'bi-book',           'Songbooks',            'manage_songbooks',            'Content'    ],
     ['credit-people',   '/manage/credit-people',   'bi-person-badge',   'Credit People',        'manage_credit_people',        'Content'    ],
     ['languages',       '/manage/languages',       'bi-translate',      'Languages',            'manage_languages',            'Content'    ],
+    ['tags',            '/manage/tags',            'bi-tags',           'Tags & Themes',        'manage_tags',                 'Content'    ],
     ['restrictions',    '/manage/restrictions',    'bi-shield-lock',    'Content Restrictions', 'manage_content_restrictions', 'Content'    ],
     ['tiers',           '/manage/tiers',           'bi-stars',          'Access Tiers',         'manage_access_tiers',         'Content'    ],
     ['users',           '/manage/users',           'bi-people',         'Users',                'view_users',                  'People'     ],
