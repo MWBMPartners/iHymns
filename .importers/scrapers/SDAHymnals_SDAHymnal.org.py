@@ -45,6 +45,9 @@ Usage:
 # ---------------------------------------------------------------------------
 import urllib.request   # For making HTTP requests to fetch hymn pages
 import urllib.error     # For handling HTTP error responses (404, 500, etc.)
+import urllib.parse     # For decoding percent-encoded path components in
+                         # the redirect-to-home detection (#699 multilingual
+                         # sister sites use Cyrillic paths in the URL).
 import html.parser      # Base class for our custom HTML parser (no BeautifulSoup needed)
 import sys
 
@@ -220,6 +223,106 @@ DEFAULT_OUTPUT_DIR = "./hymns"
 # and avoid triggering rate limits. 1.0s is a reasonable balance between
 # speed and politeness.
 DELAY              = 1.0
+
+# Language-name lookup for the output-folder suffix (#780). Each scraper
+# manifest carries a `lang` field (BCP 47 primary subtag) and we compose
+# the subdir as "<Title> [<ABBR>]_<LanguageName>-<lang>" so a curator
+# (and the bulk-import handler) can read the language straight off
+# disk without a separate manifest lookup. Fallback for an unknown code
+# is the code itself uppercased — keeps the suffix non-empty rather
+# than degrading to the legacy shape.
+LANG_NAMES = {
+    "en":      "English",
+    "es":      "Spanish",
+    "pt":      "Portuguese",
+    "fr":      "French",
+    "it":      "Italian",
+    "de":      "German",
+    "nl":      "Dutch",
+    "ru":      "Russian",
+    "uk":      "Ukrainian",
+    "pl":      "Polish",
+    "bg":      "Bulgarian",
+    "mk":      "Macedonian",
+    "hr":      "Croatian",
+    "sr-Latn": "Serbian (Latin)",
+    "sr-Cyrl": "Serbian (Cyrillic)",
+    "sl":      "Slovenian",
+    "sk":      "Slovak",
+    "cs":      "Czech",
+    "ro":      "Romanian",
+    "el":      "Greek",
+    "tr":      "Turkish",
+    "ar":      "Arabic",
+    "he":      "Hebrew",
+    "fa":      "Persian",
+    "hi":      "Hindi",
+    "bn":      "Bengali",
+    "ta":      "Tamil",
+    "ml":      "Malayalam",
+    "te":      "Telugu",
+    "zh":      "Chinese",
+    "ja":      "Japanese",
+    "ko":      "Korean",
+    "vi":      "Vietnamese",
+    "th":      "Thai",
+    "id":      "Indonesian",
+    "ms":      "Malay",
+    "tl":      "Tagalog",
+    "sw":      "Swahili",
+    "rw":      "Kinyarwanda",
+    "to":      "Tonga",
+    "tn":      "Tswana",
+    "st":      "Sotho",
+    "ny":      "Chichewa",
+    "sn":      "Shona",
+    "ve":      "Venda",
+    "nd":      "Northern Ndebele",
+    "xh":      "Xhosa",
+    "ts":      "Xitsonga",
+    "ki":      "Kikuyu",
+    "guz":     "Gusii",
+    "luo":     "Luo",
+    "tum":     "Tumbuka",
+    "nso":     "Sepedi",
+    "bem":     "Bemba",
+    "tw":      "Twi",
+    "yo":      "Yoruba",
+    "ig":      "Igbo",
+    "ha":      "Hausa",
+    "am":      "Amharic",
+    "mg":      "Malagasy",
+}
+
+
+def language_label(code):
+    """
+    Look up the English display name for a BCP 47 primary subtag.
+    Returns the code itself uppercased when unknown — better to keep
+    the folder suffix non-empty than to silently degrade.
+    """
+    if not code:
+        return ""
+    return LANG_NAMES.get(code, code.upper())
+
+
+def compose_subdir(title, abbrev, lang_code):
+    """
+    Build the output sub-directory name for a hymnal (#780):
+
+        "<Title> [<ABBR>]_<LanguageName>-<lang>"
+
+    e.g. "Seventh-day Adventist Hymnal [SDAH]_English-en"
+         "Himnario Adventista [HA]_Spanish-es"
+
+    When lang_code is empty/None we fall back to the legacy shape
+    so a manifest entry without a language stays valid.
+    """
+    base = f"{title} [{abbrev}]"
+    if not lang_code:
+        return base
+    label = language_label(lang_code)
+    return f"{base}_{label}-{lang_code}"
 
 
 # ---------------------------------------------------------------------------
@@ -572,6 +675,70 @@ class HymnParser(html.parser.HTMLParser):
 # Fetch & parse — HTTP request handling and hymn data extraction
 # ---------------------------------------------------------------------------
 
+# Known rate-limit / error-shell page signatures across the multilingual
+# sister-site set (#699). These are short fragments of the limit-page
+# body text that don't appear in real hymn lyrics. Add new phrases as
+# they're discovered — but the structural check in _is_rate_limit_page()
+# is the fail-closed default, so missing a phrase here only costs one
+# extra wait/retry per language, never a 3000-file garbage flood.
+RATE_LIMIT_PHRASES = [
+    # English — sdahymnal.org, hymnal.xyz
+    "reached limit for today",
+    "we are sorry",
+    # Portuguese — hinarioadventista.com (HASD).
+    # Discovered the hard way on 2026-05-01 when the English-only
+    # detector let 3404 "Desculpe, mas você chegou o limite de hoje"
+    # pages parse as fake successful hymns.
+    "desculpe, mas você chegou o limite de hoje",
+    "limite de hoje",
+    # Other languages: add phrases here as they're observed. The
+    # structural fallback below catches new languages without code
+    # changes — these explicit phrases just avoid the 60s retry pause
+    # on the first hit.
+    # TODO: ES (himnario.net / nuevohimnario.com)
+    # TODO: FR (hymnes.net)
+    # TODO: IT (innarioavventista.com)
+    # TODO: HR / SR-Latn (himne.net / pjesme.net)
+    # TODO: BG (hristianskipesni.com)
+    # TODO: MK (hristijanskipesni.com)
+    # TODO: SR-Cyrl (pesmarica.net)
+]
+
+
+def _is_rate_limit_page(html_text, parser):
+    """
+    Detect a rate-limit / error-shell page by EITHER signal:
+
+    1. Phrase match — page body contains a known limit phrase
+       (English, Portuguese, etc. — see RATE_LIMIT_PHRASES).
+
+    2. Structural — parser found a title but ZERO lyrics sections.
+       Every real hymn on this site network has at least one
+       verse/chorus block (div.block-heading-five). An error
+       shell that reuses the standard title layout but carries no
+       hymn data is the language-agnostic rate-limit indicator.
+
+    The structural check is the fail-closed default: any future
+    language whose phrase isn't in RATE_LIMIT_PHRASES still gets
+    caught, so a missing phrase string costs at most one extra
+    wait/retry per language rather than thousands of garbage saves.
+
+    Args:
+        html_text: The raw HTML text of the response.
+        parser:    A HymnParser already fed with html_text.
+
+    Returns:
+        bool: True if the page looks like a rate-limit / error shell.
+    """
+    lower = html_text.lower()
+    if any(phrase in lower for phrase in RATE_LIMIT_PHRASES):
+        return True
+    # Structural fallback: title parsed but no sections.
+    if parser.title and not parser.sections:
+        return True
+    return False
+
+
 def fetch_hymn(number, base_url, home_url):
     """
     Fetch a single hymn page from the website and parse it into structured data.
@@ -616,8 +783,19 @@ def fetch_hymn(number, base_url, home_url):
                 # the requested hymn number doesn't exist (we've gone past the
                 # end of the hymnal). We only check for number > 1 because
                 # hymn 1 should always exist.
+                #
+                # Multilingual sister sites (#699) use language-specific path
+                # leaves: Hymn / Himno / Hino / Cantique / Inno / Himna /
+                # Песен / Песна / Химна. The leaf to look for is whatever
+                # came after the last slash in base_url. urllib.parse.unquote
+                # so a percent-encoded Cyrillic leaf compares cleanly against
+                # whatever form the server returns in the redirect.
+                base_path_leaf = urllib.parse.unquote(
+                    base_url.rstrip("/").rsplit("/", 1)[-1]
+                )
                 final_url = resp.url.rstrip("/")
-                if "Hymn" not in final_url and number > 1:
+                final_url_decoded = urllib.parse.unquote(final_url)
+                if base_path_leaf not in final_url_decoded and number > 1:
                     print(f"\n  Hymn {number}: redirected to home — reached end.")
                     return None  # Signal to stop scraping entirely
 
@@ -660,11 +838,30 @@ def fetch_hymn(number, base_url, home_url):
     parser = HymnParser()
     parser.feed(html_text)
 
-    # --- Rate limit detection ---
-    # Both sites show a "reached limit for today" message when you've made
-    # too many requests. If detected, pause for 60 seconds and try once more.
-    if "reached limit for today" in html_text.lower() or "we are sorry" in html_text.lower():
-        print(f"  rate limit hit — pausing 60s...", flush=True)
+    # --- Rate-limit detection (multilingual + structural) ---
+    #
+    # Two complementary signals:
+    #
+    #   (a) Phrase match — short fragments of the limit-page body text
+    #       across the languages we know about. These don't appear in
+    #       real hymn lyrics. Add new phrases to RATE_LIMIT_PHRASES as
+    #       they're discovered.
+    #
+    #   (b) Structural — parser found a title but ZERO lyrics sections.
+    #       Real hymn pages always have ≥1 verse/chorus block; an error
+    #       shell that reuses the site's standard layout (title + body)
+    #       but carries no hymn data is the multilingual rate-limit
+    #       indicator we don't yet have a phrase for.
+    #
+    # Why (b) matters: hinarioadventista.com (Portuguese / HASD) burned
+    # 3404 garbage saves on 2026-05-01 because the original detector
+    # only knew the English phrase "reached limit for today" and the
+    # Portuguese page (`Desculpe, mas você chegou o limite de hoje.`)
+    # parsed cleanly as a "successful" hymn with title+no-sections.
+    # The structural check catches every future language fail-closed
+    # without us having to hand-curate phrase strings per locale.
+    if _is_rate_limit_page(html_text, parser):
+        print(f"  rate limit / error shell hit — pausing 60s...", flush=True)
         time.sleep(60)
 
         # One retry after the cooldown period
@@ -673,21 +870,32 @@ def fetch_hymn(number, base_url, home_url):
                 raw2 = resp.read()
             html_text2 = raw2.decode("utf-8", errors="replace")
 
+            # Re-parse so the structural check can re-evaluate
+            parser2 = HymnParser()
+            parser2.feed(html_text2)
+
             # Check if we're still rate limited after waiting
-            if "reached limit for today" in html_text2.lower():
+            if _is_rate_limit_page(html_text2, parser2):
                 print(f"  Still rate limited — stopping. Try again tomorrow.")
                 return None   # Stop entirely — no point continuing today
 
-            # Rate limit cleared — re-parse with the fresh response
+            # Rate limit cleared — adopt the fresh response
             html_text = html_text2
-            parser = HymnParser()
-            parser.feed(html_text)
+            parser = parser2
         except Exception:
             return None  # Network error during retry — stop scraping
 
     # Validate that the parser found a title (indicates a valid hymn page)
     if not parser.title:
         print(f"  no title found.")
+        return "SKIP"
+
+    # Belt-and-braces — even after the rate-limit retry path, a successful
+    # parse with a title but zero sections is not a real hymn. Treat as
+    # SKIP so the caller's MAX_CONSEC=10 safety net catches a sustained
+    # error-shell stream that somehow slipped past detection.
+    if parser.title and not parser.sections:
+        print(f"  title parsed but no sections — likely error shell, skipping.")
         return "SKIP"
 
     # Return the structured hymn data
@@ -790,7 +998,19 @@ def title_case(s):
         "o'er the hills"     → "O'er The Hills"
         "EAGLE\u2019S WINGS" → "Eagle\u2019s Wings"
     """
-    return re.sub(r"[a-zA-Z]+(['\u2019\u2018][a-zA-Z]+)?", lambda m: m.group(0).capitalize(), s)
+    # Unicode-aware: `[^\W\d_]` is the standard Python 3 idiom for "any
+    # Unicode letter" (a word char that is not a digit and not an
+    # underscore). Earlier `[a-zA-Z]+` only matched ASCII letters, which
+    # mangled "SE\u00d1OR" \u2192 "Se\u00f1Or" (matched "SE", skipped "\u00d1", then
+    # matched "OR" as a fresh word and capitalised the O) and left
+    # Cyrillic titles entirely uncased on the multilingual sister sites.
+    # str.capitalize() is itself Unicode-aware in Python 3, so
+    # "SE\u00d1OR".capitalize() == "Se\u00f1or" and "\u0425\u0420\u0418\u0421\u0422\u0415".capitalize() == "\u0425\u0440\u0438\u0441\u0442\u0435".
+    return re.sub(
+        r"[^\W\d_]+(['\u2019\u2018][^\W\d_]+)?",
+        lambda m: m.group(0).capitalize(),
+        s,
+    )
 
 
 def build_existing_set(label, output_dir):
@@ -1128,9 +1348,23 @@ def scrape_site(site_key, start, end, output_dir, delay, force=False, prefer_sou
     base_url = site["base_url"]
     home_url = site["home_url"]
 
-    # Route output into a book-specific subdirectory within the base output dir
-    # e.g. "./hymns/Seventh-day Adventist Hymnal [SDAH]/"
-    book_dir = os.path.join(output_dir, site["subdir"])
+    # Route output into a book-specific subdirectory within the base output dir.
+    # The folder name now embeds the language (#780) — e.g.
+    #   "./hymns/Seventh-day Adventist Hymnal [SDAH]_English-en/"
+    # The site["subdir"] value carries the legacy "<Title> [<ABBR>]" shape; we
+    # extract title + abbrev from that and compose the new shape via
+    # compose_subdir() with site["lang"]. Sites with no `lang` set fall through
+    # to the legacy shape automatically.
+    legacy_subdir = site["subdir"]
+    # Strip trailing " [<ABBR>]" to get the bare title for the new composition.
+    m = re.match(r"^(?P<title>.+?)\s*\[(?P<abbr>[A-Za-z0-9_\-]+)\]$", legacy_subdir)
+    if m:
+        title_part = m.group("title").strip()
+        abbr_part  = m.group("abbr")
+        new_subdir = compose_subdir(title_part, abbr_part, site.get("lang", ""))
+    else:
+        new_subdir = legacy_subdir
+    book_dir = os.path.join(output_dir, new_subdir)
 
     # Print a banner with configuration details for this scrape run
     print(f"\n{'='*50}")

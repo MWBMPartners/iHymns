@@ -139,7 +139,16 @@ function _ietfBcp47Validate(string $raw)
  * closing bracket). Anchored to the entire path-segment string so we
  * don't match accidental "[" inside titles.
  */
-const _BULK_IMPORT_FOLDER_RE = '/^(?P<name>.+?)\s*\[(?P<abbr>[A-Za-z0-9_\-]+)\]$/u';
+/* Folder name regex (#780): the original "<Title> [<ABBR>]" form
+   is still accepted unchanged, plus an optional language suffix
+   "_<LanguageName>-<ISO>" the scrapers append so a curator (and the
+   bulk-import handler) can read the language straight off disk.
+       e.g. "Himnario Adventista [HA]_Spanish-es"
+            "Christ in Song [CIS]_English-en"
+   The captured `lang` group is the BCP 47 primary subtag (2-3 lower-
+   case letters or composite forms like sr-Latn). It's validated below
+   before being stamped onto the songbook row. */
+const _BULK_IMPORT_FOLDER_RE = '/^(?P<name>.+?)\s*\[(?P<abbr>[A-Za-z0-9_\-]+)\](?:_(?P<langname>[^-]+)-(?P<lang>[A-Za-z][A-Za-z0-9\-]{1,34}))?$/u';
 
 /**
  * Filename regex: "001 (CIS) - Watchman Blow The Gospel Trumpet.txt".
@@ -2190,7 +2199,7 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
  * Returns 'created' for a brand-new abbreviation, 'existing' if the
  * abbreviation was already in tblSongbooks.
  */
-function _bulkImport_upsertSongbook(\mysqli $db, string $abbr, string $name): string
+function _bulkImport_upsertSongbook(\mysqli $db, string $abbr, string $name, ?string $language = null): string
 {
     $sel = $db->prepare('SELECT 1 FROM tblSongbooks WHERE Abbreviation = ? LIMIT 1');
     $sel->bind_param('s', $abbr);
@@ -2219,8 +2228,28 @@ function _bulkImport_upsertSongbook(\mysqli $db, string $abbr, string $name): st
         }
     }
 
-    $ins = $db->prepare('INSERT INTO tblSongbooks (Abbreviation, Name, Colour, SongCount) VALUES (?, ?, ?, 0)');
-    $ins->bind_param('sss', $abbr, $name, $colour);
+    /* Language captured from the folder-name suffix (#780). Validated
+       against the picker's BCP 47 grammar so a malformed suffix can't
+       land bad data — falls through to NULL on rejection. */
+    $langTag = null;
+    if ($language !== null && $language !== '') {
+        $langTrim = trim($language);
+        if (preg_match('/^[a-z]{2,3}(-[A-Za-z0-9]+)*$/i', $langTrim)) {
+            $langTag = mb_substr($langTrim, 0, 35);
+        }
+    }
+
+    if ($langTag !== null) {
+        $ins = $db->prepare(
+            'INSERT INTO tblSongbooks (Abbreviation, Name, Colour, SongCount, Language) VALUES (?, ?, ?, 0, ?)'
+        );
+        $ins->bind_param('ssss', $abbr, $name, $colour, $langTag);
+    } else {
+        $ins = $db->prepare(
+            'INSERT INTO tblSongbooks (Abbreviation, Name, Colour, SongCount) VALUES (?, ?, ?, 0)'
+        );
+        $ins->bind_param('sss', $abbr, $name, $colour);
+    }
     $ins->execute();
     $ins->close();
     return 'created';
@@ -2437,6 +2466,9 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
 
         $abbr     = strtoupper($folderMatch['abbr']);
         $bookName = trim($folderMatch['name']);
+        /* Optional `_<LangName>-<ISO>` suffix on the folder (#780). The
+           ISO code becomes the songbook's Language at upsert time. */
+        $folderLang = isset($folderMatch['lang']) ? trim((string)$folderMatch['lang']) : '';
         $fileAbbr = strtoupper($fileMatch['abbr']);
         $songNum  = (int)$fileMatch['num'];
 
@@ -2453,7 +2485,7 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
 
         /* Songbook upsert — once per abbreviation per import. */
         if (!isset($songbookSeen[$abbr])) {
-            $state = _bulkImport_upsertSongbook($db, $abbr, $bookName);
+            $state = _bulkImport_upsertSongbook($db, $abbr, $bookName, $folderLang ?: null);
             $songbookSeen[$abbr] = $state;
             if ($state === 'created') {
                 $songbooksCreated[] = $abbr;
