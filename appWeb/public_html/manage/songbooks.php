@@ -39,6 +39,47 @@ $error   = '';
 $success = '';
 $db      = getDbMysqli();
 
+/* ---- GET ?action=pick_colour&abbr=XX (#772) -----------------------------
+ * JSON helper for the edit-songbook modal's "Pick distinctive colour"
+ * button. Calls pickAutoSongbookColour() to choose a hex that isn't
+ * already in use by any other songbook (the picker reads tblSongbooks
+ * itself to compute the avoid-set, so the result is guaranteed
+ * distinctive across the live catalogue). Empty / missing abbr falls
+ * back to a generic seed so a brand-new songbook in the create form
+ * can still get a suggestion.
+ *
+ * Admin role required — same gate as the bulk auto-colour actions.
+ * ----------------------------------------------------------------------- */
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
+    && ($_GET['action'] ?? '') === 'pick_colour'
+) {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store');
+    if (!in_array(($currentUser['role'] ?? ''), ['admin', 'global_admin'], true)) {
+        http_response_code(403);
+        echo json_encode(['error' => 'Admin role required.']);
+        exit;
+    }
+    $abbr = trim((string)($_GET['abbr'] ?? ''));
+    if ($abbr === '') {
+        /* Use a 6-char random seed so a fresh-songbook caller still
+           gets a distinctive suggestion via the hash fallback path. */
+        $abbr = substr(bin2hex(random_bytes(3)), 0, 6);
+    }
+    try {
+        require_once __DIR__ . DIRECTORY_SEPARATOR
+            . 'includes' . DIRECTORY_SEPARATOR
+            . 'songbook-palette.php';
+        $hex = pickAutoSongbookColour($db, $abbr);
+        echo json_encode(['colour' => $hex]);
+    } catch (\Throwable $e) {
+        error_log('[manage songbooks pick_colour] ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['error' => 'Could not pick a colour.']);
+    }
+    exit;
+}
+
 /* ---- GET ?action=script_search&q=… (#681 / renamed table in #738) ------
  * JSON typeahead for the IETF BCP 47 picker's Script field. Matches
  * substring (LIKE %q%) against tblLanguageScripts.Name OR
@@ -1403,7 +1444,22 @@ $csrf = csrfToken();
                         </div>
                         <div class="row g-2 mb-3">
                             <div class="col-sm-6">
-                                <label class="form-label">Colour (hex)</label>
+                                <label class="form-label d-flex align-items-center justify-content-between">
+                                    <span>Colour (hex)</span>
+                                    <!-- Per-songbook auto-colour button (#772). Calls
+                                         /manage/songbooks?action=pick_colour&abbr=<row>
+                                         which in turn invokes pickAutoSongbookColour()
+                                         to choose a hex not already used by any other
+                                         songbook. The result is written into the
+                                         colour-picker text input + swatch via the
+                                         shared partial's existing change handler. -->
+                                    <button type="button" class="btn btn-sm btn-outline-info py-0 px-2"
+                                            id="edit-pick-colour-btn"
+                                            title="Pick a random distinctive colour, avoiding ones already in use"
+                                            style="font-size: 0.75rem;">
+                                        <i class="bi bi-magic me-1" aria-hidden="true"></i>Pick distinctive
+                                    </button>
+                                </label>
                                 <?php
                                     /* Shared colour picker partial (#715). The text
                                        input keeps id="edit-colour" via the partial's
@@ -1748,8 +1804,61 @@ $csrf = csrfToken();
             document.getElementById('edit-rename-refs').checked     = false;
             document.getElementById('edit-song-count').textContent  = row.song_count;
             document.getElementById('edit-rename-refs-wrap').style.display = row.song_count > 0 ? '' : 'none';
+            /* Stash the current row's abbreviation on the modal for the
+               "Pick distinctive colour" button below — the button reads
+               it and POSTs to /manage/songbooks?action=pick_colour. */
+            document.getElementById('editModal').dataset.editAbbr = row.abbreviation || '';
             new bootstrap.Modal(document.getElementById('editModal')).show();
         }
+
+        /* Per-songbook auto-colour button (#772). Wires once on DOM
+           ready; reads the current edit-modal's data-edit-abbr to know
+           which row it's running for, then POSTs to
+           /manage/songbooks?action=pick_colour. The handler echoes a
+           hex; we write it into the colour-picker text input and fire
+           an `input` event so the picker partial's swatch + preview
+           update via the same path manual edits use. */
+        document.addEventListener('DOMContentLoaded', function () {
+            var btn = document.getElementById('edit-pick-colour-btn');
+            if (!btn) return;
+            btn.addEventListener('click', async function () {
+                var modal = document.getElementById('editModal');
+                var abbr = modal?.dataset?.editAbbr || '';
+                btn.disabled = true;
+                var originalHtml = btn.innerHTML;
+                btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
+                try {
+                    var url = '/manage/songbooks?action=pick_colour'
+                            + (abbr ? ('&abbr=' + encodeURIComponent(abbr)) : '');
+                    var r = await fetch(url, { credentials: 'same-origin' });
+                    var d = await r.json().catch(function () { return {}; });
+                    if (!r.ok || !d || !d.colour) {
+                        alert((d && d.error) || 'Could not pick a colour.');
+                        return;
+                    }
+                    var colourText = document.querySelector(
+                        '[data-colour-picker-id="edit-songbook-colour"] .colour-picker-text'
+                    );
+                    var colourSwatch = document.querySelector(
+                        '[data-colour-picker-id="edit-songbook-colour"] .colour-picker-swatch'
+                    );
+                    if (colourText) {
+                        colourText.value = d.colour;
+                        colourText.dispatchEvent(new Event('input', { bubbles: true }));
+                    }
+                    if (colourSwatch && /^#[0-9A-Fa-f]{6}$/.test(d.colour)) {
+                        colourSwatch.value = d.colour.toLowerCase();
+                    }
+                } catch (err) {
+                    console.error('[songbooks pick_colour]', err);
+                    alert('Could not pick a colour.');
+                } finally {
+                    btn.disabled = false;
+                    btn.innerHTML = originalHtml;
+                }
+            });
+        });
+
         function openDeleteModal(row) {
             document.getElementById('delete-id').value = row.id;
             document.getElementById('delete-abbr-label').textContent = row.abbreviation;
