@@ -1076,6 +1076,7 @@ $csrf = csrfToken();
                         <th data-sort-key="name" data-sort-type="text">Name</th>
                         <th class="text-center" data-sort-key="official" data-sort-type="text" title="Official published hymnal (#502)">Official</th>
                         <th class="text-center" data-sort-key="songs" data-sort-type="number">Songs</th>
+                        <th data-sort-key="language" data-sort-type="text" title="IETF BCP 47 language tag — empty means multi-lingual / not specified (#778)">Languages</th>
                         <th data-sort-key="colour" data-sort-type="text">Colour</th>
                         <th class="text-end">Actions</th>
                     </tr>
@@ -1109,6 +1110,37 @@ $csrf = csrfToken();
                                 <?php endif; ?>
                             </td>
                             <td class="text-center"><?= number_format((int)$r['ActualSongCount']) ?></td>
+                            <td>
+                                <?php
+                                    /* Languages column (#778 v1). Renders the
+                                       songbook's stored Language as an uppercase
+                                       primary-subtag badge — same shape as the
+                                       public-site songbook-tile-language-badge.
+                                       Empty Language stays an em-dash; the
+                                       absence is meaningful (multi-lingual or
+                                       not-yet-tagged). v2 will swap this for a
+                                       chip-list when multi-language support
+                                       lands. */
+                                    $bookLang = trim((string)($r['Language'] ?? ''));
+                                ?>
+                                <?php if ($bookLang !== ''): ?>
+                                    <?php
+                                        /* Show the full tag (e.g. en-GB, zh-Hans-CN)
+                                           but render only the primary subtag in
+                                           the badge for compactness, matching the
+                                           public-site badge convention. The full
+                                           tag goes in the title for hover. */
+                                        $primary = strtoupper(preg_replace('/-.*$/', '', $bookLang) ?: $bookLang);
+                                    ?>
+                                    <span class="badge bg-info text-dark"
+                                          style="font-size: 0.7rem; font-weight: 600;"
+                                          title="<?= htmlspecialchars($bookLang, ENT_QUOTES, 'UTF-8') ?>">
+                                        <?= htmlspecialchars($primary, ENT_QUOTES, 'UTF-8') ?>
+                                    </span>
+                                <?php else: ?>
+                                    <small class="text-muted">—</small>
+                                <?php endif; ?>
+                            </td>
                             <td>
                                 <?php if ($r['Colour']): ?>
                                     <span class="d-inline-block me-1" style="width:1rem;height:1rem;border-radius:50%;background:<?= htmlspecialchars($r['Colour']) ?>"></span>
@@ -1214,7 +1246,7 @@ $csrf = csrfToken();
                         </tr>
                     <?php endforeach; ?>
                     <?php if (!$rows): ?>
-                        <tr><td colspan="8" class="text-muted text-center py-4">No songbooks yet. Add one below.</td></tr>
+                        <tr><td colspan="9" class="text-muted text-center py-4">No songbooks yet. Add one below.</td></tr>
                     <?php endif; ?>
                 </tbody>
             </table>
