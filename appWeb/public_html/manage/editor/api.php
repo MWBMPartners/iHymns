@@ -1008,12 +1008,23 @@ switch ($action) {
         }));
         $addTags = is_array($payload['add'] ?? null) ? $payload['add'] : [];
         $remTags = is_array($payload['remove'] ?? null) ? $payload['remove'] : [];
+        /* Tag normalisation (#762):
+           - trim
+           - collapse internal whitespace runs to single spaces
+           - cap at 50 chars (matches tblSongTags.Name VARCHAR(50))
+           - Title-Case so 'worship' / 'WORSHIP' / 'Worship' all resolve
+             to the same canonical 'Worship' row, both for matching
+             (case-insensitive in DB collation, but defensive on PHP
+             side too) and for storage / display. */
         $normaliseTag = function ($name) {
             $trimmed = trim((string)$name);
-            return $trimmed === '' ? null : mb_substr($trimmed, 0, 50);
+            $trimmed = preg_replace('/\s+/u', ' ', $trimmed);
+            if ($trimmed === null || $trimmed === '') return null;
+            $titled = mb_convert_case($trimmed, MB_CASE_TITLE_SIMPLE, 'UTF-8');
+            return mb_substr($titled, 0, 50);
         };
-        $addTags = array_values(array_filter(array_map($normaliseTag, $addTags)));
-        $remTags = array_values(array_filter(array_map($normaliseTag, $remTags)));
+        $addTags = array_values(array_unique(array_filter(array_map($normaliseTag, $addTags))));
+        $remTags = array_values(array_unique(array_filter(array_map($normaliseTag, $remTags))));
 
         if (empty($songIds) || (empty($addTags) && empty($remTags))) {
             http_response_code(400);
@@ -1028,7 +1039,13 @@ switch ($action) {
             $db->begin_transaction();
 
             /* Resolve / create tag rows for each ADD name. Keep a map of
-               Name -> Id so we can insert mapping rows. */
+               Name -> Id so we can insert mapping rows. The
+               ON DUPLICATE KEY clause now also pulls the existing
+               row's Name up to the new (Title-Cased) form via
+               VALUES(Name) — so a curator who lands on an existing
+               row whose stored Name is non-canonical (e.g. "worship"
+               from before #762) re-canonicalises it on the next
+               upsert without a separate backfill round-trip. */
             $addIds = [];
             foreach ($addTags as $name) {
                 $slug = strtolower(preg_replace('/[^a-z0-9]+/i', '-', $name));
@@ -1036,7 +1053,7 @@ switch ($action) {
                 if ($slug === '') { continue; }
                 $stmt = $db->prepare(
                     'INSERT INTO tblSongTags (Name, Slug) VALUES (?, ?) ' .
-                    'ON DUPLICATE KEY UPDATE Id = LAST_INSERT_ID(Id)'
+                    'ON DUPLICATE KEY UPDATE Id = LAST_INSERT_ID(Id), Name = VALUES(Name)'
                 );
                 $stmt->bind_param('ss', $name, $slug);
                 $stmt->execute();
@@ -1062,7 +1079,12 @@ switch ($action) {
 
             /* Remove mapping rows. Resolve tag Ids by Name first (only
                delete if the tag exists — names that don't match anything
-               are silently ignored). */
+               are silently ignored). The Name comparison runs through
+               the column's utf8mb4_unicode_ci collation so a curator
+               removing 'worship' still hits the canonical 'Worship'
+               row (the input here is already Title-Cased by
+               $normaliseTag, but case-folded matching is the right
+               default for any future caller). */
             if (!empty($remTags) && !empty($songIds)) {
                 $remIds = [];
                 $nameStmt = $db->prepare('SELECT Id FROM tblSongTags WHERE Name = ? LIMIT 1');
