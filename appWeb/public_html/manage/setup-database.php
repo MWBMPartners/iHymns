@@ -224,6 +224,7 @@ if ($action !== '') {
         'cldr-native-names' => 'migrate-cldr-native-names.php',
         'tag-titlecase'     => 'migrate-tag-titlecase.php',
         'tblsongs-number-nullable' => 'migrate-tblsongs-number-nullable.php',
+        'multi-language-tables'    => 'migrate-multi-language-tables.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -266,6 +267,7 @@ if ($action !== '') {
         'cldr-native-names',
         'tag-titlecase',
         'tblsongs-number-nullable',
+        'multi-language-tables',
         /* When you add a new migrate-*.php under appWeb/.sql/, ALSO add
            its action key to:
              1. $scriptMap above (action key → file)
@@ -1048,6 +1050,27 @@ if ($hasCredentials && defined('DB_HOST')) {
                             CLDR JSON files, overwrites the bundled snapshots,
                             then re-runs the import.
                         </p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">3w. Multi-language tables (#778 phase A)</h5>
+                        <p class="card-text text-secondary small">
+                            Creates <code>tblSongbookLanguages</code> +
+                            <code>tblSongLanguages</code> for the multi-language
+                            songbook / song work, and back-fills the legacy
+                            single-tag <code>Language</code> columns into them
+                            with <code>IsPrimary=1</code>. Read paths consuming
+                            the legacy columns continue to work unchanged.
+                            Phases B-E of #778 build the chip-list editors,
+                            display surfaces, filter union, and bulk-import
+                            auto-link on top. Idempotent.
+                        </p>
+                        <a href="?action=multi-language-tables" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run Multi-Language Tables Migration
+                        </a>
                     </div>
                 </div>
             </div>
