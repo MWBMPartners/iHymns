@@ -628,6 +628,56 @@ body.banner-visible.search-open .main-content {
     transform: translateY(0);
 }
 
+/* ------------------------------------------------------------------
+ * Per-type page transitions (#752)
+ *
+ * The base rules above describe the legacy "fade-with-translateY"
+ * effect — that's the default for both `fade` and `crossfade`. The
+ * `slide` variant overrides the transform to be horizontal and
+ * direction-aware: forward navigation slides the leaving page out
+ * to the left and the new page in from the right, mirroring iOS /
+ * Android navigation cues. Back navigation reverses both axes.
+ *
+ * Settings → Page transitions exposes the four options:
+ *   none      — no transition (handled in JS, .page-visible applied
+ *               immediately).
+ *   fade      — opacity fade with subtle vertical translate (legacy).
+ *   slide     — horizontal slide that follows nav direction.
+ *   crossfade — pure opacity, no translate (cleaner on data-heavy
+ *               pages where translateY can flicker).
+ * ------------------------------------------------------------------ */
+
+/* slide — forward (push from right). */
+body[data-page-transition="slide"][data-nav-direction="forward"] #page-content.page-leaving {
+    transform: translateX(-24px);
+}
+body[data-page-transition="slide"][data-nav-direction="forward"] #page-content.page-entering {
+    transform: translateX(24px);
+}
+
+/* slide — back (push from left). */
+body[data-page-transition="slide"][data-nav-direction="back"] #page-content.page-leaving {
+    transform: translateX(24px);
+}
+body[data-page-transition="slide"][data-nav-direction="back"] #page-content.page-entering {
+    transform: translateX(-24px);
+}
+
+/* slide — visible state always rests at zero offset. */
+body[data-page-transition="slide"] #page-content.page-visible {
+    transform: translateX(0);
+}
+
+/* crossfade — opacity-only, no translate. Less motion for
+   information-dense pages. */
+body[data-page-transition="crossfade"] #page-content.page-leaving,
+body[data-page-transition="crossfade"] #page-content.page-entering {
+    transform: none;
+}
+body[data-page-transition="crossfade"] #page-content.page-visible {
+    transform: none;
+}
+
 /* Staggered list items (#149) */
 .page-song .song-list-item,
 .page-songbook .song-list-item,

@@ -32,10 +32,15 @@ export class Transitions {
     }
 
     /**
-     * Load the saved transition type from localStorage.
+     * Load the saved transition type from localStorage and stamp it
+     * onto <body> so CSS can branch on the active variant. The
+     * settings UI offers `none | fade | slide | crossfade`; per-type
+     * CSS lives in app.css under the
+     * `body[data-page-transition="…"]` selectors.
      */
     loadType() {
         this.type = localStorage.getItem(STORAGE_TRANSITION) || 'none';
+        document.body.dataset.pageTransition = this.type;
     }
 
     /**
