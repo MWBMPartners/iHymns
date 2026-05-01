@@ -222,6 +222,7 @@ if ($action !== '') {
         'user-preferred-languages' => 'migrate-user-preferred-languages.php',
         'iana-language-subtag-registry' => 'migrate-iana-language-subtag-registry.php',
         'cldr-native-names' => 'migrate-cldr-native-names.php',
+        'tag-titlecase'     => 'migrate-tag-titlecase.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -262,6 +263,7 @@ if ($action !== '') {
         'user-preferred-languages',
         'iana-language-subtag-registry',
         'cldr-native-names',
+        'tag-titlecase',
         /* When you add a new migrate-*.php under appWeb/.sql/, ALSO add
            its action key to:
              1. $scriptMap above (action key → file)
@@ -1044,6 +1046,27 @@ if ($hasCredentials && defined('DB_HOST')) {
                             CLDR JSON files, overwrites the bundled snapshots,
                             then re-runs the import.
                         </p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">3u. Tag Title-Case Backfill (#762)</h5>
+                        <p class="card-text text-secondary small">
+                            Walks <code>tblSongTags</code> and rewrites <code>Name</code>
+                            to Title Case for any row that isn't already canonical. The
+                            <code>bulk_tag</code> handler now Title-Cases on every
+                            upsert, so new tags land canonical from creation; this
+                            backfill resolves rows that pre-date #762's normalisation.
+                            Idempotent — re-runs no-op on canonical rows. Rare
+                            collisions (two rows whose canonical forms would clash)
+                            are logged and left untouched for resolution via the
+                            forthcoming /manage/tags merge UI.
+                        </p>
+                        <a href="?action=tag-titlecase" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run Tag Title-Case Backfill
+                        </a>
                     </div>
                 </div>
             </div>
