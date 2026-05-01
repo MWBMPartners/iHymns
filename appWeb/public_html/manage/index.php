@@ -304,9 +304,25 @@ $csrf = csrfToken();
                      data-card-id="<?= htmlspecialchars($id) ?>"
                      data-hidden="<?= $isHidden ? '1' : '0' ?>">
                     <div class="card-admin position-relative">
+                        <?php
+                            /* Padlock chip moved to the top-right corner of the
+                               card (#785) — was inline next to the title and
+                               crowded the heading. The .lock-chip-corner class
+                               keeps the same red/yellow tier colours but
+                               position:absolutes the chip so it doesn't push
+                               anything around. */
+                            $tier = entitlementHighestRole($entitlement);
+                            if ($tier !== null):
+                                $tierCls   = $tier === 'global_admin' ? 'lock-chip-global-admin' : 'lock-chip-admin';
+                                $tierLabel = $tier === 'global_admin' ? 'Requires Global Admin' : 'Requires Admin';
+                        ?>
+                            <i class="bi bi-lock-fill lock-chip lock-chip-corner <?= $tierCls ?>"
+                               aria-label="<?= htmlspecialchars($tierLabel, ENT_QUOTES, 'UTF-8') ?>"
+                               title="<?= htmlspecialchars($tierLabel, ENT_QUOTES, 'UTF-8') ?>"></i>
+                        <?php endif; ?>
                         <a href="<?= htmlspecialchars($href) ?>" class="quick-link" <?= $target ?>>
                             <i class="bi <?= htmlspecialchars($icon) ?> d-block mb-2" aria-hidden="true"></i>
-                            <strong><?= $title /* some titles contain &amp; entity */ ?><?= entitlementLockChipHtml($entitlement) ?></strong>
+                            <strong><?= $title /* some titles contain &amp; entity */ ?></strong>
                             <div class="small text-muted"><?= $sub /* same */ ?></div>
                         </a>
                     </div>
