@@ -1,12 +1,16 @@
 /**
- * iHymns — Reading Progress Indicator Module (#109)
+ * iHymns — Reading Progress Indicator Module (#109, #751)
  *
  * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
- * Displays a thin, scroll-linked progress bar at the top of song pages
- * that fills from left to right as the user scrolls through lyrics.
- * Uses the songbook accent colour. Hidden on short songs that don't scroll.
+ * Displays a thin, scroll-linked progress bar at the top of any
+ * scrollable page. Originally song-only (#109); generalised in #751
+ * to fire on every page the router loads. The bar fills from left to
+ * right as the user scrolls, hidden on short pages that don't need
+ * scrolling. Songbook colour applies on song / songbook pages where
+ * the relevant `data-songbook-color` is present; everywhere else the
+ * bar uses the framework accent colour.
  */
 
 export class ReadingProgress {
@@ -27,22 +31,37 @@ export class ReadingProgress {
     init() {}
 
     /**
-     * Set up the progress indicator on a song page.
-     * Called by router after song page loads.
+     * Generic entry point: attach the progress bar to whatever page is
+     * currently rendered, regardless of which router page emitted it.
+     * Called by router.afterPageLoad() on every navigation. Safe to
+     * call when no scrollable content is present — short pages are
+     * detected via the documentElement.scrollHeight heuristic and the
+     * bar simply isn't created.
+     *
+     * Colour-source priority (set by createBar()):
+     *   1. data-songbook-color attribute on a `.page-song` /
+     *      `.page-songbook` ancestor — when the page has a clear
+     *      songbook context, we inherit its accent.
+     *   2. Legacy [data-songbook="…"] CSS rules for the original
+     *      hardcoded songbooks (CP/JP/MP/SDAH/CH/Misc).
+     *   3. CSS default (--bs-primary) — every other page.
      */
-    initSongPage() {
+    initOnAnyPage() {
         this.cleanup();
 
-        const songPage = document.querySelector('.page-song');
-        if (!songPage) return;
-
-        /* Check if the page actually scrolls */
+        /* Wait one frame so the freshly-injected page HTML has had
+           layout. scrollHeight is what we check; before layout it's
+           often equal to clientHeight and we'd false-negative. */
         requestAnimationFrame(() => {
             if (document.documentElement.scrollHeight <= window.innerHeight + 50) {
-                return; /* Song is short enough to not need scrolling */
+                return; /* Page doesn't scroll meaningfully — no bar needed. */
             }
 
-            this.createBar(songPage);
+            /* Prefer a song / songbook context for colour inheritance,
+               but the bar attaches even when neither is present. */
+            const ctx = document.querySelector('.page-song, .page-songbook');
+            this.createBar(ctx);
+
             this._scrollHandler = () => this.updateProgress();
             window.addEventListener('scroll', this._scrollHandler, { passive: true });
             this.updateProgress();
@@ -50,10 +69,22 @@ export class ReadingProgress {
     }
 
     /**
-     * Create the progress bar element.
-     * @param {HTMLElement} songPage The song page article element
+     * Backwards-compatible alias. The router still calls this on
+     * song-page navigation; new call sites should prefer
+     * initOnAnyPage(). (#751)
      */
-    createBar(songPage) {
+    initSongPage() {
+        this.initOnAnyPage();
+    }
+
+    /**
+     * Create the progress bar element.
+     * @param {HTMLElement|null} ctx Optional song/songbook context
+     *   element used to inherit the accent colour. When null (e.g. on
+     *   /home, /favorites, or any /manage/* page), the bar uses the
+     *   default --bs-primary CSS rule.
+     */
+    createBar(ctx) {
         this.bar = document.createElement('div');
         this.bar.className = 'reading-progress-bar';
         this.bar.setAttribute('role', 'progressbar');
@@ -62,23 +93,29 @@ export class ReadingProgress {
         this.bar.setAttribute('aria-valuemax', '100');
         this.bar.setAttribute('aria-valuenow', '0');
 
-        /* Apply songbook accent colour. Three sources, in priority order:
-           1) data-songbook-color on the article — the runtime colour
-              fetched by song.php from tblSongbooks.Colour. Works for
-              every songbook, including custom ones created via
+        /* Apply songbook accent colour when a context is present. Three
+           sources, in priority order:
+           1) data-songbook-color on the page-song / page-songbook
+              article — the runtime colour fetched by song.php /
+              songbook page from tblSongbooks.Colour. Works for every
+              songbook, including custom ones created via
               /manage/songbooks whose abbreviation isn't in the
               hardcoded --songbook-{ABBR} CSS variable set.
            2) data-songbook abbreviation, exposed via the
               [data-songbook="…"] CSS rules in app.css for the legacy
               built-in songbooks (CP/JP/MP/SDAH/CH/Misc).
-           3) The CSS default (--bs-primary). */
-        const songbook       = songPage.dataset.songbook;
-        const songbookColour = songPage.dataset.songbookColor;
-        if (songbookColour) {
-            this.bar.style.background = songbookColour;
-        }
-        if (songbook) {
-            this.bar.dataset.songbook = songbook;
+           3) The CSS default (--bs-primary) — applies on every other
+              page (#751: home, songbooks list, favourites, /manage/*,
+              etc.). */
+        if (ctx) {
+            const songbook       = ctx.dataset.songbook;
+            const songbookColour = ctx.dataset.songbookColor;
+            if (songbookColour) {
+                this.bar.style.background = songbookColour;
+            }
+            if (songbook) {
+                this.bar.dataset.songbook = songbook;
+            }
         }
 
         /* Insert directly under <body> rather than inside #page-content.
