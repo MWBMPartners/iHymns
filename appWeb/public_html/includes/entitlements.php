@@ -53,6 +53,12 @@ const ENTITLEMENTS = [
     'run_db_backup'        => ['admin', 'global_admin'],
     'run_db_restore'       => ['global_admin'],
     'drop_legacy_tables'   => ['global_admin'],
+    /* System configuration — email service, system-wide flags, etc.
+       (#768). Global Admin only because the settings affect every
+       user (e.g. SMTP credentials, captcha provider, registration
+       mode) and a misconfigured email backend can produce spam-
+       grade outbound traffic from the server's IP. */
+    'manage_configuration' => ['global_admin'],
 
     /* Content moderation */
     'review_song_requests' => ['editor', 'admin', 'global_admin'],
