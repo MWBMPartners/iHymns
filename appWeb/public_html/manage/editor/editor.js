@@ -1884,6 +1884,18 @@ function addSongTag(song, tagName) {
     if (!song || !song.id || !tagName || !tagName.trim()) return;
     tagName = tagName.trim();
 
+    /* Block tag-add on songs that haven't been saved yet (#770).
+       Brand-new songs from Add carry a synthetic
+       `song-<ts>-<rand>` id and won't have a corresponding row in
+       tblSongs — the bulk_tag handler's INSERT into tblSongTagMap
+       would silently skip due to the foreign-key constraint, the
+       API would still respond {added: 0}, and the success toast
+       would mislead the curator into thinking it stuck. */
+    if (typeof song.id === 'string' && song.id.indexOf('song-') === 0) {
+        showToast('Save the song first, then add tags. (Tags need a saved song to attach to.)', 'warning');
+        return;
+    }
+
     /* Optimistic update: append the chip locally so the UI feels
        snappy, then re-fetch on completion to pick up the real row
        (so the ×-remove later uses the canonical spelling the DB
@@ -1901,12 +1913,23 @@ function addSongTag(song, tagName) {
     })
     .then(function (r) { return r.json(); })
     .then(function (data) {
-        if (data && data.added != null) {
+        /* Treat added===0 as failure even when the response is shaped
+           as success — that means the server's INSERT IGNORE was a
+           no-op (FK rejected, duplicate, or similar) so the chip
+           wouldn't appear in the assigned list anyway and a "success"
+           toast would mislead. (#770) */
+        if (data && data.added > 0) {
             /* Invalidate the bulk-load cache so loadSongTags re-fetches
                with the authoritative row set (#496 follow-up). */
             delete song.tags;
             loadSongTags(song);
             showToast('Added tag "' + tagName + '".', 'success');
+        } else if (data && data.added === 0) {
+            showToast(
+                'Tag couldn\'t be applied. Save the song first, then re-add — ' +
+                'tags need a saved song to attach to.',
+                'warning'
+            );
         } else {
             showToast((data && data.error) || 'Failed to add tag.', 'danger');
         }

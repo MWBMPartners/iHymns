@@ -73,6 +73,11 @@ const ENTITLEMENTS = [
        need to add a private-use code, fix a NativeName, or deactivate a
        deprecated subtag without dropping the row. */
     'manage_languages'     => ['admin', 'global_admin'],
+    /* Tags / themes (tblSongTags). Curator-managed taxonomy that
+       powers the public Browse-by-Theme home section + /tag/<slug>
+       listing pages. Curators occasionally need to rename, merge
+       duplicates, or delete unused tags. (#770) */
+    'manage_tags'          => ['admin', 'global_admin'],
 
     /* Org-admin role (#707) — system-level grant that says "this role
        MAY hold an admin/owner role on at least one organisation".
