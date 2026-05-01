@@ -6532,6 +6532,1081 @@ if ($action !== null) {
             break;
         }
 
+        /* =================================================================
+         * USERS — admin CRUD parity (#719 PR 2b)
+         *
+         * Mirrors the web-admin POST handlers in /manage/users.php so
+         * native clients can perform user curation without a webview.
+         * The actual mutation goes through the helpers in
+         * manage/includes/auth.php (createUser / updateUserRole / etc.)
+         * — those helpers already write the canonical activity-log
+         * row (`user.create`, `auth.role_change`, ...). The endpoints
+         * here only add a parallel `api.admin.user.*` row on the catch
+         * path so failures surface under the API surface prefix in
+         * /manage/activity-log.
+         *
+         * Hierarchy gates mirror users.php exactly: an admin can't
+         * promote above their own level, can't act on a peer or
+         * superior unless they are global_admin, and can't act on
+         * themselves for the destructive verbs.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: create a user
+         * POST body: { username, password, display_name?, role?, email? }
+         * Defaults: role=editor, display_name=username, email=''.
+         * Returns 201 + new user id.
+         * ----------------------------------------------------------------- */
+        case 'admin_user_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                       . 'includes'  . DIRECTORY_SEPARATOR . 'auth.php';
+
+            $body        = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $username    = trim((string)($body['username']     ?? ''));
+            $password    = (string)($body['password']          ?? '');
+            $displayName = trim((string)($body['display_name'] ?? '')) ?: $username;
+            $role        = trim((string)($body['role']         ?? 'editor'));
+            $email       = trim((string)($body['email']        ?? ''));
+
+            if (mb_strlen($username) < 3) {
+                sendJson(['error' => 'Username must be at least 3 characters.'], 400);
+                break;
+            }
+            if (strlen($password) < 8) {
+                sendJson(['error' => 'Password must be at least 8 characters.'], 400);
+                break;
+            }
+            if (!in_array($role, allRoles(), true)) {
+                sendJson(['error' => 'Invalid role.'], 400);
+                break;
+            }
+            /* Hierarchy gate (mirrors users.php). Only global_admin can
+               assign global_admin; nobody can promote above their own
+               level. */
+            $actingRole = (string)$authUser['Role'];
+            if ($role === 'global_admin' && $actingRole !== 'global_admin') {
+                sendJson(['error' => 'Only Global Admin can assign the Global Admin role.'], 403);
+                break;
+            }
+            if (roleLevel($role) > roleLevel($actingRole)) {
+                sendJson(['error' => 'Cannot assign a role higher than your own.'], 403);
+                break;
+            }
+
+            try {
+                $newUserId = createUser($username, $password, $displayName, $role, $email);
+                sendJson([
+                    'ok'       => true,
+                    'id'       => (int)$newUserId,
+                    'username' => $username,
+                    'role'     => $role,
+                ], 201);
+            } catch (\RuntimeException $e) {
+                /* createUser throws on duplicate username — surface as
+                   409 Conflict so native UIs can render a sensible
+                   "username already taken" prompt. */
+                $status = stripos($e->getMessage(), 'already exists') !== false ? 409 : 400;
+                sendJson(['error' => $e->getMessage()], $status);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.user.create', 'user', '', $e, ['username' => $username]);
+                error_log('[admin_user_create] ' . $e->getMessage());
+                sendJson(['error' => 'Could not create user.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: update a user's profile (display name + email)
+         * POST body: { user_id, display_name, email? }
+         * Hierarchy: an admin can edit themselves; otherwise the target
+         * must be strictly below the acting user's role level (or the
+         * acting user is global_admin).
+         * ----------------------------------------------------------------- */
+        case 'admin_user_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                       . 'includes'  . DIRECTORY_SEPARATOR . 'auth.php';
+
+            $body        = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $targetId    = (int)($body['user_id']      ?? 0);
+            $displayName = trim((string)($body['display_name'] ?? ''));
+            $email       = trim((string)($body['email']        ?? ''));
+
+            if ($targetId <= 0) {
+                sendJson(['error' => 'user_id required.'], 400);
+                break;
+            }
+            if ($displayName === '') {
+                sendJson(['error' => 'Display name cannot be empty.'], 400);
+                break;
+            }
+
+            $target = getUserById($targetId);
+            if (!$target) {
+                sendJson(['error' => 'User not found.'], 404);
+                break;
+            }
+            $actingId   = (int)$authUser['Id'];
+            $actingRole = (string)$authUser['Role'];
+            if (roleLevel((string)$target['role']) >= roleLevel($actingRole)
+                && $actingRole !== 'global_admin'
+                && $targetId !== $actingId) {
+                sendJson(['error' => 'Cannot edit a user at or above your role level.'], 403);
+                break;
+            }
+
+            try {
+                updateUserProfile($targetId, $displayName, $email);
+                sendJson(['ok' => true, 'id' => $targetId, 'username' => (string)$target['username']]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.user.update', 'user', (string)$targetId, $e);
+                error_log('[admin_user_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update profile.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: rename a user (username change)
+         * POST body: { user_id, new_username }
+         * renameUser() returns false + error string on shape / dup
+         * conflicts; the API turns those into 400/409.
+         * ----------------------------------------------------------------- */
+        case 'admin_user_rename': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                       . 'includes'  . DIRECTORY_SEPARATOR . 'auth.php';
+
+            $body        = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $targetId    = (int)($body['user_id']      ?? 0);
+            $newUsername = trim((string)($body['new_username'] ?? ''));
+
+            if ($targetId <= 0) {
+                sendJson(['error' => 'user_id required.'], 400);
+                break;
+            }
+
+            $target = getUserById($targetId);
+            if (!$target) {
+                sendJson(['error' => 'User not found.'], 404);
+                break;
+            }
+            $actingId   = (int)$authUser['Id'];
+            $actingRole = (string)$authUser['Role'];
+            if (roleLevel((string)$target['role']) >= roleLevel($actingRole)
+                && $actingRole !== 'global_admin'
+                && $targetId !== $actingId) {
+                sendJson(['error' => 'Cannot rename a user at or above your role level.'], 403);
+                break;
+            }
+
+            try {
+                $renameError = null;
+                $ok = renameUser($targetId, $newUsername, $renameError);
+                if (!$ok) {
+                    /* renameUser sets $renameError to the user-friendly
+                       reason. "already" → conflict, anything else → 400. */
+                    $msg    = $renameError ?? 'Could not rename user.';
+                    $status = stripos($msg, 'already') !== false ? 409 : 400;
+                    sendJson(['error' => $msg], $status);
+                    break;
+                }
+                sendJson([
+                    'ok'           => true,
+                    'id'           => $targetId,
+                    'old_username' => (string)$target['username'],
+                    'new_username' => mb_strtolower(trim($newUsername)),
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.user.rename', 'user', (string)$targetId, $e);
+                error_log('[admin_user_rename] ' . $e->getMessage());
+                sendJson(['error' => 'Could not rename user.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: change a user's role
+         * POST body: { user_id, new_role }
+         * updateUserRole() throws on hierarchy violations — turned
+         * into 403 (when the message is about the role gate) or 400.
+         * ----------------------------------------------------------------- */
+        case 'admin_user_role_change': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                       . 'includes'  . DIRECTORY_SEPARATOR . 'auth.php';
+
+            $body     = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $targetId = (int)($body['user_id']  ?? 0);
+            $newRole  = trim((string)($body['new_role'] ?? ''));
+
+            if ($targetId <= 0 || $newRole === '') {
+                sendJson(['error' => 'user_id and new_role required.'], 400);
+                break;
+            }
+
+            try {
+                /* The helper takes the same shape getCurrentUser()
+                   produces — lowercase keys. Build that from the
+                   bearer-token user. */
+                $actingShape = [
+                    'id'   => (int)$authUser['Id'],
+                    'role' => (string)$authUser['Role'],
+                ];
+                updateUserRole($targetId, $newRole, $actingShape);
+                sendJson(['ok' => true, 'id' => $targetId, 'new_role' => $newRole]);
+            } catch (\RuntimeException $e) {
+                $msg = $e->getMessage();
+                $isHierarchy = (stripos($msg, 'cannot')      !== false)
+                            || (stripos($msg, 'only global') !== false);
+                $status = $isHierarchy ? 403 : (stripos($msg, 'not found') !== false ? 404 : 400);
+                sendJson(['error' => $msg], $status);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.user.role_change', 'user', (string)$targetId, $e);
+                error_log('[admin_user_role_change] ' . $e->getMessage());
+                sendJson(['error' => 'Could not change role.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: toggle active state
+         * POST body: { user_id }
+         * Cannot deactivate self. Cannot act on a peer or superior
+         * unless global_admin.
+         * Returns 200 + ok + new is_active so the caller can render
+         * the toggled state without re-reading.
+         * ----------------------------------------------------------------- */
+        case 'admin_user_toggle_active': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                       . 'includes'  . DIRECTORY_SEPARATOR . 'auth.php';
+
+            $body     = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $targetId = (int)($body['user_id'] ?? 0);
+            if ($targetId <= 0) {
+                sendJson(['error' => 'user_id required.'], 400);
+                break;
+            }
+
+            $target = getUserById($targetId);
+            if (!$target) {
+                sendJson(['error' => 'User not found.'], 404);
+                break;
+            }
+            $actingId   = (int)$authUser['Id'];
+            $actingRole = (string)$authUser['Role'];
+            if ($targetId === $actingId) {
+                sendJson(['error' => 'Cannot deactivate your own account.'], 403);
+                break;
+            }
+            if (roleLevel((string)$target['role']) >= roleLevel($actingRole)
+                && $actingRole !== 'global_admin') {
+                sendJson(['error' => 'Cannot modify a user at or above your role level.'], 403);
+                break;
+            }
+
+            try {
+                $newState = !((bool)$target['is_active']);
+                setUserActive($targetId, $newState);
+                sendJson([
+                    'ok'        => true,
+                    'id'        => $targetId,
+                    'is_active' => $newState,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.user.toggle_active', 'user', (string)$targetId, $e);
+                error_log('[admin_user_toggle_active] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update active state.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: reset a user's password
+         * POST body: { user_id, new_password }
+         * Self-reset is permitted (mirrors users.php). Otherwise the
+         * target must be below the acting user's role level (or the
+         * acting user is global_admin).
+         * ----------------------------------------------------------------- */
+        case 'admin_user_password_reset': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                       . 'includes'  . DIRECTORY_SEPARATOR . 'auth.php';
+
+            $body        = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $targetId    = (int)($body['user_id']      ?? 0);
+            $newPassword = (string)($body['new_password'] ?? '');
+
+            if ($targetId <= 0) {
+                sendJson(['error' => 'user_id required.'], 400);
+                break;
+            }
+            if (strlen($newPassword) < 8) {
+                sendJson(['error' => 'Password must be at least 8 characters.'], 400);
+                break;
+            }
+
+            $target = getUserById($targetId);
+            if (!$target) {
+                sendJson(['error' => 'User not found.'], 404);
+                break;
+            }
+            $actingId   = (int)$authUser['Id'];
+            $actingRole = (string)$authUser['Role'];
+            if (roleLevel((string)$target['role']) >= roleLevel($actingRole)
+                && $actingRole !== 'global_admin'
+                && $targetId !== $actingId) {
+                sendJson(['error' => 'Cannot reset password for a user at or above your role level.'], 403);
+                break;
+            }
+
+            try {
+                changeUserPassword($targetId, $newPassword);
+                sendJson(['ok' => true, 'id' => $targetId, 'username' => (string)$target['username']]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.user.password_reset', 'user', (string)$targetId, $e);
+                error_log('[admin_user_password_reset] ' . $e->getMessage());
+                sendJson(['error' => 'Could not reset password.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete a user
+         * POST body: { user_id }
+         * Cannot delete self. Cannot delete a peer or superior unless
+         * global_admin. Hard delete via the helper — the helper handles
+         * audit + cascading FK semantics.
+         * ----------------------------------------------------------------- */
+        case 'admin_user_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                       . 'includes'  . DIRECTORY_SEPARATOR . 'auth.php';
+
+            $body     = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $targetId = (int)($body['user_id'] ?? 0);
+            if ($targetId <= 0) {
+                sendJson(['error' => 'user_id required.'], 400);
+                break;
+            }
+
+            $target = getUserById($targetId);
+            if (!$target) {
+                sendJson(['error' => 'User not found.'], 404);
+                break;
+            }
+            $actingId   = (int)$authUser['Id'];
+            $actingRole = (string)$authUser['Role'];
+            if ($targetId === $actingId) {
+                sendJson(['error' => 'Cannot delete your own account.'], 403);
+                break;
+            }
+            if (roleLevel((string)$target['role']) >= roleLevel($actingRole)
+                && $actingRole !== 'global_admin') {
+                sendJson(['error' => 'Cannot delete a user at or above your role level.'], 403);
+                break;
+            }
+
+            try {
+                deleteUser($targetId);
+                sendJson(['ok' => true, 'id' => $targetId, 'username' => (string)$target['username']]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.user.delete', 'user', (string)$targetId, $e);
+                error_log('[admin_user_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete user.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * USER GROUPS — admin CRUD parity (#719 PR 2b)
+         *
+         * Mirrors /manage/groups.php. Group rows live in tblUserGroups;
+         * membership lives in tblUsers.GroupId (one group per user).
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: create a user group
+         * POST body: {
+         *   name, description?,
+         *   access_alpha?, access_beta?, access_rc?, access_rtw?
+         * }
+         * Returns 201 + new group id.
+         * ----------------------------------------------------------------- */
+        case 'admin_group_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $name = trim((string)($body['name']        ?? ''));
+            $desc = trim((string)($body['description'] ?? ''));
+            $aA   = !empty($body['access_alpha']) ? 1 : 0;
+            $aB   = !empty($body['access_beta'])  ? 1 : 0;
+            $aR   = !empty($body['access_rc'])    ? 1 : 0;
+            $aW   = !empty($body['access_rtw'])   ? 1 : 0;
+
+            if ($name === '') {
+                sendJson(['error' => 'Name is required.'], 400);
+                break;
+            }
+            if (strlen($name) > 100) {
+                sendJson(['error' => 'Name must be 100 characters or fewer.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('SELECT Id FROM tblUserGroups WHERE Name = ?');
+                $stmt->bind_param('s', $name);
+                $stmt->execute();
+                $exists = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($exists) {
+                    sendJson(['error' => 'A group with that name already exists.'], 409);
+                    break;
+                }
+
+                $stmt = $db->prepare(
+                    'INSERT INTO tblUserGroups (Name, Description, AccessAlpha, AccessBeta, AccessRc, AccessRtw)
+                     VALUES (?, ?, ?, ?, ?, ?)'
+                );
+                $stmt->bind_param('ssiiii', $name, $desc, $aA, $aB, $aR, $aW);
+                $stmt->execute();
+                $newId = (int)$db->insert_id;
+                $stmt->close();
+
+                logActivity('api.admin.group.create', 'group', (string)$newId, [
+                    'name'          => $name,
+                    'description'   => $desc,
+                    'access_alpha'  => (bool)$aA,
+                    'access_beta'   => (bool)$aB,
+                    'access_rc'     => (bool)$aR,
+                    'access_rtw'    => (bool)$aW,
+                ]);
+
+                sendJson(['ok' => true, 'id' => $newId, 'name' => $name], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.group.create', 'group', '', $e, ['name' => $name]);
+                error_log('[admin_group_create] ' . $e->getMessage());
+                sendJson(['error' => 'Could not create group.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: update a user group
+         * POST body: {
+         *   id, name, description?,
+         *   access_alpha?, access_beta?, access_rc?, access_rtw?
+         * }
+         * ----------------------------------------------------------------- */
+        case 'admin_group_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id']   ?? 0);
+            $name = trim((string)($body['name']        ?? ''));
+            $desc = trim((string)($body['description'] ?? ''));
+            $aA   = !empty($body['access_alpha']) ? 1 : 0;
+            $aB   = !empty($body['access_beta'])  ? 1 : 0;
+            $aR   = !empty($body['access_rc'])    ? 1 : 0;
+            $aW   = !empty($body['access_rtw'])   ? 1 : 0;
+
+            if ($id <= 0) {
+                sendJson(['error' => 'Group id required.'], 400);
+                break;
+            }
+            if ($name === '') {
+                sendJson(['error' => 'Name is required.'], 400);
+                break;
+            }
+            if (strlen($name) > 100) {
+                sendJson(['error' => 'Name must be 100 characters or fewer.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                /* Confirm the row exists so we can return 404 cleanly
+                   instead of a successful no-op. */
+                $stmt = $db->prepare('SELECT Id FROM tblUserGroups WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $found = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if (!$found) {
+                    sendJson(['error' => 'Group not found.'], 404);
+                    break;
+                }
+
+                $stmt = $db->prepare('SELECT Id FROM tblUserGroups WHERE Name = ? AND Id <> ?');
+                $stmt->bind_param('si', $name, $id);
+                $stmt->execute();
+                $dup = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($dup) {
+                    sendJson(['error' => 'Another group already uses that name.'], 409);
+                    break;
+                }
+
+                $stmt = $db->prepare(
+                    'UPDATE tblUserGroups
+                        SET Name = ?, Description = ?,
+                            AccessAlpha = ?, AccessBeta = ?, AccessRc = ?, AccessRtw = ?
+                      WHERE Id = ?'
+                );
+                $stmt->bind_param('ssiiiii', $name, $desc, $aA, $aB, $aR, $aW, $id);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.admin.group.update', 'group', (string)$id, [
+                    'name'          => $name,
+                    'description'   => $desc,
+                    'access_alpha'  => (bool)$aA,
+                    'access_beta'   => (bool)$aB,
+                    'access_rc'     => (bool)$aR,
+                    'access_rtw'    => (bool)$aW,
+                ]);
+
+                sendJson(['ok' => true, 'id' => $id, 'name' => $name]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.group.update', 'group', (string)$id, $e);
+                error_log('[admin_group_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update group.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete a user group
+         * POST body: { id }
+         * Refuses with 422 if any user is still a member.
+         * ----------------------------------------------------------------- */
+        case 'admin_group_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) {
+                sendJson(['error' => 'Group id required.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('SELECT Name FROM tblUserGroups WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $name = (string)($row[0] ?? '');
+                if ($name === '') {
+                    sendJson(['error' => 'Group not found.'], 404);
+                    break;
+                }
+
+                $stmt = $db->prepare('SELECT COUNT(*) FROM tblUsers WHERE GroupId = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $members = (int)($row[0] ?? 0);
+                if ($members > 0) {
+                    sendJson([
+                        'error'        => "Cannot delete '{$name}': {$members} user(s) still belong to it.",
+                        'member_count' => $members,
+                        'name'         => $name,
+                        'hint'         => 'Move the members to another group (or remove them) first.',
+                    ], 422);
+                    break;
+                }
+
+                $stmt = $db->prepare('DELETE FROM tblUserGroups WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.admin.group.delete', 'group', (string)$id, ['name' => $name]);
+                sendJson(['ok' => true, 'id' => $id, 'name' => $name]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.group.delete', 'group', (string)$id, $e);
+                error_log('[admin_group_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete group.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: add a user to a group (sets tblUsers.GroupId)
+         * POST body: { group_id, user_id }
+         * No-op-friendly: re-adding a user already in the same group
+         * is a 200 (UPDATE just touches UpdatedAt).
+         * ----------------------------------------------------------------- */
+        case 'admin_group_member_add': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body    = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $groupId = (int)($body['group_id'] ?? 0);
+            $userId  = (int)($body['user_id']  ?? 0);
+            if ($groupId <= 0 || $userId <= 0) {
+                sendJson(['error' => 'group_id and user_id required.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+
+                /* Probe both rows so we can return the right 404. The
+                   web admin doesn't bother (typo → silent UPDATE 0
+                   rows), but a JSON API caller wants a definite
+                   answer. */
+                $stmt = $db->prepare('SELECT Id FROM tblUserGroups WHERE Id = ?');
+                $stmt->bind_param('i', $groupId);
+                $stmt->execute();
+                $hasGroup = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if (!$hasGroup) {
+                    sendJson(['error' => 'Group not found.'], 404);
+                    break;
+                }
+                $stmt = $db->prepare('SELECT Id FROM tblUsers WHERE Id = ?');
+                $stmt->bind_param('i', $userId);
+                $stmt->execute();
+                $hasUser = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if (!$hasUser) {
+                    sendJson(['error' => 'User not found.'], 404);
+                    break;
+                }
+
+                $stmt = $db->prepare('UPDATE tblUsers SET GroupId = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
+                $stmt->bind_param('ii', $groupId, $userId);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.admin.group.member_add', 'group', (string)$groupId, [
+                    'user_id' => $userId,
+                ]);
+
+                sendJson(['ok' => true, 'group_id' => $groupId, 'user_id' => $userId]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.group.member_add', 'group', (string)$groupId, $e, ['user_id' => $userId]);
+                error_log('[admin_group_member_add] ' . $e->getMessage());
+                sendJson(['error' => 'Could not add member to group.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: remove a user from their group (sets GroupId = NULL)
+         * POST body: { user_id }
+         * group_id is intentionally NOT required — a user belongs to at
+         * most one group via tblUsers.GroupId, so dropping the FK is
+         * sufficient regardless of which group they were in.
+         * ----------------------------------------------------------------- */
+        case 'admin_group_member_remove': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $userId = (int)($body['user_id'] ?? 0);
+            if ($userId <= 0) {
+                sendJson(['error' => 'user_id required.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('SELECT GroupId FROM tblUsers WHERE Id = ?');
+                $stmt->bind_param('i', $userId);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                if ($row === null) {
+                    sendJson(['error' => 'User not found.'], 404);
+                    break;
+                }
+                $oldGroupId = $row[0] !== null ? (int)$row[0] : null;
+
+                $stmt = $db->prepare('UPDATE tblUsers SET GroupId = NULL, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
+                $stmt->bind_param('i', $userId);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.admin.group.member_remove', 'group',
+                    $oldGroupId !== null ? (string)$oldGroupId : '', [
+                        'user_id'  => $userId,
+                    ]
+                );
+
+                sendJson([
+                    'ok'              => true,
+                    'user_id'         => $userId,
+                    'previous_group'  => $oldGroupId,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.group.member_remove', 'group', '', $e, ['user_id' => $userId]);
+                error_log('[admin_group_member_remove] ' . $e->getMessage());
+                sendJson(['error' => 'Could not remove member from group.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * ACCESS TIERS — admin CRUD parity (#719 PR 2b)
+         *
+         * Mirrors /manage/tiers.php. Capability-column list lives in
+         * includes/access_tier_validation.php (TIER_CAPS const) so a
+         * new capability is a one-line schema + const change — no
+         * surface-specific bind_param edits needed.
+         *
+         * Input shape: `caps` is a JSON object keyed by exact tblAccessTiers
+         * column name, value bool/int. Unknown keys are ignored; missing
+         * keys default to 0.
+         *
+         * Reserved tier names (public / free / ccli / premium / pro) cannot
+         * be deleted via the API — same hard refusal as /manage/tiers.php's
+         * implicit gate (the row lookup blocks delete on rows still
+         * referenced by users, but the API also rejects up-front).
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: create an access tier
+         * POST body: {
+         *   name, display_name, level, description?, caps?: { ... }
+         * }
+         * ----------------------------------------------------------------- */
+        case 'admin_tier_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'access_tier_validation.php';
+
+            $body        = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $name        = trim((string)($body['name']         ?? ''));
+            $displayName = trim((string)($body['display_name'] ?? ''));
+            $level       = (int)($body['level']                ?? 0);
+            $description = trim((string)($body['description']  ?? ''));
+            $capsInput   = is_array($body['caps'] ?? null) ? $body['caps'] : [];
+
+            if ($e = validateTierName($name))   { sendJson(['error' => $e], 400); break; }
+            if ($displayName === '')            { sendJson(['error' => 'display_name is required.'], 400); break; }
+            if ($e = validateTierLevel($level)) { sendJson(['error' => $e], 400); break; }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('SELECT Id FROM tblAccessTiers WHERE Name = ?');
+                $stmt->bind_param('s', $name);
+                $stmt->execute();
+                $exists = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($exists) {
+                    sendJson(['error' => 'A tier with that name already exists.'], 409);
+                    break;
+                }
+
+                $caps = [];
+                foreach (array_keys(TIER_CAPS) as $col) {
+                    /* Accept the camelCase or PascalCase form clients
+                       might use; the canonical key is the exact column
+                       name. Default to 0 when unspecified. */
+                    $caps[$col] = !empty($capsInput[$col]) ? 1 : 0;
+                }
+
+                $cols         = array_merge(['Name','DisplayName','Level','Description'], array_keys(TIER_CAPS));
+                $placeholders = implode(', ', array_fill(0, count($cols), '?'));
+                $sql          = 'INSERT INTO tblAccessTiers (' . implode(',', $cols) . ') VALUES (' . $placeholders . ')';
+                /* Type string: Name(s) DisplayName(s) Level(i) Description(s) +
+                   each TIER_CAPS column as int. Built dynamically so a new
+                   capability column auto-extends the bind without an edit. */
+                $types  = 'ssis' . str_repeat('i', count(TIER_CAPS));
+                $values = array_merge([$name, $displayName, $level, $description], array_values($caps));
+                $stmt   = $db->prepare($sql);
+                $stmt->bind_param($types, ...$values);
+                $stmt->execute();
+                $newId = (int)$db->insert_id;
+                $stmt->close();
+
+                logActivity('api.admin.tier.create', 'access_tier', (string)$newId, [
+                    'name'         => $name,
+                    'display_name' => $displayName,
+                    'level'        => $level,
+                    'description'  => $description,
+                    'caps'         => $caps,
+                ]);
+
+                sendJson(['ok' => true, 'id' => $newId, 'name' => $name], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.tier.create', 'access_tier', '', $e, ['name' => $name]);
+                error_log('[admin_tier_create] ' . $e->getMessage());
+                sendJson(['error' => 'Could not create tier.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: update an access tier
+         * POST body: {
+         *   id, display_name, level, description?, caps?: { ... }
+         * }
+         * `name` (the machine key) is intentionally immutable — too
+         * many tblUsers.AccessTier rows reference it for a casual
+         * rename. Use a manual SQL migration if a rename is genuinely
+         * needed.
+         * ----------------------------------------------------------------- */
+        case 'admin_tier_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'access_tier_validation.php';
+
+            $body        = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id          = (int)($body['id']                   ?? 0);
+            $displayName = trim((string)($body['display_name'] ?? ''));
+            $level       = (int)($body['level']                ?? 0);
+            $description = trim((string)($body['description']  ?? ''));
+            $capsInput   = is_array($body['caps'] ?? null) ? $body['caps'] : [];
+
+            if ($id <= 0)                       { sendJson(['error' => 'Tier id required.'], 400); break; }
+            if ($displayName === '')            { sendJson(['error' => 'display_name is required.'], 400); break; }
+            if ($e = validateTierLevel($level)) { sendJson(['error' => $e], 400); break; }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('SELECT Name FROM tblAccessTiers WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $name = (string)($row[0] ?? '');
+                if ($name === '') {
+                    sendJson(['error' => 'Tier not found.'], 404);
+                    break;
+                }
+
+                $caps = [];
+                foreach (array_keys(TIER_CAPS) as $col) {
+                    $caps[$col] = !empty($capsInput[$col]) ? 1 : 0;
+                }
+
+                $sets = ['DisplayName = ?', 'Level = ?', 'Description = ?'];
+                $args = [$displayName, $level, $description];
+                foreach ($caps as $col => $val) {
+                    $sets[] = "$col = ?";
+                    $args[] = $val;
+                }
+                $args[] = $id;
+                /* Type string: DisplayName(s), Level(i), Description(s),
+                   each TIER_CAPS column as int, then Id(i). */
+                $types = 'sis' . str_repeat('i', count(TIER_CAPS)) . 'i';
+                $stmt  = $db->prepare(
+                    'UPDATE tblAccessTiers SET ' . implode(', ', $sets) . ' WHERE Id = ?'
+                );
+                $stmt->bind_param($types, ...$args);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.admin.tier.update', 'access_tier', (string)$id, [
+                    'name'         => $name,
+                    'display_name' => $displayName,
+                    'level'        => $level,
+                    'description'  => $description,
+                    'caps'         => $caps,
+                ]);
+
+                sendJson(['ok' => true, 'id' => $id, 'name' => $name]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.tier.update', 'access_tier', (string)$id, $e);
+                error_log('[admin_tier_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update tier.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete an access tier
+         * POST body: { id }
+         * Refuses with 422 if any user is still on this tier.
+         * ----------------------------------------------------------------- */
+        case 'admin_tier_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) {
+                sendJson(['error' => 'Tier id required.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('SELECT Name FROM tblAccessTiers WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $name = (string)($row[0] ?? '');
+                if ($name === '') {
+                    sendJson(['error' => 'Tier not found.'], 404);
+                    break;
+                }
+
+                $stmt = $db->prepare('SELECT COUNT(*) FROM tblUsers WHERE AccessTier = ?');
+                $stmt->bind_param('s', $name);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $inUse = (int)($row[0] ?? 0);
+                if ($inUse > 0) {
+                    sendJson([
+                        'error'      => "Cannot delete '{$name}': {$inUse} user(s) are currently on this tier.",
+                        'user_count' => $inUse,
+                        'name'       => $name,
+                        'hint'       => 'Reassign affected users to another tier first.',
+                    ], 422);
+                    break;
+                }
+
+                $stmt = $db->prepare('DELETE FROM tblAccessTiers WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.admin.tier.delete', 'access_tier', (string)$id, ['name' => $name]);
+                sendJson(['ok' => true, 'id' => $id, 'name' => $name]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.tier.delete', 'access_tier', (string)$id, $e);
+                error_log('[admin_tier_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete tier.'], 500);
+            }
+            break;
+        }
+
         /* -----------------------------------------------------------------
          * Unknown action
          * ----------------------------------------------------------------- */
