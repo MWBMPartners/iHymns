@@ -50,31 +50,27 @@ function saveToAccount(subtags) {
 
 /**
  * Build the picker UI inside the host element.
- * Available subtags come from /api?action=songbooks (each row's
- * `language` field) — this is the same set the home grid filter
- * shows, so the two stay in lock-step.
+ * Available subtags come from /api?action=catalogue_language_subtags —
+ * the same UNION of songbook + song-level distinct primary subtags
+ * that the home page's filter partial uses, so the two surfaces
+ * always show the same chip set. (#776)
+ *
+ * Previously hit /api?action=songbooks and harvested each row's
+ * `language` — that was (a) song-level languages were missed
+ * (catalogues with EN-tagged songbooks but multilingual songs only
+ * showed EN) and (b) slow because it pulled the full row payload
+ * for every songbook.
  */
 async function buildPicker(host) {
-    /* Discover available languages from songbook + song catalogue.
-       /api?action=languages would ALSO work but it returns every
-       known ISO code; we only want what the catalogue actually has. */
-    let books = [];
+    let available = [];
     try {
-        const resp = await fetch('/api?action=songbooks');
+        const resp = await fetch('/api?action=catalogue_language_subtags');
         if (resp.ok) {
             const j = await resp.json();
-            books = Array.isArray(j.songbooks) ? j.songbooks : [];
+            available = Array.isArray(j.subtags) ? j.subtags.slice() : [];
         }
     } catch (_e) { /* offline → empty picker */ }
-
-    const subtagSet = new Set();
-    for (const b of books) {
-        const tag = (b.language || '').toLowerCase();
-        if (!tag) continue;
-        const m = tag.match(/^([a-z]{2,3})/);
-        if (m) subtagSet.add(m[1]);
-    }
-    const available = Array.from(subtagSet).sort();
+    available.sort();
 
     if (available.length === 0) {
         host.innerHTML = '<p class="small text-muted mb-0">' +

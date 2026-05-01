@@ -2376,6 +2376,86 @@ if ($action !== null) {
             ]);
             break;
 
+        /* -----------------------------------------------------------------
+         * Distinct primary language subtags actually present in the
+         * catalogue (#776). Returns the union of:
+         *   - tblSongbooks.Language primary subtag
+         *   - tblSongs.Language primary subtag
+         * The two-source union mirrors the home-page filter partial
+         * (includes/partials/songbook-language-filter.php) so the
+         * settings widget and the home filter expose the same chip set.
+         *
+         * Lightweight by design — the settings filter previously hit
+         * /api?action=songbooks and got back the full row payload
+         * (KB to MB depending on catalogue size). This response is
+         * a few dozen bytes and is cacheable for 5 minutes since
+         * subtags rarely change.
+         *
+         * Response: { subtags: ['en', 'es', 'fr', ...] }
+         *           (lowercase, sorted, de-duplicated)
+         * ----------------------------------------------------------------- */
+        case 'catalogue_language_subtags':
+            $db = getDbMysqli();
+            $subtags = [];
+
+            /* Source 1 — tblSongbooks.Language. Primary subtag only. */
+            try {
+                $res = $db->query(
+                    "SELECT DISTINCT LOWER(SUBSTRING_INDEX(Language, '-', 1)) AS sub
+                       FROM tblSongbooks
+                      WHERE Language IS NOT NULL AND Language <> ''"
+                );
+                if ($res) {
+                    while ($r = $res->fetch_row()) {
+                        $sub = (string)$r[0];
+                        if (preg_match('/^[a-z]{2,3}$/', $sub)) {
+                            $subtags[$sub] = true;
+                        }
+                    }
+                    $res->close();
+                }
+            } catch (\Throwable $_e) { /* best-effort */ }
+
+            /* Source 2 — tblSongs.Language. Probe column existence so
+               a pre-#681 deployment doesn't 500. */
+            try {
+                $probe = $db->prepare(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                      WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME   = 'tblSongs'
+                        AND COLUMN_NAME  = 'Language' LIMIT 1"
+                );
+                $probe->execute();
+                $hasLangCol = $probe->get_result()->fetch_row() !== null;
+                $probe->close();
+                if ($hasLangCol) {
+                    $res = $db->query(
+                        "SELECT DISTINCT LOWER(SUBSTRING_INDEX(Language, '-', 1)) AS sub
+                           FROM tblSongs
+                          WHERE Language IS NOT NULL AND Language <> ''"
+                    );
+                    if ($res) {
+                        while ($r = $res->fetch_row()) {
+                            $sub = (string)$r[0];
+                            if (preg_match('/^[a-z]{2,3}$/', $sub)) {
+                                $subtags[$sub] = true;
+                            }
+                        }
+                        $res->close();
+                    }
+                }
+            } catch (\Throwable $_e) { /* best-effort */ }
+
+            $list = array_keys($subtags);
+            sort($list);
+
+            /* Cache for 5 min (subtag set rarely changes). The Vary
+               header is conservative — same result for every visitor
+               regardless of auth state. */
+            header('Cache-Control: public, max-age=300');
+            sendJson(['subtags' => $list]);
+            break;
+
         /* =================================================================
          * USER PROFILE UPDATE
          * ================================================================= */
