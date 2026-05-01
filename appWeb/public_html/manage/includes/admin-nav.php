@@ -261,12 +261,12 @@ $_avatarUrlLarge = userAvatarUrl($_userEmail, 64, $_userAvatarSvc);
     <div class="offcanvas-body p-0">
         <nav class="list-group list-group-flush" aria-label="Admin sections">
             <?php foreach ($_visibleAdminLinks as $l): ?>
-                <?php [$id, $href, $icon, $label] = $l; ?>
+                <?php [$id, $href, $icon, $label, $entitlement] = $l; ?>
                 <a href="<?= htmlspecialchars($href) ?>"
                    class="list-group-item list-group-item-action d-flex align-items-center gap-2<?= $_activePage === $id ? ' active' : '' ?>"
                    <?= $_activePage === $id ? 'aria-current="page"' : '' ?>>
                     <i class="bi <?= htmlspecialchars($icon) ?>" aria-hidden="true"></i>
-                    <span><?= htmlspecialchars($label) ?></span>
+                    <span><?= htmlspecialchars($label) ?><?= entitlementLockChipHtml($entitlement) ?></span>
                 </a>
             <?php endforeach; ?>
         </nav>

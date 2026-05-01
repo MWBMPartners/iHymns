@@ -45,12 +45,12 @@ foreach ($_sidebarLinks as $l) {
                 </div>
             <?php endif; ?>
             <?php foreach ($links as $l): ?>
-                <?php [$id, $href, $icon, $label] = $l; ?>
+                <?php [$id, $href, $icon, $label, $entitlement] = $l; ?>
                 <a href="<?= htmlspecialchars($href) ?>"
                    class="admin-sidebar-link d-flex align-items-center gap-2 px-3 py-2<?= $_sidebarActive === $id ? ' active' : '' ?>"
                    <?= $_sidebarActive === $id ? 'aria-current="page"' : '' ?>>
                     <i class="bi <?= htmlspecialchars($icon) ?> fs-6" aria-hidden="true"></i>
-                    <span><?= htmlspecialchars($label) ?></span>
+                    <span><?= htmlspecialchars($label) ?><?= entitlementLockChipHtml($entitlement) ?></span>
                 </a>
             <?php endforeach; ?>
         <?php endforeach; ?>
