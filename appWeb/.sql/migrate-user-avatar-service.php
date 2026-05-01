@@ -133,4 +133,8 @@ if (_migAvatarSvc_columnExists($mysqli, 'tblUsers', 'AvatarService')) {
 }
 
 _migAvatarSvc_out('User avatar-service migration finished.');
-$mysqli->close();
+/* Don't close $mysqli — it's the shared singleton from getDbMysqli().
+   The bulk migration runner in /manage/setup-database.php iterates many
+   migrations in one PHP request; closing here would invalidate the
+   handle for every subsequent migration that calls getDbMysqli(). PHP
+   closes the connection on script exit anyway. */
