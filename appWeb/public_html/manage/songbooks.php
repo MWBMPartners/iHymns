@@ -1118,39 +1118,55 @@ $csrf = csrfToken();
                                 <?php endif; ?>
                             </td>
                             <td class="text-end">
+                                <?php
+                                    /* Build the row payload once, then escape for
+                                       HTML attribute embedding (#774). The earlier
+                                       form embedded raw json_encode() output inside
+                                       a single-quoted onclick attribute — apostrophes
+                                       in a Name (e.g. "Ogotera kw'ogotogia Nyasae"
+                                       for OKON; many Polynesian / French / Slavic
+                                       names contain them) terminated the attribute
+                                       early and the click handler became malformed
+                                       silently, so the modal never opened. The
+                                       htmlspecialchars(ENT_QUOTES) wrap encodes
+                                       the apostrophe as &#039; — the browser
+                                       unescapes on attribute read and the JSON
+                                       arrives intact. */
+                                    $editRowJson = json_encode([
+                                        'id'                  => (int)$r['Id'],
+                                        'abbreviation'        => $r['Abbreviation'],
+                                        'name'                => $r['Name'],
+                                        'colour'              => $r['Colour'],
+                                        'display_order'       => (int)$r['DisplayOrder'],
+                                        'song_count'          => (int)$r['ActualSongCount'],
+                                        'is_official'         => (int)$r['IsOfficial'] === 1,
+                                        'publisher'           => $r['Publisher']       ?? '',
+                                        'publication_year'    => $r['PublicationYear'] ?? '',
+                                        'copyright'           => $r['Copyright']       ?? '',
+                                        'affiliation'         => $r['Affiliation']     ?? '',
+                                        /* #673 — Language defaults to '' so the dropdown
+                                           picks "— Not specified —" when absent. */
+                                        'language'            => $r['Language']        ?? '',
+                                        /* #672 — fields default to '' so a row from a
+                                           pre-migration deployment renders cleanly
+                                           (the bibSelect probe above gates the SELECT). */
+                                        'website_url'         => $r['WebsiteUrl']         ?? '',
+                                        'internet_archive_url'=> $r['InternetArchiveUrl'] ?? '',
+                                        'wikipedia_url'       => $r['WikipediaUrl']       ?? '',
+                                        'wikidata_id'         => $r['WikidataId']         ?? '',
+                                        'oclc_number'         => $r['OclcNumber']         ?? '',
+                                        'ocn_number'          => $r['OcnNumber']          ?? '',
+                                        'lcp_number'          => $r['LcpNumber']          ?? '',
+                                        'isbn'                => $r['Isbn']               ?? '',
+                                        'ark_id'              => $r['ArkId']              ?? '',
+                                        'isni_id'             => $r['IsniId']             ?? '',
+                                        'viaf_id'             => $r['ViafId']             ?? '',
+                                        'lccn'                => $r['Lccn']               ?? '',
+                                        'lc_class'            => $r['LcClass']            ?? '',
+                                    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                                ?>
                                 <button type="button" class="btn btn-sm btn-outline-info"
-                                        onclick='openEditModal(<?= json_encode([
-                                            'id'                  => (int)$r['Id'],
-                                            'abbreviation'        => $r['Abbreviation'],
-                                            'name'                => $r['Name'],
-                                            'colour'              => $r['Colour'],
-                                            'display_order'       => (int)$r['DisplayOrder'],
-                                            'song_count'          => (int)$r['ActualSongCount'],
-                                            'is_official'         => (int)$r['IsOfficial'] === 1,
-                                            'publisher'           => $r['Publisher']       ?? '',
-                                            'publication_year'    => $r['PublicationYear'] ?? '',
-                                            'copyright'           => $r['Copyright']       ?? '',
-                                            'affiliation'         => $r['Affiliation']     ?? '',
-                                            /* #673 — Language defaults to '' so the dropdown
-                                               picks "— Not specified —" when absent. */
-                                            'language'            => $r['Language']        ?? '',
-                                            /* #672 — fields default to '' so a row from a
-                                               pre-migration deployment renders cleanly
-                                               (the bibSelect probe above gates the SELECT). */
-                                            'website_url'         => $r['WebsiteUrl']         ?? '',
-                                            'internet_archive_url'=> $r['InternetArchiveUrl'] ?? '',
-                                            'wikipedia_url'       => $r['WikipediaUrl']       ?? '',
-                                            'wikidata_id'         => $r['WikidataId']         ?? '',
-                                            'oclc_number'         => $r['OclcNumber']         ?? '',
-                                            'ocn_number'          => $r['OcnNumber']          ?? '',
-                                            'lcp_number'          => $r['LcpNumber']          ?? '',
-                                            'isbn'                => $r['Isbn']               ?? '',
-                                            'ark_id'              => $r['ArkId']              ?? '',
-                                            'isni_id'             => $r['IsniId']             ?? '',
-                                            'viaf_id'             => $r['ViafId']             ?? '',
-                                            'lccn'                => $r['Lccn']               ?? '',
-                                            'lc_class'            => $r['LcClass']            ?? '',
-                                        ]) ?>)'
+                                        onclick="openEditModal(<?= htmlspecialchars((string)$editRowJson, ENT_QUOTES, 'UTF-8') ?>)"
                                         title="Edit songbook">
                                     <i class="bi bi-pencil"></i>
                                 </button>
@@ -1162,19 +1178,29 @@ $csrf = csrfToken();
                                     $songCnt = (int)$r['ActualSongCount'];
                                     $isAdmin = in_array(($currentUser['role'] ?? ''), ['admin', 'global_admin'], true);
                                 ?>
+                                <?php
+                                    /* Same htmlspecialchars wrap as the Edit button
+                                       above — protects the inline JSON against
+                                       apostrophes / quotes in Abbreviation. (#774) */
+                                    $deleteRowJson = json_encode([
+                                        'id'           => (int)$r['Id'],
+                                        'abbreviation' => $r['Abbreviation'],
+                                    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                                    $cascadeRowJson = json_encode([
+                                        'id'           => (int)$r['Id'],
+                                        'abbreviation' => $r['Abbreviation'],
+                                        'song_count'   => $songCnt,
+                                    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                                ?>
                                 <?php if ($songCnt === 0): ?>
                                 <button type="button" class="btn btn-sm btn-outline-danger"
-                                        onclick='openDeleteModal(<?= json_encode(['id' => (int)$r['Id'], 'abbreviation' => $r['Abbreviation']]) ?>)'
+                                        onclick="openDeleteModal(<?= htmlspecialchars((string)$deleteRowJson, ENT_QUOTES, 'UTF-8') ?>)"
                                         title="Delete songbook (no songs reference it)">
                                     <i class="bi bi-trash"></i>
                                 </button>
                                 <?php elseif ($isAdmin): ?>
                                 <button type="button" class="btn btn-sm btn-outline-danger"
-                                        onclick='openCascadeDeleteModal(<?= json_encode([
-                                            'id' => (int)$r['Id'],
-                                            'abbreviation' => $r['Abbreviation'],
-                                            'song_count' => $songCnt,
-                                        ]) ?>)'
+                                        onclick="openCascadeDeleteModal(<?= htmlspecialchars((string)$cascadeRowJson, ENT_QUOTES, 'UTF-8') ?>)"
                                         title="Cascade-delete: songbook + <?= $songCnt ?> song(s) + every reference to them">
                                     <i class="bi bi-trash"></i>
                                 </button>
