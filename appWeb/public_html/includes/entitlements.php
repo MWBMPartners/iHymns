@@ -126,6 +126,59 @@ const ENTITLEMENTS = [
 $_ihymns_effective_entitlements = null;
 
 /**
+ * Return the most-restrictive role tier required by an entitlement,
+ * for use by the admin-surface padlock indicators (#758).
+ *
+ * Mapping:
+ *   - null / empty key → null   (no chip)
+ *   - user or editor in roles → null   (no chip — anyone can act)
+ *   - admin in roles → 'admin'   (yellow chip)
+ *   - only global_admin in roles → 'global_admin'   (red chip)
+ *
+ * Reads the effective map (defaults + admin overrides) so a curator
+ * who has tightened access via /manage/entitlements sees padlocks
+ * that match the live policy, not the hardcoded defaults.
+ *
+ * @param string|null $key Entitlement key (e.g. 'manage_songbooks')
+ * @return string|null     'admin' | 'global_admin' | null
+ */
+function entitlementHighestRole(?string $key): ?string
+{
+    if ($key === null || $key === '') return null;
+    $map = effectiveEntitlements();
+    $roles = $map[$key] ?? [];
+    if (empty($roles)) return null;
+    if (in_array('user', $roles, true) || in_array('editor', $roles, true)) {
+        return null;
+    }
+    if (in_array('admin', $roles, true)) {
+        return 'admin';
+    }
+    return 'global_admin';
+}
+
+/**
+ * Render the inline HTML for a padlock chip next to an entitlement-
+ * gated label / card title. Empty string when the entitlement is
+ * accessible to user/editor (no chip needed). Bootstrap Icons
+ * bi-lock-fill is SVG-rendered and accepts CSS colour overrides via
+ * the .lock-chip-{tier} class. (#758)
+ *
+ * @param string|null $key Entitlement key
+ * @return string          Inline HTML (already escaped) or ''
+ */
+function entitlementLockChipHtml(?string $key): string
+{
+    $tier = entitlementHighestRole($key);
+    if ($tier === null) return '';
+    $tierCls = $tier === 'global_admin' ? 'lock-chip-global-admin' : 'lock-chip-admin';
+    $label   = $tier === 'global_admin' ? 'Requires Global Admin' : 'Requires Admin';
+    return ' <i class="bi bi-lock-fill lock-chip ' . $tierCls . '"'
+         . ' aria-label="' . htmlspecialchars($label, ENT_QUOTES, 'UTF-8') . '"'
+         . ' title="' . htmlspecialchars($label, ENT_QUOTES, 'UTF-8') . '"></i>';
+}
+
+/**
  * Return the effective entitlement map, applying any admin overrides
  * saved under `tblAppSettings.SettingKey = 'entitlements_overrides'`.
  *

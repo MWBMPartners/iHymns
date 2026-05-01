@@ -296,7 +296,7 @@ $csrf = csrfToken();
             <?php foreach ($dashboardLayout['order'] as $cardId): ?>
                 <?php
                 if (!isset($dashboardById[$cardId])) continue;
-                [$id, , $href, $icon, $title, $sub, $sameTab] = $dashboardById[$cardId];
+                [$id, $entitlement, $href, $icon, $title, $sub, $sameTab] = $dashboardById[$cardId];
                 $isHidden = isset($hiddenSet[$id]);
                 $target = $sameTab ? '' : 'target="_blank" rel="noopener"';
                 ?>
@@ -306,7 +306,7 @@ $csrf = csrfToken();
                     <div class="card-admin position-relative">
                         <a href="<?= htmlspecialchars($href) ?>" class="quick-link" <?= $target ?>>
                             <i class="bi <?= htmlspecialchars($icon) ?> d-block mb-2" aria-hidden="true"></i>
-                            <strong><?= $title /* some titles contain &amp; entity */ ?></strong>
+                            <strong><?= $title /* some titles contain &amp; entity */ ?><?= entitlementLockChipHtml($entitlement) ?></strong>
                             <div class="small text-muted"><?= $sub /* same */ ?></div>
                         </a>
                     </div>

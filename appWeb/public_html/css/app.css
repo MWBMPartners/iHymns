@@ -2173,6 +2173,42 @@ body.reduce-motion .shortcuts-overlay {
 }
 
 /* ==========================================================================
+   ENTITLEMENT LOCK CHIPS (#758)
+   Small SVG-rendered padlock indicator next to admin-surface labels and
+   card titles. Colour communicates the role tier required to actually
+   click through:
+     red   = Global Admin only
+     yellow = Admin or Global Admin
+   Items visible to user/editor render no chip — the absence is itself
+   the cue. The HTML lives in entitlementLockChipHtml() in
+   includes/entitlements.php; markup is <i class="bi bi-lock-fill
+   lock-chip lock-chip-{tier}" title="…">.
+   ========================================================================== */
+
+.lock-chip {
+    font-size: 0.78em;
+    opacity: 0.9;
+    vertical-align: 0.05em;
+    margin-left: 0.4rem;
+    /* Don't let a tooltip-cursor crowd the link target on mobile. */
+    pointer-events: auto;
+}
+
+.lock-chip-global-admin { color: #ef4444; }
+.lock-chip-admin        { color: #f59e0b; }
+
+/* In high-contrast mode the chip needs a slightly bolder outline so
+   the colour difference reads at a glance. */
+[data-ihymns-theme="high-contrast"] .lock-chip-global-admin {
+    color: #ff5252;
+    text-shadow: 0 0 1px #000;
+}
+[data-ihymns-theme="high-contrast"] .lock-chip-admin {
+    color: #ffb020;
+    text-shadow: 0 0 1px #000;
+}
+
+/* ==========================================================================
    READING PROGRESS INDICATOR (#109)
    ========================================================================== */
 
