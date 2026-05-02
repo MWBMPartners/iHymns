@@ -227,6 +227,7 @@ if ($action !== '') {
         'multi-language-tables'    => 'migrate-multi-language-tables.php',
         'parent-songbooks'         => 'migrate-parent-songbooks.php',
         'recompute-songbook-songcount' => 'migrate-recompute-songbook-songcount.php',
+        'songcount-triggers'           => 'migrate-songcount-triggers.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -272,6 +273,7 @@ if ($action !== '') {
         'multi-language-tables',
         'parent-songbooks',
         'recompute-songbook-songcount',
+        'songcount-triggers',
         /* When you add a new migrate-*.php under appWeb/.sql/, ALSO add
            its action key to:
              1. $scriptMap above (action key → file)
@@ -1054,6 +1056,31 @@ if ($hasCredentials && defined('DB_HOST')) {
                             CLDR JSON files, overwrites the bundled snapshots,
                             then re-runs the import.
                         </p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">3z. SongCount triggers (#793)</h5>
+                        <p class="card-text text-secondary small">
+                            Installs three triggers
+                            (<code>AFTER INSERT / UPDATE / DELETE</code>) on
+                            <code>tblSongs</code> so
+                            <code>tblSongbooks.SongCount</code> auto-maintains
+                            without any application-side recompute. Lifts the
+                            cache-maintenance responsibility off every current
+                            and future write path. Also runs an initial
+                            recompute as part of installation so the standalone
+                            recompute card (3y.) becomes redundant after this
+                            one runs. Idempotent. On hosts that disallow
+                            <code>CREATE TRIGGER</code> the migration logs the
+                            failure cleanly — PR #792's app-side recompute
+                            remains the safety net.
+                        </p>
+                        <a href="?action=songcount-triggers" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run SongCount Triggers Migration
+                        </a>
                     </div>
                 </div>
             </div>
