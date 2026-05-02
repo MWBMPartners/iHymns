@@ -37,6 +37,10 @@ $activePage = 'songbooks';
 
 $error   = '';
 $success = '';
+/* #782 phase E — populated by the `family_manifest` POST action below.
+   When non-null the page renders the plan table at the bottom of the
+   admin surface so the curator can review before a confirmed re-submit. */
+$manifestPreview = null;
 $db      = getDbMysqli();
 
 /* ---- GET ?action=pick_colour&abbr=XX (#772) -----------------------------
@@ -1231,6 +1235,245 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 break;
             }
 
+            case 'family_manifest': {
+                /* #782 phase E — apply / preview a family-manifest JSON
+                   file (the one ChristInSong.app.py emits as
+                   `_family-manifest.json` after a scrape). Two modes
+                   gated by `confirm`:
+                     - confirm absent → preview-only; build the plan
+                       and stash it on $manifestPreview for the page
+                       render to display the table. No DB writes.
+                     - confirm = '1'  → preview AND apply: walk the
+                       same plan and run the parent-link UPDATE for
+                       each row tagged 'will_link' / 'will_relink'.
+                   Re-uploadable: skipped rows ("already correct",
+                   "child missing", etc.) are surfaced in the result
+                   so a curator can fix the catalogue and re-upload. */
+                if (!in_array(($currentUser['role'] ?? ''), ['admin', 'global_admin'], true)) {
+                    $error = 'Admin role required to apply a family manifest.';
+                    break;
+                }
+                /* Local schema probe — the `update` case has its own
+                   $hasParentCols scoped to that case, and we don't want
+                   to lift it out just for one extra consumer. Same
+                   INFORMATION_SCHEMA query, instance-cached costs are
+                   negligible on the rare admin-only manifest path. */
+                $hasParentCols = false;
+                try {
+                    $probe = $db->prepare(
+                        "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                          WHERE TABLE_SCHEMA = DATABASE()
+                            AND TABLE_NAME   = 'tblSongbooks'
+                            AND COLUMN_NAME  = 'ParentSongbookId'
+                          LIMIT 1"
+                    );
+                    $probe->execute();
+                    $hasParentCols = $probe->get_result()->fetch_row() !== null;
+                    $probe->close();
+                } catch (\Throwable $_e) { /* fall through to false */ }
+                if (!$hasParentCols) {
+                    $error = 'Parent-songbook schema (#782 phase A) is not installed yet — run /manage/setup-database first.';
+                    break;
+                }
+                $upload = $_FILES['manifest'] ?? null;
+                if (!is_array($upload) || ($upload['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+                    $error = 'No manifest file received (or upload failed). Pick a JSON file and try again.';
+                    break;
+                }
+                if (($upload['size'] ?? 0) > 1024 * 1024) {
+                    /* Real manifests are tiny (a few KB). 1 MB is a
+                       generous cap that stops a runaway file from
+                       chewing memory in json_decode. */
+                    $error = 'Manifest file is too large (>1 MB). Are you sure this is a family manifest?';
+                    break;
+                }
+                $raw = file_get_contents($upload['tmp_name']);
+                if ($raw === false || $raw === '') {
+                    $error = 'Could not read the uploaded manifest file.';
+                    break;
+                }
+                $manifest = json_decode($raw, true);
+                if (!is_array($manifest)) {
+                    $error = 'Manifest is not valid JSON.';
+                    break;
+                }
+                if ((int)($manifest['schema_version'] ?? 0) !== 1) {
+                    $error = 'Unsupported manifest schema_version (this admin only knows version 1).';
+                    break;
+                }
+                $families = $manifest['families'] ?? [];
+                if (!is_array($families) || !$families) {
+                    $error = 'Manifest has no `families` entries to process.';
+                    break;
+                }
+
+                /* Pull every (Id, Abbreviation, ParentSongbookId) once so
+                   the plan loop is in-memory only. Catalogues are small
+                   enough that this beats one round-trip per child. */
+                $books = [];
+                $stmt  = $db->prepare(
+                    'SELECT Id, Abbreviation, ParentSongbookId, ParentRelationship
+                       FROM tblSongbooks'
+                );
+                $stmt->execute();
+                $res = $stmt->get_result();
+                while ($brow = $res->fetch_assoc()) {
+                    $books[strtoupper((string)$brow['Abbreviation'])] = [
+                        'id'           => (int)$brow['Id'],
+                        'parentId'     => isset($brow['ParentSongbookId']) ? (int)$brow['ParentSongbookId'] : 0,
+                        'relationship' => (string)($brow['ParentRelationship'] ?? ''),
+                    ];
+                }
+                $stmt->close();
+
+                /* Build the plan: one row per child across every family.
+                   Action codes:
+                     'will_link'    — child has no parent yet → set parent
+                     'will_relink'  — child has a parent that doesn't match the manifest → flagged but ONLY applied with `relink_existing=1`
+                     'already_ok'   — child already points at the right parent with the right relationship → skipped
+                     'parent_miss'  — manifest's parent.abbreviation isn't in the catalogue → cannot link, log + skip
+                     'child_miss'   — manifest's child isn't in the catalogue → log + skip
+                     'self'         — manifest claims child === parent → log + skip (defensive) */
+                $plan = [];
+                $relinkExisting = !empty($_POST['relink_existing']);
+                foreach ($families as $fam) {
+                    $parent = $fam['parent']  ?? null;
+                    $kids   = $fam['children'] ?? [];
+                    if (!is_array($parent) || !is_array($kids)) continue;
+                    $parentAbbr = strtoupper(trim((string)($parent['abbreviation'] ?? '')));
+                    if ($parentAbbr === '' || !isset($books[$parentAbbr])) {
+                        foreach ((array)$kids as $kid) {
+                            if (!is_array($kid)) continue;
+                            $plan[] = [
+                                'child'        => strtoupper((string)($kid['abbreviation'] ?? '')),
+                                'parent'       => $parentAbbr,
+                                'relationship' => (string)($kid['relationship'] ?? ''),
+                                'action'       => 'parent_miss',
+                                'note'         => "Parent `{$parentAbbr}` is not in the catalogue.",
+                            ];
+                        }
+                        continue;
+                    }
+                    $parentId = $books[$parentAbbr]['id'];
+                    foreach ($kids as $kid) {
+                        if (!is_array($kid)) continue;
+                        $childAbbr = strtoupper(trim((string)($kid['abbreviation'] ?? '')));
+                        $rel       = (string)($kid['relationship'] ?? 'translation');
+                        if (!in_array($rel, ['translation','edition','abridgement'], true)) {
+                            $rel = 'translation';
+                        }
+                        if ($childAbbr === '') continue;
+                        if ($childAbbr === $parentAbbr) {
+                            $plan[] = ['child' => $childAbbr, 'parent' => $parentAbbr,
+                                       'relationship' => $rel, 'action' => 'self',
+                                       'note' => 'Manifest lists the parent as its own child — skipped.'];
+                            continue;
+                        }
+                        if (!isset($books[$childAbbr])) {
+                            $plan[] = ['child' => $childAbbr, 'parent' => $parentAbbr,
+                                       'relationship' => $rel, 'action' => 'child_miss',
+                                       'note' => "Child `{$childAbbr}` is not in the catalogue (was it imported?)."];
+                            continue;
+                        }
+                        $current = $books[$childAbbr];
+                        if ($current['parentId'] === 0) {
+                            $plan[] = ['child' => $childAbbr, 'parent' => $parentAbbr,
+                                       'relationship' => $rel, 'action' => 'will_link',
+                                       'note' => ''];
+                        } elseif ($current['parentId'] === $parentId
+                                  && $current['relationship'] === $rel) {
+                            $plan[] = ['child' => $childAbbr, 'parent' => $parentAbbr,
+                                       'relationship' => $rel, 'action' => 'already_ok',
+                                       'note' => 'Already linked to this parent with this relationship.'];
+                        } else {
+                            $plan[] = ['child' => $childAbbr, 'parent' => $parentAbbr,
+                                       'relationship' => $rel, 'action' => 'will_relink',
+                                       'note' => 'Currently links to a different parent / relationship. '
+                                                . 'Tick "Relink existing" to overwrite.'];
+                        }
+                    }
+                }
+
+                /* Apply step (only when confirm=1). For will_relink rows
+                   we additionally require relink_existing — keeps the
+                   destructive overwrite behind a second tick so a hasty
+                   double-click doesn't silently rewire half the catalogue. */
+                $applied = 0;
+                $skipped = 0;
+                $confirm = !empty($_POST['confirm']);
+                if ($confirm) {
+                    $db->begin_transaction();
+                    try {
+                        $up = $db->prepare(
+                            'UPDATE tblSongbooks
+                                SET ParentSongbookId = ?, ParentRelationship = ?
+                              WHERE Abbreviation = ?'
+                        );
+                        foreach ($plan as &$p) {
+                            $shouldApply = ($p['action'] === 'will_link')
+                                || ($p['action'] === 'will_relink' && $relinkExisting);
+                            if (!$shouldApply) {
+                                if (in_array($p['action'], ['will_link', 'will_relink'], true)) {
+                                    $skipped++;
+                                }
+                                continue;
+                            }
+                            $parentAbbr  = $p['parent'];
+                            $parentId    = $books[$parentAbbr]['id'];
+                            $rel         = $p['relationship'];
+                            $childAbbr   = $p['child'];
+                            /* The UPDATE filters on Abbreviation rather
+                               than Id so the SQL stays readable; types
+                               are 'i' (parent id), 's' (relationship enum),
+                               's' (child abbreviation). */
+                            $up->bind_param('iss', $parentId, $rel, $childAbbr);
+                            $up->execute();
+                            $applied++;
+                            $p['action'] = $p['action'] === 'will_relink' ? 'relinked' : 'linked';
+                        }
+                        unset($p);
+                        $up->close();
+                        $db->commit();
+                        if (function_exists('logActivity')) {
+                            logActivity('songbook.family_manifest_apply', 'songbook', '', [
+                                'scraper'        => (string)($manifest['scraper'] ?? ''),
+                                'applied'        => $applied,
+                                'skipped'        => $skipped,
+                                'plan_size'      => count($plan),
+                                'relink_existing'=> $relinkExisting,
+                            ]);
+                        }
+                        $success = "Applied {$applied} parent link(s) from the manifest"
+                                 . ($skipped > 0 ? "; {$skipped} link(s) skipped (see table for why)." : '.');
+                    } catch (\Throwable $e) {
+                        $db->rollback();
+                        throw $e;
+                    }
+                } else {
+                    $countByAction = array_count_values(array_column($plan, 'action'));
+                    $success = 'Manifest parsed — preview below. Tick "Confirm" + re-submit to apply '
+                             . (int)($countByAction['will_link'] ?? 0) . ' new link(s)'
+                             . (isset($countByAction['will_relink']) ? ' (or also tick "Relink existing" to overwrite '
+                                . (int)$countByAction['will_relink'] . ' diverging row(s))' : '')
+                             . '.';
+                }
+
+                /* Stash for the page-template render block lower down. */
+                $manifestPreview = [
+                    'plan'            => $plan,
+                    'applied'         => $applied,
+                    'skipped'         => $skipped,
+                    'confirmed'       => $confirm,
+                    'relink_existing' => $relinkExisting,
+                    'meta'            => [
+                        'scraper'         => (string)($manifest['scraper']         ?? ''),
+                        'scraper_version' => (string)($manifest['scraper_version'] ?? ''),
+                        'generated_at'    => (string)($manifest['generated_at']    ?? ''),
+                    ],
+                ];
+                break;
+            }
+
             default:
                 $error = 'Unknown action.';
         }
@@ -1758,6 +2001,135 @@ $csrf = csrfToken();
                     </button>
                 </form>
             </div>
+        </div>
+        <?php endif; ?>
+
+        <?php if (in_array(($currentUser['role'] ?? ''), ['admin', 'global_admin'], true)): ?>
+        <!-- Family-manifest uploader (#782 phase E). Admin / global_admin
+             only. Curators upload the JSON file written by a scraper
+             (e.g. .importers/scrapers/ChristInSong.app.py emits
+             `_family-manifest.json` at the top of .SourceSongData/) to
+             bulk-link vernacular hymnals to their canonical parent
+             without hand-editing 22 rows on the songbooks list above.
+
+             Two-step flow: upload + click "Preview plan" → review the
+             plan table that renders below → tick "Confirm" + re-upload
+             the same file to actually apply. The destructive overwrite
+             ("Relink existing") sits behind a second tick so a hasty
+             double-click can't silently rewire a row that already
+             pointed at a different parent. -->
+        <div class="card-admin p-3 mb-4">
+            <h2 class="h6 mb-2"><i class="bi bi-diagram-3 me-2"></i>Apply family manifest</h2>
+            <p class="small text-muted mb-3">
+                Upload a JSON file produced by a scraper (e.g. <code>_family-manifest.json</code>
+                from <code>ChristInSong.app.py</code>) to bulk-link vernacular / edition / abridgement
+                rows to their canonical parent songbook. Preview-only by default — tick
+                <strong>Confirm</strong> below the preview to apply.
+            </p>
+            <form method="POST" enctype="multipart/form-data">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                <input type="hidden" name="action"     value="family_manifest">
+                <div class="row g-2 align-items-end">
+                    <div class="col-sm-6">
+                        <label class="form-label small">Manifest file (JSON, ≤ 1 MB)</label>
+                        <input type="file" name="manifest"
+                               class="form-control form-control-sm"
+                               accept="application/json,.json" required>
+                    </div>
+                    <div class="col-sm-3 d-flex align-items-end gap-2">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox"
+                                   name="confirm" value="1" id="manifest-confirm">
+                            <label class="form-check-label small" for="manifest-confirm">
+                                Confirm — apply the plan
+                            </label>
+                        </div>
+                    </div>
+                    <div class="col-sm-3 d-flex align-items-end gap-2">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox"
+                                   name="relink_existing" value="1" id="manifest-relink">
+                            <label class="form-check-label small" for="manifest-relink">
+                                Relink existing
+                                <small class="text-muted d-block">overwrite rows that already point elsewhere</small>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-amber btn-sm mt-3">
+                    <i class="bi bi-eye me-1"></i>Preview / Apply
+                </button>
+            </form>
+
+            <?php if ($manifestPreview !== null): ?>
+                <hr class="my-3">
+                <?php
+                    $meta = $manifestPreview['meta'];
+                    $countByAction = array_count_values(array_column($manifestPreview['plan'], 'action'));
+                    /* Action label + Bootstrap badge class lookup —
+                       pre-computed so the table loop stays compact. */
+                    $actionMeta = [
+                        'will_link'   => ['Will link',          'bg-info'],
+                        'will_relink' => ['Would relink',       'bg-warning text-dark'],
+                        'already_ok'  => ['Already correct',    'bg-success'],
+                        'parent_miss' => ['Parent missing',     'bg-secondary'],
+                        'child_miss'  => ['Child missing',      'bg-secondary'],
+                        'self'        => ['Self-parent',        'bg-danger'],
+                        'linked'      => ['Linked',             'bg-success'],
+                        'relinked'    => ['Relinked',           'bg-success'],
+                    ];
+                ?>
+                <div class="small text-muted mb-2">
+                    Manifest from
+                    <code><?= htmlspecialchars($meta['scraper'] ?: 'unknown') ?></code>
+                    <?php if ($meta['scraper_version']): ?>
+                        v<?= htmlspecialchars($meta['scraper_version']) ?>
+                    <?php endif; ?>
+                    <?php if ($meta['generated_at']): ?>
+                        · generated <?= htmlspecialchars($meta['generated_at']) ?>
+                    <?php endif; ?>
+                    · <?= count($manifestPreview['plan']) ?> row(s).
+                </div>
+                <table class="table table-sm align-middle mb-0">
+                    <thead>
+                        <tr class="text-muted small">
+                            <th>Child</th>
+                            <th>Parent</th>
+                            <th>Relationship</th>
+                            <th>Action</th>
+                            <th>Note</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($manifestPreview['plan'] as $p):
+                            [$lbl, $cls] = $actionMeta[$p['action']] ?? [$p['action'], 'bg-secondary'];
+                        ?>
+                            <tr>
+                                <td><code><?= htmlspecialchars($p['child']) ?></code></td>
+                                <td><code><?= htmlspecialchars($p['parent']) ?></code></td>
+                                <td><small><?= htmlspecialchars($p['relationship']) ?></small></td>
+                                <td><span class="badge <?= htmlspecialchars($cls) ?>"><?= htmlspecialchars($lbl) ?></span></td>
+                                <td><small class="text-muted"><?= htmlspecialchars($p['note']) ?></small></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+                <?php if (!$manifestPreview['confirmed']): ?>
+                    <p class="small text-muted mt-3 mb-0">
+                        Re-upload the same file with <strong>Confirm</strong> ticked to apply
+                        <?= (int)($countByAction['will_link'] ?? 0) ?> new link(s)<?php
+                        if (!empty($countByAction['will_relink'])):
+                            ?> (or also tick <strong>Relink existing</strong> to overwrite
+                            <?= (int)$countByAction['will_relink'] ?> diverging row(s))<?php
+                        endif; ?>.
+                    </p>
+                <?php else: ?>
+                    <p class="small text-muted mt-3 mb-0">
+                        Applied <?= (int)$manifestPreview['applied'] ?>;
+                        skipped <?= (int)$manifestPreview['skipped'] ?> writable row(s).
+                    </p>
+                <?php endif; ?>
+            <?php endif; ?>
         </div>
         <?php endif; ?>
 
