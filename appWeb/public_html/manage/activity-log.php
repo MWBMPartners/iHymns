@@ -105,12 +105,19 @@ if (($_GET['export'] ?? '') === 'csv') {
     header('Cache-Control: no-store');
 
     $out = fopen('php://output', 'w');
+    /* #805 — CreatedAtUtc is an explicit UTC ISO-8601 string built
+       from UNIX_TIMESTAMP() via gmdate() so downloaded CSVs are
+       timezone-unambiguous regardless of where the spreadsheet ends
+       up. The legacy `CreatedAt` column is preserved for back-compat
+       with any existing report tooling but should be considered
+       deprecated — `CreatedAtUtc` is the new canonical value. */
     fputcsv($out, [
-        'Id', 'CreatedAt', 'Username', 'Action', 'EntityType', 'EntityId',
+        'Id', 'CreatedAt', 'CreatedAtUtc', 'Username', 'Action', 'EntityType', 'EntityId',
         'Result', 'IpAddress', 'UserAgent', 'RequestId', 'Method', 'DurationMs', 'Details',
     ]);
     $stmt = $db->prepare(
-        'SELECT a.Id, a.CreatedAt, u.Username, a.Action, a.EntityType, a.EntityId,
+        'SELECT a.Id, a.CreatedAt, UNIX_TIMESTAMP(a.CreatedAt) AS CreatedAtTs,
+                u.Username, a.Action, a.EntityType, a.EntityId,
                 a.Result, a.IpAddress, a.UserAgent, a.RequestId, a.Method,
                 a.DurationMs, a.Details
            FROM tblActivityLog a
@@ -123,8 +130,10 @@ if (($_GET['export'] ?? '') === 'csv') {
     $stmt->execute();
     $res = $stmt->get_result();
     while ($row = $res->fetch_assoc()) {
+        $ts        = (int)($row['CreatedAtTs'] ?? 0);
+        $createdUtc = $ts > 0 ? gmdate('Y-m-d\TH:i:s\Z', $ts) : '';
         fputcsv($out, [
-            $row['Id'], $row['CreatedAt'], $row['Username'] ?? '', $row['Action'],
+            $row['Id'], $row['CreatedAt'], $createdUtc, $row['Username'] ?? '', $row['Action'],
             $row['EntityType'], $row['EntityId'], $row['Result'],
             $row['IpAddress'], $row['UserAgent'] ?? '', $row['RequestId'] ?? '',
             $row['Method'] ?? '', $row['DurationMs'] ?? '', $row['Details'] ?? '',
@@ -154,8 +163,16 @@ try {
     $total = (int)($row[0] ?? 0);
     $countStmt->close();
 
+    /* #805 — also pull UNIX_TIMESTAMP(a.CreatedAt) so the cell can
+       render an unambiguous UTC value AND carry the seconds-since-epoch
+       as a data attribute for the JS converter below. The raw
+       a.CreatedAt comes back in MySQL's session timezone (`SYSTEM` by
+       default = OS), so suffixing 'Z' on the string would lie when the
+       server isn't in UTC. UNIX_TIMESTAMP() is always UTC seconds and
+       side-steps that whole class of bug. */
     $stmt = $db->prepare(
-        'SELECT a.Id, a.CreatedAt, a.Action, a.EntityType, a.EntityId, a.Result,
+        'SELECT a.Id, a.CreatedAt, UNIX_TIMESTAMP(a.CreatedAt) AS CreatedAtTs,
+                a.Action, a.EntityType, a.EntityId, a.Result,
                 a.Details, a.IpAddress, a.UserAgent, a.RequestId, a.Method,
                 a.DurationMs, u.Username
            FROM tblActivityLog a
@@ -384,15 +401,25 @@ $buildQuery = function (array $overrides = []) {
                             ? json_encode($detailsArr, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
                             : '';
                         $rowId = (int)$r['Id'];
+                        /* #805 — render the cell text as UTC built from
+                           UNIX_TIMESTAMP via gmdate() so the value is
+                           correct regardless of MySQL session TZ or
+                           PHP date.timezone. The data-ts attribute
+                           carries the Unix seconds for the JS converter
+                           to format in the visitor's local TZ. The
+                           " UTC" suffix is dropped by the JS once it
+                           replaces the cell, so visitors see "(local)"
+                           cells without the redundant suffix. */
+                        $createdTs    = (int)($r['CreatedAtTs'] ?? 0);
+                        $createdUtcStr = $createdTs > 0
+                            ? gmdate('Y-m-d H:i:s', $createdTs)
+                            : (string)$r['CreatedAt'];
                     ?>
                         <tr class="activity-row">
                             <td class="text-muted small activity-when"
-                                data-utc="<?= htmlspecialchars(
-                                    str_replace(' ', 'T', (string)$r['CreatedAt']) . 'Z',
-                                    ENT_QUOTES, 'UTF-8'
-                                ) ?>"
-                                title="<?= htmlspecialchars((string)$r['CreatedAt'], ENT_QUOTES, 'UTF-8') ?> UTC">
-                                <?= htmlspecialchars((string)$r['CreatedAt'], ENT_QUOTES, 'UTF-8') ?>
+                                data-ts="<?= (int)$createdTs ?>"
+                                title="<?= htmlspecialchars($createdUtcStr, ENT_QUOTES, 'UTF-8') ?> UTC">
+                                <?= htmlspecialchars($createdUtcStr, ENT_QUOTES, 'UTF-8') ?> <span class="text-muted">UTC</span>
                             </td>
                             <td>
                                 <?php if (!empty($r['Username'])): ?>
@@ -484,12 +511,16 @@ $buildQuery = function (array $overrides = []) {
         <?php endif; ?>
     </div>
 
-    <!-- Local-time conversion + UA-wrap styling (#721 / #723).
-         Each .activity-when cell carries data-utc="2026-04-30T13:53:42Z";
-         this script formats it via the browser's Intl.DateTimeFormat in
-         the user's local timezone and replaces the cell's text. If Intl
-         isn't available (very old browser) the cells stay UTC and the
-         header label stays "When (UTC)". -->
+    <!-- Visitor-local time conversion (#805, replaces #721 / #723).
+         Each .activity-when cell carries data-ts="<unix-seconds-utc>";
+         this script multiplies by 1000, builds a Date, formats via the
+         browser's Intl.DateTimeFormat in the visitor's resolved
+         timezone, and replaces the cell's text. The fallback (cell
+         text rendered server-side as `YYYY-MM-DD HH:MM:SS UTC` from
+         gmdate(UNIX_TIMESTAMP)) stays in place if Intl is unavailable
+         OR the visitor's TZ can't be resolved — so the column is
+         always either visitor-local or unambiguous UTC, never silently
+         server-local-pretending-to-be-anything-else. -->
     <style>
         .activity-ua {
             display: inline-block;
@@ -502,17 +533,24 @@ $buildQuery = function (array $overrides = []) {
     (function () {
         try {
             if (typeof Intl === 'undefined' || !Intl.DateTimeFormat) return;
+            /* Resolve the visitor's TZ explicitly so we can fall back
+               to UTC display if it comes back empty (some locked-down
+               browser configs return ''). */
+            var resolved = Intl.DateTimeFormat().resolvedOptions();
+            var visitorTz = resolved && resolved.timeZone ? resolved.timeZone : '';
+            if (!visitorTz) return; /* fall back to server-rendered UTC */
             var fmt = new Intl.DateTimeFormat(undefined, {
-                year:   'numeric', month:  '2-digit', day:    '2-digit',
-                hour:   '2-digit', minute: '2-digit', second: '2-digit',
-                hour12: false,
+                year:    'numeric', month:  '2-digit', day:    '2-digit',
+                hour:    '2-digit', minute: '2-digit', second: '2-digit',
+                hour12:  false,
+                timeZone: visitorTz,
             });
-            var cells = document.querySelectorAll('.activity-when[data-utc]');
+            var cells = document.querySelectorAll('.activity-when[data-ts]');
             if (!cells.length) return;
             cells.forEach(function (cell) {
-                var iso = cell.getAttribute('data-utc');
-                if (!iso) return;
-                var d = new Date(iso);
+                var ts = parseInt(cell.getAttribute('data-ts') || '0', 10);
+                if (!ts) return;
+                var d = new Date(ts * 1000);
                 if (isNaN(d.getTime())) return;
                 /* Reformat to "YYYY-MM-DD HH:MM:SS" — matches the
                    table's existing visual cadence; some locales would
@@ -523,10 +561,15 @@ $buildQuery = function (array $overrides = []) {
                 }, {});
                 cell.textContent = parts.year + '-' + parts.month + '-' + parts.day
                     + ' ' + parts.hour + ':' + parts.minute + ':' + parts.second;
+                /* Hover title carries the resolved timezone name so
+                   curators inspecting an entry can see the offset
+                   they're looking at — useful when comparing logs
+                   across teammates in different regions. */
+                cell.setAttribute('title', cell.textContent + ' (' + visitorTz + ')');
             });
             var header = document.getElementById('activity-when-header');
-            if (header) header.textContent = 'When (local)';
-        } catch (_e) { /* fail-soft — leave UTC text in place */ }
+            if (header) header.textContent = 'When (local — ' + visitorTz + ')';
+        } catch (_e) { /* fail-soft — server-rendered UTC stays */ }
     })();
     </script>
 
