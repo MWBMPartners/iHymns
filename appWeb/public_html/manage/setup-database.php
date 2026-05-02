@@ -226,6 +226,7 @@ if ($action !== '') {
         'tblsongs-number-nullable' => 'migrate-tblsongs-number-nullable.php',
         'multi-language-tables'    => 'migrate-multi-language-tables.php',
         'parent-songbooks'         => 'migrate-parent-songbooks.php',
+        'recompute-songbook-songcount' => 'migrate-recompute-songbook-songcount.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -270,6 +271,7 @@ if ($action !== '') {
         'tblsongs-number-nullable',
         'multi-language-tables',
         'parent-songbooks',
+        'recompute-songbook-songcount',
         /* When you add a new migrate-*.php under appWeb/.sql/, ALSO add
            its action key to:
              1. $scriptMap above (action key → file)
@@ -1052,6 +1054,28 @@ if ($hasCredentials && defined('DB_HOST')) {
                             CLDR JSON files, overwrites the bundled snapshots,
                             then re-runs the import.
                         </p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">3y. Recompute Songbook SongCount (#791)</h5>
+                        <p class="card-text text-secondary small">
+                            Walks every <code>tblSongbooks</code> row and rewrites
+                            <code>SongCount</code> from a live
+                            <code>SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?</code>.
+                            Fixes stale cache values left behind when songs were
+                            saved via the editor before #791's recompute fix
+                            landed — the symptom was Misc (or any songbook that
+                            received its first song via the editor) failing to
+                            appear on the home / songbooks pages because the
+                            tile-render gate is <code>songCount &gt; 0</code>.
+                            Idempotent — rows already correct skip silently.
+                        </p>
+                        <a href="?action=recompute-songbook-songcount" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run Songbook SongCount Recompute
+                        </a>
                     </div>
                 </div>
             </div>
