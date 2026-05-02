@@ -82,6 +82,30 @@ function toTitleCase(string $str): string
     return implode(' ', $words);
 }
 
+/**
+ * Normalise a tblSongs.Number value coming back from the database to the
+ * canonical "unnumbered" representation (#797).
+ *
+ * The column is nullable and NULL is the canonical sentinel for "this
+ * song has no songbook position" (#392). However:
+ *   - mysqli + assoc fetch hands NULL back as PHP null, which a naive
+ *     `(int)$row['number']` round-trips to 0 — masking the NULL and
+ *     causing the rest of the app to render "0" everywhere;
+ *   - some legacy rows / payloads carry an empty string or '0'.
+ *
+ * Treat null, '', '0' and any non-positive integer as null. Any positive
+ * integer is preserved as int.
+ *
+ * @param mixed $value
+ * @return int|null
+ */
+function normaliseSongNumber($value): ?int
+{
+    if ($value === null || $value === '') return null;
+    $n = (int)$value;
+    return $n > 0 ? $n : null;
+}
+
 class SongData
 {
     /** MySQLi connection (null when using JSON fallback) */
@@ -481,7 +505,7 @@ class SongData
 
         $songs = [];
         while ($row = $result->fetch_assoc()) {
-            $row['number'] = (int)$row['number'];
+            $row['number'] = normaliseSongNumber($row['number']);
             $row['verified'] = (bool)$row['verified'];
             $row['lyricsPublicDomain'] = (bool)$row['lyricsPublicDomain'];
             $row['musicPublicDomain'] = (bool)$row['musicPublicDomain'];
@@ -744,7 +768,7 @@ class SongData
 
         while ($row = $result->fetch_assoc()) {
             unset($row['relevance']);
-            $row['number'] = (int)$row['number'];
+            $row['number'] = normaliseSongNumber($row['number']);
             $row['verified'] = (bool)$row['verified'];
             $row['lyricsPublicDomain'] = (bool)$row['lyricsPublicDomain'];
             $row['musicPublicDomain'] = (bool)$row['musicPublicDomain'];
@@ -897,7 +921,7 @@ class SongData
 
         $songs = [];
         while ($row = $result->fetch_assoc()) {
-            $row['number'] = (int)$row['number'];
+            $row['number'] = normaliseSongNumber($row['number']);
             $row['verified'] = (bool)$row['verified'];
             $row['lyricsPublicDomain'] = (bool)$row['lyricsPublicDomain'];
             $row['musicPublicDomain'] = (bool)$row['musicPublicDomain'];
@@ -1097,7 +1121,7 @@ class SongData
             return null;
         }
 
-        $row['number'] = (int)$row['number'];
+        $row['number'] = normaliseSongNumber($row['number']);
         $row['verified'] = (bool)$row['verified'];
         $row['lyricsPublicDomain'] = (bool)$row['lyricsPublicDomain'];
         $row['musicPublicDomain'] = (bool)$row['musicPublicDomain'];
@@ -1651,7 +1675,7 @@ class SongData
 
         $songs = [];
         while ($row = $result->fetch_assoc()) {
-            $row['number'] = (int)$row['number'];
+            $row['number'] = normaliseSongNumber($row['number']);
             $row['verified'] = (bool)$row['verified'];
             $row['lyricsPublicDomain'] = (bool)$row['lyricsPublicDomain'];
             $row['musicPublicDomain'] = (bool)$row['musicPublicDomain'];
