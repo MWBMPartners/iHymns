@@ -50,10 +50,38 @@ $bookName    = $song['songbookName'] ?? '';
    colour on the bar. Empty string means "let the bar fall back to
    the default accent". */
 $songbookColour = '';
+$songbookParent = null;   /* #782 phase D — nested array shape: id, abbreviation, name, relationship */
 if ($songbook !== '') {
     $bookData = $songData->getSongbook($songbook);
-    if (is_array($bookData) && !empty($bookData['colour'])) {
-        $songbookColour = trim((string)$bookData['colour']);
+    if (is_array($bookData)) {
+        if (!empty($bookData['colour'])) {
+            $songbookColour = trim((string)$bookData['colour']);
+        }
+        if (!empty($bookData['parent']) && is_array($bookData['parent'])) {
+            $songbookParent = $bookData['parent'];
+        }
+    }
+}
+
+/* #782 phase D — if the songbook has a parent (translation / edition /
+   abridgement of a canonical source), try to deep-link to the parent's
+   same-numbered song. Falls back to the parent songbook's index when
+   the parent doesn't carry that number. Skipped silently on unnumbered
+   songs (the parent-link only makes sense at hymn-number granularity). */
+$parentSongLinkUrl  = '';
+$parentSongLinkType = ''; /* 'song' | 'songbook' | '' */
+if ($songbookParent !== null
+    && $songNumber !== null
+    && (string)($songbookParent['abbreviation'] ?? '') !== ''
+) {
+    $parentAbbr = (string)$songbookParent['abbreviation'];
+    $parentSid  = $songData->findSongIdByNumber($parentAbbr, $songNumber);
+    if ($parentSid !== null) {
+        $parentSongLinkUrl  = '/song/' . $parentSid;
+        $parentSongLinkType = 'song';
+    } else {
+        $parentSongLinkUrl  = '/songbook/' . $parentAbbr;
+        $parentSongLinkType = 'songbook';
     }
 }
 $writers     = $song['writers']     ?? [];
@@ -212,6 +240,48 @@ unset($_t);
                         <span class="badge bg-body-secondary"><?= htmlspecialchars($songbook) ?></span>
                         <?= htmlspecialchars($bookName) ?>
                     </p>
+                    <?php if ($songbookParent !== null && $parentSongLinkUrl !== ''):
+                        /* #782 phase D — canonical-source link. Renders only
+                           when the current songbook declares a parent AND we
+                           have an absolute number to deep-link with. The icon
+                           varies by ParentRelationship — translate / bookmark
+                           (edition) / scissors (abridgement) — matching the
+                           admin-side Parent column in /manage/songbooks. The
+                           prose stays neutral ("Original …") so the badge
+                           reads naturally regardless of relationship type. */
+                        $rel    = (string)($songbookParent['relationship'] ?? '');
+                        $relLbl = match ($rel) {
+                            'translation' => 'Translation of',
+                            'edition'     => 'Edition of',
+                            'abridgement' => 'Abridgement of',
+                            default       => 'Original',
+                        };
+                        $relIcn = match ($rel) {
+                            'translation' => 'fa-language',
+                            'edition'     => 'fa-bookmark',
+                            'abridgement' => 'fa-scissors',
+                            default       => 'fa-link',
+                        };
+                        $parentName = (string)($songbookParent['name']         ?? '');
+                        $parentAbbr = (string)($songbookParent['abbreviation'] ?? '');
+                    ?>
+                    <p class="small mt-2 mb-0">
+                        <a href="<?= htmlspecialchars($parentSongLinkUrl) ?>"
+                           class="text-decoration-none"
+                           data-navigate="<?= htmlspecialchars($parentSongLinkType) ?>"
+                           <?php if ($parentSongLinkType === 'song'): ?>data-song-id="<?= htmlspecialchars(basename($parentSongLinkUrl)) ?>"<?php endif; ?>
+                           <?php if ($parentSongLinkType === 'songbook'): ?>data-songbook-id="<?= htmlspecialchars($parentAbbr) ?>"<?php endif; ?>
+                           title="View this hymn in its canonical source">
+                            <i class="fa-solid <?= htmlspecialchars($relIcn) ?> me-1" aria-hidden="true"></i>
+                            <?= htmlspecialchars($relLbl) ?>
+                            <span class="badge bg-body-secondary ms-1"><?= htmlspecialchars($parentAbbr) ?></span>
+                            <?= htmlspecialchars($parentName) ?>
+                            <?php if ($parentSongLinkType === 'song'): ?>
+                                <span class="text-muted">— hymn #<?= (int)$songNumber ?></span>
+                            <?php endif; ?>
+                        </a>
+                    </p>
+                    <?php endif; ?>
                 </div>
             </div>
 

@@ -82,6 +82,27 @@ $stats = $songData->getStats();
                                     <p class="text-muted small mb-0 mt-1">
                                         <?= number_format($book['songCount']) ?> songs
                                     </p>
+                                    <?php
+                                    /* #782 phase D — "Part of: <Series>" line.
+                                       Same shape as the home-grid tile in
+                                       includes/pages/home.php. Renders only
+                                       when the songbook is in at least one
+                                       series; multiple series joined with " · ".
+                                       Kept on its own row to avoid stretching
+                                       the songCount line on tight viewports. */
+                                    $bookSeries = (array)($book['series'] ?? []);
+                                    if ($bookSeries):
+                                        $names = array_map(
+                                            static fn(array $s): string => htmlspecialchars((string)($s['name'] ?? '')),
+                                            $bookSeries
+                                        );
+                                    ?>
+                                    <p class="text-muted small mb-0 mt-1 songbook-tile-series"
+                                       title="Part of <?= count($bookSeries) ?> series">
+                                        <i class="fa-solid fa-layer-group me-1" aria-hidden="true"></i>
+                                        <span class="visually-hidden">Part of </span><?= implode(' · ', $names) ?>
+                                    </p>
+                                    <?php endif; ?>
                                 </div>
                                 <!-- Arrow indicator -->
                                 <i class="fa-solid fa-chevron-right text-muted mt-1" aria-hidden="true"></i>

@@ -179,6 +179,31 @@ $songbooks = $songData->getSongbooks();
                                 <p class="card-text text-muted small mt-2 mb-0">
                                     <?= number_format($book['songCount']) ?> songs
                                 </p>
+                                <?php
+                                /* #782 phase D — "Part of: <Series>" line.
+                                   Renders only when the songbook belongs to one
+                                   or more series (Songs of Fellowship volumes,
+                                   themed compilations). Multiple series are
+                                   joined with " · " — clean separator that
+                                   doesn't fight with commas inside series
+                                   names. The series links route to the
+                                   /series/<slug> page (phase D adds the page
+                                   itself in a future PR; until then the
+                                   anchors 404 — captured in the PR's known-
+                                   limits list). */
+                                $bookSeries = (array)($book['series'] ?? []);
+                                if ($bookSeries):
+                                    $names = array_map(
+                                        static fn(array $s): string => htmlspecialchars((string)($s['name'] ?? '')),
+                                        $bookSeries
+                                    );
+                                ?>
+                                <p class="card-text text-muted small mt-1 mb-0 songbook-tile-series"
+                                   title="Part of <?= count($bookSeries) ?> series">
+                                    <i class="fa-solid fa-layer-group me-1" aria-hidden="true"></i>
+                                    <span class="visually-hidden">Part of </span><?= implode(' · ', $names) ?>
+                                </p>
+                                <?php endif; ?>
                             </div>
                             <!-- Offline-download button (#453). Hidden by
                                  default; the offline-support check in
