@@ -65,6 +65,23 @@ function resolveType(type) {
 }
 
 /**
+ * Coerce a component number to a positive integer, or null.
+ *
+ * The editor stores `number: 0` (or null/empty) as a sentinel meaning
+ * "this is the only one of its kind" — see issue #795. Anything that is
+ * not a positive integer is therefore treated as "no number" and the
+ * caller suppresses the suffix.
+ *
+ * @param {*} n
+ * @returns {number|null}
+ */
+function positiveNumber(n) {
+    if (n == null || n === '') return null;
+    const parsed = parseInt(n, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+/**
  * Build a short tag for a component, e.g. "V1", "C", "B2", "PC1".
  * Aliases resolve to their canonical type (e.g. refrain → "C").
  *
@@ -73,7 +90,8 @@ function resolveType(type) {
  */
 export function shortTag(comp) {
     const meta = resolveType(comp.type) || { short: comp.type.charAt(0).toUpperCase() };
-    return meta.short + (comp.number != null ? comp.number : '');
+    const num = positiveNumber(comp.number);
+    return meta.short + (num != null ? num : '');
 }
 
 /**
@@ -86,7 +104,8 @@ export function shortTag(comp) {
 export function fullLabel(comp) {
     const meta = resolveType(comp.type);
     const label = meta ? meta.label : comp.type.charAt(0).toUpperCase() + comp.type.slice(1);
-    return comp.number != null ? `${label} ${comp.number}` : label;
+    const num = positiveNumber(comp.number);
+    return num != null ? `${label} ${num}` : label;
 }
 
 /**
