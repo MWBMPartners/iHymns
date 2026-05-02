@@ -313,6 +313,178 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
     exit;
 }
 
+/* ---- GET ?action=parent_search&q=…&exclude_id=… (#782 phase B) --------
+ * JSON typeahead for the edit-modal's "Parent songbook" picker. Returns
+ * matching rows from tblSongbooks ranked by usage (most-cited as a
+ * parent first, then alphabetical) so the Christ in Song / Mission
+ * Praise heads surface above one-off siblings.
+ *
+ * `exclude_id` is the row currently being edited. We omit it from the
+ * results AND recursively omit every descendant of it — picking a
+ * descendant as the new parent would create a cycle, and showing it
+ * in the dropdown only to reject on save is a worse UX than just
+ * not offering it. (Phase B "light" cycle detection still runs on the
+ * server-side update path as a defence-in-depth — a curator hitting the
+ * endpoint directly can't smuggle a cycle in.)
+ *
+ * Pre-migration safe: probes for the ParentSongbookId column and
+ * returns an empty list with a `note` if the schema isn't there yet,
+ * so the admin page renders cleanly on a deployment that hasn't run
+ * migrate-parent-songbooks.php.
+ * ----------------------------------------------------------------------- */
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
+    && ($_GET['action'] ?? '') === 'parent_search'
+) {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store');
+    $q         = trim((string)($_GET['q'] ?? ''));
+    $limit     = max(1, min(50, (int)($_GET['limit'] ?? 20)));
+    $excludeId = (int)($_GET['exclude_id'] ?? 0);
+
+    $hasParentCol = false;
+    try {
+        $probe = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblSongbooks'
+                AND COLUMN_NAME  = 'ParentSongbookId'
+              LIMIT 1"
+        );
+        $probe->execute();
+        $hasParentCol = $probe->get_result()->fetch_row() !== null;
+        $probe->close();
+    } catch (\Throwable $e) {
+        error_log('[parent_search] probe failed: ' . $e->getMessage());
+    }
+    if (!$hasParentCol) {
+        echo json_encode([
+            'suggestions' => [],
+            'note'        => 'tblSongbooks.ParentSongbookId not yet present — run /manage/setup-database',
+        ]);
+        exit;
+    }
+
+    /* Build the descendant-of-exclude set so the typeahead never
+       offers a child as a candidate parent. BFS against the ParentFK,
+       capped at 32 levels to bound the walk in pathological data
+       (real catalogues never go more than ~3 deep). */
+    $descendants = [];
+    if ($excludeId > 0) {
+        $descendants[$excludeId] = true;
+        $frontier = [$excludeId];
+        $depth    = 0;
+        $stmt     = $db->prepare(
+            'SELECT Id FROM tblSongbooks WHERE ParentSongbookId = ?'
+        );
+        while ($frontier && $depth < 32) {
+            $next = [];
+            foreach ($frontier as $parentId) {
+                $stmt->bind_param('i', $parentId);
+                $stmt->execute();
+                $res = $stmt->get_result();
+                while ($row = $res->fetch_row()) {
+                    $cid = (int)$row[0];
+                    if (!isset($descendants[$cid])) {
+                        $descendants[$cid] = true;
+                        $next[] = $cid;
+                    }
+                }
+            }
+            $frontier = $next;
+            $depth++;
+        }
+        $stmt->close();
+    }
+
+    /* Empty query → still return the top-N most-used parents so the
+       picker shows something useful as soon as the field is focused.
+       This mirrors what curators expect from the affiliation typeahead. */
+    try {
+        $like   = '%' . $q . '%';
+        $excl   = array_keys($descendants);
+        /* Build the IN(...) placeholders from the descendant count.
+           Always at least one placeholder so the prepared SQL stays
+           constant-shape when nothing is excluded — bind a sentinel 0. */
+        $exclPh = $excl ? implode(',', array_fill(0, count($excl), '?')) : '0';
+
+        if ($q === '') {
+            $sql = "SELECT b.Id, b.Abbreviation, b.Name, b.Language,
+                           (SELECT COUNT(*) FROM tblSongbooks c WHERE c.ParentSongbookId = b.Id) AS childCount
+                      FROM tblSongbooks b
+                     WHERE b.Id NOT IN ($exclPh)
+                     ORDER BY childCount DESC, b.Name ASC
+                     LIMIT ?";
+            $stmt = $db->prepare($sql);
+            $types = str_repeat('i', count($excl) ?: 1) . 'i';
+            $args  = $excl ?: [0];
+            $args[] = $limit;
+            $stmt->bind_param($types, ...$args);
+        } else {
+            $sql = "SELECT b.Id, b.Abbreviation, b.Name, b.Language,
+                           (SELECT COUNT(*) FROM tblSongbooks c WHERE c.ParentSongbookId = b.Id) AS childCount
+                      FROM tblSongbooks b
+                     WHERE b.Id NOT IN ($exclPh)
+                       AND (b.Name LIKE ? OR b.Abbreviation LIKE ?)
+                     ORDER BY childCount DESC, b.Name ASC
+                     LIMIT ?";
+            $stmt = $db->prepare($sql);
+            $types = str_repeat('i', count($excl) ?: 1) . 'ssi';
+            $args  = $excl ?: [0];
+            $args[] = $like;
+            $args[] = $like;
+            $args[] = $limit;
+            $stmt->bind_param($types, ...$args);
+        }
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $suggestions = [];
+        while ($row = $res->fetch_assoc()) {
+            $suggestions[] = [
+                'id'           => (int)$row['Id'],
+                'abbreviation' => (string)$row['Abbreviation'],
+                'name'         => (string)$row['Name'],
+                'language'     => (string)($row['Language'] ?? ''),
+                'childCount'   => (int)$row['childCount'],
+            ];
+        }
+        $stmt->close();
+        echo json_encode(['suggestions' => $suggestions], JSON_UNESCAPED_UNICODE);
+    } catch (\Throwable $e) {
+        error_log('[parent_search] ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['error' => 'Search failed.']);
+    }
+    exit;
+}
+
+/* ---- Cycle-detection helper for #782 phase B --------------------------
+ * Walks ParentSongbookId upward from $candidateParent and returns true
+ * if the chain hits $rowId — i.e. setting that parent would create a
+ * cycle. Capped at 64 hops to bound pathological data (the FK chain
+ * never legitimately goes more than ~3 deep — English CIS → vernacular
+ * CIS, MP1 → MP2 → MP-Combined). NULL parent terminates cleanly.
+ * ----------------------------------------------------------------------- */
+function _wouldCreateParentCycle(mysqli $db, int $rowId, int $candidateParent): bool
+{
+    if ($candidateParent <= 0 || $rowId <= 0) return false;
+    if ($candidateParent === $rowId)          return true;
+    $current = $candidateParent;
+    $stmt    = $db->prepare('SELECT ParentSongbookId FROM tblSongbooks WHERE Id = ?');
+    $hops    = 0;
+    while ($current > 0 && $hops < 64) {
+        $stmt->bind_param('i', $current);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_row();
+        if (!$row) break;
+        $next = $row[0] !== null ? (int)$row[0] : 0;
+        if ($next === $rowId) { $stmt->close(); return true; }
+        $current = $next;
+        $hops++;
+    }
+    $stmt->close();
+    return false;
+}
+
 /* Local closures over $db that wrap the shared helpers in
    includes/songbook_validation.php. The shared helpers are plain
    functions (no captured state); these wrappers exist solely so the
@@ -520,18 +692,64 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $lccn         = trim((string)($_POST['lccn']                ?? '')) ?: null;
                 $lcClass      = trim((string)($_POST['lc_class']            ?? '')) ?: null;
 
+                /* #782 phase B — Parent songbook fields. Curator picks
+                   a parent via the typeahead which fills `parent_songbook_id`
+                   (hidden int) plus `parent_relationship` (enum dropdown).
+                   Both fields are optional: a NULL parent means "standalone"
+                   (or peer-grouped via the series tables, which is phase C
+                   territory). Posted blank → null on both. The relationship
+                   is force-cleared when the parent is, so we can't leave a
+                   stranded "translation" label without a target. */
+                $parentIdRaw   = trim((string)($_POST['parent_songbook_id']  ?? ''));
+                $parentRelRaw  = trim((string)($_POST['parent_relationship'] ?? ''));
+                $parentId      = ($parentIdRaw === '' || $parentIdRaw === '0') ? null : (int)$parentIdRaw;
+                $parentRel     = $parentRelRaw === '' ? null : $parentRelRaw;
+                if ($parentId === null) {
+                    $parentRel = null;
+                }
+                if ($parentRel !== null
+                    && !in_array($parentRel, ['translation', 'edition', 'abridgement'], true)
+                ) {
+                    $error = 'Parent relationship must be translation, edition, or abridgement.';
+                    break;
+                }
+
+                /* Probe whether the #782 phase A columns are live. A
+                   deployment that hasn't yet run migrate-parent-songbooks.php
+                   should still let curators edit songbooks — the parent
+                   fields just stay invisible to the audit diff + the
+                   secondary UPDATE below skips. */
+                $hasParentCols = false;
+                try {
+                    $probe = $db->prepare(
+                        "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                          WHERE TABLE_SCHEMA = DATABASE()
+                            AND TABLE_NAME   = 'tblSongbooks'
+                            AND COLUMN_NAME  = 'ParentSongbookId'
+                          LIMIT 1"
+                    );
+                    $probe->execute();
+                    $hasParentCols = $probe->get_result()->fetch_row() !== null;
+                    $probe->close();
+                } catch (\Throwable $_e) { /* probe failure → fall through */ }
+
                 /* Fetch the full before-row so the audit log carries
                    a complete diff of which fields actually changed
                    (#535) — otherwise the timeline reader has to
                    guess. SELECT extended for #672 metadata so the
-                   diff covers the new identifier columns too. */
+                   diff covers the new identifier columns too. The
+                   #782 parent fields are appended only when the
+                   schema probe above said they exist. */
+                $parentSelect = $hasParentCols
+                    ? ', ParentSongbookId, ParentRelationship'
+                    : '';
                 $existing = $db->prepare(
                     'SELECT Abbreviation, Name, DisplayOrder, Colour, IsOfficial,
                             Publisher, PublicationYear, Copyright, Affiliation,
                             Language,
                             WebsiteUrl, InternetArchiveUrl, WikipediaUrl, WikidataId,
                             OclcNumber, OcnNumber, LcpNumber, Isbn, ArkId, IsniId,
-                            ViafId, Lccn, LcClass
+                            ViafId, Lccn, LcClass' . $parentSelect . '
                        FROM tblSongbooks WHERE Id = ?'
                 );
                 $existing->bind_param('i', $id);
@@ -554,6 +772,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $dupExists = $dup->get_result()->fetch_row() !== null;
                     $dup->close();
                     if ($dupExists) { $error = 'That abbreviation is already taken.'; break; }
+                }
+
+                /* #782 phase B — cycle guard. The typeahead already
+                   excludes self + descendants from the suggestions, but
+                   a curator hitting POST directly could still try to
+                   smuggle one in. Walk upward from the candidate; abort
+                   if the chain hits this row. Self-as-parent and any
+                   loop both surface as the same friendly error. */
+                if ($hasParentCols && $parentId !== null) {
+                    if ($parentId === $id) {
+                        $error = 'A songbook cannot be its own parent.';
+                        break;
+                    }
+                    if (_wouldCreateParentCycle($db, $id, $parentId)) {
+                        $error = 'That parent would create a loop in the songbook hierarchy.';
+                        break;
+                    }
                 }
 
                 $db->begin_transaction();
@@ -617,6 +852,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $stmt->close();
                         }
                     }
+
+                    /* #782 phase B — write the parent-songbook fields in
+                       a separate small UPDATE so the existing 23-param
+                       bind on the big UPDATE above stays untouched (one
+                       fewer place to mis-count types — see #694). Skipped
+                       silently when the schema columns aren't live yet. */
+                    if ($hasParentCols) {
+                        $stmt = $db->prepare(
+                            'UPDATE tblSongbooks
+                                SET ParentSongbookId = ?, ParentRelationship = ?
+                              WHERE Id = ?'
+                        );
+                        /* Bind NULLs explicitly via mysqli_stmt::send_long_data?
+                           No — for INT/string params, binding a PHP null with
+                           type 'i' / 's' sends SQL NULL on PHP 8+, which is
+                           exactly what we want for the optional FK / enum. */
+                        $stmt->bind_param('isi', $parentId, $parentRel, $id);
+                        $stmt->execute();
+                        $stmt->close();
+                    }
+
                     $db->commit();
 
                     /* Audit (#535) — compute the changed-fields list
@@ -649,6 +905,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'Lccn'              => $lccn,
                         'LcClass'           => $lcClass,
                     ];
+                    if ($hasParentCols) {
+                        $afterRow['ParentSongbookId']   = $parentId;
+                        $afterRow['ParentRelationship'] = $parentRel;
+                    }
                     $changed = [];
                     foreach ($afterRow as $k => $v) {
                         if (!array_key_exists($k, $beforeRow ?? [])) continue;
@@ -986,13 +1246,39 @@ try {
     } catch (\Throwable $_e) { /* probe failure → fall through */ }
     $langSelect = $hasLangCol ? ', b.Language' : '';
 
+    /* Same probe pattern for the #782 phase A parent columns. When
+       the schema is live, also LEFT JOIN to the parent row so the
+       list-page Parent column can render abbreviation + name in one
+       query. The join-aliased columns come back as ParentAbbr /
+       ParentName / ParentRelationship to avoid clobbering b.* keys. */
+    $hasParentCol = false;
+    try {
+        $probe = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblSongbooks'
+                AND COLUMN_NAME  = 'ParentSongbookId'
+              LIMIT 1"
+        );
+        $probe->execute();
+        $hasParentCol = $probe->get_result()->fetch_row() !== null;
+        $probe->close();
+    } catch (\Throwable $_e) { /* probe failure → fall through */ }
+    $parentSelect = $hasParentCol
+        ? ', b.ParentSongbookId, b.ParentRelationship,
+             p.Abbreviation AS ParentAbbreviation, p.Name AS ParentName'
+        : '';
+    $parentJoin   = $hasParentCol
+        ? ' LEFT JOIN tblSongbooks p ON p.Id = b.ParentSongbookId'
+        : '';
+
     $stmt = $db->prepare(
         'SELECT b.Id, b.Abbreviation, b.Name, b.SongCount, b.DisplayOrder, b.Colour,
                 b.IsOfficial, b.Publisher, b.PublicationYear,
-                b.Copyright, b.Affiliation' . $langSelect . $bibSelect . ',
+                b.Copyright, b.Affiliation' . $langSelect . $bibSelect . $parentSelect . ',
                 COUNT(s.Id) AS ActualSongCount
            FROM tblSongbooks b
-           LEFT JOIN tblSongs s ON s.SongbookAbbr = b.Abbreviation
+           LEFT JOIN tblSongs s ON s.SongbookAbbr = b.Abbreviation' . $parentJoin . '
           GROUP BY b.Id
           ORDER BY b.DisplayOrder ASC, b.Name ASC'
     );
@@ -1077,6 +1363,7 @@ $csrf = csrfToken();
                         <th class="text-center" data-sort-key="official" data-sort-type="text" title="Official published hymnal (#502)">Official</th>
                         <th class="text-center" data-sort-key="songs" data-sort-type="number">Songs</th>
                         <th data-sort-key="language" data-sort-type="text" title="IETF BCP 47 language tag — empty means multi-lingual / not specified (#778)">Languages</th>
+                        <th data-sort-key="parent" data-sort-type="text" title="Canonical parent songbook — translations / editions point upward to their source (#782)">Parent</th>
                         <th data-sort-key="colour" data-sort-type="text">Colour</th>
                         <th class="text-end">Actions</th>
                     </tr>
@@ -1142,6 +1429,38 @@ $csrf = csrfToken();
                                 <?php endif; ?>
                             </td>
                             <td>
+                                <?php
+                                    /* Parent column (#782 phase B). When the row
+                                       has a parent, render a chip with the parent
+                                       abbreviation + an icon picked from the
+                                       relationship: bi-translate (translation),
+                                       bi-bookmark (edition), bi-scissors
+                                       (abridgement). The full parent name + the
+                                       relationship word go in the title for hover.
+                                       Empty parent → em-dash (the row stands alone
+                                       or is peer-grouped via series, not handled
+                                       in phase B). */
+                                    $parentAbbr = trim((string)($r['ParentAbbreviation'] ?? ''));
+                                    $parentRel  = trim((string)($r['ParentRelationship'] ?? ''));
+                                    $parentName = trim((string)($r['ParentName']         ?? ''));
+                                    $relIcon    = match ($parentRel) {
+                                        'translation' => 'bi-translate',
+                                        'edition'     => 'bi-bookmark',
+                                        'abridgement' => 'bi-scissors',
+                                        default       => 'bi-link-45deg',
+                                    };
+                                ?>
+                                <?php if ($parentAbbr !== ''): ?>
+                                    <span class="badge bg-secondary"
+                                          style="font-size: 0.7rem; font-weight: 600;"
+                                          title="<?= htmlspecialchars($parentName . ($parentRel !== '' ? ' — ' . $parentRel : ''), ENT_QUOTES, 'UTF-8') ?>">
+                                        <i class="bi <?= htmlspecialchars($relIcon, ENT_QUOTES, 'UTF-8') ?> me-1" aria-hidden="true"></i><?= htmlspecialchars($parentAbbr, ENT_QUOTES, 'UTF-8') ?>
+                                    </span>
+                                <?php else: ?>
+                                    <small class="text-muted">—</small>
+                                <?php endif; ?>
+                            </td>
+                            <td>
                                 <?php if ($r['Colour']): ?>
                                     <span class="d-inline-block me-1" style="width:1rem;height:1rem;border-radius:50%;background:<?= htmlspecialchars($r['Colour']) ?>"></span>
                                     <small class="text-muted"><?= htmlspecialchars($r['Colour']) ?></small>
@@ -1195,6 +1514,14 @@ $csrf = csrfToken();
                                         'viaf_id'             => $r['ViafId']             ?? '',
                                         'lccn'                => $r['Lccn']               ?? '',
                                         'lc_class'            => $r['LcClass']            ?? '',
+                                        /* #782 phase B — parent fields. Defaults
+                                           keep the modal openable on a pre-migration
+                                           deployment (the LEFT JOIN above only
+                                           runs when the columns exist). */
+                                        'parent_songbook_id'  => isset($r['ParentSongbookId']) ? (int)$r['ParentSongbookId'] : 0,
+                                        'parent_relationship' => $r['ParentRelationship']  ?? '',
+                                        'parent_abbreviation' => $r['ParentAbbreviation']  ?? '',
+                                        'parent_name'         => $r['ParentName']          ?? '',
                                     ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                                 ?>
                                 <button type="button" class="btn btn-sm btn-outline-info"
@@ -1246,7 +1573,7 @@ $csrf = csrfToken();
                         </tr>
                     <?php endforeach; ?>
                     <?php if (!$rows): ?>
-                        <tr><td colspan="9" class="text-muted text-center py-4">No songbooks yet. Add one below.</td></tr>
+                        <tr><td colspan="10" class="text-muted text-center py-4">No songbooks yet. Add one below.</td></tr>
                     <?php endif; ?>
                 </tbody>
             </table>
@@ -1596,6 +1923,57 @@ $csrf = csrfToken();
                             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'ietf-language-picker.php';
                         ?>
 
+                        <!-- #782 phase B — Parent songbook picker. Two visible
+                             inputs (text typeahead + relationship enum) plus a
+                             hidden parent_songbook_id that gets set when the
+                             curator picks a row from the typeahead. The Clear
+                             button wipes both fields. The typeahead boot lives
+                             at the bottom of the page (search "parent-typeahead"). -->
+                        <div class="row g-2 mb-3" id="edit-parent-block">
+                            <div class="col-sm-7">
+                                <label class="form-label">Parent songbook (optional)</label>
+                                <input type="hidden" name="parent_songbook_id" id="edit-parent-id" value="">
+                                <div class="d-flex gap-1">
+                                    <input type="text"
+                                           class="form-control"
+                                           id="edit-parent-search"
+                                           list="edit-parent-datalist"
+                                           autocomplete="off"
+                                           maxlength="120"
+                                           placeholder="Type to search — leave blank if standalone">
+                                    <button type="button"
+                                            class="btn btn-outline-secondary"
+                                            id="edit-parent-clear"
+                                            title="Clear parent">
+                                        <i class="bi bi-x-lg" aria-hidden="true"></i>
+                                    </button>
+                                </div>
+                                <datalist id="edit-parent-datalist"></datalist>
+                                <div class="form-text small">
+                                    Pick the canonical parent for translations
+                                    (Spanish CIS → English CIS), editions
+                                    (Mission Praise 2 → Mission Praise 1), or
+                                    abridgements. Series/volumes use a different
+                                    mechanism (phase C, #782).
+                                </div>
+                            </div>
+                            <div class="col-sm-5">
+                                <label class="form-label">Relationship</label>
+                                <select class="form-select"
+                                        name="parent_relationship"
+                                        id="edit-parent-relationship">
+                                    <option value="">— Select —</option>
+                                    <option value="translation">Translation of parent</option>
+                                    <option value="edition">Edition of parent</option>
+                                    <option value="abridgement">Abridgement of parent</option>
+                                </select>
+                                <div class="form-text small">
+                                    Required when a parent is set; cleared
+                                    automatically when the parent is removed.
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- #672 — collapsible "Online links" + "Authority identifiers".
                              Closed by default so the modal still opens at the same height
                              curators are used to. <details> is native HTML5; no JS needed
@@ -1862,6 +2240,30 @@ $csrf = csrfToken();
             document.getElementById('edit-rename-refs').checked     = false;
             document.getElementById('edit-song-count').textContent  = row.song_count;
             document.getElementById('edit-rename-refs-wrap').style.display = row.song_count > 0 ? '' : 'none';
+
+            /* #782 phase B — pre-fill the parent picker. Hidden id +
+               relationship come from the row payload; the visible search
+               input shows "ABBR — Name" so the curator sees what's bound
+               without re-typing. The boot script below scopes the
+               typeahead to the row currently being edited (exclude_id) so
+               descendants of this row never appear as candidates. */
+            (function () {
+                const idInput  = document.getElementById('edit-parent-id');
+                const txtInput = document.getElementById('edit-parent-search');
+                const relSel   = document.getElementById('edit-parent-relationship');
+                if (idInput)  idInput.value  = row.parent_songbook_id ? String(row.parent_songbook_id) : '';
+                if (txtInput) {
+                    const a = (row.parent_abbreviation || '').toString();
+                    const n = (row.parent_name        || '').toString();
+                    txtInput.value = a ? (n ? (a + ' — ' + n) : a) : '';
+                }
+                if (relSel)   relSel.value   = row.parent_relationship || '';
+                /* Stash the row id so the typeahead can pass exclude_id
+                   on every fetch — the server then strips this row + all
+                   descendants from suggestions. */
+                document.getElementById('editModal').dataset.editId = row.id || '';
+            })();
+
             /* Stash the current row's abbreviation on the modal for the
                "Pick distinctive colour" button below — the button reads
                it and POSTs to /manage/songbooks?action=pick_colour. */
@@ -2199,6 +2601,97 @@ $csrf = csrfToken();
                 if (input.value.trim() !== '') lookup(input.value.trim());
             });
         });
+    })();
+    </script>
+
+    <!-- Parent-songbook typeahead (#782 phase B / parent-typeahead).
+         Same shape as the affiliation typeahead above: <datalist>
+         driven by a debounced fetch against
+         /manage/songbooks?action=parent_search. The picker carries
+         two pieces of state — the visible "ABBR — Name" string in
+         #edit-parent-search and the hidden numeric id in
+         #edit-parent-id. When the curator picks an option from the
+         datalist (or types a value matching one), the input event
+         hands the option's data-id back into the hidden field; if
+         they then keep typing the parent_id resets to '' so a
+         half-typed name can't masquerade as a saved selection.
+         The Clear button wipes both fields + the relationship enum. -->
+    <script>
+    (function () {
+        const txt = document.getElementById('edit-parent-search');
+        const hid = document.getElementById('edit-parent-id');
+        const rel = document.getElementById('edit-parent-relationship');
+        const clr = document.getElementById('edit-parent-clear');
+        const dl  = document.getElementById('edit-parent-datalist');
+        if (!txt || !hid || !dl) return;
+
+        /* Map of the most recent suggestion list by visible label.
+           When the user picks an option, the input event fires with
+           input.value === one of these labels — we look up the id
+           in this map and write it into the hidden field. */
+        let labelToId = new Map();
+        let inflight  = null;
+        let debounce  = null;
+
+        const lookup = (query) => {
+            if (inflight) inflight.abort();
+            const ac = new AbortController();
+            inflight = ac;
+            const excludeId = document.getElementById('editModal')?.dataset?.editId || '';
+            const url = '/manage/songbooks?action=parent_search'
+                      + '&q=' + encodeURIComponent(query)
+                      + '&exclude_id=' + encodeURIComponent(excludeId)
+                      + '&limit=20';
+            fetch(url, { credentials: 'same-origin', signal: ac.signal })
+                .then(r => r.ok ? r.json() : { suggestions: [] })
+                .then(data => {
+                    const list = Array.isArray(data.suggestions) ? data.suggestions : [];
+                    labelToId = new Map();
+                    dl.innerHTML = list.map(s => {
+                        const a   = (s.abbreviation || '').replace(/"/g, '&quot;');
+                        const n   = (s.name         || '').replace(/"/g, '&quot;');
+                        const cc  = (typeof s.childCount === 'number') ? s.childCount : 0;
+                        const lbl = a + (n ? ' — ' + n : '');
+                        labelToId.set(lbl, String(s.id));
+                        const tail = cc > 0 ? ' (' + cc + ' child' + (cc === 1 ? '' : 'ren') + ')' : '';
+                        return '<option value="' + lbl + '" label="' + lbl + tail + '"></option>';
+                    }).join('');
+                })
+                .catch(err => { if (err.name !== 'AbortError') { /* silent */ } });
+        };
+
+        txt.addEventListener('input', () => {
+            const v = txt.value.trim();
+            /* Picked-from-datalist sync: an exact label match means the
+               curator selected one of the suggestions, so commit its id
+               to the hidden field. Anything else clears the id so we
+               never save a parent_songbook_id that doesn't match what's
+               visible to the curator. */
+            const id = labelToId.get(v);
+            hid.value = id || '';
+            if (v === '') {
+                dl.innerHTML = '';
+                return;
+            }
+            clearTimeout(debounce);
+            debounce = setTimeout(() => lookup(v), 200);
+        });
+        txt.addEventListener('focus', () => {
+            /* Always run an empty-query lookup on focus — surfaces the
+               top-N most-used parents as soon as the picker opens, even
+               before the curator types anything. */
+            lookup(txt.value.trim());
+        });
+
+        if (clr) {
+            clr.addEventListener('click', () => {
+                txt.value = '';
+                hid.value = '';
+                if (rel) rel.value = '';
+                dl.innerHTML = '';
+                txt.focus();
+            });
+        }
     })();
     </script>
 
