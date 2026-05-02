@@ -522,11 +522,15 @@ unset($_t);
                 $lines  = $component['lines'] ?? [];
 
                 /* Build a human-readable label for the component.
-                   "refrain" is an alias for "chorus" — display as Chorus. */
+                   "refrain" is an alias for "chorus" — display as Chorus.
+                   The editor stores `number: 0` as a sentinel for "this is the
+                   only one of its kind" (issue #795). Treat any non-positive
+                   or non-numeric value as "no number" so single-component songs
+                   render as plain "Verse" / "Chorus" rather than "Verse 0". */
                 $displayType = ($type === 'refrain') ? 'chorus' : $type;
                 $label = ucfirst($displayType);
-                if ($number !== null) {
-                    $label .= ' ' . $number;
+                if (is_numeric($number) && (int)$number > 0) {
+                    $label .= ' ' . (int)$number;
                 }
 
                 /* CSS class for styling different component types */
