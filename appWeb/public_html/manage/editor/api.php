@@ -1303,8 +1303,14 @@ switch ($action) {
                components alone (safer than wiping them on a partial). */
             if (isset($restorePayload['Title'])) {
                 $title = (string)$restorePayload['Title'];
-                $number = isset($restorePayload['Number']) && $restorePayload['Number'] !== null
-                    ? (int)$restorePayload['Number'] : null;
+                /* Same NULL/''/'0'/0 normalisation as save_song (#797).
+                   A revision row whose stored Number is 0 (legacy data
+                   from before the convention was enforced) restores to
+                   NULL — round-tripping the 0 would defeat the fix. */
+                $rawRestoreNumber = $restorePayload['Number'] ?? null;
+                $number = ($rawRestoreNumber === null || $rawRestoreNumber === '' || (int)$rawRestoreNumber <= 0)
+                    ? null
+                    : (int)$rawRestoreNumber;
                 $verified = (int)($restorePayload['Verified']           ?? 0);
                 $lyricsPD = (int)($restorePayload['LyricsPublicDomain'] ?? 0);
                 $musicPD  = (int)($restorePayload['MusicPublicDomain']  ?? 0);
@@ -2115,7 +2121,16 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
 {
     $songId       = (string)$song['id'];
     $title        = (string)$song['title'];
-    $number       = isset($song['number']) ? (int)$song['number'] : null;
+    /* Same NULL/''/'0'/0 normalisation as the editor save paths (#797).
+       The TXT bulk-import parser usually produces a positive integer
+       (the file's leading "## NN" marker drives the SongId format), but
+       a future caller could legitimately pass a song with no songbook
+       position. Fold any non-positive / empty value to NULL so the
+       column carries the canonical sentinel. */
+    $rawNumber    = $song['number'] ?? null;
+    $number       = ($rawNumber === null || $rawNumber === '' || (int)$rawNumber <= 0)
+        ? null
+        : (int)$rawNumber;
     $songbookAbbr = (string)$song['songbook'];
     $songbookName = (string)$song['songbookName'];
     /* IETF BCP 47 sanitise (#681). Bulk-import builds the song dict

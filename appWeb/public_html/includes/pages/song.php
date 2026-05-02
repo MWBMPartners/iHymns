@@ -31,9 +31,15 @@ if ($song === null) {
     return;
 }
 
-/* Extract metadata for convenience — Number is null for Misc songs (#392) */
+/* Extract metadata for convenience — Number is NULL for Misc songs and
+   for any custom-songbook entry that wasn't given a position (#392, #797).
+   Treat null, '', '0' and 0 as equivalent — the canonical "unnumbered"
+   value is NULL, but legacy rows and JS payloads sometimes carry 0 or '0'
+   and the rest of the page must treat them the same way. */
 $rawSongNumber = $song['number'] ?? null;
-$songNumber    = ($rawSongNumber === null || $rawSongNumber === '') ? null : (int)$rawSongNumber;
+$songNumber    = ($rawSongNumber === null || $rawSongNumber === '' || (int)$rawSongNumber <= 0)
+    ? null
+    : (int)$rawSongNumber;
 $songTitle   = toTitleCase($song['title'] ?? 'Untitled');
 $songbook    = $song['songbook'] ?? '';
 $bookName    = $song['songbookName'] ?? '';
@@ -155,7 +161,7 @@ unset($_t);
 <!-- ================================================================
      SONG PAGE — Full lyrics and metadata
      ================================================================ -->
-<article class="page-song" aria-label="<?= htmlspecialchars($songTitle) ?>" data-song-id="<?= htmlspecialchars($song['id']) ?>" data-songbook="<?= htmlspecialchars($songbook) ?>"<?php if ($songbookColour !== ''): ?> data-songbook-color="<?= htmlspecialchars($songbookColour) ?>"<?php endif; ?> data-song-number="<?= (int)$songNumber ?>"<?php if (!empty($song['capo'])): ?> data-capo="<?= (int)$song['capo'] ?>"<?php endif; ?><?php if (!empty($song['key'])): ?> data-key="<?= htmlspecialchars($song['key']) ?>"<?php endif; ?>>
+<article class="page-song" aria-label="<?= htmlspecialchars($songTitle) ?>" data-song-id="<?= htmlspecialchars($song['id']) ?>" data-songbook="<?= htmlspecialchars($songbook) ?>"<?php if ($songbookColour !== ''): ?> data-songbook-color="<?= htmlspecialchars($songbookColour) ?>"<?php endif; ?><?php if ($songNumber !== null): ?> data-song-number="<?= (int)$songNumber ?>"<?php endif; ?><?php if (!empty($song['capo'])): ?> data-capo="<?= (int)$song['capo'] ?>"<?php endif; ?><?php if (!empty($song['key'])): ?> data-key="<?= htmlspecialchars($song['key']) ?>"<?php endif; ?>>
 
     <!-- Breadcrumb navigation with schema.org markup (#151) -->
     <nav aria-label="Breadcrumb" class="mb-3">
@@ -176,7 +182,11 @@ unset($_t);
                 <meta itemprop="position" content="2">
             </li>
             <li class="breadcrumb-item active" aria-current="page" itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
-                <span itemprop="name">#<?= $songNumber ?></span>
+                <?php /* Unnumbered songs (Misc, custom collections without a
+                         position) fall back to the song title so the final
+                         crumb is meaningful (#797) — "#0" was the bug we
+                         saw in alpha. */ ?>
+                <span itemprop="name"><?= $songNumber !== null ? '#' . (int)$songNumber : htmlspecialchars($songTitle) ?></span>
                 <meta itemprop="position" content="3">
             </li>
         </ol>
@@ -185,12 +195,17 @@ unset($_t);
     <!-- Song header card -->
     <div class="card card-song-header mb-4">
         <div class="card-body">
-            <!-- Song number and title -->
+            <!-- Song number and title — the coloured badge is rendered only
+                 for songs that actually have a songbook position. Unnumbered
+                 songs (Misc, custom collections without a position) drop the
+                 badge entirely so the title sits flush left (#797). -->
             <div class="d-flex align-items-start gap-3 mb-3">
+                <?php if ($songNumber !== null): ?>
                 <span class="song-number-badge-lg" data-songbook="<?= htmlspecialchars($songbook) ?>"
-                      aria-label="<?= $songNumber === null ? 'Unnumbered song' : 'Song number ' . (int)$songNumber ?>">
-                    <?= $songNumber === null ? '' : (int)$songNumber ?>
+                      aria-label="Song number <?= (int)$songNumber ?>">
+                    <?= (int)$songNumber ?>
                 </span>
+                <?php endif; ?>
                 <div class="flex-grow-1">
                     <h1 class="h4 mb-1"><?= htmlspecialchars($songTitle) ?><?php if (!empty($song['verified'])): ?><span class="verified-badge" title="Verified lyrics" aria-label="Verified lyrics"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.15"/><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M7.5 12.5L10.5 15.5L16.5 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><?php endif; ?></h1>
                     <p class="text-muted mb-0">
