@@ -37,6 +37,7 @@ $_adminLinks = [
     ['revisions',       '/manage/revisions',       'bi-clock-history',  'Revisions Audit',      'verify_songs',                'Content'    ],
     ['missing-numbers', '/manage/missing-numbers', 'bi-binoculars',     'Missing Numbers',      'edit_songs',                  'Content'    ],
     ['songbooks',       '/manage/songbooks',       'bi-book',           'Songbooks',            'manage_songbooks',            'Content'    ],
+    ['songbook-series', '/manage/songbook-series', 'bi-collection',     'Songbook Series',      'manage_songbooks',            'Content'    ],
     ['credit-people',   '/manage/credit-people',   'bi-person-badge',   'Credit People',        'manage_credit_people',        'Content'    ],
     ['languages',       '/manage/languages',       'bi-translate',      'Languages',            'manage_languages',            'Content'    ],
     ['tags',            '/manage/tags',            'bi-tags',           'Tags & Themes',        'manage_tags',                 'Content'    ],
