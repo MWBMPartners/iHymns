@@ -592,6 +592,114 @@ def scrape_hymnal(key, output_dir, force, refrain_override=None, pad_width=3):
 # Optional: bundle output into a zip
 # ---------------------------------------------------------------------------
 
+def write_family_manifest(output_dir, attempted_keys, failed_keys, parent_key="english"):
+    """
+    Emit `_family-manifest.json` at the top of the output dir describing
+    the parent/child relationships among the hymnals just scraped.
+
+    The admin's `/manage/songbooks` page accepts this file via an "Apply
+    family manifest" upload (#782 phase E) and uses it to bulk-set the
+    `ParentSongbookId` + `ParentRelationship` columns on the imported
+    songbooks — so a curator who scrapes + bulk-imports the Christ in
+    Song catalogue doesn't have to hand-link 22 vernaculars to CIS one
+    at a time afterwards.
+
+    Manifest schema (versioned for future-proofing):
+
+        {
+            "schema_version": 1,
+            "scraper":         "ChristInSong.app.py",
+            "scraper_version": "1.0",
+            "generated_at":    "<ISO-8601 UTC>",
+            "families": [
+                {
+                    "parent": {
+                        "abbreviation": "CIS",
+                        "name":         "Christ in Song",
+                        "language":     "en"
+                    },
+                    "children": [
+                        {"abbreviation": "HA", "name": "Himnario Adventista",
+                         "language": "es", "relationship": "translation"},
+                        ...
+                    ]
+                }
+            ]
+        }
+
+    Args:
+        output_dir:       Where to write the manifest (same root that
+                          holds the per-hymnal folders).
+        attempted_keys:   Hymnal keys passed through the run (input arg).
+        failed_keys:      Subset that errored out — excluded from
+                          `children` so we don't link a non-existent
+                          songbook.
+        parent_key:       HYMNALS key to treat as the parent. Defaults
+                          to 'english' (the CIS canonical edition);
+                          exposed for future flexibility.
+
+    Returns:
+        Tuple `(manifest_path, child_count)`. child_count is the number
+        of vernacular hymnals that landed in the `children` list — zero
+        means nothing to write (parent only / parent failed) and the
+        manifest is skipped.
+    """
+    if parent_key not in HYMNALS:
+        return (None, 0)
+    if parent_key in failed_keys:
+        # Parent itself failed — there's nothing to attach children to.
+        return (None, 0)
+    if parent_key not in attempted_keys:
+        # Run was scoped to a subset that didn't include the parent —
+        # children would dangle. Skip the manifest; the curator can
+        # link by hand via /manage/songbooks if they want.
+        return (None, 0)
+
+    parent_info = HYMNALS[parent_key]
+    children = []
+    for k in attempted_keys:
+        if k == parent_key or k in failed_keys:
+            continue
+        info = HYMNALS.get(k)
+        if not info:
+            continue
+        children.append({
+            "abbreviation": info["abbrev"],
+            "name":         info["title"],
+            "language":     info.get("lang", ""),
+            # Every CIS vernacular is a translation of the English original
+            # by definition. Future scrapers (Mission Praise editions, …)
+            # can vary the relationship per child.
+            "relationship": "translation",
+        })
+
+    if not children:
+        return (None, 0)
+
+    from datetime import datetime, timezone
+    manifest = {
+        "schema_version": 1,
+        "scraper":         "ChristInSong.app.py",
+        "scraper_version": "1.0",
+        "generated_at":    datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "families": [
+            {
+                "parent": {
+                    "abbreviation": parent_info["abbrev"],
+                    "name":         parent_info["title"],
+                    "language":     parent_info.get("lang", ""),
+                },
+                "children": children,
+            },
+        ],
+    }
+    manifest_path = os.path.join(output_dir, "_family-manifest.json")
+    with open(manifest_path, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2, sort_keys=False)
+        f.write("\n")
+    return (manifest_path, len(children))
+
+
 def zip_output(output_dir, zip_path):
     """
     Bundle every .txt file under `output_dir` into a single zip file.
@@ -730,6 +838,12 @@ notes:
         "--list", action="store_true",
         help="Print the hymnal manifest and exit."
     )
+    ap.add_argument(
+        "--no-manifest", action="store_true",
+        help="Skip writing _family-manifest.json (the file the admin "
+             "uses to bulk-link vernacular hymnals to CIS via "
+             "/manage/songbooks → 'Apply family manifest')."
+    )
     args = ap.parse_args()
 
     if args.list:
@@ -790,6 +904,25 @@ notes:
     if failed_keys:
         print(f"  Failed hymnals: {', '.join(failed_keys)}")
     print(f"{'='*60}")
+
+    # Family manifest (#782 phase E). Lists every successful vernacular
+    # under the English CIS parent so the admin's "Apply family manifest"
+    # uploader can bulk-link them post-import. Skipped when the parent
+    # itself wasn't part of the run, when the parent failed, or when
+    # --no-manifest is passed.
+    if not args.no_manifest:
+        manifest_path, child_count = write_family_manifest(
+            output_dir, keys, failed_keys
+        )
+        if manifest_path:
+            print(f"\nFamily manifest → {manifest_path}")
+            print(f"  {child_count} vernacular hymnal(s) listed under CIS.")
+            print( "  Upload this file via /manage/songbooks → "
+                   "'Apply family manifest' to bulk-link them.")
+        else:
+            print( "\nFamily manifest skipped — parent CIS was not part "
+                   "of this run (or failed). Use --hymnal english,… to "
+                   "include it.")
 
     # Optional zip bundle.
     if args.zip_path:

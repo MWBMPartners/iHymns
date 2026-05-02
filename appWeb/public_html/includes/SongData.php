@@ -647,6 +647,351 @@ class SongData
     }
 
     /* =====================================================================
+     * PARENT/SERIES PROGRAMMATIC HELPERS (#782 phase E)
+     *
+     * Public surface so other parts of the codebase (custom report
+     * generators, future projection-software exporters, the analytics
+     * module, etc.) can ask the questions the public song page + tile
+     * already render answers to, without re-implementing the joins.
+     * ===================================================================== */
+
+    /**
+     * Return the full hierarchical family of a songbook — its single
+     * parent (or null), every direct child, and every sibling (other
+     * children of the same parent, excluding the row itself). Hops are
+     * bounded at 64 in each direction so a pathological cycle in the
+     * data — already prevented by phase B's _wouldCreateParentCycle
+     * guard — couldn't blow up the walk anyway.
+     *
+     * Empty `parent` + `children` + `siblings` arrays for songbooks that
+     * have no relations declared. Pre-migration deployments (no
+     * ParentSongbookId column) get the same empty shape.
+     *
+     * Result shape:
+     *   [
+     *     'self'     => ['id' => 'CIS', 'name' => 'Christ in Song'],
+     *     'parent'   => null | ['id' => 'CIS', 'name' => '…',
+     *                            'relationship' => 'translation'|'edition'|'abridgement'],
+     *     'children' => [
+     *        ['id' => 'HA', 'name' => 'Himnario Adventista',
+     *         'relationship' => 'translation', 'language' => 'es'],
+     *        …
+     *     ],
+     *     'siblings' => [ ...same shape as children... ],
+     *   ]
+     *
+     * @param string $abbr Songbook abbreviation
+     * @return array Family shape (always returns a populated array; missing rows ⇒ self => null)
+     */
+    public function getSongbookFamily(string $abbr): array
+    {
+        $abbr = strtoupper(trim($abbr));
+        $empty = [
+            'self'     => null,
+            'parent'   => null,
+            'children' => [],
+            'siblings' => [],
+        ];
+        if ($abbr === '') return $empty;
+
+        if ($this->jsonMode) {
+            /* JSON-mode catalogues don't ship parent/series metadata
+               (the JSON shape predates phase A) — return the trivial
+               family. */
+            $book = $this->getSongbook($abbr);
+            return $book ? array_merge($empty, ['self' => ['id' => $book['id'], 'name' => $book['name']]]) : $empty;
+        }
+
+        if ($this->_songbookParentSelect() === '') return $empty;
+
+        try {
+            /* 1) self + own parent (if any). */
+            $stmt = $this->db->prepare(
+                'SELECT b.Id, b.Abbreviation, b.Name,
+                        b.ParentSongbookId, b.ParentRelationship,
+                        p.Abbreviation AS parentAbbr, p.Name AS parentName
+                   FROM tblSongbooks b
+                   LEFT JOIN tblSongbooks p ON p.Id = b.ParentSongbookId
+                  WHERE b.Abbreviation = ?'
+            );
+            $stmt->bind_param('s', $abbr);
+            $stmt->execute();
+            $self = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if (!$self) return $empty;
+
+            $selfId = (int)$self['Id'];
+            $out = [
+                'self' => [
+                    'id'   => (string)$self['Abbreviation'],
+                    'name' => (string)$self['Name'],
+                ],
+                'parent'   => null,
+                'children' => [],
+                'siblings' => [],
+            ];
+            $parentId = isset($self['ParentSongbookId']) ? (int)$self['ParentSongbookId'] : 0;
+            if ($parentId > 0) {
+                $out['parent'] = [
+                    'id'           => (string)($self['parentAbbr'] ?? ''),
+                    'name'         => (string)($self['parentName'] ?? ''),
+                    'relationship' => (string)($self['ParentRelationship'] ?? ''),
+                ];
+            }
+
+            /* 2) Direct children (rows whose ParentSongbookId === selfId).
+                  Pulled with the optional Language column so callers
+                  rendering a list can show "Spanish" / "Tswana" inline. */
+            $langTail = $this->_songbookLanguageSelect() === '' ? '' : ', b.Language AS language';
+            $stmt = $this->db->prepare(
+                "SELECT b.Abbreviation AS id, b.Name AS name,
+                        b.ParentRelationship AS relationship
+                        {$langTail}
+                   FROM tblSongbooks b
+                  WHERE b.ParentSongbookId = ?
+                  ORDER BY b.Name ASC"
+            );
+            $stmt->bind_param('i', $selfId);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            while ($r = $res->fetch_assoc()) {
+                $out['children'][] = [
+                    'id'           => (string)$r['id'],
+                    'name'         => (string)$r['name'],
+                    'relationship' => (string)($r['relationship'] ?? ''),
+                    'language'     => (string)($r['language']     ?? ''),
+                ];
+            }
+            $stmt->close();
+
+            /* 3) Siblings (other children of the same parent, excluding
+                  self). Skipped when this row has no parent. */
+            if ($parentId > 0) {
+                $stmt = $this->db->prepare(
+                    "SELECT b.Abbreviation AS id, b.Name AS name,
+                            b.ParentRelationship AS relationship
+                            {$langTail}
+                       FROM tblSongbooks b
+                      WHERE b.ParentSongbookId = ?
+                        AND b.Id <> ?
+                      ORDER BY b.Name ASC"
+                );
+                $stmt->bind_param('ii', $parentId, $selfId);
+                $stmt->execute();
+                $res = $stmt->get_result();
+                while ($r = $res->fetch_assoc()) {
+                    $out['siblings'][] = [
+                        'id'           => (string)$r['id'],
+                        'name'         => (string)$r['name'],
+                        'relationship' => (string)($r['relationship'] ?? ''),
+                        'language'     => (string)($r['language']     ?? ''),
+                    ];
+                }
+                $stmt->close();
+            }
+
+            return $out;
+        } catch (\Throwable $e) {
+            error_log('[SongData::getSongbookFamily] ' . $e->getMessage());
+            return $empty;
+        }
+    }
+
+    /**
+     * Return every songbook in a series, ordered by membership SortOrder
+     * then Name. Looked up by either the series id (int) or its slug
+     * (string). Empty list when the series doesn't exist or the schema
+     * isn't live yet.
+     *
+     * Result shape per row:
+     *   ['id' => 'SoF1', 'name' => 'Songs of Fellowship vol 1',
+     *    'sortOrder' => 10, 'note' => 'first volume',
+     *    'language' => 'en']  // language only when the column is live
+     *
+     * @param int|string $seriesIdOrSlug
+     * @return array<int, array<string, int|string>>
+     */
+    public function getSongbooksInSeries($seriesIdOrSlug): array
+    {
+        if ($this->jsonMode) return []; /* JSON catalogues don't carry series */
+
+        /* Schema probe — same gate as _songbookSeriesMap(). */
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongbookSeries'
+                  LIMIT 1"
+            );
+            $probe->execute();
+            $present = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+            if (!$present) return [];
+        } catch (\Throwable $_e) {
+            return [];
+        }
+
+        $langTail = $this->_songbookLanguageSelect() === '' ? '' : ', b.Language AS language';
+        try {
+            if (is_int($seriesIdOrSlug)) {
+                $sql = "SELECT b.Abbreviation AS id, b.Name AS name,
+                               m.SortOrder    AS sortOrder,
+                               m.Note         AS note
+                               {$langTail}
+                          FROM tblSongbookSeriesMembership m
+                          JOIN tblSongbooks b ON b.Id = m.SongbookId
+                         WHERE m.SeriesId = ?
+                         ORDER BY m.SortOrder ASC, b.Name ASC";
+                $stmt = $this->db->prepare($sql);
+                $sid  = (int)$seriesIdOrSlug;
+                $stmt->bind_param('i', $sid);
+            } else {
+                $sql = "SELECT b.Abbreviation AS id, b.Name AS name,
+                               m.SortOrder    AS sortOrder,
+                               m.Note         AS note
+                               {$langTail}
+                          FROM tblSongbookSeriesMembership m
+                          JOIN tblSongbooks       b ON b.Id = m.SongbookId
+                          JOIN tblSongbookSeries  s ON s.Id = m.SeriesId
+                         WHERE s.Slug = ?
+                         ORDER BY m.SortOrder ASC, b.Name ASC";
+                $stmt = $this->db->prepare($sql);
+                $slug = (string)$seriesIdOrSlug;
+                $stmt->bind_param('s', $slug);
+            }
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $out = [];
+            while ($r = $res->fetch_assoc()) {
+                $row = [
+                    'id'        => (string)$r['id'],
+                    'name'      => (string)$r['name'],
+                    'sortOrder' => (int)$r['sortOrder'],
+                    'note'      => (string)($r['note'] ?? ''),
+                ];
+                if (array_key_exists('language', $r)) {
+                    $row['language'] = (string)($r['language'] ?? '');
+                }
+                $out[] = $row;
+            }
+            $stmt->close();
+            return $out;
+        } catch (\Throwable $e) {
+            error_log('[SongData::getSongbooksInSeries] ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Given a SongId (e.g. 'HA-0042'), return the same hymn-number's
+     * row in every related songbook — parent + every child of the
+     * parent (i.e. every sibling translation/edition/abridgement) —
+     * keyed by relationship for easy rendering.
+     *
+     * Result shape:
+     *   [
+     *     'parent'   => ['id' => 'CIS-0042', 'songbook' => 'CIS',
+     *                    'name' => 'Christ in Song', 'language' => 'en',
+     *                    'relationship' => 'translation'],
+     *     'siblings' => [
+     *        ['id' => 'KMK-0042', 'songbook' => 'KMK', 'name' => 'Keresete Mo Kopelong',
+     *         'language' => 'tn', 'relationship' => 'translation'],
+     *        …
+     *     ],
+     *   ]
+     *
+     * Empty when:
+     *   - the song's number is null (Misc / unnumbered),
+     *   - the songbook has no parent,
+     *   - no related songbook carries the same number.
+     *
+     * Cheap: one INFORMATION_SCHEMA probe (cached), one row fetch,
+     * one family walk, one IN(…) query for the same-number row in
+     * each related songbook. ~3 queries total.
+     */
+    public function getSongCounterparts(string $songId): array
+    {
+        $empty = ['parent' => null, 'siblings' => []];
+        $songId = trim($songId);
+        if ($songId === '') return $empty;
+        if ($this->jsonMode) return $empty;
+        if ($this->_songbookParentSelect() === '') return $empty;
+
+        try {
+            /* Step 1 — pull the source song's (SongbookAbbr, Number).
+               Cheap, no joins. */
+            $stmt = $this->db->prepare(
+                'SELECT SongbookAbbr, Number FROM tblSongs WHERE SongId = ? LIMIT 1'
+            );
+            $stmt->bind_param('s', $songId);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if (!$row) return $empty;
+
+            $abbr   = (string)$row['SongbookAbbr'];
+            $number = $row['Number'] !== null ? (int)$row['Number'] : 0;
+            if ($number <= 0) return $empty;
+
+            /* Step 2 — walk the family. Re-uses the helper above so the
+               relationship-aware language tail comes for free. */
+            $family = $this->getSongbookFamily($abbr);
+
+            /* Step 3 — assemble the candidate-row list of related songbook
+               abbreviations (parent + siblings). Children of the current
+               songbook aren't included — counterpart semantics here are
+               "this hymn elsewhere in the same family", and a child of
+               the current row would be a translation OF this row, which
+               is the inward-translations relationship already covered
+               by tblSongTranslations elsewhere on the song page (#281). */
+            $candidates = [];
+            $relationshipByAbbr = [];
+            if ($family['parent']) {
+                $candidates[] = $family['parent']['id'];
+                $relationshipByAbbr[$family['parent']['id']] = $family['parent']['relationship'];
+            }
+            foreach ($family['siblings'] as $s) {
+                $candidates[] = $s['id'];
+                $relationshipByAbbr[$s['id']] = $s['relationship'];
+            }
+            if (!$candidates) return $empty;
+
+            $ph   = implode(',', array_fill(0, count($candidates), '?'));
+            $sql  = "SELECT s.SongId, s.SongbookAbbr, b.Name AS bookName,
+                            b.Language AS bookLanguage
+                       FROM tblSongs s
+                       JOIN tblSongbooks b ON b.Abbreviation = s.SongbookAbbr
+                      WHERE s.Number = ? AND s.SongbookAbbr IN ($ph)";
+            $stmt = $this->db->prepare($sql);
+            $types = 'i' . str_repeat('s', count($candidates));
+            $args  = array_merge([$number], $candidates);
+            $stmt->bind_param($types, ...$args);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $out = $empty;
+            while ($r = $res->fetch_assoc()) {
+                $entry = [
+                    'id'           => (string)$r['SongId'],
+                    'songbook'     => (string)$r['SongbookAbbr'],
+                    'name'         => (string)$r['bookName'],
+                    'language'     => (string)($r['bookLanguage'] ?? ''),
+                    'relationship' => (string)($relationshipByAbbr[$r['SongbookAbbr']] ?? ''),
+                ];
+                if ($family['parent'] && $r['SongbookAbbr'] === $family['parent']['id']) {
+                    $out['parent'] = $entry;
+                } else {
+                    $out['siblings'][] = $entry;
+                }
+            }
+            $stmt->close();
+            return $out;
+        } catch (\Throwable $e) {
+            error_log('[SongData::getSongCounterparts] ' . $e->getMessage());
+            return $empty;
+        }
+    }
+
+    /* =====================================================================
      * SONG RETRIEVAL METHODS
      * ===================================================================== */
 
