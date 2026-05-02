@@ -873,6 +873,70 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $stmt->close();
                     }
 
+                    /* #782 phase C — reconcile series memberships for this
+                       songbook. The edit modal posts a checkbox group
+                       `series_membership_ids[]` containing the series ids
+                       this songbook should belong to after the save. We
+                       (1) delete any existing membership not in the post
+                       and (2) insert any post id not already on disk. We
+                       deliberately leave SortOrder + Note untouched on
+                       rows that were already present — those are managed
+                       on /manage/songbook-series, not from here.
+
+                       Schema-gated by $hasSeriesSchema (probed at page
+                       load) so a deployment that hasn't run
+                       migrate-parent-songbooks.php (#782 phase A) sees
+                       no UI block + skips this code path entirely. */
+                    if ($hasSeriesSchema) {
+                        $postedSeriesIds = $_POST['series_membership_ids'] ?? [];
+                        if (!is_array($postedSeriesIds)) $postedSeriesIds = [];
+                        $postedSeriesIds = array_values(array_unique(array_map('intval', $postedSeriesIds)));
+                        $postedSeriesIds = array_values(array_filter(
+                            $postedSeriesIds,
+                            static fn(int $v): bool => $v > 0
+                        ));
+
+                        if ($postedSeriesIds) {
+                            /* DELETE rows whose SeriesId is not in the posted set. */
+                            $ph    = implode(',', array_fill(0, count($postedSeriesIds), '?'));
+                            $sql   = "DELETE FROM tblSongbookSeriesMembership
+                                       WHERE SongbookId = ?
+                                         AND SeriesId NOT IN ($ph)";
+                            $stmt  = $db->prepare($sql);
+                            $types = 'i' . str_repeat('i', count($postedSeriesIds));
+                            $args  = array_merge([$id], $postedSeriesIds);
+                            $stmt->bind_param($types, ...$args);
+                            $stmt->execute();
+                            $stmt->close();
+
+                            /* INSERT IGNORE for the upsert side — composite
+                               PK (SeriesId, SongbookId) makes a duplicate
+                               insert a no-op, which is what we want for
+                               toggles that were already on. SortOrder
+                               defaults to 0 for fresh rows; the series
+                               page is the canonical place to tweak it. */
+                            $stmt = $db->prepare(
+                                'INSERT IGNORE INTO tblSongbookSeriesMembership
+                                     (SeriesId, SongbookId, SortOrder)
+                                  VALUES (?, ?, 0)'
+                            );
+                            foreach ($postedSeriesIds as $sid) {
+                                $stmt->bind_param('ii', $sid, $id);
+                                $stmt->execute();
+                            }
+                            $stmt->close();
+                        } else {
+                            /* No checkboxes ticked → strip every membership
+                               for this songbook. */
+                            $stmt = $db->prepare(
+                                'DELETE FROM tblSongbookSeriesMembership WHERE SongbookId = ?'
+                            );
+                            $stmt->bind_param('i', $id);
+                            $stmt->execute();
+                            $stmt->close();
+                        }
+                    }
+
                     $db->commit();
 
                     /* Audit (#535) — compute the changed-fields list
@@ -914,12 +978,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         if (!array_key_exists($k, $beforeRow ?? [])) continue;
                         if ((string)$beforeRow[$k] !== (string)$v) $changed[] = $k;
                     }
-                    logActivity('songbook.edit', 'songbook', (string)$id, [
+                    /* #782 phase C — also note the post-save series
+                       membership ids on the activity row so the audit
+                       trail captures membership churn even though the
+                       membership table doesn't appear in $beforeRow /
+                       $afterRow. Cheap (small int array); kept inside
+                       the optional schema gate. */
+                    $auditExtras = [];
+                    if ($hasSeriesSchema) {
+                        $auditExtras['series_membership_ids'] = $postedSeriesIds ?? [];
+                    }
+                    logActivity('songbook.edit', 'songbook', (string)$id, array_merge([
                         'fields'             => $changed,
                         'before'             => array_intersect_key($beforeRow, array_flip($changed)),
                         'after'              => array_intersect_key($afterRow,  array_flip($changed)),
                         'songs_renamed_too'  => $alsoRename && $abbrChanged,
-                    ]);
+                    ], $auditExtras));
                     /* Keep the affiliation registry in sync — only when the
                        value actually changed and is non-empty (#670). */
                     if (in_array('Affiliation', $changed, true)) {
@@ -1172,6 +1246,65 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'action' => $_POST['action'] ?? null,
             ]);
         $error = $error ?: 'Database error — check server logs for details.';
+    }
+}
+
+/* ----- Songbook series catalogue (#782 phase C) —————————————————————
+ *       Pulled once per page-load + handed into the edit modal as a
+ *       checkbox list so curators can attach a songbook to one or more
+ *       series (Songs of Fellowship volumes, themed compilations) without
+ *       having to bounce over to /manage/songbook-series.
+ *
+ *       The series CRUD itself lives on /manage/songbook-series — this
+ *       page only exposes membership toggles. Sort-order + Note edits
+ *       on a per-membership basis stay on the series page (asymmetry
+ *       on purpose: from the songbook side, only "is it in?" matters).
+ *
+ *       Schema-conditional: if tblSongbookSeries hasn't been migrated
+ *       yet the section is silently absent and $allSeries / $sbSeriesMap
+ *       stay empty.
+ * ----- */
+$hasSeriesSchema = false;
+$allSeries       = [];
+$sbSeriesMap     = []; /* SongbookId => [SeriesId, ...] */
+try {
+    $probe = $db->prepare(
+        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'tblSongbookSeries'
+          LIMIT 1"
+    );
+    $probe->execute();
+    $hasSeriesSchema = $probe->get_result()->fetch_row() !== null;
+    $probe->close();
+} catch (\Throwable $_e) { /* probe failure → series UI stays hidden */ }
+if ($hasSeriesSchema) {
+    try {
+        $res = $db->query('SELECT Id, Name, Slug FROM tblSongbookSeries ORDER BY Name ASC');
+        if ($res) {
+            while ($srow = $res->fetch_assoc()) {
+                $allSeries[] = [
+                    'id'   => (int)$srow['Id'],
+                    'name' => (string)$srow['Name'],
+                    'slug' => (string)$srow['Slug'],
+                ];
+            }
+            $res->close();
+        }
+        $res = $db->query('SELECT SeriesId, SongbookId FROM tblSongbookSeriesMembership');
+        if ($res) {
+            while ($mrow = $res->fetch_assoc()) {
+                $sb = (int)$mrow['SongbookId'];
+                if (!isset($sbSeriesMap[$sb])) $sbSeriesMap[$sb] = [];
+                $sbSeriesMap[$sb][] = (int)$mrow['SeriesId'];
+            }
+            $res->close();
+        }
+    } catch (\Throwable $e) {
+        error_log('[manage/songbooks.php series fetch] ' . $e->getMessage());
+        /* Reset to safe defaults so the modal still opens. */
+        $allSeries   = [];
+        $sbSeriesMap = [];
     }
 }
 
@@ -1522,6 +1655,10 @@ $csrf = csrfToken();
                                         'parent_relationship' => $r['ParentRelationship']  ?? '',
                                         'parent_abbreviation' => $r['ParentAbbreviation']  ?? '',
                                         'parent_name'         => $r['ParentName']          ?? '',
+                                        /* #782 phase C — series the songbook is currently a
+                                           member of. Empty array on a pre-migration deploy
+                                           or for songbooks not in any series. */
+                                        'series_membership_ids' => $sbSeriesMap[(int)$r['Id']] ?? [],
                                     ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                                 ?>
                                 <button type="button" class="btn btn-sm btn-outline-info"
@@ -1974,6 +2111,53 @@ $csrf = csrfToken();
                             </div>
                         </div>
 
+                        <?php if ($hasSeriesSchema): ?>
+                        <!-- #782 phase C — Series memberships. A simple
+                             checkbox group rather than a typeahead since
+                             series counts stay small (Songs of Fellowship,
+                             Mission Praise, etc. — hand-counted dozens
+                             at most). For richer per-membership editing
+                             (sort-order, note) curators use the dedicated
+                             /manage/songbook-series page. -->
+                        <div class="mb-3" id="edit-series-block">
+                            <label class="form-label d-flex justify-content-between align-items-center">
+                                <span>Series memberships</span>
+                                <a href="/manage/songbook-series" class="small text-info"
+                                   title="Manage series — names, slugs, sort order, member adds">
+                                    <i class="bi bi-collection me-1" aria-hidden="true"></i>Manage series
+                                </a>
+                            </label>
+                            <?php if (!$allSeries): ?>
+                                <div class="form-text small">
+                                    No series defined yet. <a href="/manage/songbook-series">Create one</a>
+                                    on the series page, then return here to attach this songbook.
+                                </div>
+                            <?php else: ?>
+                                <div class="d-flex flex-wrap gap-2"
+                                     id="edit-series-checkbox-group"
+                                     role="group" aria-label="Series memberships">
+                                    <?php foreach ($allSeries as $s): ?>
+                                        <div class="form-check">
+                                            <input class="form-check-input"
+                                                   type="checkbox"
+                                                   name="series_membership_ids[]"
+                                                   value="<?= (int)$s['id'] ?>"
+                                                   id="edit-series-cb-<?= (int)$s['id'] ?>">
+                                            <label class="form-check-label small"
+                                                   for="edit-series-cb-<?= (int)$s['id'] ?>">
+                                                <?= htmlspecialchars($s['name']) ?>
+                                            </label>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                                <div class="form-text small">
+                                    Tick to attach this songbook to one or more series. Sort
+                                    order within each series is set on the series page.
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                        <?php endif; ?>
+
                         <!-- #672 — collapsible "Online links" + "Authority identifiers".
                              Closed by default so the modal still opens at the same height
                              curators are used to. <details> is native HTML5; no JS needed
@@ -2262,6 +2446,23 @@ $csrf = csrfToken();
                    on every fetch — the server then strips this row + all
                    descendants from suggestions. */
                 document.getElementById('editModal').dataset.editId = row.id || '';
+            })();
+
+            /* #782 phase C — pre-tick series-membership checkboxes from
+               the row payload. The checkbox group is only present when
+               the schema is live; uncheck-all first so opening row B
+               after row A doesn't carry over A's ticks. */
+            (function () {
+                const group = document.getElementById('edit-series-checkbox-group');
+                if (!group) return;
+                group.querySelectorAll('input[type=checkbox]').forEach(cb => {
+                    cb.checked = false;
+                });
+                const ids = Array.isArray(row.series_membership_ids) ? row.series_membership_ids : [];
+                ids.forEach(sid => {
+                    const cb = group.querySelector('input[value="' + Number(sid) + '"]');
+                    if (cb) cb.checked = true;
+                });
             })();
 
             /* Stash the current row's abbreviation on the modal for the
