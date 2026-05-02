@@ -272,20 +272,23 @@ class SongData
             return $books;
         }
 
-        $bibSelect  = $this->_songbookBibSelect();
-        $langSelect = $this->_songbookLanguageSelect();
+        $bibSelect    = $this->_songbookBibSelect();
+        $langSelect   = $this->_songbookLanguageSelect();
+        $parentSelect = $this->_songbookParentSelect();
+        $parentJoin   = $this->_songbookParentJoin();
         $stmt = $this->db->prepare(
-            "SELECT Abbreviation AS id, Name AS name, SongCount AS songCount,
-                    Colour AS colour,
-                    IsOfficial      AS isOfficial,
-                    Publisher       AS publisher,
-                    PublicationYear AS publicationYear,
-                    Copyright       AS copyright,
-                    Affiliation     AS affiliation
+            "SELECT b.Abbreviation AS id, b.Name AS name, b.SongCount AS songCount,
+                    b.Colour AS colour,
+                    b.IsOfficial      AS isOfficial,
+                    b.Publisher       AS publisher,
+                    b.PublicationYear AS publicationYear,
+                    b.Copyright       AS copyright,
+                    b.Affiliation     AS affiliation
                     {$langSelect}
                     {$bibSelect}
-             FROM tblSongbooks
-             ORDER BY Name ASC"
+                    {$parentSelect}
+             FROM tblSongbooks b{$parentJoin}
+             ORDER BY b.Name ASC"
         );
         $stmt->execute();
         $result = $stmt->get_result();
@@ -295,10 +298,55 @@ class SongData
             /* Cast to a strict bool so JSON consumers don't have to
                deal with 0/1 vs true/false ambiguity (#502). */
             $row['isOfficial'] = (bool)$row['isOfficial'];
-            $books[] = $row;
+            $books[] = $this->_normaliseSongbookParent($row);
         }
         $stmt->close();
+
+        /* Attach series memberships in one batch query (#782 phase D)
+           so the home/browse grids can render a "Part of: <Series>" line
+           without N+1 queries. */
+        if ($books) {
+            $seriesMap = $this->_songbookSeriesMap(null);
+            foreach ($books as &$_b) {
+                $_b['series'] = $seriesMap[(string)$_b['id']] ?? [];
+            }
+            unset($_b);
+        }
         return $books;
+    }
+
+    /**
+     * Normalise the parent-songbook fields on a fetched row into a
+     * single nested `parent` key (or null) — keeps consumers from
+     * having to know about the underlying column names. Called once
+     * per row in getSongbook / getSongbooks. Safe to call when the
+     * schema isn't live: the parent fields are simply absent.
+     *
+     * @param array<string,mixed> $row Fetched row (mutated)
+     * @return array<string,mixed>     The same row with `parent` added
+     */
+    private function _normaliseSongbookParent(array $row): array
+    {
+        $pid = $row['parentSongbookId'] ?? null;
+        if ($pid !== null && (int)$pid > 0) {
+            $row['parent'] = [
+                'id'           => (int)$pid,
+                'abbreviation' => (string)($row['parentAbbreviation'] ?? ''),
+                'name'         => (string)($row['parentName']         ?? ''),
+                'relationship' => (string)($row['parentRelationship'] ?? ''),
+            ];
+        } else {
+            $row['parent'] = null;
+        }
+        /* Strip the flat columns now that we've nested them — keeps
+           the public shape clean. */
+        unset(
+            $row['parentSongbookId'],
+            $row['parentRelationship'],
+            $row['parentAbbreviation'],
+            $row['parentName']
+        );
+        return $row;
     }
 
     /**
@@ -371,6 +419,181 @@ class SongData
     private ?string $_langSelectCache = null;
 
     /**
+     * Same shape as _songbookBibSelect() / _songbookLanguageSelect()
+     * but for the optional parent-songbook FK columns added in #782
+     * phase A. When the schema is live, returns a SELECT tail with
+     * `b.ParentSongbookId AS parentSongbookId,
+     *  b.ParentRelationship AS parentRelationship,
+     *  p.Abbreviation AS parentAbbreviation,
+     *  p.Name AS parentName`
+     * — assumes the caller's main table is aliased `b` and joins
+     * `LEFT JOIN tblSongbooks p ON p.Id = b.ParentSongbookId`. The
+     * join fragment is exposed as a separate accessor so callers can
+     * inject it into the FROM clause.
+     *
+     * Probe-once cache (one INFORMATION_SCHEMA round-trip per request)
+     * keeps getSongbook + getSongbooks cheap when both are called.
+     */
+    private function _songbookParentSelect(): string
+    {
+        if ($this->_parentSelectCache !== null) {
+            return $this->_parentSelectCache;
+        }
+        $hasParentCol = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongbooks'
+                    AND COLUMN_NAME  = 'ParentSongbookId'
+                  LIMIT 1"
+            );
+            $probe->execute();
+            $hasParentCol = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* probe failure → no parent tail */ }
+        $this->_parentSelectCache = $hasParentCol
+            ? ', b.ParentSongbookId   AS parentSongbookId,
+                 b.ParentRelationship AS parentRelationship,
+                 p.Abbreviation       AS parentAbbreviation,
+                 p.Name               AS parentName'
+            : '';
+        return $this->_parentSelectCache;
+    }
+    private ?string $_parentSelectCache = null;
+
+    /** LEFT JOIN fragment paired with _songbookParentSelect(). Empty
+        when the schema isn't live so the FROM clause stays valid. */
+    private function _songbookParentJoin(): string
+    {
+        return $this->_songbookParentSelect() === ''
+            ? ''
+            : ' LEFT JOIN tblSongbooks p ON p.Id = b.ParentSongbookId';
+    }
+
+    /**
+     * Pull `[abbr => [{id, name, slug}, ...]]` from the
+     * tblSongbookSeries / tblSongbookSeriesMembership tables for a
+     * subset (or all) of songbooks. Series counts in real catalogues
+     * stay small — issuing one query per page-load (vs N queries per
+     * songbook) keeps both /songbook/<abbr> and the home grid cheap.
+     *
+     * Schema-probed; pre-migration deployments get an empty map so
+     * the caller's tile / page renders cleanly without the row.
+     *
+     * @param string[]|null $abbrs Limit to these abbreviations; null = all
+     * @return array<string, array<int, array{id:int,name:string,slug:string}>>
+     */
+    private function _songbookSeriesMap(?array $abbrs = null): array
+    {
+        $hasSeriesSchema = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongbookSeries'
+                  LIMIT 1"
+            );
+            $probe->execute();
+            $hasSeriesSchema = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* fall through */ }
+        if (!$hasSeriesSchema) return [];
+
+        try {
+            if ($abbrs === null) {
+                $sql = 'SELECT b.Abbreviation AS abbr,
+                               s.Id           AS sid,
+                               s.Name         AS sname,
+                               s.Slug         AS sslug,
+                               m.SortOrder    AS sortOrder
+                          FROM tblSongbookSeriesMembership m
+                          JOIN tblSongbookSeries s ON s.Id = m.SeriesId
+                          JOIN tblSongbooks      b ON b.Id = m.SongbookId
+                         ORDER BY b.Abbreviation, m.SortOrder ASC, s.Name ASC';
+                $stmt = $this->db->prepare($sql);
+            } else {
+                $abbrs = array_values(array_filter(array_unique(array_map(
+                    static fn($a) => strtoupper(trim((string)$a)),
+                    $abbrs
+                ))));
+                if (!$abbrs) return [];
+                $ph  = implode(',', array_fill(0, count($abbrs), '?'));
+                $sql = "SELECT b.Abbreviation AS abbr,
+                               s.Id           AS sid,
+                               s.Name         AS sname,
+                               s.Slug         AS sslug,
+                               m.SortOrder    AS sortOrder
+                          FROM tblSongbookSeriesMembership m
+                          JOIN tblSongbookSeries s ON s.Id = m.SeriesId
+                          JOIN tblSongbooks      b ON b.Id = m.SongbookId
+                         WHERE b.Abbreviation IN ($ph)
+                         ORDER BY b.Abbreviation, m.SortOrder ASC, s.Name ASC";
+                $stmt  = $this->db->prepare($sql);
+                $types = str_repeat('s', count($abbrs));
+                $stmt->bind_param($types, ...$abbrs);
+            }
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $out = [];
+            while ($row = $res->fetch_assoc()) {
+                $abbr = (string)$row['abbr'];
+                if (!isset($out[$abbr])) $out[$abbr] = [];
+                $out[$abbr][] = [
+                    'id'   => (int)$row['sid'],
+                    'name' => (string)$row['sname'],
+                    'slug' => (string)$row['sslug'],
+                ];
+            }
+            $stmt->close();
+            return $out;
+        } catch (\Throwable $e) {
+            error_log('[SongData::_songbookSeriesMap] ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Find a SongId by (songbook abbreviation, number) without
+     * re-fetching the full song row. Used by the song page to
+     * decide whether the parent songbook has a same-numbered
+     * counterpart worth deep-linking to (#782 phase D). Returns
+     * null when the songbook has no song at that number.
+     *
+     * Cheaper than getSongByNumber() — only a single SELECT against
+     * the indexed (SongbookAbbr, Number) pair.
+     */
+    public function findSongIdByNumber(string $abbr, int $number): ?string
+    {
+        if ($number <= 0) return null;
+        $abbr = strtoupper(trim($abbr));
+        if ($abbr === '') return null;
+        if ($this->jsonMode) {
+            foreach ($this->jsonData['songs'] ?? [] as $song) {
+                if (strtoupper((string)($song['songbook'] ?? '')) === $abbr
+                    && (int)($song['number'] ?? 0) === $number
+                ) {
+                    return (string)$song['id'];
+                }
+            }
+            return null;
+        }
+        try {
+            $stmt = $this->db->prepare(
+                'SELECT SongId FROM tblSongs WHERE SongbookAbbr = ? AND Number = ? LIMIT 1'
+            );
+            $stmt->bind_param('si', $abbr, $number);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            return $row ? (string)$row['SongId'] : null;
+        } catch (\Throwable $e) {
+            error_log('[SongData::findSongIdByNumber] ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
      * Get a single songbook by its abbreviation ID.
      *
      * @param string $id Songbook abbreviation (e.g., 'CP', 'MP')
@@ -385,20 +608,23 @@ class SongData
             }
             return null;
         }
-        $bibSelect  = $this->_songbookBibSelect();
-        $langSelect = $this->_songbookLanguageSelect();
+        $bibSelect    = $this->_songbookBibSelect();
+        $langSelect   = $this->_songbookLanguageSelect();
+        $parentSelect = $this->_songbookParentSelect();
+        $parentJoin   = $this->_songbookParentJoin();
         $stmt = $this->db->prepare(
-            "SELECT Abbreviation AS id, Name AS name, SongCount AS songCount,
-                    Colour AS colour,
-                    IsOfficial      AS isOfficial,
-                    Publisher       AS publisher,
-                    PublicationYear AS publicationYear,
-                    Copyright       AS copyright,
-                    Affiliation     AS affiliation
+            "SELECT b.Abbreviation AS id, b.Name AS name, b.SongCount AS songCount,
+                    b.Colour AS colour,
+                    b.IsOfficial      AS isOfficial,
+                    b.Publisher       AS publisher,
+                    b.PublicationYear AS publicationYear,
+                    b.Copyright       AS copyright,
+                    b.Affiliation     AS affiliation
                     {$langSelect}
                     {$bibSelect}
-             FROM tblSongbooks
-             WHERE Abbreviation = ?"
+                    {$parentSelect}
+             FROM tblSongbooks b{$parentJoin}
+             WHERE b.Abbreviation = ?"
         );
         $stmt->bind_param('s', $id);
         $stmt->execute();
@@ -411,6 +637,12 @@ class SongData
         }
         $row['songCount']  = (int)$row['songCount'];
         $row['isOfficial'] = (bool)$row['isOfficial'];
+        $row = $this->_normaliseSongbookParent($row);
+        /* #782 phase D — also attach series memberships. Single-songbook
+           variant of the bulk fetch on getSongbooks(); pre-migration
+           safe via the schema probe inside _songbookSeriesMap. */
+        $seriesMap     = $this->_songbookSeriesMap([$id]);
+        $row['series'] = $seriesMap[(string)$row['id']] ?? [];
         return $row;
     }
 
