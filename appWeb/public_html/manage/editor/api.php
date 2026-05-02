@@ -822,6 +822,56 @@ switch ($action) {
                 $rev->close();
             } catch (\Throwable $_e) { /* revisions are best-effort */ }
 
+            /* Refresh tblSongbooks.SongCount for every songbook this
+               save touched (#791). The home + /songbooks tiles gate
+               render on `songCount > 0`, and SongCount is a cached
+               column — without this recompute, a brand-new song
+               saved to Misc / any not-yet-populated songbook lands
+               in tblSongs but the songbook tile never appears
+               because the cache stays at 0.
+
+               Two paths recompute:
+                 - The current row's SongbookAbbr (always).
+                 - The PREVIOUS row's SongbookAbbr if it differs
+                   (song moved between books — old book shrinks,
+                   new book grows). previousData is the JSON dump
+                   of the row before this save.
+
+               Wrapped in try/catch so a SongCount recompute failure
+               (e.g. transient deadlock) doesn't roll back the song
+               save itself — the cache will self-heal on the next
+               recompute pass. */
+            try {
+                $cnt = $db->prepare(
+                    'UPDATE tblSongbooks
+                        SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?)
+                      WHERE Abbreviation = ?'
+                );
+                $cnt->bind_param('ss', $songbookAbbr, $songbookAbbr);
+                $cnt->execute();
+                $cnt->close();
+
+                /* If the row moved songbooks, the OLD book also needs
+                   its count refreshed so its tile shrinks (or hides
+                   entirely if this was its last song). */
+                if ($previousData !== null) {
+                    $prev = json_decode($previousData, true);
+                    $prevAbbr = is_array($prev) ? (string)($prev['SongbookAbbr'] ?? '') : '';
+                    if ($prevAbbr !== '' && $prevAbbr !== $songbookAbbr) {
+                        $cnt = $db->prepare(
+                            'UPDATE tblSongbooks
+                                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?)
+                              WHERE Abbreviation = ?'
+                        );
+                        $cnt->bind_param('ss', $prevAbbr, $prevAbbr);
+                        $cnt->execute();
+                        $cnt->close();
+                    }
+                }
+            } catch (\Throwable $_e) {
+                error_log('[editor save_song] SongCount recompute failed: ' . $_e->getMessage());
+            }
+
             /* Activity log (#535) — high-level "song.create" / "song.edit"
                row with a cross-link to the revisions row above so a
                timeline reader can drill into the full before/after diff
