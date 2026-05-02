@@ -50,6 +50,99 @@ enableDebugModeIfRequested();
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
+
+/* =========================================================================
+ * GLOBAL JSON ERROR HANDLER (#803)
+ *
+ * Without this, an uncaught \Throwable anywhere in the dispatch below
+ * produced PHP's default HTML error page — every JSON client hit it
+ * and `res.json()` blew up, surfacing the misleading "Network error.
+ * Please try again." instead of the real cause. Registered as early as
+ * possible so even a fatal in the rest of the bootstrap (require_once
+ * etc.) gets a JSON response on action requests.
+ *
+ * Two registrations:
+ *   - set_exception_handler   — catches uncaught \Throwable
+ *   - register_shutdown_function — catches fatal errors (parse errors,
+ *                                    out-of-memory, …) that don't
+ *                                    surface as throwables
+ *
+ * Page (?page=…) requests still get an HTML fragment — the SPA injects
+ * the response into a <div>, so a JSON body would be useless. Action
+ * requests get JSON. Everything is logged to error_log with a request
+ * id correlation token.
+ *
+ * Body shape on Alpha/Beta — message + class to speed up debugging:
+ *   { "error": "Database error: ...", "request_id": "abc1234567",
+ *     "exception_class": "mysqli_sql_exception" }
+ * Body shape on production — generic message + request id only:
+ *   { "error": "Internal server error.", "request_id": "abc1234567" }
+ * ========================================================================= */
+(function () {
+    /* Generate a short request id once. Re-used by both handlers + by
+       any inner handler that wants to thread the same correlation id
+       through to its log lines. Stashed on $GLOBALS so the rest of the
+       request can read it without reaching back through this closure. */
+    $rid = bin2hex(random_bytes(5));
+    $GLOBALS['_ihymnsApiRequestId'] = $rid;
+
+    $isAction = isset($_GET['action']) && trim((string)$_GET['action']) !== '';
+    $devStatus = $GLOBALS['app']['Application']['Version']['Development']['Status'] ?? null;
+    $verbose = ($devStatus === 'Alpha' || $devStatus === 'Beta');
+
+    $emit = function (string $msg, string $class, ?string $where = null) use ($isAction, $verbose, $rid) {
+        /* Always log the full detail to error_log so production admins
+           can correlate via the request id even when the response is
+           generic. */
+        error_log(sprintf(
+            '[api uncaught rid=%s] %s: %s%s',
+            $rid, $class, $msg, $where ? " @ {$where}" : ''
+        ));
+        if (headers_sent()) return; /* nothing we can do — response already started */
+        http_response_code(500);
+        if ($isAction) {
+            header('Content-Type: application/json; charset=UTF-8');
+            header('X-Content-Type-Options: nosniff');
+            header('Cache-Control: no-cache, must-revalidate');
+            $body = ['error' => 'Internal server error.', 'request_id' => $rid];
+            if ($verbose) {
+                $body['error']           = $msg;
+                $body['exception_class'] = $class;
+                if ($where !== null) $body['where'] = $where;
+            }
+            echo json_encode($body, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        } else {
+            /* Page requests stay HTML so the SPA can render the chunk
+               into the page <div>. Same alpha/beta gating on what we
+               disclose. */
+            header('Content-Type: text/html; charset=UTF-8');
+            echo '<div class="alert alert-danger" role="alert">';
+            echo '<strong>Internal server error.</strong> ';
+            echo 'Reference: <code>' . htmlspecialchars($rid, ENT_QUOTES) . '</code>';
+            if ($verbose) {
+                echo '<br><small>' . htmlspecialchars($class . ': ' . $msg, ENT_QUOTES) . '</small>';
+            }
+            echo '</div>';
+        }
+    };
+
+    set_exception_handler(function (\Throwable $e) use ($emit) {
+        $emit($e->getMessage(), get_class($e),
+              basename($e->getFile()) . ':' . $e->getLine());
+    });
+
+    register_shutdown_function(function () use ($emit) {
+        $err = error_get_last();
+        /* Only trip on fatal-class errors — non-fatal warnings/notices
+           shouldn't write a 500. PHP fatals are E_ERROR, E_PARSE,
+           E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR. */
+        $fatalMask = E_ERROR | E_PARSE | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR;
+        if (!$err || !($err['type'] & $fatalMask)) return;
+        $emit($err['message'], 'PHP fatal',
+              basename($err['file'] ?? '?') . ':' . ($err['line'] ?? 0));
+    });
+})();
+
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_access.php';

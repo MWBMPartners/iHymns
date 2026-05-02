@@ -152,6 +152,82 @@ export class UserAuth {
      * ===================================================================== */
 
     /**
+     * Run a JSON POST against the auth API and resolve the response into
+     * either { ok: true, data } or { ok: false, error } where `error` is
+     * the most diagnostic string we can produce.
+     *
+     * Three failure shapes that previously all collapsed to the same
+     * misleading "Network error. Please try again." (#803):
+     *   1. fetch() rejects                  → real connectivity / CORS
+     *   2. fetch() succeeds but res.json()  → server returned non-JSON
+     *      throws (HTML error page, empty body) — surface status + a
+     *      snippet of the body so support has something actionable
+     *   3. res.ok === false                 → server returned JSON 4xx;
+     *      use data.error (existing behaviour) and fall back to status
+     *      text if data.error is missing
+     *
+     * `defaultMsg` is the friendly verb fallback for case 3 — caller
+     * passes "Registration failed." / "Login failed." etc.
+     *
+     * @param {string} url
+     * @param {object} body
+     * @param {string} defaultMsg
+     * @returns {Promise<{ ok: true, data: any } | { ok: false, error: string }>}
+     */
+    async _postJson(url, body, defaultMsg) {
+        let res;
+        try {
+            res = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                },
+                body: JSON.stringify(body),
+            });
+        } catch (err) {
+            /* Case 1 — fetch itself rejected. This is the only true
+               "couldn't reach the server" path. */
+            return { ok: false, error: 'Network error. Please check your connection and try again.' };
+        }
+
+        /* Try to parse the body as JSON. On parse failure (case 2) we
+           reach for the raw text so we can show the curator something
+           actionable — typically the start of a PHP error page or an
+           empty 502. */
+        let data = null;
+        let parseFailed = false;
+        try {
+            data = await res.json();
+        } catch {
+            parseFailed = true;
+        }
+
+        if (parseFailed) {
+            let snippet = '';
+            try { snippet = (await res.text()).slice(0, 200).trim(); } catch { /* ignore */ }
+            const detail = snippet ? ` Server said: "${snippet.replace(/\s+/g, ' ')}"` : '';
+            return {
+                ok:    false,
+                error: `Server returned an unreadable response (HTTP ${res.status} ${res.statusText}).${detail} `
+                     + 'This is a server bug — please report it.',
+            };
+        }
+
+        if (!res.ok) {
+            /* Case 3 — server replied with a JSON body but a non-2xx
+               status. data.error is the friendly message; data.request_id
+               (added by the global handler in api.php for 500s, #803)
+               is included verbatim so support can correlate the log. */
+            const friendly = (data && data.error) ? data.error : (defaultMsg + ` (HTTP ${res.status})`);
+            const rid      = data && data.request_id ? ` [ref ${data.request_id}]` : '';
+            return { ok: false, error: friendly + rid };
+        }
+
+        return { ok: true, data };
+    }
+
+    /**
      * Register a new account.
      * @param {string} username
      * @param {string} password
@@ -159,24 +235,14 @@ export class UserAuth {
      * @returns {Promise<{ success: boolean, error?: string }>}
      */
     async register(username, password, displayName) {
-        try {
-            const res = await fetch(`${this.app.config.apiUrl}?action=auth_register`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Requested-With': 'XMLHttpRequest',
-                },
-                body: JSON.stringify({ username, password, display_name: displayName }),
-            });
-
-            const data = await res.json();
-            if (!res.ok) return { success: false, error: data.error || 'Registration failed.' };
-
-            this.saveCredentials(data.token, data.user);
-            return { success: true };
-        } catch {
-            return { success: false, error: 'Network error. Please try again.' };
-        }
+        const r = await this._postJson(
+            `${this.app.config.apiUrl}?action=auth_register`,
+            { username, password, display_name: displayName },
+            'Registration failed.'
+        );
+        if (!r.ok) return { success: false, error: r.error };
+        this.saveCredentials(r.data.token, r.data.user);
+        return { success: true };
     }
 
     /**
@@ -186,24 +252,14 @@ export class UserAuth {
      * @returns {Promise<{ success: boolean, error?: string }>}
      */
     async login(username, password) {
-        try {
-            const res = await fetch(`${this.app.config.apiUrl}?action=auth_login`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Requested-With': 'XMLHttpRequest',
-                },
-                body: JSON.stringify({ username, password }),
-            });
-
-            const data = await res.json();
-            if (!res.ok) return { success: false, error: data.error || 'Login failed.' };
-
-            this.saveCredentials(data.token, data.user);
-            return { success: true };
-        } catch {
-            return { success: false, error: 'Network error. Please try again.' };
-        }
+        const r = await this._postJson(
+            `${this.app.config.apiUrl}?action=auth_login`,
+            { username, password },
+            'Login failed.'
+        );
+        if (!r.ok) return { success: false, error: r.error };
+        this.saveCredentials(r.data.token, r.data.user);
+        return { success: true };
     }
 
     /**
