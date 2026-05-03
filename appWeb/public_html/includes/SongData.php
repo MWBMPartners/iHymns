@@ -304,11 +304,13 @@ class SongData
 
         /* Attach series memberships in one batch query (#782 phase D)
            so the home/browse grids can render a "Part of: <Series>" line
-           without N+1 queries. */
+           without N+1 queries. Compilers attached the same way (#831). */
         if ($books) {
-            $seriesMap = $this->_songbookSeriesMap(null);
+            $seriesMap    = $this->_songbookSeriesMap(null);
+            $compilersMap = $this->_songbookCompilersMap(null);
             foreach ($books as &$_b) {
-                $_b['series'] = $seriesMap[(string)$_b['id']] ?? [];
+                $_b['series']    = $seriesMap[(string)$_b['id']]    ?? [];
+                $_b['compilers'] = $compilersMap[(string)$_b['id']] ?? [];
             }
             unset($_b);
         }
@@ -564,6 +566,91 @@ class SongData
     }
 
     /**
+     * Pull `[abbr => [{id, name, slug, note}, ...]]` from
+     * tblSongbookCompilers joined to tblCreditPeople. Same shape +
+     * caching strategy as _songbookSeriesMap(): single query covers
+     * the home grid + every songbook page on a single request.
+     *
+     * Schema-probed (#831). Pre-migration deployments get an empty
+     * map so /songbook/<abbr> renders cleanly without the
+     * "Compiled by …" line.
+     *
+     * @param string[]|null $abbrs Limit to these abbreviations; null = all
+     * @return array<string, array<int, array{id:int,name:string,slug:string,note:string}>>
+     */
+    private function _songbookCompilersMap(?array $abbrs = null): array
+    {
+        $hasCompilersSchema = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongbookCompilers'
+                  LIMIT 1"
+            );
+            $probe->execute();
+            $hasCompilersSchema = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* fall through */ }
+        if (!$hasCompilersSchema) return [];
+
+        try {
+            if ($abbrs === null) {
+                $sql = 'SELECT b.Abbreviation AS abbr,
+                               p.Id           AS pid,
+                               p.Name         AS pname,
+                               p.Slug         AS pslug,
+                               c.Note         AS note,
+                               c.SortOrder    AS sortOrder
+                          FROM tblSongbookCompilers c
+                          JOIN tblCreditPeople p ON p.Id = c.CreditPersonId
+                          JOIN tblSongbooks    b ON b.Id = c.SongbookId
+                         ORDER BY b.Abbreviation, c.SortOrder ASC, p.Name ASC';
+                $stmt = $this->db->prepare($sql);
+            } else {
+                $abbrs = array_values(array_filter(array_unique(array_map(
+                    static fn($a) => strtoupper(trim((string)$a)),
+                    $abbrs
+                ))));
+                if (!$abbrs) return [];
+                $ph  = implode(',', array_fill(0, count($abbrs), '?'));
+                $sql = "SELECT b.Abbreviation AS abbr,
+                               p.Id           AS pid,
+                               p.Name         AS pname,
+                               p.Slug         AS pslug,
+                               c.Note         AS note,
+                               c.SortOrder    AS sortOrder
+                          FROM tblSongbookCompilers c
+                          JOIN tblCreditPeople p ON p.Id = c.CreditPersonId
+                          JOIN tblSongbooks    b ON b.Id = c.SongbookId
+                         WHERE b.Abbreviation IN ($ph)
+                         ORDER BY b.Abbreviation, c.SortOrder ASC, p.Name ASC";
+                $stmt  = $this->db->prepare($sql);
+                $types = str_repeat('s', count($abbrs));
+                $stmt->bind_param($types, ...$abbrs);
+            }
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $out = [];
+            while ($row = $res->fetch_assoc()) {
+                $abbr = (string)$row['abbr'];
+                if (!isset($out[$abbr])) $out[$abbr] = [];
+                $out[$abbr][] = [
+                    'id'   => (int)$row['pid'],
+                    'name' => (string)$row['pname'],
+                    'slug' => (string)($row['pslug'] ?? ''),
+                    'note' => (string)($row['note'] ?? ''),
+                ];
+            }
+            $stmt->close();
+            return $out;
+        } catch (\Throwable $e) {
+            error_log('[SongData::_songbookCompilersMap] ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
      * Find a SongId by (songbook abbreviation, number) without
      * re-fetching the full song row. Used by the song page to
      * decide whether the parent songbook has a same-numbered
@@ -650,9 +737,12 @@ class SongData
         $row = $this->_normaliseSongbookParent($row);
         /* #782 phase D — also attach series memberships. Single-songbook
            variant of the bulk fetch on getSongbooks(); pre-migration
-           safe via the schema probe inside _songbookSeriesMap. */
-        $seriesMap     = $this->_songbookSeriesMap([$id]);
-        $row['series'] = $seriesMap[(string)$row['id']] ?? [];
+           safe via the schema probe inside _songbookSeriesMap.
+           #831 — compilers attached the same way. */
+        $seriesMap        = $this->_songbookSeriesMap([$id]);
+        $compilersMap     = $this->_songbookCompilersMap([$id]);
+        $row['series']    = $seriesMap[(string)$row['id']]    ?? [];
+        $row['compilers'] = $compilersMap[(string)$row['id']] ?? [];
         return $row;
     }
 

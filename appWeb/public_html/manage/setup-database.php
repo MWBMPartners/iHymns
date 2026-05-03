@@ -226,6 +226,7 @@ $friendlyTitles = [
     'parent-songbooks'                 => 'Parent Songbooks (#782 phase A)',
     'song-links'                       => 'Cross-book Song Links (#807 / #808)',
     'songcount-triggers'               => 'SongCount Triggers (#793)',
+    'songbook-compilers'               => 'Songbook Compilers (#831)',
     /* `recompute-songbook-songcount` no longer exposed via the dashboard
        (#818) — the SongCount Triggers migration above includes its own
        initial recompute. The CLI script stays on disk for emergency
@@ -528,6 +529,17 @@ $migrationCards = [
                   . ' recompute remains the safety net.',
         'button' => 'Run SongCount Triggers Migration',
     ],
+    'songbook-compilers' => [
+        'title'  => 'Songbook Compilers (#831)',
+        'body'   => 'Adds <code>tblSongbookCompilers</code> — a many-to-many join between'
+                  . ' <code>tblSongbooks</code> and <code>tblCreditPeople</code> so a hymnal'
+                  . ' can record the people who compiled / edited it (e.g. Mission Praise →'
+                  . ' Peter Horrobin &amp; Greg Leavers). Distinct from the per-song credit'
+                  . ' tables; this is a credit at the <em>songbook</em> level. Carries'
+                  . ' SortOrder + an optional Note for edition / co-compiler context.'
+                  . ' Idempotent.',
+        'button' => 'Run Songbook Compilers Migration',
+    ],
     /* recompute-songbook-songcount card removed (#818) — its work is
        now covered by the SongCount Triggers migration above, which
        runs an initial recompute as part of its installation. The
@@ -657,6 +669,7 @@ $migrationProbes = [
        logic still fires on every run), so the card is always
        reachable as a manual recompute. */
     'songcount-triggers'                 => static fn(\mysqli $db) => !_migProbe_triggerExists($db, 'trg_songs_songcount_ai'),
+    'songbook-compilers'                 => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongbookCompilers'),
     /* Data-only backfills — applied state isn't cheap to detect
        reliably from schema alone. Default to "always show" so a
        curator can always re-run; re-runs are idempotent. */
@@ -845,6 +858,7 @@ if ($action !== '') {
            on disk for emergency CLI manual runs:
              php appWeb/.sql/migrate-recompute-songbook-songcount.php  */
         'songcount-triggers'       => 'migrate-songcount-triggers.php',
+        'songbook-compilers'       => 'migrate-songbook-compilers.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -897,6 +911,7 @@ if ($action !== '') {
            successfully installed). Listing it here too would just
            recompute twice on every Apply-All run. */
         'songcount-triggers',
+        'songbook-compilers',
         /* When you add a new migrate-*.php under appWeb/.sql/, ALSO add
            its action key to:
              1. $scriptMap above (action key → file)

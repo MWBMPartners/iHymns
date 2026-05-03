@@ -461,6 +461,85 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
     exit;
 }
 
+/* ---- GET ?action=compiler_search&q=… (#831) ---------------------------
+ * JSON typeahead for the edit-modal Compilers picker. Returns rows
+ * from tblCreditPeople matching the query, preferring people who are
+ * already cited in the catalogue (name appears in any of the song-
+ * credit tables) — keeps real contributors above bare registry rows.
+ *
+ * Empty `q` returns the most-cited people so the field surfaces useful
+ * candidates as soon as it's focused, mirroring the affiliation +
+ * parent typeaheads.
+ *
+ * Pre-migration safe: no schema dependency on tblSongbookCompilers
+ * itself (we're searching the existing tblCreditPeople), so the
+ * endpoint works as soon as the credit-people registry has rows.
+ * ----------------------------------------------------------------------- */
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
+    && ($_GET['action'] ?? '') === 'compiler_search'
+) {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store');
+    $q     = trim((string)($_GET['q'] ?? ''));
+    $limit = max(1, min(50, (int)($_GET['limit'] ?? 20)));
+
+    /* tblCreditPeople is the registry; safe to assume it exists at
+       this point (it's part of the core schema since #545 / install).
+       Defensive fallback — if it really isn't there, return empty. */
+    try {
+        $probe = $db->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblCreditPeople' LIMIT 1"
+        );
+        if (!$probe || $probe->fetch_row() === null) {
+            echo json_encode([
+                'suggestions' => [],
+                'note'        => 'tblCreditPeople not yet created — run /manage/setup-database',
+            ]);
+            exit;
+        }
+    } catch (\Throwable $e) {
+        error_log('[compiler_search] probe failed: ' . $e->getMessage());
+    }
+
+    try {
+        if ($q === '') {
+            $sql = 'SELECT Id, Name, Slug FROM tblCreditPeople
+                     WHERE COALESCE(IsSpecialCase, 0) = 0
+                     ORDER BY Name ASC
+                     LIMIT ?';
+            $stmt = $db->prepare($sql);
+            $stmt->bind_param('i', $limit);
+        } else {
+            $like = '%' . $q . '%';
+            $sql  = 'SELECT Id, Name, Slug FROM tblCreditPeople
+                      WHERE Name LIKE ?
+                        AND COALESCE(IsSpecialCase, 0) = 0
+                      ORDER BY Name ASC
+                      LIMIT ?';
+            $stmt = $db->prepare($sql);
+            $stmt->bind_param('si', $like, $limit);
+        }
+        $stmt->execute();
+        $res  = $stmt->get_result();
+        $sugg = [];
+        while ($row = $res->fetch_assoc()) {
+            $sugg[] = [
+                'id'   => (int)$row['Id'],
+                'name' => (string)$row['Name'],
+                'slug' => (string)($row['Slug'] ?? ''),
+            ];
+        }
+        $stmt->close();
+        echo json_encode(['suggestions' => $sugg], JSON_UNESCAPED_UNICODE);
+    } catch (\Throwable $e) {
+        error_log('[compiler_search] ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['error' => 'Search failed.']);
+    }
+    exit;
+}
+
 /* ---- Cycle-detection helper for #782 phase B --------------------------
  * Walks ParentSongbookId upward from $candidateParent and returns true
  * if the chain hits $rowId — i.e. setting that parent would create a
@@ -522,6 +601,22 @@ try {
     $hasSeriesSchema = $probeSeries->get_result()->fetch_row() !== null;
     $probeSeries->close();
 } catch (\Throwable $_e) { /* probe failure → series UI stays hidden */ }
+
+/* Probe for tblSongbookCompilers (#831). Same hoist rationale as
+   $hasSeriesSchema — the POST handler's reconciliation block needs
+   the flag, so we can't defer the probe to the render section. */
+$hasCompilersSchema = false;
+try {
+    $probeComp = $db->prepare(
+        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'tblSongbookCompilers'
+          LIMIT 1"
+    );
+    $probeComp->execute();
+    $hasCompilersSchema = $probeComp->get_result()->fetch_row() !== null;
+    $probeComp->close();
+} catch (\Throwable $_e) { /* probe failure → compilers UI stays hidden */ }
 
 /* ----- POST actions ----- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -962,6 +1057,61 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
                     }
 
+                    /* #831 — reconcile compiler credits for this songbook.
+                       The edit modal posts three parallel arrays:
+                         compiler_person_ids[]   — credit-people FKs
+                         compiler_notes[]        — optional per-row note
+                       Position N in each array is the same compiler row;
+                       array index also drives SortOrder so a curator's
+                       drag-reorder persists.
+                       Reconciliation: replace the row's full compiler
+                       set on every save (DELETE-then-INSERT in one
+                       transaction). Cheaper than diff-then-update and
+                       avoids edge cases when the same person appears
+                       twice with different SortOrder.
+                       Schema-gated by $hasCompilersSchema so a
+                       pre-migration deployment skips silently. */
+                    $postedCompilerSet = [];
+                    if ($hasCompilersSchema) {
+                        $rawIds   = $_POST['compiler_person_ids'] ?? [];
+                        $rawNotes = $_POST['compiler_notes']      ?? [];
+                        if (!is_array($rawIds))   $rawIds   = [];
+                        if (!is_array($rawNotes)) $rawNotes = [];
+                        $compilerRows = [];
+                        $seenIds      = [];
+                        foreach ($rawIds as $idx => $rawPid) {
+                            $pid = (int)$rawPid;
+                            if ($pid <= 0)              continue;
+                            if (isset($seenIds[$pid]))  continue;   /* de-dup */
+                            $seenIds[$pid] = true;
+                            $note = trim((string)($rawNotes[$idx] ?? ''));
+                            $compilerRows[] = [
+                                'pid'   => $pid,
+                                'note'  => ($note !== '' ? mb_substr($note, 0, 255) : null),
+                                'order' => count($compilerRows),  /* sequential */
+                            ];
+                        }
+
+                        $stmt = $db->prepare('DELETE FROM tblSongbookCompilers WHERE SongbookId = ?');
+                        $stmt->bind_param('i', $id);
+                        $stmt->execute();
+                        $stmt->close();
+
+                        if ($compilerRows) {
+                            $stmt = $db->prepare(
+                                'INSERT INTO tblSongbookCompilers
+                                     (SongbookId, CreditPersonId, SortOrder, Note)
+                                  VALUES (?, ?, ?, ?)'
+                            );
+                            foreach ($compilerRows as $cr) {
+                                $stmt->bind_param('iiis', $id, $cr['pid'], $cr['order'], $cr['note']);
+                                $stmt->execute();
+                                $postedCompilerSet[] = $cr['pid'];
+                            }
+                            $stmt->close();
+                        }
+                    }
+
                     $db->commit();
 
                     /* Audit (#535) — compute the changed-fields list
@@ -1012,6 +1162,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $auditExtras = [];
                     if ($hasSeriesSchema) {
                         $auditExtras['series_membership_ids'] = $postedSeriesIds ?? [];
+                    }
+                    if ($hasCompilersSchema) {
+                        $auditExtras['compiler_person_ids'] = $postedCompilerSet;
                     }
                     logActivity('songbook.edit', 'songbook', (string)$id, array_merge([
                         'fields'             => $changed,
@@ -1564,6 +1717,44 @@ if ($hasSeriesSchema) {
     }
 }
 
+/* ----- Compiler-credits map for the edit modal (#831) -----------------
+ *       SongbookId => [{personId, personName, sortOrder, note}, …]
+ *       Joined to tblCreditPeople so the edit-modal payload can render
+ *       chips with the person's display name without a second client
+ *       round-trip. Schema-conditional via $hasCompilersSchema (probed
+ *       earlier alongside $hasSeriesSchema) so a pre-migration
+ *       deployment loads the page with the section silently empty.
+ * ----- */
+$sbCompilersMap = []; /* SongbookId => [{...}, ...] in SortOrder asc */
+if ($hasCompilersSchema) {
+    try {
+        $res = $db->query(
+            'SELECT c.SongbookId, c.CreditPersonId, c.SortOrder, c.Note,
+                    p.Name AS PersonName, p.Slug AS PersonSlug
+               FROM tblSongbookCompilers c
+               JOIN tblCreditPeople     p ON p.Id = c.CreditPersonId
+              ORDER BY c.SongbookId ASC, c.SortOrder ASC, p.Name ASC'
+        );
+        if ($res) {
+            while ($crow = $res->fetch_assoc()) {
+                $sb = (int)$crow['SongbookId'];
+                if (!isset($sbCompilersMap[$sb])) $sbCompilersMap[$sb] = [];
+                $sbCompilersMap[$sb][] = [
+                    'person_id'   => (int)$crow['CreditPersonId'],
+                    'person_name' => (string)$crow['PersonName'],
+                    'person_slug' => (string)($crow['PersonSlug'] ?? ''),
+                    'sort_order'  => (int)$crow['SortOrder'],
+                    'note'        => (string)($crow['Note'] ?? ''),
+                ];
+            }
+            $res->close();
+        }
+    } catch (\Throwable $e) {
+        error_log('[manage/songbooks.php compilers fetch] ' . $e->getMessage());
+        $sbCompilersMap = [];
+    }
+}
+
 /* ----- Active languages for the songbook editor's optional
  *       Language dropdown (#673). Sourced from tblLanguages so the
  *       admin doesn't have to hard-code ISO codes. We pull this
@@ -1915,6 +2106,11 @@ $csrf = csrfToken();
                                            member of. Empty array on a pre-migration deploy
                                            or for songbooks not in any series. */
                                         'series_membership_ids' => $sbSeriesMap[(int)$r['Id']] ?? [],
+                                        /* #831 — compiler credits attached to this songbook,
+                                           in SortOrder. Each item carries person_id, person_name,
+                                           person_slug, note. Empty list pre-migration or for
+                                           songbooks with no compilers. */
+                                        'compilers'             => $sbCompilersMap[(int)$r['Id']] ?? [],
                                     ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                                 ?>
                                 <button type="button" class="btn btn-sm btn-outline-info"
@@ -2543,6 +2739,63 @@ $csrf = csrfToken();
                         </div>
                         <?php endif; ?>
 
+                        <?php if ($hasCompilersSchema): ?>
+                        <!-- #831 — Compiler / Editor credits. Multi-row picker
+                             where each row pairs a tblCreditPeople entry with
+                             an optional note (edition / co-compiler context).
+                             Drag-handle reorder persists via array-index ⇒
+                             SortOrder on save. The hidden inputs are named
+                             compiler_person_ids[] / compiler_notes[] in
+                             parallel arrays. -->
+                        <div class="mb-3" id="edit-compilers-block">
+                            <label class="form-label d-flex justify-content-between align-items-center">
+                                <span>Compilers / Editors</span>
+                                <a href="/manage/credit-people" class="small text-info"
+                                   title="Manage credit people — add a person, set bio, slug, …">
+                                    <i class="bi bi-person-badge me-1" aria-hidden="true"></i>Manage people
+                                </a>
+                            </label>
+                            <div class="form-text small mb-2">
+                                The person(s) who compiled / edited this hymnal —
+                                e.g. <em>Mission Praise</em> by Peter Horrobin &amp; Greg Leavers.
+                                Distinct from per-song writer / composer credits.
+                            </div>
+
+                            <!-- Existing rows render here (one chip card per
+                                 compiler). The boot script clears + repopulates
+                                 from row.compilers when the modal opens. -->
+                            <div id="edit-compilers-rows" class="vstack gap-2 mb-2"></div>
+
+                            <!-- Add-by-typeahead input. Picking a name from the
+                                 datalist commits the hidden id and appends a new
+                                 row to #edit-compilers-rows. -->
+                            <div class="row g-2 align-items-end">
+                                <div class="col-md-8">
+                                    <label class="form-label small" for="edit-compiler-add-search">Add a compiler</label>
+                                    <input type="text"
+                                           class="form-control form-control-sm"
+                                           id="edit-compiler-add-search"
+                                           list="edit-compiler-datalist"
+                                           placeholder="Type a name from Credit People"
+                                           autocomplete="off">
+                                    <datalist id="edit-compiler-datalist"></datalist>
+                                </div>
+                                <div class="col-md-4">
+                                    <button type="button"
+                                            class="btn btn-sm btn-outline-info w-100"
+                                            id="edit-compiler-add-btn">
+                                        <i class="bi bi-plus-lg me-1" aria-hidden="true"></i>Add
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="form-text small text-muted mt-1">
+                                Person must already exist in Credit People. Use
+                                <a href="/manage/credit-people">Manage people</a>
+                                to register a new compiler before adding them here.
+                            </div>
+                        </div>
+                        <?php endif; ?>
+
                         <!-- #672 — collapsible "Online links" + "Authority identifiers".
                              Closed by default so the modal still opens at the same height
                              curators are used to. <details> is native HTML5; no JS needed
@@ -2850,6 +3103,32 @@ $csrf = csrfToken();
                     const cb = group.querySelector('input[value="' + Number(sid) + '"]');
                     if (cb) cb.checked = true;
                 });
+            })();
+
+            /* #831 — populate the Compilers list from row.compilers.
+               The container is only present when $hasCompilersSchema is
+               true (so a pre-migration deployment skips this entire
+               block silently). Each item gets a row with hidden
+               person-id, visible name+slug, optional note, drag handle
+               and remove button. The row builder is shared by the
+               typeahead-add handler below. */
+            (function () {
+                const container = document.getElementById('edit-compilers-rows');
+                if (!container) return;
+                container.innerHTML = '';
+                const compilers = Array.isArray(row.compilers) ? row.compilers : [];
+                compilers.forEach(c => {
+                    container.appendChild(window._iHymnsBuildCompilerRow({
+                        personId:   c.person_id || 0,
+                        personName: c.person_name || '',
+                        personSlug: c.person_slug || '',
+                        note:       c.note || '',
+                    }));
+                });
+                /* Clear the add-search field too so reopening the modal
+                   doesn't leave a stale half-typed name behind. */
+                const addInput = document.getElementById('edit-compiler-add-search');
+                if (addInput) addInput.value = '';
             })();
 
             /* Stash the current row's abbreviation on the modal for the
@@ -3283,6 +3562,149 @@ $csrf = csrfToken();
                 dl.innerHTML = '';
                 txt.focus();
             });
+        }
+    })();
+    </script>
+
+    <!-- Compilers picker (#831). Reuses the parent-typeahead's pattern
+         (debounced fetch → datalist) but instead of a single binding
+         it appends one row per pick to #edit-compilers-rows. Each row
+         carries hidden compiler_person_ids[] / compiler_notes[] inputs
+         plus a per-row note input + remove button. SortOrder is
+         derived from DOM index on save (the POST handler treats array
+         index as the order). -->
+    <script>
+    (function () {
+        const addInput = document.getElementById('edit-compiler-add-search');
+        const addBtn   = document.getElementById('edit-compiler-add-btn');
+        const dl       = document.getElementById('edit-compiler-datalist');
+        const rowsEl   = document.getElementById('edit-compilers-rows');
+        if (!addInput || !rowsEl) return;  /* schema not live → block absent */
+
+        /* Live-fetch suggestions as the curator types. Map of
+           visible label → person id captured per fetch so the
+           "Add" button can resolve the typed value. */
+        let labelToId = new Map();
+        let inflight  = null;
+        let debounce  = null;
+
+        const lookup = (query) => {
+            if (inflight) inflight.abort();
+            const ac = new AbortController();
+            inflight = ac;
+            const url = '/manage/songbooks?action=compiler_search'
+                      + '&q=' + encodeURIComponent(query)
+                      + '&limit=20';
+            fetch(url, { credentials: 'same-origin', signal: ac.signal })
+                .then(r => r.ok ? r.json() : { suggestions: [] })
+                .then(data => {
+                    const list = Array.isArray(data.suggestions) ? data.suggestions : [];
+                    labelToId = new Map();
+                    dl.innerHTML = list.map(s => {
+                        const n = (s.name || '').replace(/"/g, '&quot;');
+                        labelToId.set(n, { id: s.id, slug: s.slug || '' });
+                        return '<option value="' + n + '"></option>';
+                    }).join('');
+                })
+                .catch(err => { if (err.name !== 'AbortError') { /* silent */ } });
+        };
+
+        addInput.addEventListener('input', () => {
+            const v = addInput.value.trim();
+            if (v === '') { dl.innerHTML = ''; return; }
+            clearTimeout(debounce);
+            debounce = setTimeout(() => lookup(v), 200);
+        });
+        addInput.addEventListener('focus', () => lookup(addInput.value.trim()));
+
+        /* Add button — commits the currently-typed name (must be an
+           exact match against one of the fetched suggestions; we never
+           save a free-text id-less compiler since the FK requires a
+           real tblCreditPeople row). */
+        const commitAdd = () => {
+            const v = addInput.value.trim();
+            if (v === '') return;
+            const hit = labelToId.get(v);
+            if (!hit) {
+                /* Soft warn — don't trap the curator. They can either
+                   pick from the dropdown or visit Manage People to
+                   register the name first. */
+                addInput.classList.add('is-invalid');
+                setTimeout(() => addInput.classList.remove('is-invalid'), 1500);
+                return;
+            }
+            /* Skip if already added — UNIQUE (SongbookId, CreditPersonId)
+               on the table would catch it but we may as well be friendly. */
+            const existing = rowsEl.querySelector('input[name="compiler_person_ids[]"][value="' + Number(hit.id) + '"]');
+            if (existing) {
+                addInput.value = '';
+                return;
+            }
+            rowsEl.appendChild(window._iHymnsBuildCompilerRow({
+                personId:   hit.id,
+                personName: v,
+                personSlug: hit.slug,
+                note:       '',
+            }));
+            addInput.value = '';
+            dl.innerHTML = '';
+        };
+        if (addBtn) addBtn.addEventListener('click', commitAdd);
+        /* Enter inside the input also commits (matches the shape of the
+           tag chip-list in the Song Editor). Suppress the form submit
+           that Enter would otherwise trigger on a modal form. */
+        addInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                commitAdd();
+            }
+        });
+
+        /* Row builder — exposed on window so openEditModal() above can
+           use it too without re-defining the markup. Kept inside this
+           IIFE's closure-free namespace by attaching to window. */
+        window._iHymnsBuildCompilerRow = function (data) {
+            const card = document.createElement('div');
+            card.className = 'card bg-dark border-secondary';
+            const pid = Number(data.personId) || 0;
+            const nm  = String(data.personName || '');
+            const sl  = String(data.personSlug || '');
+            const nt  = String(data.note || '');
+            const personLink = sl
+                ? '<a href="/people/' + encodeURIComponent(sl) + '" target="_blank" rel="noopener" class="text-info text-decoration-none">'
+                  + escapeHtml(nm) + ' <i class="bi bi-box-arrow-up-right small" aria-hidden="true"></i></a>'
+                : escapeHtml(nm);
+            card.innerHTML =
+                '<div class="card-body py-2">' +
+                  '<div class="d-flex align-items-center gap-2">' +
+                    '<i class="bi bi-grip-vertical text-muted" aria-hidden="true"></i>' +
+                    '<div class="flex-grow-1">' +
+                      '<div class="small fw-semibold">' + personLink + '</div>' +
+                      '<input type="hidden" name="compiler_person_ids[]" value="' + pid + '">' +
+                      '<input type="text" class="form-control form-control-sm mt-1" ' +
+                              'name="compiler_notes[]" placeholder="Optional note (e.g. \'5th edition\')" ' +
+                              'maxlength="255" value="' + escapeHtml(nt) + '">' +
+                    '</div>' +
+                    '<button type="button" class="btn btn-sm btn-outline-danger" ' +
+                            'data-action="remove-compiler" title="Remove this compiler">' +
+                      '<i class="bi bi-x-lg"></i>' +
+                    '</button>' +
+                  '</div>' +
+                '</div>';
+            card.querySelector('[data-action=remove-compiler]')
+                .addEventListener('click', () => card.remove());
+            return card;
+        };
+
+        /* Tiny shared escapeHtml — local copy to avoid pulling in a
+           module dependency for this one inline script. */
+        function escapeHtml(s) {
+            return String(s)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
         }
     })();
     </script>

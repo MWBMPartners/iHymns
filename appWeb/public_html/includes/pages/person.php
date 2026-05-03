@@ -128,6 +128,37 @@ foreach ($roleTables as $roleKey => $cfg) {
 $totalSongs = count($matchedSongIds);
 
 /* ---------------------------------------------------------------------- */
+/* 2b. Compiled songbooks (#831). Schema-probed — pre-migration deploys   */
+/*     get an empty list so the section is hidden without a fatal.        */
+/* ---------------------------------------------------------------------- */
+$compiledBooks = [];
+if ($person && (int)$person['Id'] > 0) {
+    try {
+        $r = $db->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongbookCompilers' LIMIT 1"
+        );
+        $hasCompTable = $r && $r->fetch_row() !== null;
+        if ($r) $r->close();
+        if ($hasCompTable) {
+            $stmt = $db->prepare(
+                'SELECT b.Abbreviation AS abbr, b.Name AS name, b.SongCount AS songCount,
+                        c.Note         AS note,  c.SortOrder AS sortOrder
+                   FROM tblSongbookCompilers c
+                   JOIN tblSongbooks b ON b.Id = c.SongbookId
+                  WHERE c.CreditPersonId = ?
+                  ORDER BY b.Name ASC'
+            );
+            $pid = (int)$person['Id'];
+            $stmt->bind_param('i', $pid);
+            $stmt->execute();
+            $compiledBooks = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+        }
+    } catch (\Throwable $_e) { /* table missing — leave empty */ }
+}
+
+/* ---------------------------------------------------------------------- */
 /* 3. External links (when the registry row exists).                      */
 /* ---------------------------------------------------------------------- */
 $links = [];
@@ -276,6 +307,38 @@ foreach ($discography as $rk => $entry) {
                         </a>
                     <?php endforeach; ?>
                 </div>
+            </div>
+        </div>
+    <?php endif; ?>
+
+    <!-- Compiled songbooks (#831) — appears above the per-song
+         discography because compiling a hymnal is editorial credit
+         on the catalogue itself, not a per-song role. Hidden when
+         this person has compiled none. -->
+    <?php if (!empty($compiledBooks)): ?>
+        <div class="mb-4">
+            <h2 class="h6 mb-2 text-muted">
+                <i class="fa-solid fa-pen-nib me-1" aria-hidden="true"></i>
+                As Compiler / Editor
+                <small class="text-muted">(<?= count($compiledBooks) ?>)</small>
+            </h2>
+            <div class="list-group">
+                <?php foreach ($compiledBooks as $b): ?>
+                    <a href="/songbook/<?= htmlspecialchars($b['abbr']) ?>"
+                       class="list-group-item list-group-item-action d-flex align-items-center gap-2"
+                       data-navigate="songbook"
+                       data-songbook="<?= htmlspecialchars($b['abbr']) ?>">
+                        <span class="badge bg-body-secondary"><?= htmlspecialchars($b['abbr']) ?></span>
+                        <div class="flex-grow-1">
+                            <div><?= htmlspecialchars($b['name']) ?></div>
+                            <?php if (!empty($b['note'])): ?>
+                                <small class="text-muted"><?= htmlspecialchars($b['note']) ?></small>
+                            <?php endif; ?>
+                        </div>
+                        <small class="text-muted"><?= number_format((int)$b['songCount']) ?> songs</small>
+                        <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>
+                    </a>
+                <?php endforeach; ?>
             </div>
         </div>
     <?php endif; ?>
