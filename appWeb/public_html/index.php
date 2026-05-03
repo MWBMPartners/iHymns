@@ -646,7 +646,12 @@ if (!empty($breadcrumbItems)) {
                         <i class="fa-solid fa-music fa-lg" aria-hidden="true"></i>
                         <span class="fw-bold"><?= htmlspecialchars($app["Application"]["Name"]) ?></span>
                         <?php if ($app["Application"]["Version"]["Development"]["Status"]): ?>
-                            <span class="badge bg-warning text-dark ms-1 small"><?= htmlspecialchars($app["Application"]["Version"]["Development"]["Status"]) ?></span>
+                            <!-- Environment badge (#812) — must remain visible at every
+                                 viewport so functional differences between Alpha/Beta and
+                                 production stay obvious. Uses the dedicated `env-badge`
+                                 class (admin.css / app.css) for stable padding instead of
+                                 Bootstrap's `small` modifier which collapsed awkwardly. -->
+                            <span class="badge env-badge bg-warning text-dark ms-1"><?= htmlspecialchars($app["Application"]["Version"]["Development"]["Status"]) ?></span>
                         <?php endif; ?>
                     </button>
                     <ul class="dropdown-menu" aria-labelledby="logo-nav-btn">
@@ -693,15 +698,11 @@ if (!empty($breadcrumbItems)) {
 
                 <!-- Right-side header actions -->
                 <div class="d-flex align-items-center gap-2">
-                    <!-- Search toggle button -->
-                    <button type="button"
-                            class="btn btn-header-icon"
-                            id="header-search-toggle"
-                            aria-label="Toggle search"
-                            aria-expanded="false"
-                            aria-controls="header-search-bar">
-                        <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
-                    </button>
+                    <!-- Search toggle button removed (#812) — the bottom
+                         footer-nav already exposes a "Search" entry that
+                         navigates to /search; one affordance is enough,
+                         and the saved real-estate matters most on mobile
+                         portrait. -->
 
                     <!-- Shuffle button — randomly pick a song -->
                     <button type="button"
@@ -860,35 +861,11 @@ if (!empty($breadcrumbItems)) {
             </div>
         </nav>
 
-        <!-- ============================================================
-             COLLAPSIBLE SEARCH BAR — Slides down below the header
-             when the search toggle is activated.
-             ============================================================ -->
-        <div id="header-search-bar" class="header-search-bar" aria-hidden="true">
-            <div class="container-fluid px-3 py-2">
-                <form id="search-form" role="search" aria-label="Search songs" autocomplete="off">
-                    <div class="input-group">
-                        <span class="input-group-text" aria-hidden="true">
-                            <i class="fa-solid fa-magnifying-glass"></i>
-                        </span>
-                        <input type="search"
-                               class="form-control"
-                               id="search-input"
-                               name="q"
-                               placeholder="Search songs, hymns, lyrics..."
-                               aria-label="Search songs"
-                               autocomplete="off"
-                               spellcheck="false">
-                        <button type="button"
-                                class="btn btn-outline-secondary d-none"
-                                id="search-clear-btn"
-                                aria-label="Clear search">
-                            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
-                        </button>
-                    </div>
-                </form>
-            </div>
-        </div>
+        <!-- Collapsible header search bar removed (#812) alongside its
+             toggle button. The dedicated /search page reached via the
+             footer-nav handles the use case. The autocomplete + Fuse
+             index logic in js/modules/search.js degrades gracefully
+             when neither element is present. -->
     </header>
 
     <!-- ================================================================

@@ -102,7 +102,7 @@ $_avatarUrlLarge = userAvatarUrl($_userEmail, 64, $_userAvatarSvc);
                         id="admin-brand-btn">
                     <i class="bi bi-music-note-beamed fs-5" aria-hidden="true"></i>
                     <span class="fw-bold">iHymns</span>
-                    <span class="badge bg-warning text-dark ms-1 small">Admin</span>
+                    <span class="badge env-badge bg-warning text-dark ms-1">Admin</span>
                 </button>
                 <ul class="dropdown-menu" aria-labelledby="admin-brand-btn">
                     <li><a class="dropdown-item" href="/manage/">

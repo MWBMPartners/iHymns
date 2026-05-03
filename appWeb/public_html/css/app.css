@@ -36,7 +36,7 @@
 :root {
     /* --- Layout dimensions --- */
     --header-height: 56px;
-    --search-bar-height: 56px;
+    /* --search-bar-height removed (#812) — header search bar gone. */
     --footer-nav-height: 60px;
     --footer-info-height: 28px;
     --footer-total-height: calc(var(--footer-nav-height) + var(--footer-info-height));
@@ -466,26 +466,30 @@ body {
     border-radius: 50%;
 }
 
-/* Channel badge ("Alpha" / "Beta") responsive sizing (#580).
-   At wide widths we keep the full word; at < md we shrink to a
-   single letter so the right-edge cluster has room for every icon
-   (search, shuffle, theme, notifications, account) on phones. The
-   single-letter form preserves the colour cue so QA still spots
-   the channel at a glance. */
-.app-header .navbar-brand .badge.bg-warning,
-.navbar-admin .navbar-brand .badge.bg-warning {
+/* Channel badge ("Alpha" / "Beta") — uniform pill at every viewport (#812).
+   The full environment name MUST stay readable on every screen because
+   functionality and capabilities differ between channels. The previous
+   rule shrank the badge to a single letter (font-size:0 + ::first-letter)
+   on < 576px which looked clipped and obscured the cue. Fixed pill,
+   compact padding, uppercase text — readable everywhere. */
+.app-header .navbar-brand .badge.env-badge,
+.navbar-admin .navbar-brand .badge.env-badge {
+    font-size: 0.65rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.22em 0.55em;
+    line-height: 1.05;
+    border-radius: 999px;
     transition: padding 0.15s ease;
 }
-@media (max-width: 575.98px) {
-    .app-header .navbar-brand .badge.bg-warning,
-    .navbar-admin .navbar-brand .badge.bg-warning {
-        font-size: 0;            /* hide the long word */
-        padding: 0.18em 0.4em;
-        line-height: 1;
-    }
-    .app-header .navbar-brand .badge.bg-warning::first-letter,
-    .navbar-admin .navbar-brand .badge.bg-warning::first-letter {
-        font-size: 0.65rem;      /* show only the first letter */
+@media (max-width: 359.98px) {
+    /* Ultra-narrow viewports (< 360px) — tighten padding a touch but
+       keep the full word visible. No more single-letter trick. */
+    .app-header .navbar-brand .badge.env-badge,
+    .navbar-admin .navbar-brand .badge.env-badge {
+        padding: 0.2em 0.45em;
+        font-size: 0.6rem;
     }
 }
 
@@ -498,21 +502,9 @@ body {
     transform: scale(0.92);
 }
 
-/* Collapsible search bar */
-.header-search-bar {
-    max-height: 0;
-    overflow: hidden;
-    transition: max-height var(--transition-slow), opacity var(--transition-normal);
-    opacity: 0;
-    background: var(--header-bg);
-    border-top: 1px solid var(--card-border);
-}
-
-.header-search-bar.open {
-    max-height: var(--search-bar-height);
-    opacity: 1;
-    overflow: visible;
-}
+/* Collapsible header search bar removed (#812) — the bottom-drawer
+   Search entry navigates straight to /search; no need for a sliding
+   header bar duplicating the affordance. */
 
 /* ---------------------------------------------------------------------------
    Main Content Area
@@ -529,14 +521,9 @@ body.banner-visible .main-content {
     padding-top: calc(var(--header-height) + var(--install-banner-height) + env(safe-area-inset-top, 0px) + 8px);
 }
 
-/* Adjust when search bar is open */
-body.search-open .main-content {
-    padding-top: calc(var(--header-height) + var(--search-bar-height) + 8px);
-}
-
-body.banner-visible.search-open .main-content {
-    padding-top: calc(var(--header-height) + var(--install-banner-height) + var(--search-bar-height) + env(safe-area-inset-top, 0px) + 8px);
-}
+/* `.search-open` body class no longer applied (#812) — header search
+   bar + toggle were removed alongside the duplicate bottom-drawer
+   Search entry. The padding-shift rules went with them. */
 
 /* ---------------------------------------------------------------------------
    PWA Standalone Mode — Safe Area Insets
@@ -559,9 +546,7 @@ body.banner-visible.search-open .main-content {
         padding-bottom: calc(var(--footer-total-height) + env(safe-area-inset-bottom, 0px) + 8px);
     }
 
-    body.search-open .main-content {
-        padding-top: calc(var(--header-height) + var(--search-bar-height) + env(safe-area-inset-top, 0px) + 8px);
-    }
+    /* `.search-open` body class no longer applied (#812). */
 
     /* Footer — extend background into the bottom safe area (home indicator) */
     .app-footer {
