@@ -76,7 +76,7 @@ $effective = effectiveEntitlements();
 $groups = [
     'Song data' => ['edit_songs', 'delete_songs', 'bulk_edit_songs', 'verify_songs'],
     'User management' => ['view_users', 'edit_users', 'change_user_roles', 'assign_global_admin', 'delete_users'],
-    'Database & operations' => ['view_admin_dashboard', 'view_analytics', 'run_db_install', 'run_db_migrate', 'run_db_backup', 'run_db_restore', 'drop_legacy_tables', 'manage_configuration'],
+    'Database & operations' => ['view_admin_dashboard', 'view_analytics', 'run_db_install', 'run_db_migrate', 'run_db_backup', 'run_db_restore', 'drop_legacy_tables', 'manage_configuration', 'manage_notifications'],
     'Content moderation' => ['review_song_requests'],
     'Content structure'  => ['manage_songbooks', 'manage_user_groups', 'manage_organisations', 'manage_credit_people', 'manage_languages', 'manage_tags'],
     'Channel access'     => ['access_alpha', 'access_beta'],
@@ -130,6 +130,7 @@ $ENTITLEMENT_LABELS = [
     'view_activity_log'         => ['View activity log',             'Open the audit-trail viewer (#535)'],
     'manage_entitlements'       => ['Manage entitlements',           'Edit this map itself — Global Admin only'],
     'manage_configuration'      => ['Manage system configuration',   'Email service, system flags — Global Admin only (#768)'],
+    'manage_notifications'      => ['Manage notifications',          'Compose & broadcast in-app notifications — Global Admin only (#813)'],
 ];
 
 $entLabel = static function (string $key) use ($ENTITLEMENT_LABELS): array {

@@ -174,6 +174,33 @@ body:has(.navbar-admin) {
     font-weight: 600;
 }
 
+/* Collapsible accordion group toggle (#819). Renders as an inline
+   button styled to match the old `admin-sidebar-group-label` so the
+   visual rhythm is preserved while adding click-to-toggle. The
+   chevron flips when the section opens. */
+.admin-sidebar-group-toggle,
+.admin-offcanvas-group-toggle {
+    letter-spacing: 0.04em;
+    text-decoration: none;
+    color: var(--text-secondary);
+}
+.admin-sidebar-group-toggle:hover,
+.admin-sidebar-group-toggle:focus,
+.admin-offcanvas-group-toggle:hover,
+.admin-offcanvas-group-toggle:focus {
+    color: var(--text-primary);
+    background-color: rgba(255, 255, 255, 0.03);
+    text-decoration: none;
+}
+.admin-sidebar-group-toggle .bi-chevron-down,
+.admin-offcanvas-group-toggle .bi-chevron-down {
+    transition: transform var(--transition-fast);
+}
+.admin-sidebar-group-toggle.collapsed .bi-chevron-down,
+.admin-offcanvas-group-toggle.collapsed .bi-chevron-down {
+    transform: rotate(-90deg);
+}
+
 .admin-sidebar-link {
     color: var(--text-secondary);
     text-decoration: none;

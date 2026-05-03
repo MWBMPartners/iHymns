@@ -7,6 +7,15 @@ declare(strict_types=1);
  *
  * Copyright (c) 2026 iHymns. All rights reserved.
  *
+ * STATUS: DEPRECATED ON THE DASHBOARD (#818) — superseded by the
+ * SongCount Triggers migration (#793 / migrate-songcount-triggers.php),
+ * which runs the same recompute as part of its installation. Listing
+ * both on /manage/setup-database meant the bulk runner recomputed
+ * twice on every Apply-All; the standalone card was dropped while
+ * leaving this script on disk for emergency CLI manual runs (e.g. if
+ * someone hand-edits tblSongs and needs to refresh the cache outside
+ * the trigger / save_song write paths).
+ *
  * PURPOSE:
  * tblSongbooks.SongCount is a cached aggregate that the home + the
  * /songbooks tile-grid use to gate render — `if songCount > 0`.
@@ -25,8 +34,9 @@ declare(strict_types=1);
  *
  * USAGE:
  *   CLI: php appWeb/.sql/migrate-recompute-songbook-songcount.php
- *   Web: /manage/setup-database → "Recompute Songbook SongCount (#791)"
- *        (entry point requires global_admin)
+ *   Web: removed from /manage/setup-database (#818) — run the
+ *        SongCount Triggers card to get the same recompute plus
+ *        the trigger installation.
  */
 
 if (PHP_SAPI === 'cli') {

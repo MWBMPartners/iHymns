@@ -102,7 +102,7 @@ $_avatarUrlLarge = userAvatarUrl($_userEmail, 64, $_userAvatarSvc);
                         id="admin-brand-btn">
                     <i class="bi bi-music-note-beamed fs-5" aria-hidden="true"></i>
                     <span class="fw-bold">iHymns</span>
-                    <span class="badge bg-warning text-dark ms-1 small">Admin</span>
+                    <span class="badge env-badge bg-warning text-dark ms-1">Admin</span>
                 </button>
                 <ul class="dropdown-menu" aria-labelledby="admin-brand-btn">
                     <li><a class="dropdown-item" href="/manage/">
@@ -259,15 +259,71 @@ $_avatarUrlLarge = userAvatarUrl($_userEmail, 64, $_userAvatarSvc);
                 aria-label="Close"></button>
     </div>
     <div class="offcanvas-body p-0">
-        <nav class="list-group list-group-flush" aria-label="Admin sections">
-            <?php foreach ($_visibleAdminLinks as $l): ?>
-                <?php [$id, $href, $icon, $label, $entitlement] = $l; ?>
-                <a href="<?= htmlspecialchars($href) ?>"
-                   class="list-group-item list-group-item-action d-flex align-items-center gap-2<?= $_activePage === $id ? ' active' : '' ?>"
-                   <?= $_activePage === $id ? 'aria-current="page"' : '' ?>>
-                    <i class="bi <?= htmlspecialchars($icon) ?>" aria-hidden="true"></i>
-                    <span><?= htmlspecialchars($label) ?><?= entitlementLockChipHtml($entitlement) ?></span>
-                </a>
+        <?php
+            /* Mirror the desktop sidebar's accordion structure (#819) so
+               mobile gets the same compact, collapsible groups. Same
+               localStorage keys, same active-group force-expand
+               behaviour — the JS in admin-sidebar.php scopes itself
+               via [data-admin-accordion]. */
+            $_offGrouped = [];
+            foreach ($_visibleAdminLinks as $l) {
+                $_offGrouped[$l[5] ?? ''][] = $l;
+            }
+            $_offActiveGroup = '';
+            foreach ($_visibleAdminLinks as $l) {
+                if (($l[0] ?? null) === $_activePage) {
+                    $_offActiveGroup = (string)($l[5] ?? '');
+                    break;
+                }
+            }
+            $_offSlug = static function (string $g): string {
+                $slug = strtolower(preg_replace('/[^A-Za-z0-9]+/', '-', $g));
+                return 'admin-off-grp-' . trim($slug, '-');
+            };
+        ?>
+        <nav class="admin-offcanvas-nav" aria-label="Admin sections"
+             data-admin-accordion="offcanvas">
+            <?php foreach ($_offGrouped as $_grp => $_links): ?>
+                <?php if ($_grp === ''): ?>
+                    <?php foreach ($_links as $l): ?>
+                        <?php [$id, $href, $icon, $label, $entitlement] = $l; ?>
+                        <a href="<?= htmlspecialchars($href) ?>"
+                           class="list-group-item list-group-item-action d-flex align-items-center gap-2<?= $_activePage === $id ? ' active' : '' ?>"
+                           <?= $_activePage === $id ? 'aria-current="page"' : '' ?>>
+                            <i class="bi <?= htmlspecialchars($icon) ?>" aria-hidden="true"></i>
+                            <span><?= htmlspecialchars($label) ?><?= entitlementLockChipHtml($entitlement) ?></span>
+                        </a>
+                    <?php endforeach; ?>
+                    <?php continue; ?>
+                <?php endif; ?>
+                <?php
+                    $_isActiveOff = ($_grp === $_offActiveGroup);
+                    $_offId       = $_offSlug($_grp);
+                ?>
+                <div class="admin-offcanvas-group" data-group="<?= htmlspecialchars((string)$_grp) ?>">
+                    <button type="button"
+                            class="admin-offcanvas-group-toggle btn btn-link w-100 d-flex align-items-center justify-content-between text-uppercase small fw-semibold px-3 py-2<?= $_isActiveOff ? '' : ' collapsed' ?>"
+                            data-bs-toggle="collapse"
+                            data-bs-target="#<?= htmlspecialchars($_offId) ?>"
+                            aria-expanded="<?= $_isActiveOff ? 'true' : 'false' ?>"
+                            aria-controls="<?= htmlspecialchars($_offId) ?>">
+                        <span class="text-muted"><?= htmlspecialchars((string)$_grp) ?></span>
+                        <i class="bi bi-chevron-down ms-2 small" aria-hidden="true"></i>
+                    </button>
+                    <div id="<?= htmlspecialchars($_offId) ?>"
+                         class="offcanvas-group-body collapse<?= $_isActiveOff ? ' show' : '' ?>"
+                         <?= $_isActiveOff ? 'data-active-forced="1"' : '' ?>>
+                        <?php foreach ($_links as $l): ?>
+                            <?php [$id, $href, $icon, $label, $entitlement] = $l; ?>
+                            <a href="<?= htmlspecialchars($href) ?>"
+                               class="list-group-item list-group-item-action d-flex align-items-center gap-2 ps-4<?= $_activePage === $id ? ' active' : '' ?>"
+                               <?= $_activePage === $id ? 'aria-current="page"' : '' ?>>
+                                <i class="bi <?= htmlspecialchars($icon) ?>" aria-hidden="true"></i>
+                                <span><?= htmlspecialchars($label) ?><?= entitlementLockChipHtml($entitlement) ?></span>
+                            </a>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
             <?php endforeach; ?>
         </nav>
     </div>
