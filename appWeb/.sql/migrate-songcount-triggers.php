@@ -84,8 +84,42 @@ _migSCTrig_out('SongCount triggers migration starting (#793)…');
 
 $db = getDbMysqli();
 if (!$db) {
-    _migSCTrig_out('ERROR: could not connect to database.');
-    exit(1);
+    /* Throw rather than exit so the bulk runner records this as a real
+       failure (and its admin chrome still renders). exit() in a child
+       mid-bulk truncates the page — see #817. */
+    throw new \RuntimeException('Could not connect to database.');
+}
+
+/* Detect whether a mysqli error message indicates the host has denied
+   trigger creation (typically: SUPER required, binary-logging strict
+   mode, or shared-host policy). Three signals cover the common shapes:
+     - "you do not have the SUPER privilege"
+     - "TRIGGER command denied to user …"
+     - explicit "privilege" / "binary logging" hints. */
+function _migSCTrig_isDenied(string $err): bool
+{
+    return stripos($err, 'super') !== false
+        || stripos($err, 'denied') !== false
+        || stripos($err, 'privilege') !== false
+        || stripos($err, 'binary logging') !== false;
+}
+
+/* PHP 8.1+ defaults mysqli_report to throw mysqli_sql_exception on
+   failure, so $db->query() never returns false on error — it throws.
+   The pre-existing `if (!$db->query(...))` branch was unreachable.
+   This wrapper restores the run-and-classify pattern by catching the
+   exception and surfacing the original error message + denied flag. */
+function _migSCTrig_runQuery(\mysqli $db, string $sql): array
+{
+    try {
+        $ok = $db->query($sql);
+        if ($ok === false) {
+            return ['ok' => false, 'denied' => _migSCTrig_isDenied($db->error), 'err' => $db->error];
+        }
+        return ['ok' => true, 'denied' => false, 'err' => ''];
+    } catch (\mysqli_sql_exception $e) {
+        return ['ok' => false, 'denied' => _migSCTrig_isDenied($e->getMessage()), 'err' => $e->getMessage()];
+    }
 }
 
 /* =========================================================================
@@ -97,8 +131,15 @@ $triggerNames = [
     'trg_songs_songcount_au',
 ];
 foreach ($triggerNames as $name) {
-    if (!$db->query("DROP TRIGGER IF EXISTS {$name}")) {
-        _migSCTrig_out("WARN: DROP TRIGGER IF EXISTS {$name} failed: " . $db->error);
+    $r = _migSCTrig_runQuery($db, "DROP TRIGGER IF EXISTS {$name}");
+    if (!$r['ok']) {
+        _migSCTrig_out("WARN: DROP TRIGGER IF EXISTS {$name} failed: {$r['err']}");
+        if ($r['denied']) {
+            /* If the host denies DROP TRIGGER it will also deny CREATE
+               TRIGGER. Skip straight to the recompute fallback so the
+               operator gets a clean run instead of one error per name. */
+            break;
+        }
     }
 }
 
@@ -140,30 +181,46 @@ $triggersSql = [
 ];
 
 $triggersCreated = 0;
-$triggersFailed  = false;
+$triggersDenied  = false;
 foreach ($triggersSql as $name => $sql) {
-    if ($db->query($sql)) {
+    $r = _migSCTrig_runQuery($db, $sql);
+    if ($r['ok']) {
         _migSCTrig_out("[add ] {$name}.");
         $triggersCreated++;
-    } else {
-        $triggersFailed = true;
-        $err = $db->error;
-        _migSCTrig_out("WARN: CREATE TRIGGER {$name} failed: {$err}");
+        continue;
+    }
+    _migSCTrig_out("WARN: CREATE TRIGGER {$name} failed: {$r['err']}");
+    if ($r['denied']) {
         /* Most-common failure on shared hosts: SUPER privilege required
            pre-MySQL-8.0, or trigger creation explicitly denied by the
            hosting policy. Surface a clear hint so the operator knows
            the application-side recompute from PR #792 is the
-           remaining safety net. */
-        if (stripos($err, 'super') !== false || stripos($err, 'denied') !== false || stripos($err, 'privilege') !== false) {
-            _migSCTrig_out('       Hint: this MySQL host disallows CREATE TRIGGER without SUPER. Save_song from #791/PR #792 still keeps the cache correct for editor saves; bulk imports continue to recompute via their existing per-import path.');
-            break;
-        }
+           remaining safety net, then exit clean — failing the migration
+           would block `Apply all` for no benefit. */
+        $triggersDenied = true;
+        _migSCTrig_out('       Hint: this MySQL host disallows CREATE TRIGGER (typically: SUPER privilege, or shared-host policy).');
+        _migSCTrig_out('       Save_song from #791/PR #792 still keeps the cache correct for editor saves; bulk imports recompute via their per-import path. The migration is not failing — the triggers are an optimisation, not a requirement.');
+        break;
     }
+    /* Non-denial failure (e.g. syntax error, server error). Re-throw so
+       the bulk runner records the failure and stops — this would be a
+       genuine bug in the migration, not a host policy. */
+    throw new \RuntimeException("CREATE TRIGGER {$name} failed: {$r['err']}");
 }
 
-if ($triggersCreated === 0) {
+if ($triggersCreated === 0 && !$triggersDenied) {
     _migSCTrig_out('ERROR: no triggers could be created. Cache will rely on application-side recompute (PR #792) only.');
-    exit(1);
+    /* Use return rather than exit(1) so the bulk runner's page chrome
+       still renders (an exit() in a child mid-bulk truncates the
+       admin layout — see #817). The bulk runner doesn't see this as
+       a failure; the operator sees the WARN lines above. */
+    return;
+}
+if ($triggersDenied) {
+    _migSCTrig_out('');
+    _migSCTrig_out('SongCount triggers skipped on this host — using application-side recompute (PR #792) as the cache safety net.');
+    /* Still run the initial recompute below so the cache is clean
+       regardless of whether triggers were installed. */
 }
 
 /* =========================================================================
