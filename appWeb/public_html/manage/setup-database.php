@@ -740,12 +740,19 @@ if ($action !== '') {
        sniff. (#817 round 2 — was the suspected root cause of the
        "raw HTML page" symptom.) */
     header('X-Content-Type-Options: nosniff');
+    /* Disable caching of the apply-all response so a curator never sees
+       a stale "raw HTML" snapshot from a CDN / browser cache after the
+       chrome-render fix lands. Each apply-all run is unique anyway. */
+    header('Cache-Control: no-store, no-cache, must-revalidate');
+    header('Pragma: no-cache');
 
     /* Drain any default output buffer so our manual flush() actually
        reaches the browser. PHP defaults to one ambient buffer; we
-       want output to stream as soon as we echo. */
+       want output to stream as soon as we echo. The first echo below
+       triggers PHP to send the headers we just queued. */
     while (ob_get_level() > 0) {
-        @ob_end_flush();
+        @ob_end_clean();   /* discard any buffered content from before
+                              the action block, to be safe */
     }
     @ob_implicit_flush(true);
 
@@ -758,6 +765,8 @@ if ($action !== '') {
        runs. */
     ?>
 <!DOCTYPE html>
+<!-- IHYMNS_APPLY_ALL_CHROME_v3 — if you can see this comment in View Source,
+     the chrome-first render is reaching the browser. (#817 round 2) -->
 <html lang="en" data-bs-theme="dark">
 <head>
     <meta charset="UTF-8">
