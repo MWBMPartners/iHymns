@@ -2799,10 +2799,12 @@ $csrf = csrfToken();
 
             /* #782 phase B — pre-fill the parent picker. Hidden id +
                relationship come from the row payload; the visible search
-               input shows "ABBR — Name" so the curator sees what's bound
-               without re-typing. The boot script below scopes the
-               typeahead to the row currently being edited (exclude_id) so
-               descendants of this row never appear as candidates. */
+               input shows "Name (ABBR)" so the curator sees what's bound
+               in the same shape used elsewhere on the site (canonical
+               full-name-then-abbr pattern). The boot script below scopes
+               the typeahead to the row currently being edited
+               (exclude_id) so descendants of this row never appear as
+               candidates. */
             (function () {
                 const idInput  = document.getElementById('edit-parent-id');
                 const txtInput = document.getElementById('edit-parent-search');
@@ -2811,7 +2813,7 @@ $csrf = csrfToken();
                 if (txtInput) {
                     const a = (row.parent_abbreviation || '').toString();
                     const n = (row.parent_name        || '').toString();
-                    txtInput.value = a ? (n ? (a + ' — ' + n) : a) : '';
+                    txtInput.value = n ? (a ? (n + ' (' + a + ')') : n) : a;
                 }
                 if (relSel)   relSel.value   = row.parent_relationship || '';
                 /* Stash the row id so the typeahead can pass exclude_id
@@ -3220,13 +3222,17 @@ $csrf = csrfToken();
                 .then(data => {
                     const list = Array.isArray(data.suggestions) ? data.suggestions : [];
                     labelToId = new Map();
+                    /* Format suggestions as "Full Name (ABBR)" — same shape used
+                       elsewhere on the site for songbook references. (was the
+                       reverse "ABBR — Full Name" which the user reported as
+                       inconsistent with the rest of the UI.) */
                     dl.innerHTML = list.map(s => {
                         const a   = (s.abbreviation || '').replace(/"/g, '&quot;');
                         const n   = (s.name         || '').replace(/"/g, '&quot;');
                         const cc  = (typeof s.childCount === 'number') ? s.childCount : 0;
-                        const lbl = a + (n ? ' — ' + n : '');
+                        const lbl = n ? (a ? (n + ' (' + a + ')') : n) : a;
                         labelToId.set(lbl, String(s.id));
-                        const tail = cc > 0 ? ' (' + cc + ' child' + (cc === 1 ? '' : 'ren') + ')' : '';
+                        const tail = cc > 0 ? ' — ' + cc + ' child' + (cc === 1 ? '' : 'ren') : '';
                         return '<option value="' + lbl + '" label="' + lbl + tail + '"></option>';
                     }).join('');
                 })
