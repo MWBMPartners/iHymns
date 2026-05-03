@@ -1012,6 +1012,47 @@ $currentUser = getCurrentUser();
                             </div>
                         </div>
 
+                        <!-- Cross-book counterparts (#807) — same hymn in different songbooks.
+                             Distinct from Translations: counterparts are typically the same
+                             language, different songbook, unrelated number — e.g. Amazing Grace
+                             as MP-031 and CH-376 and SDAH-108. -->
+                        <div class="mb-4">
+                            <label class="form-label">
+                                <i class="bi bi-link-45deg me-1"></i>Cross-book counterparts
+                            </label>
+                            <div class="form-text mb-2" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                                Link this song to its appearances in other songbooks (same hymn,
+                                different number). Use Translations for other-language versions.
+                            </div>
+
+                            <!-- Dynamic list of counterpart rows, rendered by editor.js. -->
+                            <div id="song-links-container">
+                                <span class="text-muted small">Save the song first, then add counterparts.</span>
+                            </div>
+
+                            <!-- Add Counterpart form -->
+                            <div class="input-group input-group-sm mt-2">
+                                <input type="text" class="form-control" id="add-song-link-songid"
+                                       placeholder="Target Song ID (e.g. CH-0376)" list="song-link-song-list">
+                                <datalist id="song-link-song-list"></datalist>
+                                <button type="button" class="btn btn-outline-primary" id="add-song-link-btn">
+                                    <i class="bi bi-plus-lg me-1"></i>Link
+                                </button>
+                            </div>
+
+                            <!-- Suggested counterparts (#808) — top similar-titled candidates.
+                                 Hidden until at least one suggestion exists for the open song. -->
+                            <div id="song-link-suggestions" class="mt-3" style="display:none;">
+                                <div class="form-text mb-2" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                                    <i class="bi bi-lightbulb me-1"></i>
+                                    Suggested counterparts — similar titles in other songbooks:
+                                </div>
+                                <div id="song-link-suggestions-list">
+                                    <!-- Rendered by editor.js -->
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- Copyright Text — free-text copyright notice -->
                         <div class="mb-3">
                             <label for="edit-copyright" class="form-label">
