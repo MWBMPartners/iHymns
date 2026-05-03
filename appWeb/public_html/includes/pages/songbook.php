@@ -92,6 +92,23 @@ if ($book === null) {
                     <?php endforeach; ?>
                 </p>
             <?php endif; ?>
+            <?php
+                /* #832 — "Also known as …" line. Hidden when this
+                   songbook has no alt names (or pre-migration). */
+                $altNames = $book['alternativeNames'] ?? [];
+                if (!empty($altNames)):
+            ?>
+                <p class="text-muted small mb-0 mt-1">
+                    <span class="me-1">Also known as:</span>
+                    <?php foreach ($altNames as $i => $a): ?>
+                        <?php if ($i > 0): ?>, <?php endif; ?>
+                        <em><?= htmlspecialchars($a['title']) ?></em>
+                        <?php if (!empty($a['note'])): ?>
+                            <span class="text-muted">(<?= htmlspecialchars($a['note']) ?>)</span>
+                        <?php endif; ?>
+                    <?php endforeach; ?>
+                </p>
+            <?php endif; ?>
         </div>
         <div class="d-flex gap-2">
             <!-- Number pad search for this songbook -->

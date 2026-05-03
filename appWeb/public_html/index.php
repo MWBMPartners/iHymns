@@ -245,6 +245,20 @@ try {
                 'name'     => $ogSong['title'],
                 'inLanguage' => $locale,
             ];
+            /* #832 — alternateName for SEO. Search engines pick this up
+               so a query for the original title / common misspelling /
+               vernacular name still surfaces this song. Empty array on
+               pre-migration deployments — key omitted in that case so
+               the JSON-LD stays clean. */
+            if (!empty($ogSong['alternativeTitles'])) {
+                $musicComposition['alternateName'] = array_values(array_map(
+                    static fn(array $a): string => (string)($a['title'] ?? ''),
+                    array_filter(
+                        $ogSong['alternativeTitles'],
+                        static fn($a) => is_array($a) && !empty($a['title'])
+                    )
+                ));
+            }
             if (!empty($ogSong['composers'])) {
                 $musicComposition['composer'] = array_map(
                     fn($name) => ['@type' => 'Person', 'name' => $name],
@@ -283,6 +297,21 @@ try {
             $ogTitle = htmlspecialchars($ogBook['name']) . ' — ' . $app["Application"]["Name"];
             $ogDescription = 'Browse ' . number_format($ogBook['songCount'])
                            . ' songs from ' . $ogBook['name'] . ' on ' . $app["Application"]["Name"];
+            /* #832 — append "Also known as: …" to social previews when
+               alt names are present, so a Twitter/Facebook share card
+               surfaces vernacular names too. Capped at 3 alts to keep
+               the OG description from blowing past the ~200 char
+               threshold platforms truncate at. */
+            if (!empty($ogBook['alternativeNames'])) {
+                $altSlice = array_slice($ogBook['alternativeNames'], 0, 3);
+                $altText  = implode(', ', array_map(
+                    static fn(array $a): string => (string)($a['title'] ?? ''),
+                    $altSlice
+                ));
+                if ($altText !== '') {
+                    $ogDescription .= '. Also known as: ' . $altText;
+                }
+            }
             $ogImage = getCanonicalUrl('/og-image?songbook=' . urlencode($matches[1]));
             $ogImageAlt = $ogBook['name'] . ' songbook on ' . $app["Application"]["Name"];
 
@@ -292,6 +321,24 @@ try {
                 ['name' => 'Songbooks', 'url' => getCanonicalUrl('/songbooks')],
                 ['name' => $ogBook['name'], 'url' => $canonicalUrl],
             ];
+
+            /* JSON-LD: MusicAlbum (#832 — alternateName for SEO). */
+            $musicAlbum = [
+                '@context' => 'https://schema.org',
+                '@type'    => 'MusicAlbum',
+                'name'     => $ogBook['name'],
+                'numTracks' => (int)($ogBook['songCount'] ?? 0),
+            ];
+            if (!empty($ogBook['alternativeNames'])) {
+                $musicAlbum['alternateName'] = array_values(array_map(
+                    static fn(array $a): string => (string)($a['title'] ?? ''),
+                    array_filter(
+                        $ogBook['alternativeNames'],
+                        static fn($a) => is_array($a) && !empty($a['title'])
+                    )
+                ));
+            }
+            $jsonLdScripts[] = $musicAlbum;
         }
     }
     /* Shared setlist page: /setlist/shared/abc123 */

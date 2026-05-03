@@ -297,6 +297,29 @@ try {
                 <?php endif; ?>
                 <div class="flex-grow-1">
                     <h1 class="h4 mb-1"><?= htmlspecialchars($songTitle) ?><?php if (!empty($song['verified'])): ?><span class="verified-badge" title="Verified lyrics" aria-label="Verified lyrics"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.15"/><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M7.5 12.5L10.5 15.5L16.5 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><?php endif; ?></h1>
+                    <?php
+                        /* #832 — "Also known as …" line. Hidden when this
+                           song has no alt titles (or pre-migration). Per-row
+                           Note appears in muted parentheses; per-row Language
+                           tag appears as a small badge (e.g. "es") so a user
+                           can see which alt belongs to which language variant. */
+                        $altTitles = $song['alternativeTitles'] ?? [];
+                        if (!empty($altTitles)):
+                    ?>
+                        <p class="text-muted small mb-1">
+                            <span class="me-1">Also known as:</span>
+                            <?php foreach ($altTitles as $i => $a): ?>
+                                <?php if ($i > 0): ?>, <?php endif; ?>
+                                <em><?= htmlspecialchars($a['title']) ?></em>
+                                <?php if (!empty($a['language'])): ?>
+                                    <span class="badge bg-secondary text-light small"><?= htmlspecialchars($a['language']) ?></span>
+                                <?php endif; ?>
+                                <?php if (!empty($a['note'])): ?>
+                                    <span class="text-muted">(<?= htmlspecialchars($a['note']) ?>)</span>
+                                <?php endif; ?>
+                            <?php endforeach; ?>
+                        </p>
+                    <?php endif; ?>
                     <p class="text-muted mb-0">
                         <span class="badge bg-body-secondary"><?= htmlspecialchars($songbook) ?></span>
                         <?= htmlspecialchars($bookName) ?>
