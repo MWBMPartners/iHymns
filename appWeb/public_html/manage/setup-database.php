@@ -225,8 +225,11 @@ $friendlyTitles = [
     'multi-language-tables'            => 'Multi-language Tables (#778 phase A)',
     'parent-songbooks'                 => 'Parent Songbooks (#782 phase A)',
     'song-links'                       => 'Cross-book Song Links (#807 / #808)',
-    'recompute-songbook-songcount'     => 'Recompute Songbook SongCount (#791)',
     'songcount-triggers'               => 'SongCount Triggers (#793)',
+    /* `recompute-songbook-songcount` no longer exposed via the dashboard
+       (#818) — the SongCount Triggers migration above includes its own
+       initial recompute. The CLI script stays on disk for emergency
+       manual runs. */
 ];
 
 /* Per-migration card content (#816). Single source of truth for the
@@ -579,8 +582,12 @@ if ($action !== '') {
         'multi-language-tables'    => 'migrate-multi-language-tables.php',
         'parent-songbooks'         => 'migrate-parent-songbooks.php',
         'song-links'               => 'migrate-song-links.php',
-        'recompute-songbook-songcount' => 'migrate-recompute-songbook-songcount.php',
-        'songcount-triggers'           => 'migrate-songcount-triggers.php',
+        /* recompute-songbook-songcount removed from the dashboard
+           manifest (#818) — the work is now part of the SongCount
+           Triggers migration's installation step. The script remains
+           on disk for emergency CLI manual runs:
+             php appWeb/.sql/migrate-recompute-songbook-songcount.php  */
+        'songcount-triggers'       => 'migrate-songcount-triggers.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -626,7 +633,12 @@ if ($action !== '') {
         'multi-language-tables',
         'parent-songbooks',
         'song-links',
-        'recompute-songbook-songcount',
+        /* `recompute-songbook-songcount` removed from the bulk run
+           (#818) — its work is now baked into the SongCount Triggers
+           migration's installation step (the trigger-creation script
+           runs an initial recompute regardless of whether triggers were
+           successfully installed). Listing it here too would just
+           recompute twice on every Apply-All run. */
         'songcount-triggers',
         /* When you add a new migrate-*.php under appWeb/.sql/, ALSO add
            its action key to:
