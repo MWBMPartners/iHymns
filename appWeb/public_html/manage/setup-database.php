@@ -178,6 +178,56 @@ if (isset($_GET['saved'])) {
 $action = $_GET['action'] ?? '';
 $actionOutput = '';
 $actionSuccess = false;
+
+/* User-friendly action titles for the status heading (#814). The
+   previous heading rendered `ucfirst($action)` which left the URL
+   slug visible (e.g. "Bulk-import-jobs Output"). This map mirrors
+   each card's title so the operator sees the same name on the
+   action page that they clicked on the dashboard. Add an entry
+   when a new action is registered in $scriptMap below. Falling
+   back to `ucfirst()` keeps unknown actions readable instead of
+   PHP-warning. */
+$friendlyTitles = [
+    /* Top-level operations */
+    'install'                          => 'Install Tables',
+    'migrate'                          => 'Migrate Song Data',
+    'users'                            => 'Migrate Users & Setlists',
+    'cleanup'                          => 'Cleanup Expired Tokens',
+    'backup'                           => 'Backup Database',
+    'restore'                          => 'Restore from Backup',
+    'drop-legacy'                      => 'Drop Legacy Tables',
+    'apply-all-migrations'             => 'Apply All Pending Migrations',
+    /* Per-migration cards (label = card title minus the legacy
+       alphabetic prefix; #816 standardised this on the issue
+       number as the primary identifier). */
+    'account-sync'                     => 'Account Sync & Shared Setlists',
+    'credits'                          => 'Credit Fields (#497)',
+    'songbook-meta'                    => 'Songbook Metadata (#502)',
+    'user-features-catchup'            => 'User Features Catch-Up (#517)',
+    'activity-log-expand'              => 'Activity Log Expansion (#535)',
+    'credit-people'                    => 'Credit People Registry (#545)',
+    'credit-people-flags'              => 'Credit People Flags (#584, #585)',
+    'song-artists'                     => 'Songs Artist credit (#587)',
+    'credit-people-slug'               => 'Credit People Slug + public page (#588)',
+    'user-avatar-service'              => 'Per-user Avatar Service (#616)',
+    'organisation-licences'            => 'Multiple Licence Types per Organisation (#640)',
+    'songbook-affiliations'            => 'Songbook Affiliations Registry (#670)',
+    'songbook-bibliographic'           => 'Songbook Bibliographic Metadata (#672)',
+    'songbook-language'                => 'Songbook Language Column (#673)',
+    'ietf-bcp47-language'              => 'IETF BCP 47 Language Tagging (#681)',
+    'bulk-import-jobs'                 => 'Bulk Import Jobs Tracking (#676)',
+    'backfill-legacy-songbook-languages' => 'Backfill Legacy Songbook Languages (#735)',
+    'user-preferred-languages'         => 'User Preferred Languages Column (#736)',
+    'iana-language-subtag-registry'    => 'IETF BCP 47 Reference Data (#738)',
+    'cldr-native-names'                => 'CLDR Native Names Overlay',
+    'tag-titlecase'                    => 'Tag Title-Case Backfill (#762)',
+    'tblsongs-number-nullable'         => 'tblSongs.Number Nullable (#783)',
+    'multi-language-tables'            => 'Multi-language Tables (#778 phase A)',
+    'parent-songbooks'                 => 'Parent Songbooks (#782 phase A)',
+    'song-links'                       => 'Cross-book Song Links (#807 / #808)',
+    'recompute-songbook-songcount'     => 'Recompute Songbook SongCount (#791)',
+    'songcount-triggers'               => 'SongCount Triggers (#793)',
+];
 /* Captured during bulk-run so the failure can be surfaced as a visible
    banner ABOVE the (potentially long, scrollable) output panel. (#720) */
 $bulkFirstFailStep    = null;
@@ -590,7 +640,14 @@ if ($hasCredentials && defined('DB_HOST')) {
              ============================================================ -->
         <p><a href="?" class="btn btn-outline-secondary btn-sm">&larr; Back to Dashboard</a></p>
         <h4 class="mb-2">
-            <?= htmlspecialchars(ucfirst($action)) ?> Output
+            <?php
+                /* User-friendly heading (#814) — fall back to ucfirst()
+                   only when an action key has no entry in the map (a
+                   fresh migration whose card was added but whose entry
+                   wasn't registered yet — defensive, not expected). */
+                $headingTitle = $friendlyTitles[$action] ?? ucfirst($action);
+            ?>
+            <?= htmlspecialchars($headingTitle) ?> &mdash; Output
             <?php if ($actionSuccess): ?>
                 <span class="badge bg-success ms-2">Complete</span>
             <?php else: ?>
