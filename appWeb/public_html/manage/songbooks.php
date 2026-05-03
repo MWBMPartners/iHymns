@@ -502,6 +502,27 @@ $validateAbbr   = fn(string $abbr): ?string => validateSongbookAbbr($abbr);
 $validateColour = fn(string $c): ?string    => validateSongbookColour($c);
 $validateBcp47  = fn(string $tag): ?string  => validateSongbookBcp47($tag);
 
+/* Probe for the series schema BEFORE the POST handler so the
+   series-membership reconciliation block inside it can gate on
+   $hasSeriesSchema. Without this hoist the variable was first
+   defined ~1000 lines down (in the dashboard render section)
+   AFTER the POST handler had already returned, so every save
+   silently skipped its series block. The data-fetch (allSeries +
+   sbSeriesMap) stays down with the render where it's actually
+   consumed. */
+$hasSeriesSchema = false;
+try {
+    $probeSeries = $db->prepare(
+        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'tblSongbookSeries'
+          LIMIT 1"
+    );
+    $probeSeries->execute();
+    $hasSeriesSchema = $probeSeries->get_result()->fetch_row() !== null;
+    $probeSeries->close();
+} catch (\Throwable $_e) { /* probe failure → series UI stays hidden */ }
+
 /* ----- POST actions ----- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
@@ -1506,21 +1527,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
  *       Schema-conditional: if tblSongbookSeries hasn't been migrated
  *       yet the section is silently absent and $allSeries / $sbSeriesMap
  *       stay empty.
+ *
+ *       $hasSeriesSchema is probed earlier in the file (just before
+ *       the POST handler) so the membership-reconciliation block
+ *       inside the POST path can gate on it. Don't re-probe here.
  * ----- */
-$hasSeriesSchema = false;
 $allSeries       = [];
 $sbSeriesMap     = []; /* SongbookId => [SeriesId, ...] */
-try {
-    $probe = $db->prepare(
-        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-          WHERE TABLE_SCHEMA = DATABASE()
-            AND TABLE_NAME   = 'tblSongbookSeries'
-          LIMIT 1"
-    );
-    $probe->execute();
-    $hasSeriesSchema = $probe->get_result()->fetch_row() !== null;
-    $probe->close();
-} catch (\Throwable $_e) { /* probe failure → series UI stays hidden */ }
 if ($hasSeriesSchema) {
     try {
         $res = $db->query('SELECT Id, Name, Slug FROM tblSongbookSeries ORDER BY Name ASC');
