@@ -1,3 +1,8 @@
+## [unreleased] — alpha
+
+- feat(songs): **cross-book counterparts** (#807) — new `tblSongLinks` join table + editor sidebar section + public song-page "Also appears in" dropdown + `api.php?action=song_links` endpoint. Lets curators declare that two-or-more `tblSongs` rows in different songbooks are the same hymn (e.g. Amazing Grace as MP-031 / CH-376 / SDAH-108 / SoF-29 / JP-006). Distinct from `tblSongTranslations` (different language) and `tblSongbooks.ParentSongbookId` (translated / edition derivatives at songbook level).
+- feat(admin): **song link suggestions** (#808) — new `/manage/song-link-suggestions` page lists pre-computed similar-titled-song candidates with Link / Dismiss / Open-in-editor actions. Builder script at `tools/build-song-link-suggestions.php` computes pairwise title + first-line + author similarity, writing into `tblSongLinkSuggestions`. Inline 5-suggestion panel in the editor sidebar surfaces candidates for the open song.
+
 ## [0.10.x] — 2026-04-18 (alpha)
 
 - feat: **auth** — magic-link (email + 6-digit code) is now the primary sign-in path; cross-subdomain `HttpOnly` cookie + 30-day sliding expiry; HttpOnly cookie ITP-resistant persistence
