@@ -517,6 +517,81 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
+         * Cross-book counterparts for one song (#807)
+         * Returns every other tblSongs row that shares this song's
+         * tblSongLinks.GroupId — same hymn in a different songbook.
+         * Distinct from translations (different language) and from the
+         * songbook-level parent link (#782 phase D).
+         * Parameters: id (required) — canonical SongId, e.g. CP-0001
+         * ----------------------------------------------------------------- */
+        case 'song_links':
+            $songId = isset($_GET['id']) ? trim($_GET['id']) : '';
+            if ($songId === '') {
+                sendJson(['error' => 'Song ID is required.'], 400);
+                break;
+            }
+            try {
+                $db = getDbMysqli();
+
+                /* Probe for the table — deployments that haven't run the
+                   migration get a clean empty list rather than a 500. */
+                $probe = $db->query(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                      WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME   = 'tblSongLinks' LIMIT 1"
+                );
+                $hasTable = $probe && $probe->fetch_row() !== null;
+                if ($probe) $probe->close();
+                if (!$hasTable) {
+                    sendJson(['groupId' => 0, 'songs' => []]);
+                    break;
+                }
+
+                $stmt = $db->prepare(
+                    'SELECT GroupId FROM tblSongLinks WHERE SongId = ? LIMIT 1'
+                );
+                $stmt->bind_param('s', $songId);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                $groupId = $row ? (int)$row['GroupId'] : 0;
+
+                $songs = [];
+                if ($groupId > 0) {
+                    $stmt = $db->prepare(
+                        'SELECT s.SongId       AS id,
+                                s.Title        AS title,
+                                s.Number       AS number,
+                                s.SongbookAbbr AS songbook,
+                                sb.Name        AS songbookName,
+                                s.Language     AS language,
+                                l.Note         AS note,
+                                l.Verified     AS verified
+                           FROM tblSongLinks l
+                           JOIN tblSongs s      ON s.SongId = l.SongId
+                           JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+                          WHERE l.GroupId = ?
+                            AND l.SongId  <> ?
+                          ORDER BY s.SongbookAbbr ASC, s.Number ASC'
+                    );
+                    $stmt->bind_param('is', $groupId, $songId);
+                    $stmt->execute();
+                    $songs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                    $stmt->close();
+                    foreach ($songs as &$s) {
+                        $s['number']   = ($s['number'] === null) ? null : (int)$s['number'];
+                        $s['verified'] = (bool)$s['verified'];
+                    }
+                    unset($s);
+                }
+                sendJson(['groupId' => $groupId, 'songs' => $songs]);
+            } catch (\Throwable $e) {
+                error_log('[api] song_links failed: ' . $e->getMessage());
+                sendJson(['error' => 'Failed to load cross-book counterparts.'], 500);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
          * Get all songbooks (filtered by user's preferred languages, #736)
          * ----------------------------------------------------------------- */
         case 'songbooks':

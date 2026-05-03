@@ -184,6 +184,67 @@ foreach ($translations as &$_t) {
 }
 unset($_t);
 
+/* ===================================================================
+ * Cross-book counterparts (#807) — same hymn appearing in different
+ * songbooks at unrelated numbers.
+ *
+ * Distinct from the translations list above (different language)
+ * and from the songbook-level parent link (#782 phase D, which only
+ * fires when the parent songbook carries the same hymn number).
+ *
+ * Probes for tblSongLinks first so deployments that haven't run the
+ * migration silently skip the panel rather than 500ing.
+ * =================================================================== */
+$songLinks = [];
+try {
+    if (!isset($translationsDb)) {
+        require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+        $translationsDb = getDbMysqli();
+    }
+    $probe = $translationsDb->query(
+        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'tblSongLinks' LIMIT 1"
+    );
+    $hasLinksTable = $probe && $probe->fetch_row() !== null;
+    if ($probe) $probe->close();
+
+    if ($hasLinksTable) {
+        $sid = (string)($song['id'] ?? '');
+        $stmt = $translationsDb->prepare(
+            'SELECT s.SongId       AS song_id,
+                    s.Title        AS title,
+                    s.Number       AS number,
+                    s.SongbookAbbr AS songbook,
+                    sb.Name        AS songbook_name,
+                    s.Language     AS language
+               FROM tblSongLinks self
+               JOIN tblSongLinks other ON other.GroupId = self.GroupId
+                                     AND other.SongId <> self.SongId
+               JOIN tblSongs s         ON s.SongId = other.SongId
+               JOIN tblSongbooks sb    ON sb.Abbreviation = s.SongbookAbbr
+              WHERE self.SongId = ?
+              ORDER BY s.SongbookAbbr ASC, s.Number ASC'
+        );
+        if ($stmt !== false) {
+            $stmt->bind_param('s', $sid);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            while ($row = $res->fetch_assoc()) {
+                $row['number'] = ($row['number'] === null || $row['number'] === '' || (int)$row['number'] <= 0)
+                    ? null
+                    : (int)$row['number'];
+                $songLinks[] = $row;
+            }
+            $stmt->close();
+        }
+    }
+} catch (\Throwable $_e) {
+    /* Table missing or DB hiccup — hide the panel rather than block
+       the page render. The panel is decorative; the song still loads. */
+    $songLinks = [];
+}
+
 ?>
 
 <!-- ================================================================
@@ -404,6 +465,49 @@ unset($_t);
                                         <?php if (!empty($t['verified'])): ?>
                                             <i class="fa-solid fa-circle-check text-success ms-1 small"
                                                title="Verified translation" aria-hidden="true"></i>
+                                        <?php endif; ?>
+                                    </a>
+                                </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    </div>
+                </div>
+            <?php endif; ?>
+
+            <!-- ============================================================
+                 Cross-book counterparts (#807) — "Also appears in" dropdown.
+                 Shown when this song shares a tblSongLinks.GroupId with one
+                 or more other songs (same hymn, different songbook, often
+                 same language). Sits beside the translations dropdown so
+                 the two are visually parallel but semantically distinct.
+                 ============================================================ -->
+            <?php if (!empty($songLinks)): ?>
+                <div class="song-cross-book-links mb-3">
+                    <div class="dropdown">
+                        <button type="button"
+                                class="btn btn-sm btn-outline-secondary dropdown-toggle"
+                                data-bs-toggle="dropdown"
+                                aria-expanded="false"
+                                aria-label="Also appears in other songbooks">
+                            <i class="fa-solid fa-link me-1" aria-hidden="true"></i>
+                            Also appears in
+                            <?php if (count($songLinks) === 1): ?>
+                                <?= htmlspecialchars($songLinks[0]['songbook']) ?>
+                            <?php else: ?>
+                                <?= count($songLinks) ?> songbooks
+                            <?php endif; ?>
+                        </button>
+                        <ul class="dropdown-menu">
+                            <?php foreach ($songLinks as $sl): ?>
+                                <li>
+                                    <a class="dropdown-item"
+                                       href="/song/<?= htmlspecialchars($sl['song_id']) ?>"
+                                       data-navigate="song"
+                                       data-song-id="<?= htmlspecialchars($sl['song_id']) ?>">
+                                        <span class="badge bg-body-secondary me-2"><?= htmlspecialchars($sl['songbook']) ?></span>
+                                        <span class="fw-semibold"><?= htmlspecialchars($sl['songbook_name']) ?></span>
+                                        <?php if ($sl['number'] !== null): ?>
+                                            <small class="text-muted ms-1">— hymn #<?= (int)$sl['number'] ?></small>
                                         <?php endif; ?>
                                     </a>
                                 </li>

@@ -1419,6 +1419,78 @@ ALTER TABLE tblSongs MODIFY Number INT UNSIGNED NULL DEFAULT NULL;
 -- Zero out any existing Misc song numbers (historic placeholders).
 UPDATE tblSongs SET Number = NULL WHERE SongbookAbbr = 'Misc' AND Number IS NOT NULL;
 
+-- ----------------------------------------------------------------------------
+-- tblSongLinks (#807) — cross-book counterparts.
+-- All rows sharing a GroupId represent the same hymn in different songbooks
+-- (Amazing Grace as MP-031 / CH-376 / SDAH-108 / SoF-29 / JP-006). Distinct
+-- from tblSongTranslations (different-language same hymn) and from
+-- tblSongbooks.ParentSongbookId (which only handles translated / edition
+-- derivatives at the songbook level, requiring matching hymn numbers).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongLinks (
+    Id           INT UNSIGNED  AUTO_INCREMENT PRIMARY KEY,
+    GroupId      INT UNSIGNED  NOT NULL
+                 COMMENT 'All songs sharing a GroupId are the same hymn (cross-book counterparts).',
+    SongId       VARCHAR(20)   NOT NULL,
+    Note         VARCHAR(255)  NOT NULL DEFAULT ''
+                 COMMENT 'Optional curator-set annotation, e.g. "uses 1990 Wesley revision text"',
+    Verified     TINYINT(1)    NOT NULL DEFAULT 0,
+    CreatedBy    INT UNSIGNED  NULL DEFAULT NULL
+                 COMMENT 'tblUsers.Id of the curator who linked this row, if signed in',
+    CreatedAt    TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_song (SongId),
+    KEY idx_GroupId (GroupId),
+    CONSTRAINT fk_SongLinks_Song
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongLinkSuggestions (#808) — pre-computed pairwise similarity scores.
+-- Populated by tools/build-song-link-suggestions.php; consumed by the
+-- /manage/song-link-suggestions admin page. Pairs are stored canonically
+-- with SongIdA < SongIdB so each unordered pair has at most one row.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongLinkSuggestions (
+    Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    SongIdA         VARCHAR(20)  NOT NULL COMMENT 'Always lexicographically <= SongIdB',
+    SongIdB         VARCHAR(20)  NOT NULL,
+    Score           DECIMAL(4,3) NOT NULL COMMENT 'Composite similarity, 0.000-1.000',
+    TitleScore      DECIMAL(4,3) NOT NULL DEFAULT 0.000,
+    LyricsScore     DECIMAL(4,3) NOT NULL DEFAULT 0.000,
+    AuthorsScore    DECIMAL(4,3) NOT NULL DEFAULT 0.000,
+    ComputedAt      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_pair (SongIdA, SongIdB),
+    KEY idx_Score (Score),
+    KEY idx_SongA (SongIdA),
+    KEY idx_SongB (SongIdB),
+    CONSTRAINT fk_SongLinkSugg_A FOREIGN KEY (SongIdA)
+        REFERENCES tblSongs(SongId) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_SongLinkSugg_B FOREIGN KEY (SongIdB)
+        REFERENCES tblSongs(SongId) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongLinkSuggestionsDismissed (#808) — curator-rejected pairs.
+-- The build job consults this table and skips dismissed pairs so the
+-- suggestion list doesn't keep proposing pairs the curator has already
+-- said no to.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongLinkSuggestionsDismissed (
+    Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    SongIdA         VARCHAR(20)  NOT NULL COMMENT 'Always lexicographically <= SongIdB',
+    SongIdB         VARCHAR(20)  NOT NULL,
+    DismissedBy     INT UNSIGNED NULL DEFAULT NULL,
+    DismissedAt     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    Reason          VARCHAR(255) NOT NULL DEFAULT '',
+    UNIQUE KEY uk_pair (SongIdA, SongIdB),
+    KEY idx_SongA (SongIdA),
+    KEY idx_SongB (SongIdB)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
 -- Search-query log for analytics (#404). Captures every search so we can
 -- surface top queries + zero-result queries in the admin dashboard.
 CREATE TABLE IF NOT EXISTS tblSearchQueries (

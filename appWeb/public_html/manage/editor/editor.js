@@ -594,6 +594,13 @@ function selectSong(songId) {
     /* Render the translations (cross-song link) panel (#352). */
     renderTranslations(song);
 
+    /* Render cross-book counterparts (#807) and pull suggestions
+       for the open song (#808). Both are async — the panels show
+       a loading hint until their fetch resolves, and a switched
+       song mid-flight cancels via the currentSongId guard inside
+       each callback. */
+    renderSongLinks(song);
+
     /* Fetch + render this song's tags (#496). Async — the chip list
        shows "Loading…" until the fetch resolves; failures keep the
        list empty rather than blocking the whole editor. */
@@ -2209,6 +2216,366 @@ function initTranslationControls() {
     });
 }
 
+/* ============================================================================
+ * Cross-book counterparts (#807) — same hymn in different songbooks.
+ *
+ * Differs from the Translations panel in two ways:
+ *   1. Counterparts are typically same-language, different-songbook.
+ *   2. Persistence is server-side immediate (POST /api?action=add_song_link)
+ *      rather than batched into the song's save payload — the relationship
+ *      is independent of the song's other metadata, so deferring to save
+ *      would break the "linked songs appear on each other's page" promise
+ *      until the second song was also saved.
+ * ============================================================================ */
+
+/* Latest fetch result kept in-memory so render-only re-runs don't refetch. */
+var songLinksCache = { songId: null, links: [] };
+
+/**
+ * fetchSongLinks(songId, cb)
+ * --------------------------
+ * Reads the current cross-book counterparts for one song from
+ * /api?action=get_song_links and invokes cb({groupId, links}).
+ */
+function fetchSongLinks(songId, cb) {
+    fetch('api.php?action=get_song_links&id=' + encodeURIComponent(songId))
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            if (data && data.error) { cb({ groupId: 0, links: [] }); return; }
+            cb({
+                groupId: data.groupId || 0,
+                links:   Array.isArray(data.links) ? data.links : [],
+            });
+        })
+        .catch(function () { cb({ groupId: 0, links: [] }); });
+}
+
+/**
+ * renderSongLinks(song)
+ * ---------------------
+ * Populates #song-links-container with one row per cross-book counterpart.
+ * The dataset is loaded asynchronously; while the fetch is in flight the
+ * container shows a small loading message.
+ *
+ * @param {Object} song - The currently-open song.
+ */
+function renderSongLinks(song) {
+    var container = document.getElementById('song-links-container');
+    if (!container) return;
+
+    /* Songs that haven't been persisted yet (synthetic ID prefix
+       "song-") have no FK target in tblSongs, so the API would 404
+       any link attempt. Surface that explicitly rather than letting
+       the user click Link and watch it fail. */
+    var unsaved = (typeof song.id === 'string' && song.id.indexOf('song-') === 0);
+    if (unsaved) {
+        container.innerHTML = '';
+        var hint = document.createElement('span');
+        hint.className = 'text-muted small';
+        hint.textContent = 'Save the song first, then add counterparts.';
+        container.appendChild(hint);
+        var datalist0 = document.getElementById('song-link-song-list');
+        if (datalist0) datalist0.innerHTML = '';
+        var sugBox = document.getElementById('song-link-suggestions');
+        if (sugBox) sugBox.style.display = 'none';
+        return;
+    }
+
+    container.innerHTML = '';
+    var loading = document.createElement('span');
+    loading.className = 'text-muted small';
+    loading.textContent = 'Loading cross-book counterparts…';
+    container.appendChild(loading);
+
+    /* Populate the datalist eagerly — the user might start typing
+       before the fetch returns. */
+    var datalist = document.getElementById('song-link-song-list');
+    if (datalist) {
+        datalist.innerHTML = '';
+        songData.songs.forEach(function (s) {
+            if (s.id === song.id) return;
+            var opt = document.createElement('option');
+            opt.value = s.id;
+            opt.textContent = s.title + ' (' + (s.songbook || '?') + ')';
+            datalist.appendChild(opt);
+        });
+    }
+
+    fetchSongLinks(song.id, function (data) {
+        /* Guard against an out-of-order fetch: the user may have
+           switched songs while the network call was in flight. */
+        if (currentSongId !== song.id) return;
+
+        songLinksCache = { songId: song.id, links: data.links };
+        container.innerHTML = '';
+
+        if (!data.links.length) {
+            var empty = document.createElement('span');
+            empty.className = 'text-muted small';
+            empty.textContent = 'No cross-book counterparts linked yet.';
+            container.appendChild(empty);
+        } else {
+            data.links.forEach(function (ln) {
+                var row = document.createElement('div');
+                row.className = 'd-flex align-items-center gap-2 mb-1';
+
+                var badge = document.createElement('span');
+                badge.className = 'badge bg-secondary';
+                badge.textContent = ln.songbook || '?';
+
+                var info = document.createElement('span');
+                info.className = 'flex-grow-1 small';
+                var strong = document.createElement('strong');
+                strong.textContent = ln.songId;
+                info.appendChild(strong);
+                var suffix = ' — ' + (ln.title || '(unknown)');
+                if (ln.number !== null && ln.number !== undefined) {
+                    suffix += ' (#' + ln.number + ')';
+                }
+                info.appendChild(document.createTextNode(suffix));
+
+                var removeBtn = document.createElement('button');
+                removeBtn.type = 'button';
+                removeBtn.className = 'btn btn-sm btn-outline-danger';
+                removeBtn.title = 'Unlink this counterpart';
+                removeBtn.innerHTML = '<i class="bi bi-x-lg"></i>';
+                removeBtn.addEventListener('click', function () {
+                    removeSongLink(song.id, ln.songId);
+                });
+
+                row.appendChild(badge);
+                row.appendChild(info);
+                row.appendChild(removeBtn);
+                container.appendChild(row);
+            });
+        }
+
+        /* Suggestions panel refresh runs alongside the link list. */
+        renderSongLinkSuggestions(song);
+    });
+}
+
+/**
+ * addSongLinkClickHandler()
+ * -------------------------
+ * Wired to the "Link" button below the counterparts list. POSTs to
+ * /api?action=add_song_link, then re-renders both the list and the
+ * suggestions panel on success.
+ */
+function addSongLinkClickHandler() {
+    if (!currentSongId) {
+        showToast('Select a song first.', 'warning');
+        return;
+    }
+    var input = document.getElementById('add-song-link-songid');
+    var targetId = (input.value || '').trim();
+    if (!targetId) {
+        showToast('Enter a target Song ID.', 'warning');
+        return;
+    }
+    if (targetId === currentSongId) {
+        showToast('A song cannot be a counterpart of itself.', 'warning');
+        return;
+    }
+    var targetSong = songData.songs.find(function (s) { return s.id === targetId; });
+    if (!targetSong) {
+        showToast('Song "' + targetId + '" not found in the database.', 'danger');
+        return;
+    }
+
+    fetch('api.php?action=add_song_link', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ sourceSongId: currentSongId, targetSongId: targetId }),
+    })
+        .then(function (r) { return r.json().then(function (j) { return { status: r.status, body: j }; }); })
+        .then(function (resp) {
+            if (resp.status >= 400 || (resp.body && resp.body.error)) {
+                showToast(resp.body && resp.body.error
+                    ? resp.body.error
+                    : 'Failed to add counterpart link.', 'danger');
+                return;
+            }
+            input.value = '';
+            var song = songData.songs.find(function (s) { return s.id === currentSongId; });
+            if (song) renderSongLinks(song);
+            showToast('Cross-book counterpart linked.', 'success');
+        })
+        .catch(function () {
+            showToast('Network error while linking counterpart.', 'danger');
+        });
+}
+
+/**
+ * removeSongLink(currentId, targetSongId)
+ * ---------------------------------------
+ * Drops the link for `targetSongId` from the current group. The server
+ * also drops the remaining row if removing leaves a singleton group.
+ */
+function removeSongLink(currentId, targetSongId) {
+    fetch('api.php?action=remove_song_link', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ songId: targetSongId }),
+    })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            if (data && data.error) {
+                showToast(data.error, 'danger');
+                return;
+            }
+            var song = songData.songs.find(function (s) { return s.id === currentId; });
+            if (song) renderSongLinks(song);
+            showToast('Cross-book counterpart unlinked.', 'success');
+        })
+        .catch(function () {
+            showToast('Network error while unlinking counterpart.', 'danger');
+        });
+}
+
+/**
+ * renderSongLinkSuggestions(song)
+ * -------------------------------
+ * Populates #song-link-suggestions with up to 5 high-similarity pairs
+ * involving the open song. Hidden when no suggestions are available.
+ *
+ * Server-side endpoint also returns `tableMissing: true` when the
+ * suggestion table doesn't exist yet (migration not applied) — in
+ * that case we silently keep the panel hidden.
+ */
+function renderSongLinkSuggestions(song) {
+    var box   = document.getElementById('song-link-suggestions');
+    var list  = document.getElementById('song-link-suggestions-list');
+    if (!box || !list) return;
+
+    fetch('api.php?action=suggest_song_links&id=' + encodeURIComponent(song.id))
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+            if (currentSongId !== song.id) return;
+            var suggestions = (data && Array.isArray(data.suggestions)) ? data.suggestions : [];
+            if (!suggestions.length) {
+                box.style.display = 'none';
+                list.innerHTML = '';
+                return;
+            }
+            list.innerHTML = '';
+            suggestions.forEach(function (sg) {
+                var row = document.createElement('div');
+                row.className = 'd-flex align-items-center gap-2 mb-1 small';
+
+                var scoreBadge = document.createElement('span');
+                scoreBadge.className = 'badge bg-info-subtle text-info-emphasis';
+                scoreBadge.textContent = Math.round(sg.score * 100) + '%';
+                scoreBadge.title = 'Title score ' + Math.round(sg.titleScore * 100)
+                                 + '% · lyrics score ' + Math.round(sg.lyricsScore * 100) + '%';
+
+                var info = document.createElement('span');
+                info.className = 'flex-grow-1';
+                var idChip = document.createElement('strong');
+                idChip.textContent = sg.other.songId;
+                info.appendChild(idChip);
+                var label = ' — ' + (sg.other.title || '(untitled)');
+                if (sg.other.number !== null && sg.other.number !== undefined) {
+                    label += ' (' + (sg.other.songbook || '?') + ' #' + sg.other.number + ')';
+                } else if (sg.other.songbook) {
+                    label += ' (' + sg.other.songbook + ')';
+                }
+                info.appendChild(document.createTextNode(label));
+
+                var linkBtn = document.createElement('button');
+                linkBtn.type = 'button';
+                linkBtn.className = 'btn btn-sm btn-outline-success';
+                linkBtn.title = 'Link as the same hymn';
+                linkBtn.innerHTML = '<i class="bi bi-link-45deg"></i>';
+                linkBtn.addEventListener('click', function () {
+                    fetch('api.php?action=add_song_link', {
+                        method:  'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body:    JSON.stringify({
+                            sourceSongId: song.id,
+                            targetSongId: sg.other.songId,
+                        }),
+                    })
+                        .then(function (r) { return r.json().then(function (j) { return { status: r.status, body: j }; }); })
+                        .then(function (resp) {
+                            if (resp.status >= 400 || (resp.body && resp.body.error)) {
+                                showToast(resp.body && resp.body.error
+                                    ? resp.body.error
+                                    : 'Failed to link from suggestion.', 'danger');
+                                return;
+                            }
+                            showToast('Linked as same hymn.', 'success');
+                            renderSongLinks(song);
+                        })
+                        .catch(function () {
+                            showToast('Network error.', 'danger');
+                        });
+                });
+
+                var dismissBtn = document.createElement('button');
+                dismissBtn.type = 'button';
+                dismissBtn.className = 'btn btn-sm btn-outline-secondary';
+                dismissBtn.title = 'Dismiss — different hymns';
+                dismissBtn.innerHTML = '<i class="bi bi-x-lg"></i>';
+                dismissBtn.addEventListener('click', function () {
+                    fetch('api.php?action=dismiss_song_link_suggestion', {
+                        method:  'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body:    JSON.stringify({
+                            songIdA: song.id,
+                            songIdB: sg.other.songId,
+                        }),
+                    })
+                        .then(function (r) { return r.json(); })
+                        .then(function (data) {
+                            if (data && data.error) {
+                                showToast(data.error, 'danger');
+                                return;
+                            }
+                            showToast('Suggestion dismissed.', 'info');
+                            renderSongLinkSuggestions(song);
+                        })
+                        .catch(function () {
+                            showToast('Network error.', 'danger');
+                        });
+                });
+
+                row.appendChild(scoreBadge);
+                row.appendChild(info);
+                row.appendChild(linkBtn);
+                row.appendChild(dismissBtn);
+                list.appendChild(row);
+            });
+            box.style.display = '';
+        })
+        .catch(function () {
+            box.style.display = 'none';
+        });
+}
+
+/**
+ * initSongLinksControls()
+ * -----------------------
+ * Wires the "Link" button. Idempotent: safe to call from init().
+ */
+function initSongLinksControls() {
+    var addBtn = document.getElementById('add-song-link-btn');
+    if (!addBtn) return;
+    addBtn.addEventListener('click', addSongLinkClickHandler);
+
+    /* Enter on the input field also triggers Link — matches the
+       interaction model on the Translations input. */
+    var input = document.getElementById('add-song-link-songid');
+    if (input) {
+        input.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                addSongLinkClickHandler();
+            }
+        });
+    }
+}
+
 /**
  * createDynamicInputRow(value, onChange, onRemove)
  * ------------------------------------------------
@@ -3606,6 +3973,9 @@ function init() {
 
     /* Bind translation controls (#352). */
     initTranslationControls();
+
+    /* Bind cross-book counterparts controls (#807). */
+    initSongLinksControls();
 
     /* Structure tab is display:none until its Bootstrap tab is opened,
        so scrollHeight reads 0 on any component textarea fitted while

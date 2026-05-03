@@ -580,6 +580,452 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
+     * GET_SONG_LINKS — Cross-book counterparts for one song (#807)
+     *
+     * Returns every other tblSongs row that shares this song's
+     * tblSongLinks.GroupId — i.e. every counterpart appearance of
+     * the same hymn in a different songbook. Distinct from
+     * get_translations (different-language same hymn) and from the
+     * songbook-level parent link (#782 phase D).
+     * ----------------------------------------------------------------- */
+    case 'get_song_links':
+        $songId = isset($_GET['id']) ? trim($_GET['id']) : '';
+        if ($songId === '') {
+            http_response_code(400);
+            echo json_encode(['error' => 'Song ID is required.']);
+            break;
+        }
+        try {
+            $db = getDbMysqli();
+            /* Two-step: find this song's GroupId (if any), then list
+               every OTHER member of that group. Returning the GroupId
+               itself lets the editor UI distinguish "no group yet" from
+               "in a group but I'm the only member" — both render as an
+               empty list, but the second case shouldn't happen and is
+               worth surfacing if it does. */
+            $stmt = $db->prepare('SELECT GroupId FROM tblSongLinks WHERE SongId = ? LIMIT 1');
+            $stmt->bind_param('s', $songId);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            $groupId = $row ? (int)$row['GroupId'] : 0;
+
+            $links = [];
+            if ($groupId > 0) {
+                $stmt = $db->prepare(
+                    'SELECT l.Id          AS id,
+                            l.SongId      AS songId,
+                            l.Note        AS note,
+                            l.Verified    AS verified,
+                            s.Title       AS title,
+                            s.Number      AS number,
+                            s.SongbookAbbr AS songbook,
+                            sb.Name       AS songbookName,
+                            s.Language    AS language
+                       FROM tblSongLinks l
+                       JOIN tblSongs s      ON s.SongId = l.SongId
+                       JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+                      WHERE l.GroupId = ?
+                        AND l.SongId  <> ?
+                      ORDER BY s.SongbookAbbr ASC, s.Number ASC'
+                );
+                $stmt->bind_param('is', $groupId, $songId);
+                $stmt->execute();
+                $links = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+                foreach ($links as &$ln) {
+                    $ln['id']       = (int)$ln['id'];
+                    $ln['verified'] = (bool)$ln['verified'];
+                    $ln['number']   = ($ln['number'] === null) ? null : (int)$ln['number'];
+                }
+                unset($ln);
+            }
+            echo json_encode([
+                'groupId' => $groupId,
+                'links'   => $links,
+            ]);
+        } catch (\Throwable $e) {
+            error_log('[iHymns Editor] get_song_links failed: ' . $e->getMessage());
+            http_response_code(500);
+            echo json_encode(['error' => 'Failed to load song links.']);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * ADD_SONG_LINK — Link two songs as cross-book counterparts (#807)
+     *
+     * Body: { sourceSongId, targetSongId, note? }
+     *
+     * Behaviour:
+     *   - If neither song is in a group, mint a new GroupId and add
+     *     both rows under it.
+     *   - If exactly one song is in a group, add the other to it.
+     *   - If both songs are already in the SAME group, no-op.
+     *   - If the two songs are in DIFFERENT groups, refuse — curator
+     *     must explicitly merge or unlink first (prevents accidental
+     *     loss of a multi-member group).
+     * ----------------------------------------------------------------- */
+    case 'add_song_link':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        $body = json_decode(file_get_contents('php://input'), true);
+        $srcId = trim((string)($body['sourceSongId'] ?? ''));
+        $tgtId = trim((string)($body['targetSongId'] ?? ''));
+        $note  = trim((string)($body['note'] ?? ''));
+        if ($srcId === '' || $tgtId === '') {
+            http_response_code(400);
+            echo json_encode(['error' => 'sourceSongId and targetSongId are required.']);
+            break;
+        }
+        if ($srcId === $tgtId) {
+            http_response_code(400);
+            echo json_encode(['error' => 'A song cannot be linked to itself.']);
+            break;
+        }
+
+        try {
+            $db = getDbMysqli();
+
+            /* Validate both songs exist before we mutate anything —
+               cheaper than catching an FK violation after a partial
+               INSERT. */
+            $probe = $db->prepare(
+                'SELECT SongId FROM tblSongs WHERE SongId IN (?, ?)'
+            );
+            $probe->bind_param('ss', $srcId, $tgtId);
+            $probe->execute();
+            $found = [];
+            $res = $probe->get_result();
+            while ($r = $res->fetch_assoc()) $found[] = $r['SongId'];
+            $probe->close();
+            if (count($found) < 2) {
+                http_response_code(404);
+                echo json_encode(['error' => 'One or both songs were not found.']);
+                break;
+            }
+
+            /* Look up each side's existing group, if any. */
+            $lookup = $db->prepare(
+                'SELECT SongId, GroupId FROM tblSongLinks WHERE SongId IN (?, ?)'
+            );
+            $lookup->bind_param('ss', $srcId, $tgtId);
+            $lookup->execute();
+            $existing = [];
+            $res = $lookup->get_result();
+            while ($r = $res->fetch_assoc()) $existing[$r['SongId']] = (int)$r['GroupId'];
+            $lookup->close();
+
+            $srcGroup = $existing[$srcId] ?? 0;
+            $tgtGroup = $existing[$tgtId] ?? 0;
+
+            $createdBy = isset($currentUser['id']) ? (int)$currentUser['id'] : null;
+
+            if ($srcGroup > 0 && $tgtGroup > 0) {
+                if ($srcGroup === $tgtGroup) {
+                    /* Already linked — refresh the note on the target row
+                       so the curator sees their annotation persisted, but
+                       don't error. */
+                    if ($note !== '') {
+                        $upd = $db->prepare(
+                            'UPDATE tblSongLinks SET Note = ? WHERE SongId = ?'
+                        );
+                        $upd->bind_param('ss', $note, $tgtId);
+                        $upd->execute();
+                        $upd->close();
+                    }
+                    echo json_encode(['success' => true, 'groupId' => $srcGroup, 'noop' => true]);
+                    break;
+                }
+                /* Two different groups — refuse. The curator can unlink
+                   one side first, or we can add a separate "merge groups"
+                   admin action later. */
+                http_response_code(409);
+                echo json_encode([
+                    'error' => 'Both songs are already in different counterpart groups. Unlink one before linking, or use the merge tool.',
+                ]);
+                break;
+            }
+
+            if ($srcGroup === 0 && $tgtGroup === 0) {
+                /* Neither in a group — mint a new GroupId.
+                   MAX(GroupId)+1 is fine here: tblSongLinks is small,
+                   curator-edited, and AUTO_INCREMENT on GroupId would
+                   complicate the merge-groups operation. */
+                $r = $db->query('SELECT COALESCE(MAX(GroupId), 0) + 1 AS NextId FROM tblSongLinks');
+                $newGroup = $r ? (int)$r->fetch_assoc()['NextId'] : 1;
+                if ($r) $r->close();
+
+                $ins = $db->prepare(
+                    'INSERT INTO tblSongLinks (GroupId, SongId, Note, CreatedBy)
+                     VALUES (?, ?, ?, ?), (?, ?, ?, ?)'
+                );
+                $emptyNote = '';
+                $ins->bind_param(
+                    'issiisis',
+                    $newGroup, $srcId, $emptyNote, $createdBy,
+                    $newGroup, $tgtId, $note,      $createdBy
+                );
+                $ins->execute();
+                $ins->close();
+                echo json_encode(['success' => true, 'groupId' => $newGroup, 'created' => true]);
+                break;
+            }
+
+            /* Exactly one side already in a group — extend it. */
+            $joinGroup = $srcGroup > 0 ? $srcGroup : $tgtGroup;
+            $newSongId = $srcGroup > 0 ? $tgtId    : $srcId;
+            $ins = $db->prepare(
+                'INSERT INTO tblSongLinks (GroupId, SongId, Note, CreatedBy)
+                 VALUES (?, ?, ?, ?)'
+            );
+            $ins->bind_param('issi', $joinGroup, $newSongId, $note, $createdBy);
+            $ins->execute();
+            $ins->close();
+            echo json_encode(['success' => true, 'groupId' => $joinGroup, 'extended' => true]);
+        } catch (\Throwable $e) {
+            error_log('[iHymns Editor] add_song_link failed: ' . $e->getMessage());
+            http_response_code(500);
+            echo json_encode(['error' => 'Failed to add song link.']);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * REMOVE_SONG_LINK — Drop one song from its group (#807)
+     *
+     * Body: { id?: int, songId?: string }  (either identifier works)
+     *
+     * If removing leaves the group with only one remaining member, the
+     * remaining row is also dropped — a singleton group is meaningless
+     * and would otherwise show up as "no counterparts" forever while
+     * still occupying a UNIQUE slot.
+     * ----------------------------------------------------------------- */
+    case 'remove_song_link':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        $body     = json_decode(file_get_contents('php://input'), true);
+        $removeId = (int)($body['id'] ?? 0);
+        $songId   = trim((string)($body['songId'] ?? ''));
+        if ($removeId <= 0 && $songId === '') {
+            http_response_code(400);
+            echo json_encode(['error' => 'id or songId is required.']);
+            break;
+        }
+
+        try {
+            $db = getDbMysqli();
+
+            /* Resolve the row + its GroupId before deleting so we can
+               clean up an orphaned singleton in the same transaction. */
+            if ($removeId > 0) {
+                $stmt = $db->prepare('SELECT Id, GroupId FROM tblSongLinks WHERE Id = ?');
+                $stmt->bind_param('i', $removeId);
+            } else {
+                $stmt = $db->prepare('SELECT Id, GroupId FROM tblSongLinks WHERE SongId = ?');
+                $stmt->bind_param('s', $songId);
+            }
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if (!$row) {
+                /* Already gone — return success rather than 404 so a
+                   double-click on the remove button doesn't surface a
+                   spurious error. */
+                echo json_encode(['success' => true, 'deleted' => 0]);
+                break;
+            }
+
+            $groupId = (int)$row['GroupId'];
+
+            $del = $db->prepare('DELETE FROM tblSongLinks WHERE Id = ?');
+            $del->bind_param('i', $row['Id']);
+            $del->execute();
+            $deleted = $del->affected_rows;
+            $del->close();
+
+            /* If the group now has fewer than two members, drop the
+               remainder. A singleton group is meaningless. */
+            $r = $db->prepare('SELECT COUNT(*) AS n FROM tblSongLinks WHERE GroupId = ?');
+            $r->bind_param('i', $groupId);
+            $r->execute();
+            $remaining = (int)$r->get_result()->fetch_assoc()['n'];
+            $r->close();
+            if ($remaining < 2) {
+                $cleanup = $db->prepare('DELETE FROM tblSongLinks WHERE GroupId = ?');
+                $cleanup->bind_param('i', $groupId);
+                $cleanup->execute();
+                $cleanup->close();
+            }
+
+            echo json_encode(['success' => true, 'deleted' => $deleted]);
+        } catch (\Throwable $e) {
+            error_log('[iHymns Editor] remove_song_link failed: ' . $e->getMessage());
+            http_response_code(500);
+            echo json_encode(['error' => 'Failed to remove song link.']);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * SUGGEST_SONG_LINKS — Top similar-title pairs for one song (#808)
+     *
+     * Returns up to 5 highest-scoring pending suggestions involving
+     * the open song, used by the editor sidebar's inline
+     * "Suggested counterparts" panel. Same data the
+     * /manage/song-link-suggestions admin page lists, scoped to a
+     * single song.
+     * ----------------------------------------------------------------- */
+    case 'suggest_song_links':
+        $songId = isset($_GET['id']) ? trim($_GET['id']) : '';
+        if ($songId === '') {
+            http_response_code(400);
+            echo json_encode(['error' => 'Song ID is required.']);
+            break;
+        }
+        try {
+            $db = getDbMysqli();
+
+            /* Probe the suggestion table — it might not exist yet on
+               deployments that haven't run the migration. Returning an
+               empty list (rather than 500ing) keeps the editor working
+               while the migration's still pending. */
+            $probe = $db->query(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongLinkSuggestions' LIMIT 1"
+            );
+            $hasTable = $probe && $probe->fetch_row() !== null;
+            if ($probe) $probe->close();
+            if (!$hasTable) {
+                echo json_encode(['suggestions' => [], 'tableMissing' => true]);
+                break;
+            }
+
+            $stmt = $db->prepare(
+                'SELECT s.Id        AS id,
+                        s.SongIdA   AS songIdA,
+                        s.SongIdB   AS songIdB,
+                        s.Score     AS score,
+                        s.TitleScore AS titleScore,
+                        s.LyricsScore AS lyricsScore,
+                        a.Title     AS titleA,
+                        a.Number    AS numberA,
+                        a.SongbookAbbr AS songbookA,
+                        b.Title     AS titleB,
+                        b.Number    AS numberB,
+                        b.SongbookAbbr AS songbookB
+                   FROM tblSongLinkSuggestions s
+                   JOIN tblSongs a ON a.SongId = s.SongIdA
+                   JOIN tblSongs b ON b.SongId = s.SongIdB
+                  WHERE (s.SongIdA = ? OR s.SongIdB = ?)
+                    AND NOT EXISTS (
+                        SELECT 1 FROM tblSongLinkSuggestionsDismissed d
+                         WHERE d.SongIdA = s.SongIdA AND d.SongIdB = s.SongIdB
+                    )
+                    /* Skip pairs where both songs are already in the
+                       same counterpart group — they\'re already linked. */
+                    AND NOT EXISTS (
+                        SELECT 1
+                          FROM tblSongLinks la
+                          JOIN tblSongLinks lb ON la.GroupId = lb.GroupId
+                         WHERE la.SongId = s.SongIdA AND lb.SongId = s.SongIdB
+                    )
+                  ORDER BY s.Score DESC
+                  LIMIT 5'
+            );
+            $stmt->bind_param('ss', $songId, $songId);
+            $stmt->execute();
+            $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+
+            /* Normalise the response so the "other side" is always in
+               a single `other` field, regardless of which slot the
+               current song was found in. */
+            $suggestions = [];
+            foreach ($rows as $r) {
+                $isA = ($r['songIdA'] === $songId);
+                $suggestions[] = [
+                    'id'          => (int)$r['id'],
+                    'score'       => (float)$r['score'],
+                    'titleScore'  => (float)$r['titleScore'],
+                    'lyricsScore' => (float)$r['lyricsScore'],
+                    'other' => [
+                        'songId'   => $isA ? $r['songIdB']  : $r['songIdA'],
+                        'title'    => $isA ? $r['titleB']   : $r['titleA'],
+                        'number'   => $isA ? $r['numberB']  : $r['numberA'],
+                        'songbook' => $isA ? $r['songbookB']: $r['songbookA'],
+                    ],
+                ];
+            }
+            echo json_encode(['suggestions' => $suggestions]);
+        } catch (\Throwable $e) {
+            error_log('[iHymns Editor] suggest_song_links failed: ' . $e->getMessage());
+            http_response_code(500);
+            echo json_encode(['error' => 'Failed to load suggestions.']);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * DISMISS_SONG_LINK_SUGGESTION — Curator says "no, different hymns" (#808)
+     *
+     * Body: { songIdA, songIdB, reason? }  (canonical order enforced
+     *       server-side so callers needn't pre-sort)
+     * ----------------------------------------------------------------- */
+    case 'dismiss_song_link_suggestion':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        $body = json_decode(file_get_contents('php://input'), true);
+        $a    = trim((string)($body['songIdA'] ?? ''));
+        $b    = trim((string)($body['songIdB'] ?? ''));
+        $reason = trim((string)($body['reason'] ?? ''));
+        if ($a === '' || $b === '' || $a === $b) {
+            http_response_code(400);
+            echo json_encode(['error' => 'songIdA and songIdB are required and must differ.']);
+            break;
+        }
+        /* Canonicalise: SongIdA < SongIdB lexicographically, matching
+           the build-script invariant. */
+        if ($a > $b) { [$a, $b] = [$b, $a]; }
+
+        try {
+            $db = getDbMysqli();
+            $dismissedBy = isset($currentUser['id']) ? (int)$currentUser['id'] : null;
+            $stmt = $db->prepare(
+                'INSERT INTO tblSongLinkSuggestionsDismissed (SongIdA, SongIdB, DismissedBy, Reason)
+                 VALUES (?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE Reason = VALUES(Reason),
+                                         DismissedBy = VALUES(DismissedBy),
+                                         DismissedAt = CURRENT_TIMESTAMP'
+            );
+            $stmt->bind_param('ssis', $a, $b, $dismissedBy, $reason);
+            $stmt->execute();
+            $stmt->close();
+
+            /* Drop the matching pending suggestion so it disappears
+               from every consumer immediately. */
+            $del = $db->prepare(
+                'DELETE FROM tblSongLinkSuggestions WHERE SongIdA = ? AND SongIdB = ?'
+            );
+            $del->bind_param('ss', $a, $b);
+            $del->execute();
+            $del->close();
+
+            echo json_encode(['success' => true]);
+        } catch (\Throwable $e) {
+            error_log('[iHymns Editor] dismiss_song_link_suggestion failed: ' . $e->getMessage());
+            http_response_code(500);
+            echo json_encode(['error' => 'Failed to dismiss suggestion.']);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
      * SAVE_SONG — Write a single song's data (#394)
      *
      * UPSERT of one song + its child rows (writers/composers/components)
@@ -1942,7 +2388,7 @@ switch ($action) {
      * ----------------------------------------------------------------- */
     default:
         http_response_code(400);
-        echo json_encode(['error' => 'Unknown action. Use: load, save, save_song, save_song_tags, tag_search, credit_search, bulk_tag, list_revisions, restore_revision, get_translations, add_translation, remove_translation, bulk_import_zip, bulk_import_status']);
+        echo json_encode(['error' => 'Unknown action. Use: load, save, save_song, save_song_tags, tag_search, credit_search, bulk_tag, list_revisions, restore_revision, get_translations, add_translation, remove_translation, get_song_links, add_song_link, remove_song_link, suggest_song_links, dismiss_song_link_suggestion, bulk_import_zip, bulk_import_status']);
         break;
 }
 

@@ -226,6 +226,7 @@ if ($action !== '') {
         'tblsongs-number-nullable' => 'migrate-tblsongs-number-nullable.php',
         'multi-language-tables'    => 'migrate-multi-language-tables.php',
         'parent-songbooks'         => 'migrate-parent-songbooks.php',
+        'song-links'               => 'migrate-song-links.php',
         'recompute-songbook-songcount' => 'migrate-recompute-songbook-songcount.php',
         'songcount-triggers'           => 'migrate-songcount-triggers.php',
         'cleanup'     => 'cleanup.php',
@@ -272,6 +273,7 @@ if ($action !== '') {
         'tblsongs-number-nullable',
         'multi-language-tables',
         'parent-songbooks',
+        'song-links',
         'recompute-songbook-songcount',
         'songcount-triggers',
         /* When you add a new migrate-*.php under appWeb/.sql/, ALSO add
@@ -1102,6 +1104,31 @@ if ($hasCredentials && defined('DB_HOST')) {
                         </p>
                         <a href="?action=recompute-songbook-songcount" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run Songbook SongCount Recompute
+                        </a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">3y2. Cross-book song links (#807 / #808)</h5>
+                        <p class="card-text text-secondary small">
+                            Creates <code>tblSongLinks</code> for the
+                            "this hymn appears in multiple songbooks"
+                            relationship (Amazing Grace as MP-031 / CH-376
+                            / SDAH-108 / SoF-29 / JP-006), plus
+                            <code>tblSongLinkSuggestions</code> +
+                            <code>tblSongLinkSuggestionsDismissed</code>
+                            for the admin similar-titled-song candidate
+                            list (#808). Distinct from
+                            <code>tblSongTranslations</code>
+                            (different-language same hymn) and
+                            <code>tblSongbooks.ParentSongbookId</code>
+                            (translated / edition derivatives at the
+                            songbook level). Idempotent.
+                        </p>
+                        <a href="?action=song-links" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            Run Cross-book Song Links Migration
                         </a>
                     </div>
                 </div>
