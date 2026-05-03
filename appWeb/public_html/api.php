@@ -988,23 +988,19 @@ if ($action !== null) {
                 }
             }
 
-            /* Rate limit registrations: max 3 per IP per hour. The
-               first prepared statement below is intentionally left
-               un-fetched — it's a no-op leftover from #236's original
-               implementation that the simpler fallback (count from
-               tblLoginAttempts) replaced; preserved so this commit
-               stays a pure mechanical mysqli conversion with no
-               behavioural change. */
+            /* Rate limit registrations: count recent attempts (any
+               outcome) from this IP. tblLoginAttempts is the rate-limit
+               source of truth.
+               Removed: a leftover SELECT that joined `tblUsers` to
+               `tblLoginAttempts.UserId` — `tblLoginAttempts` has no
+               `UserId` column (the table tracks attempts by IP, not by
+               user; see the schema). The query was documented as
+               "intentionally left un-fetched" but PHP 8.1+ throws on
+               execute() when columns are missing, so every
+               registration POST 500'd with `Unknown column 'UserId' in
+               'field list'`. The fallback below was already doing the
+               rate-limit work correctly. */
             $clientIp = $_SERVER['REMOTE_ADDR'] ?? '';
-            $stmt = $db->prepare(
-                'SELECT COUNT(*) FROM tblUsers
-                 WHERE CreatedAt > DATE_SUB(NOW(), INTERVAL 1 HOUR)
-                 AND Id IN (SELECT DISTINCT UserId FROM tblLoginAttempts WHERE IpAddress = ? AND Success = 1)'
-            );
-            $stmt->bind_param('s', $clientIp);
-            $stmt->execute();
-            $stmt->close();
-            /* Simpler fallback: count recent registrations by checking tblLoginAttempts */
             $stmt = $db->prepare(
                 'SELECT COUNT(*) FROM tblLoginAttempts
                  WHERE IpAddress = ? AND AttemptedAt > DATE_SUB(NOW(), INTERVAL 1 HOUR)'
