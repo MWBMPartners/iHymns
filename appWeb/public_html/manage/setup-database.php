@@ -228,6 +228,308 @@ $friendlyTitles = [
     'recompute-songbook-songcount'     => 'Recompute Songbook SongCount (#791)',
     'songcount-triggers'               => 'SongCount Triggers (#793)',
 ];
+
+/* Per-migration card content (#816). Single source of truth for the
+   card grid render. Title is the same string the status heading
+   uses, identified by issue number rather than the legacy
+   alphabetic-suffix scheme (3a, 3b, … 3z, 3y2 — non-monotonic and
+   visually confusing). Cards render in $migrationOrder sequence so
+   the grid mirrors the deployment order the bulk runner uses. The
+   `extra_html` slot lets a card append controls beyond the single
+   "Run …" button — currently used by the IANA + CLDR live-refresh
+   side-button on the BCP 47 reference card. */
+$migrationCards = [
+    'account-sync' => [
+        'title'  => 'Account Sync &amp; Shared Setlists',
+        'body'   => 'Adds the <code>Settings</code> column to <code>tblUsers</code>'
+                  . ' (per-device prefs sync) and creates <code>tblSharedSetlists</code>,'
+                  . ' then imports any legacy share-link JSON files into the new table.'
+                  . ' Idempotent — safe to re-run.',
+        'button' => 'Run Account Sync Migration',
+    ],
+    'credits' => [
+        'title'  => 'Credit Fields (#497)',
+        'body'   => 'Adds <code>TuneName</code> and <code>Iswc</code> columns to'
+                  . ' <code>tblSongs</code>, and creates'
+                  . ' <code>tblSongArrangers</code>, <code>tblSongAdaptors</code>'
+                  . ' and <code>tblSongTranslators</code>. Idempotent — safe to re-run.',
+        'button' => 'Run Credit Fields Migration',
+    ],
+    'songbook-meta' => [
+        'title'  => 'Songbook Metadata (#502)',
+        'body'   => 'Adds <code>Colour</code> (catch-up — missed forward-migration on older'
+                  . ' databases), <code>IsOfficial</code>, <code>Publisher</code>,'
+                  . ' <code>PublicationYear</code>, <code>Copyright</code> and'
+                  . ' <code>Affiliation</code> columns to <code>tblSongbooks</code>,'
+                  . ' and flags existing non-Misc songbooks as official.'
+                  . ' Idempotent — safe to re-run.',
+        'button' => 'Run Songbook Metadata Migration',
+    ],
+    'user-features-catchup' => [
+        'title'  => 'User Features Catch-Up (#517)',
+        'body'   => 'Catches up three pieces of user-feature schema that landed in'
+                  . ' <code>schema.sql</code> without forward-migrations and were'
+                  . ' surfaced by the Schema Audit page: <code>tblUserGroups.AllowCardReorder</code>,'
+                  . ' <code>tblUserSetlists</code> table, and <code>tblSearchQueries</code>'
+                  . ' table. Idempotent — safe to re-run.',
+        'button' => 'Run User Features Catch-Up Migration',
+    ],
+    'activity-log-expand' => [
+        'title'  => 'Activity Log Expansion (#535)',
+        'body'   => 'Extends <code>tblActivityLog</code> with the columns required by the'
+                  . ' comprehensive instrumentation pass: <code>Result</code>,'
+                  . ' <code>UserAgent</code>, <code>RequestId</code>, <code>Method</code>,'
+                  . ' <code>DurationMs</code>, plus indexes on <code>Result</code> and'
+                  . ' <code>RequestId</code> for the common debug-query patterns.'
+                  . ' Idempotent — safe to re-run.',
+        'button' => 'Run Activity Log Expansion Migration',
+    ],
+    'credit-people' => [
+        'title'  => 'Credit People Registry (#545)',
+        'body'   => 'Creates the registry tables that back the new'
+                  . ' <code>/manage/credit-people</code> area: <code>tblCreditPeople</code>'
+                  . ' (canonical name plus optional birth/death + notes),'
+                  . ' <code>tblCreditPersonLinks</code> (multiple external reference URLs'
+                  . ' per person), and <code>tblCreditPersonIPI</code> (multiple IPI Name'
+                  . ' Numbers per person). The five song-credit tables are not modified —'
+                  . ' this is additive. Idempotent — safe to re-run.',
+        'button' => 'Run Credit People Registry Migration',
+    ],
+    'credit-people-flags' => [
+        'title'  => 'Credit People Flags (#584, #585)',
+        'body'   => 'Adds the <code>IsSpecialCase</code> and <code>IsGroup</code>'
+                  . ' classification flags to <code>tblCreditPeople</code> so the registry'
+                  . ' can distinguish special-case attributions (Anonymous, Traditional,'
+                  . ' Public Domain, Unknown) from real individuals, and groups / bands /'
+                  . ' collectives (Hillsong United, Bethel Music) from single people.'
+                  . ' Backfills the four obvious special-case names on first run.'
+                  . ' Idempotent — safe to re-run.',
+        'button' => 'Run Credit People Flags Migration',
+    ],
+    'song-artists' => [
+        'title'  => 'Songs Artist credit (#587)',
+        'body'   => 'Adds <code>tblSongArtists</code> — a sixth credit role parallel to the'
+                  . ' existing five (writers / composers / arrangers / adaptors /'
+                  . ' translators). Captures the recording / release artist of'
+                  . ' contemporary worship songs (e.g. <em>Hillsong Worship</em> for'
+                  . ' "What a Beautiful Name") and feeds the future ProPresenter export.'
+                  . ' Names auto-register in <code>tblCreditPeople</code> via the same'
+                  . ' INSERT-IGNORE pattern as the other roles. Idempotent — safe to re-run.',
+        'button' => 'Run Songs Artist Migration',
+    ],
+    'credit-people-slug' => [
+        'title'  => 'Credit People Slug + public page (#588)',
+        'body'   => 'Adds <code>tblCreditPeople.Slug</code> with a UNIQUE index, backfills'
+                  . ' it from each row\'s Name (collision-safe with numeric suffixes), and'
+                  . ' unlocks the public <code>/people/&lt;slug&gt;</code> landing page —'
+                  . ' bio, lifespan, external links, and a discography grouped by role'
+                  . ' across the six song-credit tables. Idempotent — safe to re-run.',
+        'button' => 'Run Credit People Slug Migration',
+    ],
+    'user-avatar-service' => [
+        'title'  => 'Per-user avatar service (#616)',
+        'body'   => 'Adds <code>tblUsers.AvatarService</code> so each signed-in user can'
+                  . ' override the project-level avatar resolver default — Gravatar,'
+                  . ' Libravatar, DiceBear identicon (no third-party request), or None.'
+                  . ' NULL on this column means "inherit project default", so existing'
+                  . ' users behave identically until they choose to opt in or out via'
+                  . ' Settings &gt; Profile &gt; Avatar source. Idempotent — safe to re-run.',
+        'button' => 'Run Per-user Avatar Service Migration',
+    ],
+    'organisation-licences' => [
+        'title'  => 'Multiple licence types per organisation (#640)',
+        'body'   => 'Adds <code>tblOrganisationLicences</code> — a join table so each'
+                  . ' organisation can hold any number of licences (e.g. CCLI for lyrics +'
+                  . ' MRL for musical notation). Backfills one row per org from the'
+                  . ' existing primary <code>LicenceType</code> column. The primary column'
+                  . ' is left in place for back-compat; tier resolution unions across both.'
+                  . ' Idempotent — safe to re-run.',
+        'button' => 'Run Multi-licence Migration',
+    ],
+    'songbook-affiliations' => [
+        'title'  => 'Songbook affiliations registry (#670)',
+        'body'   => 'Closes the &ldquo;Affiliation lookup table&rdquo; out-of-scope item from'
+                  . ' #502. Adds <code>tblSongbookAffiliations</code> as a controlled'
+                  . ' vocabulary (Name UNIQUE) so the songbook editor can typeahead-suggest'
+                  . ' existing values instead of letting small typing variations create'
+                  . ' duplicate entries. Backfills the registry from every distinct non-empty'
+                  . ' <code>Affiliation</code> already in <code>tblSongbooks</code>.'
+                  . ' Idempotent — safe to re-run.',
+        'button' => 'Run Songbook Affiliations Migration',
+    ],
+    'songbook-bibliographic' => [
+        'title'  => 'Songbook bibliographic metadata (#672)',
+        'body'   => 'Adds 13 nullable columns to <code>tblSongbooks</code> for canonical'
+                  . ' references to the wider bibliographic record: Website / Internet'
+                  . ' Archive / Wikipedia URLs, plus the authority identifiers WikiData,'
+                  . ' OCLC, OCN, LCP, ISBN, ARK, ISNI, VIAF, LCCN, and LC Class. All'
+                  . ' optional; no FKs. Idempotent — safe to re-run.',
+        'button' => 'Run Songbook Bibliographic Migration',
+    ],
+    'songbook-language' => [
+        'title'  => 'Songbook language column (#673)',
+        'body'   => 'Adds an optional <code>Language</code> column to <code>tblSongbooks</code>'
+                  . ' (ISO 639-1 code, NULLable) so a curator can tag a songbook with its'
+                  . ' predominant language. Mirrors <code>tblSongs.Language</code> without'
+                  . ' the NOT NULL or DEFAULT — empty selection saves as NULL. Idempotent —'
+                  . ' safe to re-run.',
+        'button' => 'Run Songbook Language Migration',
+    ],
+    'ietf-bcp47-language' => [
+        'title'  => 'IETF BCP 47 language tagging (#681)',
+        'body'   => 'Brings every <code>Language</code> column on songs, songbooks,'
+                  . ' translations and song-requests up to <code>VARCHAR(35)</code> so they'
+                  . ' can hold a full IETF BCP 47 tag (language[-script][-region], e.g.'
+                  . ' <code>pt-BR</code>, <code>zh-Hans-CN</code>, <code>sr-Latn</code>).'
+                  . ' Adds <code>tblScripts</code> (~28 ISO 15924 codes) and'
+                  . ' <code>tblRegions</code> (~255 ISO 3166-1 codes + six M.49 area'
+                  . ' groupings) for the composite picker\'s typeahead. Idempotent — safe'
+                  . ' to re-run.',
+        'button' => 'Run IETF BCP 47 Language Migration',
+    ],
+    'bulk-import-jobs' => [
+        'title'  => 'Bulk Import Jobs Tracking (#676)',
+        'body'   => 'Adds <code>tblBulkImportJobs</code> so the Song Editor\'s ZIP import'
+                  . ' can run asynchronously: the upload returns <code>{job_id}</code>'
+                  . ' immediately, the worker keeps processing in the freed PHP request,'
+                  . ' and the browser polls a status endpoint for live progress (% complete).'
+                  . ' Lets a curator navigate away while a long import runs; a notification'
+                  . ' fires on completion. Idempotent — safe to re-run.',
+        'button' => 'Run Bulk Import Jobs Migration',
+    ],
+    'backfill-legacy-songbook-languages' => [
+        'title'  => 'Backfill legacy songbook languages (#735)',
+        'body'   => 'Sets <code>Language=\'en\'</code> on the 5 legacy English songbooks'
+                  . ' (CP, JP, MP, SDAH, CH) where it isn\'t already set. Required by the'
+                  . ' language filter (#734 / #736) — the filter renders only when ≥2'
+                  . ' distinct primary subtags exist across songbooks UNION songs, so this'
+                  . ' baseline ensures the filter appears the moment any non-English'
+                  . ' songbook lands. Idempotent — re-running is safe; rows already set'
+                  . ' (e.g. <code>en-GB</code>, <code>en-US</code>) are not touched.',
+        'button' => 'Run Legacy Songbook Language Backfill',
+    ],
+    'user-preferred-languages' => [
+        'title'  => 'User preferred languages column (#736)',
+        'body'   => 'Adds <code>tblUsers.PreferredLanguagesJson</code> so a signed-in user'
+                  . ' can save their language-filter choice to their account and have it'
+                  . ' sync across devices. Stored as a JSON array of IETF BCP 47 primary'
+                  . ' subtags (e.g. <code>["en","es"]</code>); NULL or <code>[]</code>'
+                  . ' means "show all languages". Idempotent — safe to re-run.',
+        'button' => 'Run User Preferred Languages Migration',
+    ],
+    'iana-language-subtag-registry' => [
+        'title'  => 'IETF BCP 47 Reference Data (#738)',
+        'body'   => 'Imports the IANA Language Subtag Registry and CLDR English display'
+                  . ' names — every language (~8,000), script (~225), region (~305), and'
+                  . ' variant (~140) subtag the IETF BCP 47 standard recognises. Uses'
+                  . ' bundled snapshots in <code>appWeb/.sql/data/</code>; the picker'
+                  . ' autocomplete works completely offline once applied.'
+                  . '</p><p class="card-text text-secondary small">'
+                  . 'Schema work (idempotent): renames <code>tblScripts</code> →'
+                  . ' <code>tblLanguageScripts</code> for clarity, adds'
+                  . ' <code>tblLanguageVariants</code>, adds <code>tblLanguages.Scope</code>.'
+                  . ' Re-running picks up new rows from a refreshed snapshot without'
+                  . ' touching curator-flagged ones.',
+        'button' => 'Run IANA + CLDR Import',
+        /* The IANA + CLDR card has a paired live-refresh side button +
+           status line; rendered after the primary button, inside the
+           card body. */
+        'extra_html' => '<button type="button"'
+                      . ' class="btn btn-outline-warning btn-action ms-2 ' . ($hasCredentials ? '' : 'disabled') . '"'
+                      . ' data-action="refresh-iana-cldr">'
+                      . '<i class="bi bi-cloud-download me-1" aria-hidden="true"></i>'
+                      . 'Refresh from IANA + CLDR (live)</button>'
+                      . '<p class="card-text small text-muted mt-2 mb-0" data-iana-refresh-status>'
+                      . 'Live refresh fetches the latest IANA registry and CLDR JSON files,'
+                      . ' overwrites the bundled snapshots, then re-runs the import.</p>',
+    ],
+    'cldr-native-names' => [
+        'title'  => 'CLDR Native Names overlay',
+        'body'   => 'Backfills <code>tblLanguages.NativeName</code> with each language\'s'
+                  . ' self-name — the form a speaker would write in their own locale'
+                  . ' ("Deutsch", "日本語", "Tshivenḓa", "العربية"). Sourced from'
+                  . ' <code>appWeb/.sql/data/cldr-native-names.json</code> (~316 entries,'
+                  . ' generated from <code>cldr-localenames-full</code>; rebuild with'
+                  . ' <code>tools/fetch-cldr-native-names.sh</code>). Once applied, the'
+                  . ' IETF picker (#681 / #685) shows e.g. "German (Deutsch) — de" instead'
+                  . ' of just "German — de". Idempotent — re-running no-ops on rows whose'
+                  . ' <code>NativeName</code> already matches.',
+        'button' => 'Run CLDR Native Names Overlay',
+    ],
+    'tag-titlecase' => [
+        'title'  => 'Tag Title-Case Backfill (#762)',
+        'body'   => 'Walks <code>tblSongTags</code> and rewrites <code>Name</code> to Title'
+                  . ' Case for any row that isn\'t already canonical. The <code>bulk_tag</code>'
+                  . ' handler now Title-Cases on every upsert, so new tags land canonical'
+                  . ' from creation; this backfill resolves rows that pre-date #762\'s'
+                  . ' normalisation. Idempotent — re-runs no-op on canonical rows. Rare'
+                  . ' collisions (two rows whose canonical forms would clash) are logged'
+                  . ' and left untouched for resolution via the forthcoming /manage/tags'
+                  . ' merge UI.',
+        'button' => 'Run Tag Title-Case Backfill',
+    ],
+    'tblsongs-number-nullable' => [
+        'title'  => 'tblSongs.Number nullable (#783)',
+        'body'   => 'Aligns the schema with the post-#392 policy that lets songs in'
+                  . ' unofficial songbooks (Misc, custom collections) persist'
+                  . ' <code>Number</code> as <code>NULL</code>. Without this, the save_song'
+                  . ' handler\'s intentional NULL-bind raises mysqli error 1048 ("Column'
+                  . ' \'Number\' cannot be null") on every Misc save. Idempotent —'
+                  . ' INFORMATION_SCHEMA probe; skips when already nullable.',
+        'button' => 'Run tblSongs.Number Nullable Migration',
+    ],
+    'multi-language-tables' => [
+        'title'  => 'Multi-language tables (#778 phase A)',
+        'body'   => 'Creates <code>tblSongbookLanguages</code> + <code>tblSongLanguages</code>'
+                  . ' for the multi-language songbook / song work, and back-fills the legacy'
+                  . ' single-tag <code>Language</code> columns into them with'
+                  . ' <code>IsPrimary=1</code>. Read paths consuming the legacy columns'
+                  . ' continue to work unchanged. Phases B-E of #778 build the chip-list'
+                  . ' editors, display surfaces, filter union, and bulk-import auto-link'
+                  . ' on top. Idempotent.',
+        'button' => 'Run Multi-Language Tables Migration',
+    ],
+    'parent-songbooks' => [
+        'title'  => 'Parent Songbooks (#782 phase A)',
+        'body'   => 'Adds <code>tblSongbooks.ParentSongbookId</code> +'
+                  . ' <code>ParentRelationship</code> for hierarchical relationships'
+                  . ' (translations / editions / abridgements), plus'
+                  . ' <code>tblSongbookSeries</code> + <code>tblSongbookSeriesMembership</code>'
+                  . ' for peer-to-peer collections (Songs of Fellowship volumes, themed'
+                  . ' compilations). Both shapes coexist — a row can carry a parent FK AND'
+                  . ' series memberships. Schema only; phases B-E (admin picker, public'
+                  . ' display, helpers, bulk-import auto-link) are tracked in #782. Idempotent.',
+        'button' => 'Run Parent Songbooks Migration',
+    ],
+    'song-links' => [
+        'title'  => 'Cross-book Song Links (#807 / #808)',
+        'body'   => 'Creates <code>tblSongLinks</code> for the "this hymn appears in multiple'
+                  . ' songbooks" relationship (Amazing Grace as MP-031 / CH-376 / SDAH-108 /'
+                  . ' SoF-29 / JP-006), plus <code>tblSongLinkSuggestions</code> +'
+                  . ' <code>tblSongLinkSuggestionsDismissed</code> for the admin'
+                  . ' similar-titled-song candidate list (#808). Distinct from'
+                  . ' <code>tblSongTranslations</code> (different-language same hymn) and'
+                  . ' <code>tblSongbooks.ParentSongbookId</code> (translated / edition'
+                  . ' derivatives at the songbook level). Idempotent.',
+        'button' => 'Run Cross-book Song Links Migration',
+    ],
+    'songcount-triggers' => [
+        'title'  => 'SongCount Triggers (#793)',
+        'body'   => 'Installs three triggers (<code>AFTER INSERT / UPDATE / DELETE</code>)'
+                  . ' on <code>tblSongs</code> so <code>tblSongbooks.SongCount</code>'
+                  . ' auto-maintains without any application-side recompute. Lifts the'
+                  . ' cache-maintenance responsibility off every current and future write'
+                  . ' path. Also runs an initial recompute as part of installation.'
+                  . ' Idempotent. On hosts that disallow <code>CREATE TRIGGER</code> the'
+                  . ' migration logs a friendly skip cleanly (#815) — PR #792\'s app-side'
+                  . ' recompute remains the safety net.',
+        'button' => 'Run SongCount Triggers Migration',
+    ],
+    /* recompute-songbook-songcount card removed (#818) — its work is
+       now covered by the SongCount Triggers migration above, which
+       runs an initial recompute as part of its installation. The
+       underlying script remains on disk for emergency CLI runs. */
+];
 /* Captured during bulk-run so the failure can be surfaced as a visible
    banner ABOVE the (potentially long, scrollable) output panel. (#720) */
 $bulkFirstFailStep    = null;
@@ -768,574 +1070,49 @@ if ($hasCredentials && defined('DB_HOST')) {
                     </div>
                 </div>
             </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3a. Account Sync &amp; Shared Setlists</h5>
-                        <p class="card-text text-secondary small">
-                            Adds the <code>Settings</code> column to <code>tblUsers</code>
-                            (per-device prefs sync) and creates <code>tblSharedSetlists</code>,
-                            then imports any legacy share-link JSON files into the new table.
-                            Idempotent — safe to re-run.
-                        </p>
-                        <a href="?action=account-sync" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run Account Sync Migration
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3b. Credit Fields (#497)</h5>
-                        <p class="card-text text-secondary small">
-                            Adds <code>TuneName</code> and <code>Iswc</code> columns to
-                            <code>tblSongs</code>, and creates
-                            <code>tblSongArrangers</code>, <code>tblSongAdaptors</code>
-                            and <code>tblSongTranslators</code>. Idempotent — safe to re-run.
-                        </p>
-                        <a href="?action=credits" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run Credit Fields Migration
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3c. Songbook Metadata (#502)</h5>
-                        <p class="card-text text-secondary small">
-                            Adds <code>Colour</code> (catch-up — missed
-                            forward-migration on older databases),
-                            <code>IsOfficial</code>, <code>Publisher</code>,
-                            <code>PublicationYear</code>, <code>Copyright</code> and
-                            <code>Affiliation</code> columns to <code>tblSongbooks</code>,
-                            and flags existing non-Misc songbooks as official.
-                            Idempotent — safe to re-run.
-                        </p>
-                        <a href="?action=songbook-meta" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run Songbook Metadata Migration
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3d. User Features Catch-Up (#517)</h5>
-                        <p class="card-text text-secondary small">
-                            Catches up three pieces of user-feature schema that
-                            landed in <code>schema.sql</code> without forward-
-                            migrations and were surfaced by the Schema Audit page:
-                            <code>tblUserGroups.AllowCardReorder</code>,
-                            <code>tblUserSetlists</code> table, and
-                            <code>tblSearchQueries</code> table.
-                            Idempotent — safe to re-run.
-                        </p>
-                        <a href="?action=user-features-catchup" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run User Features Catch-Up Migration
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3e. Activity Log Expansion (#535)</h5>
-                        <p class="card-text text-secondary small">
-                            Extends <code>tblActivityLog</code> with the columns
-                            required by the comprehensive instrumentation
-                            pass: <code>Result</code>, <code>UserAgent</code>,
-                            <code>RequestId</code>, <code>Method</code>,
-                            <code>DurationMs</code>, plus indexes on
-                            <code>Result</code> and <code>RequestId</code>
-                            for the common debug-query patterns.
-                            Idempotent — safe to re-run.
-                        </p>
-                        <a href="?action=activity-log-expand" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run Activity Log Expansion Migration
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3f. Credit People Registry (#545)</h5>
-                        <p class="card-text text-secondary small">
-                            Creates the registry tables that back the new
-                            <code>/manage/credit-people</code> area:
-                            <code>tblCreditPeople</code> (canonical name plus
-                            optional birth/death + notes),
-                            <code>tblCreditPersonLinks</code> (multiple external
-                            reference URLs per person), and
-                            <code>tblCreditPersonIPI</code> (multiple IPI Name
-                            Numbers per person). The five song-credit tables
-                            are not modified — this is additive.
-                            Idempotent — safe to re-run.
-                        </p>
-                        <a href="?action=credit-people" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run Credit People Registry Migration
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3g. Credit People Flags (#584, #585)</h5>
-                        <p class="card-text text-secondary small">
-                            Adds the <code>IsSpecialCase</code> and <code>IsGroup</code>
-                            classification flags to <code>tblCreditPeople</code> so the
-                            registry can distinguish special-case attributions
-                            (Anonymous, Traditional, Public Domain, Unknown)
-                            from real individuals, and groups / bands /
-                            collectives (Hillsong United, Bethel Music) from
-                            single people. Backfills the four obvious special-case
-                            names on first run. Idempotent — safe to re-run.
-                        </p>
-                        <a href="?action=credit-people-flags" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run Credit People Flags Migration
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3h. Songs Artist credit (#587)</h5>
-                        <p class="card-text text-secondary small">
-                            Adds <code>tblSongArtists</code> — a sixth credit role
-                            parallel to the existing five (writers / composers /
-                            arrangers / adaptors / translators). Captures the
-                            recording / release artist of contemporary worship
-                            songs (e.g. <em>Hillsong Worship</em> for "What a
-                            Beautiful Name") and feeds the future ProPresenter
-                            export. Names auto-register in <code>tblCreditPeople</code>
-                            via the same INSERT-IGNORE pattern as the other roles.
-                            Idempotent — safe to re-run.
-                        </p>
-                        <a href="?action=song-artists" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run Songs Artist Migration
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3i. Credit People Slug + public page (#588)</h5>
-                        <p class="card-text text-secondary small">
-                            Adds <code>tblCreditPeople.Slug</code> with a UNIQUE
-                            index, backfills it from each row's Name (collision-safe
-                            with numeric suffixes), and unlocks the public
-                            <code>/people/&lt;slug&gt;</code> landing page —
-                            bio, lifespan, external links, and a discography
-                            grouped by role across the six song-credit tables.
-                            Idempotent — safe to re-run.
-                        </p>
-                        <a href="?action=credit-people-slug" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run Credit People Slug Migration
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3j. Per-user avatar service (#616)</h5>
-                        <p class="card-text text-secondary small">
-                            Adds <code>tblUsers.AvatarService</code> so each
-                            signed-in user can override the project-level
-                            avatar resolver default — Gravatar, Libravatar,
-                            DiceBear identicon (no third-party request), or
-                            None. NULL on this column means "inherit project
-                            default", so existing users behave identically
-                            until they choose to opt in or out via Settings
-                            &gt; Profile &gt; Avatar source. Idempotent —
-                            safe to re-run.
-                        </p>
-                        <a href="?action=user-avatar-service" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run Per-user Avatar Service Migration
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3k. Multiple licence types per organisation (#640)</h5>
-                        <p class="card-text text-secondary small">
-                            Adds <code>tblOrganisationLicences</code> — a join table
-                            so each organisation can hold any number of licences
-                            (e.g. CCLI for lyrics + MRL for musical notation).
-                            Backfills one row per org from the existing primary
-                            <code>LicenceType</code> column. The primary column
-                            is left in place for back-compat; tier resolution
-                            unions across both. Idempotent — safe to re-run.
-                        </p>
-                        <a href="?action=organisation-licences" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run Multi-licence Migration
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3l. Songbook affiliations registry (#670)</h5>
-                        <p class="card-text text-secondary small">
-                            Closes the &ldquo;Affiliation lookup table&rdquo; out-of-scope
-                            item from #502. Adds <code>tblSongbookAffiliations</code> as
-                            a controlled vocabulary (Name UNIQUE) so the songbook editor
-                            can typeahead-suggest existing values instead of letting small
-                            typing variations create duplicate entries. Backfills the
-                            registry from every distinct non-empty <code>Affiliation</code>
-                            already in <code>tblSongbooks</code>. Idempotent — safe to re-run.
-                        </p>
-                        <a href="?action=songbook-affiliations" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run Songbook Affiliations Migration
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3m. Songbook bibliographic metadata (#672)</h5>
-                        <p class="card-text text-secondary small">
-                            Adds 13 nullable columns to <code>tblSongbooks</code> for
-                            canonical references to the wider bibliographic record:
-                            Website / Internet Archive / Wikipedia URLs, plus the
-                            authority identifiers WikiData, OCLC, OCN, LCP, ISBN,
-                            ARK, ISNI, VIAF, LCCN, and LC Class. All optional;
-                            no FKs. Idempotent — safe to re-run.
-                        </p>
-                        <a href="?action=songbook-bibliographic" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run Songbook Bibliographic Migration
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3n. Songbook language column (#673)</h5>
-                        <p class="card-text text-secondary small">
-                            Adds an optional <code>Language</code> column to
-                            <code>tblSongbooks</code> (ISO 639-1 code, NULLable) so a
-                            curator can tag a songbook with its predominant language.
-                            Mirrors <code>tblSongs.Language</code> without the NOT NULL
-                            or DEFAULT — empty selection saves as NULL. Idempotent —
-                            safe to re-run.
-                        </p>
-                        <a href="?action=songbook-language" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run Songbook Language Migration
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3o. IETF BCP 47 language tagging (#681)</h5>
-                        <p class="card-text text-secondary small">
-                            Brings every <code>Language</code> column on songs,
-                            songbooks, translations and song-requests up to
-                            <code>VARCHAR(35)</code> so they can hold a full IETF
-                            BCP 47 tag (language[-script][-region], e.g.
-                            <code>pt-BR</code>, <code>zh-Hans-CN</code>,
-                            <code>sr-Latn</code>). Adds <code>tblScripts</code>
-                            (~28 ISO 15924 codes) and <code>tblRegions</code>
-                            (~255 ISO 3166-1 codes + six M.49 area groupings)
-                            for the composite picker's typeahead. Idempotent
-                            — safe to re-run.
-                        </p>
-                        <a href="?action=ietf-bcp47-language" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run IETF BCP 47 Language Migration
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3p. Bulk import jobs tracking (#676)</h5>
-                        <p class="card-text text-secondary small">
-                            Adds <code>tblBulkImportJobs</code> so the Song Editor's
-                            ZIP import can run asynchronously: the upload returns
-                            <code>{job_id}</code> immediately, the worker keeps
-                            processing in the freed PHP request, and the browser
-                            polls a status endpoint for live progress (% complete).
-                            Lets a curator navigate away while a long import runs;
-                            a notification fires on completion. Idempotent —
-                            safe to re-run.
-                        </p>
-                        <a href="?action=bulk-import-jobs" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run Bulk Import Jobs Migration
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3s. IETF BCP 47 reference data (#738)</h5>
-                        <p class="card-text text-secondary small">
-                            Imports the IANA Language Subtag Registry and CLDR
-                            English display names — every language (~8,000),
-                            script (~225), region (~305), and variant (~140)
-                            subtag the IETF BCP 47 standard recognises. Uses
-                            bundled snapshots in <code>appWeb/.sql/data/</code>;
-                            the picker autocomplete works completely offline
-                            once applied.
-                        </p>
-                        <p class="card-text text-secondary small">
-                            Schema work (idempotent): renames
-                            <code>tblScripts</code> →
-                            <code>tblLanguageScripts</code> for clarity, adds
-                            <code>tblLanguageVariants</code>, adds
-                            <code>tblLanguages.Scope</code>. Re-running picks
-                            up new rows from a refreshed snapshot without
-                            touching curator-flagged ones.
-                        </p>
-                        <div class="d-flex gap-2 flex-wrap">
-                            <a href="?action=iana-language-subtag-registry" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                                Run IANA + CLDR Import
+
+            <!-- ============================================================
+                 PER-MIGRATION CARDS (#816)
+
+                 Data-driven render: cards iterate $migrationOrder so the
+                 grid matches the deployment / dependency order the
+                 "Apply all" runner uses. Each card identifies itself by
+                 issue number — the legacy alphabetic-prefix scheme
+                 (3a, 3b, … 3z, 3y2) was non-monotonic and rotted on
+                 every addition.
+
+                 To add a new migration card, add an entry to
+                 $migrationCards above and append its action key to
+                 $migrationOrder. The bulk runner picks it up
+                 automatically; this loop renders it in the correct
+                 grid position with no further edits.
+                 ============================================================ -->
+            <?php foreach ($migrationOrder as $_migAction): ?>
+                <?php
+                    /* Skip if no card definition — keeps $migrationOrder
+                       able to track scripts that run via "Apply all"
+                       but don't need a per-card UI (e.g. the redundant
+                       recompute step removed in #818). */
+                    $_card = $migrationCards[$_migAction] ?? null;
+                    if (!$_card) continue;
+                ?>
+                <div class="col-md-6">
+                    <div class="card bg-dark border-secondary h-100">
+                        <div class="card-body">
+                            <h5 class="card-title"><?= $_card['title'] ?></h5>
+                            <p class="card-text text-secondary small"><?= $_card['body'] ?></p>
+                            <a href="?action=<?= htmlspecialchars($_migAction) ?>"
+                               class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                                <?= htmlspecialchars($_card['button']) ?>
                             </a>
-                            <button type="button"
-                                    class="btn btn-outline-warning btn-action <?= $hasCredentials ? '' : 'disabled' ?>"
-                                    data-action="refresh-iana-cldr">
-                                <i class="bi bi-cloud-download me-1" aria-hidden="true"></i>
-                                Refresh from IANA + CLDR (live)
-                            </button>
+                            <?php if (!empty($_card['extra_html'])): ?>
+                                <?= $_card['extra_html'] ?>
+                            <?php endif; ?>
                         </div>
-                        <p class="card-text small text-muted mt-2 mb-0" data-iana-refresh-status>
-                            Live refresh fetches the latest IANA registry and
-                            CLDR JSON files, overwrites the bundled snapshots,
-                            then re-runs the import.
-                        </p>
                     </div>
                 </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3z. SongCount triggers (#793)</h5>
-                        <p class="card-text text-secondary small">
-                            Installs three triggers
-                            (<code>AFTER INSERT / UPDATE / DELETE</code>) on
-                            <code>tblSongs</code> so
-                            <code>tblSongbooks.SongCount</code> auto-maintains
-                            without any application-side recompute. Lifts the
-                            cache-maintenance responsibility off every current
-                            and future write path. Also runs an initial
-                            recompute as part of installation so the standalone
-                            recompute card (3y.) becomes redundant after this
-                            one runs. Idempotent. On hosts that disallow
-                            <code>CREATE TRIGGER</code> the migration logs the
-                            failure cleanly — PR #792's app-side recompute
-                            remains the safety net.
-                        </p>
-                        <a href="?action=songcount-triggers" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run SongCount Triggers Migration
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3y. Recompute Songbook SongCount (#791)</h5>
-                        <p class="card-text text-secondary small">
-                            Walks every <code>tblSongbooks</code> row and rewrites
-                            <code>SongCount</code> from a live
-                            <code>SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?</code>.
-                            Fixes stale cache values left behind when songs were
-                            saved via the editor before #791's recompute fix
-                            landed — the symptom was Misc (or any songbook that
-                            received its first song via the editor) failing to
-                            appear on the home / songbooks pages because the
-                            tile-render gate is <code>songCount &gt; 0</code>.
-                            Idempotent — rows already correct skip silently.
-                        </p>
-                        <a href="?action=recompute-songbook-songcount" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run Songbook SongCount Recompute
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3y2. Cross-book song links (#807 / #808)</h5>
-                        <p class="card-text text-secondary small">
-                            Creates <code>tblSongLinks</code> for the
-                            "this hymn appears in multiple songbooks"
-                            relationship (Amazing Grace as MP-031 / CH-376
-                            / SDAH-108 / SoF-29 / JP-006), plus
-                            <code>tblSongLinkSuggestions</code> +
-                            <code>tblSongLinkSuggestionsDismissed</code>
-                            for the admin similar-titled-song candidate
-                            list (#808). Distinct from
-                            <code>tblSongTranslations</code>
-                            (different-language same hymn) and
-                            <code>tblSongbooks.ParentSongbookId</code>
-                            (translated / edition derivatives at the
-                            songbook level). Idempotent.
-                        </p>
-                        <a href="?action=song-links" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run Cross-book Song Links Migration
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3x. Parent Songbooks (#782 phase A)</h5>
-                        <p class="card-text text-secondary small">
-                            Adds <code>tblSongbooks.ParentSongbookId</code> +
-                            <code>ParentRelationship</code> for hierarchical
-                            relationships (translations / editions /
-                            abridgements), plus <code>tblSongbookSeries</code>
-                            + <code>tblSongbookSeriesMembership</code> for
-                            peer-to-peer collections (Songs of Fellowship
-                            volumes, themed compilations). Both shapes
-                            coexist — a row can carry a parent FK AND series
-                            memberships. Schema only; phases B-E (admin
-                            picker, public display, helpers, bulk-import
-                            auto-link) are tracked in #782. Idempotent.
-                        </p>
-                        <a href="?action=parent-songbooks" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run Parent Songbooks Migration
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3w. Multi-language tables (#778 phase A)</h5>
-                        <p class="card-text text-secondary small">
-                            Creates <code>tblSongbookLanguages</code> +
-                            <code>tblSongLanguages</code> for the multi-language
-                            songbook / song work, and back-fills the legacy
-                            single-tag <code>Language</code> columns into them
-                            with <code>IsPrimary=1</code>. Read paths consuming
-                            the legacy columns continue to work unchanged.
-                            Phases B-E of #778 build the chip-list editors,
-                            display surfaces, filter union, and bulk-import
-                            auto-link on top. Idempotent.
-                        </p>
-                        <a href="?action=multi-language-tables" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run Multi-Language Tables Migration
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3v. tblSongs.Number nullable (#783)</h5>
-                        <p class="card-text text-secondary small">
-                            Aligns the schema with the post-#392 policy that lets
-                            songs in unofficial songbooks (Misc, custom collections)
-                            persist <code>Number</code> as <code>NULL</code>. Without
-                            this, the save_song handler's intentional NULL-bind
-                            raises mysqli error 1048 (\"Column 'Number' cannot be
-                            null\") on every Misc save. Idempotent — INFORMATION_SCHEMA
-                            probe; skips when already nullable.
-                        </p>
-                        <a href="?action=tblsongs-number-nullable" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run tblSongs.Number Nullable Migration
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3u. Tag Title-Case Backfill (#762)</h5>
-                        <p class="card-text text-secondary small">
-                            Walks <code>tblSongTags</code> and rewrites <code>Name</code>
-                            to Title Case for any row that isn't already canonical. The
-                            <code>bulk_tag</code> handler now Title-Cases on every
-                            upsert, so new tags land canonical from creation; this
-                            backfill resolves rows that pre-date #762's normalisation.
-                            Idempotent — re-runs no-op on canonical rows. Rare
-                            collisions (two rows whose canonical forms would clash)
-                            are logged and left untouched for resolution via the
-                            forthcoming /manage/tags merge UI.
-                        </p>
-                        <a href="?action=tag-titlecase" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run Tag Title-Case Backfill
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3t. CLDR Native Names overlay</h5>
-                        <p class="card-text text-secondary small">
-                            Backfills <code>tblLanguages.NativeName</code> with each
-                            language's self-name — the form a speaker would write in
-                            their own locale ("Deutsch", "日本語", "Tshivenḓa", "العربية").
-                            Sourced from <code>appWeb/.sql/data/cldr-native-names.json</code>
-                            (~316 entries, generated from
-                            <code>cldr-localenames-full</code>; rebuild with
-                            <code>tools/fetch-cldr-native-names.sh</code>). Once applied,
-                            the IETF picker (#681 / #685) shows e.g. "German (Deutsch) — de"
-                            instead of just "German — de". Idempotent — re-running
-                            no-ops on rows whose <code>NativeName</code> already matches.
-                        </p>
-                        <a href="?action=cldr-native-names" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run CLDR Native Names Overlay
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3r. User preferred languages column (#736)</h5>
-                        <p class="card-text text-secondary small">
-                            Adds <code>tblUsers.PreferredLanguagesJson</code> so a
-                            signed-in user can save their language-filter choice
-                            to their account and have it sync across devices.
-                            Stored as a JSON array of IETF BCP 47 primary
-                            subtags (e.g. <code>["en","es"]</code>); NULL or
-                            <code>[]</code> means "show all languages".
-                            Idempotent — safe to re-run.
-                        </p>
-                        <a href="?action=user-preferred-languages" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run User Preferred Languages Migration
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">3q. Backfill legacy songbook languages (#735)</h5>
-                        <p class="card-text text-secondary small">
-                            Sets <code>Language='en'</code> on the 5 legacy English
-                            songbooks (CP, JP, MP, SDAH, CH) where it isn't already
-                            set. Required by the language filter (#734 / #736) — the
-                            filter renders only when ≥2 distinct primary subtags
-                            exist across songbooks UNION songs, so this baseline
-                            ensures the filter appears the moment any non-English
-                            songbook lands. Idempotent — re-running is safe; rows
-                            already set (e.g. <code>en-GB</code>, <code>en-US</code>)
-                            are not touched.
-                        </p>
-                        <a href="?action=backfill-legacy-songbook-languages" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                            Run Legacy Songbook Language Backfill
-                        </a>
-                    </div>
-                </div>
-            </div>
+            <?php endforeach; ?>
+
             <div class="col-md-6">
                 <div class="card bg-dark border-secondary h-100">
                     <div class="card-body">
