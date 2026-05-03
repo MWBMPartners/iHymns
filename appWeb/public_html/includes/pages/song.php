@@ -833,6 +833,65 @@ try {
         </div>
     </section>
 
+    <?php
+        /* #833 — "Find this hymn elsewhere" panel. Reads tblSongExternalLinks
+           via the `links` array attached by SongData::_externalLinksMap('song'),
+           groups by Category, hides when empty. Each link opens in a new
+           tab with rel="noopener nofollow" so search-engine PageRank
+           doesn't leak. */
+        $songLinksRows = $song['links'] ?? [];
+        if (!empty($songLinksRows)):
+            $sLinksByCat = [];
+            foreach ($songLinksRows as $l) {
+                $cat = (string)($l['category'] ?? 'other');
+                if (!isset($sLinksByCat[$cat])) $sLinksByCat[$cat] = [];
+                $sLinksByCat[$cat][] = $l;
+            }
+            $sCatLabels = [
+                'official'    => 'Official',
+                'information' => 'Information',
+                'read'        => 'Read',
+                'sheet-music' => 'Sheet music',
+                'listen'      => 'Listen',
+                'watch'       => 'Watch',
+                'purchase'    => 'Purchase',
+                'authority'   => 'Authority',
+                'social'      => 'Social',
+                'other'       => 'Other',
+            ];
+    ?>
+    <section id="song-external-links" class="song-external-links mt-4 pt-3 border-top" aria-label="Find this hymn elsewhere">
+        <h2 class="h6 mb-3 d-flex align-items-center gap-2">
+            <i class="fa-solid fa-link me-1 text-muted" aria-hidden="true"></i>
+            Find this hymn elsewhere
+        </h2>
+        <?php foreach ($sCatLabels as $cat => $catLabel): ?>
+            <?php if (empty($sLinksByCat[$cat])) continue; ?>
+            <div class="mb-2">
+                <div class="text-uppercase small text-muted mb-1"><?= htmlspecialchars($catLabel) ?></div>
+                <div class="d-flex flex-wrap gap-2">
+                    <?php foreach ($sLinksByCat[$cat] as $l): ?>
+                        <a href="<?= htmlspecialchars($l['url']) ?>"
+                           target="_blank" rel="noopener nofollow"
+                           class="btn btn-sm btn-outline-secondary d-inline-flex align-items-center gap-2">
+                            <?php if (!empty($l['iconClass'])): ?>
+                                <i class="<?= htmlspecialchars($l['iconClass']) ?>" aria-hidden="true"></i>
+                            <?php endif; ?>
+                            <span><?= htmlspecialchars($l['name']) ?></span>
+                            <?php if (!empty($l['note'])): ?>
+                                <span class="text-muted small">— <?= htmlspecialchars($l['note']) ?></span>
+                            <?php endif; ?>
+                            <?php if (!empty($l['verified'])): ?>
+                                <i class="fa-solid fa-circle-check text-success small" aria-label="Verified" title="Verified"></i>
+                            <?php endif; ?>
+                        </a>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+        <?php endforeach; ?>
+    </section>
+    <?php endif; ?>
+
     <!-- Related songs (#118) — populated client-side from songs.json -->
     <section id="related-songs" class="related-songs mt-4 pt-3 border-top d-none" aria-label="Related songs">
         <h2 class="h6 mb-3 d-flex align-items-center gap-2" role="button" data-bs-toggle="collapse" data-bs-target="#related-songs-list" aria-expanded="true" aria-controls="related-songs-list">
