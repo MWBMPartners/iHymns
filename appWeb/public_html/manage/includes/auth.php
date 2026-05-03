@@ -300,33 +300,69 @@ function requireAuth(): void
         exit;
     }
 
-    /* Idle timeout (#531) — auto-logout after IDLE_TIMEOUT_SECONDS of
-       inactivity. last_activity is bumped on every protected-page hit
-       below, so an active session glides forward indefinitely while
-       an abandoned one expires within half an hour. */
+    /* Idle timeout (#531) — after IDLE_TIMEOUT_SECONDS without a
+       protected-page hit, drop the PHP session and silently re-adopt
+       from the cross-subdomain `ihymns_auth` API-token cookie so an
+       active main-app sign-in carries the user straight back in
+       without a login prompt. The 30-day rolling token is the source
+       of truth for "is this user signed in"; the /manage/ PHP session
+       is just a per-tab cache that gets refreshed periodically.
+       Only when the API token is also gone (expired / revoked /
+       password-changed) do we fall through to /manage/login.
+
+       Note: we MUST NOT call logout() here — that deletes the
+       tblApiTokens row + clears the ihymns_auth cookie, which would
+       sign the user out of the main app too and defeat the silent
+       re-adoption below. We only wipe $_SESSION. */
     $now = time();
     $lastActive = (int)($_SESSION['last_activity'] ?? 0);
     if ($lastActive > 0 && ($now - $lastActive) > IDLE_TIMEOUT_SECONDS) {
         $kickedUserId = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : null;
-        /* Record the timeout BEFORE wiping the session so the row is
-           attributed to the user who got kicked, not to NULL. logout()
-           is told not to write its own auth.logout row to avoid
-           double-logging the same event. (#535) */
-        logActivity(
-            'auth.session_timeout',
-            'user',
-            (string)($kickedUserId ?? ''),
-            ['idle_seconds' => $now - $lastActive],
-            'success',
-            $kickedUserId
-        );
-        logout(false);
+        $idleSeconds  = $now - $lastActive;
+
+        /* Drop the stale session contents but keep the cookie/DB row
+           that adoptApiTokenSession() needs to read back below.
+           Rotating the session id defends against fixation across
+           the refresh boundary. */
         $_SESSION = [];
-        initSession();
-        $_SESSION['redirect_after_login'] = $_SERVER['REQUEST_URI'] ?? '/manage/';
-        $_SESSION['login_notice'] = 'Your session timed out. Please sign in again.';
-        header('Location: /manage/login');
-        exit;
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            session_regenerate_id(true);
+        }
+
+        if (adoptApiTokenSession()) {
+            /* Silent refresh — token cookie was still valid, user is
+               none the wiser. Recorded distinctly from a forced
+               re-login so admins auditing the activity log can tell
+               the two apart. (#535) */
+            $refreshedUserId = (int)($_SESSION['user_id'] ?? 0);
+            logActivity(
+                'auth.session_refresh',
+                'user',
+                (string)$refreshedUserId,
+                ['idle_seconds' => $idleSeconds],
+                'success',
+                $refreshedUserId ?: null
+            );
+            /* Fall through to the last_activity bump + getCurrentUser
+               check below so the rest of requireAuth() runs as if the
+               session had never lapsed. */
+        } else {
+            /* No valid API token to fall back on — true timeout. Log
+               BEFORE redirecting so the row is attributed to the user
+               who got kicked, not to NULL. */
+            logActivity(
+                'auth.session_timeout',
+                'user',
+                (string)($kickedUserId ?? ''),
+                ['idle_seconds' => $idleSeconds],
+                'success',
+                $kickedUserId
+            );
+            $_SESSION['redirect_after_login'] = $_SERVER['REQUEST_URI'] ?? '/manage/';
+            $_SESSION['login_notice'] = 'Your session timed out. Please sign in again.';
+            header('Location: /manage/login');
+            exit;
+        }
     }
     $_SESSION['last_activity'] = $now;
 
@@ -505,10 +541,15 @@ function attemptLogin(string $username, string $password): ?array
 /**
  * Log out the current user and destroy the session.
  *
+ * Also revokes the cross-subdomain `ihymns_auth` API token so the
+ * main app gets signed out at the same time (#764) — only call this
+ * for an explicit user-initiated logout. The idle-timeout path in
+ * requireAuth() deliberately does NOT call logout(): it wipes the
+ * /manage/ session but preserves the API token so silent re-adoption
+ * can carry the same user back in on the next request.
+ *
  * @param bool $logEvent Set false when the caller is already writing
- *                       a more-specific row (e.g. the idle-timeout
- *                       path in requireAuth() emits auth.session_timeout
- *                       beforehand and would otherwise double-log).
+ *                       a more-specific row, to avoid double-logging.
  */
 function logout(bool $logEvent = true): void
 {
