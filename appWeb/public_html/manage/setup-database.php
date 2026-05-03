@@ -734,6 +734,12 @@ if ($action !== '') {
        The non-action path (the dashboard) keeps its own existing render
        block lower down. */
     header('Content-Type: text/html; charset=UTF-8');
+    /* Lock the Content-Type so even if a child migration's earlier
+       `header('Content-Type: text/plain')` had set it, the browser
+       trusts ours and doesn't fall back to plaintext rendering on
+       sniff. (#817 round 2 — was the suspected root cause of the
+       "raw HTML page" symptom.) */
+    header('X-Content-Type-Options: nosniff');
 
     /* Drain any default output buffer so our manual flush() actually
        reaches the browser. PHP defaults to one ambient buffer; we
