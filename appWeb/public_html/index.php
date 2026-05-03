@@ -44,6 +44,67 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'debug_mode.php';
 enableDebugModeIfRequested();
 
+/* =========================================================================
+ * BOOTSTRAP SAFETY NET (#811)
+ *
+ * Catch any uncaught Throwable during request bootstrap and render a
+ * friendly fallback page instead of a blank screen. Triggers when the
+ * deployed code references schema (table / column) that the matching
+ * migrate-*.php hasn't been applied for yet — typically the brief
+ * window between a deploy landing and an admin running the migrations.
+ *
+ * Production: shows a generic "service starting" message.
+ * Alpha / Beta: includes the exception text + the exact admin path
+ *               to apply pending migrations.
+ *
+ * Register before any DB-touching require (config.php pulls APP_CONFIG
+ * but doesn't connect; SongData / channel_gate do).
+ * ========================================================================= */
+set_exception_handler(function (\Throwable $e): void {
+    error_log('[index.php bootstrap] uncaught ' . get_class($e) . ': ' . $e->getMessage()
+            . ' at ' . basename($e->getFile()) . ':' . $e->getLine());
+    if (!headers_sent()) {
+        http_response_code(503);
+        header('Content-Type: text/html; charset=UTF-8');
+        header('Retry-After: 30');
+    }
+    /* Best-effort: if we can detect Alpha/Beta from the server path, give
+       the admin a direct link to fix it. Production keeps the message
+       generic so a casual visitor isn't shown internals. */
+    $serverPath = (string)($_SERVER['SCRIPT_FILENAME'] ?? '');
+    $isPreProd  = str_contains($serverPath, 'public_html_dev')
+               || str_contains($serverPath, 'public_html_beta');
+    $detail = '';
+    if ($isPreProd) {
+        $detail = '<p class="muted">'
+                . htmlspecialchars(get_class($e) . ': ' . $e->getMessage())
+                . '</p><p>Admins: visit '
+                . '<a href="/manage/setup-database">/manage/setup-database</a> '
+                . 'and click <strong>Apply all pending migrations</strong>.</p>';
+    }
+    echo <<<HTML
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>iHymns — Service starting</title>
+<style>
+ body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#1a1d21;color:#e8e6e3;
+      margin:0;padding:2rem;display:flex;min-height:100vh;align-items:center;justify-content:center}
+ main{max-width:480px;text-align:center}
+ h1{font-size:1.5rem;margin:0 0 .75rem}
+ p{line-height:1.5;margin:.5rem 0}
+ .muted{color:#888;font-size:.85rem;font-family:ui-monospace,monospace;text-align:left;
+        background:#0f1115;padding:.75rem;border-radius:6px;overflow-wrap:break-word}
+ a{color:#67aaff}
+</style></head>
+<body><main>
+ <h1>iHymns is starting up</h1>
+ <p>The service is initialising. Please retry in a moment.</p>
+ {$detail}
+</main></body></html>
+HTML;
+});
+
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
@@ -272,8 +333,13 @@ try {
     else {
         $pageType = 'other';
     }
-} catch (\RuntimeException $e) {
-    /* If song data isn't available, use defaults — no fatal error */
+} catch (\Throwable $e) {
+    /* If song data isn't available, use defaults — no fatal error.
+       Widened from \RuntimeException → \Throwable (#811) so a fresh
+       deploy that lands new-schema code before its migrations have
+       run still renders the page; the metadata block falls back to
+       the static defaults rather than blanking the site. */
+    error_log('[index.php] OG/route detection failed: ' . $e->getMessage());
 }
 
 /* JSON-LD: WebSite schema with SearchAction (home page only) */
