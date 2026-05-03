@@ -1608,6 +1608,30 @@ class SongData
             $results = $this->_searchByWriterComposer($query, $songbookId, $limit);
         }
 
+        /* Alternative-title matches (#832) — also surface songs whose
+           tblSongAlternativeTitles row matches the query. Merges
+           de-duplicated into the existing result list AT THE TOP so
+           a curator-flagged alt match outranks a body-text fuzzy hit
+           (a search for "Faith's Review and Expectation" should put
+           Amazing Grace first, not buried below lyrics matches). */
+        $altHits = $this->_searchByAlternativeTitle($query, $songbookId, $limit);
+        if (!empty($altHits)) {
+            $seenAlt = [];
+            foreach ($results as $r) { $seenAlt[$r['id']] = true; }
+            $merged = [];
+            foreach ($altHits as $hit) {
+                if (!isset($seenAlt[$hit['id']])) {
+                    $merged[] = $hit;
+                    $seenAlt[$hit['id']] = true;
+                }
+            }
+            foreach ($results as $r) {
+                $merged[] = $r;
+            }
+            $results = $merged;
+            if ($limit > 0) $results = array_slice($results, 0, $limit);
+        }
+
         /* Scripture-reference tag matches (#397 follow-up) — if the query
            looked like a scripture reference, ALSO surface songs that have
            been tagged with the canonical book or full reference. Merges
@@ -1639,6 +1663,97 @@ class SongData
      * via /manage/editor/ (tags UI) and the hit merges into search
      * results for scripture-style queries.
      */
+
+    /**
+     * Search songs by alternative title (#832). Returns the same row
+     * shape as searchSongs() so the caller can merge results
+     * transparently. The match ranks "alt title contains the query"
+     * at the same level as a canonical title hit — alt titles ARE
+     * canonical-equivalents in MusicBrainz parlance, just less
+     * prominent. Each returned row also carries `matchedVia` =
+     * { alternativeTitle: "<the alt that matched>" } so the result
+     * UI can render a "(known as: …)" hint.
+     *
+     * Schema-probed; pre-migration deployments return an empty list.
+     */
+    private function _searchByAlternativeTitle(string $query, ?string $songbookId, int $limit): array
+    {
+        if ($this->jsonMode || !$this->db) return [];
+        $query = trim($query);
+        if ($query === '') return [];
+
+        /* Probe — bail cheaply when the schema isn't live. */
+        try {
+            $probe = $this->db->query(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongAlternativeTitles' LIMIT 1"
+            );
+            $exists = $probe && $probe->fetch_row() !== null;
+            if ($probe) $probe->close();
+            if (!$exists) return [];
+        } catch (\Throwable $_e) {
+            return [];
+        }
+
+        try {
+            $like = '%' . $query . '%';
+            $sql  = 'SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
+                            s.SongbookAbbr AS songbook, s.SongbookName AS songbookName,
+                            s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
+                            s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
+                            s.MusicPublicDomain AS musicPublicDomain,
+                            s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic,
+                            a.Title AS matchedAltTitle
+                       FROM tblSongAlternativeTitles a
+                       JOIN tblSongs s ON s.SongId = a.SongId
+                      WHERE a.Title LIKE ?';
+            $params = [$like];
+            $types  = 's';
+            if ($songbookId !== null) {
+                $songbookId = strtoupper(trim($songbookId));
+                $sql .= ' AND s.SongbookAbbr = ?';
+                $params[] = $songbookId;
+                $types   .= 's';
+            }
+            $sql .= ' ORDER BY s.SongbookAbbr, s.Number';
+            if ($limit > 0) {
+                $sql .= ' LIMIT ?';
+                $params[] = $limit;
+                $types   .= 'i';
+            }
+
+            $stmt = $this->db->prepare($sql);
+            $stmt->bind_param($types, ...$params);
+            $stmt->execute();
+            $res = $stmt->get_result();
+
+            /* De-dup on SongId — a song with three alt-titles all matching
+               the query would otherwise appear three times in the merge. */
+            $hits = [];
+            while ($row = $res->fetch_assoc()) {
+                $sid = (string)$row['id'];
+                if (isset($hits[$sid])) continue;
+                $matchedAlt = (string)($row['matchedAltTitle'] ?? '');
+                unset($row['matchedAltTitle']);
+                $row['number'] = normaliseSongNumber($row['number']);
+                $row['verified'] = (bool)$row['verified'];
+                $row['lyricsPublicDomain'] = (bool)$row['lyricsPublicDomain'];
+                $row['musicPublicDomain'] = (bool)$row['musicPublicDomain'];
+                $row['hasAudio'] = (bool)$row['hasAudio'];
+                $row['hasSheetMusic'] = (bool)$row['hasSheetMusic'];
+                $row['matchedVia'] = ['alternativeTitle' => $matchedAlt];
+                $hits[$sid] = $row;
+            }
+            $stmt->close();
+            $hits = array_values($hits);
+            $this->_attachSearchResultCredits($hits);
+            return $hits;
+        } catch (\Throwable $e) {
+            error_log('[SongData::_searchByAlternativeTitle] ' . $e->getMessage());
+            return [];
+        }
+    }
+
     private function _searchByScriptureTag(string $scriptureRef, ?string $songbookId): array
     {
         if ($this->jsonMode || !$this->db) return [];
