@@ -533,6 +533,137 @@ $migrationCards = [
        runs an initial recompute as part of its installation. The
        underlying script remains on disk for emergency CLI runs. */
 ];
+
+/* =========================================================================
+ * MIGRATION PENDING-PROBES (#820)
+ *
+ * Each entry maps an action slug to a closure that returns true when
+ * the migration still has work to do (schema not yet applied / data
+ * not yet backfilled). The dashboard partitions $migrationOrder using
+ * these results into a "pending" group rendered above the fold and an
+ * "already applied" group rolled into a <details> expander.
+ *
+ * Probes centralised here rather than per-script so the existing
+ * migrate-*.php files don't need touching — every probe is a cheap
+ * INFORMATION_SCHEMA / SHOW TABLES check using the helpers below.
+ *
+ * Conservative defaults:
+ *   - probe missing for a slug → treated as pending (always shown).
+ *   - probe throws → treated as pending (assume work needed; better
+ *     to over-show than to silently hide a migration the operator
+ *     may need to debug).
+ *   - data-only backfills (tag-titlecase) where "applied" is
+ *     undetectable cheaply: returns true (always shown). Re-running
+ *     them is a no-op, so over-showing costs nothing.
+ * ========================================================================= */
+
+/** Returns true when an INFORMATION_SCHEMA TABLES row exists for $table. */
+function _migProbe_tableExists(\mysqli $db, string $table): bool
+{
+    $stmt = $db->prepare(
+        'SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1'
+    );
+    $stmt->bind_param('s', $table);
+    $stmt->execute();
+    $exists = (bool)$stmt->get_result()->fetch_row();
+    $stmt->close();
+    return $exists;
+}
+
+/** Returns true when an INFORMATION_SCHEMA COLUMNS row exists for $table.$column. */
+function _migProbe_columnExists(\mysqli $db, string $table, string $column): bool
+{
+    $stmt = $db->prepare(
+        'SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1'
+    );
+    $stmt->bind_param('ss', $table, $column);
+    $stmt->execute();
+    $exists = (bool)$stmt->get_result()->fetch_row();
+    $stmt->close();
+    return $exists;
+}
+
+/** Returns true when $table.$column is currently nullable per INFORMATION_SCHEMA. */
+function _migProbe_columnIsNullable(\mysqli $db, string $table, string $column): bool
+{
+    $stmt = $db->prepare(
+        'SELECT IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1'
+    );
+    $stmt->bind_param('ss', $table, $column);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    return $row && strtoupper((string)$row['IS_NULLABLE']) === 'YES';
+}
+
+/** Returns true when an INFORMATION_SCHEMA TRIGGERS row exists for $trigger. */
+function _migProbe_triggerExists(\mysqli $db, string $trigger): bool
+{
+    $stmt = $db->prepare(
+        'SELECT 1 FROM INFORMATION_SCHEMA.TRIGGERS
+          WHERE TRIGGER_SCHEMA = DATABASE() AND TRIGGER_NAME = ? LIMIT 1'
+    );
+    $stmt->bind_param('s', $trigger);
+    $stmt->execute();
+    $exists = (bool)$stmt->get_result()->fetch_row();
+    $stmt->close();
+    return $exists;
+}
+
+$migrationProbes = [
+    /* Schema-additive migrations — pending when their marker column /
+       table doesn't yet exist. The choice of marker is the most
+       distinctive add per migration, so a partial run of a previous
+       migration that landed some columns but not others gets re-run
+       (and is idempotent — safe). */
+    'account-sync'                       => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblUsers', 'Settings'),
+    'credits'                            => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongs', 'TuneName'),
+    'songbook-meta'                      => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongbooks', 'IsOfficial'),
+    'user-features-catchup'              => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblUserGroups', 'AllowCardReorder'),
+    'activity-log-expand'                => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblActivityLog', 'RequestId'),
+    'credit-people'                      => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblCreditPeople'),
+    'credit-people-flags'                => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblCreditPeople', 'IsSpecialCase'),
+    'song-artists'                       => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongArtists'),
+    'credit-people-slug'                 => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblCreditPeople', 'Slug'),
+    'user-avatar-service'                => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblUsers', 'AvatarService'),
+    'organisation-licences'              => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblOrganisationLicences'),
+    'songbook-affiliations'              => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongbookAffiliations'),
+    'songbook-bibliographic'             => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongbooks', 'WikidataId'),
+    'songbook-language'                  => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongbooks', 'Language'),
+    /* IETF BCP 47 Language Tagging adds tblScripts (later renamed →
+       tblLanguageScripts in #738). Either name signals the schema is
+       at-or-past this migration. */
+    'ietf-bcp47-language'                => static fn(\mysqli $db) =>
+        !(_migProbe_tableExists($db, 'tblScripts') || _migProbe_tableExists($db, 'tblLanguageScripts')),
+    'bulk-import-jobs'                   => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblBulkImportJobs'),
+    'user-preferred-languages'           => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblUsers', 'PreferredLanguagesJson'),
+    /* IANA + CLDR import (#738) — pending when the rename to
+       tblLanguageScripts hasn't happened OR tblLanguageVariants
+       isn't there. Either signals the schema-half of the migration
+       hasn't run; data-only re-runs are cheap. */
+    'iana-language-subtag-registry'      => static fn(\mysqli $db) =>
+        !_migProbe_tableExists($db, 'tblLanguageVariants') || !_migProbe_columnExists($db, 'tblLanguages', 'Scope'),
+    'tblsongs-number-nullable'           => static fn(\mysqli $db) => !_migProbe_columnIsNullable($db, 'tblSongs', 'Number'),
+    'multi-language-tables'              => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongbookLanguages'),
+    'parent-songbooks'                   => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongbooks', 'ParentSongbookId'),
+    'song-links'                         => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongLinks'),
+    /* SongCount triggers (#793) — pending when the AFTER INSERT
+       trigger is absent. On hosts that disallow CREATE TRIGGER the
+       migration's friendly-skip path (#815) means this stays
+       "pending" forever, but re-running is a no-op (the recompute
+       logic still fires on every run), so the card is always
+       reachable as a manual recompute. */
+    'songcount-triggers'                 => static fn(\mysqli $db) => !_migProbe_triggerExists($db, 'trg_songs_songcount_ai'),
+    /* Data-only backfills — applied state isn't cheap to detect
+       reliably from schema alone. Default to "always show" so a
+       curator can always re-run; re-runs are idempotent. */
+    'cldr-native-names'                  => static fn(\mysqli $db) => true,
+    'tag-titlecase'                      => static fn(\mysqli $db) => true,
+    'backfill-legacy-songbook-languages' => static fn(\mysqli $db) => true,
+];
 /* Captured during bulk-run so the failure can be surfaced as a visible
    banner ABOVE the (potentially long, scrollable) output panel. (#720) */
 $bulkFirstFailStep    = null;
@@ -827,6 +958,12 @@ if ($action !== '') {
 $dbStatus = null;
 $dbTables = [];
 
+/* Pending vs applied partition (#820). Populated by the probes inside
+   the dbStatus block below; defaults to "everything pending" so a
+   missing connection / probe failure shows the full grid (safe). */
+$pendingActions = $migrationOrder;
+$appliedActions = [];
+
 if ($hasCredentials && defined('DB_HOST')) {
     try {
         $statusConn = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME, (int)DB_PORT);
@@ -840,9 +977,37 @@ if ($hasCredentials && defined('DB_HOST')) {
             $count = $countResult ? (int)$countResult->fetch_assoc()['cnt'] : 0;
             $dbTables[] = ['name' => $tableName, 'count' => $count];
         }
+
+        /* Run pending-probes against the live schema (#820). Uses the
+           same connection we just opened — a single round trip per
+           probe, all under 100 ms cumulatively on a typical install.
+           Any throw / unknown probe falls into "pending" so the card
+           still appears (over-show is safe; under-hide is not). */
+        $pendingActions = [];
+        $appliedActions = [];
+        foreach ($migrationOrder as $_action) {
+            $_probe = $migrationProbes[$_action] ?? null;
+            if ($_probe === null) {
+                $pendingActions[] = $_action;
+                continue;
+            }
+            try {
+                if ($_probe($statusConn)) {
+                    $pendingActions[] = $_action;
+                } else {
+                    $appliedActions[] = $_action;
+                }
+            } catch (\Throwable $_pe) {
+                $pendingActions[] = $_action;
+            }
+        }
+
         $statusConn->close();
     } catch (\Throwable $e) {
         $dbStatus = 'error: ' . $e->getMessage();
+        /* On connection failure, leave $pendingActions = $migrationOrder
+           (set to default above) so the curator still sees the cards
+           and can debug. */
     }
 }
 
@@ -1042,18 +1207,46 @@ if ($hasCredentials && defined('DB_HOST')) {
              first, only dropping into individual cards when they
              need to debug a specific step.
              ============================================================ -->
-        <div class="alert alert-primary border-0 mb-4 d-flex flex-column flex-md-row gap-3 align-items-md-center justify-content-between">
+        <?php
+            /* Pending count for the Apply-all banner (#820). When the
+               schema is fully up-to-date we surface that explicitly so
+               an operator scanning the page knows there's nothing to do
+               without scrolling the card grid. Cards from $migrationOrder
+               without a $migrationCards entry don't count — they're
+               skip-only entries (or not yet defined). */
+            $_pendingCardCount = count(array_filter(
+                $pendingActions,
+                static fn(string $slug): bool => isset($migrationCards[$slug])
+            ));
+            $_alertVariant = $_pendingCardCount > 0 ? 'alert-primary' : 'alert-success';
+        ?>
+        <div class="alert <?= $_alertVariant ?> border-0 mb-4 d-flex flex-column flex-md-row gap-3 align-items-md-center justify-content-between">
             <div>
                 <h5 class="mb-1">
-                    <i class="bi bi-collection-play me-2" aria-hidden="true"></i>
-                    Apply all pending migrations
+                    <?php if ($_pendingCardCount > 0): ?>
+                        <i class="bi bi-collection-play me-2" aria-hidden="true"></i>
+                        Apply all pending migrations
+                        <span class="badge bg-warning text-dark ms-2" style="font-size: 0.75rem;">
+                            <?= $_pendingCardCount ?> pending
+                        </span>
+                    <?php else: ?>
+                        <i class="bi bi-check2-circle me-2" aria-hidden="true"></i>
+                        Schema fully up-to-date
+                    <?php endif; ?>
                 </h5>
                 <p class="mb-0 small">
-                    Runs every <code>migrate-*.php</code> in dependency order,
-                    skipping ones already applied (each migration is idempotent).
-                    Stops on the first hard failure with a clear pointer to the
-                    offending step. Use this on a fresh install, after a deploy,
-                    or whenever the schema-audit page (#518) shows drift.
+                    <?php if ($_pendingCardCount > 0): ?>
+                        Runs every <code>migrate-*.php</code> in dependency order,
+                        skipping ones already applied (each migration is idempotent).
+                        Stops on the first hard failure with a clear pointer to the
+                        offending step. Use this on a fresh install, after a deploy,
+                        or whenever the schema-audit page (#518) shows drift.
+                    <?php else: ?>
+                        Every migration's pending-probe (#820) reports its work as
+                        applied. The "Apply all" button still works (a bulk re-run
+                        is a safe no-op); previously-applied cards are tucked into
+                        the expander below for diagnostic re-runs.
+                    <?php endif; ?>
                 </p>
             </div>
             <a href="?action=apply-all-migrations"
@@ -1122,37 +1315,84 @@ if ($hasCredentials && defined('DB_HOST')) {
                  (3a, 3b, … 3z, 3y2) was non-monotonic and rotted on
                  every addition.
 
+                 #820 — pending vs applied partition. $pendingActions
+                 (cards whose work the schema probes detect as not yet
+                 applied) render normally above the fold;
+                 $appliedActions roll into a <details> expander below
+                 so a fully-up-to-date database shows just the few
+                 cards an admin needs to act on, not all 25.
+
                  To add a new migration card, add an entry to
-                 $migrationCards above and append its action key to
-                 $migrationOrder. The bulk runner picks it up
-                 automatically; this loop renders it in the correct
-                 grid position with no further edits.
+                 $migrationCards above, append its action key to
+                 $migrationOrder, and add a probe to $migrationProbes
+                 so the partition can detect it.
                  ============================================================ -->
-            <?php foreach ($migrationOrder as $_migAction): ?>
-                <?php
-                    /* Skip if no card definition — keeps $migrationOrder
-                       able to track scripts that run via "Apply all"
-                       but don't need a per-card UI (e.g. the redundant
-                       recompute step removed in #818). */
-                    $_card = $migrationCards[$_migAction] ?? null;
-                    if (!$_card) continue;
-                ?>
-                <div class="col-md-6">
-                    <div class="card bg-dark border-secondary h-100">
-                        <div class="card-body">
-                            <h5 class="card-title"><?= $_card['title'] ?></h5>
-                            <p class="card-text text-secondary small"><?= $_card['body'] ?></p>
-                            <a href="?action=<?= htmlspecialchars($_migAction) ?>"
-                               class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
-                                <?= htmlspecialchars($_card['button']) ?>
-                            </a>
-                            <?php if (!empty($_card['extra_html'])): ?>
-                                <?= $_card['extra_html'] ?>
-                            <?php endif; ?>
+            <?php
+                /* Render helper — single card markup reused for both
+                   the pending grid and the inside-expander grid. */
+                $_renderCard = static function (string $migAction, array $card, bool $hasCreds): void {
+                    ?>
+                    <div class="col-md-6">
+                        <div class="card bg-dark border-secondary h-100">
+                            <div class="card-body">
+                                <h5 class="card-title"><?= $card['title'] ?></h5>
+                                <p class="card-text text-secondary small"><?= $card['body'] ?></p>
+                                <a href="?action=<?= htmlspecialchars($migAction) ?>"
+                                   class="btn btn-info btn-action <?= $hasCreds ? '' : 'disabled' ?>">
+                                    <?= htmlspecialchars($card['button']) ?>
+                                </a>
+                                <?php if (!empty($card['extra_html'])): ?>
+                                    <?= $card['extra_html'] ?>
+                                <?php endif; ?>
+                            </div>
                         </div>
                     </div>
-                </div>
+                    <?php
+                };
+            ?>
+
+            <?php foreach ($pendingActions as $_migAction): ?>
+                <?php
+                    $_card = $migrationCards[$_migAction] ?? null;
+                    if (!$_card) continue;     /* slug in $migrationOrder but no card body */
+                    $_renderCard($_migAction, $_card, $hasCredentials);
+                ?>
             <?php endforeach; ?>
+
+            <?php
+                /* Filter applied list to slugs that actually have card
+                   bodies (some $migrationOrder entries — like the
+                   removed recompute step — have no card). The expander
+                   should only count rows it can actually render. */
+                $_appliedRenderable = array_values(array_filter(
+                    $appliedActions,
+                    static fn(string $slug): bool => isset($migrationCards[$slug])
+                ));
+            ?>
+            <?php if (!empty($_appliedRenderable)): ?>
+                <div class="col-12">
+                    <details class="card bg-dark border-secondary applied-migrations-details">
+                        <summary class="card-header d-flex align-items-center gap-2 text-secondary small" style="cursor: pointer;">
+                            <i class="bi bi-check2-circle text-success" aria-hidden="true"></i>
+                            <span>
+                                <strong><?= count($_appliedRenderable) ?></strong>
+                                migration<?= count($_appliedRenderable) === 1 ? '' : 's' ?>
+                                already applied — click to show
+                            </span>
+                            <span class="ms-auto small text-muted">
+                                Re-running an applied migration is a safe no-op.
+                            </span>
+                        </summary>
+                        <div class="card-body">
+                            <div class="row g-3">
+                                <?php foreach ($_appliedRenderable as $_appliedAction): ?>
+                                    <?php $_renderCard($_appliedAction, $migrationCards[$_appliedAction], $hasCredentials); ?>
+                                <?php endforeach; ?>
+                            </div>
+                        </div>
+                    </details>
+                </div>
+            <?php endif; ?>
 
             <div class="col-md-6">
                 <div class="card bg-dark border-secondary h-100">
