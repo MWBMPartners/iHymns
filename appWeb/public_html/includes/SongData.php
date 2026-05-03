@@ -377,13 +377,20 @@ class SongData
             $hasBibCols = $probe->get_result()->fetch_row() !== null;
             $probe->close();
         } catch (\Throwable $_e) { /* probe failure → fall through to empty tail */ }
+        /* Every column is `b.`-qualified so the SELECT compiles when the
+           parent-songbook self-join (LEFT JOIN tblSongbooks p ON …, see
+           _songbookParentJoin) is also active. Without the alias prefix
+           every name in this fragment is ambiguous because both `b` and
+           `p` are aliases for tblSongbooks — produced "Column 'X' in
+           field list is ambiguous" 500s on every getSongbooks() call once
+           both #672 (bib) and #782 (parent) had been applied. */
         $this->_bibSelectCache = $hasBibCols
-            ? ', WebsiteUrl AS websiteUrl, InternetArchiveUrl AS internetArchiveUrl,
-               WikipediaUrl AS wikipediaUrl, WikidataId AS wikidataId,
-               OclcNumber AS oclcNumber, OcnNumber AS ocnNumber,
-               LcpNumber AS lcpNumber, Isbn AS isbn,
-               ArkId AS arkId, IsniId AS isniId,
-               ViafId AS viafId, Lccn AS lccn, LcClass AS lcClass'
+            ? ', b.WebsiteUrl AS websiteUrl, b.InternetArchiveUrl AS internetArchiveUrl,
+               b.WikipediaUrl AS wikipediaUrl, b.WikidataId AS wikidataId,
+               b.OclcNumber AS oclcNumber, b.OcnNumber AS ocnNumber,
+               b.LcpNumber AS lcpNumber, b.Isbn AS isbn,
+               b.ArkId AS arkId, b.IsniId AS isniId,
+               b.ViafId AS viafId, b.Lccn AS lccn, b.LcClass AS lcClass'
             : '';
         return $this->_bibSelectCache;
     }
@@ -413,7 +420,10 @@ class SongData
             $hasLangCol = $probe->get_result()->fetch_row() !== null;
             $probe->close();
         } catch (\Throwable $_e) { /* probe failure → no Language tail */ }
-        $this->_langSelectCache = $hasLangCol ? ', Language AS language' : '';
+        /* `b.`-qualified — same reason as _songbookBibSelect() above; the
+           parent-songbook self-join makes any unqualified column
+           ambiguous. */
+        $this->_langSelectCache = $hasLangCol ? ', b.Language AS language' : '';
         return $this->_langSelectCache;
     }
     private ?string $_langSelectCache = null;
