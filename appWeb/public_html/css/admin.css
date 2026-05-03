@@ -81,12 +81,40 @@ a:not(.btn):not(.nav-link):not(.dropdown-item):hover {
     right: 0;
     z-index: 1030;
     min-height: var(--admin-navbar-height);
+    /* Honour the iOS top safe area so the navbar can't sit under the
+       Dynamic Island / notch on installed PWA. Mirrors the public
+       site's .app-header rule in app.css. */
+    padding-top: calc(0.5rem + env(safe-area-inset-top, 0px));
+    padding-left: calc(1rem + env(safe-area-inset-left, 0px));
+    padding-right: calc(1rem + env(safe-area-inset-right, 0px));
     /* Keep the solid --surface-card background from the shared rule
        above. The main app's .app-header uses a translucent glass token
        because the content scrolling under it provides visual context,
        but the admin navbar sits above tightly-packed dashboard cards
        at the same slate-900 tone and disappears when translucent. */
     box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+}
+
+/* Narrow-viewport polish — stop the right-side button cluster
+   (theme + avatar + hamburger) from being clipped on phones in
+   portrait. The hamburger is the rightmost element and was reported
+   sliding past the viewport edge on the dashboard view. Tighten
+   the inline gaps + horizontal padding so every header item stays
+   reachable. */
+@media (max-width: 575.98px) {
+    .navbar-admin {
+        padding-left: calc(0.5rem + env(safe-area-inset-left, 0px));
+        padding-right: calc(0.5rem + env(safe-area-inset-right, 0px));
+    }
+    .navbar-admin .container-fluid {
+        padding-left: 0.25rem;
+        padding-right: 0.25rem;
+    }
+    .navbar-admin .d-flex.gap-2 {
+        gap: 0.25rem !important;
+    }
+    /* Brand chip (".badge.env-badge") already uses a stable pill at
+       this width via app.css #812; nothing further needed here. */
 }
 
 /* Admin footer — fixed to the bottom of the viewport. Uses the card
@@ -102,8 +130,13 @@ a:not(.btn):not(.nav-link):not(.dropdown-item):hover {
     left: 0;
     right: 0;
     z-index: 1030;
+    /* Honour the iOS home-indicator safe area so the footer doesn't
+       sit under it on installed PWA. env() is universally supported;
+       desktop browsers fall back to the literal `0px`. */
     padding-top: 0.4rem;
-    padding-bottom: 0.4rem;
+    padding-bottom: calc(0.4rem + env(safe-area-inset-bottom, 0px));
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
     background-color: var(--surface-card);
     border-top: 1px solid var(--card-border);
     box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.35);
@@ -115,10 +148,13 @@ a:not(.btn):not(.nav-link):not(.dropdown-item):hover {
    Scoped with :has() so the Song Editor (which uses .navbar-editor and
    its own full-height flex layout) is unaffected. Uses the shared
    --footer-info-height token (28 px normal / 40 px small viewports per
-   the media queries in app.css). */
+   the media queries in app.css). The safe-area-inset additions match
+   the public-site .main-content rule in app.css so the admin chrome
+   feels identical on iOS PWA — same gap above the notch + clearance
+   above the home indicator. */
 body:has(.navbar-admin) {
-    padding-top: calc(var(--admin-navbar-height) + 0.5rem);
-    padding-bottom: calc(var(--footer-info-height) + 1rem);
+    padding-top: calc(var(--admin-navbar-height) + 0.5rem + env(safe-area-inset-top, 0px));
+    padding-bottom: calc(var(--footer-info-height) + 1rem + env(safe-area-inset-bottom, 0px));
 }
 
 /* ==========================================================================
@@ -137,10 +173,13 @@ body:has(.navbar-admin) {
        pane can stretch to a visible edge on short pages instead of
        leaving body-background whitespace below them (#499). Tall
        pages scroll naturally because .admin-main's content grows
-       the layout. */
+       the layout. Subtract the iOS safe-area insets too so the
+       layout doesn't push past the home indicator on installed PWA. */
     min-height: calc(100vh
                      - var(--admin-navbar-height)
                      - var(--footer-info-height)
+                     - env(safe-area-inset-top, 0px)
+                     - env(safe-area-inset-bottom, 0px)
                      - 1rem);
 }
 
@@ -153,9 +192,11 @@ body:has(.navbar-admin) {
     /* Sticky under the fixed top bar, bounded by the fixed footer, so
        the sidebar stays visible while the main column scrolls. The
        `top` offset matches the body's padding-top that clears
-       .navbar-admin (see body:has(.navbar-admin) above). */
+       .navbar-admin (see body:has(.navbar-admin) above) — including
+       the iOS safe-area-inset-top so the sidebar sits exactly below
+       the navbar on installed PWA. */
     position: sticky;
-    top: calc(var(--admin-navbar-height) + 0.5rem);
+    top: calc(var(--admin-navbar-height) + 0.5rem + env(safe-area-inset-top, 0px));
     /* Before #499 the sidebar aligned flex-start with a max-height,
        which left visible body background below it on tall viewports.
        Drop align-self so the flex parent stretches us to the layout
@@ -165,6 +206,8 @@ body:has(.navbar-admin) {
     max-height: calc(100vh
                      - var(--admin-navbar-height)
                      - var(--footer-info-height)
+                     - env(safe-area-inset-top, 0px)
+                     - env(safe-area-inset-bottom, 0px)
                      - 1rem);
     overflow-y: auto;
 }
