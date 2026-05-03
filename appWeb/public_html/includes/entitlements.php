@@ -60,6 +60,15 @@ const ENTITLEMENTS = [
        grade outbound traffic from the server's IP. */
     'manage_configuration' => ['global_admin'],
 
+    /* In-app notifications admin — compose & broadcast. (#813)
+       Global Admin only: a broadcast targeting "all signed-in users"
+       can amount to mass messaging that's hard to revoke once
+       people have read it. Limit to operators who own platform
+       comms. The header bell + per-user list endpoints remain open
+       to every signed-in user; this is just for posting / managing
+       the feed. */
+    'manage_notifications' => ['global_admin'],
+
     /* Content moderation */
     'review_song_requests' => ['editor', 'admin', 'global_admin'],
 

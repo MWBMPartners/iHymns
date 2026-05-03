@@ -29,38 +29,56 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
+/* Sidebar group layout (#819). The Content group had grown to 12
+   items and dwarfed every other section — split into three more
+   meaningful groups (Songs / Catalogue / Access) and consolidated
+   Entitlements alongside the other gating concerns under Access.
+   The new groups render as collapsible accordion sections in
+   admin-sidebar.php and the mobile offcanvas. */
 $_adminLinks = [
-    /* id               href                       icon                 label                   entitlement                    group         */
-    ['dashboard',       '/manage/',                'bi-speedometer2',   'Dashboard',            null,                          ''           ],
-    ['editor',          '/manage/editor/',         'bi-pencil-square',  'Song Editor',          'edit_songs',                  'Content'    ],
-    ['requests',        '/manage/requests',        'bi-lightbulb',      'Song Requests',        'review_song_requests',        'Content'    ],
-    ['revisions',       '/manage/revisions',       'bi-clock-history',  'Revisions Audit',      'verify_songs',                'Content'    ],
-    ['missing-numbers', '/manage/missing-numbers', 'bi-binoculars',     'Missing Numbers',      'edit_songs',                  'Content'    ],
-    ['song-link-suggestions', '/manage/song-link-suggestions', 'bi-lightbulb', 'Song Link Suggestions', 'edit_songs',         'Content'    ],
-    ['songbooks',       '/manage/songbooks',       'bi-book',           'Songbooks',            'manage_songbooks',            'Content'    ],
-    ['songbook-series', '/manage/songbook-series', 'bi-collection',     'Songbook Series',      'manage_songbooks',            'Content'    ],
-    ['credit-people',   '/manage/credit-people',   'bi-person-badge',   'Credit People',        'manage_credit_people',        'Content'    ],
-    ['languages',       '/manage/languages',       'bi-translate',      'Languages',            'manage_languages',            'Content'    ],
-    ['tags',            '/manage/tags',            'bi-tags',           'Tags & Themes',        'manage_tags',                 'Content'    ],
-    ['restrictions',    '/manage/restrictions',    'bi-shield-lock',    'Content Restrictions', 'manage_content_restrictions', 'Content'    ],
-    ['tiers',           '/manage/tiers',           'bi-stars',          'Access Tiers',         'manage_access_tiers',         'Content'    ],
-    ['users',           '/manage/users',           'bi-people',         'Users',                'view_users',                  'People'     ],
-    ['groups',          '/manage/groups',          'bi-people-fill',    'User Groups',          'manage_user_groups',          'People'     ],
-    ['organisations',   '/manage/organisations',   'bi-building',       'Organisations',        'manage_organisations',        'People'     ],
+    /* id                    href                              icon                  label                    entitlement                    group         */
+    ['dashboard',            '/manage/',                       'bi-speedometer2',    'Dashboard',             null,                          ''           ],
+
+    /* Songs — per-row content surfaces (#819) */
+    ['editor',               '/manage/editor/',                'bi-pencil-square',   'Song Editor',           'edit_songs',                  'Songs'      ],
+    ['requests',             '/manage/requests',               'bi-lightbulb',       'Song Requests',         'review_song_requests',        'Songs'      ],
+    ['revisions',            '/manage/revisions',              'bi-clock-history',   'Revisions Audit',       'verify_songs',                'Songs'      ],
+    ['missing-numbers',      '/manage/missing-numbers',        'bi-binoculars',      'Missing Numbers',       'edit_songs',                  'Songs'      ],
+    ['song-link-suggestions','/manage/song-link-suggestions',  'bi-link-45deg',      'Song Link Suggestions', 'edit_songs',                  'Songs'      ],
+
+    /* Catalogue — collection / metadata surfaces (#819) */
+    ['songbooks',            '/manage/songbooks',              'bi-book',            'Songbooks',             'manage_songbooks',            'Catalogue'  ],
+    ['songbook-series',      '/manage/songbook-series',        'bi-collection',      'Songbook Series',       'manage_songbooks',            'Catalogue'  ],
+    ['credit-people',        '/manage/credit-people',          'bi-person-badge',    'Credit People',         'manage_credit_people',        'Catalogue'  ],
+    ['languages',            '/manage/languages',              'bi-translate',       'Languages',             'manage_languages',            'Catalogue'  ],
+    ['tags',                 '/manage/tags',                   'bi-tags',            'Tags & Themes',         'manage_tags',                 'Catalogue'  ],
+
+    /* Access — gating + permission surfaces (#819) */
+    ['restrictions',         '/manage/restrictions',           'bi-shield-lock',     'Content Restrictions',  'manage_content_restrictions', 'Access'     ],
+    ['tiers',                '/manage/tiers',                  'bi-stars',           'Access Tiers',          'manage_access_tiers',         'Access'     ],
+    ['entitlements',         '/manage/entitlements',           'bi-key',             'Entitlements',          'manage_entitlements',         'Access'     ],
+
+    /* People */
+    ['users',                '/manage/users',                  'bi-people',          'Users',                 'view_users',                  'People'     ],
+    ['groups',               '/manage/groups',                 'bi-people-fill',     'User Groups',           'manage_user_groups',          'People'     ],
+    ['organisations',        '/manage/organisations',          'bi-building',        'Organisations',         'manage_organisations',        'People'     ],
     /* My Organisations (#707) — the entitlement is open to every signed-in
        role; admin-nav.php applies a data-driven hide via
        userHasOwnOrganisation() so non-admins only see this link when they
        hold an admin/owner row in tblOrganisationMembers. */
-    ['my-organisations','/manage/my-organisations','bi-buildings',      'My Organisations',     'manage_own_organisation',     'People'     ],
-    ['entitlements',    '/manage/entitlements',    'bi-key',            'Entitlements',         'manage_entitlements',         'People'     ],
-    ['analytics',       '/manage/analytics',       'bi-graph-up',       'Analytics',            'view_analytics',              'Operations' ],
-    ['ccli-report',     '/manage/ccli-report',     'bi-receipt',        'CCLI Usage Report',    'view_ccli_report',            'Operations' ],
-    ['data-health',     '/manage/data-health',     'bi-activity',       'Data Health',          'drop_legacy_tables',          'Operations' ],
-    ['activity-log',    '/manage/activity-log',    'bi-journal-text',   'Activity Log',         'view_activity_log',           'Operations' ],
-    ['schema-audit',    '/manage/schema-audit',    'bi-clipboard2-data','Schema Audit',         'drop_legacy_tables',          'Operations' ],
-    ['setup-database',  '/manage/setup-database',  'bi-database-gear',  'Database Setup',       'run_db_install',              'Operations' ],
-    ['configuration',   '/manage/configuration',   'bi-sliders',        'Configuration',        'manage_configuration',        'Operations' ],
-    ['help',            '/manage/help',            'bi-life-preserver', 'Help / Guides',        null,                          'Help'       ],
+    ['my-organisations',     '/manage/my-organisations',       'bi-buildings',       'My Organisations',      'manage_own_organisation',     'People'     ],
+
+    /* Operations — reports, maintenance, infrastructure */
+    ['analytics',            '/manage/analytics',              'bi-graph-up',        'Analytics',             'view_analytics',              'Operations' ],
+    ['ccli-report',          '/manage/ccli-report',            'bi-receipt',         'CCLI Usage Report',     'view_ccli_report',            'Operations' ],
+    ['data-health',          '/manage/data-health',            'bi-activity',        'Data Health',           'drop_legacy_tables',          'Operations' ],
+    ['activity-log',         '/manage/activity-log',           'bi-journal-text',    'Activity Log',          'view_activity_log',           'Operations' ],
+    ['schema-audit',         '/manage/schema-audit',           'bi-clipboard2-data', 'Schema Audit',          'drop_legacy_tables',          'Operations' ],
+    ['setup-database',       '/manage/setup-database',         'bi-database-gear',   'Database Setup',        'run_db_install',              'Operations' ],
+    ['configuration',        '/manage/configuration',          'bi-sliders',         'Configuration',         'manage_configuration',        'Operations' ],
+    ['notifications',        '/manage/notifications',          'bi-bell',            'Notifications',         'manage_notifications',        'Operations' ],
+
+    ['help',                 '/manage/help',                   'bi-life-preserver',  'Help / Guides',         null,                          'Help'       ],
 ];
 
 /**
