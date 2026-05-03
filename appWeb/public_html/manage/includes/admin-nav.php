@@ -122,11 +122,14 @@ $_avatarUrlLarge = userAvatarUrl($_userEmail, 64, $_userAvatarSvc);
                  ============================================================ -->
             <div class="d-flex align-items-center gap-2 ms-auto">
 
-                <!-- Search — layout slot reserved, hidden until admin
-                     search is wired up. Keeping the button in the DOM
-                     means enabling it later doesn't reflow the bar. -->
+                <!-- Search — layout slot reserved at md+ widths only,
+                     hidden until admin search is wired up. Removed from
+                     the layout (d-none) on phone-portrait widths so the
+                     reserved slot doesn't push the hamburger off-screen
+                     on iPhones (the user reported the burger sliding
+                     past the right edge). -->
                 <button type="button"
-                        class="btn btn-header-icon invisible"
+                        class="btn btn-header-icon invisible d-none d-md-inline-flex"
                         id="admin-search-btn"
                         aria-hidden="true"
                         tabindex="-1"
