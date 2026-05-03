@@ -618,6 +618,21 @@ try {
     $probeComp->close();
 } catch (\Throwable $_e) { /* probe failure → compilers UI stays hidden */ }
 
+/* Probe for tblSongbookAlternativeTitles (#832). Same hoist
+   rationale as $hasSeriesSchema — POST handler needs the gate. */
+$hasAltNamesSchema = false;
+try {
+    $probeAlt = $db->prepare(
+        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'tblSongbookAlternativeTitles'
+          LIMIT 1"
+    );
+    $probeAlt->execute();
+    $hasAltNamesSchema = $probeAlt->get_result()->fetch_row() !== null;
+    $probeAlt->close();
+} catch (\Throwable $_e) { /* probe failure → alt-names UI stays hidden */ }
+
 /* ----- POST actions ----- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
@@ -1112,6 +1127,58 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
                     }
 
+                    /* #832 — reconcile songbook alternative names. The edit
+                       modal posts parallel arrays:
+                         alt_name_titles[]  — the alt name string
+                         alt_name_notes[]   — optional per-row note
+                       Position N in each array is the same alt-name row;
+                       array index drives SortOrder. Empty / blank titles
+                       are dropped before insert.
+                       Schema-gated by $hasAltNamesSchema; pre-migration
+                       deployments skip this block silently. */
+                    $postedAltNames = [];
+                    if ($hasAltNamesSchema) {
+                        $rawT = $_POST['alt_name_titles'] ?? [];
+                        $rawN = $_POST['alt_name_notes']  ?? [];
+                        if (!is_array($rawT)) $rawT = [];
+                        if (!is_array($rawN)) $rawN = [];
+                        $altRows = [];
+                        $seen    = [];
+                        foreach ($rawT as $idx => $rawTitle) {
+                            $title = trim((string)$rawTitle);
+                            if ($title === '')              continue;
+                            $title = mb_substr($title, 0, 255);
+                            $key   = mb_strtolower($title);
+                            if (isset($seen[$key]))         continue;  /* de-dup case-insensitive */
+                            $seen[$key] = true;
+                            $note = trim((string)($rawN[$idx] ?? ''));
+                            $altRows[] = [
+                                'title' => $title,
+                                'note'  => ($note !== '' ? mb_substr($note, 0, 255) : null),
+                                'order' => count($altRows),
+                            ];
+                        }
+
+                        $stmt = $db->prepare('DELETE FROM tblSongbookAlternativeTitles WHERE SongbookId = ?');
+                        $stmt->bind_param('i', $id);
+                        $stmt->execute();
+                        $stmt->close();
+
+                        if ($altRows) {
+                            $stmt = $db->prepare(
+                                'INSERT INTO tblSongbookAlternativeTitles
+                                     (SongbookId, Title, SortOrder, Note)
+                                  VALUES (?, ?, ?, ?)'
+                            );
+                            foreach ($altRows as $a) {
+                                $stmt->bind_param('isis', $id, $a['title'], $a['order'], $a['note']);
+                                $stmt->execute();
+                                $postedAltNames[] = $a['title'];
+                            }
+                            $stmt->close();
+                        }
+                    }
+
                     $db->commit();
 
                     /* Audit (#535) — compute the changed-fields list
@@ -1165,6 +1232,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                     if ($hasCompilersSchema) {
                         $auditExtras['compiler_person_ids'] = $postedCompilerSet;
+                    }
+                    if ($hasAltNamesSchema) {
+                        $auditExtras['alternative_names'] = $postedAltNames;
                     }
                     logActivity('songbook.edit', 'songbook', (string)$id, array_merge([
                         'fields'             => $changed,
@@ -1755,6 +1825,37 @@ if ($hasCompilersSchema) {
     }
 }
 
+/* ----- Alternative-names map (#832) -----------------------------------
+ *       SongbookId => [{title, sortOrder, note}, …] in SortOrder asc.
+ *       Same caching strategy as $sbSeriesMap — single batch fetch
+ *       per page-load. Schema-conditional via $hasAltNamesSchema.
+ * ----- */
+$sbAltNamesMap = [];
+if ($hasAltNamesSchema) {
+    try {
+        $res = $db->query(
+            'SELECT SongbookId, Title, SortOrder, Note
+               FROM tblSongbookAlternativeTitles
+              ORDER BY SongbookId ASC, SortOrder ASC, Title ASC'
+        );
+        if ($res) {
+            while ($arow = $res->fetch_assoc()) {
+                $sb = (int)$arow['SongbookId'];
+                if (!isset($sbAltNamesMap[$sb])) $sbAltNamesMap[$sb] = [];
+                $sbAltNamesMap[$sb][] = [
+                    'title'      => (string)$arow['Title'],
+                    'sort_order' => (int)$arow['SortOrder'],
+                    'note'       => (string)($arow['Note'] ?? ''),
+                ];
+            }
+            $res->close();
+        }
+    } catch (\Throwable $e) {
+        error_log('[manage/songbooks.php alt-names fetch] ' . $e->getMessage());
+        $sbAltNamesMap = [];
+    }
+}
+
 /* ----- Active languages for the songbook editor's optional
  *       Language dropdown (#673). Sourced from tblLanguages so the
  *       admin doesn't have to hard-code ISO codes. We pull this
@@ -2111,6 +2212,10 @@ $csrf = csrfToken();
                                            person_slug, note. Empty list pre-migration or for
                                            songbooks with no compilers. */
                                         'compilers'             => $sbCompilersMap[(int)$r['Id']] ?? [],
+                                        /* #832 — alternative names attached to this songbook,
+                                           in SortOrder. Each item carries title + note. Empty
+                                           list pre-migration or for songbooks with no alts. */
+                                        'alternative_names'     => $sbAltNamesMap[(int)$r['Id']] ?? [],
                                     ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                                 ?>
                                 <button type="button" class="btn btn-sm btn-outline-info"
@@ -2796,6 +2901,40 @@ $csrf = csrfToken();
                         </div>
                         <?php endif; ?>
 
+                        <?php if ($hasAltNamesSchema): ?>
+                        <!-- #832 — Alternative songbook names. Multi-row chip list:
+                             each row pairs an alt-title with an optional Note
+                             ("vernacular", "older form", "transliteration", …).
+                             Reorder via drag handle persists via array index ⇒
+                             SortOrder on save. -->
+                        <div class="mb-3" id="edit-alt-names-block">
+                            <label class="form-label">Alternative names <span class="text-muted small">(optional)</span></label>
+                            <div class="form-text small mb-2">
+                                "Also known as …" — vernacular names, older spellings,
+                                or originals. Searched alongside the canonical name and
+                                emitted as JSON-LD <code>alternateName</code> for SEO.
+                            </div>
+                            <div id="edit-alt-names-rows" class="vstack gap-2 mb-2"></div>
+                            <div class="row g-2 align-items-end">
+                                <div class="col-md-9">
+                                    <input type="text"
+                                           class="form-control form-control-sm"
+                                           id="edit-alt-name-add-input"
+                                           placeholder="Type an alternative name and press Enter"
+                                           maxlength="255"
+                                           autocomplete="off">
+                                </div>
+                                <div class="col-md-3">
+                                    <button type="button"
+                                            class="btn btn-sm btn-outline-info w-100"
+                                            id="edit-alt-name-add-btn">
+                                        <i class="bi bi-plus-lg me-1" aria-hidden="true"></i>Add
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        <?php endif; ?>
+
                         <!-- #672 — collapsible "Online links" + "Authority identifiers".
                              Closed by default so the modal still opens at the same height
                              curators are used to. <details> is native HTML5; no JS needed
@@ -3128,6 +3267,26 @@ $csrf = csrfToken();
                 /* Clear the add-search field too so reopening the modal
                    doesn't leave a stale half-typed name behind. */
                 const addInput = document.getElementById('edit-compiler-add-search');
+                if (addInput) addInput.value = '';
+            })();
+
+            /* #832 — populate the alternative-names list from
+               row.alternative_names. Container only exists when the
+               schema probe says yes; clear + repopulate on every
+               open so opening row B after row A doesn't carry A's
+               alts over. */
+            (function () {
+                const container = document.getElementById('edit-alt-names-rows');
+                if (!container) return;
+                container.innerHTML = '';
+                const alts = Array.isArray(row.alternative_names) ? row.alternative_names : [];
+                alts.forEach(a => {
+                    container.appendChild(window._iHymnsBuildAltNameRow({
+                        title: a.title || '',
+                        note:  a.note  || '',
+                    }));
+                });
+                const addInput = document.getElementById('edit-alt-name-add-input');
                 if (addInput) addInput.value = '';
             })();
 
@@ -3705,6 +3864,81 @@ $csrf = csrfToken();
                 .replace(/>/g, '&gt;')
                 .replace(/"/g, '&quot;')
                 .replace(/'/g, '&#39;');
+        }
+    })();
+    </script>
+
+    <!-- Alternative-names chip-list editor (#832). Pure-text picker —
+         no FK, no typeahead — just type-and-Enter to add. Each row
+         carries hidden alt_name_titles[] / alt_name_notes[] inputs,
+         a Note input, and a remove button. -->
+    <script>
+    (function () {
+        const addInput = document.getElementById('edit-alt-name-add-input');
+        const addBtn   = document.getElementById('edit-alt-name-add-btn');
+        const rowsEl   = document.getElementById('edit-alt-names-rows');
+        if (!addInput || !rowsEl) return;  /* schema not live → block absent */
+
+        const commitAdd = () => {
+            const v = addInput.value.trim();
+            if (v === '') return;
+            /* Skip if already added (case-insensitive). UNIQUE
+               (SongbookId, Title) on the table would catch it but a
+               soft client-side guard is friendlier. */
+            const existing = Array.from(rowsEl.querySelectorAll('input[name="alt_name_titles[]"]'))
+                .map(i => (i.value || '').toLowerCase());
+            if (existing.includes(v.toLowerCase())) {
+                addInput.classList.add('is-invalid');
+                setTimeout(() => addInput.classList.remove('is-invalid'), 1500);
+                return;
+            }
+            rowsEl.appendChild(window._iHymnsBuildAltNameRow({
+                title: v,
+                note:  '',
+            }));
+            addInput.value = '';
+        };
+        if (addBtn) addBtn.addEventListener('click', commitAdd);
+        addInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                commitAdd();
+            }
+        });
+
+        /* Shared row-builder, also used by openEditModal() above to
+           rebuild the list on modal-open. */
+        window._iHymnsBuildAltNameRow = function (data) {
+            const card = document.createElement('div');
+            card.className = 'card bg-dark border-secondary';
+            const t  = String(data.title || '');
+            const nt = String(data.note  || '');
+            card.innerHTML =
+                '<div class="card-body py-2">' +
+                  '<div class="d-flex align-items-center gap-2">' +
+                    '<i class="bi bi-grip-vertical text-muted" aria-hidden="true"></i>' +
+                    '<div class="flex-grow-1">' +
+                      '<input type="text" class="form-control form-control-sm fw-semibold" ' +
+                              'name="alt_name_titles[]" maxlength="255" required value="' + escapeHtml(t) + '">' +
+                      '<input type="text" class="form-control form-control-sm mt-1" ' +
+                              'name="alt_name_notes[]" placeholder="Optional note (e.g. \'older spelling\')" ' +
+                              'maxlength="255" value="' + escapeHtml(nt) + '">' +
+                    '</div>' +
+                    '<button type="button" class="btn btn-sm btn-outline-danger" ' +
+                            'data-action="remove-alt-name" title="Remove this alt name">' +
+                      '<i class="bi bi-x-lg"></i>' +
+                    '</button>' +
+                  '</div>' +
+                '</div>';
+            card.querySelector('[data-action=remove-alt-name]')
+                .addEventListener('click', () => card.remove());
+            return card;
+        };
+
+        function escapeHtml(s) {
+            return String(s)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
         }
     })();
     </script>
