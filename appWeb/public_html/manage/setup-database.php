@@ -699,7 +699,20 @@ register_shutdown_function(function () use (&$pageRenderedCleanly): void {
     }
     echo "\n<!-- emergency chrome closure (#817) — a child script "
        . "exited or died mid-render before the page completed. -->\n";
-    echo "</div>\n</main>\n</div><!-- /.admin-layout -->\n</body>\n</html>\n";
+    /* Close the layers the action path opens (in order):
+         <div class="output-log">    ← migration log container
+         <div class="container-admin"> ← page container
+         </main>                       ← admin-nav.php opened this
+         </div><!-- /.admin-layout --> ← admin-nav.php opened this too
+         </body></html>
+       Five closes is one too many on the non-action page (which
+       doesn't open the output-log); browsers tolerate stray closing
+       tags so emit them all and accept the harmless extra. */
+    echo "</div><!-- /.output-log (if open) -->\n";
+    echo "</div><!-- /.container-admin -->\n";
+    echo "</main>\n";
+    echo "</div><!-- /.admin-layout -->\n";
+    echo "</body>\n</html>\n";
 });
 
 if ($action !== '') {
@@ -710,6 +723,75 @@ if ($action !== '') {
      * still fine — only the header propagates via buffered output). */
     define('IHYMNS_SETUP_DASHBOARD', true);
 
+    /* #817 round 2 — render the page chrome BEFORE the bulk run, so:
+       (a) Content-Type: text/html is committed to the response before
+           any child script's `header('Content-Type: text/plain')` could
+           leak (header() is silently ignored once headers are sent — and
+           we deliberately send headers + opening chrome here).
+       (b) An exit() inside any included migration can no longer truncate
+           the chrome — it's already on the wire. The shutdown handler
+           emits the closing tags.
+       The non-action path (the dashboard) keeps its own existing render
+       block lower down. */
+    header('Content-Type: text/html; charset=UTF-8');
+
+    /* Drain any default output buffer so our manual flush() actually
+       reaches the browser. PHP defaults to one ambient buffer; we
+       want output to stream as soon as we echo. */
+    while (ob_get_level() > 0) {
+        @ob_end_flush();
+    }
+    @ob_implicit_flush(true);
+
+    /* Compute the user-friendly heading once for use in <title> + h4. */
+    $headingTitle = $friendlyTitles[$action] ?? ucfirst($action);
+
+    /* Render chrome opening — DOCTYPE through the open tag of the
+       output panel. After this echo, the response is committed: every
+       byte of HTML below this point is on the wire before the bulk
+       runs. */
+    ?>
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= htmlspecialchars($headingTitle) ?> — iHymns Admin</title>
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
+    <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__) . "/css/app.css") ?>">
+    <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime(dirname(__DIR__) . "/css/admin.css") ?>">
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
+</head>
+<body>
+<?php if (!$isInitialSetup): require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; endif; ?>
+
+<div class="container-admin py-4">
+    <h1 class="mb-1">
+        Database Setup<?= entitlementLockChipHtml('run_db_install') ?>
+    </h1>
+    <p class="text-secondary mb-4">
+        iHymns Admin &mdash; Installation, migration, and maintenance.
+        <span class="badge bg-danger text-light ms-2" style="font-size: 0.7rem; font-weight: 600;">
+            <i class="bi bi-lock-fill me-1" aria-hidden="true"></i>Global Admin only
+        </span>
+    </p>
+    <p><a href="?" class="btn btn-outline-secondary btn-sm">&larr; Back to Dashboard</a></p>
+    <h4 class="mb-2 d-flex align-items-center gap-2">
+        <span><?= htmlspecialchars($headingTitle) ?> &mdash; Output</span>
+        <span id="action-status-badge" class="badge bg-secondary">Running…</span>
+    </h4>
+    <div class="output-log" id="action-output-log">
+<?php
+    /* Push the chrome to the browser NOW. After this point even a
+       fatal in a child migration leaves the chrome visible (the
+       shutdown handler appends `</div></main>...</body></html>`). */
+    @ob_flush();
+    @flush();
+
+    /* Capture the bulk run's output so the per-step framing (▶ / ✓
+       / ✗) can be displayed inside the already-open <div class="output-log">
+       above, AND so the bulk-failure banner has the data it needs. The
+       captured buffer is echoed inline after the run completes. */
     ob_start();
 
     $scriptDir = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . '.sql' . DIRECTORY_SEPARATOR . '';
@@ -943,12 +1025,66 @@ if ($action !== '') {
     }
 
     $actionOutput = ob_get_clean();
+    /* Echo the captured bulk output INSIDE the <div class="output-log">
+       we opened above. Closing tags follow so the chrome wraps around
+       it cleanly. */
+    echo $actionOutput;
+    ?>
+    </div><!-- /.output-log -->
 
-    /* Defence in depth: if any child script still managed to set a
-     * non-HTML Content-Type (e.g. old cached copy), override it so the
-     * dashboard HTML renders correctly on iOS Safari/Edge. */
-    header('Content-Type: text/html; charset=UTF-8');
-    header_remove('X-Content-Type-Options');
+    <?php
+        /* Update the running-badge to reflect the final state. The
+           badge was rendered as "Running…" before the bulk started;
+           swap it once the response can finalise. */
+    ?>
+    <script>
+        (function () {
+            var badge = document.getElementById('action-status-badge');
+            if (!badge) return;
+            badge.textContent = <?= $actionSuccess ? "'Complete'" : "'Error'" ?>;
+            badge.className   = <?= $actionSuccess ? "'badge bg-success'" : "'badge bg-danger'" ?>;
+        })();
+    </script>
+
+    <?php if ($action === 'apply-all-migrations' && $bulkFirstFailStep !== null): ?>
+        <!-- Failure summary BELOW the panel (#817 round 2 — moved from
+             above to below because chrome now opens before the panel
+             does, and a banner above the panel would be rendered before
+             the run completed and the failure data was available). -->
+        <div class="alert alert-danger mt-3" role="alert">
+            <h5 class="alert-heading mb-2">
+                <i class="bi bi-exclamation-triangle-fill me-1"></i>
+                Bulk run failed at step:
+                <code><?= htmlspecialchars((string)$bulkFirstFailStep) ?></code>
+            </h5>
+            <p class="mb-2">
+                <strong><?= (int)$bulkTotalRan ?></strong>
+                migration<?= $bulkTotalRan === 1 ? '' : 's' ?>
+                completed before this step;
+                <strong><?= (int)$bulkTotalFailed ?></strong>
+                failed; remaining steps were not attempted.
+            </p>
+            <p class="mb-1">
+                <strong>Cause:</strong>
+                <code><?= htmlspecialchars((string)$bulkFirstFailMessage) ?></code>
+            </p>
+            <?php if ($bulkFirstFailFile !== ''): ?>
+                <p class="mb-0 small text-muted">
+                    At
+                    <code><?= htmlspecialchars((string)$bulkFirstFailFile) ?>:<?= (int)$bulkFirstFailLine ?></code>
+                    — full per-step output above.
+                </p>
+            <?php endif; ?>
+        </div>
+    <?php endif; ?>
+
+</div><!-- /.container-admin -->
+<?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
+</body>
+</html>
+<?php
+    $pageRenderedCleanly = true;
+    exit;
 }
 
 /* =========================================================================
@@ -1142,62 +1278,15 @@ if ($hasCredentials && defined('DB_HOST')) {
         </div>
     <?php endif; ?>
 
-    <?php if ($action !== ''): ?>
-        <!-- ============================================================
-             ACTION OUTPUT
-             ============================================================ -->
-        <p><a href="?" class="btn btn-outline-secondary btn-sm">&larr; Back to Dashboard</a></p>
-        <h4 class="mb-2">
-            <?php
-                /* User-friendly heading (#814) — fall back to ucfirst()
-                   only when an action key has no entry in the map (a
-                   fresh migration whose card was added but whose entry
-                   wasn't registered yet — defensive, not expected). */
-                $headingTitle = $friendlyTitles[$action] ?? ucfirst($action);
-            ?>
-            <?= htmlspecialchars($headingTitle) ?> &mdash; Output
-            <?php if ($actionSuccess): ?>
-                <span class="badge bg-success ms-2">Complete</span>
-            <?php else: ?>
-                <span class="badge bg-danger ms-2">Error</span>
-            <?php endif; ?>
-        </h4>
-
-        <?php if ($action === 'apply-all-migrations' && $bulkFirstFailStep !== null): ?>
-            <!-- Prominent failure banner ABOVE the (potentially long,
-                 scrollable) output panel so the operator sees exactly
-                 which step broke and the message detail without having
-                 to scroll the panel to find it. (#720) -->
-            <div class="alert alert-danger" role="alert">
-                <h5 class="alert-heading mb-2">
-                    <i class="bi bi-exclamation-triangle-fill me-1"></i>
-                    Bulk run failed at step:
-                    <code><?= htmlspecialchars($bulkFirstFailStep) ?></code>
-                </h5>
-                <p class="mb-2">
-                    <strong><?= $bulkTotalRan ?></strong>
-                    migration<?= $bulkTotalRan === 1 ? '' : 's' ?>
-                    completed before this step;
-                    <strong><?= $bulkTotalFailed ?></strong>
-                    failed; remaining steps were not attempted.
-                </p>
-                <p class="mb-1">
-                    <strong>Cause:</strong>
-                    <code><?= htmlspecialchars($bulkFirstFailMessage) ?></code>
-                </p>
-                <?php if ($bulkFirstFailFile !== ''): ?>
-                    <p class="mb-0 small text-muted">
-                        At
-                        <code><?= htmlspecialchars($bulkFirstFailFile) ?>:<?= (int)$bulkFirstFailLine ?></code>
-                        — full per-step output below.
-                    </p>
-                <?php endif; ?>
-            </div>
-        <?php endif; ?>
-
-        <div class="output-log"><?= $actionOutput ?></div>
-
-    <?php else: ?>
+    <?php
+        /* Action path note (#817 round 2): when $action !== '' the page
+           is fully self-rendered higher up — DOCTYPE through
+           admin-footer.php — and `exit`s before reaching this block.
+           So everything below this point only ever runs on the
+           dashboard view. The legacy `<?php if ($action !== ''):` /
+           `<?php else: ?>` wrapper around the dashboard cards has been
+           removed accordingly. */
+    ?>
         <!-- ============================================================
              ONE-STEP MIGRATIONS RUNNER (#577)
              Runs every migration script in dependency order. Each
@@ -1629,8 +1718,6 @@ if ($hasCredentials && defined('DB_HOST')) {
         <?php elseif (!$hasCredentials): ?>
             <div class="alert alert-secondary py-2">Configure credentials first.</div>
         <?php endif; ?>
-
-    <?php endif; ?>
 
     <hr class="my-4">
     <p class="text-secondary text-center small">
