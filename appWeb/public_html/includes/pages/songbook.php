@@ -63,6 +63,35 @@ if ($book === null) {
                 <span class="badge bg-body-secondary ms-1"><?= htmlspecialchars($book['id']) ?></span>
             </h1>
             <p class="text-muted mb-0"><?= number_format($book['songCount']) ?> songs</p>
+            <?php
+                /* #831 — "Compiled by …" line. Each compiler links to
+                   their /people/<slug> page when one exists; falls back
+                   to a plain name span otherwise. Multiple compilers
+                   joined with " · " for visual lightness. Hidden when
+                   the songbook has no compilers attached (or on
+                   pre-migration deployments where SongData returns an
+                   empty list). */
+                $compilers = $book['compilers'] ?? [];
+                if (!empty($compilers)):
+            ?>
+                <p class="text-muted small mb-0 mt-1">
+                    <i class="fa-solid fa-pen-nib me-1" aria-hidden="true"></i>
+                    Compiled by
+                    <?php foreach ($compilers as $i => $c): ?>
+                        <?php if ($i > 0): ?> &middot; <?php endif; ?>
+                        <?php if (!empty($c['slug'])): ?>
+                            <a href="/people/<?= rawurlencode($c['slug']) ?>"
+                               data-navigate="person"
+                               class="text-reset text-decoration-underline"><?= htmlspecialchars($c['name']) ?></a>
+                        <?php else: ?>
+                            <span><?= htmlspecialchars($c['name']) ?></span>
+                        <?php endif; ?>
+                        <?php if (!empty($c['note'])): ?>
+                            <span class="text-muted">(<?= htmlspecialchars($c['note']) ?>)</span>
+                        <?php endif; ?>
+                    <?php endforeach; ?>
+                </p>
+            <?php endif; ?>
         </div>
         <div class="d-flex gap-2">
             <!-- Number pad search for this songbook -->
