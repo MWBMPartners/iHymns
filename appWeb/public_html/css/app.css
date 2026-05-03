@@ -3037,3 +3037,61 @@ body.offline-unsupported .btn-save-offline,
 body.offline-unsupported .offline-only {
     display: none !important;
 }
+
+/* ---------------------------------------------------------------------------
+   Pull-to-refresh indicator (#822)
+
+   Native-app-style pull-down circle that appears when the user drags from
+   the top of the page. The module sets translateY inline based on pull
+   distance; this CSS provides the resting position (off-screen above the
+   viewport) and the visual chrome of the circle + arrow + spinner.
+   --------------------------------------------------------------------------- */
+.pull-to-refresh-indicator {
+    position: fixed;
+    top: calc(env(safe-area-inset-top, 0px) - 56px);  /* off-screen by default */
+    left: 50%;
+    transform: translateX(-50%);  /* centred horizontally; JS adds translateY */
+    z-index: 1100;                /* above header (1030) + footer */
+    pointer-events: none;
+    transition: transform 0.18s ease-out;
+    will-change: transform;
+}
+@media (prefers-reduced-motion: reduce) {
+    .pull-to-refresh-indicator {
+        transition: none;
+    }
+}
+.pull-to-refresh-indicator .ptr-circle {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: var(--surface-card, #1e293b);
+    border: 1px solid var(--card-border, rgba(255,255,255,0.1));
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary, #94a3b8);
+    transition: color 0.15s ease, transform 0.18s ease-out;
+}
+/* Past threshold — flip arrow + tint accent so the user sees the
+   "release to refresh" state distinctly. */
+.pull-to-refresh-indicator.is-armed .ptr-circle {
+    color: var(--accent-solid, #6366f1);
+    transform: rotate(180deg);
+}
+.pull-to-refresh-indicator.is-spinning .ptr-circle {
+    color: var(--accent-solid, #6366f1);
+    transform: none;  /* override is-armed rotate while spinning */
+}
+.pull-to-refresh-indicator .ptr-arrow {
+    font-size: 0.95rem;
+    transition: transform 0.18s ease-out;
+}
+.pull-to-refresh-indicator .ptr-spinner {
+    /* Bootstrap spinner-border-sm provides the spin animation; we
+       just need to size + colour it to match the arrow it replaces. */
+    width: 1rem;
+    height: 1rem;
+    border-width: 0.15em;
+}
