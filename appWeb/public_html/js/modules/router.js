@@ -101,6 +101,17 @@ export class Router {
     }
 
     /**
+     * Re-load the current route's content. Used by the pull-to-refresh
+     * gesture (#822) — same as if the user navigated away and back,
+     * but without changing the URL. Re-fetches the page HTML and
+     * re-runs the after-load hooks so any cached page state (favourites
+     * counts, song-of-the-day, etc.) refreshes.
+     */
+    async refresh() {
+        await this.handleCurrentRoute({ isPopstate: false, isRefresh: true });
+    }
+
+    /**
      * Navigate to a new URL path.
      * Pushes the new state to the browser history and loads the page.
      *
