@@ -542,6 +542,35 @@ $bulkFirstFailLine    = 0;
 $bulkTotalRan         = 0;
 $bulkTotalFailed      = 0;
 
+/* Page-render sentinel + emergency chrome closer (#817).
+   "Apply all" was reported as rendering "in its own raw HTML page,
+   not within the same UI structure" — the cause is a child migration
+   that calls `exit()` mid-bulk. exit() bypasses the try/catch in the
+   bulk loop AND the outer page render below, so the admin chrome
+   never closes and the user sees an unwrapped log.
+   Set the flag to true at the very end of the page (just before the
+   trailing exit) and a shutdown handler emits the chrome's closing
+   tags if we never reached it. The migration scripts themselves are
+   being audited to use `return` / `throw` instead of exit(); this is
+   the defence-in-depth for any straggler. */
+$pageRenderedCleanly = false;
+register_shutdown_function(function () use (&$pageRenderedCleanly): void {
+    if ($pageRenderedCleanly) return;
+    /* Drain whatever's still buffered so it precedes the chrome tags
+       we're about to emit. The chrome itself is intentionally a
+       compact emergency-closure — full sidebar / footer can't be
+       reconstructed from a shutdown handler reliably (no access to
+       the open-state $GLOBALS['_adminLayoutOpen']) but closing the
+       outer wrappers + body/html prevents the browser from leaving
+       the response visually open. */
+    while (ob_get_level() > 0) {
+        @ob_end_flush();
+    }
+    echo "\n<!-- emergency chrome closure (#817) — a child script "
+       . "exited or died mid-render before the page completed. -->\n";
+    echo "</div>\n</main>\n</div><!-- /.admin-layout -->\n</body>\n</html>\n";
+});
+
 if ($action !== '') {
     /* Signal to the included scripts that they're being run from the
      * dashboard, so they skip `header('Content-Type: text/plain')` which
@@ -1450,4 +1479,5 @@ if ($hasCredentials && defined('DB_HOST')) {
 </html>
 <?php
 /* Prevent any included script's exit() from showing raw output after our page */
+$pageRenderedCleanly = true;
 exit;
