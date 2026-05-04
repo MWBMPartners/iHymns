@@ -231,6 +231,7 @@ $friendlyTitles = [
     'external-links'                   => 'External Links System (#833)',
     'backfill-songbook-links'          => 'Backfill Songbook URL columns → External Links (#833)',
     'backfill-credit-person-links'     => 'Backfill Credit-Person Links → External Links (#833)',
+    'works'                            => 'Works — composition grouping (#840)',
     /* `recompute-songbook-songcount` no longer exposed via the dashboard
        (#818) — the SongCount Triggers migration above includes its own
        initial recompute. The CLI script stays on disk for emergency
@@ -593,6 +594,20 @@ $migrationCards = [
                   . ' read-fallback for one release cycle.',
         'button' => 'Run Credit-Person Links Backfill',
     ],
+    'works' => [
+        'title'  => 'Works — composition grouping (#840)',
+        'body'   => 'Adds <code>tblWorks</code> + <code>tblWorkSongs</code> +'
+                  . ' <code>tblWorkExternalLinks</code> so curators can group multiple'
+                  . ' <code>tblSongs</code> rows that represent the same underlying composition'
+                  . ' across different songbooks / arrangements / translations'
+                  . ' (mirrors MusicBrainz Work ↔ Recording). Each Work carries a canonical'
+                  . ' Title, optional ISWC (the international standard code for musical works),'
+                  . ' optional Notes, and any number of external links. Also widens'
+                  . ' <code>tblExternalLinkTypes.AppliesTo</code> to include <code>\'work\'</code>'
+                  . ' and seeds the new flag on the relevant link types. No data backfill'
+                  . ' (Works is brand new). Idempotent.',
+        'button' => 'Run Works Migration',
+    ],
     /* recompute-songbook-songcount card removed (#818) — its work is
        now covered by the SongCount Triggers migration above, which
        runs an initial recompute as part of its installation. The
@@ -730,6 +745,15 @@ $migrationProbes = [
         || !_migProbe_tableExists($db, 'tblSongbookExternalLinks')
         || !_migProbe_tableExists($db, 'tblSongExternalLinks')
         || !_migProbe_tableExists($db, 'tblCreditPersonExternalLinks'),
+    /* Works: pending when any of the three new Works tables is absent.
+       The AppliesTo SET widening on tblExternalLinkTypes is detected
+       in the migration itself; the probe doesn't need to also check
+       it because re-running the migration is idempotent. */
+    'works'                              => static fn(\mysqli $db) =>
+        !_migProbe_tableExists($db, 'tblWorks')
+        || !_migProbe_tableExists($db, 'tblWorkSongs')
+        || (_migProbe_tableExists($db, 'tblExternalLinkTypes')
+            && !_migProbe_tableExists($db, 'tblWorkExternalLinks')),
     /* Backfills run once after schema lands. They're idempotent so
        always-show is safe — but we can be smarter: pending when the
        new table has fewer rows than the legacy source had non-empty
@@ -930,6 +954,7 @@ if ($action !== '') {
         'external-links'                => 'migrate-external-links.php',
         'backfill-songbook-links'       => 'migrate-backfill-songbook-links.php',
         'backfill-credit-person-links'  => 'migrate-backfill-credit-person-links.php',
+        'works'                         => 'migrate-works.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -987,6 +1012,7 @@ if ($action !== '') {
         'external-links',
         'backfill-songbook-links',
         'backfill-credit-person-links',
+        'works',
         /* When you add a new migrate-*.php under appWeb/.sql/, ALSO add
            its action key to:
              1. $scriptMap above (action key → file)

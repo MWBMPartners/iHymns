@@ -834,6 +834,68 @@ try {
     </section>
 
     <?php
+        /* #840 — "Part of work" panel. Reads $song['works'] attached by
+           SongData::_worksMap (#840). Lists each Work this song belongs
+           to with its sibling members ("other versions of this work")
+           grouped under it. Hidden when empty + when the schema isn't
+           applied. */
+        $songWorks = $song['works'] ?? [];
+        if (!empty($songWorks)):
+    ?>
+    <section id="song-works" class="song-works mt-4 pt-3 border-top" aria-label="Part of work">
+        <h2 class="h6 mb-3 d-flex align-items-center gap-2">
+            <i class="fa-solid fa-diagram-project me-1 text-muted" aria-hidden="true"></i>
+            Part of work
+        </h2>
+        <?php foreach ($songWorks as $w): ?>
+            <div class="mb-3 song-work-block">
+                <div class="d-flex flex-wrap align-items-baseline gap-2 mb-1">
+                    <a href="/work/<?= htmlspecialchars($w['slug']) ?>"
+                       class="fw-semibold"
+                       data-navigate="work"
+                       data-work-slug="<?= htmlspecialchars($w['slug']) ?>">
+                        <?= htmlspecialchars($w['title']) ?>
+                    </a>
+                    <?php if (!empty($w['iswc'])): ?>
+                        <span class="text-muted small">ISWC: <code><?= htmlspecialchars($w['iswc']) ?></code></span>
+                    <?php endif; ?>
+                    <?php if (!empty($w['isCanonical'])): ?>
+                        <span class="badge bg-success-subtle text-success-emphasis">Canonical version</span>
+                    <?php endif; ?>
+                </div>
+                <?php
+                    $siblings = array_values(array_filter(
+                        $w['members'] ?? [],
+                        static fn($m) => (string)$m['songId'] !== (string)$song['id']
+                    ));
+                ?>
+                <?php if (!empty($siblings)): ?>
+                    <div class="text-uppercase small text-muted mb-1">Other versions of this work</div>
+                    <div class="list-group list-group-flush song-list">
+                        <?php foreach ($siblings as $m): ?>
+                            <a href="/song/<?= htmlspecialchars($m['songId']) ?>"
+                               class="list-group-item list-group-item-action song-list-item d-flex align-items-center gap-2"
+                               data-navigate="song"
+                               data-song-id="<?= htmlspecialchars($m['songId']) ?>">
+                                <span class="badge bg-body-secondary"><?= htmlspecialchars($m['songbook']) ?></span>
+                                <?php if ((int)$m['number'] > 0): ?>
+                                    <span class="text-muted small">#<?= (int)$m['number'] ?></span>
+                                <?php endif; ?>
+                                <span class="flex-grow-1"><?= htmlspecialchars(toTitleCase((string)$m['title'])) ?></span>
+                                <?php if (!empty($m['isCanonical'])): ?>
+                                    <i class="fa-solid fa-star text-warning small" aria-label="Canonical version" title="Canonical version"></i>
+                                <?php endif; ?>
+                                <i class="fa-solid fa-chevron-right text-muted small" aria-hidden="true"></i>
+                            </a>
+                        <?php endforeach; ?>
+                    </div>
+                <?php endif; ?>
+            </div>
+        <?php endforeach; ?>
+    </section>
+    <?php endif; ?>
+
+    <?php
         /* #833 — "Find this hymn elsewhere" panel. Reads tblSongExternalLinks
            via the `links` array attached by SongData::_externalLinksMap('song'),
            groups by Category, hides when empty. Each link opens in a new

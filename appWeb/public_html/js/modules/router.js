@@ -275,6 +275,12 @@ export class Router {
                    is forgiving — Wikipedia-style /wiki/Foo + linked-data
                    habits both work. */
                 return { page: 'person', params: { slug: segments[1] || '' } };
+            case 'work':
+            case 'works':
+                /* Work public page (#840). /work/<slug> is canonical;
+                   /works/<slug> accepted as a forgiving alias matching
+                   the people / person convention. */
+                return { page: 'work', params: { slug: segments[1] || '' } };
             case 'help':
                 return { page: 'help', params: {} };
             case 'terms':

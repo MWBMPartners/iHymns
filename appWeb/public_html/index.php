@@ -425,6 +425,73 @@ try {
             }
         } catch (\Throwable $_e) { /* table missing — no JSON-LD */ }
     }
+    /* Work page: /work/<slug> (#840 — sameAs JSON-LD + breadcrumb) */
+    elseif (preg_match('#^/work/([a-z0-9\-]+)$#', $requestPath, $matches)) {
+        $pageType = 'other';
+        $workSlug = $matches[1];
+        try {
+            $workDb = getDbMysqli();
+            /* Probe tblWorks; pre-migration deployments skip silently. */
+            $r = $workDb->query(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblWorks' LIMIT 1"
+            );
+            $hasWorksTable = $r && $r->fetch_row() !== null;
+            if ($r) $r->close();
+            if ($hasWorksTable) {
+                $stmt = $workDb->prepare(
+                    'SELECT Id, Title, Slug, Iswc FROM tblWorks WHERE Slug = ? LIMIT 1'
+                );
+                $stmt->bind_param('s', $workSlug);
+                $stmt->execute();
+                $workRow = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                if ($workRow) {
+                    $ogTitle       = htmlspecialchars((string)$workRow['Title']) . ' — Work — ' . $app["Application"]["Name"];
+                    $ogDescription = 'Work record on ' . $app["Application"]["Name"]
+                                   . (!empty($workRow['Iswc']) ? ' — ISWC ' . htmlspecialchars((string)$workRow['Iswc']) : '');
+                    $breadcrumbItems = [
+                        ['name' => 'Home',  'url' => getCanonicalUrl('/')],
+                        ['name' => 'Works', 'url' => getCanonicalUrl('/works')],
+                        ['name' => (string)$workRow['Title'], 'url' => $canonicalUrl],
+                    ];
+                    $workJsonLd = [
+                        '@context' => 'https://schema.org',
+                        '@type'    => 'MusicComposition',
+                        'name'     => (string)$workRow['Title'],
+                    ];
+                    if (!empty($workRow['Iswc'])) {
+                        $workJsonLd['iswcCode'] = (string)$workRow['Iswc'];
+                    }
+                    $hasWorkLinks = false;
+                    $r2 = $workDb->query(
+                        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblWorkExternalLinks' LIMIT 1"
+                    );
+                    $hasWorkLinks = $r2 && $r2->fetch_row() !== null;
+                    if ($r2) $r2->close();
+                    if ($hasWorkLinks) {
+                        $stmt = $workDb->prepare(
+                            'SELECT Url FROM tblWorkExternalLinks WHERE WorkId = ?'
+                        );
+                        $wid = (int)$workRow['Id'];
+                        $stmt->bind_param('i', $wid);
+                        $stmt->execute();
+                        $linkRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                        $stmt->close();
+                        $sameAs = array_values(array_filter(array_map(
+                            static fn($l) => (string)($l['Url'] ?? ''),
+                            $linkRows
+                        )));
+                        if (!empty($sameAs)) {
+                            $workJsonLd['sameAs'] = $sameAs;
+                        }
+                    }
+                    $jsonLdScripts[] = $workJsonLd;
+                }
+            }
+        } catch (\Throwable $_e) { /* schema missing — no JSON-LD */ }
+    }
     /* Shared setlist page: /setlist/shared/abc123 */
     elseif (preg_match('#^/setlist/shared/([a-f0-9]+)$#', $requestPath, $matches)) {
         $pageType = 'other';
