@@ -904,7 +904,7 @@ joins `tblExternalLinkTypes` and excludes rows where `IsActive = 0`
 (soft delete). Returns a map keyed by Abbreviation / SongId /
 CreditPersonId.
 
-### URL → Provider auto-detect (#841)
+### URL → Provider auto-detect (#841 / DB-driven in #845)
 
 Single source of truth in
 `appWeb/public_html/js/modules/external-link-detect.js`, exposed on
@@ -919,8 +919,24 @@ so each per-page row builder calls
 `window.iHymnsLinkDetect.attachAutoDetect(card)` and inherits the
 behaviour without an extra script tag.
 
-**Adding a new provider:** append a rule to the `RULES` array in
-the module. That's the only place — every consumer inherits.
+**Rule source (#845):** patterns live in `tblExternalLinkPatterns`.
+Each row is `(LinkTypeId, Host, PathPrefix, MatchSubdomains, Priority,
+IsActive, Note)`. Lower `Priority` numbers win, so more-specific
+patterns (path-discriminated MusicBrainz, `music.youtube.com`) sit
+ahead of broader ones (`youtube.com`).
+
+The pages that ship `window._iHymnsLinkTypes` to their row builders
+attach each type's patterns via
+`attachExternalLinkPatterns($db, $types)` from
+`includes/external_link_helpers.php`. The JS module reads from there
+first; on pre-migration deployments (or pages that don't expose
+`_iHymnsLinkTypes`) it falls back to the hard-coded `RULES` array
+bundled with the module.
+
+**Adding a new provider — either:**
+1. Insert a row at `/manage/external-link-types` (no code deploy), or
+2. Append to the `RULES` fallback array in the JS module (covers
+   pre-migration deployments).
 
 **Manual-choice override:** `data-user-picked="1"` is stamped on the
 `<select>` once the user changes it explicitly. The detector reads

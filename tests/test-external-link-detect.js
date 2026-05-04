@@ -107,6 +107,35 @@ check('https://notyoutube.com/watch?v=abc',                           null);    
 /* Path-discriminated rules: musicbrainz.org root URL has no slug. */
 check('https://musicbrainz.org/',                                     null);
 
+/* ----- DB-driven rules (#845) -----
+ * When window._iHymnsLinkTypes is populated, detectFromUrl reads
+ * patterns from there instead of the hard-coded RULES. Cover:
+ *   - a custom rule wins over the bundled fallback
+ *   - empty patterns array → fallback still works
+ *   - new providers added DB-side need no code change
+ */
+sandbox.window._iHymnsLinkTypes = [
+    { id: 99, slug: 'example-news', patterns: [
+        { host: 'example.com', pathPrefix: null, matchSubdomains: true, priority: 50 },
+    ]},
+    { id: 100, slug: 'wikipedia', patterns: [
+        { host: 'wikipedia.org', pathPrefix: null, matchSubdomains: true, priority: 40 },
+    ]},
+];
+detect._resetDbRulesCache();
+check('https://example.com/article/123',                              'example-news');
+check('https://news.example.com/foo',                                 'example-news'); /* sub-domain match */
+check('https://en.wikipedia.org/wiki/Foo',                            'wikipedia');    /* still works */
+check('https://music.youtube.com/playlist?list=xyz',                  null);           /* not in DB rules */
+
+/* Empty patterns → falls back to bundled RULES. */
+sandbox.window._iHymnsLinkTypes = [
+    { id: 1, slug: 'wikipedia', patterns: [] },
+];
+detect._resetDbRulesCache();
+check('https://en.wikipedia.org/wiki/Foo',                            'wikipedia');    /* fallback */
+check('https://www.youtube.com/watch?v=abc',                          'youtube');      /* fallback */
+
 /* Output. */
-console.log(`\n#841 external-link-detect: ${passed} passed, ${failed} failed.`);
+console.log(`\n#841 + #845 external-link-detect: ${passed} passed, ${failed} failed.`);
 if (failed > 0) process.exit(1);

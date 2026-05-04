@@ -22,6 +22,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -114,6 +115,8 @@ try {
             }
             $res->close();
         }
+        /* #845 — attach DB-driven URL → provider patterns. */
+        $linkTypesForWork = attachExternalLinkPatterns($db, $linkTypesForWork);
     }
 } catch (\Throwable $_e) { /* probe failure → external-links UI silently absent */ }
 

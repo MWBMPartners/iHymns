@@ -22,6 +22,7 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    API endpoints in /api.php. Single source of truth so a tweak to the
    abbrev / colour / IETF-tag grammar lands on both surfaces in one go. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_validation.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -1969,6 +1970,10 @@ if ($hasExtLinksSchema) {
             }
             $res->close();
         }
+        /* #845 — attach DB-driven URL → provider patterns so the JS
+           auto-detect module can read them via window._iHymnsLinkTypes
+           without a second AJAX round-trip. */
+        $linkTypesForSongbook = attachExternalLinkPatterns($db, $linkTypesForSongbook);
 
         $res = $db->query(
             'SELECT el.SongbookId, el.LinkTypeId, el.Url, el.Note, el.SortOrder, el.Verified,

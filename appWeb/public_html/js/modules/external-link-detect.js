@@ -94,6 +94,39 @@
     }
 
     /**
+     * Build a normalised rule list from the DB-driven payload (#845).
+     * `window._iHymnsLinkTypes` rows carry a `patterns` array — each
+     * pattern row is { host, pathPrefix, matchSubdomains, priority }
+     * straight from `tblExternalLinkPatterns`. We expand this into the
+     * same shape the local `RULES` array uses, sort by priority, and
+     * cache. Empty when no link type carries patterns — caller falls
+     * back to RULES.
+     */
+    var _dbRulesCache = null;
+    function loadDbRules() {
+        if (_dbRulesCache !== null) return _dbRulesCache;
+        var types = (window && Array.isArray(window._iHymnsLinkTypes)) ? window._iHymnsLinkTypes : [];
+        var rules = [];
+        for (var i = 0; i < types.length; i++) {
+            var t = types[i];
+            if (!t || !Array.isArray(t.patterns)) continue;
+            for (var j = 0; j < t.patterns.length; j++) {
+                var p = t.patterns[j] || {};
+                if (!p.host) continue;
+                rules.push({
+                    slug:       String(t.slug || ''),
+                    hosts:      [String(p.host)],
+                    hostMatch:  p.matchSubdomains ? 'suffix' : 'eq',
+                    pathPrefix: p.pathPrefix ? String(p.pathPrefix) : null,
+                    priority:   Number(p.priority || 100),
+                });
+            }
+        }
+        rules.sort(function (a, b) { return a.priority - b.priority; });
+        return (_dbRulesCache = rules);
+    }
+
+    /**
      * @param {string} rawUrl
      * @returns {string|null} matching slug, or null
      */
@@ -107,8 +140,13 @@
         var host = lowerHost(u.hostname);
         if (!host) return null;
         var path = (u.pathname || '/').toLowerCase();
-        for (var i = 0; i < RULES.length; i++) {
-            var r = RULES[i];
+        /* Prefer the DB-driven rule set (#845) when available. Falls back
+           to the hard-coded RULES array on pre-migration deployments and
+           on admin pages that don't expose `_iHymnsLinkTypes`. */
+        var dbRules = loadDbRules();
+        var ruleSet = (dbRules && dbRules.length > 0) ? dbRules : RULES;
+        for (var i = 0; i < ruleSet.length; i++) {
+            var r = ruleSet[i];
             if (!matchHost(r, host)) continue;
             if (r.pathPrefix && !path.startsWith(r.pathPrefix.toLowerCase())) continue;
             return r.slug;
@@ -208,5 +246,9 @@
         attachAutoDetect: attachAutoDetect,
         /* Exposed for tests / debug — read-only conceptually. */
         _RULES: RULES,
+        /* Re-read window._iHymnsLinkTypes on next detect call. Useful
+           after dynamically replacing the registry payload (admin
+           preview, tests). */
+        _resetDbRulesCache: function () { _dbRulesCache = null; },
     };
 })();

@@ -700,7 +700,11 @@ foreach ($sections as $s) {
                         Paste a URL into the URL field of any external-link row and the provider dropdown auto-selects the matching registry entry &mdash; Wikipedia detects Wikipedia, YouTube detects YouTube, Spotify detects Spotify, etc. The detector respects manual choices: if you pick a provider before pasting, your choice wins.
                     </p>
                     <p>
-                        The detector lives in a single global module &mdash; <code>js/modules/external-link-detect.js</code> &mdash; loaded on every <code>/manage/*</code> page. Adding a new provider rule is a one-line append; every consumer (Songbook editor, Works editor, Credit People editor as it's added) inherits automatically.
+                        The detector lives in a single global module &mdash; <code>js/modules/external-link-detect.js</code> &mdash; loaded on every <code>/manage/*</code> page. Every consumer (Songbook editor, Works editor, Credit People editor as it's added) inherits automatically.
+                    </p>
+                    <h3 class="h6 mt-3">URL patterns (#845)</h3>
+                    <p>
+                        Provider rules live in the <code>tblExternalLinkPatterns</code> table &mdash; curator-editable at <a href="/manage/external-link-types">/manage/external-link-types</a>. Add a new provider, sub-domain or path-prefix-discriminated rule (e.g. <code>musicbrainz.org/work/</code>) at any time without a code deploy. Lower priority numbers win, so put more-specific patterns first. The JS module falls back to a bundled rule list on pre-migration deployments so behaviour stays consistent during rollout.
                     </p>
                     <h3 class="h6">Categories</h3>
                     <p>Links group on the public site under: <em>Official, Information, Read, Sheet music, Listen, Watch, Purchase, Authority, Social, Other</em>. The seeded type registry decides which category each provider belongs to; curators don't pick the category &mdash; it's derived from the type.</p>

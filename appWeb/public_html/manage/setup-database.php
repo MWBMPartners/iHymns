@@ -232,6 +232,7 @@ $friendlyTitles = [
     'backfill-songbook-links'          => 'Backfill Songbook URL columns → External Links (#833)',
     'backfill-credit-person-links'     => 'Backfill Credit-Person Links → External Links (#833)',
     'works'                            => 'Works — composition grouping (#840)',
+    'external-link-patterns'           => 'External-Link URL Patterns (#845)',
     /* `recompute-songbook-songcount` no longer exposed via the dashboard
        (#818) — the SongCount Triggers migration above includes its own
        initial recompute. The CLI script stays on disk for emergency
@@ -594,6 +595,18 @@ $migrationCards = [
                   . ' read-fallback for one release cycle.',
         'button' => 'Run Credit-Person Links Backfill',
     ],
+    'external-link-patterns' => [
+        'title'  => 'External-Link URL Patterns (#845)',
+        'body'   => 'Adds <code>tblExternalLinkPatterns</code> — a curator-editable'
+                  . ' table of host / path patterns that maps a pasted URL to its'
+                  . ' <code>tblExternalLinkTypes</code> entry. Replaces the JS-hardcoded'
+                  . ' rule list shipped in #841 with a DB-driven one so adding a new'
+                  . ' provider is a row insert (no code deploy). Sub-domain matching'
+                  . ' (suffix vs exact host) and optional path-prefix discrimination'
+                  . ' are both supported. Seeds the same provider list shipped in JS'
+                  . ' so the auto-detect behaviour is unchanged on first migration.',
+        'button' => 'Run External-Link Patterns Migration',
+    ],
     'works' => [
         'title'  => 'Works — composition grouping (#840)',
         'body'   => 'Adds <code>tblWorks</code> + <code>tblWorkSongs</code> +'
@@ -754,6 +767,9 @@ $migrationProbes = [
         || !_migProbe_tableExists($db, 'tblWorkSongs')
         || (_migProbe_tableExists($db, 'tblExternalLinkTypes')
             && !_migProbe_tableExists($db, 'tblWorkExternalLinks')),
+    /* External-link patterns: pending when the table doesn't exist. */
+    'external-link-patterns'             => static fn(\mysqli $db) =>
+        !_migProbe_tableExists($db, 'tblExternalLinkPatterns'),
     /* Backfills run once after schema lands. They're idempotent so
        always-show is safe — but we can be smarter: pending when the
        new table has fewer rows than the legacy source had non-empty
@@ -955,6 +971,7 @@ if ($action !== '') {
         'backfill-songbook-links'       => 'migrate-backfill-songbook-links.php',
         'backfill-credit-person-links'  => 'migrate-backfill-credit-person-links.php',
         'works'                         => 'migrate-works.php',
+        'external-link-patterns'        => 'migrate-external-link-patterns.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -1013,6 +1030,7 @@ if ($action !== '') {
         'backfill-songbook-links',
         'backfill-credit-person-links',
         'works',
+        'external-link-patterns',
         /* When you add a new migrate-*.php under appWeb/.sql/, ALSO add
            its action key to:
              1. $scriptMap above (action key → file)
