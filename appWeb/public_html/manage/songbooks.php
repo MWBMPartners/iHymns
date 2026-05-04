@@ -4236,6 +4236,13 @@ $csrf = csrfToken();
                 '</div>';
             card.querySelector('[data-action=remove-ext-link]')
                 .addEventListener('click', () => card.remove());
+            /* #841 — global URL → provider auto-detect. The module is
+               loaded by manage/includes/head-libs.php on every admin
+               page, so the wiring is the same one-liner here as in
+               every other edit modal. */
+            if (window.iHymnsLinkDetect && typeof window.iHymnsLinkDetect.attachAutoDetect === 'function') {
+                window.iHymnsLinkDetect.attachAutoDetect(card);
+            }
             return card;
         };
 

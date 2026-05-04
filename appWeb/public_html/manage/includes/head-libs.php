@@ -54,3 +54,15 @@ $_publicRoot = dirname(__DIR__, 2);
 ?>
     <link rel="stylesheet" href="/css/app.css?v=<?= filemtime($_publicRoot . '/css/app.css') ?>">
     <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime($_publicRoot . '/css/admin.css') ?>">
+<?php
+/* External-link provider auto-detect (#841) — single source of truth
+   for URL → tblExternalLinkTypes.Slug mapping, exposed on
+   window.iHymnsLinkDetect. Loaded on every admin page so each
+   page's external-links row builder can call attachAutoDetect()
+   without an extra <script> tag of its own. Eager (no `defer`)
+   so the global is ready before any inline page script that
+   constructs rows on initial page load. */
+$_extLinkDetectPath = $_publicRoot . '/js/modules/external-link-detect.js';
+$_extLinkDetectVer  = is_file($_extLinkDetectPath) ? (string)filemtime($_extLinkDetectPath) : '1';
+?>
+    <script src="/js/modules/external-link-detect.js?v=<?= htmlspecialchars($_extLinkDetectVer, ENT_QUOTES) ?>"></script>
