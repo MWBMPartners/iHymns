@@ -834,6 +834,89 @@ try {
     </section>
 
     <?php
+        /* #853 — accompanying media (audio + sheet PDF + MIDI + MusicXML).
+           Reads $song['media'] attached by SongData::_songMediaMap.
+           Audio gets an inline <audio> player (HTML5 native, supports
+           HTTP Range so the streaming endpoint's 206 response lets the
+           seek-bar work). Sheet music / MIDI / MusicXML get download
+           buttons. Annotations render as a per-row caption. Hidden
+           when no media is attached. */
+        $songMedia = $song['media'] ?? [];
+        if (!empty($songMedia)):
+            $mediaByKind = [
+                'audio' => [], 'sheet-music' => [], 'midi' => [], 'musicxml' => [],
+            ];
+            foreach ($songMedia as $m) {
+                $k = (string)($m['kind'] ?? '');
+                if (isset($mediaByKind[$k])) $mediaByKind[$k][] = $m;
+            }
+    ?>
+    <section id="song-media" class="song-media mt-4 pt-3 border-top" aria-label="Recordings &amp; resources">
+        <h2 class="h6 mb-3 d-flex align-items-center gap-2">
+            <i class="fa-solid fa-music me-1 text-muted" aria-hidden="true"></i>
+            Recordings &amp; resources
+        </h2>
+
+        <?php if (!empty($mediaByKind['audio'])): ?>
+            <div class="song-media-audio mb-3">
+                <?php foreach ($mediaByKind['audio'] as $m): ?>
+                    <div class="mb-2">
+                        <div class="small text-muted mb-1">
+                            <?= htmlspecialchars($m['fileName']) ?>
+                            <?php if (!empty($m['annotation'])): ?>
+                                — <em><?= htmlspecialchars($m['annotation']) ?></em>
+                            <?php endif; ?>
+                        </div>
+                        <audio controls preload="none" class="w-100"
+                               src="<?= htmlspecialchars($m['streamUrl']) ?>"
+                               type="<?= htmlspecialchars($m['mimeType']) ?>">
+                            Your browser doesn't support the audio element.
+                            <a href="<?= htmlspecialchars($m['streamUrl']) ?>">Download <?= htmlspecialchars($m['fileName']) ?></a>.
+                        </audio>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
+
+        <?php
+            /* Non-audio kinds render as a chip-row of download buttons
+               so the section stays compact when a song has 1 PDF + 1
+               MIDI + 1 MusicXML. */
+            $downloadKinds = [
+                'sheet-music' => ['label' => 'Sheet music',  'icon' => 'fa-file-pdf'],
+                'midi'        => ['label' => 'MIDI',         'icon' => 'fa-music'],
+                'musicxml'    => ['label' => 'MusicXML',     'icon' => 'fa-file-code'],
+            ];
+            $hasDownloads = false;
+            foreach ($downloadKinds as $k => $_) {
+                if (!empty($mediaByKind[$k])) { $hasDownloads = true; break; }
+            }
+        ?>
+        <?php if ($hasDownloads): ?>
+            <?php foreach ($downloadKinds as $kind => $kMeta): ?>
+                <?php if (empty($mediaByKind[$kind])) continue; ?>
+                <div class="mb-2">
+                    <div class="text-uppercase small text-muted mb-1"><?= htmlspecialchars($kMeta['label']) ?></div>
+                    <div class="d-flex flex-wrap gap-2">
+                        <?php foreach ($mediaByKind[$kind] as $m): ?>
+                            <a href="<?= htmlspecialchars($m['streamUrl']) ?>"
+                               class="btn btn-sm btn-outline-secondary d-inline-flex align-items-center gap-2"
+                               download="<?= htmlspecialchars($m['fileName']) ?>">
+                                <i class="fa-solid <?= htmlspecialchars($kMeta['icon']) ?>" aria-hidden="true"></i>
+                                <span><?= htmlspecialchars($m['fileName']) ?></span>
+                                <?php if (!empty($m['annotation'])): ?>
+                                    <span class="text-muted small">— <?= htmlspecialchars($m['annotation']) ?></span>
+                                <?php endif; ?>
+                            </a>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+            <?php endforeach; ?>
+        <?php endif; ?>
+    </section>
+    <?php endif; ?>
+
+    <?php
         /* #840 — "Part of work" panel. Reads $song['works'] attached by
            SongData::_worksMap (#840). Lists each Work this song belongs
            to with its sibling members ("other versions of this work")
