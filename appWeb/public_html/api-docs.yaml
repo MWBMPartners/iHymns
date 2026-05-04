@@ -7425,6 +7425,23 @@ components:
           description: Ordered song components (verses, choruses, etc.)
           items:
             $ref: "#/components/schemas/SongComponent"
+        links:
+          type: array
+          description: |
+            External links attached to this song (#833). Categorised,
+            with optional curator notes and a verified flag. Empty
+            array on pre-migration deployments.
+          items:
+            $ref: "#/components/schemas/ExternalLink"
+        works:
+          type: array
+          description: |
+            Works (#840) this song belongs to. Each entry surfaces its
+            sibling members + Work-level external links, so a UI can
+            render "Other versions of this work" without an extra
+            round-trip. Empty on pre-migration deployments.
+          items:
+            $ref: "#/components/schemas/Work"
 
     SongComponent:
       type: object
@@ -8837,4 +8854,169 @@ components:
           type: string
           format: date-time
           example: 2026-04-24T14:37:49Z
+
+    # -------------------------------------------------------------------------
+    # External Links (#833) and Works (#840)
+    # -------------------------------------------------------------------------
+
+    ExternalLink:
+      type: object
+      description: |
+        One curated external link attached to a song / songbook /
+        person / work via the per-entity tblXxxExternalLinks tables.
+        Joined to tblExternalLinkTypes for the rendering metadata
+        (slug, name, category, iconClass) — IsActive=0 link types
+        are silently filtered out.
+      properties:
+        slug:
+          type: string
+          description: Stable registry slug (e.g. `wikipedia`, `spotify`,
+            `imslp`, `musicbrainz-work`).
+          example: wikipedia
+        name:
+          type: string
+          description: Display name shown in the public-page button.
+          example: Wikipedia
+        category:
+          type: string
+          enum: [official, information, listen, watch, read, sheet-music, purchase, authority, social, other]
+          description: Drives which header the link appears under in
+            the "Find this … elsewhere" panel.
+          example: information
+        iconClass:
+          type: string
+          description: Bootstrap-icons class for the link's button.
+          example: bi-wikipedia
+        url:
+          type: string
+          format: uri
+          example: https://en.wikipedia.org/wiki/Amazing_Grace
+        note:
+          type: string
+          nullable: true
+          description: Optional curator-supplied context (e.g. "1779
+            first edition", "sung by King's College Cambridge").
+        verified:
+          type: boolean
+          description: True when a curator has personally checked the
+            URL still resolves to the right resource.
+        sortOrder:
+          type: integer
+          description: Within-category ordering hint.
+
+    WorkMember:
+      type: object
+      description: One song's membership in a Work (#840).
+      properties:
+        songId:
+          type: string
+          example: CP-0202
+        title:
+          type: string
+          example: Amazing Grace
+        number:
+          type: integer
+          nullable: true
+          example: 202
+        songbook:
+          type: string
+          example: CP
+        songbookName:
+          type: string
+          example: Christian Praise
+        isCanonical:
+          type: boolean
+          description: Curator-marked "preferred" version of the Work.
+            Typically zero or one row per Work has this set.
+        memberNote:
+          type: string
+          nullable: true
+          description: Optional context for this specific membership
+            (e.g. "1779 original", "Hindi translation").
+
+    Work:
+      type: object
+      description: |
+        A composition grouping (#840). Mirrors the MusicBrainz Work
+        entity: one Work groups multiple `tblSongs` rows representing
+        the same underlying composition across different songbooks /
+        arrangements / translations. Works can be nested without
+        limit via `parentId`.
+      properties:
+        id:
+          type: integer
+          example: 17
+        parentId:
+          type: integer
+          nullable: true
+          description: Self-FK enabling unlimited nesting (parent →
+            child → grandchild …). Server enforces no cycles at update
+            time.
+          example: 4
+        title:
+          type: string
+          example: Amazing Grace
+        slug:
+          type: string
+          description: URL-safe identifier used by `/work/<slug>`.
+          example: amazing-grace
+        iswc:
+          type: string
+          nullable: true
+          description: International Standard Musical Work Code,
+            shape `T-NNN.NNN.NNN-C` (15 chars). Optional — many
+            traditional / public-domain hymns have no formal ISWC.
+          example: T-345.246.800-1
+        notes:
+          type: string
+          nullable: true
+        parent:
+          type: object
+          nullable: true
+          description: Header summary of the parent Work (when set).
+          properties:
+            id:
+              type: integer
+            title:
+              type: string
+            slug:
+              type: string
+            iswc:
+              type: string
+              nullable: true
+        children:
+          type: array
+          description: Direct children only (one level). Render
+            recursively client-side if a deeper tree is needed.
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              title:
+                type: string
+              slug:
+                type: string
+              iswc:
+                type: string
+                nullable: true
+        members:
+          type: array
+          description: Every song that belongs to this Work, ordered
+            by IsCanonical DESC then SongbookAbbr / Number.
+          items:
+            $ref: "#/components/schemas/WorkMember"
+        links:
+          type: array
+          description: External links attached to this Work — same
+            categorisation + verification model as Song / Songbook /
+            Person links (#833).
+          items:
+            $ref: "#/components/schemas/ExternalLink"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
 

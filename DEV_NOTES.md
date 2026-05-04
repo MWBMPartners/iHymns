@@ -871,4 +871,133 @@ Open a test PR from any branch into `alpha`. Within ~30s the workflow runs, and 
 
 ---
 
-Last updated: 2026-04-26
+## 🔗 External Links System (#833) and Auto-Detect Module (#841)
+
+### Schema
+
+External links live in a controlled-vocabulary registry plus per-entity
+sibling tables:
+
+| Table | Owns the relationship for |
+| --- | --- |
+| `tblExternalLinkTypes` | The seeded provider registry (~37 types: Wikipedia, Hymnary.org, MusicBrainz, IMSLP, Spotify, YouTube, …) — see `migrate-external-links.php` |
+| `tblSongbookExternalLinks` | `tblSongbooks` ↔ link types |
+| `tblSongExternalLinks` | `tblSongs` ↔ link types |
+| `tblCreditPersonExternalLinks` | `tblCreditPeople` ↔ link types |
+| `tblWorkExternalLinks` | `tblWorks` ↔ link types (#840) |
+
+`tblExternalLinkTypes.AppliesTo` is a `SET('song','songbook','person','work')`
+that decides which entity types each provider applies to. The Works
+migration (`migrate-works.php`) widens this set + seeds the `'work'`
+flag on the appropriate provider rows.
+
+Per-entity rows carry: `Url` (≤ 2048 chars), `Note`, `SortOrder`,
+`Verified`, `CreatedAt`, `UpdatedAt`. FK on the entity is
+`ON DELETE CASCADE`; FK on the link type is `ON DELETE RESTRICT`
+(so the registry can't be accidentally trimmed under live data).
+
+### Read path
+
+`SongData::_externalLinksMap($entityType, $keys)` is the generic
+helper. Probe-gated on the relevant `tblXxxExternalLinks` table;
+joins `tblExternalLinkTypes` and excludes rows where `IsActive = 0`
+(soft delete). Returns a map keyed by Abbreviation / SongId /
+CreditPersonId.
+
+### URL → Provider auto-detect (#841)
+
+Single source of truth in
+`appWeb/public_html/js/modules/external-link-detect.js`, exposed on
+`window.iHymnsLinkDetect`:
+
+- `detectFromUrl(url)` → slug or `null`
+- `slugToOptionValue(selectEl, slug)` → numeric option value or `''`
+- `attachAutoDetect(rowEl, opts)` → teardown function
+
+Loaded on every `/manage/*` page by `manage/includes/head-libs.php`,
+so each per-page row builder calls
+`window.iHymnsLinkDetect.attachAutoDetect(card)` and inherits the
+behaviour without an extra script tag.
+
+**Adding a new provider:** append a rule to the `RULES` array in
+the module. That's the only place — every consumer inherits.
+
+**Manual-choice override:** `data-user-picked="1"` is stamped on the
+`<select>` once the user changes it explicitly. The detector reads
+that attr and bails when set.
+
+---
+
+## 🎼 Works (#840) — composition grouping
+
+`tblWorks` groups multiple `tblSongs` rows representing the same
+composition across different songbooks / arrangements / translations.
+Mirrors the MusicBrainz Work ↔ Recording relationship.
+
+### Schema
+
+```
+tblWorks
+  Id               PK
+  ParentWorkId     self-FK, ON DELETE SET NULL → unlimited nesting
+  Iswc             CHAR(15), UNIQUE, optional
+  Title            VARCHAR(255)
+  Slug             VARCHAR(80), UNIQUE
+  Notes            TEXT
+  CreatedAt / UpdatedAt
+
+tblWorkSongs
+  WorkId, SongId   composite PK
+  IsCanonical      flag (zero or one per Work, by convention)
+  SortOrder
+  Note
+
+tblWorkExternalLinks
+  same shape as the per-entity link tables (see above).
+```
+
+### Read path
+
+`SongData::_worksMap($songIds)` bulk-attaches `works` to song rows;
+each Work entry includes its `members` (sibling versions across the
+catalogue) and Work-level `links`. `SongData::getWork($slugOrId)`
+returns the full Work payload for the public `/work/<slug>` page.
+
+### Cycle prevention
+
+Application-side at update time (`manage/works.php`'s
+`$cycleSafe` closure walks the parent chain with a depth cap of 64).
+MySQL has no native cycle constraint and we don't otherwise rely on
+stored procedures, so this is the cheapest correct guard. The depth
+cap doubles as a "table somehow already inconsistent" circuit-breaker.
+
+---
+
+## 📱 Admin list-view responsive convention (#842)
+
+Every admin list table that opts into `.admin-table-responsive` gets
+a column-priority hide-on-narrow rule from the global stylesheet
+(`appWeb/public_html/css/admin.css`).
+
+Mark each `<th>` AND its corresponding `<td>` with one of:
+
+| Priority | Hides at |
+| --- | --- |
+| `data-col-priority="primary"` | never |
+| `data-col-priority="secondary"` | ≤ 768 px |
+| `data-col-priority="tertiary"` | ≤ 992 px |
+
+When adding a new admin list page: add the class to the `<table>`
+and the `data-col-priority` attribute to every `<th>` and `<td>`.
+That's it — no per-page CSS.
+
+The opt-in shape (rather than auto-applying to every `.table`) keeps
+the blast radius zero on existing pages while we roll the convention
+forward.
+
+Pages currently opted in: Credit People, Songbooks, Songbook Series,
+Works.
+
+---
+
+Last updated: 2026-05-04
