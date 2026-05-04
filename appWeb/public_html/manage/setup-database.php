@@ -227,6 +227,7 @@ $friendlyTitles = [
     'song-links'                       => 'Cross-book Song Links (#807 / #808)',
     'songcount-triggers'               => 'SongCount Triggers (#793)',
     'songbook-compilers'               => 'Songbook Compilers (#831)',
+    'alternative-titles'               => 'Alternative Titles for Songs &amp; Songbooks (#832)',
     /* `recompute-songbook-songcount` no longer exposed via the dashboard
        (#818) — the SongCount Triggers migration above includes its own
        initial recompute. The CLI script stays on disk for emergency
@@ -540,6 +541,19 @@ $migrationCards = [
                   . ' Idempotent.',
         'button' => 'Run Songbook Compilers Migration',
     ],
+    'alternative-titles' => [
+        'title'  => 'Alternative Titles for Songs &amp; Songbooks (#832)',
+        'body'   => 'Adds <code>tblSongAlternativeTitles</code> +'
+                  . ' <code>tblSongbookAlternativeTitles</code> so curators can record'
+                  . ' multiple "also known as" titles per entity. Used for internal'
+                  . ' search (a query for "Faith\'s Review and Expectation" returns'
+                  . ' Amazing Grace; "Adventist Hymnal" returns The Church Hymnal) and'
+                  . ' surfaced via JSON-LD <code>alternateName</code> for SEO. Each'
+                  . ' alt carries optional Note + per-row Language tag (songs only;'
+                  . ' lets a Spanish alt of an English hymn be flagged'
+                  . ' <code>es</code>). Idempotent.',
+        'button' => 'Run Alternative Titles Migration',
+    ],
     /* recompute-songbook-songcount card removed (#818) — its work is
        now covered by the SongCount Triggers migration above, which
        runs an initial recompute as part of its installation. The
@@ -670,6 +684,7 @@ $migrationProbes = [
        reachable as a manual recompute. */
     'songcount-triggers'                 => static fn(\mysqli $db) => !_migProbe_triggerExists($db, 'trg_songs_songcount_ai'),
     'songbook-compilers'                 => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongbookCompilers'),
+    'alternative-titles'                 => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongAlternativeTitles'),
     /* Data-only backfills — applied state isn't cheap to detect
        reliably from schema alone. Default to "always show" so a
        curator can always re-run; re-runs are idempotent. */
@@ -859,6 +874,7 @@ if ($action !== '') {
              php appWeb/.sql/migrate-recompute-songbook-songcount.php  */
         'songcount-triggers'       => 'migrate-songcount-triggers.php',
         'songbook-compilers'       => 'migrate-songbook-compilers.php',
+        'alternative-titles'       => 'migrate-alternative-titles.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -912,6 +928,7 @@ if ($action !== '') {
            recompute twice on every Apply-All run. */
         'songcount-triggers',
         'songbook-compilers',
+        'alternative-titles',
         /* When you add a new migrate-*.php under appWeb/.sql/, ALSO add
            its action key to:
              1. $scriptMap above (action key → file)

@@ -302,15 +302,18 @@ class SongData
         }
         $stmt->close();
 
-        /* Attach series memberships in one batch query (#782 phase D)
-           so the home/browse grids can render a "Part of: <Series>" line
-           without N+1 queries. Compilers attached the same way (#831). */
+        /* Attach series memberships + compilers + alt names in one
+           batch query each (#782 phase D, #831, #832) so the home /
+           browse grids can render "Part of: <Series>", "Compiled by …"
+           and "Also known as …" lines without N+1 queries. */
         if ($books) {
             $seriesMap    = $this->_songbookSeriesMap(null);
             $compilersMap = $this->_songbookCompilersMap(null);
+            $altNamesMap  = $this->_songbookAltNamesMap(null);
             foreach ($books as &$_b) {
-                $_b['series']    = $seriesMap[(string)$_b['id']]    ?? [];
-                $_b['compilers'] = $compilersMap[(string)$_b['id']] ?? [];
+                $_b['series']           = $seriesMap[(string)$_b['id']]    ?? [];
+                $_b['compilers']        = $compilersMap[(string)$_b['id']] ?? [];
+                $_b['alternativeNames'] = $altNamesMap[(string)$_b['id']]  ?? [];
             }
             unset($_b);
         }
@@ -651,6 +654,144 @@ class SongData
     }
 
     /**
+     * Pull `[abbr => [{title, note}, ...]]` from
+     * tblSongbookAlternativeTitles. Schema-probed (#832).
+     * Pre-migration deployments get an empty map so the public
+     * "Also known as …" line and JSON-LD alternateName both
+     * gracefully no-op.
+     *
+     * @param string[]|null $abbrs Limit to these abbreviations; null = all
+     * @return array<string, array<int, array{title:string,note:string}>>
+     */
+    private function _songbookAltNamesMap(?array $abbrs = null): array
+    {
+        $hasSchema = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongbookAlternativeTitles'
+                  LIMIT 1"
+            );
+            $probe->execute();
+            $hasSchema = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* fall through */ }
+        if (!$hasSchema) return [];
+
+        try {
+            if ($abbrs === null) {
+                $sql = 'SELECT b.Abbreviation AS abbr,
+                               a.Title         AS title,
+                               a.Note          AS note,
+                               a.SortOrder     AS sortOrder
+                          FROM tblSongbookAlternativeTitles a
+                          JOIN tblSongbooks b ON b.Id = a.SongbookId
+                         ORDER BY b.Abbreviation, a.SortOrder ASC, a.Title ASC';
+                $stmt = $this->db->prepare($sql);
+            } else {
+                $abbrs = array_values(array_filter(array_unique(array_map(
+                    static fn($a) => strtoupper(trim((string)$a)),
+                    $abbrs
+                ))));
+                if (!$abbrs) return [];
+                $ph  = implode(',', array_fill(0, count($abbrs), '?'));
+                $sql = "SELECT b.Abbreviation AS abbr,
+                               a.Title         AS title,
+                               a.Note          AS note,
+                               a.SortOrder     AS sortOrder
+                          FROM tblSongbookAlternativeTitles a
+                          JOIN tblSongbooks b ON b.Id = a.SongbookId
+                         WHERE b.Abbreviation IN ($ph)
+                         ORDER BY b.Abbreviation, a.SortOrder ASC, a.Title ASC";
+                $stmt  = $this->db->prepare($sql);
+                $types = str_repeat('s', count($abbrs));
+                $stmt->bind_param($types, ...$abbrs);
+            }
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $out = [];
+            while ($row = $res->fetch_assoc()) {
+                $abbr = (string)$row['abbr'];
+                if (!isset($out[$abbr])) $out[$abbr] = [];
+                $out[$abbr][] = [
+                    'title' => (string)$row['title'],
+                    'note'  => (string)($row['note'] ?? ''),
+                ];
+            }
+            $stmt->close();
+            return $out;
+        } catch (\Throwable $e) {
+            error_log('[SongData::_songbookAltNamesMap] ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Pull `[songId => [{title, note, language}, ...]]` from
+     * tblSongAlternativeTitles. Schema-probed (#832).
+     *
+     * @param string[]|null $songIds Limit to these SongIds; null = all
+     * @return array<string, array<int, array{title:string,note:string,language:string}>>
+     */
+    private function _songAltTitlesMap(?array $songIds = null): array
+    {
+        $hasSchema = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongAlternativeTitles'
+                  LIMIT 1"
+            );
+            $probe->execute();
+            $hasSchema = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* fall through */ }
+        if (!$hasSchema) return [];
+
+        try {
+            if ($songIds === null) {
+                $sql = 'SELECT SongId, Title, Note, Language, SortOrder
+                          FROM tblSongAlternativeTitles
+                         ORDER BY SongId, SortOrder ASC, Title ASC';
+                $stmt = $this->db->prepare($sql);
+            } else {
+                $songIds = array_values(array_filter(array_unique(array_map(
+                    static fn($s) => trim((string)$s),
+                    $songIds
+                ))));
+                if (!$songIds) return [];
+                $ph  = implode(',', array_fill(0, count($songIds), '?'));
+                $sql = "SELECT SongId, Title, Note, Language, SortOrder
+                          FROM tblSongAlternativeTitles
+                         WHERE SongId IN ($ph)
+                         ORDER BY SongId, SortOrder ASC, Title ASC";
+                $stmt  = $this->db->prepare($sql);
+                $types = str_repeat('s', count($songIds));
+                $stmt->bind_param($types, ...$songIds);
+            }
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $out = [];
+            while ($row = $res->fetch_assoc()) {
+                $sid = (string)$row['SongId'];
+                if (!isset($out[$sid])) $out[$sid] = [];
+                $out[$sid][] = [
+                    'title'    => (string)$row['Title'],
+                    'note'     => (string)($row['Note'] ?? ''),
+                    'language' => (string)($row['Language'] ?? ''),
+                ];
+            }
+            $stmt->close();
+            return $out;
+        } catch (\Throwable $e) {
+            error_log('[SongData::_songAltTitlesMap] ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
      * Find a SongId by (songbook abbreviation, number) without
      * re-fetching the full song row. Used by the song page to
      * decide whether the parent songbook has a same-numbered
@@ -738,11 +879,14 @@ class SongData
         /* #782 phase D — also attach series memberships. Single-songbook
            variant of the bulk fetch on getSongbooks(); pre-migration
            safe via the schema probe inside _songbookSeriesMap.
-           #831 — compilers attached the same way. */
-        $seriesMap        = $this->_songbookSeriesMap([$id]);
-        $compilersMap     = $this->_songbookCompilersMap([$id]);
-        $row['series']    = $seriesMap[(string)$row['id']]    ?? [];
-        $row['compilers'] = $compilersMap[(string)$row['id']] ?? [];
+           #831 — compilers attached the same way.
+           #832 — alt names attached the same way. */
+        $seriesMap               = $this->_songbookSeriesMap([$id]);
+        $compilersMap            = $this->_songbookCompilersMap([$id]);
+        $altNamesMap             = $this->_songbookAltNamesMap([$id]);
+        $row['series']           = $seriesMap[(string)$row['id']]    ?? [];
+        $row['compilers']        = $compilersMap[(string)$row['id']] ?? [];
+        $row['alternativeNames'] = $altNamesMap[(string)$row['id']]  ?? [];
         return $row;
     }
 
@@ -1464,6 +1608,30 @@ class SongData
             $results = $this->_searchByWriterComposer($query, $songbookId, $limit);
         }
 
+        /* Alternative-title matches (#832) — also surface songs whose
+           tblSongAlternativeTitles row matches the query. Merges
+           de-duplicated into the existing result list AT THE TOP so
+           a curator-flagged alt match outranks a body-text fuzzy hit
+           (a search for "Faith's Review and Expectation" should put
+           Amazing Grace first, not buried below lyrics matches). */
+        $altHits = $this->_searchByAlternativeTitle($query, $songbookId, $limit);
+        if (!empty($altHits)) {
+            $seenAlt = [];
+            foreach ($results as $r) { $seenAlt[$r['id']] = true; }
+            $merged = [];
+            foreach ($altHits as $hit) {
+                if (!isset($seenAlt[$hit['id']])) {
+                    $merged[] = $hit;
+                    $seenAlt[$hit['id']] = true;
+                }
+            }
+            foreach ($results as $r) {
+                $merged[] = $r;
+            }
+            $results = $merged;
+            if ($limit > 0) $results = array_slice($results, 0, $limit);
+        }
+
         /* Scripture-reference tag matches (#397 follow-up) — if the query
            looked like a scripture reference, ALSO surface songs that have
            been tagged with the canonical book or full reference. Merges
@@ -1495,6 +1663,97 @@ class SongData
      * via /manage/editor/ (tags UI) and the hit merges into search
      * results for scripture-style queries.
      */
+
+    /**
+     * Search songs by alternative title (#832). Returns the same row
+     * shape as searchSongs() so the caller can merge results
+     * transparently. The match ranks "alt title contains the query"
+     * at the same level as a canonical title hit — alt titles ARE
+     * canonical-equivalents in MusicBrainz parlance, just less
+     * prominent. Each returned row also carries `matchedVia` =
+     * { alternativeTitle: "<the alt that matched>" } so the result
+     * UI can render a "(known as: …)" hint.
+     *
+     * Schema-probed; pre-migration deployments return an empty list.
+     */
+    private function _searchByAlternativeTitle(string $query, ?string $songbookId, int $limit): array
+    {
+        if ($this->jsonMode || !$this->db) return [];
+        $query = trim($query);
+        if ($query === '') return [];
+
+        /* Probe — bail cheaply when the schema isn't live. */
+        try {
+            $probe = $this->db->query(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongAlternativeTitles' LIMIT 1"
+            );
+            $exists = $probe && $probe->fetch_row() !== null;
+            if ($probe) $probe->close();
+            if (!$exists) return [];
+        } catch (\Throwable $_e) {
+            return [];
+        }
+
+        try {
+            $like = '%' . $query . '%';
+            $sql  = 'SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
+                            s.SongbookAbbr AS songbook, s.SongbookName AS songbookName,
+                            s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
+                            s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
+                            s.MusicPublicDomain AS musicPublicDomain,
+                            s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic,
+                            a.Title AS matchedAltTitle
+                       FROM tblSongAlternativeTitles a
+                       JOIN tblSongs s ON s.SongId = a.SongId
+                      WHERE a.Title LIKE ?';
+            $params = [$like];
+            $types  = 's';
+            if ($songbookId !== null) {
+                $songbookId = strtoupper(trim($songbookId));
+                $sql .= ' AND s.SongbookAbbr = ?';
+                $params[] = $songbookId;
+                $types   .= 's';
+            }
+            $sql .= ' ORDER BY s.SongbookAbbr, s.Number';
+            if ($limit > 0) {
+                $sql .= ' LIMIT ?';
+                $params[] = $limit;
+                $types   .= 'i';
+            }
+
+            $stmt = $this->db->prepare($sql);
+            $stmt->bind_param($types, ...$params);
+            $stmt->execute();
+            $res = $stmt->get_result();
+
+            /* De-dup on SongId — a song with three alt-titles all matching
+               the query would otherwise appear three times in the merge. */
+            $hits = [];
+            while ($row = $res->fetch_assoc()) {
+                $sid = (string)$row['id'];
+                if (isset($hits[$sid])) continue;
+                $matchedAlt = (string)($row['matchedAltTitle'] ?? '');
+                unset($row['matchedAltTitle']);
+                $row['number'] = normaliseSongNumber($row['number']);
+                $row['verified'] = (bool)$row['verified'];
+                $row['lyricsPublicDomain'] = (bool)$row['lyricsPublicDomain'];
+                $row['musicPublicDomain'] = (bool)$row['musicPublicDomain'];
+                $row['hasAudio'] = (bool)$row['hasAudio'];
+                $row['hasSheetMusic'] = (bool)$row['hasSheetMusic'];
+                $row['matchedVia'] = ['alternativeTitle' => $matchedAlt];
+                $hits[$sid] = $row;
+            }
+            $stmt->close();
+            $hits = array_values($hits);
+            $this->_attachSearchResultCredits($hits);
+            return $hits;
+        } catch (\Throwable $e) {
+            error_log('[SongData::_searchByAlternativeTitle] ' . $e->getMessage());
+            return [];
+        }
+    }
+
     private function _searchByScriptureTag(string $scriptureRef, ?string $songbookId): array
     {
         if ($this->jsonMode || !$this->db) return [];
@@ -1822,6 +2081,11 @@ class SongData
         if (!empty($translations)) {
             $row['translations'] = $translations;
         }
+
+        /* #832 — alt titles for this song. Empty array on a pre-
+           migration deployment via the schema probe in the helper. */
+        $altMap = $this->_songAltTitlesMap([$songId]);
+        $row['alternativeTitles'] = $altMap[$songId] ?? [];
 
         return $row;
     }
