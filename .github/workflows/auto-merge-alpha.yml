@@ -61,12 +61,44 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
         # --delete-branch is explicit: gh's --auto path doesn't propagate
         # the repo-level delete_branch_on_merge setting through to the
         # GraphQL enablePullRequestAutoMerge mutation. Without this flag
         # every auto-merged PR's head branch sticks around after merge,
         # which is exactly the regression behind #750.
-        run: gh pr merge --auto --squash --delete-branch "$PR_URL"
+        #
+        # Why this step is failure-tolerant: when a PR has no pending
+        # required checks, `gh pr merge --auto` can exit non-zero
+        # (there's no "pending" state to attach auto-merge to). The PR
+        # still merges via GitHub's native flow once the checks queue
+        # clears, but this step exiting non-zero used to skip the
+        # wait-and-dispatch step below — which is what dispatches
+        # deploy.yml. Result: #849 merged but its deploy never fired.
+        # We log the gh output, classify the exit, and pass through.
+        run: |
+          set +e
+          OUTPUT=$(gh pr merge --auto --squash --delete-branch "$PR_URL" 2>&1)
+          STATUS=$?
+          set -e
+          echo "$OUTPUT"
+          if [ "$STATUS" -eq 0 ]; then
+            echo "auto-merge enabled."
+            exit 0
+          fi
+          # Classify common benign failures so the wait-and-dispatch
+          # step still runs.
+          if echo "$OUTPUT" | grep -qiE 'already|clean status|queued'; then
+            echo "::notice::gh pr merge --auto returned $STATUS but the PR appears mergeable / already-enabled — proceeding to wait-and-dispatch."
+            exit 0
+          fi
+          # Real failure (auth / scope / repo setting): surface it but
+          # still let the wait-and-dispatch step run, because the merge
+          # might land via a parallel route (manual button, branch-rule
+          # auto-merge) and we'd still want the deploy to fire.
+          echo "::warning::gh pr merge --auto exited $STATUS — see output above. Continuing so the wait-and-dispatch step still runs."
+          exit 0
 
       # ---------------------------------------------------------------------
       # Bridge GitHub's GITHUB_TOKEN anti-recursion rule (#551).
