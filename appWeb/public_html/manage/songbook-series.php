@@ -441,14 +441,14 @@ if ($hasSchema) {
         <!-- Series list -->
         <div class="card-admin p-3 mb-4">
             <h2 class="h6 mb-3"><i class="bi bi-list-ul me-2"></i>Existing series</h2>
-            <table class="table table-sm align-middle cp-sortable mb-0">
+            <table class="table table-sm align-middle cp-sortable mb-0 admin-table-responsive">
                 <thead>
                     <tr class="text-muted small">
-                        <th data-sort-key="name" data-sort-type="text">Name</th>
-                        <th data-sort-key="slug" data-sort-type="text">Slug</th>
-                        <th data-sort-key="members" data-sort-type="number" class="text-center">Members</th>
-                        <th data-sort-key="description" data-sort-type="text">Description</th>
-                        <th class="text-end">Actions</th>
+                        <th data-col-priority="primary"   data-sort-key="name" data-sort-type="text">Name</th>
+                        <th data-col-priority="secondary" data-sort-key="slug" data-sort-type="text">Slug</th>
+                        <th data-col-priority="primary"   data-sort-key="members" data-sort-type="number" class="text-center">Members</th>
+                        <th data-col-priority="tertiary"  data-sort-key="description" data-sort-type="text">Description</th>
+                        <th data-col-priority="primary"   class="text-end">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -473,11 +473,11 @@ if ($hasSchema) {
                             ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                         ?>
                         <tr>
-                            <td><?= htmlspecialchars((string)$r['Name']) ?></td>
-                            <td><code><?= htmlspecialchars((string)$r['Slug']) ?></code></td>
-                            <td class="text-center"><?= count($members) ?></td>
-                            <td><small class="text-muted"><?= htmlspecialchars((string)$r['Description']) ?></small></td>
-                            <td class="text-end">
+                            <td data-col-priority="primary"><?= htmlspecialchars((string)$r['Name']) ?></td>
+                            <td data-col-priority="secondary"><code><?= htmlspecialchars((string)$r['Slug']) ?></code></td>
+                            <td data-col-priority="primary" class="text-center"><?= count($members) ?></td>
+                            <td data-col-priority="tertiary"><small class="text-muted"><?= htmlspecialchars((string)$r['Description']) ?></small></td>
+                            <td data-col-priority="primary" class="text-end">
                                 <button type="button" class="btn btn-sm btn-outline-info"
                                         onclick="openSeriesEditModal(<?= htmlspecialchars((string)$rowJson, ENT_QUOTES, 'UTF-8') ?>)"
                                         title="Edit series + members">

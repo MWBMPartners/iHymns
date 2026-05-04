@@ -2180,19 +2180,19 @@ $csrf = csrfToken();
             </div>
             <?php endif; ?>
 
-            <table class="table table-sm mb-2 align-middle cp-sortable" id="songbook-list-table">
+            <table class="table table-sm mb-2 align-middle cp-sortable admin-table-responsive" id="songbook-list-table">
                 <thead>
                     <tr class="text-muted small">
-                        <th style="width:1.5rem" aria-label="Drag to reorder"></th>
-                        <th style="width:6rem">Order</th>
-                        <th data-sort-key="abbr" data-sort-type="text">Abbr</th>
-                        <th data-sort-key="name" data-sort-type="text">Name</th>
-                        <th class="text-center" data-sort-key="official" data-sort-type="text" title="Official published hymnal (#502)">Official</th>
-                        <th class="text-center" data-sort-key="songs" data-sort-type="number">Songs</th>
-                        <th data-sort-key="language" data-sort-type="text" title="IETF BCP 47 language tag — empty means multi-lingual / not specified (#778)">Languages</th>
-                        <th data-sort-key="parent" data-sort-type="text" title="Canonical parent songbook — translations / editions point upward to their source (#782)">Parent</th>
-                        <th data-sort-key="colour" data-sort-type="text">Colour</th>
-                        <th class="text-end">Actions</th>
+                        <th data-col-priority="tertiary"  style="width:1.5rem" aria-label="Drag to reorder"></th>
+                        <th data-col-priority="tertiary"  style="width:6rem">Order</th>
+                        <th data-col-priority="primary"   data-sort-key="abbr" data-sort-type="text">Abbr</th>
+                        <th data-col-priority="primary"   data-sort-key="name" data-sort-type="text">Name</th>
+                        <th data-col-priority="secondary" class="text-center" data-sort-key="official" data-sort-type="text" title="Official published hymnal (#502)">Official</th>
+                        <th data-col-priority="primary"   class="text-center" data-sort-key="songs" data-sort-type="number">Songs</th>
+                        <th data-col-priority="secondary" data-sort-key="language" data-sort-type="text" title="IETF BCP 47 language tag — empty means multi-lingual / not specified (#778)">Languages</th>
+                        <th data-col-priority="tertiary"  data-sort-key="parent" data-sort-type="text" title="Canonical parent songbook — translations / editions point upward to their source (#782)">Parent</th>
+                        <th data-col-priority="tertiary"  data-sort-key="colour" data-sort-type="text">Colour</th>
+                        <th data-col-priority="primary"   class="text-end">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -2201,20 +2201,20 @@ $csrf = csrfToken();
                             data-row-id="<?= (int)$r['Id'] ?>"
                             data-sort-name="<?= htmlspecialchars($r['Name']) ?>"
                             data-sort-abbr="<?= htmlspecialchars($r['Abbreviation']) ?>">
-                            <td class="text-center align-middle">
+                            <td data-col-priority="tertiary" class="text-center align-middle">
                                 <span class="songbook-drag-handle" title="Drag to reorder" aria-hidden="true">
                                     <i class="bi bi-grip-vertical"></i>
                                 </span>
                             </td>
-                            <td>
+                            <td data-col-priority="tertiary">
                                 <input type="number" min="0"
                                        class="form-control form-control-sm"
                                        name="display_order[<?= (int)$r['Id'] ?>]"
                                        value="<?= (int)$r['DisplayOrder'] ?>">
                             </td>
-                            <td><code><?= htmlspecialchars($r['Abbreviation']) ?></code></td>
-                            <td><?= htmlspecialchars($r['Name']) ?></td>
-                            <td class="text-center">
+                            <td data-col-priority="primary"><code><?= htmlspecialchars($r['Abbreviation']) ?></code></td>
+                            <td data-col-priority="primary"><?= htmlspecialchars($r['Name']) ?></td>
+                            <td data-col-priority="secondary" class="text-center">
                                 <?php if ((int)$r['IsOfficial'] === 1): ?>
                                     <span class="badge bg-info" title="Official published hymnal">
                                         <i class="bi bi-patch-check-fill" aria-hidden="true"></i> Yes
@@ -2223,8 +2223,8 @@ $csrf = csrfToken();
                                     <small class="text-muted" title="Curated grouping / pseudo-songbook">—</small>
                                 <?php endif; ?>
                             </td>
-                            <td class="text-center"><?= number_format((int)$r['ActualSongCount']) ?></td>
-                            <td>
+                            <td data-col-priority="primary" class="text-center"><?= number_format((int)$r['ActualSongCount']) ?></td>
+                            <td data-col-priority="secondary">
                                 <?php
                                     /* Languages column (#778 v1). Renders the
                                        songbook's stored Language as an uppercase
@@ -2255,7 +2255,7 @@ $csrf = csrfToken();
                                     <small class="text-muted">—</small>
                                 <?php endif; ?>
                             </td>
-                            <td>
+                            <td data-col-priority="tertiary">
                                 <?php
                                     /* Parent column (#782 phase B). When the row
                                        has a parent, render a chip with the parent
@@ -2287,7 +2287,7 @@ $csrf = csrfToken();
                                     <small class="text-muted">—</small>
                                 <?php endif; ?>
                             </td>
-                            <td>
+                            <td data-col-priority="tertiary">
                                 <?php if ($r['Colour']): ?>
                                     <span class="d-inline-block me-1" style="width:1rem;height:1rem;border-radius:50%;background:<?= htmlspecialchars($r['Colour']) ?>"></span>
                                     <small class="text-muted"><?= htmlspecialchars($r['Colour']) ?></small>
@@ -2295,7 +2295,7 @@ $csrf = csrfToken();
                                     <small class="text-muted">—</small>
                                 <?php endif; ?>
                             </td>
-                            <td class="text-end">
+                            <td data-col-priority="primary" class="text-end">
                                 <?php
                                     /* Build the row payload once, then escape for
                                        HTML attribute embedding (#774). The earlier

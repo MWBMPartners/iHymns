@@ -1209,16 +1209,16 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
         <!-- People table -->
         <div class="card bg-dark border-secondary p-2 mb-3">
             <div class="table-responsive">
-                <table class="table table-sm table-hover align-middle mb-0 cp-sortable">
+                <table class="table table-sm table-hover align-middle mb-0 cp-sortable admin-table-responsive">
                     <thead class="text-muted small">
                         <tr>
-                            <th scope="col" data-sort-key="name"   data-sort-type="text">Name</th>
-                            <th scope="col" class="text-center">Roles</th>
-                            <th scope="col" class="text-end" data-sort-key="total" data-sort-type="number">Total uses</th>
-                            <th scope="col" data-sort-key="source" data-sort-type="text">Source</th>
-                            <th scope="col" data-sort-key="lifespan" data-sort-type="text">Lifespan</th>
-                            <th scope="col" class="text-end">Meta</th>
-                            <th scope="col" class="text-end">Actions</th>
+                            <th scope="col" data-col-priority="primary"   data-sort-key="name"   data-sort-type="text">Name</th>
+                            <th scope="col" data-col-priority="primary"   class="text-center">Roles</th>
+                            <th scope="col" data-col-priority="primary"   class="text-end" data-sort-key="total" data-sort-type="number">Total uses</th>
+                            <th scope="col" data-col-priority="secondary" data-sort-key="source" data-sort-type="text">Source</th>
+                            <th scope="col" data-col-priority="secondary" data-sort-key="lifespan" data-sort-type="text">Lifespan</th>
+                            <th scope="col" data-col-priority="tertiary"  class="text-end">Meta</th>
+                            <th scope="col" data-col-priority="primary"   class="text-end">Actions</th>
                         </tr>
                     </thead>
                     <tbody id="cp-tbody">
@@ -1280,7 +1280,7 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                                 data-haystack="<?= htmlspecialchars($haystack) ?>"
                                 data-classification="<?= $isSpecial ? 'special' : ($isGroup ? 'group' : 'individual') ?>"
                                 data-person='<?= htmlspecialchars($personJson, ENT_QUOTES) ?>'>
-                                <td class="person-name <?= $isSpecial ? 'fst-italic' : '' ?>">
+                                <td data-col-priority="primary" class="person-name <?= $isSpecial ? 'fst-italic' : '' ?>">
                                     <?php if ($isGroup): ?>
                                         <i class="bi bi-people-fill text-info me-1" title="Group / band / collective" aria-label="Group"></i>
                                     <?php elseif ($isSpecial): ?>
@@ -1299,20 +1299,20 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                                         </span>
                                     <?php endif; ?>
                                 </td>
-                                <td class="text-center">
+                                <td data-col-priority="primary" class="text-center">
                                     <span class="badge role-pill role-w"  <?= $writers     ? '' : 'data-zero' ?>>W&middot;<?= $writers ?></span>
                                     <span class="badge role-pill role-c"  <?= $composers   ? '' : 'data-zero' ?>>C&middot;<?= $composers ?></span>
                                     <span class="badge role-pill role-ar" <?= $arrangers   ? '' : 'data-zero' ?>>Ar&middot;<?= $arrangers ?></span>
                                     <span class="badge role-pill role-ad" <?= $adaptors    ? '' : 'data-zero' ?>>Ad&middot;<?= $adaptors ?></span>
                                     <span class="badge role-pill role-t"  <?= $translators ? '' : 'data-zero' ?>>T&middot;<?= $translators ?></span>
                                 </td>
-                                <td class="text-end" data-sort-value="<?= (int)$p['total'] ?>"><strong><?= number_format($p['total']) ?></strong></td>
-                                <td data-sort-value="<?= htmlspecialchars($p['registry_id'] !== null && $p['total'] > 0 ? 'Both' : ($p['registry_id'] !== null ? 'Registry' : 'In use')) ?>"><?= $sourceBadge($p) ?></td>
-                                <td class="meta-col" data-sort-value="<?= htmlspecialchars((string)($p['birth_date'] ?? '')) ?>">
+                                <td data-col-priority="primary"   class="text-end" data-sort-value="<?= (int)$p['total'] ?>"><strong><?= number_format($p['total']) ?></strong></td>
+                                <td data-col-priority="secondary" data-sort-value="<?= htmlspecialchars($p['registry_id'] !== null && $p['total'] > 0 ? 'Both' : ($p['registry_id'] !== null ? 'Registry' : 'In use')) ?>"><?= $sourceBadge($p) ?></td>
+                                <td data-col-priority="secondary" class="meta-col" data-sort-value="<?= htmlspecialchars((string)($p['birth_date'] ?? '')) ?>">
                                     <?php $life = $lifespan($p['birth_date'], $p['death_date']);
                                           echo $life !== '' ? $life : '<span class="text-secondary">—</span>'; ?>
                                 </td>
-                                <td class="text-end meta-col">
+                                <td data-col-priority="tertiary" class="text-end meta-col">
                                     <?php if ($p['link_count'] > 0): ?>
                                         <span class="badge bg-secondary-subtle text-secondary-emphasis badge-icon-count"
                                               title="<?= (int)$p['link_count'] ?> external link(s)">
@@ -1329,7 +1329,7 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                                         <span class="text-secondary">—</span>
                                     <?php endif; ?>
                                 </td>
-                                <td class="text-end action-col">
+                                <td data-col-priority="primary" class="text-end action-col">
                                     <div class="btn-group btn-group-sm" role="group" aria-label="Row actions">
                                         <?php
                                             /* Merge / Rename / Delete are available for any row that
