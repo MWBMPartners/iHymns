@@ -233,6 +233,7 @@ $friendlyTitles = [
     'backfill-credit-person-links'     => 'Backfill Credit-Person Links → External Links (#833)',
     'works'                            => 'Works — composition grouping (#840)',
     'external-link-patterns'           => 'External-Link URL Patterns (#845)',
+    'song-media'                       => 'Song Media Uploads (#853)',
     /* `recompute-songbook-songcount` no longer exposed via the dashboard
        (#818) — the SongCount Triggers migration above includes its own
        initial recompute. The CLI script stays on disk for emergency
@@ -291,6 +292,7 @@ $scriptMap = [
     'backfill-credit-person-links'  => 'migrate-backfill-credit-person-links.php',
     'works'                         => 'migrate-works.php',
     'external-link-patterns'        => 'migrate-external-link-patterns.php',
+    'song-media'                    => 'migrate-song-media.php',
     'cleanup'     => 'cleanup.php',
     'backup'      => 'backup.php',
     'restore'     => 'restore.php',
@@ -339,6 +341,7 @@ $migrationOrder = [
     'backfill-credit-person-links',
     'works',
     'external-link-patterns',
+    'song-media',
 ];
 
 /* Per-migration card content (#816). Single source of truth for the
@@ -723,6 +726,21 @@ $migrationCards = [
                   . ' (Works is brand new). Idempotent.',
         'button' => 'Run Works Migration',
     ],
+    'song-media' => [
+        'title'  => 'Song Media Uploads (#853)',
+        'body'   => 'Adds <code>tblSongMedia</code> — the unified per-song accompanying-files'
+                  . ' table so curators can upload audio (MP3 / M4A / OGG / WAV / FLAC / ALAC),'
+                  . ' sheet music (PDF), notation (MusicXML) and MIDI for each song via the'
+                  . ' Song Editor. Hybrid storage: PDF / MIDI / MusicXML go to a'
+                  . ' <code>MEDIUMBLOB</code> column for atomic backups + transactional gating;'
+                  . ' audio goes to <code>appWeb/uploads/songs/&lt;hash&gt;</code> off the public'
+                  . ' docroot, served via a gated <code>/song-media/&lt;id&gt;</code> route so'
+                  . ' <code>checkContentAccess()</code> applies regardless of backend. The'
+                  . ' legacy <code>tblSongs.HasAudio</code> / <code>HasSheetMusic</code> flags'
+                  . ' from MissionPraise scraping stay in place as read-fallbacks for one'
+                  . ' release cycle. Idempotent.',
+        'button' => 'Run Song Media Migration',
+    ],
     /* recompute-songbook-songcount card removed (#818) — its work is
        now covered by the SongCount Triggers migration above, which
        runs an initial recompute as part of its installation. The
@@ -872,6 +890,9 @@ $migrationProbes = [
     /* External-link patterns: pending when the table doesn't exist. */
     'external-link-patterns'             => static fn(\mysqli $db) =>
         !_migProbe_tableExists($db, 'tblExternalLinkPatterns'),
+    /* Song media uploads: pending when tblSongMedia is absent. */
+    'song-media'                         => static fn(\mysqli $db) =>
+        !_migProbe_tableExists($db, 'tblSongMedia'),
     /* Backfills run once after schema lands. They're idempotent so
        always-show is safe — but we can be smarter: pending when the
        new table has fewer rows than the legacy source had non-empty
