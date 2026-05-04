@@ -239,6 +239,108 @@ $friendlyTitles = [
        manual runs. */
 ];
 
+/* =========================================================================
+ * MIGRATION REGISTRY (top-level — must be visible to BOTH the action-handler
+ * block and the page-render block below)
+ *
+ * Previously these two arrays were defined only inside the
+ * `if ($action !== '')` block lower down. That meant the page-render path
+ * (no `?action=` set) saw `$migrationOrder` as undefined → PHP 8 emits a
+ * warning, the partition foreach iterates nothing, both `$pendingActions`
+ * and `$appliedActions` end up empty, and the per-migration card grid
+ * silently disappears. Hoisting them here so the partition + cards work
+ * on every page load. (#820 follow-up)
+ * ========================================================================= */
+
+/* Slug → migrate-*.php filename. Drives the action handler that runs
+   one migration at a time AND the "Apply all pending" bulk runner. */
+$scriptMap = [
+    'install'     => 'install.php',
+    'migrate'     => 'migrate-json.php',
+    'users'       => 'migrate-users.php',
+    'account-sync'=> 'migrate-account-sync.php',
+    'credits'     => 'migrate-credit-fields.php',
+    'songbook-meta' => 'migrate-songbook-meta.php',
+    'user-features-catchup' => 'migrate-user-features-catchup.php',
+    'activity-log-expand' => 'migrate-activity-log-expand.php',
+    'credit-people' => 'migrate-credit-people.php',
+    'credit-people-flags' => 'migrate-credit-people-flags.php',
+    'song-artists'  => 'migrate-song-artists.php',
+    'credit-people-slug' => 'migrate-credit-people-slug.php',
+    'user-avatar-service' => 'migrate-user-avatar-service.php',
+    'organisation-licences' => 'migrate-organisation-licences.php',
+    'songbook-affiliations' => 'migrate-songbook-affiliations.php',
+    'songbook-bibliographic' => 'migrate-songbook-bibliographic.php',
+    'songbook-language'      => 'migrate-songbook-language.php',
+    'ietf-bcp47-language'    => 'migrate-ietf-bcp47-language.php',
+    'bulk-import-jobs'       => 'migrate-bulk-import-jobs.php',
+    'backfill-legacy-songbook-languages' => 'migrate-backfill-legacy-songbook-languages.php',
+    'user-preferred-languages' => 'migrate-user-preferred-languages.php',
+    'iana-language-subtag-registry' => 'migrate-iana-language-subtag-registry.php',
+    'cldr-native-names' => 'migrate-cldr-native-names.php',
+    'tag-titlecase'     => 'migrate-tag-titlecase.php',
+    'tblsongs-number-nullable' => 'migrate-tblsongs-number-nullable.php',
+    'multi-language-tables'    => 'migrate-multi-language-tables.php',
+    'parent-songbooks'         => 'migrate-parent-songbooks.php',
+    'song-links'               => 'migrate-song-links.php',
+    'songcount-triggers'       => 'migrate-songcount-triggers.php',
+    'songbook-compilers'            => 'migrate-songbook-compilers.php',
+    'alternative-titles'            => 'migrate-alternative-titles.php',
+    'external-links'                => 'migrate-external-links.php',
+    'backfill-songbook-links'       => 'migrate-backfill-songbook-links.php',
+    'backfill-credit-person-links'  => 'migrate-backfill-credit-person-links.php',
+    'works'                         => 'migrate-works.php',
+    'external-link-patterns'        => 'migrate-external-link-patterns.php',
+    'cleanup'     => 'cleanup.php',
+    'backup'      => 'backup.php',
+    'restore'     => 'restore.php',
+    'drop-legacy' => 'drop-legacy-tables.php',
+];
+
+/* Authoritative deployment order. The "Apply all pending" runner
+   walks this list; the per-migration card grid renders in this
+   order too. Each script is idempotent — re-runs no-op when the
+   schema is already up-to-date.
+
+   To add a new migration: append its action key here, add a
+   $migrationCards entry below, and a $migrationProbes entry so the
+   pending/applied partition can detect it. */
+$migrationOrder = [
+    'account-sync',
+    'credits',
+    'songbook-meta',
+    'user-features-catchup',
+    'activity-log-expand',
+    'credit-people',
+    'credit-people-flags',
+    'song-artists',
+    'credit-people-slug',
+    'user-avatar-service',
+    'organisation-licences',
+    'songbook-affiliations',
+    'songbook-bibliographic',
+    'songbook-language',
+    'ietf-bcp47-language',
+    'bulk-import-jobs',
+    'backfill-legacy-songbook-languages',
+    'user-preferred-languages',
+    'iana-language-subtag-registry',
+    'cldr-native-names',
+    'tag-titlecase',
+    'tblsongs-number-nullable',
+    'multi-language-tables',
+    'parent-songbooks',
+    'song-links',
+    'songcount-triggers',
+    'songbook-compilers',
+    'alternative-titles',
+    'external-links',
+    'backfill-songbook-links',
+    'backfill-credit-person-links',
+    'works',
+    'external-link-patterns',
+];
+
 /* Per-migration card content (#816). Single source of truth for the
    card grid render. Title is the same string the status heading
    uses, identified by issue number rather than the legacy
@@ -930,117 +1032,9 @@ if ($action !== '') {
     ob_start();
 
     $scriptDir = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . '.sql' . DIRECTORY_SEPARATOR . '';
-    $scriptMap = [
-        'install'     => 'install.php',
-        'migrate'     => 'migrate-json.php',
-        'users'       => 'migrate-users.php',
-        'account-sync'=> 'migrate-account-sync.php',
-        'credits'     => 'migrate-credit-fields.php',
-        'songbook-meta' => 'migrate-songbook-meta.php',
-        'user-features-catchup' => 'migrate-user-features-catchup.php',
-        'activity-log-expand' => 'migrate-activity-log-expand.php',
-        'credit-people' => 'migrate-credit-people.php',
-        'credit-people-flags' => 'migrate-credit-people-flags.php',
-        'song-artists'  => 'migrate-song-artists.php',
-        'credit-people-slug' => 'migrate-credit-people-slug.php',
-        'user-avatar-service' => 'migrate-user-avatar-service.php',
-        'organisation-licences' => 'migrate-organisation-licences.php',
-        'songbook-affiliations' => 'migrate-songbook-affiliations.php',
-        'songbook-bibliographic' => 'migrate-songbook-bibliographic.php',
-        'songbook-language'      => 'migrate-songbook-language.php',
-        'ietf-bcp47-language'    => 'migrate-ietf-bcp47-language.php',
-        'bulk-import-jobs'       => 'migrate-bulk-import-jobs.php',
-        'backfill-legacy-songbook-languages' => 'migrate-backfill-legacy-songbook-languages.php',
-        'user-preferred-languages' => 'migrate-user-preferred-languages.php',
-        'iana-language-subtag-registry' => 'migrate-iana-language-subtag-registry.php',
-        'cldr-native-names' => 'migrate-cldr-native-names.php',
-        'tag-titlecase'     => 'migrate-tag-titlecase.php',
-        'tblsongs-number-nullable' => 'migrate-tblsongs-number-nullable.php',
-        'multi-language-tables'    => 'migrate-multi-language-tables.php',
-        'parent-songbooks'         => 'migrate-parent-songbooks.php',
-        'song-links'               => 'migrate-song-links.php',
-        /* recompute-songbook-songcount removed from the dashboard
-           manifest (#818) — the work is now part of the SongCount
-           Triggers migration's installation step. The script remains
-           on disk for emergency CLI manual runs:
-             php appWeb/.sql/migrate-recompute-songbook-songcount.php  */
-        'songcount-triggers'       => 'migrate-songcount-triggers.php',
-        'songbook-compilers'            => 'migrate-songbook-compilers.php',
-        'alternative-titles'            => 'migrate-alternative-titles.php',
-        'external-links'                => 'migrate-external-links.php',
-        'backfill-songbook-links'       => 'migrate-backfill-songbook-links.php',
-        'backfill-credit-person-links'  => 'migrate-backfill-credit-person-links.php',
-        'works'                         => 'migrate-works.php',
-        'external-link-patterns'        => 'migrate-external-link-patterns.php',
-        'cleanup'     => 'cleanup.php',
-        'backup'      => 'backup.php',
-        'restore'     => 'restore.php',
-        'drop-legacy' => 'drop-legacy-tables.php',
-    ];
-
-    /* Authoritative migration order (#577). Lifted from the historic
-       per-card sequence in this dashboard — we add a single "Apply
-       All Pending Migrations" entry that runs each migration script
-       in this order, sequentially, stopping on the first hard failure.
-       Each script is already idempotent (every migration starts with
-       INFORMATION_SCHEMA / SHOW TABLES probes), so re-running the bulk
-       button after work has been applied is safe.
-
-       To add a new migration: ship the migrate-*.php file, append its
-       action key here, and the bulk button picks it up. The schema
-       audit page (#518) cross-checks declared @migration-adds against
-       the live schema and warns if the bulk run completed but drift
-       remains. */
-    $migrationOrder = [
-        'account-sync',
-        'credits',
-        'songbook-meta',
-        'user-features-catchup',
-        'activity-log-expand',
-        'credit-people',
-        'credit-people-flags',
-        'song-artists',
-        'credit-people-slug',
-        'user-avatar-service',
-        'organisation-licences',
-        'songbook-affiliations',
-        'songbook-bibliographic',
-        'songbook-language',
-        'ietf-bcp47-language',
-        'bulk-import-jobs',
-        'backfill-legacy-songbook-languages',
-        'user-preferred-languages',
-        'iana-language-subtag-registry',
-        'cldr-native-names',
-        'tag-titlecase',
-        'tblsongs-number-nullable',
-        'multi-language-tables',
-        'parent-songbooks',
-        'song-links',
-        /* `recompute-songbook-songcount` removed from the bulk run
-           (#818) — its work is now baked into the SongCount Triggers
-           migration's installation step (the trigger-creation script
-           runs an initial recompute regardless of whether triggers were
-           successfully installed). Listing it here too would just
-           recompute twice on every Apply-All run. */
-        'songcount-triggers',
-        'songbook-compilers',
-        'alternative-titles',
-        'external-links',
-        'backfill-songbook-links',
-        'backfill-credit-person-links',
-        'works',
-        'external-link-patterns',
-        /* When you add a new migrate-*.php under appWeb/.sql/, ALSO add
-           its action key to:
-             1. $scriptMap above (action key → file)
-             2. this $migrationOrder list (so the bulk runner picks it up)
-             3. The card definitions further down (so the per-card UI
-                still works for one-off targeted runs)
-           Keep this list in deployment order. Each script must be
-           idempotent — re-runs across the bulk action must no-op when
-           the schema is already up-to-date. (#708) */
-    ];
+    /* $scriptMap and $migrationOrder are now defined at the top of the
+       file (above $migrationCards) so both the action handler here AND
+       the page-render path below can see them. */
 
     /* "Apply all pending migrations" handler (#577). Iterates
        $migrationOrder, runs each script via require, and stops on
