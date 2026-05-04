@@ -79,6 +79,26 @@ function _songArtistsTableExists(\mysqli $db): bool
 }
 
 /**
+ * Cached probe for tblSongMedia (#853). The table arrives via
+ * migrate-song-media.php; until that migration has been applied, the
+ * song_media_* endpoints return early with a friendly 503 / empty
+ * list rather than 500ing on a partly-migrated install.
+ */
+function _songMedia_tableExists(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) return $cached;
+    $stmt = $db->prepare(
+        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongMedia' LIMIT 1"
+    );
+    $stmt->execute();
+    $cached = $stmt->get_result()->fetch_row() !== null;
+    $stmt->close();
+    return $cached;
+}
+
+/**
  * Validate + normalise an IETF BCP 47 language tag (#681).
  *
  * v1 grammar (matches the songbook editor's $validateBcp47): lowercase
@@ -2384,11 +2404,439 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
+     * SONG_MEDIA_LIST — return the media rows attached to a song so the
+     * Song Editor's chip-list editor (#853 phase C) can render existing
+     * uploads on modal-open. Schema-probed: a pre-migration deploy
+     * returns an empty list rather than 500ing. Bytes are NEVER
+     * included in this payload — the editor surfaces filename,
+     * kind, mime, size, annotation; the bytes only travel via the
+     * /song-media/<id> streaming endpoint (phase E).
+     * ----------------------------------------------------------------- */
+    case 'song_media_list':
+        $songId = trim((string)($_GET['song_id'] ?? ''));
+        if ($songId === '') {
+            http_response_code(400);
+            echo json_encode(['error' => 'song_id required.']);
+            break;
+        }
+        try {
+            $db = getDbMysqli();
+            if (!_songMedia_tableExists($db)) {
+                /* Pre-migration deploy → empty list. */
+                echo json_encode(['ok' => true, 'media' => []]);
+                break;
+            }
+            $stmt = $db->prepare(
+                'SELECT Id, Kind, StorageBackend, FileName, MimeType, SizeBytes,
+                        Annotation, SortOrder, UploadedBy, UploadedAt
+                   FROM tblSongMedia
+                  WHERE SongId = ?
+                  ORDER BY Kind ASC, SortOrder ASC, Id ASC'
+            );
+            $stmt->bind_param('s', $songId);
+            $stmt->execute();
+            $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+            $media = array_map(
+                static fn(array $r): array => [
+                    'id'             => (int)$r['Id'],
+                    'kind'           => (string)$r['Kind'],
+                    'storage_backend'=> (string)$r['StorageBackend'],
+                    'file_name'      => (string)$r['FileName'],
+                    'mime_type'      => (string)$r['MimeType'],
+                    'size_bytes'     => (int)$r['SizeBytes'],
+                    'annotation'     => (string)($r['Annotation'] ?? ''),
+                    'sort_order'     => (int)$r['SortOrder'],
+                    'uploaded_by'    => isset($r['UploadedBy']) ? (int)$r['UploadedBy'] : null,
+                    'uploaded_at'    => (string)$r['UploadedAt'],
+                    'stream_url'     => '/song-media/' . (int)$r['Id'],
+                ],
+                $rows
+            );
+            echo json_encode(['ok' => true, 'media' => $media], JSON_UNESCAPED_UNICODE);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[song_media_list] ' . $e->getMessage());
+            echo json_encode(['error' => 'Could not fetch media.']);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * SONG_MEDIA_UPLOAD — accept a single uploaded file for a song.
+     *
+     * Multipart fields:
+     *   song_id     — target SongId (must exist in tblSongs)
+     *   kind        — one of audio | sheet-music | midi | musicxml
+     *   annotation  — optional curator note (≤255 chars)
+     *   file        — the upload itself
+     *
+     * Pipeline:
+     *   1. requireEditor (already enforced globally at the top of the
+     *      file); upload-rights = editor / admin / global_admin.
+     *   2. Validate kind, song existence, $_FILES error code.
+     *   3. SongMediaStorage::validateUpload() — sniffs the MIME on
+     *      bytes (not the upload's declared content-type) + caps size
+     *      against per-kind SIZE_CAPS.
+     *   4. SongMediaStorage::stage() — writes to disk for FS kinds,
+     *      returns bytes for DB kinds. Handles dir mkdir + chmod.
+     *   5. INSERT tblSongMedia row, with SortOrder = (max+1) for the
+     *      same (song, kind) so new uploads land at the bottom.
+     *   6. On INSERT failure for an FS kind: unlink the staged file
+     *      so it doesn't orphan.
+     *   7. logActivity('song-media.upload', 'song', $songId, ...).
+     * ----------------------------------------------------------------- */
+    case 'song_media_upload':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR
+            . 'includes' . DIRECTORY_SEPARATOR . 'SongMediaStorage.php';
+
+        $songId     = trim((string)($_POST['song_id'] ?? ''));
+        $kind       = trim((string)($_POST['kind'] ?? ''));
+        $annotation = trim((string)($_POST['annotation'] ?? ''));
+
+        if ($songId === '' || !in_array($kind, SongMediaStorage::allKinds(), true)) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Missing or invalid song_id / kind.']);
+            break;
+        }
+        if ($annotation !== '' && function_exists('mb_substr')) {
+            $annotation = mb_substr($annotation, 0, 255);
+        }
+
+        if (!isset($_FILES['file']) || ($_FILES['file']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $err = $_FILES['file']['error'] ?? UPLOAD_ERR_NO_FILE;
+            $msg = match ($err) {
+                UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE => 'File exceeds the server upload size limit.',
+                UPLOAD_ERR_NO_FILE                        => 'No file received — expected multipart with a "file" field.',
+                UPLOAD_ERR_PARTIAL                        => 'Upload was interrupted.',
+                default                                   => 'Upload failed.',
+            };
+            http_response_code(400);
+            echo json_encode(['error' => $msg, 'phpError' => $err]);
+            break;
+        }
+
+        $tmpPath  = (string)$_FILES['file']['tmp_name'];
+        $origName = (string)($_FILES['file']['name'] ?? 'upload');
+        $size     = (int)($_FILES['file']['size'] ?? 0);
+
+        try {
+            $db = getDbMysqli();
+            if (!_songMedia_tableExists($db)) {
+                http_response_code(503);
+                echo json_encode(['error' => 'Song Media migration has not been run.']);
+                break;
+            }
+
+            /* Song must exist — gives a clean 404 instead of an FK violation. */
+            $stmt = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+            $stmt->bind_param('s', $songId);
+            $stmt->execute();
+            $exists = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            if (!$exists) {
+                http_response_code(404);
+                echo json_encode(['error' => 'Song not found.']);
+                break;
+            }
+
+            /* MIME sniff + size cap. Returns canonical extension/mime. */
+            $meta = SongMediaStorage::validateUpload($tmpPath, $kind, $size);
+
+            /* Read bytes once + stage. FS kinds get a path back; DB
+               kinds get the bytes for binding inline. */
+            $bytes = file_get_contents($tmpPath);
+            if ($bytes === false) {
+                throw new \RuntimeException('Could not read upload tempfile.');
+            }
+            $staged = SongMediaStorage::stage($bytes, $kind, $meta['extension']);
+
+            /* Sanitise the filename we record — keep just the basename
+               + clamp length so a curator-pasted weirdness doesn't end
+               up in our Content-Disposition header later. */
+            $cleanName = basename($origName);
+            $cleanName = preg_replace('/[\x00-\x1f\x7f]/', '', $cleanName) ?? 'upload';
+            $cleanName = function_exists('mb_substr')
+                ? mb_substr($cleanName, 0, 255)
+                : substr($cleanName, 0, 255);
+
+            /* SortOrder = (current max + 1) for this (song, kind) so
+               new uploads append; the curator can drag-reorder later. */
+            $stmt = $db->prepare(
+                'SELECT COALESCE(MAX(SortOrder), -1) AS m FROM tblSongMedia WHERE SongId = ? AND Kind = ?'
+            );
+            $stmt->bind_param('ss', $songId, $kind);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            $nextOrder = (int)($row['m'] ?? -1) + 1;
+
+            $uploadedBy = isset($currentUser['id']) ? (int)$currentUser['id'] : null;
+            $annotationOrNull = ($annotation !== '') ? $annotation : null;
+
+            /* Insert. Note: bind_param 's' for the BLOB content works
+               for our sub-16MB cap — mysqli is binary-safe; send_long_data
+               isn't required here. */
+            try {
+                $stmt = $db->prepare(
+                    'INSERT INTO tblSongMedia
+                         (SongId, Kind, StorageBackend, FileName, MimeType, SizeBytes,
+                          Sha256, Content, StoragePath, Annotation, SortOrder, UploadedBy)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                );
+                $stmt->bind_param(
+                    'sssssissssii',
+                    $songId,
+                    $kind,
+                    $staged['backend'],
+                    $cleanName,
+                    $meta['mime'],
+                    $size,
+                    $staged['sha256'],
+                    $staged['content'],
+                    $staged['path'],
+                    $annotationOrNull,
+                    $nextOrder,
+                    $uploadedBy
+                );
+                $stmt->execute();
+                $newId = (int)$db->insert_id;
+                $stmt->close();
+            } catch (\Throwable $insertErr) {
+                /* Roll back the staged file so it doesn't orphan. */
+                if ($staged['backend'] === 'filesystem' && $staged['path'] !== null) {
+                    SongMediaStorage::deleteStorage([
+                        'StorageBackend' => 'filesystem',
+                        'StoragePath'    => $staged['path'],
+                    ]);
+                }
+                throw $insertErr;
+            }
+
+            if (function_exists('logActivity')) {
+                logActivity(
+                    'song-media.upload',
+                    'song',
+                    $songId,
+                    [
+                        'media_id'   => $newId,
+                        'kind'       => $kind,
+                        'backend'    => $staged['backend'],
+                        'file_name'  => $cleanName,
+                        'mime'       => $meta['mime'],
+                        'size_bytes' => $size,
+                        'sha256'     => $staged['sha256'],
+                    ]
+                );
+            }
+
+            echo json_encode([
+                'ok'    => true,
+                'media' => [
+                    'id'              => $newId,
+                    'kind'            => $kind,
+                    'storage_backend' => $staged['backend'],
+                    'file_name'       => $cleanName,
+                    'mime_type'       => $meta['mime'],
+                    'size_bytes'      => $size,
+                    'annotation'      => $annotation,
+                    'sort_order'      => $nextOrder,
+                    'uploaded_by'     => $uploadedBy,
+                    'uploaded_at'     => date('Y-m-d H:i:s'),
+                    'stream_url'      => '/song-media/' . $newId,
+                ],
+            ], JSON_UNESCAPED_UNICODE);
+        } catch (\Throwable $e) {
+            $msg = $e->getMessage();
+            /* SongMediaStorage throws \RuntimeException for user-fixable
+               problems (wrong mime, oversize, empty); 400 those.
+               Anything else is server-side → 500. */
+            $userFacing = $e instanceof \RuntimeException || $e instanceof \InvalidArgumentException;
+            http_response_code($userFacing ? 400 : 500);
+            error_log('[song_media_upload] ' . $msg);
+            echo json_encode(['error' => $userFacing ? $msg : 'Upload failed.']);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * SONG_MEDIA_DELETE — remove a single media row (and its underlying
+     * storage). FS-backed: unlinks the file too. DB-backed: blob goes
+     * with the row.
+     *
+     * POST: media_id
+     * ----------------------------------------------------------------- */
+    case 'song_media_delete':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR
+            . 'includes' . DIRECTORY_SEPARATOR . 'SongMediaStorage.php';
+
+        $mediaId = (int)($_POST['media_id'] ?? 0);
+        if ($mediaId <= 0) {
+            http_response_code(400);
+            echo json_encode(['error' => 'media_id required.']);
+            break;
+        }
+
+        try {
+            $db = getDbMysqli();
+            if (!_songMedia_tableExists($db)) {
+                http_response_code(404);
+                echo json_encode(['error' => 'Media not found.']);
+                break;
+            }
+            $stmt = $db->prepare(
+                'SELECT Id, SongId, Kind, StorageBackend, StoragePath, FileName
+                   FROM tblSongMedia WHERE Id = ? LIMIT 1'
+            );
+            $stmt->bind_param('i', $mediaId);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if (!$row) {
+                http_response_code(404);
+                echo json_encode(['error' => 'Media not found.']);
+                break;
+            }
+
+            /* Unlink first, then delete the row. If the unlink fails
+               we still proceed — orphan files on disk are recoverable;
+               leaving the row alive after a "delete me" is worse. */
+            SongMediaStorage::deleteStorage([
+                'StorageBackend' => (string)$row['StorageBackend'],
+                'StoragePath'    => (string)($row['StoragePath'] ?? ''),
+            ]);
+
+            $stmt = $db->prepare('DELETE FROM tblSongMedia WHERE Id = ?');
+            $stmt->bind_param('i', $mediaId);
+            $stmt->execute();
+            $stmt->close();
+
+            if (function_exists('logActivity')) {
+                logActivity(
+                    'song-media.delete',
+                    'song',
+                    (string)$row['SongId'],
+                    [
+                        'media_id'  => $mediaId,
+                        'kind'      => (string)$row['Kind'],
+                        'backend'   => (string)$row['StorageBackend'],
+                        'file_name' => (string)$row['FileName'],
+                    ]
+                );
+            }
+
+            echo json_encode(['ok' => true, 'deleted' => $mediaId]);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[song_media_delete] ' . $e->getMessage());
+            echo json_encode(['error' => 'Delete failed.']);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * SONG_MEDIA_REORDER — rewrite SortOrder for one (song, kind)
+     * group. The UI posts the new ordered list; we treat array index
+     * as the new SortOrder and write each row in a single transaction.
+     *
+     * POST:
+     *   song_id
+     *   kind
+     *   ids[] — list of media row Ids in the new order
+     * ----------------------------------------------------------------- */
+    case 'song_media_reorder':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR
+            . 'includes' . DIRECTORY_SEPARATOR . 'SongMediaStorage.php';
+
+        $songId = trim((string)($_POST['song_id'] ?? ''));
+        $kind   = trim((string)($_POST['kind'] ?? ''));
+        $rawIds = $_POST['ids'] ?? [];
+        if (!is_array($rawIds)) $rawIds = [];
+
+        if ($songId === '' || !in_array($kind, SongMediaStorage::allKinds(), true)) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Missing or invalid song_id / kind.']);
+            break;
+        }
+
+        $orderedIds = [];
+        foreach ($rawIds as $raw) {
+            $id = (int)$raw;
+            if ($id > 0 && !in_array($id, $orderedIds, true)) $orderedIds[] = $id;
+        }
+        if (empty($orderedIds)) {
+            echo json_encode(['ok' => true, 'reordered' => 0]);
+            break;
+        }
+
+        try {
+            $db = getDbMysqli();
+            if (!_songMedia_tableExists($db)) {
+                http_response_code(503);
+                echo json_encode(['error' => 'Song Media migration has not been run.']);
+                break;
+            }
+            $db->begin_transaction();
+            try {
+                /* UPDATE one row at a time, scoped to (song, kind, id)
+                   so a curator can't accidentally reorder rows from
+                   another song or another kind by passing the wrong
+                   ids — the WHERE clause is the safety net. */
+                $stmt = $db->prepare(
+                    'UPDATE tblSongMedia SET SortOrder = ?
+                      WHERE Id = ? AND SongId = ? AND Kind = ?'
+                );
+                $written = 0;
+                foreach ($orderedIds as $i => $id) {
+                    $stmt->bind_param('iiss', $i, $id, $songId, $kind);
+                    $stmt->execute();
+                    $written += $stmt->affected_rows;
+                }
+                $stmt->close();
+                $db->commit();
+            } catch (\Throwable $txErr) {
+                try { $db->rollback(); } catch (\Throwable $_) {}
+                throw $txErr;
+            }
+
+            if (function_exists('logActivity')) {
+                logActivity(
+                    'song-media.reorder',
+                    'song',
+                    $songId,
+                    [
+                        'kind'         => $kind,
+                        'ordered_ids'  => $orderedIds,
+                    ]
+                );
+            }
+
+            echo json_encode(['ok' => true, 'reordered' => $written]);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[song_media_reorder] ' . $e->getMessage());
+            echo json_encode(['error' => 'Reorder failed.']);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
      * Unknown action
      * ----------------------------------------------------------------- */
     default:
         http_response_code(400);
-        echo json_encode(['error' => 'Unknown action. Use: load, save, save_song, save_song_tags, tag_search, credit_search, bulk_tag, list_revisions, restore_revision, get_translations, add_translation, remove_translation, get_song_links, add_song_link, remove_song_link, suggest_song_links, dismiss_song_link_suggestion, bulk_import_zip, bulk_import_status']);
+        echo json_encode(['error' => 'Unknown action. Use: load, save, save_song, save_song_tags, tag_search, credit_search, bulk_tag, list_revisions, restore_revision, get_translations, add_translation, remove_translation, get_song_links, add_song_link, remove_song_link, suggest_song_links, dismiss_song_link_suggestion, bulk_import_zip, bulk_import_status, song_media_list, song_media_upload, song_media_delete, song_media_reorder']);
         break;
 }
 
