@@ -312,12 +312,12 @@ $csrf = csrfToken();
                 </div>
             <?php else: ?>
                 <div class="table-responsive">
-                    <table class="table table-sm align-middle">
+                    <table class="table table-sm align-middle cp-sortable">
                         <thead>
                             <tr>
-                                <th scope="col">Score</th>
-                                <th scope="col">Song A</th>
-                                <th scope="col">Song B</th>
+                                <th scope="col" data-sort-key="score" data-sort-type="number">Score</th>
+                                <th scope="col" data-sort-key="songA" data-sort-type="text">Song A</th>
+                                <th scope="col" data-sort-key="songB" data-sort-type="text">Song B</th>
                                 <th scope="col" class="text-end">Actions</th>
                             </tr>
                         </thead>

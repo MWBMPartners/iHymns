@@ -401,13 +401,13 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     </p>
 
     <div class="table-responsive">
-        <table class="table table-dark table-striped table-hover align-middle">
+        <table class="table table-dark table-striped table-hover align-middle cp-sortable">
             <thead>
                 <tr>
-                    <th>Name</th>
-                    <th>Slug</th>
-                    <th>Description</th>
-                    <th class="text-end">Songs</th>
+                    <th data-sort-key="name" data-sort-type="text">Name</th>
+                    <th data-sort-key="slug" data-sort-type="text">Slug</th>
+                    <th data-sort-key="description" data-sort-type="text">Description</th>
+                    <th class="text-end" data-sort-key="songs" data-sort-type="number">Songs</th>
                     <th class="text-end">Actions</th>
                 </tr>
             </thead>

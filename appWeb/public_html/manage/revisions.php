@@ -156,14 +156,14 @@ try {
             <p class="text-muted p-4 mb-0">No revisions match these filters.</p>
         <?php else: ?>
             <div class="table-responsive">
-                <table class="table table-dark table-hover mb-0 align-middle small">
+                <table class="table table-dark table-hover mb-0 align-middle small cp-sortable">
                     <thead>
                         <tr>
-                            <th scope="col">When</th>
-                            <th scope="col">Action</th>
-                            <th scope="col">Song</th>
-                            <th scope="col">User</th>
-                            <th scope="col" class="text-end">Revision</th>
+                            <th scope="col" data-sort-key="when"     data-sort-type="text">When</th>
+                            <th scope="col" data-sort-key="action"   data-sort-type="text">Action</th>
+                            <th scope="col" data-sort-key="song"     data-sort-type="text">Song</th>
+                            <th scope="col" data-sort-key="user"     data-sort-type="text">User</th>
+                            <th scope="col" class="text-end" data-sort-key="revision" data-sort-type="number">Revision</th>
                         </tr>
                     </thead>
                     <tbody>

@@ -411,14 +411,14 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             </span>
         </div>
         <div class="table-responsive">
-            <table class="table table-dark table-sm table-hover mb-0">
+            <table class="table table-dark table-sm table-hover mb-0 cp-sortable">
                 <thead>
                     <tr>
-                        <th>When</th>
-                        <th>Recipient</th>
-                        <th>Type</th>
-                        <th>Title / Body</th>
-                        <th class="text-center">Read</th>
+                        <th data-sort-key="when"      data-sort-type="text">When</th>
+                        <th data-sort-key="recipient" data-sort-type="text">Recipient</th>
+                        <th data-sort-key="type"      data-sort-type="text">Type</th>
+                        <th data-sort-key="title"     data-sort-type="text">Title / Body</th>
+                        <th class="text-center" data-sort-key="read" data-sort-type="text">Read</th>
                         <th></th>
                     </tr>
                 </thead>

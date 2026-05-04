@@ -166,15 +166,15 @@ try {
         <div class="card-admin p-4 text-center text-muted">No requests in this bucket.</div>
     <?php else: ?>
         <div class="card-admin p-0">
-            <table class="table table-sm table-hover mb-0">
+            <table class="table table-sm table-hover mb-0 cp-sortable">
                 <thead>
                     <tr class="text-muted small">
-                        <th>#</th>
-                        <th>Title</th>
-                        <th>Songbook</th>
-                        <th>Submitted</th>
-                        <th>By</th>
-                        <th>Status</th>
+                        <th data-sort-key="id"         data-sort-type="number">#</th>
+                        <th data-sort-key="title"      data-sort-type="text">Title</th>
+                        <th data-sort-key="songbook"   data-sort-type="text">Songbook</th>
+                        <th data-sort-key="submitted"  data-sort-type="text">Submitted</th>
+                        <th data-sort-key="by"         data-sort-type="text">By</th>
+                        <th data-sort-key="status"     data-sort-type="text">Status</th>
                         <th></th>
                     </tr>
                 </thead>
