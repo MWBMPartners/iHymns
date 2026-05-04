@@ -256,7 +256,7 @@ if ($page !== null) {
        still skip this path because they include user-specific data. */
     $_cacheablePages = [
         'home', 'songbooks', 'songbook', 'song', 'search',
-        'writer', 'person', 'help', 'terms', 'privacy', 'request', 'request-a-song',
+        'writer', 'person', 'work', 'help', 'terms', 'privacy', 'request', 'request-a-song',
     ];
     $_shouldCachePage = in_array($page, $_cacheablePages, true);
     if ($_shouldCachePage) {
@@ -342,6 +342,19 @@ if ($page !== null) {
                 break;
             }
             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'person.php';
+            break;
+
+        case 'work':
+            /* Work public page (#840). Slug-keyed lookup via
+               SongData::getWork(); 404 when the schema isn't applied
+               or the slug is unknown. */
+            $workSlug = isset($_GET['slug']) ? trim($_GET['slug']) : '';
+            if ($workSlug === '') {
+                http_response_code(400);
+                echo '<div class="alert alert-warning" role="alert">Work slug is required.</div>';
+                break;
+            }
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'work.php';
             break;
 
         case 'help':

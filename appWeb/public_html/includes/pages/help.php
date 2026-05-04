@@ -88,6 +88,37 @@ declare(strict_types=1);
             </div>
         </div>
 
+        <!-- External Links & Works (#833 / #840) -->
+        <div class="accordion-item">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#help-external-links-works"
+                        aria-expanded="false"
+                        aria-controls="help-external-links-works">
+                    <i class="fa-solid fa-link me-2" aria-hidden="true"></i>
+                    Find a hymn elsewhere &amp; Works
+                </button>
+            </h2>
+            <div id="help-external-links-works" class="accordion-collapse collapse" data-bs-parent="#help-accordion">
+                <div class="accordion-body">
+                    <h3 class="h6">Find this song / songbook / person elsewhere</h3>
+                    <p>Every song page, songbook page and credit-person page now has a <strong>Find this … elsewhere</strong> panel listing curated links out to the rest of the web — Wikipedia, Hymnary.org, Spotify, Apple Music, YouTube, Internet Archive, IMSLP, MusicBrainz, CCLI SongSelect, VIAF and more — grouped by category (Official, Information, Read, Sheet music, Listen, Watch, Purchase, Authority, Social, Other).</p>
+                    <p>A small <i class="fa-solid fa-circle-check text-success" aria-hidden="true"></i> tick beside a link means a curator has personally verified it. Each link opens in a new tab.</p>
+
+                    <h3 class="h6 mt-3">Works — same composition across multiple songbooks</h3>
+                    <p>A <strong>Work</strong> groups every version of the same composition that appears across the catalogue. So <em>Amazing Grace</em> — which exists in dozens of hymnals under slightly different titles, with different arrangements — has one Work record, and every individual song entry links back to it.</p>
+                    <ul>
+                        <li>Visit <code>/work/&lt;slug&gt;</code> to see every version of a Work, grouped by songbook</li>
+                        <li>On any song page, the "Part of work" panel lists sibling versions you can jump to</li>
+                        <li>Works can be <strong>nested</strong> — an original Work can have child Works for derivative arrangements / translations / choral versions, with unlimited depth</li>
+                        <li>The optional <strong>ISWC</strong> (International Standard Musical Work Code) cross-references the Work to external royalty / catalogue platforms</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
         <!-- Favourites -->
         <div class="accordion-item">
             <h2 class="accordion-header">

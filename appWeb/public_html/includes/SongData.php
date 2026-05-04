@@ -2214,6 +2214,12 @@ class SongData
         $linksMap = $this->_externalLinksMap('song', [$songId]);
         $row['links'] = $linksMap[$songId] ?? [];
 
+        /* #840 — Works this song belongs to (with sibling members
+           and Work-level external links attached). Empty array on a
+           pre-migration deployment via the schema probe. */
+        $worksMap = $this->_worksMap([$songId]);
+        $row['works'] = $worksMap[$songId] ?? [];
+
         return $row;
     }
 
@@ -2756,5 +2762,369 @@ class SongData
         $this->_attachSearchResultCredits($songs); /* #533 */
 
         return $songs;
+    }
+
+    /* =====================================================================
+     * WORKS — composition grouping (#840)
+     *
+     * Pull membership rows from tblWorkSongs and the Work header rows
+     * they reference. Probe-gated on tblWorks existing; pre-migration
+     * deployments get an empty map and every read path short-circuits
+     * cleanly.
+     * ===================================================================== */
+
+    /**
+     * Probe once — does tblWorks exist? Cached because the song page
+     * and the api both ask within the same request.
+     */
+    private function _hasWorksSchema(): bool
+    {
+        if (isset($this->_hasWorksSchemaCache)) {
+            return $this->_hasWorksSchemaCache;
+        }
+        try {
+            $stmt = $this->db->prepare(
+                'SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1'
+            );
+            $t = 'tblWorks';
+            $stmt->bind_param('s', $t);
+            $stmt->execute();
+            $exists = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            return $this->_hasWorksSchemaCache = $exists;
+        } catch (\Throwable $_e) {
+            return $this->_hasWorksSchemaCache = false;
+        }
+    }
+    /** @var bool|null cached probe result */
+    private ?bool $_hasWorksSchemaCache = null;
+
+    /**
+     * For each songId in $songIds, return a list of Works the song is
+     * a member of. Empty array on a pre-migration deployment.
+     *
+     * Each Work entry: { id, parentId, title, slug, iswc, isCanonical,
+     *                    members:[{songId, songbook, number, title, songbookName}],
+     *                    links:[…] }
+     *
+     * Members + links are attached for the Works that appear, so
+     * downstream code can render the "Other versions of this work"
+     * sub-list without another round-trip.
+     *
+     * @param array<int,string> $songIds
+     * @return array<string,array<int,array<string,mixed>>> keyed by songId
+     */
+    private function _worksMap(array $songIds): array
+    {
+        if (empty($songIds) || !$this->_hasWorksSchema()) return [];
+
+        $clean = array_values(array_filter(array_unique(array_map('strval', $songIds))));
+        if (empty($clean)) return [];
+
+        try {
+            /* Step 1 — membership rows + Work headers in one go. */
+            $ph    = implode(',', array_fill(0, count($clean), '?'));
+            $sql   = "SELECT ws.SongId    AS songId,
+                             ws.IsCanonical AS isCanonical,
+                             ws.SortOrder AS memberSort,
+                             ws.Note      AS memberNote,
+                             w.Id         AS workId,
+                             w.ParentWorkId AS parentId,
+                             w.Title      AS title,
+                             w.Slug       AS slug,
+                             w.Iswc       AS iswc
+                        FROM tblWorkSongs ws
+                        JOIN tblWorks w ON w.Id = ws.WorkId
+                       WHERE ws.SongId IN ($ph)
+                       ORDER BY w.Title ASC, ws.SortOrder ASC";
+            $stmt  = $this->db->prepare($sql);
+            $types = str_repeat('s', count($clean));
+            $stmt->bind_param($types, ...$clean);
+            $stmt->execute();
+            $res = $stmt->get_result();
+
+            $bySong = [];
+            $workIds = [];
+            while ($row = $res->fetch_assoc()) {
+                $sid  = (string)$row['songId'];
+                $wid  = (int)$row['workId'];
+                $workIds[$wid] = true;
+                $bySong[$sid][] = [
+                    'id'          => $wid,
+                    'parentId'    => $row['parentId'] !== null ? (int)$row['parentId'] : null,
+                    'title'       => (string)$row['title'],
+                    'slug'        => (string)$row['slug'],
+                    'iswc'        => (string)($row['iswc'] ?? ''),
+                    'isCanonical' => (bool)$row['isCanonical'],
+                    'memberNote'  => (string)($row['memberNote'] ?? ''),
+                    /* members + links attached in step 2/3 below */
+                    'members'     => [],
+                    'links'       => [],
+                ];
+            }
+            $stmt->close();
+
+            if (empty($bySong)) return [];
+
+            /* Step 2 — sibling members of each work surfaced. */
+            $widList = array_keys($workIds);
+            $ph2     = implode(',', array_fill(0, count($widList), '?'));
+            $sql2    = "SELECT ws.WorkId AS workId,
+                               ws.SongId AS songId,
+                               ws.IsCanonical AS isCanonical,
+                               s.Title AS title,
+                               s.Number AS number,
+                               s.SongbookAbbr AS songbook,
+                               s.SongbookName AS songbookName
+                          FROM tblWorkSongs ws
+                          JOIN tblSongs s ON s.SongId = ws.SongId
+                         WHERE ws.WorkId IN ($ph2)
+                         ORDER BY s.SongbookAbbr ASC, s.Number ASC, s.Title ASC";
+            $stmt2 = $this->db->prepare($sql2);
+            $types2 = str_repeat('i', count($widList));
+            $stmt2->bind_param($types2, ...$widList);
+            $stmt2->execute();
+            $r2 = $stmt2->get_result();
+            $membersByWork = [];
+            while ($mrow = $r2->fetch_assoc()) {
+                $wid = (int)$mrow['workId'];
+                $membersByWork[$wid][] = [
+                    'songId'       => (string)$mrow['songId'],
+                    'title'        => (string)$mrow['title'],
+                    'number'       => normaliseSongNumber($mrow['number']),
+                    'songbook'     => (string)$mrow['songbook'],
+                    'songbookName' => (string)($mrow['songbookName'] ?? ''),
+                    'isCanonical'  => (bool)$mrow['isCanonical'],
+                ];
+            }
+            $stmt2->close();
+
+            /* Step 3 — work-level external links (only when the table
+               exists; widely deferred-friendly since #833 might not yet
+               be applied even when Works is). */
+            $linksByWork = [];
+            try {
+                $probe = $this->db->prepare(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblWorkExternalLinks' LIMIT 1"
+                );
+                $probe->execute();
+                $hasWorkLinks = $probe->get_result()->fetch_row() !== null;
+                $probe->close();
+            } catch (\Throwable $_e) {
+                $hasWorkLinks = false;
+            }
+            if ($hasWorkLinks) {
+                $sql3 = "SELECT el.WorkId AS workId,
+                                t.Slug      AS slug,
+                                t.Name      AS name,
+                                t.Category  AS category,
+                                t.IconClass AS iconClass,
+                                el.Url      AS url,
+                                el.Note     AS note,
+                                el.Verified AS verified,
+                                el.SortOrder AS sortOrder
+                           FROM tblWorkExternalLinks el
+                           JOIN tblExternalLinkTypes t ON t.Id = el.LinkTypeId
+                          WHERE el.WorkId IN ($ph2)
+                            AND COALESCE(t.IsActive, 1) = 1
+                          ORDER BY el.WorkId, t.Category, el.SortOrder ASC,
+                                   t.DisplayOrder ASC, t.Name ASC";
+                $stmt3 = $this->db->prepare($sql3);
+                $stmt3->bind_param($types2, ...$widList);
+                $stmt3->execute();
+                $r3 = $stmt3->get_result();
+                while ($lrow = $r3->fetch_assoc()) {
+                    $wid = (int)$lrow['workId'];
+                    $linksByWork[$wid][] = [
+                        'slug'      => (string)$lrow['slug'],
+                        'name'      => (string)$lrow['name'],
+                        'category'  => (string)$lrow['category'],
+                        'iconClass' => (string)($lrow['iconClass'] ?? ''),
+                        'url'       => (string)$lrow['url'],
+                        'note'      => (string)($lrow['note'] ?? ''),
+                        'verified'  => (bool)$lrow['verified'],
+                        'sortOrder' => (int)$lrow['sortOrder'],
+                    ];
+                }
+                $stmt3->close();
+            }
+
+            /* Stitch it together. */
+            foreach ($bySong as $sid => &$worksList) {
+                foreach ($worksList as &$w) {
+                    $w['members'] = $membersByWork[$w['id']] ?? [];
+                    $w['links']   = $linksByWork[$w['id']]   ?? [];
+                }
+                unset($w);
+            }
+            unset($worksList);
+
+            return $bySong;
+        } catch (\Throwable $e) {
+            error_log('[SongData::_worksMap] ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Public read: full Work row by slug or numeric id, including
+     * members, parent / children references and external links.
+     * Returns null when the schema isn't there or the work doesn't
+     * exist. Used by the public /work/<slug> page and the api.
+     */
+    public function getWork(string|int $slugOrId): ?array
+    {
+        if (!$this->_hasWorksSchema()) return null;
+
+        $isInt = is_int($slugOrId) || ctype_digit((string)$slugOrId);
+        try {
+            if ($isInt) {
+                $stmt = $this->db->prepare(
+                    'SELECT Id, ParentWorkId, Title, Slug, Iswc, Notes, CreatedAt, UpdatedAt
+                       FROM tblWorks WHERE Id = ? LIMIT 1'
+                );
+                $id = (int)$slugOrId;
+                $stmt->bind_param('i', $id);
+            } else {
+                $stmt = $this->db->prepare(
+                    'SELECT Id, ParentWorkId, Title, Slug, Iswc, Notes, CreatedAt, UpdatedAt
+                       FROM tblWorks WHERE Slug = ? LIMIT 1'
+                );
+                $slug = (string)$slugOrId;
+                $stmt->bind_param('s', $slug);
+            }
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if (!$row) return null;
+
+            $work = [
+                'id'        => (int)$row['Id'],
+                'parentId'  => $row['ParentWorkId'] !== null ? (int)$row['ParentWorkId'] : null,
+                'title'     => (string)$row['Title'],
+                'slug'      => (string)$row['Slug'],
+                'iswc'      => (string)($row['Iswc'] ?? ''),
+                'notes'     => (string)($row['Notes'] ?? ''),
+                'createdAt' => (string)$row['CreatedAt'],
+                'updatedAt' => (string)$row['UpdatedAt'],
+                'parent'    => null,
+                'children'  => [],
+                'members'   => [],
+                'links'     => [],
+            ];
+
+            /* Parent header (one row) */
+            if ($work['parentId'] !== null) {
+                $stmt = $this->db->prepare(
+                    'SELECT Id, Title, Slug, Iswc FROM tblWorks WHERE Id = ? LIMIT 1'
+                );
+                $pid = (int)$work['parentId'];
+                $stmt->bind_param('i', $pid);
+                $stmt->execute();
+                $prow = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                if ($prow) {
+                    $work['parent'] = [
+                        'id'    => (int)$prow['Id'],
+                        'title' => (string)$prow['Title'],
+                        'slug'  => (string)$prow['Slug'],
+                        'iswc'  => (string)($prow['Iswc'] ?? ''),
+                    ];
+                }
+            }
+
+            /* Direct children */
+            $stmt = $this->db->prepare(
+                'SELECT Id, Title, Slug, Iswc FROM tblWorks
+                  WHERE ParentWorkId = ? ORDER BY Title ASC'
+            );
+            $wid = (int)$work['id'];
+            $stmt->bind_param('i', $wid);
+            $stmt->execute();
+            $cres = $stmt->get_result();
+            while ($crow = $cres->fetch_assoc()) {
+                $work['children'][] = [
+                    'id'    => (int)$crow['Id'],
+                    'title' => (string)$crow['Title'],
+                    'slug'  => (string)$crow['Slug'],
+                    'iswc'  => (string)($crow['Iswc'] ?? ''),
+                ];
+            }
+            $stmt->close();
+
+            /* Members */
+            $stmt = $this->db->prepare(
+                'SELECT ws.SongId, ws.IsCanonical, ws.SortOrder, ws.Note,
+                        s.Title, s.Number, s.SongbookAbbr, s.SongbookName
+                   FROM tblWorkSongs ws
+                   JOIN tblSongs s ON s.SongId = ws.SongId
+                  WHERE ws.WorkId = ?
+                  ORDER BY ws.IsCanonical DESC, s.SongbookAbbr ASC, s.Number ASC'
+            );
+            $stmt->bind_param('i', $wid);
+            $stmt->execute();
+            $mres = $stmt->get_result();
+            while ($mrow = $mres->fetch_assoc()) {
+                $work['members'][] = [
+                    'songId'       => (string)$mrow['SongId'],
+                    'title'        => (string)$mrow['Title'],
+                    'number'       => normaliseSongNumber($mrow['Number']),
+                    'songbook'     => (string)$mrow['SongbookAbbr'],
+                    'songbookName' => (string)($mrow['SongbookName'] ?? ''),
+                    'isCanonical'  => (bool)$mrow['IsCanonical'],
+                    'memberNote'   => (string)($mrow['Note'] ?? ''),
+                ];
+            }
+            $stmt->close();
+
+            /* External links — probe-gated on the work-links table */
+            try {
+                $probe = $this->db->prepare(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                      WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME = 'tblWorkExternalLinks' LIMIT 1"
+                );
+                $probe->execute();
+                $hasWorkLinks = $probe->get_result()->fetch_row() !== null;
+                $probe->close();
+            } catch (\Throwable $_e) {
+                $hasWorkLinks = false;
+            }
+            if ($hasWorkLinks) {
+                $stmt = $this->db->prepare(
+                    "SELECT t.Slug, t.Name, t.Category, t.IconClass,
+                            el.Url, el.Note, el.Verified, el.SortOrder
+                       FROM tblWorkExternalLinks el
+                       JOIN tblExternalLinkTypes t ON t.Id = el.LinkTypeId
+                      WHERE el.WorkId = ?
+                        AND COALESCE(t.IsActive, 1) = 1
+                      ORDER BY t.Category, el.SortOrder ASC,
+                               t.DisplayOrder ASC, t.Name ASC"
+                );
+                $stmt->bind_param('i', $wid);
+                $stmt->execute();
+                $lres = $stmt->get_result();
+                while ($lrow = $lres->fetch_assoc()) {
+                    $work['links'][] = [
+                        'slug'      => (string)$lrow['Slug'],
+                        'name'      => (string)$lrow['Name'],
+                        'category'  => (string)$lrow['Category'],
+                        'iconClass' => (string)($lrow['IconClass'] ?? ''),
+                        'url'       => (string)$lrow['Url'],
+                        'note'      => (string)($lrow['Note'] ?? ''),
+                        'verified'  => (bool)$lrow['Verified'],
+                        'sortOrder' => (int)$lrow['SortOrder'],
+                    ];
+                }
+                $stmt->close();
+            }
+
+            return $work;
+        } catch (\Throwable $e) {
+            error_log('[SongData::getWork] ' . $e->getMessage());
+            return null;
+        }
     }
 }

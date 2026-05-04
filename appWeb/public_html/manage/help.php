@@ -656,6 +656,72 @@ foreach ($sections as $s) {
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Rename and Merge are atomic — either every credit on every song updates, or none does. Half-finished states are not possible.
                     </div>
+                    <h3 class="h6 mt-3">Bulk promote (#846)</h3>
+                    <p>
+                        When a fresh deployment has hundreds of typed credit names that haven't been registered, click <strong>Bulk promote with fuzzy-match</strong> on the Credit People page header. The bulk page surfaces every name cited on at least one song that doesn't have a registry row, scores each against the existing registry rows (and against other candidates), and lets you pick per-row: <em>Register as new</em>, <em>Merge into existing</em> (re-points every credit on every song to the canonical row's name), or <em>Skip</em>. The whole submit runs in a single transaction with one <code>bulk_run_id</code> on the audit log so you can review the run as a unit.
+                    </p>
+                </section>
+
+                <section id="works" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-diagram-3 me-2"></i>Works</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-warning text-dark">admin</span>
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <p>
+                        A <strong>Work</strong> groups multiple <code>tblSongs</code> rows that represent the same underlying composition across different songbooks / arrangements / translations &mdash; mirrors the <a href="https://musicbrainz.org/doc/Work" target="_blank" rel="noopener noreferrer">MusicBrainz Work</a> &harr; Recording relationship. So <em>Amazing Grace</em>, which appears in dozens of hymnals under slightly different titles, lives as one Work with each songbook entry as a member.
+                    </p>
+                    <h3 class="h6">Key actions</h3>
+                    <dl class="actions">
+                        <dt>Create</dt><dd>Title + slug (auto from title) + optional ISWC + optional parent Work + optional notes. Members are added via the Edit modal once the row exists.</dd>
+                        <dt>Edit</dt><dd>Add / remove member songs (typeahead over the whole catalogue), mark one as <em>canonical</em>, set sort order, attach external links (the provider dropdown auto-detects from the URL).</dd>
+                        <dt>Delete</dt><dd>Memberships and external links cascade away with the Work. Child Works (if any) <strong>orphan</strong> &mdash; their <code>ParentWorkId</code> goes to <code>NULL</code> &mdash; rather than cascade-delete.</dd>
+                    </dl>
+                    <h3 class="h6">Nesting</h3>
+                    <p>
+                        Works can be nested without limit: an original Work can have child Works for derivative arrangements, translations, choral versions, etc., each of which can in turn have its own children. Cycles are blocked server-side at update time (no Work can become its own ancestor).
+                    </p>
+                    <h3 class="h6">ISWC</h3>
+                    <p>
+                        The ISWC (<code>T-NNN.NNN.NNN-C</code>) is the international identifier for a musical composition, registered with CISAC societies (BMI, ASCAP, PRS, &hellip;). It's optional &mdash; many traditional hymns predate the system, and many newer compositions haven't been registered. When supplied, the field shape-validates and canonicalises to the standard format.
+                    </p>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> The same song <em>can</em> belong to multiple Works (e.g. a medley arrangement that quotes two compositions), but it's rare and usually a misclassification. The list view's "Members" column is the quickest sanity check.
+                    </div>
+                </section>
+
+                <section id="external-links" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-link-45deg me-2"></i>External Links</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-warning text-dark">admin</span>
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <p>
+                        Songs, Songbooks, Credit People and Works all support a <strong>card-list editor</strong> for external links &mdash; controlled-vocabulary providers (Wikipedia, Hymnary.org, Spotify, IMSLP, MusicBrainz, etc.) backed by <code>tblExternalLinkTypes</code>. Each link carries an optional Note and a curator-set Verified flag.
+                    </p>
+                    <h3 class="h6">URL auto-detect (#841)</h3>
+                    <p>
+                        Paste a URL into the URL field of any external-link row and the provider dropdown auto-selects the matching registry entry &mdash; Wikipedia detects Wikipedia, YouTube detects YouTube, Spotify detects Spotify, etc. The detector respects manual choices: if you pick a provider before pasting, your choice wins.
+                    </p>
+                    <p>
+                        The detector lives in a single global module &mdash; <code>js/modules/external-link-detect.js</code> &mdash; loaded on every <code>/manage/*</code> page. Every consumer (Songbook editor, Works editor, Credit People editor as it's added) inherits automatically.
+                    </p>
+                    <h3 class="h6 mt-3">URL patterns (#845)</h3>
+                    <p>
+                        Provider rules live in the <code>tblExternalLinkPatterns</code> table &mdash; curator-editable at <a href="/manage/external-link-types">/manage/external-link-types</a>. Add a new provider, sub-domain or path-prefix-discriminated rule (e.g. <code>musicbrainz.org/work/</code>) at any time without a code deploy. Lower priority numbers win, so put more-specific patterns first. The JS module falls back to a bundled rule list on pre-migration deployments so behaviour stays consistent during rollout.
+                    </p>
+                    <h3 class="h6">Categories</h3>
+                    <p>Links group on the public site under: <em>Official, Information, Read, Sheet music, Listen, Watch, Purchase, Authority, Social, Other</em>. The seeded type registry decides which category each provider belongs to; curators don't pick the category &mdash; it's derived from the type.</p>
+                </section>
+
+                <section id="mobile-admin" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-phone me-2"></i>Mobile admin (responsive list views)</h2>
+                    <p>
+                        Admin list pages opt into a column-priority responsive convention (#842). Tag the table <code>.admin-table-responsive</code>, then mark each <code>&lt;th&gt;</code> + <code>&lt;td&gt;</code> with <code>data-col-priority="primary"</code>, <code>"secondary"</code>, or <code>"tertiary"</code>. Below 992px tertiary columns hide; below 768px secondary columns hide too. Primary columns are always visible.
+                    </p>
+                    <p>
+                        Pages currently opted in: Credit People, Songbooks, Songbook Series, Works. The convention is documented in <code>DEV_NOTES.md</code>; rolling it forward to the remaining list pages is a per-page cosmetic change with zero CSS work.
+                    </p>
                 </section>
 
                 <section id="restrictions" class="help-section card-admin mb-4">

@@ -77,6 +77,15 @@ const ENTITLEMENTS = [
     'manage_user_groups'   => ['admin', 'global_admin'],
     'manage_organisations' => ['admin', 'global_admin'],
     'manage_credit_people' => ['admin', 'global_admin'],
+    /* Works (#840) — composition-grouping CRUD. Same gate as the rest
+       of the catalogue surfaces; curators creating Works are doing
+       editorial work that ripples across multiple songbook surfaces. */
+    'manage_works'         => ['admin', 'global_admin'],
+    /* External-link types + URL patterns (#845) — controlled-vocabulary
+       registry that drives every "Find this … elsewhere" panel and
+       the URL auto-detect module. Curator-managed; same gate as the
+       rest of the catalogue surfaces. */
+    'manage_external_link_types' => ['admin', 'global_admin'],
     /* Reference data — IETF BCP 47 language registry (tblLanguages).
        Mostly seeded from the IANA registry (#738) but admins occasionally
        need to add a private-use code, fix a NativeName, or deactivate a

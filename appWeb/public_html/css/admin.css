@@ -986,3 +986,33 @@ body:has(.navbar-admin) .modal-content.bg-dark {
     font-size: 0.75rem;
     line-height: 1;
 }
+
+/* ----------------------------------------------------------------------------
+   RESPONSIVE LIST-VIEW CONVENTION (#842)
+
+   Every admin list table tagged `.admin-table-responsive` opts into a
+   priority-based column visibility scheme so phones don't have to
+   horizontal-scroll a wide table off-screen.
+
+   Mark each <th> + <td> with one of:
+     data-col-priority="primary"    — never hidden
+     data-col-priority="secondary"  — hidden ≤ 768px
+     data-col-priority="tertiary"   — hidden ≤ 992px
+
+   Pages that opt in: credit-people, works, …
+   When adding a new admin list: add the class to the <table> and the
+   data-col-priority attr to every <th> AND its corresponding <td>.
+
+   See DEV_NOTES.md for the full convention.
+---------------------------------------------------------------------------- */
+@media (max-width: 768px) {
+    .admin-table-responsive [data-col-priority="secondary"],
+    .admin-table-responsive [data-col-priority="tertiary"] {
+        display: none !important;
+    }
+}
+@media (min-width: 768.01px) and (max-width: 992px) {
+    .admin-table-responsive [data-col-priority="tertiary"] {
+        display: none !important;
+    }
+}

@@ -261,12 +261,12 @@ $csrf = csrfToken();
         <!-- MySQL table counts -->
         <div class="card-admin p-3 mb-3">
             <h2 class="h6 mb-3"><i class="bi bi-database me-2"></i>MySQL table counts</h2>
-            <table class="table table-sm mb-0 align-middle">
+            <table class="table table-sm mb-0 align-middle cp-sortable">
                 <thead>
                     <tr class="text-muted small">
-                        <th>Table</th>
-                        <th class="text-end">Rows</th>
-                        <th>Status</th>
+                        <th data-sort-key="table" data-sort-type="text">Table</th>
+                        <th class="text-end" data-sort-key="rows" data-sort-type="number">Rows</th>
+                        <th data-sort-key="status" data-sort-type="text">Status</th>
                     </tr>
                 </thead>
                 <tbody>

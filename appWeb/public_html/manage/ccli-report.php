@@ -230,13 +230,13 @@ foreach ($rows as $r) $totalViews += (int)$r['view_count'];
             </div>
         <?php else: ?>
             <div class="table-responsive">
-                <table class="table table-sm table-hover align-middle">
+                <table class="table table-sm table-hover align-middle cp-sortable">
                     <thead>
                         <tr>
-                            <th scope="col">Song</th>
-                            <th scope="col" class="text-end">CCLI #</th>
-                            <th scope="col" class="text-end">Views</th>
-                            <th scope="col">Copyright</th>
+                            <th scope="col" data-sort-key="song"      data-sort-type="text">Song</th>
+                            <th scope="col" class="text-end" data-sort-key="ccli" data-sort-type="text">CCLI #</th>
+                            <th scope="col" class="text-end" data-sort-key="views" data-sort-type="number">Views</th>
+                            <th scope="col" data-sort-key="copyright" data-sort-type="text">Copyright</th>
                         </tr>
                     </thead>
                     <tbody>

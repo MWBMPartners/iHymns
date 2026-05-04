@@ -203,11 +203,11 @@ foreach ($reports as $r) {
                                     </div>
                                 <?php else: ?>
                                     <div class="table-responsive">
-                                        <table class="table table-sm align-middle mb-0">
+                                        <table class="table table-sm align-middle mb-0 cp-sortable">
                                             <thead>
                                                 <tr>
-                                                    <th scope="col">Range</th>
-                                                    <th scope="col" class="text-end">Missing</th>
+                                                    <th scope="col" data-sort-key="range" data-sort-type="text">Range</th>
+                                                    <th scope="col" class="text-end" data-sort-key="missing" data-sort-type="number">Missing</th>
                                                     <th scope="col">Action</th>
                                                 </tr>
                                             </thead>

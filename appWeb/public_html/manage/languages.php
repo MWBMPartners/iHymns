@@ -551,15 +551,15 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     </p>
 
     <div class="table-responsive">
-        <table class="table table-dark table-striped table-hover align-middle" id="languages-table">
+        <table class="table table-dark table-striped table-hover align-middle cp-sortable" id="languages-table">
             <thead>
                 <tr>
-                    <th scope="col">Code</th>
-                    <th scope="col">Name</th>
-                    <th scope="col">NativeName</th>
-                    <th scope="col" class="text-center">Direction</th>
-                    <th scope="col">Scope</th>
-                    <th scope="col" class="text-center">Active</th>
+                    <th scope="col" data-sort-key="code" data-sort-type="text">Code</th>
+                    <th scope="col" data-sort-key="name" data-sort-type="text">Name</th>
+                    <th scope="col" data-sort-key="nativeName" data-sort-type="text">NativeName</th>
+                    <th scope="col" class="text-center" data-sort-key="direction" data-sort-type="text">Direction</th>
+                    <th scope="col" data-sort-key="scope" data-sort-type="text">Scope</th>
+                    <th scope="col" class="text-center" data-sort-key="active" data-sort-type="text">Active</th>
                     <th scope="col" class="text-end">Actions</th>
                 </tr>
             </thead>

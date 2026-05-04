@@ -376,7 +376,7 @@ $buildQuery = function (array $overrides = []) {
             </div>
         <?php else: ?>
             <div class="table-responsive">
-                <table class="table table-sm table-dark table-hover align-middle">
+                <table class="table table-sm table-dark table-hover align-middle cp-sortable">
                     <thead>
                         <tr>
                             <?php /* Header label flips between (local) and (UTC) at runtime
@@ -384,13 +384,13 @@ $buildQuery = function (array $overrides = []) {
                                      If the script doesn't run (CSP block, ancient browser),
                                      the cells stay UTC and the header keeps its initial
                                      "(UTC)" suffix. (#723) */ ?>
-                            <th style="width: 11rem;" id="activity-when-header">When (UTC)</th>
-                            <th style="width: 10rem;">User</th>
-                            <th>Action</th>
-                            <th>Entity</th>
-                            <th style="width: 5rem;">Result</th>
-                            <th style="width: 9rem;">IP</th>
-                            <th style="width: 5rem;">Req</th>
+                            <th style="width: 11rem;" id="activity-when-header" data-sort-key="when"   data-sort-type="text">When (UTC)</th>
+                            <th style="width: 10rem;" data-sort-key="user"   data-sort-type="text">User</th>
+                            <th data-sort-key="action" data-sort-type="text">Action</th>
+                            <th data-sort-key="entity" data-sort-type="text">Entity</th>
+                            <th style="width: 5rem;"  data-sort-key="result" data-sort-type="text">Result</th>
+                            <th style="width: 9rem;"  data-sort-key="ip"     data-sort-type="text">IP</th>
+                            <th style="width: 5rem;"  data-sort-key="req"    data-sort-type="text">Req</th>
                         </tr>
                     </thead>
                     <tbody>
