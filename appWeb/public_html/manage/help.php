@@ -656,6 +656,10 @@ foreach ($sections as $s) {
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Rename and Merge are atomic — either every credit on every song updates, or none does. Half-finished states are not possible.
                     </div>
+                    <h3 class="h6 mt-3">Bulk promote (#846)</h3>
+                    <p>
+                        When a fresh deployment has hundreds of typed credit names that haven't been registered, click <strong>Bulk promote with fuzzy-match</strong> on the Credit People page header. The bulk page surfaces every name cited on at least one song that doesn't have a registry row, scores each against the existing registry rows (and against other candidates), and lets you pick per-row: <em>Register as new</em>, <em>Merge into existing</em> (re-points every credit on every song to the canonical row's name), or <em>Skip</em>. The whole submit runs in a single transaction with one <code>bulk_run_id</code> on the audit log so you can review the run as a unit.
+                    </p>
                 </section>
 
                 <section id="works" class="help-section card-admin mb-4">

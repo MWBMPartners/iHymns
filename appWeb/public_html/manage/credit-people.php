@@ -1087,6 +1087,12 @@ $totalNames           = count($people);
 $totalInRegistry      = count(array_filter($people, static fn($p) => $p['registry_id'] !== null));
 $totalInUse           = count(array_filter($people, static fn($p) => $p['total'] > 0));
 $totalRegistryOnly    = $totalNames - $totalInUse;
+/* #846 — count of names that are in-use but not in the registry, so
+   the parent page can flash a "promote in bulk" CTA when there's any
+   meaningful work to do. */
+$totalInUseUnregistered = count(array_filter($people, static fn($p) =>
+    $p['total'] > 0 && $p['registry_id'] === null
+));
 ?>
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
@@ -1143,6 +1149,22 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
         <?php endif; ?>
         <?php if ($error): ?>
             <div class="alert alert-danger py-2"><?= htmlspecialchars($error) ?></div>
+        <?php endif; ?>
+
+        <?php if ($totalInUseUnregistered > 0): ?>
+            <!-- #846 — bulk-promote CTA. Shows only when there's
+                 actual unregistered-but-cited work waiting. -->
+            <div class="alert alert-info d-flex flex-wrap align-items-center gap-2 py-2">
+                <i class="bi bi-people" aria-hidden="true"></i>
+                <span>
+                    <strong><?= number_format($totalInUseUnregistered) ?></strong>
+                    name<?= $totalInUseUnregistered === 1 ? '' : 's' ?> cited on at least one song
+                    <em>aren't</em> in the registry yet.
+                </span>
+                <a href="/manage/credit-people-bulk-promote" class="btn btn-sm btn-info ms-auto">
+                    <i class="bi bi-magic me-1"></i>Bulk promote with fuzzy-match
+                </a>
+            </div>
         <?php endif; ?>
 
         <!-- Summary tiles -->
