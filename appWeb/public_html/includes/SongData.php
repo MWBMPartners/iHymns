@@ -302,18 +302,20 @@ class SongData
         }
         $stmt->close();
 
-        /* Attach series memberships + compilers + alt names in one
-           batch query each (#782 phase D, #831, #832) so the home /
-           browse grids can render "Part of: <Series>", "Compiled by …"
-           and "Also known as …" lines without N+1 queries. */
+        /* Attach series memberships, compilers, alt names and external
+           links in batch queries (#782 phase D, #831, #832, #833) so
+           the home / browse grids and songbook pages render without
+           N+1 queries. */
         if ($books) {
             $seriesMap    = $this->_songbookSeriesMap(null);
             $compilersMap = $this->_songbookCompilersMap(null);
             $altNamesMap  = $this->_songbookAltNamesMap(null);
+            $linksMap     = $this->_externalLinksMap('songbook', null);
             foreach ($books as &$_b) {
                 $_b['series']           = $seriesMap[(string)$_b['id']]    ?? [];
                 $_b['compilers']        = $compilersMap[(string)$_b['id']] ?? [];
                 $_b['alternativeNames'] = $altNamesMap[(string)$_b['id']]  ?? [];
+                $_b['links']            = $linksMap[(string)$_b['id']]     ?? [];
             }
             unset($_b);
         }
@@ -792,6 +794,123 @@ class SongData
     }
 
     /**
+     * Pull `[entityKey => [{slug, name, category, url, note, verified, iconClass}, ...]]`
+     * from one of the three tblXxxExternalLinks join tables (#833).
+     * Generic over the three entity types — `$entityType` selects the
+     * table + key-column combination:
+     *
+     *   'songbook' → tblSongbookExternalLinks      keyed by Abbreviation
+     *   'song'     → tblSongExternalLinks          keyed by SongId
+     *   'person'   → tblCreditPersonExternalLinks  keyed by CreditPersonId (int)
+     *
+     * Schema-probed; pre-migration deployments get an empty map. The
+     * registry join (tblExternalLinkTypes) drops link-type rows that
+     * have been deactivated — IsActive = 0 acts as a soft delete.
+     *
+     * @param string         $entityType  'songbook' | 'song' | 'person'
+     * @param array|null     $keys        Limit to these keys; null = all
+     * @return array<string|int, array<int, array{slug:string,name:string,category:string,url:string,note:string,verified:bool,iconClass:string,sortOrder:int}>>
+     */
+    private function _externalLinksMap(string $entityType, ?array $keys = null): array
+    {
+        switch ($entityType) {
+            case 'songbook':
+                $table   = 'tblSongbookExternalLinks';
+                $entCol  = 'SongbookId';
+                $joinSql = ' JOIN tblSongbooks b ON b.Id = el.SongbookId ';
+                $keyExpr = 'b.Abbreviation';
+                $bindT   = 's';
+                break;
+            case 'song':
+                $table   = 'tblSongExternalLinks';
+                $entCol  = 'SongId';
+                $joinSql = '';
+                $keyExpr = 'el.SongId';
+                $bindT   = 's';
+                break;
+            case 'person':
+                $table   = 'tblCreditPersonExternalLinks';
+                $entCol  = 'CreditPersonId';
+                $joinSql = '';
+                $keyExpr = 'el.CreditPersonId';
+                $bindT   = 'i';
+                break;
+            default:
+                return [];
+        }
+
+        $hasSchema = false;
+        try {
+            $probe = $this->db->prepare(
+                'SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1'
+            );
+            $probe->bind_param('s', $table);
+            $probe->execute();
+            $hasSchema = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* fall through */ }
+        if (!$hasSchema) return [];
+
+        try {
+            $base = "SELECT {$keyExpr} AS k,
+                            t.Slug      AS slug,
+                            t.Name      AS name,
+                            t.Category  AS category,
+                            t.IconClass AS iconClass,
+                            el.Url      AS url,
+                            el.Note     AS note,
+                            el.Verified AS verified,
+                            el.SortOrder AS sortOrder
+                       FROM {$table} el
+                       JOIN tblExternalLinkTypes t ON t.Id = el.LinkTypeId
+                       {$joinSql}
+                      WHERE COALESCE(t.IsActive, 1) = 1";
+            $orderBy = " ORDER BY {$keyExpr}, t.Category, el.SortOrder ASC, t.DisplayOrder ASC, t.Name ASC";
+
+            if ($keys === null) {
+                $stmt = $this->db->prepare($base . $orderBy);
+            } else {
+                $clean = array_values(array_filter(array_unique(array_map(
+                    static fn($k) => is_int($k) ? $k : trim((string)$k),
+                    $keys
+                ))));
+                if ($entityType === 'songbook') {
+                    $clean = array_map(static fn($s) => strtoupper((string)$s), $clean);
+                }
+                if (!$clean) return [];
+                $ph    = implode(',', array_fill(0, count($clean), '?'));
+                $sql   = $base . " AND {$keyExpr} IN ($ph)" . $orderBy;
+                $stmt  = $this->db->prepare($sql);
+                $types = str_repeat($bindT, count($clean));
+                $stmt->bind_param($types, ...$clean);
+            }
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $out = [];
+            while ($row = $res->fetch_assoc()) {
+                $key = $entityType === 'person' ? (int)$row['k'] : (string)$row['k'];
+                if (!isset($out[$key])) $out[$key] = [];
+                $out[$key][] = [
+                    'slug'      => (string)$row['slug'],
+                    'name'      => (string)$row['name'],
+                    'category'  => (string)$row['category'],
+                    'iconClass' => (string)($row['iconClass'] ?? ''),
+                    'url'       => (string)$row['url'],
+                    'note'      => (string)($row['note'] ?? ''),
+                    'verified'  => (bool)$row['verified'],
+                    'sortOrder' => (int)$row['sortOrder'],
+                ];
+            }
+            $stmt->close();
+            return $out;
+        } catch (\Throwable $e) {
+            error_log("[SongData::_externalLinksMap({$entityType})] " . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
      * Find a SongId by (songbook abbreviation, number) without
      * re-fetching the full song row. Used by the song page to
      * decide whether the parent songbook has a same-numbered
@@ -880,13 +999,16 @@ class SongData
            variant of the bulk fetch on getSongbooks(); pre-migration
            safe via the schema probe inside _songbookSeriesMap.
            #831 — compilers attached the same way.
-           #832 — alt names attached the same way. */
+           #832 — alt names attached the same way.
+           #833 — external links attached the same way. */
         $seriesMap               = $this->_songbookSeriesMap([$id]);
         $compilersMap            = $this->_songbookCompilersMap([$id]);
         $altNamesMap             = $this->_songbookAltNamesMap([$id]);
+        $linksMap                = $this->_externalLinksMap('songbook', [$id]);
         $row['series']           = $seriesMap[(string)$row['id']]    ?? [];
         $row['compilers']        = $compilersMap[(string)$row['id']] ?? [];
         $row['alternativeNames'] = $altNamesMap[(string)$row['id']]  ?? [];
+        $row['links']            = $linksMap[(string)$row['id']]     ?? [];
         return $row;
     }
 
@@ -2086,6 +2208,11 @@ class SongData
            migration deployment via the schema probe in the helper. */
         $altMap = $this->_songAltTitlesMap([$songId]);
         $row['alternativeTitles'] = $altMap[$songId] ?? [];
+
+        /* #833 — external links for this song. Empty array on a
+           pre-migration deployment via the schema probe. */
+        $linksMap = $this->_externalLinksMap('song', [$songId]);
+        $row['links'] = $linksMap[$songId] ?? [];
 
         return $row;
     }

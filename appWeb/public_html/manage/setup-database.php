@@ -228,6 +228,9 @@ $friendlyTitles = [
     'songcount-triggers'               => 'SongCount Triggers (#793)',
     'songbook-compilers'               => 'Songbook Compilers (#831)',
     'alternative-titles'               => 'Alternative Titles for Songs &amp; Songbooks (#832)',
+    'external-links'                   => 'External Links System (#833)',
+    'backfill-songbook-links'          => 'Backfill Songbook URL columns → External Links (#833)',
+    'backfill-credit-person-links'     => 'Backfill Credit-Person Links → External Links (#833)',
     /* `recompute-songbook-songcount` no longer exposed via the dashboard
        (#818) — the SongCount Triggers migration above includes its own
        initial recompute. The CLI script stays on disk for emergency
@@ -554,6 +557,42 @@ $migrationCards = [
                   . ' <code>es</code>). Idempotent.',
         'button' => 'Run Alternative Titles Migration',
     ],
+    'external-links' => [
+        'title'  => 'External Links System (#833)',
+        'body'   => 'MusicBrainz-style external-links registry for songs, songbooks AND'
+                  . ' credit-people. Adds <code>tblExternalLinkTypes</code> (controlled'
+                  . ' vocabulary, ~37 seeded types — Hymnary.org, CCLI Songselect, IMSLP,'
+                  . ' YouTube, Spotify, Internet Archive, Wikipedia, Wikidata, MusicBrainz,'
+                  . ' VIAF, social, …) plus three per-entity join tables'
+                  . ' (<code>tblSongbookExternalLinks</code>, <code>tblSongExternalLinks</code>,'
+                  . ' <code>tblCreditPersonExternalLinks</code>). Multiple links of the same'
+                  . ' type per entity supported (e.g. five Internet Archive scans of one'
+                  . ' hymnal). Idempotent — re-runs upsert seed rows by slug without'
+                  . ' touching curator-modified IsActive / DisplayOrder.',
+        'button' => 'Run External Links Migration',
+    ],
+    'backfill-songbook-links' => [
+        'title'  => 'Backfill Songbook URL columns → External Links (#833)',
+        'body'   => 'Copies non-empty <code>tblSongbooks.WebsiteUrl</code> /'
+                  . ' <code>InternetArchiveUrl</code> / <code>WikipediaUrl</code> values'
+                  . ' into <code>tblSongbookExternalLinks</code> with the corresponding'
+                  . ' link types. Idempotent — re-runs use a NOT EXISTS guard so duplicate'
+                  . ' (SongbookId, LinkType, Url) tuples are no-ops. The legacy columns'
+                  . ' stay in place as read-fallbacks for one release cycle.',
+        'button' => 'Run Songbook Links Backfill',
+    ],
+    'backfill-credit-person-links' => [
+        'title'  => 'Backfill Credit-Person Links → External Links (#833)',
+        'body'   => 'Migrates rows from the existing <code>tblCreditPersonLinks</code>'
+                  . ' (free-text LinkType from #545) into <code>tblCreditPersonExternalLinks</code>.'
+                  . ' Maps free-text type strings to controlled-vocabulary slugs'
+                  . ' (<code>wikipedia</code> → <code>wikipedia</code>, <code>imslp</code> →'
+                  . ' <code>imslp</code>, …). Unrecognised values fall through to'
+                  . ' <code>other</code> with the original string preserved in Note.'
+                  . ' Idempotent. Legacy <code>tblCreditPersonLinks</code> stays as a'
+                  . ' read-fallback for one release cycle.',
+        'button' => 'Run Credit-Person Links Backfill',
+    ],
     /* recompute-songbook-songcount card removed (#818) — its work is
        now covered by the SongCount Triggers migration above, which
        runs an initial recompute as part of its installation. The
@@ -685,6 +724,19 @@ $migrationProbes = [
     'songcount-triggers'                 => static fn(\mysqli $db) => !_migProbe_triggerExists($db, 'trg_songs_songcount_ai'),
     'songbook-compilers'                 => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongbookCompilers'),
     'alternative-titles'                 => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongAlternativeTitles'),
+    /* External Links: pending when any of the four new tables is absent. */
+    'external-links'                     => static fn(\mysqli $db) =>
+        !_migProbe_tableExists($db, 'tblExternalLinkTypes')
+        || !_migProbe_tableExists($db, 'tblSongbookExternalLinks')
+        || !_migProbe_tableExists($db, 'tblSongExternalLinks')
+        || !_migProbe_tableExists($db, 'tblCreditPersonExternalLinks'),
+    /* Backfills run once after schema lands. They're idempotent so
+       always-show is safe — but we can be smarter: pending when the
+       new table has fewer rows than the legacy source had non-empty
+       values. Simpler heuristic: pending if the new table is empty
+       AND the legacy source has data. */
+    'backfill-songbook-links'            => static fn(\mysqli $db) => true,
+    'backfill-credit-person-links'       => static fn(\mysqli $db) => true,
     /* Data-only backfills — applied state isn't cheap to detect
        reliably from schema alone. Default to "always show" so a
        curator can always re-run; re-runs are idempotent. */
@@ -873,8 +925,11 @@ if ($action !== '') {
            on disk for emergency CLI manual runs:
              php appWeb/.sql/migrate-recompute-songbook-songcount.php  */
         'songcount-triggers'       => 'migrate-songcount-triggers.php',
-        'songbook-compilers'       => 'migrate-songbook-compilers.php',
-        'alternative-titles'       => 'migrate-alternative-titles.php',
+        'songbook-compilers'            => 'migrate-songbook-compilers.php',
+        'alternative-titles'            => 'migrate-alternative-titles.php',
+        'external-links'                => 'migrate-external-links.php',
+        'backfill-songbook-links'       => 'migrate-backfill-songbook-links.php',
+        'backfill-credit-person-links'  => 'migrate-backfill-credit-person-links.php',
         'cleanup'     => 'cleanup.php',
         'backup'      => 'backup.php',
         'restore'     => 'restore.php',
@@ -929,6 +984,9 @@ if ($action !== '') {
         'songcount-triggers',
         'songbook-compilers',
         'alternative-titles',
+        'external-links',
+        'backfill-songbook-links',
+        'backfill-credit-person-links',
         /* When you add a new migrate-*.php under appWeb/.sql/, ALSO add
            its action key to:
              1. $scriptMap above (action key → file)

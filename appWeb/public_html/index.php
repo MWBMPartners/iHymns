@@ -259,6 +259,18 @@ try {
                     )
                 ));
             }
+            /* #833 — sameAs for SEO. Search engines pick up the
+               external-link URLs as authority signals; e.g. a
+               linked Hymnary.org page reinforces the song identity. */
+            if (!empty($ogSong['links']) && is_array($ogSong['links'])) {
+                $sameAs = array_values(array_filter(array_map(
+                    static fn($l) => is_array($l) ? (string)($l['url'] ?? '') : '',
+                    $ogSong['links']
+                )));
+                if (!empty($sameAs)) {
+                    $musicComposition['sameAs'] = $sameAs;
+                }
+            }
             if (!empty($ogSong['composers'])) {
                 $musicComposition['composer'] = array_map(
                     fn($name) => ['@type' => 'Person', 'name' => $name],
@@ -322,11 +334,11 @@ try {
                 ['name' => $ogBook['name'], 'url' => $canonicalUrl],
             ];
 
-            /* JSON-LD: MusicAlbum (#832 — alternateName for SEO). */
+            /* JSON-LD: MusicAlbum (#832 — alternateName, #833 — sameAs for SEO). */
             $musicAlbum = [
-                '@context' => 'https://schema.org',
-                '@type'    => 'MusicAlbum',
-                'name'     => $ogBook['name'],
+                '@context'  => 'https://schema.org',
+                '@type'     => 'MusicAlbum',
+                'name'      => $ogBook['name'],
                 'numTracks' => (int)($ogBook['songCount'] ?? 0),
             ];
             if (!empty($ogBook['alternativeNames'])) {
@@ -338,8 +350,80 @@ try {
                     )
                 ));
             }
+            if (!empty($ogBook['links']) && is_array($ogBook['links'])) {
+                $albumSameAs = array_values(array_filter(array_map(
+                    static fn($l) => is_array($l) ? (string)($l['url'] ?? '') : '',
+                    $ogBook['links']
+                )));
+                if (!empty($albumSameAs)) {
+                    $musicAlbum['sameAs'] = $albumSameAs;
+                }
+            }
             $jsonLdScripts[] = $musicAlbum;
         }
+    }
+    /* Person page: /people/<slug> (#833 — sameAs JSON-LD) */
+    elseif (preg_match('#^/people/([a-z0-9\-]+)$#', $requestPath, $matches)) {
+        $pageType = 'other';
+        $personSlug = $matches[1];
+        try {
+            $personDb = getDbMysqli();
+            $stmt = $personDb->prepare(
+                'SELECT Id, Name, Slug FROM tblCreditPeople WHERE Slug = ? LIMIT 1'
+            );
+            $stmt->bind_param('s', $personSlug);
+            $stmt->execute();
+            $personRow = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if ($personRow) {
+                $personJsonLd = [
+                    '@context' => 'https://schema.org',
+                    '@type'    => 'Person',
+                    'name'     => (string)$personRow['Name'],
+                ];
+                /* Check both new and legacy link tables — same fallback
+                   as the public page. */
+                $personLinks = [];
+                $r = $personDb->query(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblCreditPersonExternalLinks' LIMIT 1"
+                );
+                $hasNewPersonLinks = $r && $r->fetch_row() !== null;
+                if ($r) $r->close();
+                if ($hasNewPersonLinks) {
+                    $stmt = $personDb->prepare(
+                        'SELECT Url FROM tblCreditPersonExternalLinks WHERE CreditPersonId = ?'
+                    );
+                    $pid = (int)$personRow['Id'];
+                    $stmt->bind_param('i', $pid);
+                    $stmt->execute();
+                    $personLinks = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                    $stmt->close();
+                }
+                if (empty($personLinks)) {
+                    try {
+                        $stmt = $personDb->prepare(
+                            'SELECT Url FROM tblCreditPersonLinks WHERE CreditPersonId = ?'
+                        );
+                        $pid = (int)$personRow['Id'];
+                        $stmt->bind_param('i', $pid);
+                        $stmt->execute();
+                        $personLinks = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                        $stmt->close();
+                    } catch (\Throwable $_e) { /* legacy table missing */ }
+                }
+                if (!empty($personLinks)) {
+                    $personSameAs = array_values(array_filter(array_map(
+                        static fn($l) => (string)($l['Url'] ?? $l['url'] ?? ''),
+                        $personLinks
+                    )));
+                    if (!empty($personSameAs)) {
+                        $personJsonLd['sameAs'] = $personSameAs;
+                    }
+                }
+                $jsonLdScripts[] = $personJsonLd;
+            }
+        } catch (\Throwable $_e) { /* table missing — no JSON-LD */ }
     }
     /* Shared setlist page: /setlist/shared/abc123 */
     elseif (preg_match('#^/setlist/shared/([a-f0-9]+)$#', $requestPath, $matches)) {

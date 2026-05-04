@@ -132,6 +132,69 @@ if ($book === null) {
         </div>
     </div>
 
+    <?php
+        /* #833 — "Find this songbook elsewhere" panel. Reads from the
+           unified tblSongbookExternalLinks table; legacy URL columns
+           (WebsiteUrl / InternetArchiveUrl / WikipediaUrl) are STILL
+           rendered below as a fallback when the new system has no rows
+           for this book — keeps pre-backfill deployments visually
+           coherent. The new system's links group by Category so curators
+           can see the listing organised by purpose. */
+        $links = $book['links'] ?? [];
+        $linksByCat = [];
+        foreach ($links as $l) {
+            $cat = (string)($l['category'] ?? 'other');
+            if (!isset($linksByCat[$cat])) $linksByCat[$cat] = [];
+            $linksByCat[$cat][] = $l;
+        }
+        $catLabels = [
+            'official'    => 'Official',
+            'information' => 'Information',
+            'read'        => 'Read',
+            'sheet-music' => 'Sheet music',
+            'listen'      => 'Listen',
+            'watch'       => 'Watch',
+            'purchase'    => 'Purchase',
+            'authority'   => 'Authority',
+            'social'      => 'Social',
+            'other'       => 'Other',
+        ];
+        if (!empty($links)):
+    ?>
+        <div class="card bg-dark border-secondary mb-3">
+            <div class="card-body">
+                <h2 class="h6 mb-3 text-muted">
+                    <i class="fa-solid fa-link me-1" aria-hidden="true"></i>
+                    Find this songbook elsewhere
+                </h2>
+                <?php foreach ($catLabels as $cat => $catLabel): ?>
+                    <?php if (empty($linksByCat[$cat])) continue; ?>
+                    <div class="mb-2">
+                        <div class="text-uppercase small text-muted mb-1"><?= htmlspecialchars($catLabel) ?></div>
+                        <div class="d-flex flex-wrap gap-2">
+                            <?php foreach ($linksByCat[$cat] as $l): ?>
+                                <a href="<?= htmlspecialchars($l['url']) ?>"
+                                   target="_blank" rel="noopener nofollow"
+                                   class="btn btn-sm btn-outline-secondary d-inline-flex align-items-center gap-2">
+                                    <?php if (!empty($l['iconClass'])): ?>
+                                        <i class="<?= htmlspecialchars($l['iconClass']) ?>" aria-hidden="true"></i>
+                                    <?php endif; ?>
+                                    <span><?= htmlspecialchars($l['name']) ?></span>
+                                    <?php if (!empty($l['note'])): ?>
+                                        <span class="text-muted small">— <?= htmlspecialchars($l['note']) ?></span>
+                                    <?php endif; ?>
+                                    <?php if (!empty($l['verified'])): ?>
+                                        <i class="fa-solid fa-circle-check text-success small" aria-label="Verified" title="Verified"></i>
+                                    <?php endif; ?>
+                                </a>
+                            <?php endforeach; ?>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        </div>
+    <?php endif; ?>
+
     <!-- Song list -->
     <div class="list-group song-list" role="list">
         <?php foreach ($songs as $song): ?>

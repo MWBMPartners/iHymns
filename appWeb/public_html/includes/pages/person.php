@@ -160,21 +160,63 @@ if ($person && (int)$person['Id'] > 0) {
 
 /* ---------------------------------------------------------------------- */
 /* 3. External links (when the registry row exists).                      */
+/*    Reads tblCreditPersonExternalLinks (the new unified system, #833)   */
+/*    if it has rows for this person, otherwise falls back to the legacy  */
+/*    tblCreditPersonLinks. The fallback keeps deployments that haven't   */
+/*    run the backfill from losing data; the migration ensures both       */
+/*    tables stay in sync once it's been applied.                         */
 /* ---------------------------------------------------------------------- */
-$links = [];
+$links = [];        /* legacy shape — LinkType / Url / Label */
+$linksUnified = []; /* unified shape — slug / name / category / url / note / verified / iconClass */
 if ($person && (int)$person['Id'] > 0) {
+    /* Try the new system first. */
     try {
-        $stmt = $db->prepare(
-            "SELECT LinkType, Url, Label
-               FROM tblCreditPersonLinks
-              WHERE CreditPersonId = ?
-              ORDER BY SortOrder, Id"
+        $r = $db->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblCreditPersonExternalLinks' LIMIT 1"
         );
-        $stmt->bind_param('i', $person['Id']);
-        $stmt->execute();
-        $links = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-        $stmt->close();
-    } catch (\Throwable $_e) { /* table missing — links stay empty */ }
+        $hasNew = $r && $r->fetch_row() !== null;
+        if ($r) $r->close();
+        if ($hasNew) {
+            $stmt = $db->prepare(
+                'SELECT t.Slug      AS slug,
+                        t.Name      AS name,
+                        t.Category  AS category,
+                        t.IconClass AS iconClass,
+                        el.Url      AS url,
+                        el.Note     AS note,
+                        el.Verified AS verified
+                   FROM tblCreditPersonExternalLinks el
+                   JOIN tblExternalLinkTypes t ON t.Id = el.LinkTypeId
+                  WHERE el.CreditPersonId = ?
+                    AND COALESCE(t.IsActive, 1) = 1
+                  ORDER BY t.Category, el.SortOrder ASC, t.DisplayOrder ASC, t.Name ASC'
+            );
+            $pid = (int)$person['Id'];
+            $stmt->bind_param('i', $pid);
+            $stmt->execute();
+            $linksUnified = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+            foreach ($linksUnified as &$_l) { $_l['verified'] = (bool)$_l['verified']; }
+            unset($_l);
+        }
+    } catch (\Throwable $_e) { /* fall through to legacy */ }
+
+    /* Legacy fallback when the new table has no rows for this person. */
+    if (empty($linksUnified)) {
+        try {
+            $stmt = $db->prepare(
+                "SELECT LinkType, Url, Label
+                   FROM tblCreditPersonLinks
+                  WHERE CreditPersonId = ?
+                  ORDER BY SortOrder, Id"
+            );
+            $stmt->bind_param('i', $person['Id']);
+            $stmt->execute();
+            $links = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+        } catch (\Throwable $_e) { /* both tables missing — links stay empty */ }
+    }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -289,8 +331,61 @@ foreach ($discography as $rk => $entry) {
         </div>
     <?php endif; ?>
 
-    <!-- External links -->
-    <?php if (!empty($links)): ?>
+    <!-- External links — unified system (#833) preferred, legacy fallback -->
+    <?php if (!empty($linksUnified)): ?>
+        <?php
+            $pLinksByCat = [];
+            foreach ($linksUnified as $l) {
+                $cat = (string)($l['category'] ?? 'other');
+                if (!isset($pLinksByCat[$cat])) $pLinksByCat[$cat] = [];
+                $pLinksByCat[$cat][] = $l;
+            }
+            $pCatLabels = [
+                'official'    => 'Official',
+                'information' => 'Information',
+                'authority'   => 'Authority',
+                'sheet-music' => 'Sheet music',
+                'listen'      => 'Listen',
+                'watch'       => 'Watch',
+                'social'      => 'Social',
+                'read'        => 'Read',
+                'purchase'    => 'Purchase',
+                'other'       => 'Other',
+            ];
+        ?>
+        <div class="card mb-4">
+            <div class="card-body">
+                <h2 class="h6 text-muted mb-3">
+                    <i class="fa-solid fa-link me-1" aria-hidden="true"></i>Find this person elsewhere
+                </h2>
+                <?php foreach ($pCatLabels as $cat => $catLabel): ?>
+                    <?php if (empty($pLinksByCat[$cat])) continue; ?>
+                    <div class="mb-2">
+                        <div class="text-uppercase small text-muted mb-1"><?= htmlspecialchars($catLabel) ?></div>
+                        <div class="d-flex flex-wrap gap-2">
+                            <?php foreach ($pLinksByCat[$cat] as $l): ?>
+                                <a class="btn btn-sm btn-outline-secondary d-inline-flex align-items-center gap-2"
+                                   href="<?= htmlspecialchars((string)$l['url']) ?>"
+                                   target="_blank" rel="noopener nofollow"
+                                   title="<?= htmlspecialchars((string)$l['url']) ?>">
+                                    <?php if (!empty($l['iconClass'])): ?>
+                                        <i class="<?= htmlspecialchars((string)$l['iconClass']) ?>" aria-hidden="true"></i>
+                                    <?php endif; ?>
+                                    <span><?= htmlspecialchars((string)$l['name']) ?></span>
+                                    <?php if (!empty($l['note'])): ?>
+                                        <span class="text-muted small">— <?= htmlspecialchars((string)$l['note']) ?></span>
+                                    <?php endif; ?>
+                                    <?php if (!empty($l['verified'])): ?>
+                                        <i class="fa-solid fa-circle-check text-success small" aria-label="Verified" title="Verified"></i>
+                                    <?php endif; ?>
+                                </a>
+                            <?php endforeach; ?>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        </div>
+    <?php elseif (!empty($links)): /* legacy fallback when no unified rows */ ?>
         <div class="card mb-4">
             <div class="card-body">
                 <h2 class="h6 text-muted mb-2">
