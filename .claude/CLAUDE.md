@@ -27,6 +27,11 @@ Before adding code on `/manage/*` or `/` (main app), review this list:
 8. **Content access / gating** → `includes/content_access.php::checkContentAccess()`. Never query `tblContentRestrictions` directly from a page or an API handler.
 9. **Licence type picker** → `$LICENCE_TYPES` map in `organisations.php` today, will migrate to `tblLicenceTypes` (#459). Never hard-code licence keys inline elsewhere.
 10. **Entitlement labels** → `$ENTITLEMENT_LABELS` map in `manage/entitlements.php`; friendly labels only, tech detail behind `global_admin` gate.
+11. **External-link URL → provider detection** → `js/modules/external-link-detect.js` (exposes `window.iHymnsLinkDetect`). Patterns are loaded into `window._iHymnsLinkTypes[].patterns` from `tblExternalLinkPatterns` (#845); the module falls back to its bundled `RULES` constant when patterns haven't been migrated yet. Any new card-list / chip-list editor that pastes a URL and wants to pre-select a provider MUST consume this module — never re-inline a regex list.
+12. **External-link type registry** → `manage/external-link-types.php` (CRUD for `tblExternalLinkTypes` + `tblExternalLinkPatterns`). Curators add new providers + their URL patterns here; nothing in `/manage/*` or `js/modules/*` should hard-code a provider key list.
+13. **Responsive admin tables** → opt in via `<table class="admin-table-responsive">` and tag each `<th>`/`<td>` with `data-col-priority="primary|secondary|tertiary"` (#842). Stacks columns at progressive breakpoints; pair with the sortable-headers convention from #844 — both shipped on Credit People, Songbooks, Songbook Series, Works, and the eight other admin lists.
+14. **Works composition grouping** → `tblWorks` (self-FK nesting) + `tblWorkSongs` + `tblWorkExternalLinks` (#840). Public page `/work/<slug>` via `?page=work&slug=…`; admin CRUD at `/manage/works`. Songs that are part of a work render the "Part of work" panel via the shared partial — don't roll your own grouping UI.
+15. **External-links registry** (#833) → `tblExternalLinkTypes` + per-entity tables `tblSongExternalLinks` / `tblSongbookExternalLinks` / `tblCreditPersonExternalLinks` / `tblWorkExternalLinks`. Editors are card-lists that share validation + the URL → provider auto-detect helper. Any new entity that grows external links gets its own `tbl<Entity>ExternalLinks` table, not a generic FK column.
 
 ### Red flags during review
 
@@ -38,6 +43,9 @@ Reject any change that introduces:
 - A PDO / mysqli instantiation outside `getDbMysqli()`. (PDO is no longer used at all — any `new PDO(...)` is a regression.)
 - A `<script>` loading Bootstrap or Bootstrap-Icons on a page that also includes `admin-footer.php` (double-load).
 - An inline click handler that re-implements behaviour the corresponding shared JS module already offers.
+- A hand-rolled regex / `URL.hostname.endsWith(...)` ladder for "what kind of link is this" — `external-link-detect.js` already exists and reads its rules from `tblExternalLinkPatterns`.
+- A new admin list page that doesn't opt into `.admin-table-responsive` + sortable headers (#842 / #844) when surrounding pages already do.
+- A duplicate songbook/song/credit-person/work "external links" editor — reuse the shared chip-list module, don't fork it per entity.
 
 When in doubt: extract first, use second. A 30-line partial is cheaper than debugging five divergent copies.
 

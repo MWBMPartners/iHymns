@@ -12,9 +12,9 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 - **Copyright**: © 2026– MWBM Partners Ltd
 - **License**: Proprietary (third-party components retain their own licenses)
 - **GitHub Repo**: <https://github.com/MWBMPartners/iHymns>
-- **Current Version**: 0.50.0 Alpha (pre-release, Phase 1) — bumped at the end of the 2026-04 #670–#681 / #687 / #676 batch
-- **Database**: MySQL 5.7+ (~40 tables, tblCamelCase naming). Songbook metadata extended in 2026-04 with bibliographic + authority-control identifiers (#672), an Affiliation registry (#670), an optional Language column (#673 → composite IETF BCP 47 with `tblScripts` + `tblRegions` in #681), an `tblBulkImportJobs` async job table (#676), and Activity Log Result/Details columns for in-app error visibility (#695)
-- **API**: 60+ JSON endpoints via `api.php` (now including public `action=scripts` + `action=regions` listings for native clients, #682), plus the editor's separate `/manage/editor/api.php` (load / save_song / bulk_import_zip / bulk_import_status / typeaheads). OpenAPI 3.0 spec at `appWeb/public_html/api-docs.yaml` (#291 / refreshed #682)
+- **Current Version**: 0.50.0 Alpha (pre-release, Phase 1) — feature flow continues through the 2026-05 #840–#852 catalogue-refresh batch (Works composition grouping, DB-driven URL auto-detect, responsive admin lists, sortable headers everywhere, bulk-promote credit-people, plus three CI/auto-merge hotfixes)
+- **Database**: MySQL 5.7+ (~50 tables, tblCamelCase naming). 2026-04 added songbook metadata extensions (#672), an Affiliation registry (#670), optional Language column (#673 → composite IETF BCP 47 with `tblScripts` + `tblRegions` in #681), `tblBulkImportJobs` async-job table (#676), and Activity Log Result/Details columns (#695). 2026-05 added the MusicBrainz-style external-links registry (#833 — `tblExternalLinkTypes` + `tblSongExternalLinks` + `tblSongbookExternalLinks` + `tblCreditPersonExternalLinks`), Works composition grouping (#840 — `tblWorks` with self-FK nesting + `tblWorkSongs` + `tblWorkExternalLinks`, plus `AppliesTo` SET widened to `'work'`), and a curator-editable URL → provider rule table (#845 — `tblExternalLinkPatterns`)
+- **API**: 60+ JSON endpoints via `api.php` (now including public `action=scripts` + `action=regions` listings for native clients, #682, and `?page=work&slug=…` for the Works public page, #840), plus the editor's separate `/manage/editor/api.php` (load / save_song / bulk_import_zip / bulk_import_status / typeaheads). OpenAPI 3.0 spec at `appWeb/public_html/api-docs.yaml` (refreshed for Works + ExternalLink shared schemas in #843)
 
 ---
 
@@ -206,12 +206,26 @@ See `DEV_NOTES.md` for full setup guide including Apple, Android, and Fire OS.
 
 ---
 
-Last updated: 2026-04-30 — refreshed at the close of the #670–#681 / #687 / #676 / #682 / #699 batch + the second-cycle batch (#693–#695 urgent fixes, #699 Phase B/C, #682 hygiene tail, #695 tail, #705 monthly cron automation, #708/#710/#711/#712 bug-batch).
+Last updated: 2026-05-04 — refreshed at the close of the #840–#852 catalogue-refresh batch:
 
-Active in-flight items deferred from the second-cycle batch (will land in their own PRs):
-- **#706** — Songbook cascade-delete with two-step confirmation modal (admin/global_admin only). Issue filed; needs a transactional FK-aware DELETE chain across tblSongs.SongId-referencing tables.
-- **#707** — Org-admin role + per-org member/licence management at /manage/my-organisations. Issue filed; multi-PR scope.
-- **#709** — tblUserSetlists empty despite migrations + legacy JSON files not imported. Needs investigation into where legacy setlists were originally stored.
-- **#713** — Rolling Manage-area sweep tracker for catch-all-with-error_log-no-logActivityError pattern. Several pages threaded; the rest catalogued in the issue checklist.
-- **#719** — Comprehensive API parity audit + OpenAPI refresh + in-app docs + Wiki refresh. Multi-PR tracker (5 sub-PRs). Realistic timeline ~1 week of focused work.
-- **#722** — Schema Audit drift: 3 uncovered columns + 18 orphans-in-DB. Needs new migration scripts for orphans (tblOrganisationLicences full table, tblSongArtists full table, tblUsers.AvatarService, tblCreditPeople.Slug/IsSpecialCase/IsGroup) + schema.sql cleanup for the typo "uncovered" entries.
+- **#840** — Works composition grouping (`tblWorks` with self-FK unlimited nesting, optional ISWC, member-songs across the catalogue, public `/work/<slug>` page, "Part of work" panel on song pages, admin CRUD at `/manage/works`).
+- **#841** — Global URL → provider auto-detect for the external-links card-list editor (`js/modules/external-link-detect.js`, exposed on `window.iHymnsLinkDetect`, loaded on every `/manage/*` page).
+- **#842** — Responsive admin list-view convention (`.admin-table-responsive` + `data-col-priority="primary|secondary|tertiary"`). Opted in: Credit People, Songbooks, Songbook Series, Works.
+- **#843** — Comprehensive docs refresh (visitor in-app help, admin in-app help, `DEV_NOTES.md`, `CHANGELOG.md`, OpenAPI `Work` + `ExternalLink` schemas).
+- **#844** — Sortable headers across every admin list page (10 pages opted in).
+- **#845** — URL-detect rules moved into MySQL (`tblExternalLinkPatterns`); new `/manage/external-link-types` curator-editable CRUD page; JS module reads patterns from `window._iHymnsLinkTypes[].patterns`, falls back to bundled `RULES` on pre-migration deployments.
+- **#846** — Bulk-promote in-use Credit People into the register (Levenshtein + token-set Jaccard fuzzy-match, single-transaction submit with shared `bulk_run_id`).
+- **#848 / #849** — Hotfixes for #847's two follow-on bugs (migration cards not rendering on no-action visit; CI guard tripping its own block-comment).
+- **#850 / #852** — CI/auto-merge plumbing made resilient: workflow tolerates `gh pr merge --auto` non-zero exits on fast-mergeable PRs; `Lint & Validate` now runs on every PR (no path filter on the `pull_request` trigger), so workflow-only / docs-only PRs can no longer deadlock auto-merge.
+
+Active in-flight items deferred from earlier batches (will land in their own PRs):
+- **#706** — Songbook cascade-delete with two-step confirmation modal.
+- **#707** — Org-admin role + per-org member/licence management at /manage/my-organisations.
+- **#709** — tblUserSetlists empty despite migrations + legacy JSON files not imported.
+- **#713** — Rolling Manage-area sweep tracker for catch-all-with-error_log-no-logActivityError pattern.
+- **#719** — Comprehensive API parity audit + OpenAPI refresh + in-app docs + Wiki refresh.
+- **#722** — Schema Audit drift: 3 uncovered columns + 18 orphans-in-DB.
+
+New deferred items from the 2026-05 batch:
+- **#838** — credit-people external-links editor on the new schema (legacy `tblCreditPersonLinks` still read-fallback).
+- **#839** — chip-list editor for song external links in `/manage/editor`.
