@@ -32,16 +32,14 @@ on:
       - '.eslintrc*'
       - 'eslint.config.*'
 
-  pull_request:
-    paths:
-      - 'appWeb/**/*.js'
-      - 'appWeb/**/*.css'
-      - 'appWeb/**/*.php'
-      - 'appWeb/**/*.html'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.eslintrc*'
-      - 'eslint.config.*'
+  # PRs intentionally have NO paths filter — see #851. Branch protection
+  # on `alpha` requires this workflow as a status check; skipping the
+  # workflow on workflow-only / docs-only PRs leaves the required check
+  # in a permanent "not satisfied" state and deadlocks auto-merge. Each
+  # lint step internally early-exits with "skipping" when its target file
+  # set is empty, so running unconditionally here is cheap and keeps the
+  # required check satisfiable on every PR shape.
+  pull_request: {}
 
 # Cancel any in-progress CI run on the same branch / PR
 concurrency:
