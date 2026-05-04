@@ -1426,9 +1426,15 @@ if ($hasCredentials && defined('DB_HOST')) {
            is fully self-rendered higher up — DOCTYPE through
            admin-footer.php — and `exit`s before reaching this block.
            So everything below this point only ever runs on the
-           dashboard view. The legacy `<?php if ($action !== ''):` /
-           `<?php else: ?>` wrapper around the dashboard cards has been
-           removed accordingly. */
+           dashboard view. The legacy "if action then run, else show
+           dashboard" wrapper around the dashboard cards has been
+           removed accordingly.
+
+           [CI note: this comment used to spell out the legacy
+           wrapper using literal PHP open tags inside backticks, which
+           tripped Step 5a of CI Lint & Validate — the guard added
+           after PR #536 to catch the embedded-tag-execution bug.
+           Re-worded prose-only to keep the guard a hard error.] */
     ?>
         <!-- ============================================================
              ONE-STEP MIGRATIONS RUNNER (#577)
