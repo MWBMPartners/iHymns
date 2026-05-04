@@ -544,6 +544,17 @@ function selectSong(songId) {
     currentSongId = songId;
     updateHistoryButtonState();
 
+    /* #853 — broadcast a song-loaded event so independent modules
+       (e.g. the Media tab editor) can refresh their state without
+       having to monkey-patch this function. The detail.songId is
+       canonical; window.currentSongId stays the source of truth
+       for late-joiners that miss the event. */
+    try {
+        document.dispatchEvent(new CustomEvent('iHymns:song-loaded', {
+            detail: { songId: songId }
+        }));
+    } catch (_e) { /* IE11 polyfill territory; harmless to skip */ }
+
     /* Show the editor form, hide the empty state (#246). */
     var editorEmpty = document.getElementById('editorEmpty');
     var editorForm = document.getElementById('editorForm');

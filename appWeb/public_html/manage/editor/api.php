@@ -2663,6 +2663,65 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
+     * SONG_MEDIA_UPDATE — patch the annotation on an existing row.
+     * Only Annotation is mutable post-upload — kind / file / mime /
+     * size are immutable (delete + re-upload to change them).
+     *
+     * POST: media_id, annotation
+     * ----------------------------------------------------------------- */
+    case 'song_media_update':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        $mediaId    = (int)($_POST['media_id'] ?? 0);
+        $annotation = trim((string)($_POST['annotation'] ?? ''));
+        if ($mediaId <= 0) {
+            http_response_code(400);
+            echo json_encode(['error' => 'media_id required.']);
+            break;
+        }
+        if ($annotation !== '' && function_exists('mb_substr')) {
+            $annotation = mb_substr($annotation, 0, 255);
+        }
+        $annotationOrNull = ($annotation !== '') ? $annotation : null;
+        try {
+            $db = getDbMysqli();
+            if (!_songMedia_tableExists($db)) {
+                http_response_code(404);
+                echo json_encode(['error' => 'Media not found.']);
+                break;
+            }
+            $stmt = $db->prepare(
+                'UPDATE tblSongMedia SET Annotation = ? WHERE Id = ?'
+            );
+            $stmt->bind_param('si', $annotationOrNull, $mediaId);
+            $stmt->execute();
+            $touched = $stmt->affected_rows;
+            $stmt->close();
+            if ($touched === 0) {
+                http_response_code(404);
+                echo json_encode(['error' => 'Media not found.']);
+                break;
+            }
+            if (function_exists('logActivity')) {
+                logActivity(
+                    'song-media.update',
+                    'song-media',
+                    (string)$mediaId,
+                    ['annotation' => $annotation]
+                );
+            }
+            echo json_encode(['ok' => true, 'media_id' => $mediaId]);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[song_media_update] ' . $e->getMessage());
+            echo json_encode(['error' => 'Update failed.']);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
      * SONG_MEDIA_DELETE — remove a single media row (and its underlying
      * storage). FS-backed: unlinks the file too. DB-backed: blob goes
      * with the row.
