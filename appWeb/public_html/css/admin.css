@@ -18,6 +18,58 @@
  */
 
 /* ==========================================================================
+   ADMIN PAGE TRANSITIONS (#866)
+   ----------------------------------------------------------------------------
+   Cross-document View Transitions on every full-page nav inside /manage/*.
+   On Chromium 126+ / Safari 18.2+ / Firefox 134+ the browser captures a
+   snapshot of the outgoing admin page, issues the GET, snapshots the new
+   page, then animates a smooth cross-fade between the two — no white-flash,
+   no JS plumbing required.
+
+   On older browsers `@view-transition` is ignored silently and the body
+   keyframe below provides a quick CSS-only fade-in on every page load
+   (200ms, opacity 0 → 1) so curators on Safari 17 / Edge 110 still see a
+   smoother experience than the legacy white-flash.
+
+   The bulk migration runner (#862) is unaffected: that page flushes its
+   chrome before the streaming bulk run starts, so the cross-doc snapshot
+   captures the chrome fully — output streams INTO the new page after the
+   transition has already completed.
+   ========================================================================== */
+
+@view-transition {
+    navigation: auto;
+}
+
+/* Per-pseudo styling — keep it gentle. Admin work is task-focused, so a
+   smooth opacity cross-fade reads as professional rather than flashy. */
+::view-transition-old(root),
+::view-transition-new(root) {
+    animation-duration: 220ms;
+    animation-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* CSS-only fallback for browsers without View Transitions API support.
+   Plays once per full-page load. The animation is short enough that
+   Chromium-with-VT-API doesn't notice it visually (the @view-transition
+   block runs first and replaces this), but on Safari 17 / Edge 110 it's
+   the only animation and gives a 200ms fade-in instead of a white flash. */
+@keyframes ihymns-admin-fadein {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+/* prefers-reduced-motion / manual reduce-motion class collapses both
+   the View Transitions and the body fade-in to instant. */
+@media (prefers-reduced-motion: reduce) {
+    ::view-transition-old(root),
+    ::view-transition-new(root) {
+        animation-duration: 1ms !important;
+        animation-timing-function: linear !important;
+    }
+}
+
+/* ==========================================================================
    ADMIN BASE — body & typography
    ========================================================================== */
 
@@ -26,6 +78,20 @@ body {
     color: var(--text-primary);
     font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont,
                  'Helvetica Neue', Arial, sans-serif;
+    /* #866 — fallback fade-in on browsers without the View Transitions
+       API. On supported browsers the @view-transition block above takes
+       precedence and this animation is invisible. reduce-motion overrides
+       below collapse it to nothing. */
+    animation: ihymns-admin-fadein 200ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    body {
+        animation: none;
+    }
+}
+body.reduce-motion {
+    animation: none !important;
 }
 
 a:not(.btn):not(.nav-link):not(.dropdown-item) {
