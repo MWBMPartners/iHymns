@@ -2,7 +2,7 @@
 
 > **A multiplatform Christian lyrics application for worship enhancement**
 
-[![Version: 0.75.0 Alpha](https://img.shields.io/badge/Version-0.75.0%20Alpha-orange.svg)](#environments)
+[![Version: 0.76.0 Alpha](https://img.shields.io/badge/Version-0.76.0%20Alpha-orange.svg)](#environments)
 [![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](#license)
 [![Platform: Web](https://img.shields.io/badge/Platform-Web%20PWA-blue.svg)](#platforms)
 [![Platform: iOS](https://img.shields.io/badge/Platform-iOS%20%7C%20iPadOS%20%7C%20tvOS-black.svg)](#platforms)
@@ -55,7 +55,7 @@ Songs are tagged at song-level with their actual IETF BCP 47 language (#681), so
 
 | Platform | Technology | Status |
 | --- | --- | --- |
-| Web PWA | HTML5, CSS3, Bootstrap 5.3, vanilla JS, PHP 8.1+, MySQL 5.7+ / MariaDB 10.3+ | **Alpha** (v0.75.0) |
+| Web PWA | HTML5, CSS3, Bootstrap 5.3, vanilla JS, PHP 8.1+, MySQL 5.7+ / MariaDB 10.3+ | **Alpha** (v0.76.0) |
 | iOS / iPadOS / tvOS | Swift 6.3, SwiftUI | In progress |
 | Android / Fire OS | Kotlin, Jetpack Compose | Planned |
 
