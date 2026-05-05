@@ -953,30 +953,62 @@ $pageRenderedCleanly = false;
 register_shutdown_function(function () use (&$pageRenderedCleanly): void {
     if ($pageRenderedCleanly) return;
     /* Drain whatever's still buffered so it precedes the chrome tags
-       we're about to emit. The chrome itself is intentionally a
-       compact emergency-closure — full sidebar / footer can't be
-       reconstructed from a shutdown handler reliably (no access to
-       the open-state $GLOBALS['_adminLayoutOpen']) but closing the
-       outer wrappers + body/html prevents the browser from leaving
-       the response visually open. */
+       we're about to emit. */
     while (ob_get_level() > 0) {
         @ob_end_flush();
     }
-    echo "\n<!-- emergency chrome closure (#817) — a child script "
-       . "exited or died mid-render before the page completed. -->\n";
+    echo "\n<!-- emergency chrome closure (#817 / #868) — response "
+       . "truncated before the page completed. -->\n";
+
+    /* #868 — flip the status badge from "Running…" to "Interrupted"
+       so the curator sees a clear failed-state rather than a frozen
+       running indicator. Wrapped in `if (badge)` because the non-
+       action dashboard page doesn't render the badge at all and
+       this script runs in both contexts. */
+    echo '<script>'
+       . '(function(){'
+       . 'var b=document.getElementById("action-status-badge");'
+       . 'if(!b)return;'
+       . 'b.textContent="Interrupted";'
+       . 'b.className="badge bg-warning text-dark";'
+       . 'b.title="Response was truncated before the run completed — '
+       . 'likely a server-level timeout (FPM request_terminate_timeout '
+       . 'or proxy timeout). Retry, or run individual migrations one '
+       . 'at a time.";'
+       . '})();'
+       . '</script>' . "\n";
+
     /* Close the layers the action path opens (in order):
          <div class="output-log">    ← migration log container
          <div class="container-admin"> ← page container
-         </main>                       ← admin-nav.php opened this
-         </div><!-- /.admin-layout --> ← admin-nav.php opened this too
-         </body></html>
+       Then emit the admin footer + nav-layout closers so the page
+       has its standard chrome, not a bare <body>.
        Five closes is one too many on the non-action page (which
        doesn't open the output-log); browsers tolerate stray closing
        tags so emit them all and accept the harmless extra. */
     echo "</div><!-- /.output-log (if open) -->\n";
     echo "</div><!-- /.container-admin -->\n";
-    echo "</main>\n";
-    echo "</div><!-- /.admin-layout -->\n";
+
+    /* #868 — best-effort include of the admin footer so the page
+       has its normal chrome at the bottom (version stamp, build
+       metadata, copyright line, the close of <main> + admin-layout
+       when admin-nav.php opened them — gated on $GLOBALS
+       ['_adminLayoutOpen'] which we DON'T touch here, so the
+       footer's guarded-close logic still applies correctly).
+       Wrapped in @require + try/catch so a load failure during
+       shutdown doesn't compound into a fatal — better to ship a
+       footer-less page than a 500. admin-footer.php does NOT
+       emit </body></html> itself; we close the doc here. */
+    try {
+        $_footerName = __DIR__ . DIRECTORY_SEPARATOR
+                     . 'includes' . DIRECTORY_SEPARATOR
+                     . 'admin-footer.php';
+        if (is_file($_footerName)) {
+            @require $_footerName;
+        }
+    } catch (\Throwable $_e) {
+        /* Footer load failed — fall through to bare-body close. */
+    }
     echo "</body>\n</html>\n";
 });
 
