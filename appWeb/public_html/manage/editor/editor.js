@@ -895,10 +895,56 @@ function renderComponents(song) {
         btnGroup.appendChild(btnDown);
         btnGroup.appendChild(btnRemove);
 
+        /* #858 — per-component language override. NULL / empty value
+           means "inherit from the parent song's language"; an explicit
+           pick overrides for this component only. The dropdown is
+           populated from window.iHymnsLanguageOptions which is
+           pre-loaded at editor boot from /api?action=languages.
+           Disabled when the schema column is absent (pre-migration);
+           the boot script sets dataset.componentLangColumn = '0' in
+           that case so this just becomes a no-op. */
+        var langSelect = document.createElement('select');
+        langSelect.className = 'form-select form-select-sm component-language-select';
+        langSelect.style.maxWidth = '160px';
+        langSelect.title = 'Language override (optional) — defaults to the song language';
+        var langInherit = document.createElement('option');
+        langInherit.value = '';
+        langInherit.textContent = 'Same as song';
+        langSelect.appendChild(langInherit);
+        var languageOptions = Array.isArray(window.iHymnsLanguageOptions)
+            ? window.iHymnsLanguageOptions : [];
+        var currentLang = comp.language ? String(comp.language) : '';
+        var sawCurrent = false;
+        languageOptions.forEach(function (opt) {
+            var o = document.createElement('option');
+            o.value = opt.code;
+            o.textContent = opt.name + ' (' + opt.code + ')';
+            if (currentLang && currentLang.toLowerCase() === String(opt.code).toLowerCase()) {
+                o.selected = true;
+                sawCurrent = true;
+            }
+            langSelect.appendChild(o);
+        });
+        /* If the saved tag isn't in the registry (pt-BR when only pt
+           is seeded, or a brand-new tag), surface it as an extra
+           option so it doesn't silently revert on save. */
+        if (currentLang && !sawCurrent) {
+            var oExtra = document.createElement('option');
+            oExtra.value = currentLang;
+            oExtra.textContent = currentLang;
+            oExtra.selected = true;
+            langSelect.appendChild(oExtra);
+        }
+        langSelect.addEventListener('change', function () {
+            comp.language = langSelect.value || null;
+            markModified(song.id);
+        });
+
         /* Assemble the header. */
         header.appendChild(typeLabel);
         header.appendChild(typeSelect);
         header.appendChild(numInput);
+        header.appendChild(langSelect);
         header.appendChild(btnGroup);
 
         /* ---- Card body with lyrics textarea ---- */

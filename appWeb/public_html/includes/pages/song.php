@@ -312,7 +312,15 @@ try {
                                 <?php if ($i > 0): ?>, <?php endif; ?>
                                 <em><?= htmlspecialchars($a['title']) ?></em>
                                 <?php if (!empty($a['language'])): ?>
-                                    <span class="badge bg-secondary text-light small"><?= htmlspecialchars($a['language']) ?></span>
+                                    <?php
+                                        /* #856 — tooltip resolves the IETF tag to
+                                           the full language name. Lazy-require here
+                                           because most songs have no alt titles and
+                                           we don't want a SELECT for every page. */
+                                        require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'language_names.php';
+                                    ?>
+                                    <span class="badge bg-secondary text-light small"
+                                          title="<?= htmlspecialchars(resolveLanguageName($a['language'])) ?>"><?= htmlspecialchars($a['language']) ?></span>
                                 <?php endif; ?>
                                 <?php if (!empty($a['note'])): ?>
                                     <span class="text-muted">(<?= htmlspecialchars($a['note']) ?>)</span>
@@ -727,11 +735,38 @@ try {
                 : $components;
             $renderOrder = array_filter($renderOrder);
         ?>
+        <?php
+            /* #858 — collect the union of song-level + per-component
+               languages so we can extend the JSON-LD MusicComposition
+               with a multi-valued inLanguage further down. Tracked in
+               $songLanguageUnion (lowercase BCP 47 tags). */
+            $songLanguageUnion = [];
+            $songPrimaryLang = (string)($song['language'] ?? '');
+            if ($songPrimaryLang !== '') {
+                $songLanguageUnion[] = strtolower($songPrimaryLang);
+            }
+        ?>
         <?php foreach ($renderOrder as $component): ?>
             <?php
                 $type   = $component['type'] ?? 'verse';
                 $number = $component['number'] ?? null;
                 $lines  = $component['lines'] ?? [];
+                /* #858 — per-component language override. NULL / empty
+                   means "inherit from the song"; an explicit value
+                   sets lang="…" on this <div> so screen readers /
+                   browser hyphenation switch locales correctly, and
+                   surfaces a small badge so a reader can see that
+                   "this verse is in Spanish" at a glance. */
+                $compLangRaw = $component['language'] ?? null;
+                $compLang    = ($compLangRaw && trim((string)$compLangRaw) !== '')
+                             ? trim((string)$compLangRaw)
+                             : '';
+                $effectiveLang = $compLang !== ''
+                                ? $compLang
+                                : ($songPrimaryLang !== '' ? $songPrimaryLang : 'en');
+                if ($compLang !== '' && !in_array(strtolower($compLang), $songLanguageUnion, true)) {
+                    $songLanguageUnion[] = strtolower($compLang);
+                }
 
                 /* Build a human-readable label for the component.
                    "refrain" is an alias for "chorus" — display as Chorus.
@@ -747,11 +782,29 @@ try {
 
                 /* CSS class for styling different component types */
                 $typeClass = 'lyric-' . htmlspecialchars($type);
+
+                /* Badge shows the resolved name only when the component
+                   override DIFFERS from the song's primary language —
+                   no point flagging "this English verse is English". */
+                $showLangBadge = $compLang !== ''
+                              && strtolower($compLang) !== strtolower($songPrimaryLang);
+                if ($showLangBadge) {
+                    require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'language_names.php';
+                }
             ?>
-            <div class="lyric-component <?= $typeClass ?>" role="group" aria-label="<?= htmlspecialchars($label) ?>">
+            <div class="lyric-component <?= $typeClass ?>"
+                 lang="<?= htmlspecialchars($effectiveLang) ?>"
+                 role="group" aria-label="<?= htmlspecialchars($label) ?>">
                 <!-- Component type label -->
                 <div class="lyric-label" aria-hidden="true">
                     <?= htmlspecialchars($label) ?>
+                    <?php if ($showLangBadge): ?>
+                        <span class="badge bg-info text-dark ms-2"
+                              style="font-size: 0.65rem; vertical-align: middle;"
+                              title="<?= htmlspecialchars(resolveLanguageName($compLang)) ?>">
+                            <?= htmlspecialchars(strtoupper(preg_replace('/-.*$/', '', $compLang) ?: $compLang)) ?>
+                        </span>
+                    <?php endif; ?>
                 </div>
                 <!-- Lyrics lines -->
                 <div class="lyric-lines">

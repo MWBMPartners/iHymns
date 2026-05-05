@@ -1251,17 +1251,55 @@ switch ($action) {
                 $stmtRegistry->close();
             }
 
-            $insComp = $db->prepare(
-                'INSERT INTO tblSongComponents
-                    (SongId, Type, Number, SortOrder, LinesJson)
-                 VALUES (?, ?, ?, ?, ?)'
-            );
+            /* #858 — schema-probe for the optional Language column.
+               When present, the INSERT carries a per-component
+               override; pre-migration deploys keep the legacy
+               5-column INSERT shape. */
+            $hasComponentLanguage = false;
+            try {
+                $colProbe = $db->prepare(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                      WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME   = 'tblSongComponents'
+                        AND COLUMN_NAME  = 'Language' LIMIT 1"
+                );
+                $colProbe->execute();
+                $hasComponentLanguage = $colProbe->get_result()->fetch_row() !== null;
+                $colProbe->close();
+            } catch (\Throwable $_e) { /* default false */ }
+
+            if ($hasComponentLanguage) {
+                $insComp = $db->prepare(
+                    'INSERT INTO tblSongComponents
+                        (SongId, Type, Number, SortOrder, LinesJson, Language)
+                     VALUES (?, ?, ?, ?, ?, ?)'
+                );
+            } else {
+                $insComp = $db->prepare(
+                    'INSERT INTO tblSongComponents
+                        (SongId, Type, Number, SortOrder, LinesJson)
+                     VALUES (?, ?, ?, ?, ?)'
+                );
+            }
             $order = 0;
             foreach ($song['components'] ?? [] as $comp) {
                 $type   = (string)($comp['type'] ?? 'verse');
                 $cNum   = isset($comp['number']) ? (int)$comp['number'] : 0;
                 $lines  = json_encode($comp['lines'] ?? [], JSON_UNESCAPED_UNICODE);
-                $insComp->bind_param('ssiis', $songId, $type, $cNum, $order, $lines);
+                if ($hasComponentLanguage) {
+                    /* Trim + cap to 35 chars (the BCP 47 column width).
+                       Empty / null = inherit from the song; only persist
+                       a value that's plausibly a tag. */
+                    $lang = trim((string)($comp['language'] ?? ''));
+                    if ($lang === '' || !preg_match('/^[A-Za-z]{2,3}([-_][A-Za-z0-9]{1,8})*$/', $lang)) {
+                        $lang = null;
+                    } else {
+                        $lang = function_exists('mb_substr') ? mb_substr($lang, 0, 35) : substr($lang, 0, 35);
+                    }
+                    $insComp->bind_param('ssiiss', $songId, $type, $cNum, $order, $lines, $lang);
+                } else {
+                    $insComp->bind_param('ssiis', $songId, $type, $cNum, $order, $lines);
+                }
                 $insComp->execute();
                 $order++;
             }

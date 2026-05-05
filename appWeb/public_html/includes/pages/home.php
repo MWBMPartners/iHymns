@@ -14,6 +14,11 @@
 
 declare(strict_types=1);
 
+/* Language-name resolver (#856) — used for the songbook tile badge
+   tooltip. Static-cached per request so this require + map build
+   only fires once per page load. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'language_names.php';
+
 /* Load song data for statistics */
 $stats = $songData->getStats();
 $songbooks = $songData->getSongbooks();
@@ -136,18 +141,37 @@ $songbooks = $songData->getSongbooks();
                            the 2-3 letter language subtag for the badge
                            (#680). Empty = no badge — communicates
                            "multi-lingual / not specified" the same way
-                           the filter in #679 does. */
+                           the filter in #679 does.
+                           #857: the songbook's contained-languages
+                           union (book.Language ∪ DISTINCT songs.Language
+                           within this book) is attached as
+                           data-songbook-languages so a book tagged
+                           English but holding Afrikaans songs surfaces
+                           when the user filters for Afrikaans. */
                         $bookLang = (string)($book['language'] ?? '');
                         $langCode = '';
                         if ($bookLang !== '' && preg_match('/^([a-z]{2,3})/i', $bookLang, $m)) {
                             $langCode = mb_strtoupper($m[1]);
                         }
+                        $bookLangs    = $book['languages'] ?? [];
+                        $bookLangsCsv = !empty($bookLangs) ? implode(',', $bookLangs) : '';
+                        /* Tooltip lists every contained language by its
+                           full English name. Falls back to just the
+                           primary tag when there's only one. */
+                        $bookLangNames = [];
+                        foreach ($bookLangs as $sub) {
+                            $bookLangNames[] = resolveLanguageName($sub);
+                        }
+                        $bookLangsTitle = !empty($bookLangNames)
+                            ? implode(', ', $bookLangNames)
+                            : resolveLanguageName($bookLang);
                     ?>
                     <div class="col" id="songbook-<?= htmlspecialchars($book['id']) ?>">
                         <div class="card card-songbook h-100 position-relative"
                              data-songbook-id="<?= htmlspecialchars($book['id']) ?>"
                              data-songbook-songs="<?= (int)$book['songCount'] ?>"
-                             <?php if ($langCode !== ''): ?>data-songbook-language="<?= htmlspecialchars($bookLang) ?>"<?php endif; ?>>
+                             <?php if ($langCode !== ''): ?>data-songbook-language="<?= htmlspecialchars($bookLang) ?>"<?php endif; ?>
+                             <?php if ($bookLangsCsv !== ''): ?>data-songbook-languages="<?= htmlspecialchars($bookLangsCsv) ?>"<?php endif; ?>>
                             <!-- Stretched link covers the whole card body,
                                  keeping the download button clickable because
                                  the button's stacking context is raised by
@@ -158,12 +182,15 @@ $songbooks = $songData->getSongbooks();
                                aria-label="<?= htmlspecialchars($book['name']) ?> — <?= $book['songCount'] ?> songs<?= $langCode !== '' ? ' (' . htmlspecialchars($langCode) . ')' : '' ?>"></a>
                             <?php if ($langCode !== ''): ?>
                                 <!-- Language indicator badge (#680) — small uppercase
-                                     ISO 639 code in the tile's top-right corner,
-                                     positioned to clear the offline-download cloud
-                                     button below. aria-hidden because the language
-                                     is already announced by the stretched link. -->
+                                     ISO 639 code in the tile's top-right corner.
+                                     #856: tooltip resolves to the full language
+                                     name. #857: when the songbook contains songs
+                                     in multiple languages, the tooltip lists ALL
+                                     of them (e.g. "English, Afrikaans") so the
+                                     user knows why an EN-tagged book is appearing
+                                     under an Afrikaans filter. -->
                                 <span class="songbook-tile-language-badge"
-                                      title="Language: <?= htmlspecialchars($bookLang) ?>"
+                                      title="<?= htmlspecialchars($bookLangsTitle) ?>"
                                       aria-hidden="true"><?= htmlspecialchars($langCode) ?></span>
                             <?php endif; ?>
                             <div class="card-body text-center">

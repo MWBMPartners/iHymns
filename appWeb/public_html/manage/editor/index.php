@@ -1439,6 +1439,32 @@ $currentUser = getCurrentUser();
          is handled in this separate file to keep concerns separated -->
     <script src="editor.js"></script>
 
+    <!-- #858 — pre-load tblLanguages once per page so the per-component
+         language override picker (rendered by editor.js renderComponents)
+         can populate without each card re-fetching. Empty array fallback
+         on a 4xx/5xx so the dropdown still shows "Same as song" only. -->
+    <script>
+    (function () {
+        window.iHymnsLanguageOptions = window.iHymnsLanguageOptions || [];
+        fetch('/api?action=languages', { credentials: 'same-origin' })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (j) {
+                if (!j || !Array.isArray(j.languages)) return;
+                window.iHymnsLanguageOptions = j.languages
+                    .filter(function (l) { return l && l.code && l.name; })
+                    .map(function (l) { return { code: l.code, name: l.name }; });
+                /* Notify any rendered components that we're ready —
+                   editor.js doesn't currently subscribe, so the
+                   first selectSong() after this resolves picks up
+                   the populated list naturally. */
+                try {
+                    document.dispatchEvent(new CustomEvent('iHymns:languages-loaded'));
+                } catch (_e) {}
+            })
+            .catch(function () { /* registry unavailable — fallback to identity */ });
+    })();
+    </script>
+
     <!-- IETF BCP 47 picker boot (#687). The shared module is the same one
          that powers /manage/songbooks. We expose the booted instance on
          window.editSongIetfPicker so editor.js (a classic script that

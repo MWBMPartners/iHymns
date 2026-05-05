@@ -113,8 +113,43 @@ export class SongOfTheDay {
         ];
     }
 
-    /** Initialise — nothing needed on startup */
-    init() {}
+    /**
+     * Initialise — wire a single iHymns:language-filter-changed listener
+     * (#855) so the SoTD card re-picks when the user toggles the
+     * "Show languages" filter. We deliberately bind on document (not
+     * the container) so the listener survives the SPA's home-section
+     * re-renders without rebinding on each pass.
+     */
+    init() {
+        if (this._langFilterBound) return;
+        this._langFilterBound = true;
+        document.addEventListener('iHymns:language-filter-changed', () => {
+            this.renderHomeSection();
+        });
+    }
+
+    /**
+     * Read the active language-filter subtag set the same way the
+     * songbook-language-filter module does — single source of truth
+     * is localStorage['songbook-language-filter'] (a JSON array of
+     * lowercase primary subtags). Returns [] when the user has
+     * "All" selected (no filter), and likewise on parse errors.
+     *
+     * Kept as a tiny inline helper rather than imported from the
+     * filter module so SoTD stays decoupled — the filter module
+     * does the writes; we only read.
+     */
+    getActiveSubtags() {
+        try {
+            const raw = localStorage.getItem('songbook-language-filter');
+            if (!raw) return [];
+            const parsed = JSON.parse(raw);
+            if (!Array.isArray(parsed)) return [];
+            return parsed.filter(s => typeof s === 'string' && /^[a-z]{2,3}$/.test(s));
+        } catch (_e) {
+            return [];
+        }
+    }
 
     /**
      * Render the Song of the Day card on the home page.
@@ -172,16 +207,64 @@ export class SongOfTheDay {
      * @returns {object|null}
      */
     pickSong(songs, date) {
-        /* Check calendar themes */
-        for (const theme of this.calendarThemes) {
-            if (theme.check(date)) {
-                const match = this.findThemedSong(songs, theme.keywords, date);
-                if (match) return match;
-            }
-        }
+        /* #855 — apply the user's active "Show languages" filter so
+           a non-English user doesn't get an English daily song they
+           can't read. Fallback ladder:
+             1. Filtered pool (filter ∪ untagged) → themed pick
+             2. Filtered pool (filter ∪ untagged) → deterministic pick
+             3. English subset (en* ∪ untagged) → themed pick
+             4. English subset → deterministic pick
+             5. Unfiltered pool → deterministic pick (zero language
+                data on the catalogue; pre-#681 deploys fall here)
+           The themed-keyword bank stays English; Spanish/etc. carols
+           still match because hymnologists carry English-borrowed
+           proper nouns ("Adviento", "Pascua") and shared roots. */
+        const active = this.getActiveSubtags();
+        const filteredPool = this.filterSongsByLanguage(songs, active);
 
-        /* Deterministic pseudo-random pick */
-        return this.deterministicPick(songs, date);
+        const tryPool = (pool) => {
+            if (!pool || pool.length === 0) return null;
+            for (const theme of this.calendarThemes) {
+                if (theme.check(date)) {
+                    const match = this.findThemedSong(pool, theme.keywords, date);
+                    if (match) return match;
+                }
+            }
+            return this.deterministicPick(pool, date);
+        };
+
+        /* Skip the English fallback when the user's active filter
+           IS English (or "All" — already covers English) since it'd
+           just rerun the same selection over the same pool. */
+        const isEnglishOrAll = active.length === 0
+            || (active.length === 1 && active[0] === 'en');
+
+        return tryPool(filteredPool)
+            || (isEnglishOrAll ? null : tryPool(this.filterSongsByLanguage(songs, ['en'])))
+            || this.deterministicPick(songs, date);
+    }
+
+    /**
+     * Filter a songs[] array against a set of primary subtags. An
+     * empty subtags array returns the full songs array (no filter).
+     * Untagged songs (no `language` field) ALWAYS pass — we treat
+     * them as "multi-lingual / not specified" rather than "exclude
+     * because we don't know", matching the songbook-language-filter
+     * module's behaviour for tiles.
+     *
+     * @param {Array} songs
+     * @param {string[]} subtags Lowercase primary subtags; empty = no filter
+     * @returns {Array} New filtered array (may share elements with input)
+     */
+    filterSongsByLanguage(songs, subtags) {
+        if (!subtags || subtags.length === 0) return songs;
+        const set = new Set(subtags.map(s => s.toLowerCase()));
+        return songs.filter(s => {
+            const lang = (s.language || '').toLowerCase();
+            if (!lang) return true; /* untagged → always pass */
+            const primary = lang.split('-', 1)[0];
+            return set.has(primary);
+        });
     }
 
     /**

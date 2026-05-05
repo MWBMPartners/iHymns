@@ -158,17 +158,28 @@ function findTileColumn(tile) {
 function applyFilter(rootEl, subtags) {
     const set = new Set(subtags.map(s => s.toLowerCase()));
 
-    /* Songbook tiles. */
+    /* Songbook tiles.
+       #857: visibility is decided on the union of (the songbook's
+       own primary subtag) ∪ (every distinct primary subtag carried
+       by songs within that book). Server emits this union as
+       data-songbook-languages (comma-separated). The legacy
+       data-songbook-language attribute stays populated for one
+       release-cycle of back-compat with cached JS bundles, and as
+       a fallback when the union attribute is absent. */
     rootEl.querySelectorAll('[data-songbook-id]').forEach(tile => {
-        const tileLang = (tile.dataset.songbookLanguage || '').toLowerCase();
+        const langsCsv  = (tile.dataset.songbookLanguages || '').toLowerCase();
+        const fallback  = (tile.dataset.songbookLanguage  || '').toLowerCase();
         const col = findTileColumn(tile);
         if (!col) return;
 
+        const tilePrimaries = (langsCsv
+            ? langsCsv.split(',').map(s => s.trim()).filter(Boolean)
+            : (fallback ? [fallback.split('-', 1)[0]] : []));
+
         const shouldShow = (() => {
-            if (set.size === 0) return true;
-            if (!tileLang) return true;
-            const primary = tileLang.split('-', 1)[0];
-            return set.has(primary);
+            if (set.size === 0) return true;        /* "All" → everything */
+            if (tilePrimaries.length === 0) return true; /* untagged → always pass */
+            return tilePrimaries.some(p => set.has(p));
         })();
 
         if (shouldShow) {
@@ -197,6 +208,16 @@ function applyFilter(rootEl, subtags) {
             row.setAttribute('aria-hidden', 'true');
         }
     });
+
+    /* #855 — broadcast the change so independent modules (Song of
+       the Day in particular) can re-render without a page reload.
+       Detail.subtags carries the canonical lowercase array; an empty
+       array means "All" / no filter. */
+    try {
+        document.dispatchEvent(new CustomEvent('iHymns:language-filter-changed', {
+            detail: { subtags: Array.from(set) },
+        }));
+    } catch (_e) { /* polyfill territory; harmless to skip */ }
 }
 
 /**

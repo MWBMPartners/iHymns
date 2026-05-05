@@ -117,6 +117,10 @@ class SongData
     /** Whether we're using JSON fallback mode */
     private bool $jsonMode = false;
 
+    /** #858 — schema-probe result for tblSongComponents.Language. */
+    private bool $_componentLangColumn = false;
+    private bool $_componentLangColumnChecked = false;
+
     /** Check if running in JSON fallback mode (no MySQL) */
     public function isJsonFallback(): bool { return $this->jsonMode; }
 
@@ -302,20 +306,38 @@ class SongData
         }
         $stmt->close();
 
-        /* Attach series memberships, compilers, alt names and external
-           links in batch queries (#782 phase D, #831, #832, #833) so
-           the home / browse grids and songbook pages render without
-           N+1 queries. */
+        /* Attach series memberships, compilers, alt names, external
+           links and contained-language sets in batch queries (#782
+           phase D, #831, #832, #833, #857) so the home / browse
+           grids and songbook pages render without N+1 queries. */
         if ($books) {
-            $seriesMap    = $this->_songbookSeriesMap(null);
-            $compilersMap = $this->_songbookCompilersMap(null);
-            $altNamesMap  = $this->_songbookAltNamesMap(null);
-            $linksMap     = $this->_externalLinksMap('songbook', null);
+            $seriesMap        = $this->_songbookSeriesMap(null);
+            $compilersMap     = $this->_songbookCompilersMap(null);
+            $altNamesMap      = $this->_songbookAltNamesMap(null);
+            $linksMap         = $this->_externalLinksMap('songbook', null);
+            $songLanguagesMap = $this->_songbookSongLanguagesMap();
             foreach ($books as &$_b) {
                 $_b['series']           = $seriesMap[(string)$_b['id']]    ?? [];
                 $_b['compilers']        = $compilersMap[(string)$_b['id']] ?? [];
                 $_b['alternativeNames'] = $altNamesMap[(string)$_b['id']]  ?? [];
                 $_b['links']            = $linksMap[(string)$_b['id']]     ?? [];
+
+                /* #857 — union of: (a) the songbook's own primary
+                   subtag, and (b) every distinct primary subtag
+                   carried by songs within it. Drives the "Show
+                   languages" filter visibility and the badge
+                   tooltip. Returns an empty array on pre-#673
+                   deploys; the existing single-language behaviour
+                   then takes over via the legacy `language` field. */
+                $contained = $songLanguagesMap[(string)$_b['id']] ?? [];
+                $own       = '';
+                if (!empty($_b['language']) && preg_match('/^([a-z]{2,3})/i', (string)$_b['language'], $m)) {
+                    $own = strtolower($m[1]);
+                }
+                $merged = $own !== '' ? array_merge([$own], $contained) : $contained;
+                $merged = array_values(array_unique($merged));
+                sort($merged);
+                $_b['languages'] = $merged;
             }
             unset($_b);
         }
@@ -566,6 +588,73 @@ class SongData
             return $out;
         } catch (\Throwable $e) {
             error_log('[SongData::_songbookSeriesMap] ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Pull `[abbr => ['en','af',…]]` — for each songbook, the set of
+     * distinct primary language subtags that appear on its songs (#857).
+     *
+     * Used to fix songbook-tile visibility under the "Show languages"
+     * filter: a songbook tagged English (e.g. Advent Hymns) which
+     * happens to contain Afrikaans-tagged songs should still surface
+     * when the user filters for Afrikaans. The home page combines
+     * this with `tblSongbooks.Language` to produce the union list,
+     * stored on the tile as `data-songbook-languages`.
+     *
+     * Schema-probed: pre-#673 (no Language column on tblSongs)
+     * returns an empty map and the legacy single-language filter
+     * behaviour stays in effect.
+     *
+     * @return array<string, string[]>
+     */
+    private function _songbookSongLanguagesMap(): array
+    {
+        $hasSchema = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongs'
+                    AND COLUMN_NAME  = 'Language' LIMIT 1"
+            );
+            $probe->execute();
+            $hasSchema = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* fall through */ }
+        if (!$hasSchema) return [];
+
+        try {
+            /* GROUP_CONCAT keeps everything in one round-trip; the
+               primary-subtag extraction lives in SQL because the
+               sub-string is cheap there and avoids a per-row
+               PHP regex on a result set that can be tens of
+               thousands of rows. */
+            $sql = "SELECT SongbookAbbr,
+                           GROUP_CONCAT(
+                               DISTINCT LOWER(SUBSTRING_INDEX(Language, '-', 1))
+                               ORDER BY Language SEPARATOR ','
+                           ) AS langs
+                      FROM tblSongs
+                     WHERE Language IS NOT NULL AND Language <> ''
+                     GROUP BY SongbookAbbr";
+            $res = $this->db->query($sql);
+            $out = [];
+            if ($res) {
+                while ($row = $res->fetch_assoc()) {
+                    $abbr  = (string)$row['SongbookAbbr'];
+                    $langs = array_values(array_filter(
+                        explode(',', (string)($row['langs'] ?? '')),
+                        static fn($s) => $s !== '' && preg_match('/^[a-z]{2,3}$/', $s)
+                    ));
+                    $out[$abbr] = $langs;
+                }
+                $res->close();
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            error_log('[SongData::_songbookSongLanguagesMap] ' . $e->getMessage());
             return [];
         }
     }
@@ -2398,15 +2487,47 @@ class SongData
     }
 
     /**
+     * Schema-probe for tblSongComponents.Language (#858). Cached for
+     * the lifetime of the SongData instance — every call to
+     * _getComponents / _getComponentsMap shares the same answer.
+     * Pre-migration deploys return false and the SELECT skips the
+     * column to stay 1.x-compatible.
+     */
+    private function _hasComponentLanguageColumn(): bool
+    {
+        if ($this->_componentLangColumnChecked) {
+            return $this->_componentLangColumn;
+        }
+        $this->_componentLangColumnChecked = true;
+        try {
+            $stmt = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongComponents'
+                    AND COLUMN_NAME  = 'Language' LIMIT 1"
+            );
+            $stmt->execute();
+            $this->_componentLangColumn = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+        } catch (\Throwable $_e) {
+            $this->_componentLangColumn = false;
+        }
+        return $this->_componentLangColumn;
+    }
+
+    /**
      * Get components (verses, choruses) for a song.
      *
      * @param string $songId Song ID
-     * @return array Array of component objects with type, number, and lines
+     * @return array Array of component objects with type, number, lines, language
      */
     private function _getComponents(string $songId): array
     {
+        $langSelect = $this->_hasComponentLanguageColumn()
+            ? ', Language AS language'
+            : ', NULL AS language';
         $stmt = $this->db->prepare(
-            "SELECT Type AS type, Number AS number, LinesJson AS lines_json
+            "SELECT Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}
              FROM tblSongComponents
              WHERE SongId = ?
              ORDER BY SortOrder"
@@ -2417,9 +2538,10 @@ class SongData
         $components = [];
         while ($row = $result->fetch_assoc()) {
             $components[] = [
-                'type'   => $row['type'],
-                'number' => (int)$row['number'],
-                'lines'  => json_decode($row['lines_json'], true) ?? [],
+                'type'     => $row['type'],
+                'number'   => (int)$row['number'],
+                'lines'    => json_decode($row['lines_json'], true) ?? [],
+                'language' => $row['language'] !== null ? (string)$row['language'] : null,
             ];
         }
         $stmt->close();
@@ -2496,8 +2618,11 @@ class SongData
         if (empty($songIds)) return [];
         $placeholders = implode(',', array_fill(0, count($songIds), '?'));
         $types = str_repeat('s', count($songIds));
+        $langSelect = $this->_hasComponentLanguageColumn()
+            ? ', Language AS language'
+            : ', NULL AS language';
         $stmt = $this->db->prepare(
-            "SELECT SongId, Type AS type, Number AS number, LinesJson AS lines_json
+            "SELECT SongId, Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}
              FROM tblSongComponents
              WHERE SongId IN ($placeholders)
              ORDER BY SongId, SortOrder"
@@ -2508,9 +2633,10 @@ class SongData
         $map = [];
         while ($row = $result->fetch_assoc()) {
             $map[$row['SongId']][] = [
-                'type'   => $row['type'],
-                'number' => (int)$row['number'],
-                'lines'  => json_decode($row['lines_json'], true) ?? [],
+                'type'     => $row['type'],
+                'number'   => (int)$row['number'],
+                'lines'    => json_decode($row['lines_json'], true) ?? [],
+                'language' => $row['language'] !== null ? (string)$row['language'] : null,
             ];
         }
         $stmt->close();
