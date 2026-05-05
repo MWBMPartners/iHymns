@@ -197,6 +197,16 @@ function applyFilter(rootEl, subtags) {
             row.setAttribute('aria-hidden', 'true');
         }
     });
+
+    /* #855 — broadcast the change so independent modules (Song of
+       the Day in particular) can re-render without a page reload.
+       Detail.subtags carries the canonical lowercase array; an empty
+       array means "All" / no filter. */
+    try {
+        document.dispatchEvent(new CustomEvent('iHymns:language-filter-changed', {
+            detail: { subtags: Array.from(set) },
+        }));
+    } catch (_e) { /* polyfill territory; harmless to skip */ }
 }
 
 /**
