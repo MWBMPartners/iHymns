@@ -384,9 +384,15 @@ export class Router {
         this.abortController = new AbortController();
 
         try {
-            /* Start loading bar and exit transition in parallel */
+            /* #864 — fetch FIRST, animate the swap second, so old and
+               new content animate simultaneously via the View
+               Transitions API. The previous implementation was
+               sequential (out → fetch → in) which produced a "blank
+               gap" between the old and new pages that looked staged
+               rather than fluid. Loading bar still kicks off here so
+               the user has a visible affordance during the fetch
+               itself (especially on slow networks). */
             this.app.transitions.startLoading();
-            await this.app.transitions.pageOut(content);
 
             /* Fetch the page content from the API */
             const response = await fetch(url, {
@@ -403,21 +409,28 @@ export class Router {
 
             const html = await response.text();
 
-            /* Inject the new content */
-            content.innerHTML = html;
+            /* Hand the DOM swap to the transition runner. On modern
+               browsers (View Transitions API), the browser snapshots
+               the current page, runs the swap synchronously, and
+               animates the cross-fade in CSS — all in one frame, no
+               class-toggle dance. On older browsers it falls back
+               to the legacy pageOut → swap → pageIn flow. */
+            await this.app.transitions.runViewTransition(() => {
+                content.innerHTML = html;
+                /* Browsers intentionally do NOT run <script> tags
+                   inserted via innerHTML, so any inline JS in the
+                   injected page template (e.g. home.php's Popular
+                   Songs / Browse by Theme / Recently Viewed fetches)
+                   silently no-ops. Replace each script node with a
+                   freshly-created one so the browser parses and runs
+                   it as if it had been in the original document.
+                   Preserves type, src, async/defer and other
+                   attributes. */
+                this._executeInlineScripts(content);
+            }, content);
 
-            /* Browsers intentionally do NOT run <script> tags inserted via
-               innerHTML, so any inline JS in the injected page template
-               (e.g. home.php's Popular Songs / Browse by Theme / Recently
-               Viewed fetches) silently no-ops. Replace each script node
-               with a freshly-created one so the browser parses and runs
-               it as if it had been in the original document. Preserves
-               type, src, async/defer and other attributes. */
-            this._executeInlineScripts(content);
-
-            /* Complete loading bar and start enter transition */
+            /* Complete loading bar after the transition is done. */
             this.app.transitions.completeLoading();
-            await this.app.transitions.pageIn(content);
 
         } catch (error) {
             if (error.name === 'AbortError') {
