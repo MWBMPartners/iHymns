@@ -50,12 +50,24 @@ $stats = $songData->getStats();
                     /* Language indicator badge data (#680) — same pattern
                        as home.php: pull the IETF tag, extract the 2-3
                        letter language subtag, uppercase. Empty = no
-                       badge (multi-lingual / not specified). */
+                       badge (multi-lingual / not specified).
+                       #857 — also expose the contained-languages union
+                       so a book tagged English but holding Afrikaans
+                       songs surfaces under an Afrikaans filter. */
                     $bookLang = (string)($book['language'] ?? '');
                     $langCode = '';
                     if ($bookLang !== '' && preg_match('/^([a-z]{2,3})/i', $bookLang, $m)) {
                         $langCode = mb_strtoupper($m[1]);
                     }
+                    $bookLangs    = $book['languages'] ?? [];
+                    $bookLangsCsv = !empty($bookLangs) ? implode(',', $bookLangs) : '';
+                    $bookLangNames = [];
+                    foreach ($bookLangs as $sub) {
+                        $bookLangNames[] = resolveLanguageName($sub);
+                    }
+                    $bookLangsTitle = !empty($bookLangNames)
+                        ? implode(', ', $bookLangNames)
+                        : resolveLanguageName($bookLang);
                 ?>
                 <div class="col-12 col-sm-6 col-md-4 col-lg-3">
                     <a href="/songbook/<?= htmlspecialchars($book['id']) ?>"
@@ -63,12 +75,14 @@ $stats = $songData->getStats();
                        data-navigate="songbook"
                        data-songbook-id="<?= htmlspecialchars($book['id']) ?>"
                        <?php if ($langCode !== ''): ?>data-songbook-language="<?= htmlspecialchars($bookLang) ?>"<?php endif; ?>
+                       <?php if ($bookLangsCsv !== ''): ?>data-songbook-languages="<?= htmlspecialchars($bookLangsCsv) ?>"<?php endif; ?>
                        aria-label="Open <?= htmlspecialchars($book['name']) ?><?= $langCode !== '' ? ' (' . htmlspecialchars($langCode) . ')' : '' ?>">
                         <?php if ($langCode !== ''): ?>
-                            <!-- #856: tooltip resolves the IETF tag to the
-                                 full language name (e.g. "English"). -->
+                            <!-- #856 / #857: tooltip resolves the IETF tag to
+                                 the full language name; when the book contains
+                                 songs in multiple languages, all are listed. -->
                             <span class="songbook-tile-language-badge"
-                                  title="<?= htmlspecialchars(resolveLanguageName($bookLang)) ?>"
+                                  title="<?= htmlspecialchars($bookLangsTitle) ?>"
                                   aria-hidden="true"><?= htmlspecialchars($langCode) ?></span>
                         <?php endif; ?>
                         <div class="card-body">

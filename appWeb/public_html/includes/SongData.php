@@ -302,20 +302,38 @@ class SongData
         }
         $stmt->close();
 
-        /* Attach series memberships, compilers, alt names and external
-           links in batch queries (#782 phase D, #831, #832, #833) so
-           the home / browse grids and songbook pages render without
-           N+1 queries. */
+        /* Attach series memberships, compilers, alt names, external
+           links and contained-language sets in batch queries (#782
+           phase D, #831, #832, #833, #857) so the home / browse
+           grids and songbook pages render without N+1 queries. */
         if ($books) {
-            $seriesMap    = $this->_songbookSeriesMap(null);
-            $compilersMap = $this->_songbookCompilersMap(null);
-            $altNamesMap  = $this->_songbookAltNamesMap(null);
-            $linksMap     = $this->_externalLinksMap('songbook', null);
+            $seriesMap        = $this->_songbookSeriesMap(null);
+            $compilersMap     = $this->_songbookCompilersMap(null);
+            $altNamesMap      = $this->_songbookAltNamesMap(null);
+            $linksMap         = $this->_externalLinksMap('songbook', null);
+            $songLanguagesMap = $this->_songbookSongLanguagesMap();
             foreach ($books as &$_b) {
                 $_b['series']           = $seriesMap[(string)$_b['id']]    ?? [];
                 $_b['compilers']        = $compilersMap[(string)$_b['id']] ?? [];
                 $_b['alternativeNames'] = $altNamesMap[(string)$_b['id']]  ?? [];
                 $_b['links']            = $linksMap[(string)$_b['id']]     ?? [];
+
+                /* #857 — union of: (a) the songbook's own primary
+                   subtag, and (b) every distinct primary subtag
+                   carried by songs within it. Drives the "Show
+                   languages" filter visibility and the badge
+                   tooltip. Returns an empty array on pre-#673
+                   deploys; the existing single-language behaviour
+                   then takes over via the legacy `language` field. */
+                $contained = $songLanguagesMap[(string)$_b['id']] ?? [];
+                $own       = '';
+                if (!empty($_b['language']) && preg_match('/^([a-z]{2,3})/i', (string)$_b['language'], $m)) {
+                    $own = strtolower($m[1]);
+                }
+                $merged = $own !== '' ? array_merge([$own], $contained) : $contained;
+                $merged = array_values(array_unique($merged));
+                sort($merged);
+                $_b['languages'] = $merged;
             }
             unset($_b);
         }
@@ -566,6 +584,73 @@ class SongData
             return $out;
         } catch (\Throwable $e) {
             error_log('[SongData::_songbookSeriesMap] ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Pull `[abbr => ['en','af',…]]` — for each songbook, the set of
+     * distinct primary language subtags that appear on its songs (#857).
+     *
+     * Used to fix songbook-tile visibility under the "Show languages"
+     * filter: a songbook tagged English (e.g. Advent Hymns) which
+     * happens to contain Afrikaans-tagged songs should still surface
+     * when the user filters for Afrikaans. The home page combines
+     * this with `tblSongbooks.Language` to produce the union list,
+     * stored on the tile as `data-songbook-languages`.
+     *
+     * Schema-probed: pre-#673 (no Language column on tblSongs)
+     * returns an empty map and the legacy single-language filter
+     * behaviour stays in effect.
+     *
+     * @return array<string, string[]>
+     */
+    private function _songbookSongLanguagesMap(): array
+    {
+        $hasSchema = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongs'
+                    AND COLUMN_NAME  = 'Language' LIMIT 1"
+            );
+            $probe->execute();
+            $hasSchema = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* fall through */ }
+        if (!$hasSchema) return [];
+
+        try {
+            /* GROUP_CONCAT keeps everything in one round-trip; the
+               primary-subtag extraction lives in SQL because the
+               sub-string is cheap there and avoids a per-row
+               PHP regex on a result set that can be tens of
+               thousands of rows. */
+            $sql = "SELECT SongbookAbbr,
+                           GROUP_CONCAT(
+                               DISTINCT LOWER(SUBSTRING_INDEX(Language, '-', 1))
+                               ORDER BY Language SEPARATOR ','
+                           ) AS langs
+                      FROM tblSongs
+                     WHERE Language IS NOT NULL AND Language <> ''
+                     GROUP BY SongbookAbbr";
+            $res = $this->db->query($sql);
+            $out = [];
+            if ($res) {
+                while ($row = $res->fetch_assoc()) {
+                    $abbr  = (string)$row['SongbookAbbr'];
+                    $langs = array_values(array_filter(
+                        explode(',', (string)($row['langs'] ?? '')),
+                        static fn($s) => $s !== '' && preg_match('/^[a-z]{2,3}$/', $s)
+                    ));
+                    $out[$abbr] = $langs;
+                }
+                $res->close();
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            error_log('[SongData::_songbookSongLanguagesMap] ' . $e->getMessage());
             return [];
         }
     }
