@@ -509,13 +509,23 @@ declare(strict_types=1);
                     Page Transition
                 </label>
                 <select class="form-select" id="setting-transition" aria-label="Page transition style">
-                    <option value="none">None (instant)</option>
-                    <option value="fade">Fade</option>
-                    <option value="slide">Slide</option>
-                    <option value="crossfade">Crossfade</option>
+                    <option value="none">None — instant</option>
+                    <optgroup label="Classic">
+                        <option value="fade">Fade — opacity with subtle vertical drift</option>
+                        <option value="crossfade">Crossfade — pure opacity, no motion</option>
+                        <option value="slide">Slide — directional horizontal slide</option>
+                    </optgroup>
+                    <optgroup label="Modern (#865)">
+                        <option value="scale">Scale — gentle zoom with fade</option>
+                        <option value="lift">Lift — page rises from below</option>
+                        <option value="depth">Depth — cinematic recede &amp; emerge</option>
+                        <option value="blur">Blur — cinematic dissolve</option>
+                    </optgroup>
                 </select>
                 <small class="text-muted mt-1 d-block">
-                    Overridden by Reduce Motion when enabled.
+                    Overridden by Reduce Motion when enabled. Modern types use the
+                    View Transitions API for fluid, simultaneous old / new motion;
+                    they fall back to the Classic timing on older browsers.
                 </small>
             </div>
 
