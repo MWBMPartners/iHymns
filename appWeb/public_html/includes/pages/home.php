@@ -14,6 +14,11 @@
 
 declare(strict_types=1);
 
+/* Language-name resolver (#856) — used for the songbook tile badge
+   tooltip. Static-cached per request so this require + map build
+   only fires once per page load. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'language_names.php';
+
 /* Load song data for statistics */
 $stats = $songData->getStats();
 $songbooks = $songData->getSongbooks();
@@ -161,9 +166,13 @@ $songbooks = $songData->getSongbooks();
                                      ISO 639 code in the tile's top-right corner,
                                      positioned to clear the offline-download cloud
                                      button below. aria-hidden because the language
-                                     is already announced by the stretched link. -->
+                                     is already announced by the stretched link.
+                                     #856: tooltip shows the full English language
+                                     name (e.g. "English", "Afrikaans") via
+                                     resolveLanguageName(). Pre-tblLanguages deploys
+                                     fall back to the code unchanged. -->
                                 <span class="songbook-tile-language-badge"
-                                      title="Language: <?= htmlspecialchars($bookLang) ?>"
+                                      title="<?= htmlspecialchars(resolveLanguageName($bookLang)) ?>"
                                       aria-hidden="true"><?= htmlspecialchars($langCode) ?></span>
                             <?php endif; ?>
                             <div class="card-body text-center">

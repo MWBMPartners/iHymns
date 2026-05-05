@@ -312,7 +312,15 @@ try {
                                 <?php if ($i > 0): ?>, <?php endif; ?>
                                 <em><?= htmlspecialchars($a['title']) ?></em>
                                 <?php if (!empty($a['language'])): ?>
-                                    <span class="badge bg-secondary text-light small"><?= htmlspecialchars($a['language']) ?></span>
+                                    <?php
+                                        /* #856 — tooltip resolves the IETF tag to
+                                           the full language name. Lazy-require here
+                                           because most songs have no alt titles and
+                                           we don't want a SELECT for every page. */
+                                        require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'language_names.php';
+                                    ?>
+                                    <span class="badge bg-secondary text-light small"
+                                          title="<?= htmlspecialchars(resolveLanguageName($a['language'])) ?>"><?= htmlspecialchars($a['language']) ?></span>
                                 <?php endif; ?>
                                 <?php if (!empty($a['note'])): ?>
                                     <span class="text-muted">(<?= htmlspecialchars($a['note']) ?>)</span>

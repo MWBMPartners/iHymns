@@ -111,6 +111,11 @@ ksort($languageOptions);
 if (count($languageOptions) <= 1) {
     return;
 }
+
+/* #856 — resolve each subtag to a human-readable language name for
+   the pill tooltip. The helper is request-scoped + static-cached
+   so this is one extra DB query for the whole partial. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'language_names.php';
 ?>
 <div class="songbook-language-filter mb-3"
      data-songbook-language-filter
@@ -125,12 +130,18 @@ if (count($languageOptions) <= 1) {
                    id="songbook-language-filter-all" autocomplete="off" checked>
             <label class="btn btn-outline-info" for="songbook-language-filter-all">All</label>
             <?php foreach ($languageOptions as $sub => $label): ?>
-                <?php $id = 'songbook-language-filter-' . htmlspecialchars($sub, ENT_QUOTES, 'UTF-8'); ?>
+                <?php
+                    $id       = 'songbook-language-filter-' . htmlspecialchars($sub, ENT_QUOTES, 'UTF-8');
+                    /* #856 — resolved name for the tooltip; falls back to
+                       the uppercase code when tblLanguages isn't seeded. */
+                    $langName = resolveLanguageName($sub);
+                ?>
                 <input type="checkbox" class="btn-check js-songbook-language-filter-option"
                        id="<?= $id ?>"
                        value="<?= htmlspecialchars($sub, ENT_QUOTES, 'UTF-8') ?>"
                        autocomplete="off">
-                <label class="btn btn-outline-info" for="<?= $id ?>">
+                <label class="btn btn-outline-info" for="<?= $id ?>"
+                       title="<?= htmlspecialchars($langName, ENT_QUOTES, 'UTF-8') ?>">
                     <?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8') ?>
                 </label>
             <?php endforeach; ?>

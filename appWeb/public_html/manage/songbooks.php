@@ -23,6 +23,7 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    abbrev / colour / IETF-tag grammar lands on both surfaces in one go. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_validation.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'language_names.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -2247,13 +2248,21 @@ $csrf = csrfToken();
                                         /* Show the full tag (e.g. en-GB, zh-Hans-CN)
                                            but render only the primary subtag in
                                            the badge for compactness, matching the
-                                           public-site badge convention. The full
-                                           tag goes in the title for hover. */
-                                        $primary = strtoupper(preg_replace('/-.*$/', '', $bookLang) ?: $bookLang);
+                                           public-site badge convention. The title
+                                           composes the resolved English name
+                                           ("English (United Kingdom)") with the
+                                           raw tag in parens for power-users —
+                                           gives both audiences the right level
+                                           of detail (#856). */
+                                        $primary    = strtoupper(preg_replace('/-.*$/', '', $bookLang) ?: $bookLang);
+                                        $resolvedLn = resolveLanguageName($bookLang);
+                                        $titleAttr  = ($resolvedLn !== '' && strtoupper($resolvedLn) !== strtoupper($bookLang))
+                                                    ? $resolvedLn . ' (' . $bookLang . ')'
+                                                    : $bookLang;
                                     ?>
                                     <span class="badge bg-info text-dark"
                                           style="font-size: 0.7rem; font-weight: 600;"
-                                          title="<?= htmlspecialchars($bookLang, ENT_QUOTES, 'UTF-8') ?>">
+                                          title="<?= htmlspecialchars($titleAttr, ENT_QUOTES, 'UTF-8') ?>">
                                         <?= htmlspecialchars($primary, ENT_QUOTES, 'UTF-8') ?>
                                     </span>
                                 <?php else: ?>

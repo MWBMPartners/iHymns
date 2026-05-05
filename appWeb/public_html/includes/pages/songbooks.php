@@ -13,6 +13,9 @@
 
 declare(strict_types=1);
 
+/* #856 — language-name resolver for the tile badge tooltip. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'language_names.php';
+
 $songbooks = $songData->getSongbooks();
 $stats = $songData->getStats();
 
@@ -62,8 +65,10 @@ $stats = $songData->getStats();
                        <?php if ($langCode !== ''): ?>data-songbook-language="<?= htmlspecialchars($bookLang) ?>"<?php endif; ?>
                        aria-label="Open <?= htmlspecialchars($book['name']) ?><?= $langCode !== '' ? ' (' . htmlspecialchars($langCode) . ')' : '' ?>">
                         <?php if ($langCode !== ''): ?>
+                            <!-- #856: tooltip resolves the IETF tag to the
+                                 full language name (e.g. "English"). -->
                             <span class="songbook-tile-language-badge"
-                                  title="Language: <?= htmlspecialchars($bookLang) ?>"
+                                  title="<?= htmlspecialchars(resolveLanguageName($bookLang)) ?>"
                                   aria-hidden="true"><?= htmlspecialchars($langCode) ?></span>
                         <?php endif; ?>
                         <div class="card-body">
