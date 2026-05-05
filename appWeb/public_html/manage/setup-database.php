@@ -988,6 +988,19 @@ if ($action !== '') {
      * still fine — only the header propagates via buffered output). */
     define('IHYMNS_SETUP_DASHBOARD', true);
 
+    /* #862 — lift the execution-time cap for any setup-database action.
+       Shared hosts default to max_execution_time = 30s, which the bulk
+       Apply-All run blows through with ~30 migrations + real backfills.
+       Without this, PHP terminates mid-loop, the closing chrome never
+       reaches the browser, and the JS that flips #action-status-badge
+       from "Running…" to "Complete" / "Error" never runs — the badge
+       stays stuck on the initial state.
+       ignore_user_abort makes the run survive a curator closing the
+       tab mid-stream — better to land all migrations than half. */
+    @set_time_limit(0);
+    @ini_set('max_execution_time', '0');
+    @ignore_user_abort(true);
+
     /* #817 round 2 — render the page chrome BEFORE the bulk run, so:
        (a) Content-Type: text/html is committed to the response before
            any child script's `header('Content-Type: text/plain')` could
@@ -1125,6 +1138,13 @@ if ($action !== '') {
             });
 
             foreach ($migrationOrder as $migAction) {
+                /* #862 — reset the execution-time alarm before EACH
+                   migration in case the host enforces a per-script
+                   limit that survives the require() boundary. Cheap
+                   to call repeatedly; harmless when set_time_limit
+                   is disabled by safe_mode / disable_functions. */
+                @set_time_limit(0);
+
                 $migScript = $scriptMap[$migAction] ?? null;
                 if ($migScript === null) {
                     echo "  ✗ Unknown migration key: {$migAction} — skipped.\n\n";
