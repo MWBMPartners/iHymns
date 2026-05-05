@@ -234,6 +234,7 @@ $friendlyTitles = [
     'works'                            => 'Works — composition grouping (#840)',
     'external-link-patterns'           => 'External-Link URL Patterns (#845)',
     'song-media'                       => 'Song Media Uploads (#853)',
+    'song-component-language'          => 'Song Component Language Override (#858)',
     /* `recompute-songbook-songcount` no longer exposed via the dashboard
        (#818) — the SongCount Triggers migration above includes its own
        initial recompute. The CLI script stays on disk for emergency
@@ -293,6 +294,7 @@ $scriptMap = [
     'works'                         => 'migrate-works.php',
     'external-link-patterns'        => 'migrate-external-link-patterns.php',
     'song-media'                    => 'migrate-song-media.php',
+    'song-component-language'       => 'migrate-song-component-language.php',
     'cleanup'     => 'cleanup.php',
     'backup'      => 'backup.php',
     'restore'     => 'restore.php',
@@ -342,6 +344,7 @@ $migrationOrder = [
     'works',
     'external-link-patterns',
     'song-media',
+    'song-component-language',
 ];
 
 /* Per-migration card content (#816). Single source of truth for the
@@ -741,6 +744,22 @@ $migrationCards = [
                   . ' release cycle. Idempotent.',
         'button' => 'Run Song Media Migration',
     ],
+    'song-component-language' => [
+        'title'  => 'Song Component Language Override (#858)',
+        'body'   => 'Adds <code>Language VARCHAR(35) NULL</code> to'
+                  . ' <code>tblSongComponents</code> so a multi-language medley'
+                  . ' (e.g. an English carol with a Spanish chorus) can record'
+                  . ' the actual language of each verse / chorus / bridge instead'
+                  . ' of forcing the whole song under a single'
+                  . ' <code>tblSongs.Language</code> tag. <code>NULL</code> means'
+                  . ' "inherit from the parent song"; an explicit value overrides'
+                  . ' per-component. Public render uses the column to set'
+                  . ' <code>lang="…"</code> on each component <code>&lt;div&gt;</code>'
+                  . ' (correct screen-reader pronunciation, browser hyphenation)'
+                  . ' and to populate the JSON-LD <code>MusicComposition.inLanguage</code>'
+                  . ' union. Idempotent.',
+        'button' => 'Run Song Component Language Migration',
+    ],
     /* recompute-songbook-songcount card removed (#818) — its work is
        now covered by the SongCount Triggers migration above, which
        runs an initial recompute as part of its installation. The
@@ -893,6 +912,9 @@ $migrationProbes = [
     /* Song media uploads: pending when tblSongMedia is absent. */
     'song-media'                         => static fn(\mysqli $db) =>
         !_migProbe_tableExists($db, 'tblSongMedia'),
+    /* Song component language: pending when the column is absent. */
+    'song-component-language'            => static fn(\mysqli $db) =>
+        !_migProbe_columnExists($db, 'tblSongComponents', 'Language'),
     /* Backfills run once after schema lands. They're idempotent so
        always-show is safe — but we can be smarter: pending when the
        new table has fewer rows than the legacy source had non-empty

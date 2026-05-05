@@ -117,6 +117,10 @@ class SongData
     /** Whether we're using JSON fallback mode */
     private bool $jsonMode = false;
 
+    /** #858 — schema-probe result for tblSongComponents.Language. */
+    private bool $_componentLangColumn = false;
+    private bool $_componentLangColumnChecked = false;
+
     /** Check if running in JSON fallback mode (no MySQL) */
     public function isJsonFallback(): bool { return $this->jsonMode; }
 
@@ -2483,15 +2487,47 @@ class SongData
     }
 
     /**
+     * Schema-probe for tblSongComponents.Language (#858). Cached for
+     * the lifetime of the SongData instance — every call to
+     * _getComponents / _getComponentsMap shares the same answer.
+     * Pre-migration deploys return false and the SELECT skips the
+     * column to stay 1.x-compatible.
+     */
+    private function _hasComponentLanguageColumn(): bool
+    {
+        if ($this->_componentLangColumnChecked) {
+            return $this->_componentLangColumn;
+        }
+        $this->_componentLangColumnChecked = true;
+        try {
+            $stmt = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongComponents'
+                    AND COLUMN_NAME  = 'Language' LIMIT 1"
+            );
+            $stmt->execute();
+            $this->_componentLangColumn = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+        } catch (\Throwable $_e) {
+            $this->_componentLangColumn = false;
+        }
+        return $this->_componentLangColumn;
+    }
+
+    /**
      * Get components (verses, choruses) for a song.
      *
      * @param string $songId Song ID
-     * @return array Array of component objects with type, number, and lines
+     * @return array Array of component objects with type, number, lines, language
      */
     private function _getComponents(string $songId): array
     {
+        $langSelect = $this->_hasComponentLanguageColumn()
+            ? ', Language AS language'
+            : ', NULL AS language';
         $stmt = $this->db->prepare(
-            "SELECT Type AS type, Number AS number, LinesJson AS lines_json
+            "SELECT Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}
              FROM tblSongComponents
              WHERE SongId = ?
              ORDER BY SortOrder"
@@ -2502,9 +2538,10 @@ class SongData
         $components = [];
         while ($row = $result->fetch_assoc()) {
             $components[] = [
-                'type'   => $row['type'],
-                'number' => (int)$row['number'],
-                'lines'  => json_decode($row['lines_json'], true) ?? [],
+                'type'     => $row['type'],
+                'number'   => (int)$row['number'],
+                'lines'    => json_decode($row['lines_json'], true) ?? [],
+                'language' => $row['language'] !== null ? (string)$row['language'] : null,
             ];
         }
         $stmt->close();
@@ -2581,8 +2618,11 @@ class SongData
         if (empty($songIds)) return [];
         $placeholders = implode(',', array_fill(0, count($songIds), '?'));
         $types = str_repeat('s', count($songIds));
+        $langSelect = $this->_hasComponentLanguageColumn()
+            ? ', Language AS language'
+            : ', NULL AS language';
         $stmt = $this->db->prepare(
-            "SELECT SongId, Type AS type, Number AS number, LinesJson AS lines_json
+            "SELECT SongId, Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}
              FROM tblSongComponents
              WHERE SongId IN ($placeholders)
              ORDER BY SongId, SortOrder"
@@ -2593,9 +2633,10 @@ class SongData
         $map = [];
         while ($row = $result->fetch_assoc()) {
             $map[$row['SongId']][] = [
-                'type'   => $row['type'],
-                'number' => (int)$row['number'],
-                'lines'  => json_decode($row['lines_json'], true) ?? [],
+                'type'     => $row['type'],
+                'number'   => (int)$row['number'],
+                'lines'    => json_decode($row['lines_json'], true) ?? [],
+                'language' => $row['language'] !== null ? (string)$row['language'] : null,
             ];
         }
         $stmt->close();

@@ -238,12 +238,35 @@ try {
             $ogImage = getCanonicalUrl('/og-image?song=' . urlencode($matches[1]));
             $ogImageAlt = 'Preview of "' . $ogSong['title'] . '" from ' . $ogSong['songbookName'];
 
-            /* JSON-LD: MusicComposition */
+            /* JSON-LD: MusicComposition. #858 — inLanguage is the
+               union of the song's primary language and every per-
+               component override, so a Spanish-chorus / English-verse
+               medley is correctly indexed as multilingual. Falls back
+               to a single-string $locale when no per-component data
+               is attached (pre-migration / no overrides). */
+            $jsonLdLanguages = [];
+            if (!empty($ogSong['language'])) {
+                $jsonLdLanguages[] = (string)$ogSong['language'];
+            } elseif ($locale !== '') {
+                $jsonLdLanguages[] = $locale;
+            }
+            foreach (($ogSong['components'] ?? []) as $cmp) {
+                $cl = trim((string)($cmp['language'] ?? ''));
+                if ($cl !== '' && !in_array($cl, $jsonLdLanguages, true)) {
+                    $jsonLdLanguages[] = $cl;
+                }
+            }
             $musicComposition = [
                 '@context' => 'https://schema.org',
                 '@type'    => 'MusicComposition',
                 'name'     => $ogSong['title'],
-                'inLanguage' => $locale,
+                /* Single-value when only one language; array when the
+                   song carries per-component overrides. Both shapes
+                   are valid schema.org per the Web Schemas
+                   recommendation. */
+                'inLanguage' => count($jsonLdLanguages) > 1
+                    ? $jsonLdLanguages
+                    : ($jsonLdLanguages[0] ?? $locale),
             ];
             /* #832 — alternateName for SEO. Search engines pick this up
                so a query for the original title / common misspelling /
