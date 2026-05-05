@@ -952,6 +952,16 @@ $bulkTotalFailed      = 0;
 $pageRenderedCleanly = false;
 register_shutdown_function(function () use (&$pageRenderedCleanly): void {
     if ($pageRenderedCleanly) return;
+
+    /* #868 — pull the global $app into closure scope so admin-footer.php's
+       version / copyright lines render with their real values. Without
+       this, admin-footer's `$app['Application']['Version']['Number'] ?? ''`
+       returns '' because require_once on infoAppVer.php is a no-op
+       (already loaded at top-level) and the closure doesn't inherit
+       global state by default. Symptom: footer reads "| v | Terms |
+       Privacy" with no version + no copyright string. */
+    global $app;
+
     /* Drain whatever's still buffered so it precedes the chrome tags
        we're about to emit. */
     while (ob_get_level() > 0) {
@@ -995,11 +1005,31 @@ register_shutdown_function(function () use (&$pageRenderedCleanly): void {
        when admin-nav.php opened them — gated on $GLOBALS
        ['_adminLayoutOpen'] which we DON'T touch here, so the
        footer's guarded-close logic still applies correctly).
+
+       admin-footer.php reads `$app['Application']['Version']…` —
+       require_once on infoAppVer.php is a no-op when it was already
+       loaded at top-level, and admin-footer would then see $app
+       undefined in this closure's local scope. So if the global
+       $app is empty (early-fatal path where the action handler
+       never reached the line that loads infoAppVer), pull it in
+       directly here so the footer renders with real values rather
+       than "| v |  Terms |  Privacy". Required: the include's
+       `$app = [];` populates the closure's local scope, which
+       admin-footer.php inherits when require'd below.
+
        Wrapped in @require + try/catch so a load failure during
        shutdown doesn't compound into a fatal — better to ship a
        footer-less page than a 500. admin-footer.php does NOT
        emit </body></html> itself; we close the doc here. */
     try {
+        if (!isset($app) || empty($app)) {
+            $_appVerPath = dirname(__DIR__) . DIRECTORY_SEPARATOR
+                         . 'includes' . DIRECTORY_SEPARATOR
+                         . 'infoAppVer.php';
+            if (is_file($_appVerPath)) {
+                @require $_appVerPath;
+            }
+        }
         $_footerName = __DIR__ . DIRECTORY_SEPARATOR
                      . 'includes' . DIRECTORY_SEPARATOR
                      . 'admin-footer.php';
