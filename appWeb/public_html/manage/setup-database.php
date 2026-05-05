@@ -1033,6 +1033,98 @@ if ($action !== '') {
     @ini_set('max_execution_time', '0');
     @ignore_user_abort(true);
 
+    /* #869 — text-format fast-path. The dashboard's per-migration
+       AJAX runner (js/modules/setup-bulk-runner.js) calls into this
+       same action endpoint one migration at a time. It doesn't want
+       the full HTML chrome — just the migration's captured stdout
+       framed by a small text header so the runner can distinguish
+       success / error and surface per-migration progress live on
+       the dashboard. Each request is short (one migration only),
+       so the bulk run never sits in a single long PHP request that
+       could hit a server-level timeout (FPM request_terminate_timeout,
+       proxy timeout, CDN limit) — which is the real root cause of
+       the symptom that #862 / #863 / #868 only papered over. */
+    $requestedFormat = (string)($_GET['format'] ?? '');
+    if ($requestedFormat === 'text' && $action !== 'apply-all-migrations') {
+        header('Content-Type: text/plain; charset=UTF-8');
+        header('Cache-Control: no-store, no-cache, must-revalidate');
+        header('X-Content-Type-Options: nosniff');
+
+        $scriptName = $scriptMap[$action] ?? null;
+        if ($scriptName === null) {
+            http_response_code(400);
+            echo "STATUS: error\n";
+            echo "ACTION: {$action}\n";
+            echo "ERROR: Unknown action.\n";
+            $pageRenderedCleanly = true;
+            exit;
+        }
+        if (!$hasCredentials && $action !== 'install') {
+            http_response_code(412);
+            echo "STATUS: error\n";
+            echo "ACTION: {$action}\n";
+            echo "ERROR: Database credentials not configured.\n";
+            $pageRenderedCleanly = true;
+            exit;
+        }
+        $scriptDir = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR
+                   . '.sql' . DIRECTORY_SEPARATOR;
+        $scriptPath = $scriptDir . $scriptName;
+        if (!file_exists($scriptPath)) {
+            http_response_code(404);
+            echo "STATUS: error\n";
+            echo "ACTION: {$action}\n";
+            echo "ERROR: Script not found: {$scriptName}\n";
+            $pageRenderedCleanly = true;
+            exit;
+        }
+
+        /* Capture the migration's output (echo / _migXxx_out / etc.)
+           so we can frame it with a status header. The migration may
+           emit <br> tags expecting an HTML context — strip them so
+           the AJAX runner gets readable plaintext. */
+        ob_start();
+        $migOk = true;
+        $migErr = '';
+        $migErrFile = '';
+        $migErrLine = 0;
+        $migStart = microtime(true);
+        try {
+            require $scriptPath;
+        } catch (\Throwable $e) {
+            $migOk = false;
+            $migErr = $e->getMessage();
+            $migErrFile = (string)$e->getFile();
+            $migErrLine = (int)$e->getLine();
+        }
+        $migOutput = (string)ob_get_clean();
+        /* Migration scripts use `_migXxx_out()` helpers that emit
+           `<br>\n` for the dashboard context; the AJAX runner shows
+           output as preformatted text so we replace those with a
+           plain newline. */
+        $migOutput = str_replace(['<br>', '<br/>', '<br />'], '', $migOutput);
+        $elapsed = (int)round((microtime(true) - $migStart) * 1000);
+
+        if (!$migOk) {
+            http_response_code(500);
+        }
+        echo "STATUS: " . ($migOk ? 'ok' : 'error') . "\n";
+        echo "ACTION: {$action}\n";
+        echo "SCRIPT: {$scriptName}\n";
+        echo "ELAPSED_MS: {$elapsed}\n";
+        if (!$migOk) {
+            echo "ERROR: {$migErr}\n";
+            if ($migErrFile !== '') {
+                echo "ERROR_AT: " . basename($migErrFile) . ":{$migErrLine}\n";
+            }
+        }
+        echo "---\n";
+        echo $migOutput;
+
+        $pageRenderedCleanly = true;
+        exit;
+    }
+
     /* #817 round 2 — render the page chrome BEFORE the bulk run, so:
        (a) Content-Type: text/html is committed to the response before
            any child script's `header('Content-Type: text/plain')` could
@@ -1582,9 +1674,24 @@ if ($hasCredentials && defined('DB_HOST')) {
                     <?php endif; ?>
                 </p>
             </div>
+            <?php
+                /* #869 — pending-migration list serialised onto the
+                   button so the per-migration AJAX runner can pick
+                   it up without a second round-trip. Comma-separated
+                   to avoid HTML-escaping JSON-with-quotes inside an
+                   attribute. The legacy href stays in place as a
+                   no-JS fallback (with the chrome / footer / badge
+                   fixes from #862 / #863 / #868 / #870 / #871 to
+                   handle the timeout edge case). */
+                $bulkRunnerPending = array_values(array_filter(
+                    $pendingActions,
+                    static fn(string $slug): bool => isset($migrationCards[$slug])
+                ));
+            ?>
             <a href="?action=apply-all-migrations"
                class="btn btn-primary btn-lg flex-shrink-0 <?= $hasCredentials ? '' : 'disabled' ?>"
-               onclick="return confirm('Run every pending migration in dependency order?\n\nSafe to re-run — applied migrations are skipped automatically.');">
+               data-bulk-runner-trigger
+               data-pending-migrations="<?= htmlspecialchars(implode(',', $bulkRunnerPending), ENT_QUOTES, 'UTF-8') ?>">
                 <i class="bi bi-play-fill me-1" aria-hidden="true"></i>
                 Apply all
             </a>
@@ -2043,6 +2150,20 @@ if ($hasCredentials && defined('DB_HOST')) {
         }
     });
 })();
+</script>
+
+<!-- #869 — Per-migration AJAX bulk runner. Replaces the legacy
+     full-page "Apply All" redirect with a sequential fetch loop on
+     the dashboard, so no single request hits a server-level
+     timeout. Falls through to the legacy <a href> on no-JS. -->
+<?php
+    $_bulkRunnerPath    = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'setup-bulk-runner.js';
+    $_bulkRunnerVersion = is_file($_bulkRunnerPath) ? (string)filemtime($_bulkRunnerPath) : '1';
+?>
+<script type="module">
+    import { bootSetupBulkRunner }
+        from '/js/modules/setup-bulk-runner.js?v=<?= htmlspecialchars($_bulkRunnerVersion, ENT_QUOTES) ?>';
+    bootSetupBulkRunner();
 </script>
 
 <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
