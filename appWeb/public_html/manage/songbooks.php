@@ -542,6 +542,210 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
     exit;
 }
 
+/* ---- GET ?action=apply_song_language_count&songbook_id=… (#873) -------
+ * JSON impact-preview for the "Apply this language to all songs in this
+ * songbook" cleanup action. Returns:
+ *   - untagged: count of songs in the book with no Language set
+ *   - tagged:   count of songs already carrying a Language tag
+ *   - distinct_old_tags: up to 10 example old tags (for the confirm
+ *                        dialog: "7 already-tagged songs will be
+ *                        overwritten — current tags: en, en-GB, …")
+ * Lets the JS handler render an honest confirm dialog before any
+ * destructive UPDATE runs. Editor+ role required (matches the rest
+ * of the songbook write path).
+ * ----------------------------------------------------------------------- */
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
+    && ($_GET['action'] ?? '') === 'apply_song_language_count'
+) {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store');
+    if (!in_array(($currentUser['role'] ?? ''), ['editor', 'admin', 'global_admin'], true)) {
+        http_response_code(403);
+        echo json_encode(['error' => 'Editor role required.']);
+        exit;
+    }
+    $songbookId = (int)($_GET['songbook_id'] ?? 0);
+    if ($songbookId <= 0) {
+        http_response_code(400);
+        echo json_encode(['error' => 'songbook_id required.']);
+        exit;
+    }
+    try {
+        /* Resolve the songbook abbreviation — tblSongs joins by
+           SongbookAbbr (string), not SongbookId (int). 404 if the
+           id doesn't exist. */
+        $stmt = $db->prepare('SELECT Abbreviation FROM tblSongbooks WHERE Id = ? LIMIT 1');
+        $stmt->bind_param('i', $songbookId);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if (!$row) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Songbook not found.']);
+            exit;
+        }
+        $abbr = (string)$row['Abbreviation'];
+
+        $stmt = $db->prepare(
+            "SELECT
+                SUM(CASE WHEN Language IS NULL OR Language = '' THEN 1 ELSE 0 END) AS untagged,
+                SUM(CASE WHEN Language IS NOT NULL AND Language <> '' THEN 1 ELSE 0 END) AS tagged
+              FROM tblSongs
+             WHERE SongbookAbbr = ?"
+        );
+        $stmt->bind_param('s', $abbr);
+        $stmt->execute();
+        $counts = $stmt->get_result()->fetch_assoc() ?: ['untagged' => 0, 'tagged' => 0];
+        $stmt->close();
+
+        /* Sample distinct existing tags for the confirm dialog —
+           the curator wants to know what they're about to overwrite.
+           Capped at 10 so the dialog stays readable. */
+        $stmt = $db->prepare(
+            "SELECT DISTINCT Language
+               FROM tblSongs
+              WHERE SongbookAbbr = ?
+                AND Language IS NOT NULL
+                AND Language <> ''
+              ORDER BY Language ASC
+              LIMIT 10"
+        );
+        $stmt->bind_param('s', $abbr);
+        $stmt->execute();
+        $tagsRes = $stmt->get_result();
+        $tags = [];
+        while ($t = $tagsRes->fetch_row()) $tags[] = (string)$t[0];
+        $stmt->close();
+
+        echo json_encode([
+            'songbook_id'        => $songbookId,
+            'abbreviation'       => $abbr,
+            'untagged'           => (int)($counts['untagged'] ?? 0),
+            'tagged'             => (int)($counts['tagged']   ?? 0),
+            'distinct_old_tags'  => $tags,
+        ], JSON_UNESCAPED_UNICODE);
+    } catch (\Throwable $e) {
+        error_log('[apply_song_language_count] ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['error' => 'Could not count songs.']);
+    }
+    exit;
+}
+
+/* ---- POST ?action=apply_song_language (#873) ---------------------------
+ * Performs the bulk UPDATE: sets tblSongs.Language = $language for
+ * every song in the songbook. Two modes:
+ *   overwrite=0 (default): only fills untagged songs
+ *                          (Language IS NULL OR Language = '')
+ *   overwrite=1:           overwrites every song's Language regardless
+ *
+ * Logs to tblActivityLog as 'songbook.apply_song_language' with the
+ * affected count + mode + new language for after-the-fact review.
+ * Editor+ role required, CSRF validated.
+ * ----------------------------------------------------------------------- */
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST'
+    && ($_GET['action'] ?? '') === 'apply_song_language'
+) {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store');
+    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+        http_response_code(403);
+        echo json_encode(['error' => 'Invalid CSRF token.']);
+        exit;
+    }
+    if (!in_array(($currentUser['role'] ?? ''), ['editor', 'admin', 'global_admin'], true)) {
+        http_response_code(403);
+        echo json_encode(['error' => 'Editor role required.']);
+        exit;
+    }
+
+    $songbookId = (int)($_POST['songbook_id'] ?? 0);
+    $language   = trim((string)($_POST['language'] ?? ''));
+    $overwrite  = !empty($_POST['overwrite']);
+
+    if ($songbookId <= 0) {
+        http_response_code(400);
+        echo json_encode(['error' => 'songbook_id required.']);
+        exit;
+    }
+    if ($language === '') {
+        http_response_code(400);
+        echo json_encode(['error' => 'language required — songbook has no Language set.']);
+        exit;
+    }
+    /* Defensive grammar check — same shape the IETF picker enforces.
+       Prevents a tampered POST smuggling exotic / malformed values
+       into tblSongs.Language. v1: lowercase 2-3 letter primary, plus
+       optional script (4-letter Title), region (2-letter UPPER or
+       3-digit numeric), variant (5-8 alphanumeric). Caps at 35 chars
+       (the column width per #681). */
+    if (!preg_match('/^[A-Za-z]{2,3}([-_][A-Za-z0-9]{1,8})*$/', $language)
+        || strlen($language) > 35
+    ) {
+        http_response_code(400);
+        echo json_encode(['error' => 'Malformed language tag.']);
+        exit;
+    }
+
+    try {
+        /* Resolve abbreviation. */
+        $stmt = $db->prepare('SELECT Abbreviation FROM tblSongbooks WHERE Id = ? LIMIT 1');
+        $stmt->bind_param('i', $songbookId);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if (!$row) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Songbook not found.']);
+            exit;
+        }
+        $abbr = (string)$row['Abbreviation'];
+
+        /* Only-fill-untagged path adds an extra WHERE clause. The
+           bind list stays the same shape so the prepare can be
+           swapped behind a single conditional. */
+        if ($overwrite) {
+            $sql = 'UPDATE tblSongs SET Language = ? WHERE SongbookAbbr = ?';
+        } else {
+            $sql = "UPDATE tblSongs SET Language = ?
+                     WHERE SongbookAbbr = ?
+                       AND (Language IS NULL OR Language = '')";
+        }
+        $stmt = $db->prepare($sql);
+        $stmt->bind_param('ss', $language, $abbr);
+        $stmt->execute();
+        $affected = $stmt->affected_rows;
+        $stmt->close();
+
+        if (function_exists('logActivity')) {
+            logActivity(
+                'songbook.apply_song_language',
+                'songbook',
+                (string)$songbookId,
+                [
+                    'abbreviation' => $abbr,
+                    'language'     => $language,
+                    'mode'         => $overwrite ? 'overwrite' : 'fill_only',
+                    'affected'     => $affected,
+                ]
+            );
+        }
+
+        echo json_encode([
+            'ok'           => true,
+            'affected'     => (int)$affected,
+            'mode'         => $overwrite ? 'overwrite' : 'fill_only',
+            'language'     => $language,
+            'abbreviation' => $abbr,
+        ], JSON_UNESCAPED_UNICODE);
+    } catch (\Throwable $e) {
+        error_log('[apply_song_language] ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['error' => 'Update failed.']);
+    }
+    exit;
+}
+
 /* ---- Cycle-detection helper for #782 phase B --------------------------
  * Walks ParentSongbookId upward from $candidateParent and returns true
  * if the chain hits $rowId — i.e. setting that parent would create a
@@ -2909,6 +3113,49 @@ $csrf = csrfToken();
                             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'ietf-language-picker.php';
                         ?>
 
+                        <!-- #873 — "Apply this language to all songs in this
+                             songbook" cleanup action. Pushes the songbook's
+                             current Language to tblSongs.Language for every
+                             contained song. Default mode fills only untagged
+                             songs (safe); ticking the overwrite checkbox
+                             updates everything. The button is disabled when
+                             the songbook has no Language picked yet — there's
+                             nothing to push.
+                             Wired to JS at the bottom of this file (search
+                             "apply-song-language"). -->
+                        <div class="mb-3 border-top pt-2" id="edit-apply-song-language-block">
+                            <details>
+                                <summary class="form-label small text-muted" style="cursor:pointer;">
+                                    <i class="bi bi-translate me-1"></i>Apply this language to all songs in this songbook
+                                </summary>
+                                <div class="mt-2 small">
+                                    <p class="text-muted mb-2">
+                                        Bulk-set <code>tblSongs.Language</code> to the picker's value for
+                                        every song in <strong id="edit-apply-song-language-abbr">…</strong>.
+                                        Useful after a multilingual import (#778) when many songs are
+                                        untagged or carrying stale tags from the source files.
+                                    </p>
+                                    <div class="form-check small mb-2">
+                                        <input class="form-check-input" type="checkbox"
+                                               id="edit-apply-song-language-overwrite">
+                                        <label class="form-check-label" for="edit-apply-song-language-overwrite">
+                                            Also overwrite songs that already have a language tag
+                                            <span class="text-warning">(destructive — review the count first)</span>
+                                        </label>
+                                    </div>
+                                    <button type="button"
+                                            class="btn btn-sm btn-outline-info"
+                                            id="edit-apply-song-language-btn"
+                                            disabled>
+                                        <i class="bi bi-arrow-down-circle me-1"></i>
+                                        <span id="edit-apply-song-language-label">Apply to songs</span>
+                                    </button>
+                                    <span id="edit-apply-song-language-status"
+                                          class="ms-2 text-muted small"></span>
+                                </div>
+                            </details>
+                        </div>
+
                         <!-- #782 phase B — Parent songbook picker. Two visible
                              inputs (text typeahead + relationship enum) plus a
                              hidden parent_songbook_id that gets set when the
@@ -3373,6 +3620,40 @@ $csrf = csrfToken();
                 window.editIetfPicker.setTag(row.language || '');
             }
 
+            /* #873 — wire the "Apply this language to all songs" block.
+               Stash the row metadata on the button so the click handler
+               below has the songbook id + abbr + name without needing
+               another DOM round-trip. The button's enabled/disabled
+               state mirrors the picker — empty Language = nothing to
+               push, so the action is meaningless. */
+            (function () {
+                const btn   = document.getElementById('edit-apply-song-language-btn');
+                const lbl   = document.getElementById('edit-apply-song-language-label');
+                const abbr  = document.getElementById('edit-apply-song-language-abbr');
+                const stat  = document.getElementById('edit-apply-song-language-status');
+                const over  = document.getElementById('edit-apply-song-language-overwrite');
+                if (!btn || !lbl || !abbr || !stat || !over) return;
+                btn.dataset.songbookId   = row.id || '';
+                btn.dataset.songbookAbbr = row.abbreviation || '';
+                btn.dataset.songbookName = row.name || '';
+                abbr.textContent = (row.abbreviation || '') +
+                    (row.name ? ' (' + row.name + ')' : '');
+                stat.textContent = '';
+                /* Reset to default each open. */
+                over.checked = false;
+                /* Initial label uses the song-count from the row payload. */
+                const count = parseInt(row.song_count || '0', 10) || 0;
+                lbl.textContent = count > 0
+                    ? 'Apply to ' + count + ' song' + (count === 1 ? '' : 's')
+                    : 'Apply to songs';
+                /* Disable when the picker is empty — pull the current
+                   composed tag from the picker module. */
+                const currentTag = (typeof window.editIetfPicker?.getTag === 'function')
+                    ? (window.editIetfPicker.getTag() || '')
+                    : (row.language || '');
+                btn.disabled = (currentTag === '' || count === 0);
+            })();
+
             /* #672 — bibliographic + authority-control identifiers. The
                row payload normalises every key to '' when the source
                column was NULL (or missing entirely on a pre-migration
@@ -3606,6 +3887,124 @@ $csrf = csrfToken();
         if (createPicker) bootIetfLanguagePicker(createPicker);
         const editPicker   = document.querySelector('[data-ietf-picker-id="edit-songbook"]');
         if (editPicker)   window.editIetfPicker = bootIetfLanguagePicker(editPicker);
+    </script>
+
+    <!-- #873 — "Apply this language to all songs" cleanup action. Wires
+         the click handler that:
+           1. Reads the current composed tag from the IETF picker.
+           2. Fetches a count of untagged + tagged songs in this book.
+           3. Shows an honest confirm dialog with the impact.
+           4. POSTs to ?action=apply_song_language with CSRF.
+           5. Surfaces affected count in a status line; modal stays open. -->
+    <script>
+    (function () {
+        const btn  = document.getElementById('edit-apply-song-language-btn');
+        if (!btn) return;
+        const stat = document.getElementById('edit-apply-song-language-status');
+        const over = document.getElementById('edit-apply-song-language-overwrite');
+        const csrf = document.querySelector('input[name="csrf_token"]')?.value || '';
+
+        btn.addEventListener('click', async function () {
+            if (btn.disabled) return;
+            const songbookId   = btn.dataset.songbookId;
+            const songbookAbbr = btn.dataset.songbookAbbr;
+            const songbookName = btn.dataset.songbookName;
+            /* Compose the language fresh from the picker each click —
+               the curator may have just changed it in this same modal
+               session and we should respect the in-memory state. */
+            const language = (typeof window.editIetfPicker?.getTag === 'function')
+                ? (window.editIetfPicker.getTag() || '')
+                : '';
+            if (!language) {
+                stat.className = 'ms-2 small text-warning';
+                stat.textContent = 'Pick a language first.';
+                return;
+            }
+
+            /* Count impact. */
+            stat.className = 'ms-2 small text-muted';
+            stat.textContent = 'Counting affected songs…';
+            let countData;
+            try {
+                const r = await fetch('/manage/songbooks?action=apply_song_language_count'
+                    + '&songbook_id=' + encodeURIComponent(songbookId), {
+                    credentials: 'same-origin',
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                });
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                countData = await r.json();
+                if (countData.error) throw new Error(countData.error);
+            } catch (err) {
+                stat.className = 'ms-2 small text-danger';
+                stat.textContent = 'Count failed: ' + (err.message || 'unknown error');
+                return;
+            }
+
+            const overwrite = !!over.checked;
+            const willTouchUntagged = countData.untagged;
+            const willTouchTagged   = overwrite ? countData.tagged : 0;
+            const total             = willTouchUntagged + willTouchTagged;
+            if (total === 0) {
+                stat.className = 'ms-2 small text-muted';
+                stat.textContent = overwrite
+                    ? 'No songs in this songbook to update.'
+                    : 'No untagged songs left — tick the overwrite box to update tagged ones too.';
+                return;
+            }
+
+            /* Build the confirm message. Show distinct old tags when
+               we're about to overwrite, since that's the destructive
+               case the curator most needs to eyeball. */
+            const lines = [
+                'Apply Language="' + language + '" to ' + total + ' song'
+                    + (total === 1 ? '' : 's') + ' in ' + songbookName + ' (' + songbookAbbr + ')?',
+                ''
+            ];
+            if (willTouchUntagged > 0) {
+                lines.push('• ' + willTouchUntagged + ' untagged song'
+                    + (willTouchUntagged === 1 ? '' : 's') + ' will be set to "' + language + '"');
+            }
+            if (overwrite && willTouchTagged > 0) {
+                const old = (countData.distinct_old_tags || []).join(', ');
+                lines.push('• ' + willTouchTagged + ' already-tagged song'
+                    + (willTouchTagged === 1 ? '' : 's') + ' will be overwritten'
+                    + (old ? ' (current tags: ' + old + ')' : ''));
+            }
+            if (!confirm(lines.join('\n'))) return;
+
+            /* Execute. */
+            stat.className = 'ms-2 small text-muted';
+            stat.textContent = 'Updating…';
+            btn.disabled = true;
+            try {
+                const fd = new FormData();
+                fd.append('csrf_token', csrf);
+                fd.append('songbook_id', songbookId);
+                fd.append('language', language);
+                if (overwrite) fd.append('overwrite', '1');
+                const r = await fetch('/manage/songbooks?action=apply_song_language', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                    body: fd,
+                });
+                const j = await r.json().catch(() => ({}));
+                if (!r.ok || j.error) {
+                    stat.className = 'ms-2 small text-danger';
+                    stat.textContent = 'Update failed: ' + (j.error || 'HTTP ' + r.status);
+                } else {
+                    stat.className = 'ms-2 small text-success';
+                    stat.textContent = 'Updated ' + j.affected + ' song'
+                        + (j.affected === 1 ? '' : 's') + '.';
+                }
+            } catch (err) {
+                stat.className = 'ms-2 small text-danger';
+                stat.textContent = 'Network error: ' + (err.message || 'unknown');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+    })();
     </script>
 
     <!-- Colour picker boot (#715). Wires the native swatch ↔ hex
