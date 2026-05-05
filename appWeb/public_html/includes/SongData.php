@@ -794,6 +794,83 @@ class SongData
     }
 
     /**
+     * Pull `[songId => [{id, kind, fileName, mimeType, sizeBytes,
+     *                    annotation, sortOrder, streamUrl}, …]]` from
+     * tblSongMedia (#853). Schema-probed; pre-migration deployments
+     * get an empty map so the public song page just doesn't render
+     * the media block.
+     *
+     * Bytes are NEVER returned by this method — only metadata. The
+     * public surface uses streamUrl (= /song-media/<id>) which is
+     * served by the gated route (phase E) so checkContentAccess()
+     * applies regardless of whether the underlying storage is the
+     * filesystem or the database.
+     *
+     * @param string[]|null $songIds Limit to these SongIds; null = all
+     * @return array<string, array<int, array{id:int,kind:string,fileName:string,mimeType:string,sizeBytes:int,annotation:string,sortOrder:int,streamUrl:string}>>
+     */
+    private function _songMediaMap(?array $songIds = null): array
+    {
+        $hasSchema = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongMedia'
+                  LIMIT 1"
+            );
+            $probe->execute();
+            $hasSchema = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* fall through */ }
+        if (!$hasSchema) return [];
+
+        try {
+            $select = 'SELECT Id, SongId, Kind, FileName, MimeType, SizeBytes,
+                              Annotation, SortOrder
+                         FROM tblSongMedia';
+            if ($songIds === null) {
+                $sql  = $select . ' ORDER BY SongId, Kind ASC, SortOrder ASC, Id ASC';
+                $stmt = $this->db->prepare($sql);
+            } else {
+                $songIds = array_values(array_filter(array_unique(array_map(
+                    static fn($s) => trim((string)$s),
+                    $songIds
+                ))));
+                if (!$songIds) return [];
+                $ph   = implode(',', array_fill(0, count($songIds), '?'));
+                $sql  = $select . " WHERE SongId IN ($ph)"
+                      . ' ORDER BY SongId, Kind ASC, SortOrder ASC, Id ASC';
+                $stmt = $this->db->prepare($sql);
+                $types = str_repeat('s', count($songIds));
+                $stmt->bind_param($types, ...$songIds);
+            }
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $out = [];
+            while ($row = $res->fetch_assoc()) {
+                $sid = (string)$row['SongId'];
+                if (!isset($out[$sid])) $out[$sid] = [];
+                $out[$sid][] = [
+                    'id'         => (int)$row['Id'],
+                    'kind'       => (string)$row['Kind'],
+                    'fileName'   => (string)$row['FileName'],
+                    'mimeType'   => (string)$row['MimeType'],
+                    'sizeBytes'  => (int)$row['SizeBytes'],
+                    'annotation' => (string)($row['Annotation'] ?? ''),
+                    'sortOrder'  => (int)$row['SortOrder'],
+                    'streamUrl'  => '/song-media/' . (int)$row['Id'],
+                ];
+            }
+            $stmt->close();
+            return $out;
+        } catch (\Throwable $e) {
+            error_log('[SongData::_songMediaMap] ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
      * Pull `[entityKey => [{slug, name, category, url, note, verified, iconClass}, ...]]`
      * from one of the three tblXxxExternalLinks join tables (#833).
      * Generic over the three entity types — `$entityType` selects the
@@ -2219,6 +2296,24 @@ class SongData
            pre-migration deployment via the schema probe. */
         $worksMap = $this->_worksMap([$songId]);
         $row['works'] = $worksMap[$songId] ?? [];
+
+        /* #853 — accompanying media (audio + sheet PDF + MIDI +
+           MusicXML). Empty array on pre-migration. The legacy
+           HasAudio / HasSheetMusic flags from MissionPraise scrape
+           data continue to populate the indicator badges, but if
+           tblSongMedia carries any rows of that kind for this song,
+           we override the flag to true so the public surface
+           reflects curator uploads — keeps the indicator badges
+           on the songbook list page in sync without a separate
+           denormalised counter. */
+        $mediaMap = $this->_songMediaMap([$songId]);
+        $row['media'] = $mediaMap[$songId] ?? [];
+        if (!empty($row['media'])) {
+            foreach ($row['media'] as $m) {
+                if (($m['kind'] ?? '') === 'audio')        $row['hasAudio']       = true;
+                if (($m['kind'] ?? '') === 'sheet-music')  $row['hasSheetMusic']  = true;
+            }
+        }
 
         return $row;
     }

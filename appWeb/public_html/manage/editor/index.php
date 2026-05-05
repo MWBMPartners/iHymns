@@ -483,6 +483,22 @@ $currentUser = getCurrentUser();
                         </button>
                     </li>
 
+                    <!-- Media tab trigger (#853) -->
+                    <li class="nav-item" role="presentation">
+                        <button
+                            class="nav-link"
+                            id="tab-media"
+                            data-bs-toggle="tab"
+                            data-bs-target="#panel-media"
+                            type="button"
+                            role="tab"
+                            aria-controls="panel-media"
+                            aria-selected="false"
+                        >
+                            <i class="bi bi-music-note-list me-1"></i>Media
+                        </button>
+                    </li>
+
                     <!-- Preview tab trigger -->
                     <li class="nav-item" role="presentation">
                         <button
@@ -1130,6 +1146,42 @@ $currentUser = getCurrentUser();
 
 
                     <!-- -------------------------------------------------
+                         MEDIA TAB PANEL (#853)
+
+                         Per-song accompanying-files manager. The contents
+                         are rendered by the song-media-editor.js ESM
+                         module which is booted at the bottom of this file
+                         (after editor.js so the song-loaded event is
+                         observable from boot onwards).
+                         ------------------------------------------------- -->
+                    <div
+                        class="tab-pane fade"
+                        id="panel-media"
+                        role="tabpanel"
+                        aria-labelledby="tab-media"
+                    >
+                        <div class="form-section">
+                            <h6 class="section-title">
+                                <i class="bi bi-music-note-list me-1"></i>Accompanying Media
+                            </h6>
+                            <div class="text-muted small mb-3">
+                                Upload audio recordings, sheet music, MIDI sequences and
+                                MusicXML notation alongside this song. Files inherit the
+                                song's content-access rules — gated songs gate their media
+                                automatically. Sheet music / MIDI / MusicXML are stored
+                                inside the database; audio is stored on disk under
+                                <code>appWeb/uploads/songs/</code> and served via the
+                                gated <code>/song-media/&lt;id&gt;</code> route.
+                            </div>
+                            <div id="song-media-editor-root">
+                                <!-- Populated by song-media-editor.js — see <script type="module"> at the bottom of this file. -->
+                            </div>
+                        </div>
+                    </div>
+                    <!-- END Media Tab Panel -->
+
+
+                    <!-- -------------------------------------------------
                          PREVIEW TAB PANEL
                          Read-only rendered preview of the song, styled
                          similarly to how it appears in the main iHymns app.
@@ -1405,6 +1457,23 @@ $currentUser = getCurrentUser();
         const root = document.querySelector('.ietf-picker[data-ietf-picker-id="edit-song"]');
         if (root) {
             window.editSongIetfPicker = bootIetfLanguagePicker(root);
+        }
+    </script>
+
+    <!-- Song Media editor boot (#853). Subscribes to the
+         iHymns:song-loaded CustomEvent dispatched by editor.js.
+         Cache-bust on filemtime() so a deploy invalidates the
+         browser cache without a manual version bump. -->
+    <?php
+        $_mediaModulePath    = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'song-media-editor.js';
+        $_mediaModuleVersion = is_file($_mediaModulePath) ? (string)filemtime($_mediaModulePath) : '1';
+    ?>
+    <script type="module">
+        import { bootSongMediaEditor }
+            from '/js/modules/song-media-editor.js?v=<?= htmlspecialchars($_mediaModuleVersion, ENT_QUOTES) ?>';
+        const mediaRoot = document.getElementById('song-media-editor-root');
+        if (mediaRoot) {
+            window.songMediaEditor = bootSongMediaEditor(mediaRoot);
         }
     </script>
 
