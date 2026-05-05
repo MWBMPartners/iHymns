@@ -663,6 +663,184 @@ body[data-page-transition="crossfade"] #page-content.page-visible {
     transform: none;
 }
 
+/* ------------------------------------------------------------------
+ * View Transitions API page transitions (#864 / #865)
+ *
+ * The browser handles snapshot + crossfade plumbing — these CSS
+ * rules just describe per-type keyframes. The DOM update happens
+ * synchronously inside transitions.runViewTransition(); the browser
+ * captures an "old" snapshot before the call and a "new" snapshot
+ * after, then animates BOTH at the same time using whichever rules
+ * match the active body[data-page-transition] selector.
+ *
+ * Because old + new are visible simultaneously during the
+ * transition, the animations all start at the same instant — no
+ * "blank gap" between the legacy pageOut and pageIn phases.
+ *
+ * Default browser cross-fade is overridden so "none" really means
+ * none (instant); per-type rules below restore animations.
+ * ------------------------------------------------------------------ */
+
+/* Disable the browser's default cross-fade so per-type rules can
+   take over without compounding two animations. */
+::view-transition-old(root),
+::view-transition-new(root) {
+    animation: none;
+    mix-blend-mode: normal;
+}
+
+/* Position the snapshots so they overlap during the animation
+   rather than stacking — the default `::view-transition-image-pair`
+   is set to overlap, this just makes our intent explicit. */
+::view-transition-image-pair(root) {
+    isolation: auto;
+}
+
+/* fade — opacity-only crossfade with the same gentle vertical
+   offset as the legacy default (matches user expectations on
+   upgrade). Both snapshots animate simultaneously. */
+body[data-page-transition="fade"] ::view-transition-old(root) {
+    animation: ihymns-vt-fade-out 250ms ease forwards;
+}
+body[data-page-transition="fade"] ::view-transition-new(root) {
+    animation: ihymns-vt-fade-in 250ms ease forwards;
+}
+
+/* slide — horizontal directional slide. Forward = old slides left,
+   new comes from right; back is mirrored. The browser snapshots
+   the old page-content as it was, so the translate looks like a
+   single piece of paper sliding past the viewport. */
+body[data-page-transition="slide"][data-nav-direction="forward"] ::view-transition-old(root) {
+    animation: ihymns-vt-slide-out-left 280ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+body[data-page-transition="slide"][data-nav-direction="forward"] ::view-transition-new(root) {
+    animation: ihymns-vt-slide-in-right 280ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+body[data-page-transition="slide"][data-nav-direction="back"] ::view-transition-old(root) {
+    animation: ihymns-vt-slide-out-right 280ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+body[data-page-transition="slide"][data-nav-direction="back"] ::view-transition-new(root) {
+    animation: ihymns-vt-slide-in-left 280ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+
+/* crossfade — pure opacity, no translate. Cleanest option for
+   information-dense pages. */
+body[data-page-transition="crossfade"] ::view-transition-old(root) {
+    animation: ihymns-vt-cross-out 250ms ease forwards;
+}
+body[data-page-transition="crossfade"] ::view-transition-new(root) {
+    animation: ihymns-vt-cross-in 250ms ease forwards;
+}
+
+/* scale (#865) — gentle zoom; old fades out at 0.96×, new fades
+   in from 1.04×. Subtle "depth" without being flashy. */
+body[data-page-transition="scale"] ::view-transition-old(root) {
+    animation: ihymns-vt-scale-out 280ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+body[data-page-transition="scale"] ::view-transition-new(root) {
+    animation: ihymns-vt-scale-in 280ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+
+/* lift (#865) — old slides DOWN + fades, new lifts up from below
+   + fades. Tactile, kinetic — like an Instagram story dismissal. */
+body[data-page-transition="lift"] ::view-transition-old(root) {
+    animation: ihymns-vt-lift-out 320ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+body[data-page-transition="lift"] ::view-transition-new(root) {
+    animation: ihymns-vt-lift-in 320ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+
+/* depth (#865) — cinematic. Old recedes (scales to 0.92, dims),
+   new emerges (scales 1.05 → 1.00, brightens). Like an iOS app
+   launch. */
+body[data-page-transition="depth"] ::view-transition-old(root) {
+    animation: ihymns-vt-depth-out 320ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+body[data-page-transition="depth"] ::view-transition-new(root) {
+    animation: ihymns-vt-depth-in 320ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+
+/* blur (#865) — cinematic dissolve. Old blurs to 8px while
+   fading; new starts blurred and sharpens in. Great for
+   slow-network cases where the user otherwise notices the swap. */
+body[data-page-transition="blur"] ::view-transition-old(root) {
+    animation: ihymns-vt-blur-out 320ms ease forwards;
+}
+body[data-page-transition="blur"] ::view-transition-new(root) {
+    animation: ihymns-vt-blur-in 320ms ease forwards;
+}
+
+@keyframes ihymns-vt-fade-out {
+    from { opacity: 1; transform: translateY(0); }
+    to   { opacity: 0; transform: translateY(-8px); }
+}
+@keyframes ihymns-vt-fade-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes ihymns-vt-slide-out-left {
+    from { opacity: 1; transform: translateX(0); }
+    to   { opacity: 0; transform: translateX(-32px); }
+}
+@keyframes ihymns-vt-slide-in-right {
+    from { opacity: 0; transform: translateX(32px); }
+    to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes ihymns-vt-slide-out-right {
+    from { opacity: 1; transform: translateX(0); }
+    to   { opacity: 0; transform: translateX(32px); }
+}
+@keyframes ihymns-vt-slide-in-left {
+    from { opacity: 0; transform: translateX(-32px); }
+    to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes ihymns-vt-cross-out {
+    from { opacity: 1; }
+    to   { opacity: 0; }
+}
+@keyframes ihymns-vt-cross-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+@keyframes ihymns-vt-scale-out {
+    from { opacity: 1; transform: scale(1.00); }
+    to   { opacity: 0; transform: scale(0.96); }
+}
+@keyframes ihymns-vt-scale-in {
+    from { opacity: 0; transform: scale(1.04); }
+    to   { opacity: 1; transform: scale(1.00); }
+}
+
+@keyframes ihymns-vt-lift-out {
+    from { opacity: 1; transform: translateY(0); }
+    to   { opacity: 0; transform: translateY(24px); }
+}
+@keyframes ihymns-vt-lift-in {
+    from { opacity: 0; transform: translateY(40px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes ihymns-vt-depth-out {
+    from { opacity: 1; transform: scale(1.00); filter: brightness(1.00); }
+    to   { opacity: 0; transform: scale(0.92); filter: brightness(0.85); }
+}
+@keyframes ihymns-vt-depth-in {
+    from { opacity: 0; transform: scale(1.05); filter: brightness(1.10); }
+    to   { opacity: 1; transform: scale(1.00); filter: brightness(1.00); }
+}
+
+@keyframes ihymns-vt-blur-out {
+    from { opacity: 1; filter: blur(0); }
+    to   { opacity: 0; filter: blur(8px); }
+}
+@keyframes ihymns-vt-blur-in {
+    from { opacity: 0; filter: blur(8px); }
+    to   { opacity: 1; filter: blur(0); }
+}
+
 /* Staggered list items (#149) */
 .page-song .song-list-item,
 .page-songbook .song-list-item,
@@ -1632,6 +1810,24 @@ body.reduce-motion .song-list-item {
     animation: none !important;
     opacity: 1 !important;
     transform: none !important;
+}
+
+/* #864 / #865 — collapse all View Transitions API animations to a
+   1ms cross-fade when reduce-motion is in effect. The browser still
+   runs a transition (so the DOM swap is atomic) but it's
+   imperceptible. Same treatment under the @media query above and
+   under the manual `body.reduce-motion` toggle. */
+@media (prefers-reduced-motion: reduce) {
+    ::view-transition-old(root),
+    ::view-transition-new(root) {
+        animation-duration: 1ms !important;
+        animation-timing-function: linear !important;
+    }
+}
+body.reduce-motion ::view-transition-old(root),
+body.reduce-motion ::view-transition-new(root) {
+    animation-duration: 1ms !important;
+    animation-timing-function: linear !important;
 }
 
 /* ==========================================================================
