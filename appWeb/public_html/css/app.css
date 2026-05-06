@@ -3216,24 +3216,32 @@ body.reduce-motion .related-songs-chevron {
     color: var(--text-secondary);
     border: 1px solid var(--card-border);
 }
-/* On the /songbooks full-cards surface there's no download button,
-   so the badge can hug the top-right corner. The card has
-   `position: relative` set inline; this rule just nudges the
-   badge into the corner there. */
-.page-songbooks .songbook-tile-language-badge {
-    right: 0.45rem;
-}
-/* #878 — Reserve a right-side gutter on /songbooks tiles so the inline
-   chevron arrow (last flex child inside .card-body) can't sit under
-   the absolute language-tag badge in the top-right corner. The badge
-   anchors at right:0.45rem with min-width:2rem and grows to ~3rem
-   for 3-letter ISO codes (GUZ / LUO / NSO / TUM / TOI), so 3.5rem of
-   right padding pushes the chevron clear with a small breathing gap.
-   Scoped via :has() — tiles without a language badge keep the
-   existing tighter gutter so book / songCount text isn't artificially
-   short-cropped. :has() is supported by every evergreen browser. */
-.page-songbooks .card-songbook:has(.songbook-tile-language-badge) .card-body {
-    padding-right: 3.5rem;
+/* /songbooks tiles now carry the same offline-download button as the
+   home-grid tiles (#878 follow-up), so the badge no longer hugs the
+   corner — it falls back to the shared `right: 2.5rem` and packs to
+   the LEFT of the download button, exactly like home. The previous
+   override pinning it to right: 0.45rem was for the chevron-only
+   tile layout that pre-dated the download button on this surface. */
+
+/* #878 follow-up — Reserve a right-side gutter on /songbooks tiles so
+   the title text never wraps under the absolute [badge + download-
+   button] cluster in the top-right.
+     - Download button: right:0.35rem, ~1.6rem wide
+       ⇒ button range  0.35rem → 1.95rem from card right
+     - Language badge: right:2.5rem, up to ~3rem wide
+       (3-letter ISO codes — GUZ / LUO / NSO / TOI / TUM)
+       ⇒ badge range   2.5rem  → 5.5rem from card right
+     - Cluster's leftmost extent therefore ~5.5rem; bumping the
+       card-body right padding to 5.75rem keeps the chevron — the
+       last flex child on sm+ — sitting just left of the cluster
+       with a small breathing gap, AND keeps title text clear of
+       the cluster at every breakpoint.
+   Applied unconditionally because the download button is always
+   rendered; on browsers without offline support it's display:none
+   via body.offline-unsupported, which is rare enough that the
+   slightly-overpadded gutter doesn't matter. */
+.page-songbooks .card-songbook .card-body {
+    padding-right: 5.75rem;
 }
 
 /* Feature-detect class driven by js/modules/offline-ui.js. When
