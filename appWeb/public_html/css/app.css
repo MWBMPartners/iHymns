@@ -3223,6 +3223,18 @@ body.reduce-motion .related-songs-chevron {
 .page-songbooks .songbook-tile-language-badge {
     right: 0.45rem;
 }
+/* #878 — Reserve a right-side gutter on /songbooks tiles so the inline
+   chevron arrow (last flex child inside .card-body) can't sit under
+   the absolute language-tag badge in the top-right corner. The badge
+   anchors at right:0.45rem with min-width:2rem and grows to ~3rem
+   for 3-letter ISO codes (GUZ / LUO / NSO / TUM / TOI), so 3.5rem of
+   right padding pushes the chevron clear with a small breathing gap.
+   Scoped via :has() — tiles without a language badge keep the
+   existing tighter gutter so book / songCount text isn't artificially
+   short-cropped. :has() is supported by every evergreen browser. */
+.page-songbooks .card-songbook:has(.songbook-tile-language-badge) .card-body {
+    padding-right: 3.5rem;
+}
 
 /* Feature-detect class driven by js/modules/offline-ui.js. When
    .offline-unsupported is on the body, every download control hides
