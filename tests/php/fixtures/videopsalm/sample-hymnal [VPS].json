@@ -1,0 +1,79 @@
+{
+  "Text": "Sample VideoPsalm Hymnal",
+  "Description": "A small fixture covering normal hymns plus the edge cases the importer must handle gracefully.",
+  "Songs": [
+    {
+      "Number": 1,
+      "Text": "Be Thou My Vision",
+      "Author": "Mary E. Byrne / Eleanor H. Hull",
+      "Copyright": "Public Domain",
+      "CCLI": "30639",
+      "Key": "D",
+      "Verses": [
+        {
+          "ID": 1,
+          "Tag": "V1",
+          "Text": "Be Thou my vision, O Lord of my heart\nNaught be all else to me, save that Thou art"
+        },
+        {
+          "ID": 2,
+          "Tag": "C",
+          "Text": "Heart of my own heart, whatever befall\nStill be my vision, O Ruler of all"
+        },
+        {
+          "ID": 3,
+          "Tag": "V2",
+          "Text": "Be Thou my wisdom, and Thou my true word\nI ever with Thee and Thou with me, Lord"
+        }
+      ]
+    },
+    {
+      "Number": 2,
+      "Text": "Anonymous Hymn",
+      "Copyright": "Public Domain",
+      "CCLI": "",
+      "Verses": [
+        {
+          "ID": 1,
+          "Tag": "V1",
+          "Text": "A simple verse with one line"
+        }
+      ]
+    },
+    {
+      "Number": 3,
+      "Text": "Untitled No-Copyright Hymn",
+      "Author": "John Doe & Jane Roe, Sam Smith",
+      "Verses": [
+        {
+          "ID": 1,
+          "Tag": "V1",
+          "Text": "First line of the verse\nSecond line of the verse"
+        },
+        {
+          "ID": 2,
+          "Tag": "B",
+          "Text": "Bridge content here"
+        }
+      ]
+    },
+    {
+      "Number": 4,
+      "Text": "Empty Verses Hymn",
+      "Author": "Test Author",
+      "Verses": []
+    },
+    {
+      "Number": 5,
+      "Text": "",
+      "Author": "Anon",
+      "Verses": [
+        {
+          "ID": 1,
+          "Tag": "V1",
+          "Text": "This song has no title and should be skipped"
+        }
+      ]
+    }
+  ]
+}

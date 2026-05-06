@@ -3014,14 +3014,34 @@ function importJSON() {
 /**
  * importJsonCorpus(file)
  * ----------------------
- * In-memory merge of a JSON corpus into the loaded catalogue. The
- * curator must hit Save afterwards to persist the change.
+ * Routes a picked .json file to the right handler based on its shape:
+ *
+ *   - iHymns full-corpus (lowercase `songs[]`): in-memory merge into
+ *     the loaded catalogue. The curator must hit Save afterwards to
+ *     persist.
+ *
+ *   - VideoPsalm songbook (top-level `Songs[]` with capital S, #883):
+ *     uploaded straight to the bulk-import endpoint, which writes
+ *     directly to MySQL. No in-memory merge step — VideoPsalm files
+ *     are whole-hymnal payloads, not corpus diffs.
  */
 function importJsonCorpus(file) {
     var reader = new FileReader();
     reader.onload = function (event) {
         try {
             var imported = JSON.parse(event.target.result);
+
+            /* VideoPsalm detection: top-level Songs[] (capital S),
+               which the iHymns corpus shape never carries (it uses
+               lowercase songs[] alongside songbooks[] / meta).
+               Hand off to the bulk-import endpoint and bail out of
+               the in-memory merge path. */
+            if (imported && Array.isArray(imported.Songs) && !Array.isArray(imported.songs)) {
+                showToast('VideoPsalm songbook detected — uploading for bulk import.', 'info');
+                importVideoPsalmSongbook(file);
+                return;
+            }
+
             var importedSongs = imported.songs || [];
 
             var added = 0;
@@ -3064,6 +3084,66 @@ function importJsonCorpus(file) {
         }
     };
     reader.readAsText(file);
+}
+
+/**
+ * importVideoPsalmSongbook(file)
+ * ------------------------------
+ * Server-side single-file VideoPsalm import (#883). Streams the
+ * picked .json document straight to the bulk_import_videopsalm
+ * endpoint, which parses the whole-hymnal payload and inserts each
+ * song under a (possibly new) songbook in one round-trip. Insert-
+ * only — existing rows are reported as "skipped (existing)" and the
+ * database is never overwritten.
+ *
+ * VideoPsalm files are tiny (a whole hymnal is well under a MiB), so
+ * the endpoint runs synchronously and returns the summary in one go;
+ * no async / progress-widget machinery needed.
+ */
+function importVideoPsalmSongbook(file) {
+    var fd = new FormData();
+    fd.append('videopsalm', file, file.name);
+
+    fetch(EDITOR_API_URL + '?action=bulk_import_videopsalm', {
+        method:      'POST',
+        body:        fd,
+        credentials: 'same-origin',
+    }).then(function (res) {
+        return res.json().catch(function () {
+            return { error: 'Server returned an unparseable response (status ' + res.status + ').' };
+        }).then(function (data) {
+            return { ok: res.ok, data: data };
+        });
+    }).then(function (out) {
+        if (!out.ok || !out.data || out.data.ok !== true) {
+            var msg = (out.data && out.data.error) || 'Import failed.';
+            showToast('Import failed: ' + msg, 'danger');
+            return;
+        }
+        var d  = out.data;
+        var sb = (d.songbooks_created  || []).length;
+        var sx = (d.songbooks_existing || []).length;
+        showToast(
+            'Imported ' + d.songs_created + ' new song' + (d.songs_created === 1 ? '' : 's') +
+            ' (' + d.songs_skipped_existing + ' already in DB, skipped). ' +
+            sb + ' new songbook' + (sb === 1 ? '' : 's') + ', ' +
+            sx + ' existing.',
+            'success'
+        );
+        if (d.songs_failed > 0 || (d.errors && d.errors.length > 0)) {
+            showToast(
+                'Note: ' + d.songs_failed + ' song' + (d.songs_failed === 1 ? '' : 's') +
+                ' failed during import — see browser console for details.',
+                'warning'
+            );
+            try { console.warn('[bulk_import_videopsalm] errors:', d.errors); } catch (_e) {}
+        }
+        if (typeof loadSongsFromURL === 'function' && typeof SONGS_URL_CANDIDATES !== 'undefined') {
+            loadSongsFromURL(SONGS_URL_CANDIDATES[0]);
+        }
+    }).catch(function (err) {
+        showToast('Import failed: ' + (err && err.message ? err.message : err), 'danger');
+    });
 }
 
 /**

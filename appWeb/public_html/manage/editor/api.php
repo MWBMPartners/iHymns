@@ -2331,6 +2331,73 @@ switch ($action) {
         return; /* worker is done; no further switch processing needed */
 
     /* -----------------------------------------------------------------
+     * BULK_IMPORT_VIDEOPSALM — single-file VideoPsalm songbook import
+     * (#883).
+     *
+     * VideoPsalm distributes whole hymnals as one .json document with
+     * a top-level `Songs[]` array. The editor frontend detects that
+     * shape on file pick (importJsonCorpus → VideoPsalm branch) and
+     * posts the file as multipart/form-data with the `videopsalm`
+     * field name. Synchronous: a whole hymnal parses in well under
+     * a second, no need for the async / progress-widget machinery
+     * that bulk_import_zip uses for multi-MB archives.
+     *
+     * Returns the same summary shape as bulk_import_zip's sync
+     * fallback so the frontend's success / error handlers stay
+     * format-agnostic.
+     * ----------------------------------------------------------------- */
+    case 'bulk_import_videopsalm':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        if (!isset($_FILES['videopsalm']) || ($_FILES['videopsalm']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $err = $_FILES['videopsalm']['error'] ?? UPLOAD_ERR_NO_FILE;
+            $msg = 'Upload failed.';
+            if ($err === UPLOAD_ERR_INI_SIZE || $err === UPLOAD_ERR_FORM_SIZE) {
+                $msg = 'Uploaded file is larger than the server limit.';
+            } elseif ($err === UPLOAD_ERR_NO_FILE) {
+                $msg = 'No file received — expected a multipart upload with a "videopsalm" field.';
+            }
+            http_response_code(400);
+            echo json_encode(['error' => $msg, 'phpError' => $err]);
+            break;
+        }
+
+        /* Hard size cap mirrors the ZIP path's per-entry limit (5 MiB)
+           — no real VideoPsalm songbook approaches this. The full
+           bundle of free songbooks on the publisher's site is well
+           under this size in total. */
+        $sizeBytes = (int)($_FILES['videopsalm']['size'] ?? 0);
+        if ($sizeBytes > 5 * 1024 * 1024) {
+            http_response_code(413);
+            echo json_encode(['error' => 'Uploaded VideoPsalm file exceeds the 5 MiB import limit.']);
+            break;
+        }
+
+        try {
+            $tmpPath  = (string)$_FILES['videopsalm']['tmp_name'];
+            $origName = (string)($_FILES['videopsalm']['name'] ?? 'songbook.json');
+            $body     = (string)file_get_contents($tmpPath);
+            if ($body === '') {
+                http_response_code(400);
+                echo json_encode(['error' => 'Uploaded file is empty.']);
+                break;
+            }
+            $summary = _bulkImport_processVideoPsalm($body, $origName);
+            if (!($summary['ok'] ?? false)) {
+                http_response_code(400);
+            }
+            echo json_encode($summary, JSON_UNESCAPED_UNICODE);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[bulk_import_videopsalm] ' . $e->getMessage());
+            echo json_encode(['error' => 'Import failed: ' . $e->getMessage()]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
      * BULK_IMPORT_STATUS — poll one async-import job (#676).
      *
      * GET /manage/editor/api?action=bulk_import_status&job_id=N
@@ -3466,7 +3533,7 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
        the songbook on first encounter, then parse + save the song. */
     $songbookSeen      = [];   // abbrev → (created|existing) — caches the songbook upsert per archive
     $songbookCounters  = [];   // abbrev → next auto-assigned number (OpenSong fallback, #882)
-    $songsParsedByKind = ['txt' => 0, 'opensong' => 0];
+    $songsParsedByKind = ['txt' => 0, 'opensong' => 0, 'videopsalm' => 0];
 
     for ($i = 0; $i < $entryCount; $i++) {
         /* Periodic progress flush every $PROGRESS_BATCH iterations so
@@ -3501,17 +3568,79 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
 
         /* Detect file format by extension. .txt → existing plain-text
            per-song parser; .xml / .opensong → OpenSong XML parser
-           (#882). Anything else is silently skipped so a curator can
-           drop a hymnal folder containing mixed assets (PDFs, cover
-           art) without each non-song entry surfacing as a parse
-           error. */
+           (#882); .json with a top-level "Songs" array → VideoPsalm
+           songbook parser (#883). Anything else is silently skipped
+           so a curator can drop a hymnal folder containing mixed
+           assets (PDFs, cover art) without each non-song entry
+           surfacing as a parse error. */
         $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
         $kind = null;
         if ($ext === 'txt') {
             $kind = 'txt';
         } elseif ($ext === 'xml' || $ext === 'opensong') {
             $kind = 'opensong';
+        } elseif ($ext === 'json') {
+            $kind = 'videopsalm';
         } else {
+            continue;
+        }
+
+        /* VideoPsalm files (#883) carry their own songbook metadata
+           inside the JSON payload — songbook display name from the
+           top-level "Text", abbreviation derived from the filename or
+           from the title — so they don't need (and don't follow) the
+           "<Title> [<ABBR>]/" folder convention the .txt / OpenSong
+           paths require. Handle them inline and continue. */
+        if ($kind === 'videopsalm') {
+            $body = $zip->getFromIndex($i);
+            if ($body === false) {
+                $errors[] = ['entry' => $name, 'error' => 'could not read entry'];
+                $songsFailed++;
+                continue;
+            }
+            [$vpBook, $vpSongs, $vpErr] = _bulkImport_parseVideoPsalmSongbook($body, $name);
+            if ($vpBook === null) {
+                /* Not a VideoPsalm document (or malformed JSON) — fall
+                   through to the per-entry error log. The iHymns full-
+                   corpus shape (lowercase songs[]) is intentionally not
+                   accepted here; that path runs in-memory in the editor
+                   client. */
+                $errors[] = ['entry' => $name, 'error' => 'VideoPsalm parse failed: ' . ($vpErr ?? 'unknown')];
+                $songsFailed++;
+                continue;
+            }
+            $vpAbbr = (string)$vpBook['abbrev'];
+            $vpName = (string)$vpBook['name'];
+            if (!isset($songbookSeen[$vpAbbr])) {
+                $state = _bulkImport_upsertSongbook($db, $vpAbbr, $vpName, $vpBook['language'] ?? null);
+                $songbookSeen[$vpAbbr] = $state;
+                if ($state === 'created') {
+                    $songbooksCreated[] = $vpAbbr;
+                } else {
+                    $songbooksExisting[] = $vpAbbr;
+                }
+            }
+            foreach ((array)($vpBook['parseErrors'] ?? []) as $pe) {
+                $errors[] = [
+                    'entry' => $name . ': ' . ($pe['entry'] ?? '?'),
+                    'error' => (string)($pe['error'] ?? ''),
+                ];
+            }
+            foreach ((array)$vpSongs as $song) {
+                [$action, $saveErr] = _bulkImport_saveSong($db, $song);
+                if ($action === 'create') {
+                    $songsCreated++;
+                    $songsParsedByKind['videopsalm']++;
+                } elseif ($action === 'skipped') {
+                    $songsSkippedExisting++;
+                } else {
+                    $errors[] = [
+                        'entry' => $name . ': ' . ($song['id'] ?? '?'),
+                        'error' => 'save failed: ' . $saveErr,
+                    ];
+                    $songsFailed++;
+                }
+            }
             continue;
         }
 
@@ -3892,4 +4021,315 @@ function _bulkImport_nextSongNumberFor(\mysqli $db, string $abbr): int
         error_log('[_bulkImport_nextSongNumberFor] ' . $e->getMessage());
         return 1;
     }
+}
+
+/* ===========================================================================
+ * VIDEOPSALM PARSER (#883)
+ *
+ * VideoPsalm distributes whole songbooks as a single .json document with
+ * top-level metadata and a `Songs[]` array — one drop = one whole hymnal.
+ *
+ *   https://myvideopsalm.weebly.com/songbooks-and-bibles.html
+ *   https://myvideopsalm.weebly.com/free-songbook-collection.html
+ *
+ * Section tags inside `Verses[].Tag` use the same letter convention as
+ * OpenSong (V1, V2, C, B, P, T, E, I) so the type map is shared in
+ * spirit with the OpenSong parser.
+ *
+ * The parser is deliberately decoupled from the database — it returns a
+ * songbook descriptor + parsed song-objects in the same shape that
+ * _bulkImport_saveSong() consumes. The dispatcher (single-file handler
+ * and the .json branch inside _bulkImport_processZip) is what actually
+ * upserts rows.
+ * =========================================================================== */
+
+/**
+ * Map a VideoPsalm verse Tag (e.g. "V1", "C", "B2") to an iHymns
+ * component type. Trailing digits are stripped before the lookup; an
+ * unknown letter falls through to 'refrain' to mirror the OpenSong
+ * fallback behaviour.
+ */
+function _bulkImport_videopsalmComponentTypeFor(string $tag): string
+{
+    $letter = strtoupper((string)preg_replace('/\d+$/', '', trim($tag)));
+    return [
+        'V' => 'verse',
+        'C' => 'chorus',
+        'B' => 'bridge',
+        'P' => 'pre-chorus',
+        'T' => 'outro',
+        'E' => 'outro',
+        'I' => 'intro',
+    ][$letter] ?? 'refrain';
+}
+
+/**
+ * Derive a songbook abbreviation given a (possibly null) hint and the
+ * resolved songbook display name.
+ *
+ * Hint precedence:
+ *   1. "<Title> [<ABBR>].json" — the bracketed token wins.
+ *   2. A bare alphanum filename (without extension) is taken verbatim.
+ *   3. Otherwise: initials of the songbook name, uppercased; falls back
+ *      to "VP" if the name yields no usable initials.
+ */
+function _bulkImport_videopsalmAbbrevFromHint(?string $abbrevHint, string $songbookName): string
+{
+    if ($abbrevHint !== null) {
+        $hint = trim($abbrevHint);
+        /* Strip any leading folder segments — we only care about the
+           leaf filename when looking for the bracket pattern. */
+        $hint = (string)preg_replace('#^.*/#', '', $hint);
+        if (preg_match('/\[([A-Za-z0-9_\-]+)\]/', $hint, $m)) {
+            return strtoupper($m[1]);
+        }
+        $hint = (string)preg_replace('/\.json$/i', '', $hint);
+        $hint = trim($hint);
+        if ($hint !== '' && preg_match('/^[A-Za-z0-9_\-]+$/', $hint)) {
+            return strtoupper($hint);
+        }
+    }
+    $words = preg_split('/\s+/u', trim($songbookName)) ?: [];
+    $initials = '';
+    foreach ($words as $w) {
+        if ($w === '') continue;
+        $initials .= mb_substr($w, 0, 1, 'UTF-8');
+    }
+    $initials = strtoupper((string)preg_replace('/[^A-Za-z0-9]/', '', $initials));
+    return $initials !== '' ? $initials : 'VP';
+}
+
+/**
+ * Parse a VideoPsalm songbook JSON document into:
+ *   [songbookMeta, songs[], errReason]
+ *
+ * - songbookMeta is null only on a fatal parse error (invalid JSON or
+ *   missing top-level Songs[]). On success it carries:
+ *     - 'abbrev'      : derived from the filename hint or the title.
+ *     - 'name'        : top-level "Text" field, or a generic fallback.
+ *     - 'language'    : null (VideoPsalm does not encode IETF tags).
+ *     - 'parseErrors' : per-song reasons for any songs that were
+ *                       skipped (no title / no usable Verses / etc.) —
+ *                       caller surfaces these via the import summary's
+ *                       errors[] list.
+ * - songs[] uses the exact shape that _bulkImport_saveSong() consumes,
+ *   matching _bulkImport_parseTxt() / _bulkImport_parseOpenSong().
+ *
+ * @param string      $body         Raw JSON (UTF-8; BOM tolerated).
+ * @param string|null $abbrevHint   Filename or "<Title> [<ABBR>]" hint.
+ * @return array{0: ?array, 1: ?array, 2: ?string}
+ */
+function _bulkImport_parseVideoPsalmSongbook(string $body, ?string $abbrevHint = null): array
+{
+    /* Strip a UTF-8 BOM so json_decode doesn't trip. */
+    $body = (string)preg_replace('/^\xEF\xBB\xBF/', '', $body);
+    $data = json_decode($body, true);
+    if ($data === null) {
+        return [null, null, 'invalid JSON: ' . json_last_error_msg()];
+    }
+    if (!is_array($data) || !isset($data['Songs']) || !is_array($data['Songs'])) {
+        return [null, null, 'JSON has no top-level "Songs" array'];
+    }
+
+    $bookName = trim((string)($data['Text'] ?? ''));
+    if ($bookName === '') {
+        $bookName = 'VideoPsalm Songbook';
+    }
+    $abbr = _bulkImport_videopsalmAbbrevFromHint($abbrevHint, $bookName);
+
+    $songs         = [];
+    $perSongErrors = [];
+
+    foreach ($data['Songs'] as $idx => $sRaw) {
+        $entryTag = 'song #' . ((int)$idx + 1);
+        if (!is_array($sRaw)) {
+            $perSongErrors[] = ['entry' => $entryTag, 'error' => 'song entry is not an object'];
+            continue;
+        }
+
+        $title = trim((string)($sRaw['Text'] ?? ''));
+        if ($title === '') {
+            $perSongErrors[] = ['entry' => $entryTag, 'error' => 'song has no Text/title'];
+            continue;
+        }
+        $entryTag = 'song #' . ((int)$idx + 1) . ' "' . $title . '"';
+
+        /* Number resolution: VideoPsalm "Number" is authoritative when
+           present and positive; otherwise fall back to the array index
+           (1-based) so each song still gets a unique SongId. */
+        $rawNumber = $sRaw['Number'] ?? null;
+        if (is_int($rawNumber) || (is_string($rawNumber) && ctype_digit(trim($rawNumber)))) {
+            $number = (int)$rawNumber;
+        } else {
+            $number = 0;
+        }
+        if ($number <= 0) {
+            $number = (int)$idx + 1;
+        }
+
+        /* Verses → components. Empty Verses arrays / verses with empty
+           Text are skipped silently; if no usable verses survive, the
+           whole song is dropped with a perSongErrors note. */
+        $components = [];
+        $verses     = is_array($sRaw['Verses'] ?? null) ? $sRaw['Verses'] : [];
+        foreach ($verses as $v) {
+            if (!is_array($v)) continue;
+            $tag     = (string)($v['Tag'] ?? '');
+            $vNum    = 0;
+            if (preg_match('/(\d+)$/', $tag, $vm)) {
+                $vNum = (int)$vm[1];
+            }
+            $type    = $tag !== '' ? _bulkImport_videopsalmComponentTypeFor($tag) : 'verse';
+            $rawText = (string)($v['Text'] ?? '');
+            if (trim($rawText) === '') continue;
+            $rawText = str_replace(["\r\n", "\r"], "\n", $rawText);
+            $lines   = array_map('rtrim', explode("\n", $rawText));
+            /* Trim trailing empties so a verse that ends with a stray
+               newline doesn't render as a blank-line tail in the editor. */
+            while (!empty($lines) && end($lines) === '') {
+                array_pop($lines);
+            }
+            if (empty($lines)) continue;
+            $components[] = [
+                'type'   => $type,
+                'number' => $vNum,
+                'lines'  => $lines,
+            ];
+        }
+        if (empty($components)) {
+            $perSongErrors[] = ['entry' => $entryTag, 'error' => 'no usable Verses[] entries'];
+            continue;
+        }
+
+        /* Author splits: same delimiter set as the OpenSong parser
+           (slash, ampersand, comma, semicolon) so a credit string like
+           "Mary E. Byrne / Eleanor H. Hull" yields two writers. */
+        $authorRaw = trim((string)($sRaw['Author'] ?? ''));
+        $writers   = [];
+        if ($authorRaw !== '') {
+            foreach ((array)preg_split('/\s*[\/&,;]\s*/u', $authorRaw) as $w) {
+                $w = trim((string)$w);
+                if ($w !== '') $writers[] = $w;
+            }
+        }
+
+        $songs[] = [
+            'id'                 => sprintf('%s-%04d', $abbr, $number),
+            'title'              => $title,
+            'number'             => $number,
+            'songbook'           => $abbr,
+            'songbookName'       => $bookName,
+            'language'           => 'en',
+            'ccli'               => trim((string)($sRaw['CCLI'] ?? '')),
+            'iswc'               => '',
+            'tuneName'           => '',
+            'copyright'          => trim((string)($sRaw['Copyright'] ?? '')),
+            'verified'           => 0,
+            'lyricsPublicDomain' => 0,
+            'musicPublicDomain'  => 0,
+            'hasAudio'           => 0,
+            'hasSheetMusic'      => 0,
+            'writers'            => $writers,
+            'composers'          => [],
+            'arrangers'          => [],
+            'adaptors'           => [],
+            'translators'        => [],
+            'components'         => $components,
+        ];
+    }
+
+    $songbook = [
+        'abbrev'      => $abbr,
+        'name'        => $bookName,
+        'language'    => null,
+        'parseErrors' => $perSongErrors,
+    ];
+    return [$songbook, $songs, null];
+}
+
+/**
+ * Synchronous single-file VideoPsalm import — invoked from the
+ * bulk_import_videopsalm dispatcher case. Returns a summary in the
+ * same shape that _bulkImport_processZip() emits so the editor's
+ * progress / toast handlers can stay format-agnostic.
+ *
+ * @param string      $body          Raw JSON document.
+ * @param string|null $filenameHint  Original upload filename (used to
+ *                                   derive the songbook abbreviation).
+ * @return array
+ */
+function _bulkImport_processVideoPsalm(string $body, ?string $filenameHint = null): array
+{
+    [$songbook, $parsedSongs, $err] = _bulkImport_parseVideoPsalmSongbook($body, $filenameHint);
+    if ($songbook === null) {
+        return [
+            'ok'                     => false,
+            'error'                  => $err ?: 'VideoPsalm parse failed',
+            'songbooks_created'      => [],
+            'songbooks_existing'     => [],
+            'songs_created'          => 0,
+            'songs_skipped_existing' => 0,
+            'songs_failed'           => 0,
+            'parsed_by_format'       => ['videopsalm' => 0],
+            'errors'                 => [],
+        ];
+    }
+
+    $db = getDbMysqli();
+    $abbr     = (string)$songbook['abbrev'];
+    $bookName = (string)$songbook['name'];
+
+    $errors = [];
+    foreach ((array)($songbook['parseErrors'] ?? []) as $pe) {
+        $errors[] = [
+            'entry' => ($filenameHint ?? 'videopsalm') . ': ' . ($pe['entry'] ?? '?'),
+            'error' => (string)($pe['error'] ?? ''),
+        ];
+    }
+
+    $state = _bulkImport_upsertSongbook($db, $abbr, $bookName, $songbook['language'] ?? null);
+    $songbooksCreated  = ($state === 'created')  ? [$abbr] : [];
+    $songbooksExisting = ($state === 'existing') ? [$abbr] : [];
+
+    $songsCreated         = 0;
+    $songsSkippedExisting = 0;
+    $songsFailed          = 0;
+    foreach ((array)$parsedSongs as $song) {
+        [$action, $saveErr] = _bulkImport_saveSong($db, $song);
+        if ($action === 'create') {
+            $songsCreated++;
+        } elseif ($action === 'skipped') {
+            $songsSkippedExisting++;
+        } else {
+            $errors[] = [
+                'entry' => ($filenameHint ?? 'videopsalm') . ': ' . ($song['id'] ?? '?'),
+                'error' => 'save failed: ' . $saveErr,
+            ];
+            $songsFailed++;
+        }
+    }
+
+    /* Refresh SongCount only if we created the songbook in this run —
+       same no-overwrite contract as the ZIP path (#664). */
+    if (!empty($songbooksCreated)) {
+        $cnt = $db->prepare(
+            'UPDATE tblSongbooks
+                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?)
+              WHERE Abbreviation = ?'
+        );
+        $cnt->bind_param('ss', $abbr, $abbr);
+        $cnt->execute();
+        $cnt->close();
+    }
+
+    return [
+        'ok'                     => true,
+        'songbooks_created'      => $songbooksCreated,
+        'songbooks_existing'     => $songbooksExisting,
+        'songs_created'          => $songsCreated,
+        'songs_skipped_existing' => $songsSkippedExisting,
+        'songs_failed'           => $songsFailed,
+        'parsed_by_format'       => ['videopsalm' => $songsCreated + $songsSkippedExisting],
+        'errors'                 => $errors,
+    ];
 }
