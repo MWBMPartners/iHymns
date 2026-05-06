@@ -364,6 +364,11 @@ $currentUser = getCurrentUser();
                     <button type="button" class="btn btn-sm btn-amber" id="btn-add-song" title="Add new song">
                         <i class="bi bi-plus-lg me-1"></i>Add
                     </button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-export-song"
+                            title="Export the currently-open song as JSON. Filename follows the &lt;#&gt; (&lt;ABBR&gt;) - &lt;Title&gt;[ (&lt;Tune&gt;)] convention so files sort numerically in Finder / Explorer."
+                            disabled>
+                        <i class="bi bi-box-arrow-down me-1"></i>Export
+                    </button>
                     <button type="button" class="btn btn-sm btn-outline-danger" id="btn-delete-song" title="Delete selected song">
                         <i class="bi bi-trash me-1"></i>Delete
                     </button>

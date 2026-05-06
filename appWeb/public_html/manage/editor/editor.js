@@ -544,6 +544,12 @@ function selectSong(songId) {
     currentSongId = songId;
     updateHistoryButtonState();
 
+    /* Enable the toolbar's Export-current-song button (#883 follow-up).
+       Stays disabled while no song is open so the user can't trigger
+       an empty-payload download. */
+    var exportSongBtn = document.getElementById('btn-export-song');
+    if (exportSongBtn) exportSongBtn.disabled = false;
+
     /* #853 — broadcast a song-loaded event so independent modules
        (e.g. the Media tab editor) can refresh their state without
        having to monkey-patch this function. The detail.songId is
@@ -2905,6 +2911,61 @@ function validateSongsByIds(ids) {
  * ======================================================================== */
 
 /**
+ * exportCurrentSong()
+ * -------------------
+ * Downloads the currently-open song as a single-song JSON document
+ * using the shared filename convention (#883 follow-up):
+ *   "<padded#> (<ABBR>) - <Title>[ (<Tune>)].json"
+ *
+ * Padding width is derived from the maximum song number in the
+ * song's own songbook (floor 3) so files sort numerically when the
+ * curator drops a directory of exports into Finder / Explorer /
+ * iTunes / etc.
+ *
+ * Payload shape mirrors Bulk Export — `{ songs: [<song>] }` — so
+ * the same Import flow ingests an individual-song file without a
+ * special case.
+ */
+function exportCurrentSong() {
+    if (!currentSongId) {
+        showToast('No song is open to export.', 'warning');
+        return;
+    }
+    var song = findSongById(currentSongId);
+    if (!song) {
+        showToast('Could not find the open song to export.', 'danger');
+        return;
+    }
+
+    var bookSongs = (songData.songs || []).filter(function (s) {
+        return s.songbook === song.songbook;
+    });
+
+    import('/js/modules/export-filename.js?v=' + Date.now())
+        .then(function (m) {
+            var name = m.songExportFilename(song, bookSongs);
+            downloadBlob(
+                JSON.stringify({ songs: [song] }, null, 2),
+                name + '.json',
+                'application/json'
+            );
+            showToast('Exported "' + (song.title || song.id) + '".', 'success');
+        })
+        .catch(function (err) {
+            try { console.warn('[export_song] filename helper load failed:', err); } catch (_e) {}
+            /* Last-resort fallback so the export still works if the
+               helper module is unavailable. Uses a safe-but-ugly
+               filename rather than throwing. */
+            downloadBlob(
+                JSON.stringify({ songs: [song] }, null, 2),
+                (song.id || 'song') + '.json',
+                'application/json'
+            );
+            showToast('Exported (fallback filename — see console).', 'warning');
+        });
+}
+
+/**
  * exportJSON()
  * ------------
  * Downloads the full songs.json file. This is essentially the same as
@@ -4049,6 +4110,17 @@ function bindGlobalEventListeners() {
         });
     }
 
+    /* ---- Export Song button — exports the currently-open song using the
+       shared filename convention (#883 / export-filename.js). Stays
+       disabled until a song is actually loaded; loadSongIntoEditor() flips
+       its disabled state as part of the existing select-song flow. */
+    var exportSongBtn = document.getElementById('btn-export-song');
+    if (exportSongBtn) {
+        exportSongBtn.addEventListener('click', function () {
+            exportCurrentSong();
+        });
+    }
+
     /* ---- Add Component button ---- */
     var addCompBtn = document.getElementById('btn-add-component');
     if (addCompBtn) {
@@ -4309,19 +4381,60 @@ function bindMultiSelectListeners() {
         showToast('Moved ' + ids.length + ' song(s) to ' + sb.id + '. Click Save to persist.', 'success');
     });
 
-    /* Bulk Export (#399) — downloads the selected songs as JSON. */
+    /* Bulk Export (#399) — downloads the selected songs as JSON.
+       Filename follows the shared #883 / export-filename convention:
+         - 1 song selected            → "<padded#> (<ABBR>) - <Title>[ (<Tune>)].json"
+         - N songs in one songbook    → "<Songbook> (<ABBR>) [Bundle].json"
+         - mixed / no obvious bundle  → "songs-export-YYYY-MM-DD.json" (fallback) */
     var exp = document.getElementById('btn-bulk-export');
     if (exp) exp.addEventListener('click', function () {
         var ids = Array.from(window._selectedIds || []);
         if (!ids.length) return;
         var idSet = new Set(ids);
         var subset = (songData.songs || []).filter(function (s) { return idSet.has(s.id); });
-        downloadBlob(
-            JSON.stringify({ songs: subset }, null, 2),
-            'songs-export-' + new Date().toISOString().slice(0, 10) + '.json',
-            'application/json'
-        );
-        showToast('Exported ' + subset.length + ' song(s) to JSON.', 'success');
+
+        import('/js/modules/export-filename.js?v=' + Date.now())
+            .then(function (m) {
+                var filenameBase;
+                if (subset.length === 1) {
+                    var only = subset[0];
+                    var bookSongs = (songData.songs || []).filter(function (s) {
+                        return s.songbook === only.songbook;
+                    });
+                    filenameBase = m.songExportFilename(only, bookSongs);
+                } else {
+                    /* All in one songbook? Use the bundle convention. */
+                    var firstAbbr = subset[0].songbook;
+                    var allSameBook = subset.every(function (s) { return s.songbook === firstAbbr; });
+                    if (allSameBook) {
+                        var sb = (songData.songbooks || []).find(function (b) { return b.id === firstAbbr; });
+                        filenameBase = m.songbookExportFilename({
+                            id:   firstAbbr,
+                            name: (sb && sb.name) || subset[0].songbookName || firstAbbr,
+                        });
+                    } else {
+                        filenameBase = 'songs-export-' + new Date().toISOString().slice(0, 10);
+                    }
+                }
+                downloadBlob(
+                    JSON.stringify({ songs: subset }, null, 2),
+                    filenameBase + '.json',
+                    'application/json'
+                );
+                showToast('Exported ' + subset.length + ' song(s) to JSON.', 'success');
+            })
+            .catch(function (err) {
+                /* Helper module unavailable (broken deploy / offline) — fall
+                   back to the legacy date-stamped filename so the export
+                   still works. */
+                try { console.warn('[bulk_export] filename helper load failed:', err); } catch (_e) {}
+                downloadBlob(
+                    JSON.stringify({ songs: subset }, null, 2),
+                    'songs-export-' + new Date().toISOString().slice(0, 10) + '.json',
+                    'application/json'
+                );
+                showToast('Exported ' + subset.length + ' song(s) to JSON.', 'success');
+            });
     });
 
     /* Bulk Tag (#399) — adds and/or removes tags on every selected song.
