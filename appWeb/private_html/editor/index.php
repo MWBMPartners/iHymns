@@ -488,11 +488,14 @@ declare(strict_types=1);
         aria-label="Load songs.json file"
     >
 
-    <!-- Hidden file input for importing songs from an external file -->
+    <!-- Hidden file input for importing songs from an external file.
+         Supports iHymns JSON, CSV, and FreeShow `.show` files (single or
+         a `.zip` bundle of `.show` files). See Issue #884. -->
     <input
         type="file"
         id="fileInputImport"
-        accept=".json,.csv"
+        accept=".json,.csv,.show,.zip,application/json,application/zip"
+        multiple
         style="display: none;"
         aria-label="Import songs from file"
     >
@@ -560,6 +563,19 @@ declare(strict_types=1);
                             <i class="bi bi-filetype-csv me-2"></i>Export as CSV
                         </a>
                     </li>
+                    <li><hr class="dropdown-divider"></li>
+                    <!-- Export the currently-selected song to a single FreeShow .show file. (#884) -->
+                    <li>
+                        <a class="dropdown-item" href="#" id="exportFreeShowSong">
+                            <i class="bi bi-file-earmark-music me-2"></i>Export Song as .show
+                        </a>
+                    </li>
+                    <!-- Export every song in the current songbook filter as a .zip bundle of .show files. (#884) -->
+                    <li>
+                        <a class="dropdown-item" href="#" id="exportFreeShowBundle">
+                            <i class="bi bi-file-earmark-zip me-2"></i>Export Bundle as .show ZIP
+                        </a>
+                    </li>
                 </ul>
             </div>
 
@@ -568,7 +584,7 @@ declare(strict_types=1);
                 type="button"
                 class="btn btn-sm btn-amber"
                 id="btnImport"
-                title="Import songs from an external JSON or CSV file"
+                title="Import songs from JSON, CSV, FreeShow .show, or a .zip of .show files"
             >
                 <i class="bi bi-box-arrow-in-down me-1"></i>Import
             </button>
@@ -1207,6 +1223,17 @@ declare(strict_types=1);
         integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
         crossorigin="anonymous"
     ></script>
+
+    <!-- JSZip — used by the editor to read `.zip` bundles of FreeShow
+         `.show` files on import and to build the bulk export ZIP. (#884) -->
+    <script
+        src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"
+        crossorigin="anonymous"
+    ></script>
+
+    <!-- FreeShow import/export helpers (Issue #884) — pure functions used
+         by editor.js. Loaded before editor.js so window.FreeShowIO is ready. -->
+    <script src="freeshow-import.cjs"></script>
 
     <!-- Editor JavaScript — all interactive logic (loading, saving, editing, previewing)
          is handled in this separate file to keep concerns separated -->

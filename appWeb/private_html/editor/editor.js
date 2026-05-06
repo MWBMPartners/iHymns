@@ -1004,79 +1004,339 @@ function csvEscape(value) {
 /**
  * importJSON()
  * ------------
- * Opens a file picker, reads a JSON file, and MERGES its songs into the
+ * Opens a file picker accepting iHymns JSON, FreeShow `.show` files, or a
+ * `.zip` bundle of `.show` files (#884), and merges their songs into the
  * current songData. Songs with matching IDs are updated; new IDs are appended.
  */
 function importJSON() {
     /* Create a hidden file input element to open the system file picker. */
     var input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.json,application/json';
+    input.accept = '.json,.show,.zip,application/json,application/zip';
+    input.multiple = true; // allow multi-select for .show batches
 
-    /* When the user picks a file, process it. */
+    /* When the user picks file(s), process them sequentially. */
     input.addEventListener('change', function () {
-        if (!input.files || !input.files[0]) return; // user cancelled
+        if (!input.files || input.files.length === 0) return; // user cancelled
 
-        var reader = new FileReader();
-        reader.onload = function (event) {
-            try {
-                /* Parse the imported file. */
-                var imported = JSON.parse(event.target.result);
-                var importedSongs = imported.songs || [];
+        var stats = { added: 0, updated: 0, skipped: 0, errors: [] };
+        var pending = Array.prototype.slice.call(input.files);
 
-                /* Counters for user feedback. */
-                var added = 0;
-                var updated = 0;
-
-                /* Process each imported song. */
-                importedSongs.forEach(function (incoming) {
-                    /* Try to find an existing song with the same ID. */
-                    var existingIndex = songData.songs.findIndex(function (s) {
-                        return s.id === incoming.id;
-                    });
-
-                    if (existingIndex !== -1) {
-                        /* Update existing song by replacing it entirely. */
-                        songData.songs[existingIndex] = incoming;
-                        markModified(incoming.id);
-                        updated++;
-                    } else {
-                        /* Append as a new song. */
-                        songData.songs.push(incoming);
-                        markModified(incoming.id);
-                        added++;
-                    }
-                });
-
-                /* Also merge songbooks if the imported file has them. */
-                if (imported.songbooks && Array.isArray(imported.songbooks)) {
-                    imported.songbooks.forEach(function (sb) {
-                        /* Only add songbooks that don't already exist. */
-                        var exists = songData.songbooks.some(function (existing) {
-                            return existing.id === sb.id;
-                        });
-                        if (!exists) {
-                            songData.songbooks.push(sb);
-                        }
-                    });
-                }
-
-                /* Refresh all UI. */
-                populateSongbookFilterDropdown();
-                renderSongList();
-                updateStatusBar();
-
-                /* Inform the user. */
-                showToast('Import complete: ' + added + ' added, ' + updated + ' updated.', 'success');
-            } catch (err) {
-                showToast('Import failed: ' + err.message, 'danger');
-            }
-        };
-        reader.readAsText(input.files[0]);
+        function next() {
+            if (pending.length === 0) return finishImport(stats);
+            var file = pending.shift();
+            handleImportFile(file, stats).then(next, function (err) {
+                stats.errors.push(file.name + ': ' + (err && err.message ? err.message : err));
+                next();
+            });
+        }
+        next();
     });
 
     /* Programmatically click the hidden input to open the file dialog. */
     input.click();
+}
+
+/**
+ * handleImportFile(file, stats)
+ * -----------------------------
+ * Inspects a single File object and dispatches it to the correct parser
+ * based on extension and content. Mutates `stats` and returns a Promise.
+ *
+ *   .json  → iHymns wrapper OR a single FreeShow `Show`
+ *   .show  → FreeShow `Show`
+ *   .zip   → bundle of `.show` files (and/or `.json` shows)
+ */
+function handleImportFile(file, stats) {
+    var name = (file && file.name) || 'file';
+    var lower = name.toLowerCase();
+
+    if (lower.endsWith('.zip')) {
+        return importFreeShowZip(file, stats);
+    }
+    if (lower.endsWith('.show')) {
+        return readFileAsText(file).then(function (text) {
+            return ingestFreeShowText(text, name, stats);
+        });
+    }
+
+    /* Default: treat as JSON — iHymns or single FreeShow show. */
+    return readFileAsText(file).then(function (text) {
+        var parsed;
+        try { parsed = JSON.parse(text); }
+        catch (err) {
+            stats.errors.push(name + ': invalid JSON — ' + err.message);
+            return;
+        }
+        if (window.FreeShowIO && window.FreeShowIO.looksLikeFreeShow(parsed)) {
+            ingestFreeShowJson(parsed, name, stats);
+        } else {
+            mergeIHymnsImport(parsed, stats);
+        }
+    });
+}
+
+/**
+ * mergeIHymnsImport(imported, stats)
+ * ----------------------------------
+ * Merges an iHymns-shaped wrapper ({ songs, songbooks }) into songData.
+ */
+function mergeIHymnsImport(imported, stats) {
+    var importedSongs = imported.songs || [];
+    importedSongs.forEach(function (incoming) {
+        var existingIndex = songData.songs.findIndex(function (s) {
+            return s.id === incoming.id;
+        });
+        if (existingIndex !== -1) {
+            songData.songs[existingIndex] = incoming;
+            markModified(incoming.id);
+            stats.updated++;
+        } else {
+            songData.songs.push(incoming);
+            markModified(incoming.id);
+            stats.added++;
+        }
+    });
+    if (imported.songbooks && Array.isArray(imported.songbooks)) {
+        imported.songbooks.forEach(function (sb) {
+            var exists = songData.songbooks.some(function (e) { return e.id === sb.id; });
+            if (!exists) songData.songbooks.push(sb);
+        });
+    }
+}
+
+/**
+ * ingestFreeShowText(text, sourceName, stats)
+ * -------------------------------------------
+ * Parses raw text as JSON, then routes through `ingestFreeShowJson`.
+ */
+function ingestFreeShowText(text, sourceName, stats) {
+    var parsed;
+    try { parsed = JSON.parse(text); }
+    catch (err) {
+        stats.errors.push(sourceName + ': invalid JSON — ' + err.message);
+        return;
+    }
+    ingestFreeShowJson(parsed, sourceName, stats);
+}
+
+/**
+ * ingestFreeShowJson(parsed, sourceName, stats)
+ * ---------------------------------------------
+ * Converts a parsed FreeShow `Show` object into an iHymns song and
+ * inserts it into songData. Number / songbook are derived from the
+ * filter selection or fall back to `Misc` plus the next free number.
+ */
+function ingestFreeShowJson(parsed, sourceName, stats) {
+    if (!window.FreeShowIO) {
+        stats.errors.push(sourceName + ': FreeShow helper module not loaded.');
+        return;
+    }
+
+    var songbookId = getSelectedSongbookFilter() || 'Misc';
+    var sb = songData.songbooks.find(function (s) { return s.id === songbookId; });
+    var songbookName = sb ? sb.name : songbookId;
+    var nextNumber = computeNextSongNumber(songbookId);
+    var bareName = sourceName.replace(/\.(show|json)$/i, '');
+
+    var result = window.FreeShowIO.parseFreeShowShow(parsed, {
+        sourceName:   bareName,
+        songbook:     songbookId,
+        songbookName: songbookName,
+        number:       nextNumber
+    });
+
+    if (result.errors.length > 0) {
+        stats.skipped++;
+        result.errors.forEach(function (e) {
+            stats.errors.push(sourceName + ': ' + e);
+        });
+        return;
+    }
+    result.warnings.forEach(function (w) {
+        stats.errors.push(sourceName + ' (warning): ' + w);
+    });
+
+    /* Merge the produced song. Treat as new — FreeShow imports
+     * always create a fresh ID under the chosen songbook. */
+    songData.songs.push(result.song);
+    markModified(result.song.id);
+    stats.added++;
+}
+
+/**
+ * importFreeShowZip(file, stats)
+ * ------------------------------
+ * Reads a .zip archive and ingests every contained .show / .json file
+ * that matches the FreeShow shape. Requires JSZip to be loaded.
+ */
+function importFreeShowZip(file, stats) {
+    if (typeof JSZip === 'undefined') {
+        return Promise.reject(new Error('JSZip is not loaded; cannot read .zip bundles.'));
+    }
+    return JSZip.loadAsync(file).then(function (zip) {
+        var entries = [];
+        zip.forEach(function (relPath, zipEntry) {
+            if (zipEntry.dir) return;
+            var lower = relPath.toLowerCase();
+            if (lower.endsWith('.show') || lower.endsWith('.json')) {
+                entries.push(zipEntry);
+            }
+        });
+        var chain = Promise.resolve();
+        entries.forEach(function (entry) {
+            chain = chain.then(function () {
+                return entry.async('string').then(function (text) {
+                    ingestFreeShowText(text, entry.name, stats);
+                });
+            });
+        });
+        return chain;
+    });
+}
+
+/**
+ * readFileAsText(file)
+ * --------------------
+ * Promise wrapper around FileReader for UTF-8 text reads.
+ */
+function readFileAsText(file) {
+    return new Promise(function (resolve, reject) {
+        var reader = new FileReader();
+        reader.onload  = function (e) { resolve(e.target.result); };
+        reader.onerror = function ()  { reject(reader.error); };
+        reader.readAsText(file);
+    });
+}
+
+/**
+ * computeNextSongNumber(songbookId)
+ * ---------------------------------
+ * Returns one more than the largest current `number` for songs in
+ * the given songbook, or 1 if the songbook is empty.
+ */
+function computeNextSongNumber(songbookId) {
+    var max = 0;
+    songData.songs.forEach(function (s) {
+        if (s.songbook === songbookId && typeof s.number === 'number' && s.number > max) {
+            max = s.number;
+        }
+    });
+    return max + 1;
+}
+
+/**
+ * finishImport(stats)
+ * -------------------
+ * UI refresh + toast summary after all import promises settle.
+ */
+function finishImport(stats) {
+    populateSongbookFilterDropdown();
+    renderSongList();
+    updateStatusBar();
+
+    var msg = 'Import complete: ' +
+        stats.added + ' added, ' +
+        stats.updated + ' updated' +
+        (stats.skipped ? ', ' + stats.skipped + ' skipped' : '') +
+        '.';
+    showToast(msg, stats.errors.length > 0 ? 'warning' : 'success');
+
+    /* Surface the first few errors (if any) without spamming the UI. */
+    stats.errors.slice(0, 5).forEach(function (e) {
+        showToast(e, 'danger');
+    });
+    if (stats.errors.length > 5) {
+        showToast('… and ' + (stats.errors.length - 5) + ' more issues. See console.', 'danger');
+        console.warn('Import issues:', stats.errors);
+    }
+}
+
+/**
+ * exportSongAsFreeShow()
+ * ----------------------
+ * Downloads the currently-selected song as a FreeShow `.show` file.
+ * Filename rule (Issue #884):
+ *   "<SongNumber> (<SongbookAbbrev>) - <SongTitle>.show"
+ *   "<SongNumber> (<SongbookAbbrev>) - <SongTitle> (<TuneTitle>).show"
+ */
+function exportSongAsFreeShow() {
+    if (!window.FreeShowIO) {
+        showToast('FreeShow helper module not loaded.', 'danger');
+        return;
+    }
+    if (!currentSongId) {
+        showToast('Select a song first.', 'warning');
+        return;
+    }
+    var song = findSongById(currentSongId);
+    if (!song) return;
+
+    var pad = window.FreeShowIO.songbookPadWidth(song.songbook, songData.songs);
+    var filename = window.FreeShowIO.buildSongFilename(song, pad, '.show');
+    var json = JSON.stringify(window.FreeShowIO.iHymnsSongToFreeShow(song), null, 2);
+    downloadBlob(json, filename, 'application/json');
+    showToast('Exported "' + filename + '"', 'success');
+}
+
+/**
+ * exportAllAsFreeShowBundle()
+ * ---------------------------
+ * Builds a .zip archive containing one `.show` per song in the
+ * currently-active songbook filter (or the entire library if no
+ * filter is selected). Filename rule (Issue #884):
+ *   "<Songbook Title> (<Songbook Abbreviation>) [Bundle].zip"
+ */
+function exportAllAsFreeShowBundle() {
+    if (!window.FreeShowIO) {
+        showToast('FreeShow helper module not loaded.', 'danger');
+        return;
+    }
+    if (typeof JSZip === 'undefined') {
+        showToast('JSZip is not loaded; cannot build a bundle.', 'danger');
+        return;
+    }
+
+    /* Determine the scope: a single songbook or the whole library. */
+    var filterId = getSelectedSongbookFilter();
+    var songs, sbDescriptor;
+    if (filterId) {
+        songs = songData.songs.filter(function (s) { return s.songbook === filterId; });
+        sbDescriptor = songData.songbooks.find(function (s) { return s.id === filterId; })
+                    || { id: filterId, name: filterId };
+    } else {
+        songs = songData.songs.slice();
+        sbDescriptor = { id: 'iHymns', name: 'iHymns Library' };
+    }
+
+    if (songs.length === 0) {
+        showToast('No songs in the selected scope to export.', 'warning');
+        return;
+    }
+
+    var pad = window.FreeShowIO.songbookPadWidth(sbDescriptor.id, songData.songs);
+    var zip = new JSZip();
+
+    songs.forEach(function (song) {
+        var fname = window.FreeShowIO.buildSongFilename(song, pad, '.show');
+        var json  = JSON.stringify(window.FreeShowIO.iHymnsSongToFreeShow(song), null, 2);
+        zip.file(fname, json);
+    });
+
+    var bundleName = window.FreeShowIO.buildBundleFilename(sbDescriptor, '.zip');
+    zip.generateAsync({ type: 'blob' }).then(function (blob) {
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = bundleName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showToast('Exported "' + bundleName + '" (' + songs.length + ' songs).', 'success');
+    }, function (err) {
+        showToast('Bundle export failed: ' + err.message, 'danger');
+    });
 }
 
 /* ========================================================================
@@ -1545,11 +1805,63 @@ function bindGlobalEventListeners() {
         });
     }
 
-    /* ---- Import / Merge JSON button ---- */
-    var importBtn = document.getElementById('btn-import');
+    /* ---- Import / Merge JSON button (legacy id + current navbar id) ---- */
+    var importBtn = document.getElementById('btn-import')
+                 || document.getElementById('btnImport');
     if (importBtn) {
         importBtn.addEventListener('click', function () {
             importJSON();
+        });
+    }
+
+    /* ---- Export dropdown items in the navbar ---- */
+    var exportJsonLink = document.getElementById('exportJson');
+    if (exportJsonLink) {
+        exportJsonLink.addEventListener('click', function (e) {
+            e.preventDefault();
+            saveSongsToFile();
+        });
+    }
+    var exportCsvLink = document.getElementById('exportCsv');
+    if (exportCsvLink) {
+        exportCsvLink.addEventListener('click', function (e) {
+            e.preventDefault();
+            exportCSV();
+        });
+    }
+    /* FreeShow export items (Issue #884) */
+    var exportShowLink = document.getElementById('exportFreeShowSong');
+    if (exportShowLink) {
+        exportShowLink.addEventListener('click', function (e) {
+            e.preventDefault();
+            exportSongAsFreeShow();
+        });
+    }
+    var exportBundleLink = document.getElementById('exportFreeShowBundle');
+    if (exportBundleLink) {
+        exportBundleLink.addEventListener('click', function (e) {
+            e.preventDefault();
+            exportAllAsFreeShowBundle();
+        });
+    }
+
+    /* ---- Navbar Save / Load buttons (current ids in index.php) ---- */
+    var saveJsonBtn = document.getElementById('btnSaveJson');
+    if (saveJsonBtn) {
+        saveJsonBtn.addEventListener('click', function () {
+            saveSongsToFile();
+        });
+    }
+    var loadJsonBtn = document.getElementById('btnLoadJson');
+    if (loadJsonBtn) {
+        loadJsonBtn.addEventListener('click', function () {
+            var input = document.getElementById('fileInputLoad');
+            if (!input) return;
+            input.value = '';
+            input.onchange = function () {
+                if (input.files && input.files[0]) loadSongsFromFile(input.files[0]);
+            };
+            input.click();
         });
     }
 

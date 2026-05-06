@@ -1,0 +1,35 @@
+{
+  "name": "Amazing Grace",
+  "category": "song",
+  "meta": {
+    "title": "Amazing Grace",
+    "author": "John Newton",
+    "copyright": "Public Domain"
+  },
+  "slides": {
+    "v1": {
+      "group": "Verse 1",
+      "globalGroup": "verse",
+      "items": [
+        { "type": "text", "lines": [
+          { "text": [{ "value": "Amazing grace, how sweet the sound" }] },
+          { "text": [{ "value": "That saved a wretch like me" }] }
+        ]}
+      ]
+    },
+    "v2": {
+      "group": "Verse 2",
+      "globalGroup": "verse",
+      "items": [
+        { "type": "text", "lines": [
+          { "text": [{ "value": "I once was lost, but now am found" }] }
+        ]}
+      ]
+    }
+  },
+  "layouts": {
+    "primary":   { "name": "Default", "slides": [{ "id": "v1" }, { "id": "v2" }] },
+    "alternate": { "name": "Alt arrangement", "slides": [{ "id": "v2" }, { "id": "v1" }] },
+    "intro":     { "name": "Intro only", "slides": [{ "id": "v1" }] }
+  }
+}

@@ -18,7 +18,8 @@
     "lint:html": "htmlhint appWeb/public_html_beta/**/*.html",
     "lint": "npm run lint:js && npm run lint:css && npm run lint:html",
     "format": "prettier --write appWeb/public_html_beta/",
-    "test": "node tests/test-song-parser.js",
+    "test": "node tests/test-song-parser.js && node tests/test-freeshow-import.js",
+    "test:freeshow": "node tests/test-freeshow-import.js",
     "test:php": "find appWeb -name '*.php' -exec php -l {} \\;",
     "test:js": "find appWeb -name '*.js' -not -path '*/node_modules/*' -exec node --check {} \\;",
     "test:all": "npm test && npm run test:php && npm run test:js"
