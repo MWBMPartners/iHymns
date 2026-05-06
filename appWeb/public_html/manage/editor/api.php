@@ -3464,7 +3464,9 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
     /* Single pass over the archive: for each .txt entry, parse the
        enclosing folder name to learn (songbook name, abbrev), upsert
        the songbook on first encounter, then parse + save the song. */
-    $songbookSeen = [];   // abbrev → (created|existing) — caches the songbook upsert per archive
+    $songbookSeen      = [];   // abbrev → (created|existing) — caches the songbook upsert per archive
+    $songbookCounters  = [];   // abbrev → next auto-assigned number (OpenSong fallback, #882)
+    $songsParsedByKind = ['txt' => 0, 'opensong' => 0];
 
     for ($i = 0; $i < $entryCount; $i++) {
         /* Periodic progress flush every $PROGRESS_BATCH iterations so
@@ -3492,14 +3494,26 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
             continue;
         }
 
-        /* Skip directory entries and non-.txt files (a future revision
-           might also accept .json metadata; for now .txt is the
-           contract). Zip mac metadata stores ('__MACOSX/', '.DS_Store')
-           are silently ignored. */
+        /* Skip directory entries, mac metadata, and dot-files. */
         if (str_ends_with($name, '/'))                continue;
-        if (!preg_match('/\.txt$/i', $name))          continue;
         if (str_contains($name, '__MACOSX/'))         continue;
         if (str_contains($name, '/.'))                continue;
+
+        /* Detect file format by extension. .txt → existing plain-text
+           per-song parser; .xml / .opensong → OpenSong XML parser
+           (#882). Anything else is silently skipped so a curator can
+           drop a hymnal folder containing mixed assets (PDFs, cover
+           art) without each non-song entry surfacing as a parse
+           error. */
+        $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+        $kind = null;
+        if ($ext === 'txt') {
+            $kind = 'txt';
+        } elseif ($ext === 'xml' || $ext === 'opensong') {
+            $kind = 'opensong';
+        } else {
+            continue;
+        }
 
         /* Pull out the folder + file segments. We expect exactly one
            level of nesting: "<Hymnal Name> [<ABBR>]/<filename>.txt". */
@@ -3515,28 +3529,41 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
             $errors[] = ['entry' => $name, 'error' => 'folder name does not match "<Title> [<ABBR>]"'];
             continue;
         }
-        if (!preg_match(_BULK_IMPORT_FILE_RE, $file, $fileMatch)) {
-            $errors[] = ['entry' => $name, 'error' => 'filename does not match "<#> (<ABBR>) - <Title>.txt"'];
-            continue;
-        }
 
         $abbr     = strtoupper($folderMatch['abbr']);
         $bookName = trim($folderMatch['name']);
         /* Optional `_<LangName>-<ISO>` suffix on the folder (#780). The
            ISO code becomes the songbook's Language at upsert time. */
         $folderLang = isset($folderMatch['lang']) ? trim((string)$folderMatch['lang']) : '';
-        $fileAbbr = strtoupper($fileMatch['abbr']);
-        $songNum  = (int)$fileMatch['num'];
 
-        /* Cross-check: the abbreviation in the filename must match
-           the folder's abbreviation. Otherwise we'd silently put a
-           song from book A into book B. */
-        if ($fileAbbr !== $abbr) {
-            $errors[] = [
-                'entry' => $name,
-                'error' => "filename abbrev '$fileAbbr' does not match folder abbrev '$abbr'",
-            ];
-            continue;
+        /* Filename → song-number extraction. The two formats use
+           different conventions: */
+        $songNum = 0;
+        if ($kind === 'txt') {
+            /* Strict: "<#> (<ABBR>) - <Title>.txt". The number is
+               authoritative, the embedded abbreviation is cross-
+               checked against the folder. */
+            if (!preg_match(_BULK_IMPORT_FILE_RE, $file, $fileMatch)) {
+                $errors[] = ['entry' => $name, 'error' => 'filename does not match "<#> (<ABBR>) - <Title>.txt"'];
+                continue;
+            }
+            $fileAbbr = strtoupper($fileMatch['abbr']);
+            $songNum  = (int)$fileMatch['num'];
+            if ($fileAbbr !== $abbr) {
+                $errors[] = [
+                    'entry' => $name,
+                    'error' => "filename abbrev '$fileAbbr' does not match folder abbrev '$abbr'",
+                ];
+                continue;
+            }
+        } else {
+            /* OpenSong (#882): leading digits in the filename, if
+               present, are a hint only. The XML's <hymn_number>
+               element wins; the parser falls back to this hint, then
+               to a per-songbook auto-increment. */
+            if (preg_match('/^(\d{1,5})/', $file, $m)) {
+                $songNum = (int)$m[1];
+            }
         }
 
         /* Songbook upsert — once per abbreviation per import. */
@@ -3559,7 +3586,27 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
             continue;
         }
 
-        [$song, $reason] = _bulkImport_parseTxt($body, $abbr, $bookName, $songNum);
+        if ($kind === 'opensong') {
+            /* OpenSong: derive the next per-songbook auto-increment
+               so a parser fallback (no <hymn_number>, no leading
+               digits in filename) still produces a unique SongId. */
+            if (!isset($songbookCounters[$abbr])) {
+                $songbookCounters[$abbr] = _bulkImport_nextSongNumberFor($db, $abbr);
+            }
+            [$song, $reason] = _bulkImport_parseOpenSong($body, $abbr, $bookName, $songNum, $songbookCounters[$abbr]);
+            if ($song !== null) {
+                /* Bump the auto-counter to whatever number landed so a
+                   second OpenSong file in the same songbook doesn't
+                   collide on SongId. */
+                $songbookCounters[$abbr] = max($songbookCounters[$abbr], (int)$song['number']) + 1;
+                $songsParsedByKind['opensong']++;
+            }
+        } else {
+            [$song, $reason] = _bulkImport_parseTxt($body, $abbr, $bookName, $songNum);
+            if ($song !== null) {
+                $songsParsedByKind['txt']++;
+            }
+        }
         if ($song === null) {
             $errors[] = ['entry' => $name, 'error' => 'parse failed: ' . $reason];
             $songsFailed++;
@@ -3606,6 +3653,243 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
         'songs_created'          => $songsCreated,
         'songs_skipped_existing' => $songsSkippedExisting,
         'songs_failed'           => $songsFailed,
+        'parsed_by_format'       => $songsParsedByKind,
         'errors'                 => $errors,
     ];
+}
+
+/* ===========================================================================
+ * OPENSONG PARSER (#882)
+ *
+ * OpenSong stores each song as a single XML document. Reference:
+ *   https://opensong.org/documentation/importing/#songs
+ *
+ * Lyrics live in <lyrics> as plain text with bracketed section markers
+ * ([V1], [C], [B], …), chord rows (lines starting with ".") and
+ * comment rows (lines starting with ";"). The chord rows are dropped —
+ * iHymns is a lyrics catalogue. Lyric lines conventionally begin with
+ * a single space; that space is stripped to recover the real text.
+ *
+ * The output shape mirrors _bulkImport_parseTxt() so the same
+ * _bulkImport_saveSong() write path consumes it without any branching.
+ * =========================================================================== */
+
+/**
+ * Map OpenSong section letters to iHymns component types.
+ *
+ * Falls back to 'refrain' for anything we don't recognise (e.g. a
+ * non-English label slipped into the section marker), matching the
+ * fallback _bulkImport_componentTypeFor() uses for the TXT parser.
+ */
+function _bulkImport_openSongComponentTypeFor(string $letter): string
+{
+    return [
+        'V' => 'verse',
+        'C' => 'chorus',
+        'B' => 'bridge',
+        'P' => 'pre-chorus',
+        'T' => 'outro',
+        'E' => 'outro',
+        'I' => 'intro',
+    ][strtoupper($letter)] ?? 'refrain';
+}
+
+/**
+ * Parse one OpenSong XML body into the song-object shape that
+ * _bulkImport_saveSong() consumes.
+ *
+ * @param string $body         Raw XML (UTF-8; BOM tolerated).
+ * @param string $abbrev       Songbook abbreviation from the folder.
+ * @param string $songbook     Songbook display name from the folder.
+ * @param int    $numberHint   Number derived from the filename's
+ *                             leading digits (0 if none).
+ * @param int    $autoNumber   Per-songbook auto-increment fallback when
+ *                             neither the XML nor the filename supply
+ *                             a number.
+ * @return array{0: ?array, 1: ?string}  [songObject, errorReason]
+ */
+function _bulkImport_parseOpenSong(string $body, string $abbrev, string $songbook, int $numberHint, int $autoNumber): array
+{
+    /* Strip a UTF-8 BOM so SimpleXML doesn't choke. */
+    $body = preg_replace('/^\xEF\xBB\xBF/', '', $body);
+
+    /* Capture libxml errors locally so a malformed file produces a
+       readable per-entry error rather than a global warning splatter. */
+    $prevInternal = libxml_use_internal_errors(true);
+    libxml_clear_errors();
+    /* LIBXML_NONET prevents the parser from following any external
+       entity URI — DTD-based SSRF / billion-laughs hardening. */
+    $xml = simplexml_load_string($body, \SimpleXMLElement::class, LIBXML_NONET);
+    if ($xml === false) {
+        $err = libxml_get_last_error();
+        libxml_clear_errors();
+        libxml_use_internal_errors($prevInternal);
+        return [null, 'invalid XML' . ($err ? ': ' . trim($err->message) : '')];
+    }
+    libxml_clear_errors();
+    libxml_use_internal_errors($prevInternal);
+
+    if (strtolower($xml->getName()) !== 'song') {
+        return [null, 'XML root is <' . $xml->getName() . '>, expected <song>'];
+    }
+
+    $title = trim((string)($xml->title ?? ''));
+    if ($title === '') {
+        return [null, 'no <title> element'];
+    }
+
+    /* Number resolution priority: <hymn_number> in XML → filename
+       leading digits → per-songbook auto-increment. The auto-increment
+       guarantees a unique SongId even for OpenSong corpora that don't
+       carry numbers at all (which is most non-hymnal song libraries). */
+    $hymnNumberRaw = trim((string)($xml->hymn_number ?? ''));
+    $hymnNumber    = ($hymnNumberRaw !== '' && ctype_digit($hymnNumberRaw))
+        ? (int)$hymnNumberRaw
+        : 0;
+    $number = $hymnNumber > 0
+        ? $hymnNumber
+        : ($numberHint > 0 ? $numberHint : $autoNumber);
+    if ($number <= 0) {
+        return [null, 'could not determine song number'];
+    }
+
+    $components = _bulkImport_parseOpenSongLyrics((string)($xml->lyrics ?? ''));
+    if (empty($components)) {
+        return [null, 'no lyric components found in <lyrics>'];
+    }
+
+    /* Author fields in OpenSong commonly stack multiple credits with
+       slashes, ampersands or commas — split into individual writers
+       to match the way the editor stores credit names. */
+    $authors  = trim((string)($xml->author ?? ''));
+    $writers  = [];
+    if ($authors !== '') {
+        foreach (preg_split('/\s*[\/&,;]\s*/u', $authors) as $w) {
+            $w = trim((string)$w);
+            if ($w !== '') $writers[] = $w;
+        }
+    }
+
+    $songId = sprintf('%s-%04d', strtoupper($abbrev), $number);
+
+    return [[
+        'id'                 => $songId,
+        'title'              => $title,
+        'number'             => $number,
+        'songbook'           => strtoupper($abbrev),
+        'songbookName'       => $songbook,
+        'language'           => 'en',
+        'ccli'               => trim((string)($xml->ccli ?? '')),
+        'iswc'               => '',
+        'tuneName'           => '',
+        'copyright'          => trim((string)($xml->copyright ?? '')),
+        'verified'           => 0,
+        'lyricsPublicDomain' => 0,
+        'musicPublicDomain'  => 0,
+        'hasAudio'           => 0,
+        'hasSheetMusic'      => 0,
+        'writers'            => $writers,
+        'composers'          => [],
+        'arrangers'          => [],
+        'adaptors'           => [],
+        'translators'        => [],
+        'components'         => $components,
+    ], null];
+}
+
+/**
+ * Parse the body of an OpenSong <lyrics> block into the same
+ * components[] shape produced by _bulkImport_parseTxt().
+ */
+function _bulkImport_parseOpenSongLyrics(string $lyrics): array
+{
+    $lyrics = str_replace(["\r\n", "\r"], "\n", $lyrics);
+    $lines  = explode("\n", $lyrics);
+    $components = [];
+    $current    = null;
+
+    foreach ($lines as $rawLine) {
+        $trim = trim($rawLine);
+
+        /* Comment row → drop. OpenSong reserves leading ";" for
+           in-corpus notes the projector should never display. */
+        if ($trim !== '' && $trim[0] === ';') {
+            continue;
+        }
+        /* Chord row → drop. OpenSong puts chord names on a row that
+           starts with "." so the projector can suppress them; iHymns
+           is lyrics-only, so we strip them entirely rather than try
+           to interleave them with the lyric line. */
+        if ($rawLine !== '' && $rawLine[0] === '.') {
+            continue;
+        }
+
+        /* Section marker, e.g. "[V1]", "[C]", "[B]". The optional
+           trailing digits become the verse number; bare "[V]" implies
+           the next sequential verse. */
+        if (preg_match('/^\[([A-Za-z]+)(\d*)\]$/', $trim, $m)) {
+            if ($current !== null && !empty($current['lines'])) {
+                $components[] = $current;
+            }
+            $current = [
+                'type'   => _bulkImport_openSongComponentTypeFor($m[1]),
+                'number' => $m[2] !== '' ? (int)$m[2] : 0,
+                'lines'  => [],
+            ];
+            continue;
+        }
+
+        /* Blank line ends the current section so consecutive section
+           markers don't accidentally merge. */
+        if ($trim === '') {
+            if ($current !== null && !empty($current['lines'])) {
+                $components[] = $current;
+                $current = null;
+            }
+            continue;
+        }
+
+        if ($current === null) {
+            /* Lyrics before any section marker — assume verse 1 so
+               files without explicit markers (rare but legal) still
+               produce a usable song object. */
+            $current = ['type' => 'verse', 'number' => 1, 'lines' => []];
+        }
+
+        /* Strip a single leading space — OpenSong convention for lyric
+           rows; preserving it would ladder the text in the editor. */
+        $line = $rawLine;
+        if (isset($line[0]) && $line[0] === ' ') {
+            $line = substr($line, 1);
+        }
+        $current['lines'][] = rtrim($line);
+    }
+
+    if ($current !== null && !empty($current['lines'])) {
+        $components[] = $current;
+    }
+
+    return $components;
+}
+
+/**
+ * Return one greater than the maximum existing song number for a
+ * songbook, used as the OpenSong auto-increment seed when neither
+ * <hymn_number> nor the filename supply a number (#882).
+ */
+function _bulkImport_nextSongNumberFor(\mysqli $db, string $abbr): int
+{
+    try {
+        $stmt = $db->prepare(
+            'SELECT COALESCE(MAX(Number), 0) + 1 FROM tblSongs WHERE SongbookAbbr = ?'
+        );
+        $stmt->bind_param('s', $abbr);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_row();
+        $stmt->close();
+        return (int)($row[0] ?? 1);
+    } catch (\Throwable $e) {
+        error_log('[_bulkImport_nextSongNumberFor] ' . $e->getMessage());
+        return 1;
+    }
 }

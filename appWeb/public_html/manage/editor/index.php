@@ -86,9 +86,12 @@ $currentUser = getCurrentUser();
     >
 
     <!-- Hidden file input for importing songs from an external file.
-         Accepts .json (curator-edited corpus) and .zip bulk archives
-         that mirror the .SourceSongData/ folder layout (#664). The
-         zip path inserts directly into MySQL via the
+         Accepts .json (curator-edited corpus) and .zip bulk archives.
+         A bulk-import ZIP mirrors the .SourceSongData/ folder layout
+         (#664) and may contain either plain-text .txt files (one per
+         song) OR OpenSong .xml files (#882). Both kinds may be mixed
+         in the same archive — the server dispatches per-entry by
+         extension. The zip path inserts directly into MySQL via the
          /manage/editor/api.php?action=bulk_import_zip endpoint and
          never overwrites existing songbook or song rows. -->
     <input
@@ -220,7 +223,7 @@ $currentUser = getCurrentUser();
                 type="button"
                 class="btn btn-sm btn-amber"
                 id="btn-import"
-                title="Import songs from a JSON file (in-memory merge) or a .zip bulk archive (.SourceSongData layout — inserts directly into MySQL, never overwrites existing rows)"
+                title="Import songs from a JSON corpus (in-memory merge) or a .zip bulk archive. ZIPs accept the .SourceSongData layout (one .txt per song) or OpenSong .xml files in the same &lt;Hymnal&gt; [&lt;ABBR&gt;]/ folder shape. Bulk imports insert directly into MySQL and never overwrite existing rows."
             >
                 <i class="bi bi-box-arrow-in-down me-1"></i>Import
             </button>
