@@ -2591,6 +2591,23 @@ $csrf = csrfToken();
                                     <i class="bi bi-pencil"></i>
                                 </button>
                                 <?php
+                                    /* Export bundle button (#883 follow-up). Streams every
+                                       song that references this Abbreviation as a single
+                                       JSON document, named "<Title> (<ABBR>) [Bundle].json"
+                                       per the shared export-filename convention. The
+                                       click handler is wired in inline JS at the bottom
+                                       of this file; it shells out to the existing
+                                       /manage/editor/api?action=load endpoint and
+                                       filters client-side, so no new server endpoint
+                                       is required for this rollout. */
+                                ?>
+                                <button type="button" class="btn btn-sm btn-outline-secondary songbook-export-btn"
+                                        data-songbook-abbrev="<?= htmlspecialchars($r['Abbreviation'], ENT_QUOTES, 'UTF-8') ?>"
+                                        data-songbook-name="<?= htmlspecialchars($r['Name'], ENT_QUOTES, 'UTF-8') ?>"
+                                        title="Export every song in this songbook as a JSON bundle (filename: &quot;&lt;Title&gt; (&lt;ABBR&gt;) [Bundle].json&quot;).">
+                                    <i class="bi bi-box-arrow-down"></i>
+                                </button>
+                                <?php
                                     /* Three states for the delete button (#706):
                                        1. No songs                          → enabled, plain delete modal
                                        2. Has songs + admin/global_admin    → enabled, cascade modal (typed-confirm)
@@ -4677,6 +4694,74 @@ $csrf = csrfToken();
                 .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
         }
     })();
+    </script>
+
+    <!-- Songbook bundle-export wiring (#883 follow-up). Each
+         .songbook-export-btn carries data-songbook-abbrev /
+         data-songbook-name; on click we fetch the editor's full
+         corpus, filter to the abbreviation, and trigger a download
+         using the shared filename helper so the convention stays
+         consistent with the editor's per-song / bulk-export flows. -->
+    <script type="module">
+    import {
+        songbookExportFilename,
+    } from '/js/modules/export-filename.js';
+
+    document.querySelectorAll('.songbook-export-btn').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+            const abbr = btn.dataset.songbookAbbrev || '';
+            const name = btn.dataset.songbookName  || abbr;
+            if (!abbr) return;
+
+            const original = btn.innerHTML;
+            btn.disabled  = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
+
+            try {
+                const res = await fetch('/manage/editor/api.php?action=load', {
+                    credentials: 'same-origin',
+                });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const data = await res.json();
+
+                const songs = (data.songs || []).filter(
+                    (s) => (s.songbook || '').toUpperCase() === abbr.toUpperCase()
+                );
+                if (songs.length === 0) {
+                    alert('No songs reference "' + abbr + '" — nothing to export.');
+                    return;
+                }
+
+                /* Match the songbook record from the corpus so the
+                   bundle's filename uses the canonical display name
+                   (preserves accents, casing, etc.) rather than the
+                   row's `Name` column copy in the DOM. */
+                const sb = (data.songbooks || []).find(
+                    (b) => (b.id || b.abbreviation || '').toUpperCase() === abbr.toUpperCase()
+                ) || { id: abbr, name: name };
+
+                const filename = songbookExportFilename(sb) + '.json';
+                const blob     = new Blob(
+                    [JSON.stringify({ songs: songs }, null, 2)],
+                    { type: 'application/json' }
+                );
+                const url = URL.createObjectURL(blob);
+                const a   = document.createElement('a');
+                a.href     = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            } catch (err) {
+                console.warn('[songbook export]', err);
+                alert('Songbook export failed: ' + (err && err.message ? err.message : err));
+            } finally {
+                btn.disabled  = false;
+                btn.innerHTML = original;
+            }
+        });
+    });
     </script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
