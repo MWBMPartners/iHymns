@@ -486,9 +486,16 @@ foreach ($sections as $s) {
                         <li><strong>Export</strong> the current view as JSON or CSV.</li>
                         <li><strong>Revisions</strong> for the selected song shows a diff of every previous edit and a Restore button.</li>
                     </ul>
-                    <h3 class="h6">Bulk Import ZIP (#664 / #676)</h3>
+                    <h3 class="h6">Bulk Import ZIP (#664 / #676 / #882)</h3>
                     <p>
-                        For onboarding an entire songbook at once. Upload a ZIP whose top-level folders match <code>&lt;Hymnal Name&gt; [&lt;ABBR&gt;]/</code> and whose files match <code>&lt;number&gt; (&lt;ABBR&gt;) - &lt;Title&gt;.txt</code>. The importer creates the songbook on first encounter, then parses + inserts every song.
+                        For onboarding an entire songbook at once. Upload a ZIP whose top-level folders match <code>&lt;Hymnal Name&gt; [&lt;ABBR&gt;]/</code> and whose files are one of:
+                    </p>
+                    <ul>
+                        <li><strong>Plain text</strong> — <code>&lt;number&gt; (&lt;ABBR&gt;) - &lt;Title&gt;.txt</code> with the canonical title / blank / section-marker / lyric-block layout the scrapers emit. The number in the filename and folder ABBR cross-check; mismatches are reported per-entry.</li>
+                        <li><strong>OpenSong XML</strong> (#882) — <code>.xml</code> or <code>.opensong</code> files anywhere inside the hymnal folder. The song number comes from the <code>&lt;hymn_number&gt;</code> element first, then any leading digits in the filename, then a per-songbook auto-increment. <code>&lt;author&gt;</code> splits on <code>/</code>, <code>&amp;</code>, <code>,</code>, <code>;</code> into the writers list. Chord rows (lines beginning with <code>.</code>) and comment rows (lines beginning with <code>;</code>) are stripped from the lyrics.</li>
+                    </ul>
+                    <p>
+                        Both file kinds may be mixed in the same archive — the importer dispatches per entry by extension. The summary's <code>parsed_by_format</code> counter shows how many of each landed.
                     </p>
                     <ul>
                         <li><strong>INSERT-only contract:</strong> if a songbook or song already exists, it's left untouched — never overwritten. The summary reports created vs. existing counts so you can see what landed.</li>
