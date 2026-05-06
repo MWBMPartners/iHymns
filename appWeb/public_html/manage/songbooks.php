@@ -3623,9 +3623,17 @@ $csrf = csrfToken();
             /* #873 — wire the "Apply this language to all songs" block.
                Stash the row metadata on the button so the click handler
                below has the songbook id + abbr + name without needing
-               another DOM round-trip. The button's enabled/disabled
-               state mirrors the picker — empty Language = nothing to
-               push, so the action is meaningless. */
+               another DOM round-trip.
+
+               #876: the button is enabled iff the songbook contains
+               songs. We deliberately don't gate on the picker's
+               composed tag here, because editIetfPicker.setTag() above
+               is async (it awaits loadLanguages() + a region lookup)
+               and getTag() returns '' until those resolve — which
+               left the button stuck disabled even when the songbook
+               had a saved language. The click handler validates the
+               picker tag at click time and surfaces "Pick a language
+               first." cleanly. */
             (function () {
                 const btn   = document.getElementById('edit-apply-song-language-btn');
                 const lbl   = document.getElementById('edit-apply-song-language-label');
@@ -3646,12 +3654,10 @@ $csrf = csrfToken();
                 lbl.textContent = count > 0
                     ? 'Apply to ' + count + ' song' + (count === 1 ? '' : 's')
                     : 'Apply to songs';
-                /* Disable when the picker is empty — pull the current
-                   composed tag from the picker module. */
-                const currentTag = (typeof window.editIetfPicker?.getTag === 'function')
-                    ? (window.editIetfPicker.getTag() || '')
-                    : (row.language || '');
-                btn.disabled = (currentTag === '' || count === 0);
+                /* Only disable for the legitimate "nothing to update"
+                   case — empty songbook. The picker-tag check happens
+                   inside the click handler. */
+                btn.disabled = (count === 0);
             })();
 
             /* #672 — bibliographic + authority-control identifiers. The

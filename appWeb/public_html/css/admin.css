@@ -198,11 +198,18 @@ a:not(.btn):not(.nav-link):not(.dropdown-item):hover {
     z-index: 1030;
     /* Honour the iOS home-indicator safe area so the footer doesn't
        sit under it on installed PWA. env() is universally supported;
-       desktop browsers fall back to the literal `0px`. */
+       desktop browsers fall back to the literal `0px`. Horizontal
+       padding clamps to a 12 px floor (#875) — on iPhones in
+       portrait, env(safe-area-inset-left/right) is 0, which left
+       the inline copyright + version + build-stamp text flush against
+       the curved screen corners and clipped the leading/trailing
+       characters under the curve. max() keeps the existing landscape /
+       notch behaviour (where the inset legitimately exceeds 12 px)
+       while guaranteeing breathing room everywhere else. */
     padding-top: 0.4rem;
     padding-bottom: calc(0.4rem + env(safe-area-inset-bottom, 0px));
-    padding-left: env(safe-area-inset-left, 0px);
-    padding-right: env(safe-area-inset-right, 0px);
+    padding-left:  max(env(safe-area-inset-left,  0px), 12px);
+    padding-right: max(env(safe-area-inset-right, 0px), 12px);
     background-color: var(--surface-card);
     border-top: 1px solid var(--card-border);
     box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.35);
