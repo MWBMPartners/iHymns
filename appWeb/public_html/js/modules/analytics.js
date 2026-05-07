@@ -17,6 +17,8 @@
  * - Scroll depth is tracked on song pages at 25% thresholds.
  */
 
+import { STORAGE_ANALYTICS_DEBUG } from '../constants.js';
+
 export class Analytics {
     /**
      * @param {object} app Reference to the main iHymnsApp instance
@@ -51,7 +53,7 @@ export class Analytics {
      */
     init() {
         /* Check debug mode */
-        this.debug = !!localStorage.getItem('ihymns_analytics_debug');
+        this.debug = !!localStorage.getItem(STORAGE_ANALYTICS_DEBUG);
 
         /* Check Do Not Track */
         this.dntActive = navigator.doNotTrack === '1' ||

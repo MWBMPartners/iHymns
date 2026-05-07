@@ -29,6 +29,7 @@ import { Audio } from './modules/audio.js';
 import { SheetMusic } from './modules/sheet-music.js';
 import { History } from './modules/history.js';
 import { SetList } from './modules/setlist.js';
+import { UserAuth } from './modules/user-auth.js';
 import { Display } from './modules/display.js';
 import { Compare } from './modules/compare.js';
 import { Shortcuts } from './modules/shortcuts.js';
@@ -37,12 +38,20 @@ import { Transpose } from './modules/transpose.js';
 import { ReadingProgress } from './modules/reading-progress.js';
 import { SongbookIndex } from './modules/songbook-index.js';
 import { SearchHistory } from './modules/search-history.js';
+import { bootOfflineUi } from './modules/offline-ui.js';
 import { SongOfTheDay } from './modules/song-of-the-day.js';
 import { OfflineIndicator } from './modules/offline-indicator.js';
 import { StorageBridge } from './modules/storage-bridge.js';
 import { SubdomainSync } from './modules/subdomain-sync.js';
 import { Gestures } from './modules/gestures.js';
 import { Analytics } from './modules/analytics.js';
+import { Notifications } from './modules/notifications.js';
+import { escapeHtml } from './utils/html.js';
+import {
+    STORAGE_DEFAULT_SONGBOOK,
+    STORAGE_DISCLAIMER_ACCEPTED,
+    STORAGE_AUTO_UPDATE_SONGS,
+} from './constants.js';
 
 /**
  * iHymnsApp — Main application class
@@ -92,6 +101,9 @@ class iHymnsApp {
 
         /** @type {SetList} Worship set list / playlist (#94) */
         this.setList = null;
+
+        /** @type {UserAuth} Public user authentication for cross-device sync */
+        this.userAuth = null;
 
         /** @type {Display} Display preferences & presentation mode (#95) */
         this.display = null;
@@ -156,7 +168,12 @@ class iHymnsApp {
 
             /* Cross-domain storage bridge (#133) — initialise in background.
              * Modules use localStorage directly (synchronous). The bridge
-             * syncs data across domains asynchronously without blocking. */
+             * syncs data across domains asynchronously without blocking.
+             *
+             * Both promise chains carry .catch() handlers so a network /
+             * iframe / postMessage failure becomes a logged warning rather
+             * than an unhandled rejection that some browsers surface as
+             * a console error or page-level event (#530). */
             if (this.config.storageBridgeUrl) {
                 this.storageBridge = new StorageBridge(this.config.storageBridgeUrl);
                 this.storageBridge.init().then((connected) => {
@@ -176,8 +193,12 @@ class iHymnsApp {
                                 this.settings.applyReduceMotion(this.settings.get('reduceMotion'));
                                 this.settings.applyFontSize(this.settings.get('fontSize'));
                             }
+                        }).catch((err) => {
+                            console.warn('[iHymns] storageBridge.getAll failed (offline / cross-domain block):', err);
                         });
                     }
+                }).catch((err) => {
+                    console.warn('[iHymns] storageBridge.init failed (offline / iframe load):', err);
                 });
             }
 
@@ -227,6 +248,31 @@ class iHymnsApp {
             /* Worship set list / playlist (#94) */
             this.setList = new SetList(this);
             this.setList.init();
+
+            /* User authentication for cross-device sync */
+            this.userAuth = new UserAuth(this);
+            this.userAuth.initUserMenu();
+            /* Background Sync for setlists + favourites (#338). Safe to
+               call even if not signed in; the drain handlers short-
+               circuit and re-bind on next login. */
+            this.userAuth.bindOfflineDrains();
+
+            /* Re-refresh the Settings → Account section now that userAuth
+               exists and has read its localStorage credentials. Settings
+               .init() ran earlier (with userAuth still undefined) and
+               called refreshAccountSection(), which short-circuits via
+               optional chaining when userAuth is missing — leaving the
+               account section in its signed-out state even for already-
+               authenticated users. (#530) */
+            if (this.settings && typeof this.settings.refreshAccountSection === 'function') {
+                this.settings.refreshAccountSection();
+            }
+
+            /* In-app notifications bell (#289). Shows unread count from
+               tblNotifications for the signed-in user; hidden when
+               signed out. */
+            this.notifications = new Notifications(this);
+            this.notifications.init();
 
             /* Display preferences & presentation mode (#95) */
             this.display = new Display(this);
@@ -291,6 +337,11 @@ class iHymnsApp {
             /* --- Load initial page based on current URL --- */
             await this.router.handleCurrentRoute();
 
+            /* Wire offline-download buttons in whatever page just
+               rendered. Safe to call every route change because the
+               helper only binds fresh nodes. */
+            bootOfflineUi();
+
             /* --- Hide the loading spinner --- */
             this.hideLoader();
 
@@ -318,6 +369,11 @@ class iHymnsApp {
             /* Don't trigger shortcuts when typing in inputs */
             const tag = (e.target.tagName || '').toLowerCase();
             if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+
+            /* Honour the user's "Enable keyboard shortcuts" setting (#406).
+               Off by default means all shortcuts — including the `?` help
+               overlay — are disabled. Users can toggle in Settings → Input. */
+            if (this.settings && this.settings.get('keyboardShortcuts') === false) return;
 
             /* Quick-jump: capture digit keys (#96) */
             if (e.key >= '0' && e.key <= '9') {
@@ -530,6 +586,9 @@ class iHymnsApp {
             case 'shuffle-book':
                 this.shuffle.shuffleFromBook(el.dataset.shuffleBook || null);
                 break;
+            case 'print':
+                window.print();
+                break;
         }
     }
 
@@ -578,7 +637,7 @@ class iHymnsApp {
             document.body.appendChild(indicator);
         }
         indicator.innerHTML = `
-            <div class="quick-jump-number">${this.escapeHtml(this.quickJumpBuffer)}</div>
+            <div class="quick-jump-number">${escapeHtml(this.quickJumpBuffer)}</div>
             <small class="quick-jump-hint">Press Enter or wait...</small>`;
         indicator.classList.add('visible');
     }
@@ -608,7 +667,7 @@ class iHymnsApp {
 
         if (!number) return;
 
-        const defaultBook = localStorage.getItem('ihymns_default_songbook');
+        const defaultBook = localStorage.getItem(STORAGE_DEFAULT_SONGBOOK);
         if (defaultBook) {
             const padded = number.padStart(4, '0');
             this.router.navigate(`/song/${defaultBook}-${padded}`);
@@ -636,8 +695,8 @@ class iHymnsApp {
         const bookButtons = songbooks.length > 0
             ? songbooks.map(b => `
                 <button type="button" class="btn btn-outline-primary btn-sm quick-jump-book"
-                        data-book="${this.escapeHtml(b.id)}">
-                    ${this.escapeHtml(b.id)}
+                        data-book="${escapeHtml(b.id)}">
+                    ${escapeHtml(b.id)}
                 </button>`).join('')
             : ['CP', 'JP', 'MP', 'SDAH', 'CH'].map(id => `
                 <button type="button" class="btn btn-outline-primary btn-sm quick-jump-book"
@@ -645,7 +704,7 @@ class iHymnsApp {
 
         picker.innerHTML = `
             <div class="quick-jump-picker-content">
-                <p class="mb-2 fw-bold">Song #${this.escapeHtml(number)}</p>
+                <p class="mb-2 fw-bold">Song #${escapeHtml(number)}</p>
                 <p class="text-muted small mb-2">Select songbook:</p>
                 <div class="d-flex flex-wrap gap-2 justify-content-center">
                     ${bookButtons}
@@ -667,7 +726,7 @@ class iHymnsApp {
                 const bookId = btn.dataset.book;
                 const remember = document.getElementById('quick-jump-remember')?.checked;
                 if (remember) {
-                    localStorage.setItem('ihymns_default_songbook', bookId);
+                    localStorage.setItem(STORAGE_DEFAULT_SONGBOOK, bookId);
                 }
                 picker.remove();
                 const padded = number.padStart(4, '0');
@@ -699,7 +758,7 @@ class iHymnsApp {
      * If not, show the disclaimer modal.
      */
     checkDisclaimer() {
-        const accepted = localStorage.getItem('ihymns_disclaimer_accepted');
+        const accepted = localStorage.getItem(STORAGE_DISCLAIMER_ACCEPTED);
         if (accepted) return;
 
         const modal = document.getElementById('disclaimer-modal');
@@ -713,7 +772,7 @@ class iHymnsApp {
         const acceptBtn = document.getElementById('disclaimer-accept-btn');
         if (acceptBtn) {
             acceptBtn.addEventListener('click', () => {
-                localStorage.setItem('ihymns_disclaimer_accepted', 'true');
+                localStorage.setItem(STORAGE_DISCLAIMER_ACCEPTED, 'true');
                 bsModal.hide();
             });
         }
@@ -728,6 +787,20 @@ class iHymnsApp {
      */
     registerServiceWorker() {
         if (!('serviceWorker' in navigator)) return;
+
+        /*
+         * Reload when a new service worker takes control.
+         * The SW now calls skipWaiting() during install, so it activates
+         * immediately. This listener ensures the page reloads to pick up
+         * fresh HTML and newly cached CDN resources. The { once: true }
+         * flag prevents infinite reload loops.
+         */
+        let refreshing = false;
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+            if (refreshing) return;
+            refreshing = true;
+            window.location.reload();
+        });
 
         navigator.serviceWorker.register('/service-worker.js', {
             scope: '/'
@@ -782,7 +855,7 @@ class iHymnsApp {
             <div class="d-flex">
                 <div class="toast-body">
                     <i class="fa-solid fa-arrow-rotate-right me-2" aria-hidden="true"></i>
-                    A new version of ${this.escapeHtml(this.config.appName)} is available.
+                    A new version of ${escapeHtml(this.config.appName)} is available.
                     <button type="button" class="btn btn-sm btn-light ms-2" id="sw-update-btn">
                         Refresh
                     </button>
@@ -828,7 +901,7 @@ class iHymnsApp {
 
         /* Send auto-update preference to SW on init */
         navigator.serviceWorker.ready.then(() => {
-            const autoUpdate = localStorage.getItem('ihymns_auto_update_songs') === 'true';
+            const autoUpdate = localStorage.getItem(STORAGE_AUTO_UPDATE_SONGS) === 'true';
             navigator.serviceWorker.controller?.postMessage({
                 type: 'SET_AUTO_UPDATE',
                 enabled: autoUpdate,
@@ -874,10 +947,10 @@ class iHymnsApp {
             <div class="d-flex">
                 <div class="toast-body">
                     <i class="fa-solid fa-rotate me-1" aria-hidden="true"></i>
-                    Song ${this.escapeHtml(songId)} has been updated.
+                    Song ${escapeHtml(songId)} has been updated.
                     <button type="button" class="btn btn-sm btn-light ms-2 btn-update-song"
-                            data-song-id="${this.escapeHtml(songId)}"
-                            data-url="${this.escapeHtml(url)}">
+                            data-song-id="${escapeHtml(songId)}"
+                            data-url="${escapeHtml(url)}">
                         Update
                     </button>
                 </div>
@@ -913,11 +986,6 @@ class iHymnsApp {
      * @param {string} str
      * @returns {string}
      */
-    escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str || '';
-        return div.innerHTML;
-    }
 
     /**
      * Sync a localStorage key to the cross-domain storage bridge (#133).
@@ -963,13 +1031,13 @@ class iHymnsApp {
                 <div class="modal-dialog modal-dialog-centered">
                     <div class="modal-content">
                         <div class="modal-header">
-                            <h5 class="modal-title" id="${id}-label">${this.escapeHtml(title)}</h5>
+                            <h5 class="modal-title" id="${id}-label">${escapeHtml(title)}</h5>
                             <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                         </div>
-                        <div class="modal-body">${this.escapeHtml(message)}</div>
+                        <div class="modal-body">${escapeHtml(message)}</div>
                         <div class="modal-footer">
-                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">${this.escapeHtml(cancelText)}</button>
-                            <button type="button" class="btn ${okClass}" id="${id}-ok">${this.escapeHtml(okText)}</button>
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">${escapeHtml(cancelText)}</button>
+                            <button type="button" class="btn ${okClass}" id="${id}-ok">${escapeHtml(okText)}</button>
                         </div>
                     </div>
                 </div>`;
@@ -1019,18 +1087,18 @@ class iHymnsApp {
                 <div class="modal-dialog modal-dialog-centered">
                     <div class="modal-content">
                         <div class="modal-header">
-                            <h5 class="modal-title" id="${id}-label">${this.escapeHtml(title)}</h5>
+                            <h5 class="modal-title" id="${id}-label">${escapeHtml(title)}</h5>
                             <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                         </div>
                         <div class="modal-body">
-                            <label for="${id}-input" class="form-label">${this.escapeHtml(message)}</label>
+                            <label for="${id}-input" class="form-label">${escapeHtml(message)}</label>
                             <input type="text" class="form-control" id="${id}-input"
-                                   value="${this.escapeHtml(defaultValue)}"
-                                   placeholder="${this.escapeHtml(placeholder)}">
+                                   value="${escapeHtml(defaultValue)}"
+                                   placeholder="${escapeHtml(placeholder)}">
                         </div>
                         <div class="modal-footer">
-                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">${this.escapeHtml(cancelText)}</button>
-                            <button type="button" class="btn btn-primary" id="${id}-ok">${this.escapeHtml(okText)}</button>
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">${escapeHtml(cancelText)}</button>
+                            <button type="button" class="btn btn-primary" id="${id}-ok">${escapeHtml(okText)}</button>
                         </div>
                     </div>
                 </div>`;
@@ -1090,14 +1158,14 @@ class iHymnsApp {
                 <div class="modal-dialog modal-dialog-centered">
                     <div class="modal-content">
                         <div class="modal-header">
-                            <h5 class="modal-title" id="${id}-label">${this.escapeHtml(title)}</h5>
+                            <h5 class="modal-title" id="${id}-label">${escapeHtml(title)}</h5>
                             <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                         </div>
-                        <div class="modal-body">${this.escapeHtml(message)}</div>
+                        <div class="modal-body">${escapeHtml(message)}</div>
                         <div class="modal-footer">
                             <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-                            <button type="button" class="btn ${option2Class}" id="${id}-opt2">${this.escapeHtml(option2Text)}</button>
-                            <button type="button" class="btn ${option1Class}" id="${id}-opt1">${this.escapeHtml(option1Text)}</button>
+                            <button type="button" class="btn ${option2Class}" id="${id}-opt2">${escapeHtml(option2Text)}</button>
+                            <button type="button" class="btn ${option1Class}" id="${id}-opt1">${escapeHtml(option1Text)}</button>
                         </div>
                     </div>
                 </div>`;
@@ -1144,7 +1212,7 @@ class iHymnsApp {
             content.innerHTML = `
                 <div class="alert alert-danger mt-4" role="alert">
                     <i class="fa-solid fa-triangle-exclamation me-2" aria-hidden="true"></i>
-                    ${this.escapeHtml(message)}
+                    ${escapeHtml(message)}
                 </div>`;
         }
     }
@@ -1171,7 +1239,7 @@ class iHymnsApp {
         toastEl.setAttribute('aria-atomic', 'true');
         toastEl.innerHTML = `
             <div class="d-flex">
-                <div class="toast-body">${this.escapeHtml(message)}</div>
+                <div class="toast-body">${escapeHtml(message)}</div>
                 <button type="button" class="btn-close btn-close-white me-2 m-auto"
                         data-bs-dismiss="toast" aria-label="Close"></button>
             </div>`;

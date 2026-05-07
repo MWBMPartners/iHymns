@@ -12,7 +12,9 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 - **Copyright**: © 2026– MWBM Partners Ltd
 - **License**: Proprietary (third-party components retain their own licenses)
 - **GitHub Repo**: <https://github.com/MWBMPartners/iHymns>
-- **Current Version**: 0.1.6 (pre-release, Phase 1)
+- **Current Version**: 0.10.0 (pre-release, Phase 1)
+- **Database**: MySQL 5.7+ (30+ tables, tblCamelCase naming)
+- **API**: 50+ JSON endpoints via `api.php`
 
 ---
 
@@ -21,11 +23,15 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 ### Phase ONE (Current) — v0.x.x (pre-release)
 
 - Songs sourced from local `.SourceSongData/` text files
-- Parsed into structured JSON (`data/songs.json`) — single canonical copy
+- Parsed into JSON (`data/songs.json`), then migrated into **MySQL database**
 - 6 songbooks, 3,612 songs: CP (243), JP (617), MP (1355), SDAH (695), CH (702), Misc (0)
-- Some songbooks include MIDI audio and PDF sheet music
-- Song Editor (developer tool) in `appWeb/private_html/editor/` (HTTP Basic Auth)
-- Phase 1 is a first iteration — don't over-engineer file-based data distribution
+- MySQL with MySQLi prepared statements (song data) and PDO (auth/admin)
+- Database naming: `tblCamelCase` tables, `CamelCase` columns
+- User accounts with role hierarchy (global_admin/admin/editor/user)
+- User groups with version access control (Alpha/Beta/RC/RTW channel gating)
+- Song requests, multi-language support, activity logging, favorites sync
+- Song Editor in `/manage/editor/` (session-based auth)
+- Comprehensive REST-like API for PWA and native app consumption
 
 ### Phase TWO (Future) — v2.x.x
 
@@ -58,25 +64,25 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 
 | Branch | Purpose | Deploys To |
 | --- | --- | --- |
-| `beta` | Active development | `public_html_beta/` → beta server |
-| `main` | Production releases | `public_html/` → live server |
-| `alpha` | Experimental | `public_html_dev/` → dev server |
+| `alpha` | Experimental | `public_html/` → remote `public_html_dev/` |
+| `beta` | Active development | `public_html/` → remote `public_html_beta/` |
+| `main` | Production releases | `public_html/` → remote `public_html/` |
 
 ### Web Directory Structure
 
-- `appWeb/public_html/` — Production (auto-synced from beta on main merge)
-- `appWeb/public_html_beta/` — Beta (primary development target)
-- `appWeb/public_html_dev/` — Alpha/dev (experimental)
+- `appWeb/public_html/` — Single source directory (deployed to all environments)
+- `appWeb/data_share/` — Shared data (songs.json, setlists; deployed alongside public_html)
 - `appWeb/private_html/` — Private admin tools, song editor (separate SFTP path)
-- `appWeb/data/songs.json` — Shared song data (copied into each deploy dir during CI)
 
 ### Automated Deployment
 
 - GitHub Actions with `lftp` for SFTP mirroring (modelled on phpWhoIs)
-- `data/songs.json` copied INTO each deploy directory during CI (no parent path gymnastics)
+- lftp `--exclude` uses **regex patterns**, NOT shell globs (e.g. `\.xcodeproj$` not `*.xcodeproj`)
+- All branches deploy from `appWeb/public_html/`; branch determines remote SFTP path
+- `appWeb/data_share/` deployed alongside (without `--delete` to preserve runtime data)
+- `.env-channel` file injected by CI for server-side environment detection
 - `vars.SFTP_ENABLED` kill switch
 - `[deploy all]` commit flag forces full upload
-- `[skip sync]` skips beta→production sync
 - `[skip ci]` skips all workflows
 
 ### Version Numbering
@@ -84,7 +90,8 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 - `v0.x.x` = Phase 1 pre-release (current)
 - `v1.x.x` = Phase 1 stable
 - `v2.x.x` = Phase 2 (iLyrics dB integration)
-- Auto-bumped via conventional commits on push to `beta`
+- Auto-bumped via conventional commits on push to `beta` (single source of truth)
+- Alpha builds display commit date timestamp (yyyymmddhhmmss) in footer
 
 ---
 
@@ -123,6 +130,7 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 5. Update .gitignore
 6. COMMIT changes (push only when asked)
 7. Clean up temp files
+8. Keep `data/songs.schema.json` in sync with any `songs.json` structure changes (#226)
 
 ---
 
@@ -131,14 +139,23 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 | File | Purpose |
 | --- | --- |
 | `data/songs.json` | Canonical song database (single source of truth) |
+| `data/songs.schema.json` | JSON Schema (draft 2020-12) for songs.json validation (#226) |
 | `tools/parse-songs.js` | Parses .SourceSongData/ → songs.json |
 | `tools/build-web.js` | Web build/packaging script |
-| `appWeb/public_html_beta/includes/infoAppVer.php` | App version metadata |
-| `appWeb/public_html_beta/includes/components/*.php` | Modular PHP components |
-| `appWeb/public_html_beta/includes/pages/*.php` | Page templates (song, writer, privacy, terms, settings) |
-| `appWeb/public_html_beta/js/modules/*.js` | ES modules (router, analytics, gestures, settings, etc.) |
-| `appWeb/public_html_beta/js/utils/*.js` | JS utilities (text.js) |
-| `appWeb/public_html_beta/includes/config.php` | App configuration (analytics, features) |
+| `appWeb/public_html/includes/infoAppVer.php` | App version metadata |
+| `appWeb/public_html/includes/components/*.php` | Modular PHP components |
+| `appWeb/public_html/includes/pages/*.php` | Page templates (song, writer, privacy, terms, settings) |
+| `appWeb/public_html/js/modules/*.js` | ES modules (router, analytics, gestures, settings, etc.) |
+| `appWeb/public_html/js/utils/*.js` | JS utilities (html.js, text.js) |
+| `appWeb/public_html/js/constants.js` | Centralised localStorage key constants (#139) |
+| `appWeb/public_html/api.php` | Server-side API (songs, setlists, search, user auth, password reset) |
+| `appWeb/public_html/og-image.php` | Dynamic OG image generator (1200×630, contextual song images) |
+| `appWeb/public_html/sitemap.xml.php` | Dynamic XML sitemap from song database |
+| `appWeb/public_html/includes/config.php` | App configuration (analytics, features) |
+| `appWeb/public_html/manage/includes/auth.php` | Authentication middleware with role hierarchy |
+| `appWeb/public_html/includes/db_mysql.php` | Single mysqli connection factory (`getDbMysqli()`) shared by main app + admin since #555 |
+| `appWeb/public_html/js/modules/user-auth.js` | Public user auth (register, login, sync, password reset) |
+| `appWeb/public_html/js/utils/components.js` | Shared song component tag utility (12 types) |
 | `appWeb/private_html/editor/` | Song editor (dev tool) |
 | `appApple/iHymns/iHymns/Services/AppInfo.swift` | Apple app info |
 | `appAndroid/.../AppInfo.kt` | Android app info |
@@ -159,4 +176,33 @@ See `DEV_NOTES.md` for full setup guide including Apple, Android, and Fire OS.
 
 ---
 
-Last updated: 2026-04-06
+---
+
+## User Account System
+
+### Role Hierarchy (highest to lowest)
+
+| Role | Level | Capabilities |
+| --- | --- | --- |
+| `global_admin` | 4 | All powers, auto-assigned to first user |
+| `admin` | 3 | Manage users (assign roles up to admin) |
+| `editor` | 2 | Edit songs via /manage/editor/ |
+| `user` | 1 | Save setlists centrally, cross-device sync |
+
+- Each role inherits capabilities of roles below it
+- Non-logged-in (anonymous) users: local-only setlists (localStorage)
+- Public API uses bearer tokens (64-char hex, 30-day expiry)
+- Admin panel uses PHP sessions (session-based auth)
+- Password reset via secure tokens (48-char hex, 1-hour expiry, single-use)
+- Future: SIGNula ID integration
+
+### Custom Song Arrangements
+
+- Per-song arrangement editor in setlists (ProPresenter 7-style)
+- 12 component types with short tags: V, C, R, PC, B, T, CD, I, O, IL, VP, AL
+- Drag-and-drop reordering, auto-generate, sequential reset
+- Arrangements persisted in setlist data and shared setlist links
+
+---
+
+Last updated: 2026-04-09

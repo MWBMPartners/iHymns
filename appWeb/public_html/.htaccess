@@ -21,11 +21,26 @@
 RewriteEngine On
 
 # ==========================================================================
+# ADMIN AREA PASSTHROUGH (/manage/) + /admin/ alias (#407)
+#
+# The /manage/ directory has its own PHP authentication system and does
+# not use the SPA router. All requests to /manage/ are served directly
+# by PHP — they must bypass the .php blocking rule and the SPA catch-all.
+#
+# /admin/ is a permanent alias for /manage/ — same portal, friendlier URL.
+# ==========================================================================
+
+# /admin/<path> → /manage/<path> (301, preserves query string)
+RewriteRule ^admin(/.*)?$ /manage$1 [R=301,L,QSA]
+
+RewriteRule ^manage/ - [L]
+
+# ==========================================================================
 # BLOCK DIRECT ACCESS TO PHP FILES
 #
 # Security measure: prevents revealing that the server uses PHP.
 # All PHP files must be accessed through clean URL rewrites.
-# Exceptions: none — all PHP access goes through rewritten paths.
+# Exceptions: /manage/ (handled above, has its own auth).
 # ==========================================================================
 
 # Block direct access to any .php file (except internal rewrites)
@@ -51,6 +66,9 @@ RewriteRule (^|/)\.(?!well-known) - [F,L]
 
 RewriteRule ^api$ api.php [QSA,L]
 
+# /og-image → og-image.php (hides PHP extension from OG meta tags)
+RewriteRule ^og-image$ og-image.php [QSA,L]
+
 # ==========================================================================
 # SERVICE WORKER ROUTING (#81)
 #
@@ -60,6 +78,16 @@ RewriteRule ^api$ api.php [QSA,L]
 # ==========================================================================
 
 RewriteRule ^service-worker\.js$ service-worker.js.php [L]
+
+# ==========================================================================
+# SITEMAP ROUTING (#151)
+#
+# /sitemap.xml → sitemap.xml.php
+# The sitemap is generated dynamically by PHP to include all songs,
+# songbooks, writers, and static pages from the song database.
+# ==========================================================================
+
+RewriteRule ^sitemap\.xml$ sitemap.xml.php [L]
 
 # ==========================================================================
 # STATIC ASSET PASSTHROUGH
@@ -175,9 +203,15 @@ RewriteRule ^ index.php [QSA,L]
         Header set Expires "0"
     </FilesMatch>
 
-    # CSS and JS — short cache in beta
+    # CSS and JS — always revalidate so deploys take effect immediately.
+    # ES module graphs make per-file cache-busting impractical (only the
+    # entry script tag carries ?v=...; its static imports do not), and
+    # the semver bumps only on release, not on every alpha/beta deploy.
+    # "no-cache, must-revalidate" still caches the response but forces a
+    # conditional GET — the server answers 304 when unchanged (cheap) and
+    # sends fresh bytes only when the file really changed.
     <FilesMatch "\.(css|js|mjs)$">
-        Header set Cache-Control "public, max-age=3600"
+        Header set Cache-Control "no-cache, must-revalidate"
     </FilesMatch>
 
     # Images and fonts — longer cache

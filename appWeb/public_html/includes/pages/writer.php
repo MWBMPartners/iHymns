@@ -157,14 +157,14 @@ $composerCount = count(array_filter($matchedSongs, fn($m) => $m['isComposer']));
                        data-navigate="song"
                        data-song-id="<?= htmlspecialchars($song['id']) ?>"
                        role="listitem"
-                       aria-label="Song <?= (int)$song['number'] ?>: <?= htmlspecialchars($song['title']) ?>">
+                       aria-label="Song <?= (int)$song['number'] ?>: <?= htmlspecialchars(toTitleCase($song['title'])) ?>">
                         <!-- Song number badge -->
                         <span class="song-number-badge" data-songbook="<?= htmlspecialchars($bookId) ?>" aria-hidden="true">
                             <?= (int)$song['number'] ?>
                         </span>
                         <!-- Song info -->
                         <div class="song-info flex-grow-1">
-                            <span class="song-title"><?= htmlspecialchars($song['title']) ?></span>
+                            <span class="song-title"><?= htmlspecialchars(toTitleCase($song['title'])) ?></span>
                             <small class="text-muted d-block">
                                 <?php if ($match['isWriter'] && $match['isComposer']): ?>
                                     <i class="fa-solid fa-pen-fancy me-1" aria-hidden="true"></i>Words &amp; Music

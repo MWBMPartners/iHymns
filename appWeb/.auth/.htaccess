@@ -1,0 +1,15 @@
+# ============================================================================
+# iHymns — Deny all web access to credentials directory
+# Defense-in-depth: this directory should already be outside the web root,
+# but this .htaccess blocks access if it is ever accidentally exposed.
+# ============================================================================
+
+<IfModule mod_authz_core.c>
+    # Apache 2.4+
+    Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+    # Apache 2.2
+    Order deny,allow
+    Deny from all
+</IfModule>

@@ -37,13 +37,8 @@
     "prefer_related_applications": false,
     "related_applications": [
         {
-            "platform": "play",
-            "id": "ltd.mwbmpartners.ihymns",
-            "url": "https://play.google.com/store/apps/details?id=ltd.mwbmpartners.ihymns"
-        },
-        {
-            "platform": "itunes",
-            "url": "https://apps.apple.com/app/ihymns/id0000000000"
+            "platform": "webapp",
+            "url": "https://ihymns.app/manifest.json"
         }
     ],
 
@@ -94,7 +89,13 @@
             "src": "/assets/icon-192.png",
             "type": "image/png",
             "sizes": "192x192",
-            "purpose": "any maskable"
+            "purpose": "any"
+        },
+        {
+            "src": "/assets/icon-192.png",
+            "type": "image/png",
+            "sizes": "192x192",
+            "purpose": "maskable"
         },
         {
             "src": "/assets/icon-256.png",
@@ -112,7 +113,13 @@
             "src": "/assets/icon-512.png",
             "type": "image/png",
             "sizes": "512x512",
-            "purpose": "any maskable"
+            "purpose": "any"
+        },
+        {
+            "src": "/assets/icon-512.png",
+            "type": "image/png",
+            "sizes": "512x512",
+            "purpose": "maskable"
         }
     ],
 
@@ -205,6 +212,7 @@
     "share_target": {
         "action": "/search",
         "method": "GET",
+        "enctype": "application/x-www-form-urlencoded",
         "params": {
             "text": "q",
             "title": "q",
@@ -241,9 +249,11 @@
 
     "scope_extensions": [
         {
+            "type": "origin",
             "origin": "https://ihymns.app"
         },
         {
+            "type": "origin",
             "origin": "https://www.ihymns.app"
         }
     ],

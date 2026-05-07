@@ -101,7 +101,7 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Lint JavaScript (ESLint)
         run: |
-          JS_DIR="appWeb/public_html_beta/js"
+          JS_DIR="appWeb/public_html/js"
 
           # Check if there are any JS files to lint
           JS_FILES=$(find "$JS_DIR" -name '*.js' -type f 2>/dev/null || true)
@@ -130,6 +130,34 @@ jobs:
               exit 0
             }
           fi
+
+      # -----------------------------------------------------------------------
+      # Step 5a: Detect literal PHP open tags inside HTML comments / backticks
+      #
+      # PHP doesn't respect HTML-comment boundaries — it parses every `<?`
+      # open-tag it finds. A documentation comment like `<?= json_encode(...) ?>`
+      # is therefore evaluated as live PHP at request time. On PHP 8.1+ the
+      # `(...)` is first-class callable syntax, so `json_encode(...)` returns
+      # a Closure and the `<?=` then fatals trying to echo it, halting output
+      # mid-stream and leaving the browser with a truncated HTML response.
+      # This took down alpha in PR #536 (commit 96cd14a) — see
+      # `.claude/project-rules.md` §9 for the full incident note.
+      # -----------------------------------------------------------------------
+      - name: Detect embedded PHP open tags in HTML comments / backticks
+        run: |
+          echo "Scanning .php files for literal '<?' inside backticks or HTML comments..."
+          MATCHES=$(grep -rnP '`[^`]*<\?|<!--[^>]*<\?' appWeb --include='*.php' || true)
+          if [ -n "$MATCHES" ]; then
+            echo "::error::Found literal PHP open tags inside HTML comments or backticks. PHP will parse and execute these at runtime — see .claude/project-rules.md §9."
+            echo "$MATCHES" | while IFS= read -r line; do
+              # Re-emit each match as a GitHub annotation pinned to the file:line
+              FILE=$(echo "$line" | cut -d: -f1)
+              LINE=$(echo "$line" | cut -d: -f2)
+              echo "::error file=$FILE,line=$LINE::Literal PHP open tag in comment/backtick — will be parsed at runtime"
+            done
+            exit 1
+          fi
+          echo "OK: no embedded PHP tags inside HTML comments or backticks."
 
       # -----------------------------------------------------------------------
       # Step 5: Run PHP syntax check on all PHP files
@@ -176,7 +204,7 @@ jobs:
           # List of JSON files to validate
           JSON_FILES=(
             "data/songs.json"
-            "appWeb/public_html_beta/manifest.json"
+            "appWeb/public_html/manifest.json"
             "appWeb/public_html/manifest.json"
           )
 
@@ -208,7 +236,7 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Lint HTML (HTMLHint)
         run: |
-          HTML_FILES=$(find appWeb/public_html_beta/ -name '*.html' -type f 2>/dev/null || true)
+          HTML_FILES=$(find appWeb/public_html/ -name '*.html' -type f 2>/dev/null || true)
 
           if [ -z "$HTML_FILES" ]; then
             echo "No HTML files found. Skipping HTMLHint."
@@ -219,7 +247,7 @@ jobs:
 
           # Check if htmlhint is available locally, otherwise use npx
           if command -v htmlhint &>/dev/null || npx htmlhint --version &>/dev/null; then
-            npx htmlhint appWeb/public_html_beta/**/*.html || {
+            npx htmlhint appWeb/public_html/**/*.html || {
               echo "::warning::HTMLHint found issues. Review the output above."
               # Non-blocking — HTML lint issues are advisory
               exit 0

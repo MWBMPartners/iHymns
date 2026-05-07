@@ -761,13 +761,13 @@ declare(strict_types=1);
                     >
                         <!-- Song Title — the primary display name of the song -->
                         <div class="mb-3">
-                            <label for="fieldTitle" class="form-label">
+                            <label for="edit-title" class="form-label">
                                 Song Title <span class="text-danger">*</span>
                             </label>
                             <input
                                 type="text"
                                 class="form-control"
-                                id="fieldTitle"
+                                id="edit-title"
                                 placeholder="Enter song title"
                                 required
                             >
@@ -777,11 +777,11 @@ declare(strict_types=1);
                         <div class="row mb-3">
                             <!-- Song Number — the numeric identifier within a songbook -->
                             <div class="col-md-4">
-                                <label for="fieldNumber" class="form-label">Song Number</label>
+                                <label for="edit-number" class="form-label">Song Number</label>
                                 <input
                                     type="number"
                                     class="form-control"
-                                    id="fieldNumber"
+                                    id="edit-number"
                                     placeholder="e.g. 42"
                                     min="1"
                                 >
@@ -789,8 +789,8 @@ declare(strict_types=1);
 
                             <!-- Songbook — the collection this song belongs to -->
                             <div class="col-md-8">
-                                <label for="fieldSongbook" class="form-label">Songbook</label>
-                                <select class="form-select" id="fieldSongbook">
+                                <label for="edit-songbook" class="form-label">Songbook</label>
+                                <select class="form-select" id="edit-songbook">
                                     <option value="">Select songbook...</option>
                                     <!--
                                          Songbook options are populated dynamically
@@ -803,15 +803,67 @@ declare(strict_types=1);
 
                         <!-- CCLI Number — Christian Copyright Licensing International identifier -->
                         <div class="mb-3">
-                            <label for="fieldCCLI" class="form-label">CCLI Number</label>
+                            <label for="edit-ccli" class="form-label">CCLI Number</label>
                             <input
                                 type="text"
                                 class="form-control"
-                                id="fieldCCLI"
+                                id="edit-ccli"
                                 placeholder="e.g. 1234567"
                             >
                             <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
                                 The CCLI song number for licensing and reporting purposes.
+                            </div>
+                        </div>
+
+                        <!-- Status & Copyright Flags (#222, #225) -->
+                        <hr style="border-color: var(--ih-border);">
+                        <div class="mb-3">
+                            <label class="form-label d-block">
+                                <i class="bi bi-flag me-1"></i>Status &amp; Copyright
+                            </label>
+
+                            <!-- Verified — lyrics confirmed as complete and accurate -->
+                            <div class="form-check mb-2">
+                                <input
+                                    type="checkbox"
+                                    class="form-check-input"
+                                    id="edit-verified"
+                                >
+                                <label class="form-check-label" for="edit-verified">
+                                    <i class="bi bi-patch-check me-1" style="color: var(--ih-amber);"></i>
+                                    Verified — lyrics confirmed complete and accurate
+                                </label>
+                            </div>
+
+                            <!-- Lyrics Public Domain — lyric text is copyright-free -->
+                            <div class="form-check mb-2">
+                                <input
+                                    type="checkbox"
+                                    class="form-check-input"
+                                    id="edit-lyricsPublicDomain"
+                                >
+                                <label class="form-check-label" for="edit-lyricsPublicDomain">
+                                    <i class="bi bi-unlock me-1" style="color: var(--ih-amber);"></i>
+                                    Lyrics — Public Domain
+                                </label>
+                            </div>
+
+                            <!-- Music Public Domain — musical composition is copyright-free -->
+                            <div class="form-check mb-2">
+                                <input
+                                    type="checkbox"
+                                    class="form-check-input"
+                                    id="edit-musicPublicDomain"
+                                >
+                                <label class="form-check-label" for="edit-musicPublicDomain">
+                                    <i class="bi bi-unlock me-1" style="color: var(--ih-amber);"></i>
+                                    Music — Public Domain
+                                </label>
+                            </div>
+
+                            <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                                Only tick Public Domain if the work is explicitly in the public domain.
+                                An unknown or missing copyright does not imply public domain.
                             </div>
                         </div>
                     </div>
@@ -881,7 +933,73 @@ declare(strict_types=1);
                         <div class="mt-3 p-2 rounded" style="background-color: var(--ih-bg-card); border: 1px solid var(--ih-border);">
                             <small class="text-muted">
                                 <strong>Component types:</strong>
-                                Verse, Chorus, Refrain, Bridge, Pre-Chorus, Tag, Coda, Intro, Outro
+                                Verse, Chorus, Refrain, Bridge, Pre-Chorus, Tag, Coda, Intro, Outro, Interlude
+                            </small>
+                        </div>
+
+                        <!-- -------------------------------------------------
+                             ARRANGEMENT EDITOR (#161)
+                             Customise the display order of song components.
+                             Uses human-readable labels (e.g. "Verse 1, Chorus")
+                             instead of raw component indexes.
+                             ------------------------------------------------- -->
+                        <hr class="my-3">
+                        <h6 class="fw-semibold mb-2">
+                            <i class="bi bi-arrow-down-up me-1"></i>Arrangement
+                            <small class="text-muted fw-normal ms-2">(display order)</small>
+                        </h6>
+
+                        <!-- Arrangement chip display — rendered dynamically -->
+                        <div id="arrangement-chips" class="d-flex flex-wrap gap-1 mb-2" style="min-height: 32px;"></div>
+
+                        <!-- Arrangement text input for manual editing -->
+                        <div class="input-group input-group-sm mb-2">
+                            <input
+                                type="text"
+                                class="form-control"
+                                id="arrangement-input"
+                                placeholder="e.g. Verse 1, Chorus, Verse 2, Chorus, Verse 3, Chorus"
+                                aria-label="Arrangement order (comma-separated component labels)"
+                            >
+                            <button
+                                type="button"
+                                class="btn btn-outline-secondary"
+                                id="btnApplyArrangement"
+                                title="Apply arrangement"
+                            >
+                                <i class="bi bi-check-lg"></i> Apply
+                            </button>
+                        </div>
+
+                        <!-- Validation feedback -->
+                        <div id="arrangement-feedback" class="small mb-2" style="display: none;"></div>
+
+                        <!-- Quick action buttons -->
+                        <div class="d-flex flex-wrap gap-2 mb-2">
+                            <button
+                                type="button"
+                                class="btn btn-sm btn-outline-secondary"
+                                id="btnArrangementAuto"
+                                title="Insert chorus after each verse"
+                            >
+                                <i class="bi bi-magic me-1"></i>Auto: Chorus after each verse
+                            </button>
+                            <button
+                                type="button"
+                                class="btn btn-sm btn-outline-secondary"
+                                id="btnArrangementSequential"
+                                title="Use sequential order (clear arrangement)"
+                            >
+                                <i class="bi bi-arrow-down me-1"></i>Sequential (clear)
+                            </button>
+                        </div>
+
+                        <div class="p-2 rounded" style="background-color: var(--ih-bg-card); border: 1px solid var(--ih-border);">
+                            <small class="text-muted">
+                                <strong>Arrangement:</strong>
+                                Type component labels separated by commas. Use the name and number
+                                (e.g. <code>Verse 1</code>, <code>Chorus</code>, <code>Bridge</code>).
+                                Leave empty or click "Sequential" for default order.
                             </small>
                         </div>
                     </div>
@@ -963,12 +1081,12 @@ declare(strict_types=1);
 
                         <!-- Copyright Text — free-text copyright notice -->
                         <div class="mb-3">
-                            <label for="fieldCopyright" class="form-label">
+                            <label for="edit-copyright" class="form-label">
                                 <i class="bi bi-c-circle me-1"></i>Copyright
                             </label>
                             <textarea
                                 class="form-control"
-                                id="fieldCopyright"
+                                id="edit-copyright"
                                 rows="2"
                                 placeholder="e.g. Copyright 2024 Hillsong Music Publishing"
                             ></textarea>
@@ -1092,7 +1210,6 @@ declare(strict_types=1);
                             <select class="form-select form-select-sm component-type" aria-label="Component type">
                                 <option value="verse">Verse</option>
                                 <option value="chorus">Chorus</option>
-                                <option value="refrain">Refrain</option>
                                 <option value="bridge">Bridge</option>
                                 <option value="pre-chorus">Pre-Chorus</option>
                                 <option value="tag">Tag</option>

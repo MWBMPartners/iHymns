@@ -8,6 +8,8 @@
  * song via a search modal; both songs are displayed in a split view.
  * Responsive: side-by-side on desktop, tabbed on mobile.
  */
+import { escapeHtml } from '../utils/html.js';
+import { toTitleCase } from '../utils/text.js';
 
 export class Compare {
     /**
@@ -98,10 +100,10 @@ export class Compare {
 
                     results.innerHTML = songs.map(s => `
                         <button type="button" class="list-group-item list-group-item-action compare-pick"
-                                data-song-id="${this.escapeHtml(s.id)}">
-                            <span class="song-number-badge me-2" data-songbook="${this.escapeHtml(s.songbook || '')}">${s.number}</span>
-                            <strong>${this.escapeHtml(s.title)}</strong>
-                            <small class="text-muted ms-1">${this.escapeHtml(s.songbookName || '')}</small>
+                                data-song-id="${escapeHtml(s.id)}">
+                            <span class="song-number-badge me-2" data-songbook="${escapeHtml(s.songbook || '')}">${s.number}</span>
+                            <strong>${escapeHtml(toTitleCase(s.title))}</strong>
+                            <small class="text-muted ms-1">${escapeHtml(s.songbookName || '')}</small>
                         </button>`).join('');
 
                     results.querySelectorAll('.compare-pick').forEach(btn => {
@@ -220,9 +222,4 @@ export class Compare {
      * @param {string} str
      * @returns {string}
      */
-    escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str || '';
-        return div.innerHTML;
-    }
 }

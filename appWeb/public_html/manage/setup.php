@@ -1,0 +1,147 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * iHymns — Initial Admin Setup (#229)
+ *
+ * Copyright (c) 2026 iHymns. All rights reserved.
+ *
+ * PURPOSE:
+ * First-run setup page that creates the initial admin account.
+ * Automatically disabled once at least one user exists.
+ */
+
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+
+/* If users already exist, setup is disabled — redirect to login */
+if (!needsSetup()) {
+    header('Location: /manage/login');
+    exit;
+}
+
+/* Handle form submission */
+$error   = '';
+$success = false;
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $token       = $_POST['csrf_token'] ?? '';
+    $username    = $_POST['username'] ?? '';
+    $displayName = $_POST['display_name'] ?? '';
+    $password    = $_POST['password'] ?? '';
+    $confirm     = $_POST['password_confirm'] ?? '';
+
+    if (!validateCsrf($token)) {
+        $error = 'Invalid form submission. Please try again.';
+    } elseif (strlen(trim($username)) < 3) {
+        $error = 'Username must be at least 3 characters.';
+    } elseif (strlen($password) < 8) {
+        $error = 'Password must be at least 8 characters.';
+    } elseif ($password !== $confirm) {
+        $error = 'Passwords do not match.';
+    } else {
+        try {
+            createUser($username, $password, $displayName ?: $username, 'global_admin');
+            $success = true;
+        } catch (\RuntimeException $e) {
+            $error = $e->getMessage();
+        }
+    }
+}
+
+$csrf = csrfToken();
+?>
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Setup — iHymns Admin</title>
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
+    <!-- Shared iHymns palette + admin styles -->
+    <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__) . "/css/app.css") ?>">
+    <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime(dirname(__DIR__) . "/css/admin.css") ?>">
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
+</head>
+<body class="auth-center-page">
+    <div class="setup-card">
+        <div class="text-center mb-4">
+            <h1><i class="bi bi-music-note-beamed me-2"></i>iHymns</h1>
+            <p class="text-muted mb-0">Create your Global Admin account</p>
+        </div>
+
+        <?php if ($success): ?>
+            <div class="alert alert-success" role="alert">
+                <i class="bi bi-check-circle me-1"></i>Global Admin account created successfully.
+            </div>
+            <a href="/manage/login" class="btn btn-amber w-100">
+                <i class="bi bi-box-arrow-in-right me-1"></i>Go to Login
+            </a>
+        <?php else: ?>
+
+            <?php if ($error): ?>
+                <div class="alert alert-danger py-2" role="alert">
+                    <i class="bi bi-exclamation-triangle me-1"></i><?= htmlspecialchars($error) ?>
+                </div>
+            <?php endif; ?>
+
+            <form method="POST" autocomplete="off">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+
+                <div class="mb-3">
+                    <label for="username" class="form-label">Username <span class="text-danger">*</span></label>
+                    <input type="text"
+                           class="form-control"
+                           id="username"
+                           name="username"
+                           value="<?= htmlspecialchars($_POST['username'] ?? '') ?>"
+                           minlength="3"
+                           autofocus
+                           required>
+                    <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                        Minimum 3 characters. Will be lowercased automatically.
+                    </div>
+                </div>
+
+                <div class="mb-3">
+                    <label for="display_name" class="form-label">Display Name</label>
+                    <input type="text"
+                           class="form-control"
+                           id="display_name"
+                           name="display_name"
+                           value="<?= htmlspecialchars($_POST['display_name'] ?? '') ?>"
+                           placeholder="Optional — defaults to username">
+                </div>
+
+                <div class="mb-3">
+                    <label for="password" class="form-label">Password <span class="text-danger">*</span></label>
+                    <input type="password"
+                           class="form-control"
+                           id="password"
+                           name="password"
+                           minlength="8"
+                           required>
+                    <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                        Minimum 8 characters.
+                    </div>
+                </div>
+
+                <div class="mb-4">
+                    <label for="password_confirm" class="form-label">Confirm Password <span class="text-danger">*</span></label>
+                    <input type="password"
+                           class="form-control"
+                           id="password_confirm"
+                           name="password_confirm"
+                           minlength="8"
+                           required>
+                </div>
+
+                <button type="submit" class="btn btn-amber w-100">
+                    <i class="bi bi-shield-lock me-1"></i>Create Global Admin Account
+                </button>
+            </form>
+        <?php endif; ?>
+    </div>
+
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
+</body>
+</html>

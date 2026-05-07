@@ -28,6 +28,18 @@
  *   - Secure: yes (HTTPS only in production)
  */
 
+import {
+    STORAGE_THEME,
+    STORAGE_FONT_SIZE,
+    STORAGE_REDUCE_MOTION,
+    STORAGE_REDUCE_TRANSPARENCY,
+    STORAGE_DEFAULT_SONGBOOK,
+    STORAGE_TRANSITION,
+    STORAGE_AUTO_UPDATE_SONGS,
+    STORAGE_SEARCH_LYRICS,
+    STORAGE_DISPLAY,
+} from '../constants.js';
+
 export class SubdomainSync {
     constructor() {
         /** @type {string} Cookie name */
@@ -41,15 +53,15 @@ export class SubdomainSync {
          * Large data like favourites/setlists are excluded.
          */
         this.syncKeys = [
-            'ihymns_theme',
-            'ihymns_fontSize',
-            'ihymns_reduceMotion',
-            'ihymns_reduceTransparency',
-            'ihymns_default_songbook',
-            'ihymns_transition',
-            'ihymns_auto_update_songs',
-            'ihymns_search_lyrics',
-            'ihymns_display',
+            STORAGE_THEME,
+            STORAGE_FONT_SIZE,
+            STORAGE_REDUCE_MOTION,
+            STORAGE_REDUCE_TRANSPARENCY,
+            STORAGE_DEFAULT_SONGBOOK,
+            STORAGE_TRANSITION,
+            STORAGE_AUTO_UPDATE_SONGS,
+            STORAGE_SEARCH_LYRICS,
+            STORAGE_DISPLAY,
         ];
 
         /** @type {string|null} The shared cookie domain, or null if not on ihymns.app */

@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+  <!--
+    iHymns — Colour Vision Deficiency (CVD) Correction Filters
+    Copyright (c) 2026 iHymns. All rights reserved.
+
+    These SVG filters adjust colour rendering for users with colour blindness.
+    Referenced via CSS: filter: url('#ihymns-cvd-protanopia');
+
+    Matrices derived from research on CVD simulation and correction.
+    @see https://www.inf.ufrgs.br/~oliveira/pubs_files/CVD_Simulation/CVD_Simulation.html
+  -->
+
+  <!-- Protanopia correction (red-blind) -->
+  <filter id="ihymns-cvd-protanopia">
+    <feColorMatrix type="matrix" values="
+      0.567, 0.433, 0.000, 0, 0
+      0.558, 0.442, 0.000, 0, 0
+      0.000, 0.242, 0.758, 0, 0
+      0,     0,     0,     1, 0
+    "/>
+  </filter>
+
+  <!-- Deuteranopia correction (green-blind) -->
+  <filter id="ihymns-cvd-deuteranopia">
+    <feColorMatrix type="matrix" values="
+      0.625, 0.375, 0.000, 0, 0
+      0.700, 0.300, 0.000, 0, 0
+      0.000, 0.300, 0.700, 0, 0
+      0,     0,     0,     1, 0
+    "/>
+  </filter>
+
+  <!-- Tritanopia correction (blue-blind) -->
+  <filter id="ihymns-cvd-tritanopia">
+    <feColorMatrix type="matrix" values="
+      0.950, 0.050, 0.000, 0, 0
+      0.000, 0.433, 0.567, 0, 0
+      0.000, 0.475, 0.525, 0, 0
+      0,     0,     0,     1, 0
+    "/>
+  </filter>
+</svg>

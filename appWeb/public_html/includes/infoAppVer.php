@@ -79,26 +79,36 @@ $app["Application"]["Description"]["Keywords"] = "hymns, worship, lyrics, songbo
 /* Semantic version number (MAJOR.MINOR.PATCH) */
 /* Auto-bumped by the version-bump GitHub Action on push to beta */
 /* v1.x.x = Phase 1 (local JSON data), v2.x.x = Phase 2 (iLyrics dB) */
-$app["Application"]["Version"]["Number"] = "0.1.7";
+$app["Application"]["Version"]["Number"] = "0.25.2";
 
 /* Version name: human-readable release name (e.g., "Hymnal", NULL if unused) */
 $app["Application"]["Version"]["Name"] = NULL;
 
 /**
- * Development status: dynamically determined from the deployment directory.
+ * Development status: determined from the server's deployment directory.
  *
- * - If the file is in a directory containing "public_html_dev" → "Alpha"
- * - If the file is in a directory containing "public_html_beta" → "Beta"
- * - Otherwise (production public_html/) → NULL (no development label)
+ * Since all branches deploy from the same source (appWeb/public_html/),
+ * the environment is detected from the server-side DOCUMENT_ROOT or
+ * SCRIPT_FILENAME path, which reflects the SFTP destination directory:
+ *   - Remote path contains "public_html_dev"  → "Alpha"
+ *   - Remote path contains "public_html_beta" → "Beta"
+ *   - Otherwise (production public_html/)     → NULL (no label)
  *
- * This allows the same codebase to show the correct status label
- * depending on which server directory it is deployed to.
+ * Fallback: checks for a .env-channel file injected by CI/CD.
  */
+$serverPath = $_SERVER['DOCUMENT_ROOT'] ?? $_SERVER['SCRIPT_FILENAME'] ?? __DIR__;
+$envChannelFile = dirname(__DIR__) . DIRECTORY_SEPARATOR . '.env-channel';
 $app["Application"]["Version"]["Development"]["Status"] = match (true) {
-    /* Alpha/dev deployment — directory path contains "public_html_dev" */
-    str_contains(__DIR__, 'public_html_dev') => "Alpha",
-    /* Beta deployment — directory path contains "public_html_beta" */
-    str_contains(__DIR__, 'public_html_beta') => "Beta",
+    /* Alpha/dev deployment — server path contains "public_html_dev" */
+    str_contains($serverPath, 'public_html_dev') => "Alpha",
+    /* Beta deployment — server path contains "public_html_beta" */
+    str_contains($serverPath, 'public_html_beta') => "Beta",
+    /* CI/CD injected channel file fallback */
+    file_exists($envChannelFile) => match (trim(file_get_contents($envChannelFile))) {
+        'alpha' => "Alpha",
+        'beta'  => "Beta",
+        default => null,
+    },
     /* Production deployment — no development status label */
     default => null,
 };
@@ -162,12 +172,13 @@ if ($currentYear > $app["Application"]["Copyright"]["Year"]["Start"]) {
 /* Rights statement */
 $app["Application"]["Copyright"]["RightsStatement"] = "All Rights Reserved";
 
-/* Full copyright string for display: "© 2026 iHymns. All Rights Reserved" */
+/* Full copyright string for display: "Application © 2026 iHymns. All Rights Reserved" (#230)
+ * The "Application" prefix distinguishes the software copyright from song copyrights. */
 if (isset($app["Application"]["Copyright"]["UseVendor"]) && $app["Application"]["Copyright"]["UseVendor"]) {
-    $app["Application"]["Copyright"]["Full"] = "&copy; " . $app["Application"]["Copyright"]["Year"]["Display"] . " " . $app["Application"]["Vendor"]["Name"] . ". " . $app["Application"]["Copyright"]["RightsStatement"];
+    $app["Application"]["Copyright"]["Full"] = "Application &copy; " . $app["Application"]["Copyright"]["Year"]["Display"] . " " . $app["Application"]["Vendor"]["Name"] . ". " . $app["Application"]["Copyright"]["RightsStatement"];
 }
 else {
-    $app["Application"]["Copyright"]["Full"] = "&copy; " . $app["Application"]["Copyright"]["Year"]["Display"] . " " . $app["Application"]["Name"] . ". " . $app["Application"]["Copyright"]["RightsStatement"];
+    $app["Application"]["Copyright"]["Full"] = "Application &copy; " . $app["Application"]["Copyright"]["Year"]["Display"] . " " . $app["Application"]["Name"] . ". " . $app["Application"]["Copyright"]["RightsStatement"];
 }
 
 /* =========================================================================

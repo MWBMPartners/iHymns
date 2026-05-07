@@ -1,0 +1,223 @@
+/**
+ * iHymns — Accessibility Styles
+ *
+ * Copyright (c) 2026 iHymns. All rights reserved.
+ *
+ * PURPOSE:
+ * Provides additional accessibility modes beyond the standard light/dark themes:
+ *   - High contrast mode (WCAG AAA 7:1 ratio)
+ *   - Colour blind modes (protanopia, deuteranopia, tritanopia, achromatopsia)
+ *   - RTL (right-to-left) text direction for Arabic/Hebrew songs
+ *
+ * ACTIVATION:
+ * Modes are toggled via data attributes on <html>:
+ *   data-ihymns-contrast="high"
+ *   data-ihymns-cvd="protanopia" | "deuteranopia" | "tritanopia" | "achromatopsia"
+ *   dir="rtl" (set per-song based on language direction)
+ */
+
+/* =========================================================================
+ * HIGH CONTRAST MODE (#319)
+ *
+ * Pure black background with pure white text. Removes all gradients,
+ * transparency, and subtle colour differences. All interactive elements
+ * have visible outlines.
+ * ========================================================================= */
+
+[data-ihymns-contrast="high"] {
+    --bs-body-bg: #000 !important;
+    --bs-body-color: #fff !important;
+    --bs-border-color: #fff !important;
+    --bs-emphasis-color: #fff !important;
+    --bs-secondary-bg: #1a1a1a !important;
+    --bs-tertiary-bg: #333 !important;
+    --bs-link-color: #ffff00 !important;
+    --bs-link-hover-color: #ffcc00 !important;
+}
+
+[data-ihymns-contrast="high"] body {
+    background: #000 !important;
+    color: #fff !important;
+}
+
+[data-ihymns-contrast="high"] .card,
+[data-ihymns-contrast="high"] .modal-content,
+[data-ihymns-contrast="high"] .dropdown-menu,
+[data-ihymns-contrast="high"] .navbar {
+    background: #000 !important;
+    border: 2px solid #fff !important;
+    color: #fff !important;
+}
+
+[data-ihymns-contrast="high"] .btn {
+    border: 2px solid #fff !important;
+    color: #fff !important;
+    background: #000 !important;
+}
+
+[data-ihymns-contrast="high"] .btn:hover,
+[data-ihymns-contrast="high"] .btn:focus {
+    background: #fff !important;
+    color: #000 !important;
+}
+
+[data-ihymns-contrast="high"] .btn-primary,
+[data-ihymns-contrast="high"] .btn-success {
+    background: #ffff00 !important;
+    color: #000 !important;
+    border-color: #ffff00 !important;
+}
+
+[data-ihymns-contrast="high"] a {
+    color: #ffff00 !important;
+    text-decoration: underline !important;
+}
+
+[data-ihymns-contrast="high"] a:hover {
+    color: #ffcc00 !important;
+}
+
+[data-ihymns-contrast="high"] *:focus {
+    outline: 3px solid #ffff00 !important;
+    outline-offset: 2px !important;
+}
+
+[data-ihymns-contrast="high"] .text-muted,
+[data-ihymns-contrast="high"] .text-secondary {
+    color: #ccc !important;
+}
+
+[data-ihymns-contrast="high"] .badge {
+    border: 1px solid #fff !important;
+}
+
+[data-ihymns-contrast="high"] img {
+    filter: contrast(1.2) !important;
+}
+
+/* =========================================================================
+ * COLOUR BLIND MODES (CVD — Colour Vision Deficiency)
+ *
+ * Uses CSS filters to simulate and correct for common types of
+ * colour blindness. These adjust the entire page palette.
+ *
+ * Modes:
+ *   protanopia   — Red-blind (most common, ~1% of males)
+ *   deuteranopia — Green-blind (~1% of males)
+ *   tritanopia   — Blue-blind (rare, ~0.003%)
+ *   achromatopsia — Total colour blindness (monochromacy)
+ * ========================================================================= */
+
+/* Protanopia: shift reds to be distinguishable */
+[data-ihymns-cvd="protanopia"] {
+    filter: url('#ihymns-cvd-protanopia');
+}
+
+/* Deuteranopia: shift greens to be distinguishable */
+[data-ihymns-cvd="deuteranopia"] {
+    filter: url('#ihymns-cvd-deuteranopia');
+}
+
+/* Tritanopia: shift blues to be distinguishable */
+[data-ihymns-cvd="tritanopia"] {
+    filter: url('#ihymns-cvd-tritanopia');
+}
+
+/* Achromatopsia: full grayscale */
+[data-ihymns-cvd="achromatopsia"] {
+    filter: grayscale(100%);
+}
+
+/* Ensure modals and fixed elements inherit the filter */
+[data-ihymns-cvd] .modal,
+[data-ihymns-cvd] .fixed-top,
+[data-ihymns-cvd] .fixed-bottom {
+    filter: none; /* Reset — parent filter already applies */
+}
+
+/* =========================================================================
+ * SONGBOOK COLOUR OVERRIDES FOR COLOUR BLIND USERS
+ *
+ * Replace the standard songbook accent colours with patterns/textures
+ * when any CVD mode is active, ensuring songbooks remain distinguishable.
+ * ========================================================================= */
+
+[data-ihymns-cvd] .songbook-badge-CP { border-left: 4px solid #6366f1 !important; border-style: solid !important; }
+[data-ihymns-cvd] .songbook-badge-JP { border-left: 4px dashed #ec4899 !important; }
+[data-ihymns-cvd] .songbook-badge-MP { border-left: 4px dotted #14b8a6 !important; }
+[data-ihymns-cvd] .songbook-badge-SDAH { border-left: 4px double #f59e0b !important; }
+[data-ihymns-cvd] .songbook-badge-CH { border-left: 4px groove #ef4444 !important; }
+[data-ihymns-cvd] .songbook-badge-Misc { border-left: 4px ridge #8b5cf6 !important; }
+
+/* =========================================================================
+ * RTL (RIGHT-TO-LEFT) SUPPORT (#318)
+ *
+ * Applied per-song when the song's language has TextDirection = 'rtl'.
+ * The dir="rtl" attribute is set on the song lyrics container.
+ * ========================================================================= */
+
+/* Song lyrics container in RTL mode */
+.song-lyrics[dir="rtl"],
+[dir="rtl"] .song-lyrics {
+    text-align: right;
+    direction: rtl;
+}
+
+[dir="rtl"] .song-lyrics .song-component-label {
+    text-align: right;
+}
+
+/* Search results and song list items */
+[dir="rtl"] .song-list-item {
+    text-align: right;
+    flex-direction: row-reverse;
+}
+
+[dir="rtl"] .song-list-item .song-number-badge {
+    margin-left: 0.5rem;
+    margin-right: 0;
+}
+
+/* Songbook accent bar flips to right side */
+[dir="rtl"] .song-header-accent {
+    border-left: none;
+    border-right: 4px solid var(--songbook-color);
+}
+
+/* RTL-aware alignment for mixed content */
+.bidi-isolate {
+    unicode-bidi: isolate;
+}
+
+/* Writer/composer credits in RTL */
+[dir="rtl"] .song-credits {
+    text-align: right;
+}
+
+/* Setlist items in RTL */
+[dir="rtl"] .setlist-item {
+    flex-direction: row-reverse;
+}
+
+/* Navigation arrows swap in RTL */
+[dir="rtl"] .btn-prev::before { content: '→'; }
+[dir="rtl"] .btn-next::before { content: '←'; }
+
+/* =========================================================================
+ * REDUCED MOTION
+ *
+ * Respects the prefers-reduced-motion media query to disable
+ * animations for users who have requested reduced motion.
+ * Already partially implemented — this ensures full coverage.
+ * ========================================================================= */
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}

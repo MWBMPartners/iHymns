@@ -38,27 +38,46 @@ declare(strict_types=1);
  * BOOTSTRAP — Load configuration and application metadata
  * ========================================================================= */
 
-require_once __DIR__ . '/includes/config.php';
-require_once __DIR__ . '/includes/infoAppVer.php';
-require_once __DIR__ . '/includes/SongData.php';
+/* On-demand debug mode (#TBD) — must come first so it catches errors
+   anywhere downstream. Honoured only on Alpha/Beta when the page is
+   loaded with both `?_debug=1` and `?_dev=1`; production ignores. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'debug_mode.php';
+enableDebugModeIfRequested();
+
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
+
+/* Channel gate (#407) — alpha / beta subdomains require the user to
+   hold access_alpha / access_beta entitlements. Never gates production
+   or /api / /manage / static assets (those paths never hit index.php
+   thanks to the root .htaccess). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'channel_gate.php';
+enforceChannelGate($app["Application"]["Version"]["Development"]["Status"] ?? null);
 
 /* =========================================================================
- * APPLICATION METADATA SHORTCUTS
+ * APPLICATION METADATA — accessed directly via $app array
  * ========================================================================= */
 
-$appName      = $app["Application"]["Name"];
-$appVersion   = $app["Application"]["Version"]["Number"];
-$appDevStatus = $app["Application"]["Version"]["Development"]["Status"];
-$appCopyright = $app["Application"]["Copyright"]["Full"];
-$appDesc      = $app["Application"]["Description"]["Synopsis"];
-$appKeywords  = $app["Application"]["Description"]["Keywords"];
-$appUrl       = $app["Application"]["Website"]["URL"];
-$vendorName   = $app["Application"]["Vendor"]["Name"];
+/* Verify native app availability (cached, 24h TTL) */
+$nativeApps = APP_CONFIG['native_apps'];
+$iosApp     = verifyAppStoreApp('ios', $nativeApps['ios'] ?? null);
+$androidApp = verifyAppStoreApp('android', $nativeApps['android'] ?? null);
 
 /** Build a display version string (e.g., "0.1.5 Beta") */
-$versionDisplay = $appVersion;
-if ($appDevStatus !== null) {
-    $versionDisplay .= ' ' . $appDevStatus;
+$versionDisplay = $app["Application"]["Version"]["Number"];
+if ($app["Application"]["Version"]["Development"]["Status"] !== null) {
+    $versionDisplay .= ' ' . $app["Application"]["Version"]["Development"]["Status"];
+}
+
+/** On alpha: append build timestamp (yyyymmddhhmmss) for tracking deploys */
+$commitDate = $app["Application"]["Version"]["Repo"]["Commit"]["Date"] ?? null;
+if ($app["Application"]["Version"]["Development"]["Status"] === 'Alpha' && $commitDate !== null) {
+    $buildStamp = preg_replace('/[^0-9]/', '', $commitDate);
+    if (strlen($buildStamp) >= 12) {
+        $versionDisplay .= ' · ' . substr($buildStamp, 0, 14);
+    }
 }
 
 /** Library configuration shorthand */
@@ -88,8 +107,8 @@ $cspDirectives = [
     "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
     "img-src 'self' data: https:",
     "font-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
-    "connect-src 'self' https://www.google-analytics.com https://plausible.io https://www.clarity.ms https://*.usefathom.com{$cspMatomoUrl}",
-    "frame-src 'self' https://sync.ihymns.app https://*.ihymns.app",
+    "connect-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://www.google-analytics.com https://plausible.io https://www.clarity.ms https://*.usefathom.com{$cspMatomoUrl}",
+    "frame-src 'self' " . APP_CONFIG['storage_bridge']['origin'] . " https://*.ihymns.app",
     "worker-src 'self' https://cdn.jsdelivr.net blob:",
     "manifest-src 'self'",
     "base-uri 'self'",
@@ -120,11 +139,11 @@ $requestPath = getRequestPath();
 $canonicalUrl = getCanonicalUrl();
 
 /* Default OG values (used for generic pages) */
-$ogTitle       = $appName . ' — Christian Hymns & Worship Songs';
-$ogDescription = $appDesc;
+$ogTitle       = $app["Application"]["Name"] . ' — Christian Hymns & Worship Songs';
+$ogDescription = $app["Application"]["Description"]["Synopsis"];
 $ogType        = 'website';
-$ogImage       = $appUrl . '/assets/icon-512.png';
-$ogImageAlt    = $appName . ' logo';
+$ogImage       = getCanonicalUrl('/og-image');
+$ogImageAlt    = $app["Application"]["Name"] . ' logo';
 
 /* JSON-LD structured data — built during OG detection, rendered in <head> */
 $jsonLdScripts   = [];
@@ -145,7 +164,7 @@ try {
                      . ' #' . (int)$ogSong['number'];
             $ogDescription = 'View lyrics for "' . $ogSong['title']
                            . '" from ' . $ogSong['songbookName']
-                           . ' on ' . $appName;
+                           . ' on ' . $app["Application"]["Name"];
             if (!empty($ogSong['writers'])) {
                 $ogDescription .= '. Written by ' . implode(', ', $ogSong['writers']);
             }
@@ -155,6 +174,8 @@ try {
                 $ogDescription .= '. "' . implode(' / ', $firstLines) . '..."';
             }
             $ogType = 'article';
+            $ogImage = getCanonicalUrl('/og-image?song=' . urlencode($matches[1]));
+            $ogImageAlt = 'Preview of "' . $ogSong['title'] . '" from ' . $ogSong['songbookName'];
 
             /* JSON-LD: MusicComposition */
             $musicComposition = [
@@ -198,9 +219,11 @@ try {
         $ogBook = $songData->getSongbook($matches[1]);
         if ($ogBook !== null) {
             $pageType = 'songbook';
-            $ogTitle = htmlspecialchars($ogBook['name']) . ' — ' . $appName;
+            $ogTitle = htmlspecialchars($ogBook['name']) . ' — ' . $app["Application"]["Name"];
             $ogDescription = 'Browse ' . number_format($ogBook['songCount'])
-                           . ' songs from ' . $ogBook['name'] . ' on ' . $appName;
+                           . ' songs from ' . $ogBook['name'] . ' on ' . $app["Application"]["Name"];
+            $ogImage = getCanonicalUrl('/og-image?songbook=' . urlencode($matches[1]));
+            $ogImageAlt = $ogBook['name'] . ' songbook on ' . $app["Application"]["Name"];
 
             /* Breadcrumb: Home > Songbooks > Songbook Name */
             $breadcrumbItems = [
@@ -209,6 +232,30 @@ try {
                 ['name' => $ogBook['name'], 'url' => $canonicalUrl],
             ];
         }
+    }
+    /* Shared setlist page: /setlist/shared/abc123 */
+    elseif (preg_match('#^/setlist/shared/([a-f0-9]+)$#', $requestPath, $matches)) {
+        $pageType = 'other';
+        $shareId = $matches[1];
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';
+        $shareData = sharedSetlistGet($shareId);
+        if (is_array($shareData)) {
+            $setlistName = $shareData['name'] ?? 'Shared Set List';
+            $setlistSongCount = count($shareData['songs'] ?? []);
+            $ogTitle = htmlspecialchars($setlistName) . ' — Shared Set List — ' . $app["Application"]["Name"];
+            $ogDescription = 'A curated set list with ' . $setlistSongCount
+                           . ' ' . ($setlistSongCount === 1 ? 'song' : 'songs')
+                           . ' on ' . $app["Application"]["Name"];
+            $ogImage = getCanonicalUrl('/og-image?setlist=' . urlencode($shareId));
+            $ogImageAlt = 'Set list "' . $setlistName . '" on ' . $app["Application"]["Name"];
+        }
+
+        /* Breadcrumb: Home > Set Lists > Shared */
+        $breadcrumbItems = [
+            ['name' => 'Home',     'url' => getCanonicalUrl('/')],
+            ['name' => 'Set List', 'url' => getCanonicalUrl('/setlist')],
+            ['name' => 'Shared',   'url' => $canonicalUrl],
+        ];
     }
     /* Songbooks listing page */
     elseif ($requestPath === '/songbooks') {
@@ -235,7 +282,7 @@ if ($pageType === 'home') {
     $jsonLdScripts[] = [
         '@context'        => 'https://schema.org',
         '@type'           => 'WebSite',
-        'name'            => $appName,
+        'name'            => $app["Application"]["Name"],
         'url'             => $siteUrl,
         'potentialAction'  => [
             '@type'       => 'SearchAction',
@@ -279,10 +326,10 @@ if (!empty($breadcrumbItems)) {
          ================================================================ -->
     <title><?= $ogTitle ?></title>
     <meta name="description" content="<?= htmlspecialchars($ogDescription) ?>">
-    <meta name="keywords" content="<?= htmlspecialchars($appKeywords) ?>">
-    <meta name="author" content="<?= htmlspecialchars($vendorName) ?>">
-    <meta name="application-name" content="<?= htmlspecialchars($appName) ?>">
-    <meta name="generator" content="<?= htmlspecialchars($appName) ?> PWA">
+    <meta name="keywords" content="<?= htmlspecialchars($app["Application"]["Description"]["Keywords"]) ?>">
+    <meta name="author" content="<?= htmlspecialchars($app["Application"]["Vendor"]["Name"]) ?>">
+    <meta name="application-name" content="<?= htmlspecialchars($app["Application"]["Name"]) ?>">
+    <meta name="generator" content="<?= htmlspecialchars($app["Application"]["Name"]) ?> PWA">
 
     <!-- Canonical URL — prevents duplicate content for search engines -->
     <link rel="canonical" href="<?= htmlspecialchars($canonicalUrl) ?>">
@@ -291,16 +338,16 @@ if (!empty($breadcrumbItems)) {
     <meta property="og:type" content="<?= htmlspecialchars($ogType) ?>">
     <meta property="og:title" content="<?= htmlspecialchars($ogTitle) ?>">
     <meta property="og:description" content="<?= htmlspecialchars($ogDescription) ?>">
-    <meta property="og:site_name" content="<?= htmlspecialchars($appName) ?>">
+    <meta property="og:site_name" content="<?= htmlspecialchars($app["Application"]["Name"]) ?>">
     <meta property="og:url" content="<?= htmlspecialchars($canonicalUrl) ?>">
     <meta property="og:image" content="<?= htmlspecialchars($ogImage) ?>">
     <meta property="og:image:alt" content="<?= htmlspecialchars($ogImageAlt) ?>">
-    <meta property="og:image:width" content="512">
-    <meta property="og:image:height" content="512">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
     <meta property="og:locale" content="<?= htmlspecialchars($locale) ?>">
 
     <!-- Twitter Card (X / Twitter) -->
-    <meta name="twitter:card" content="summary">
+    <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="<?= htmlspecialchars($ogTitle) ?>">
     <meta name="twitter:description" content="<?= htmlspecialchars($ogDescription) ?>">
     <meta name="twitter:image" content="<?= htmlspecialchars($ogImage) ?>">
@@ -314,15 +361,20 @@ if (!empty($breadcrumbItems)) {
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="<?= htmlspecialchars($appName) ?>">
-    <!-- Smart App Banner — prompts iOS Safari to install native app (#99) -->
-    <meta name="apple-itunes-app" content="app-id=0000000000, app-argument=<?= htmlspecialchars($requestPath) ?>">
+    <meta name="apple-mobile-web-app-title" content="<?= htmlspecialchars($app["Application"]["Name"]) ?>">
+    <!-- Smart App Banner — only shown when a verified native app exists (#99) -->
+    <?php if ($iosApp['verified']): ?>
+        <meta name="apple-itunes-app" content="app-id=<?= htmlspecialchars($iosApp['appId']) ?>, app-argument=<?= htmlspecialchars($requestPath) ?>">
+    <?php endif; ?>
+    <?php if ($androidApp['verified']): ?>
+        <meta name="google-play-app" content="app-id=<?= htmlspecialchars($androidApp['appId']) ?>">
+    <?php endif; ?>
     <meta name="msapplication-TileColor" content="#4f46e5">
     <meta name="msapplication-config" content="none">
     <meta name="format-detection" content="telephone=no">
 
     <!-- PWA Manifest -->
-    <link rel="manifest" href="/manifest.json" crossorigin="use-credentials">
+    <link rel="manifest" href="/manifest.json">
 
     <!-- ================================================================
          FAVICON & APP ICONS
@@ -336,32 +388,38 @@ if (!empty($breadcrumbItems)) {
          STYLESHEETS — CDN with local fallback
          ================================================================ -->
 
-    <!-- Bootstrap CSS -->
+    <!-- Bootstrap CSS — CDN with local fallback for offline PWA -->
     <link rel="stylesheet"
           href="<?= $libs['bootstrap']['css_cdn'] ?>"
           integrity="<?= $libs['bootstrap']['css_sri'] ?>"
           crossorigin="anonymous"
-          id="bootstrap-css">
+          id="bootstrap-css"
+          onerror="this.onerror=null;this.removeAttribute('integrity');this.removeAttribute('crossorigin');this.href='/<?= $libs['bootstrap']['css_local'] ?>';">
 
-    <!-- Font Awesome CSS -->
+    <!-- Font Awesome CSS — CDN with local fallback for offline PWA -->
     <link rel="stylesheet"
           href="<?= $libs['fontawesome']['css_cdn'] ?>"
           integrity="<?= $libs['fontawesome']['css_sri'] ?>"
           crossorigin="anonymous"
-          id="fontawesome-css">
+          id="fontawesome-css"
+          onerror="this.onerror=null;this.removeAttribute('integrity');this.removeAttribute('crossorigin');this.href='/<?= $libs['fontawesome']['css_local'] ?>';">
 
-    <!-- Animate.css — CSS animation library (respects prefers-reduced-motion) -->
+    <!-- Animate.css — CDN with local fallback for offline PWA -->
     <link rel="stylesheet"
           href="<?= $libs['animatecss']['css_cdn'] ?>"
           integrity="<?= $libs['animatecss']['css_sri'] ?>"
           crossorigin="anonymous"
-          id="animatecss">
+          id="animatecss"
+          onerror="this.onerror=null;this.removeAttribute('integrity');this.removeAttribute('crossorigin');this.href='/<?= $libs['animatecss']['css_local'] ?>';">
 
     <!-- iHymns Application Stylesheet -->
-    <link rel="stylesheet" href="/css/app.css?v=<?= urlencode($appVersion) ?>">
+    <link rel="stylesheet" href="/css/app.css?v=<?= urlencode($app["Application"]["Version"]["Number"]) ?>">
+
+    <!-- Accessibility Stylesheet (high contrast, colour blind modes, RTL) -->
+    <link rel="stylesheet" href="/css/accessibility.css?v=<?= urlencode($app["Application"]["Version"]["Number"]) ?>">
 
     <!-- Print Stylesheet -->
-    <link rel="stylesheet" href="/css/print.css?v=<?= urlencode($appVersion) ?>" media="print">
+    <link rel="stylesheet" href="/css/print.css?v=<?= urlencode($app["Application"]["Version"]["Number"]) ?>" media="print">
 
     <!-- ================================================================
          PRECONNECT — Speed up CDN resource loading
@@ -487,17 +545,15 @@ if (!empty($breadcrumbItems)) {
          aria-label="Install application">
         <div class="container-fluid d-flex align-items-center justify-content-between py-2 px-3">
             <div class="d-flex align-items-center gap-2 flex-grow-1">
-                <i class="fa-solid fa-mobile-screen-button fa-lg" aria-hidden="true"></i>
-                <span class="pwa-install-text">
-                    Get the full <strong><?= htmlspecialchars($appName) ?></strong> experience!
-                </span>
+                <i class="pwa-banner-icon" aria-hidden="true"></i>
+                <span class="pwa-install-text"></span>
             </div>
             <button type="button"
-                    class="btn btn-sm btn-install-app me-2"
+                    class="btn btn-sm btn-install-app me-2 d-none"
                     id="pwa-install-btn"
-                    aria-label="Install <?= htmlspecialchars($appName) ?> app">
-                <i class="fa-solid fa-download me-1" aria-hidden="true"></i>
-                <span>Install</span>
+                    aria-label="Install <?= htmlspecialchars($app["Application"]["Name"]) ?> app">
+                <i class="me-1" aria-hidden="true"></i>
+                <span></span>
             </button>
             <button type="button"
                     class="btn-close btn-close-white"
@@ -519,12 +575,12 @@ if (!empty($breadcrumbItems)) {
                             class="navbar-brand d-flex align-items-center gap-2 dropdown-toggle"
                             data-bs-toggle="dropdown"
                             aria-expanded="false"
-                            aria-label="<?= htmlspecialchars($appName) ?> navigation menu"
+                            aria-label="<?= htmlspecialchars($app["Application"]["Name"]) ?> navigation menu"
                             id="logo-nav-btn">
                         <i class="fa-solid fa-music fa-lg" aria-hidden="true"></i>
-                        <span class="fw-bold"><?= htmlspecialchars($appName) ?></span>
-                        <?php if ($appDevStatus): ?>
-                            <span class="badge bg-warning text-dark ms-1 small"><?= htmlspecialchars($appDevStatus) ?></span>
+                        <span class="fw-bold"><?= htmlspecialchars($app["Application"]["Name"]) ?></span>
+                        <?php if ($app["Application"]["Version"]["Development"]["Status"]): ?>
+                            <span class="badge bg-warning text-dark ms-1 small"><?= htmlspecialchars($app["Application"]["Version"]["Development"]["Status"]) ?></span>
                         <?php endif; ?>
                     </button>
                     <ul class="dropdown-menu" aria-labelledby="logo-nav-btn">
@@ -544,12 +600,22 @@ if (!empty($breadcrumbItems)) {
                         <li><a class="dropdown-item" href="/stats" data-navigate="stats">
                             <i class="fa-solid fa-chart-simple me-2" aria-hidden="true"></i> Statistics
                         </a></li>
-                        <li><a class="dropdown-item" href="/settings" data-navigate="settings">
-                            <i class="fa-solid fa-gear me-2" aria-hidden="true"></i> Settings
-                        </a></li>
                         <li><a class="dropdown-item" href="/help" data-navigate="help">
                             <i class="fa-solid fa-circle-question me-2" aria-hidden="true"></i> Help
                         </a></li>
+
+                        <!-- Single "Manage" entry — opens /manage/ which
+                             shows per-entitlement cards for every
+                             curator and administration surface. Visible
+                             to any signed-in user with at least one
+                             management entitlement (toggled by
+                             user-auth.js). -->
+                        <li id="nav-manage-divider" class="d-none"><hr class="dropdown-divider"></li>
+                        <li id="nav-manage-li" class="d-none">
+                            <a class="dropdown-item" href="/manage/">
+                                <i class="fa-solid fa-gears me-2" aria-hidden="true"></i> Manage
+                            </a>
+                        </li>
                     </ul>
                 </div>
 
@@ -608,6 +674,116 @@ if (!empty($breadcrumbItems)) {
                             </li>
                         </ul>
                     </div>
+
+                    <!-- In-app notifications bell (#289). Hidden until the
+                         user signs in; the notifications module reveals it
+                         and populates the unread-count badge + dropdown
+                         body from /api?action=notifications_list. -->
+                    <div class="dropdown d-none" id="header-notifications-dropdown">
+                        <button type="button"
+                                class="btn btn-header-icon position-relative"
+                                data-bs-toggle="dropdown"
+                                aria-expanded="false"
+                                aria-label="Notifications"
+                                id="header-notifications-btn"
+                                title="Notifications">
+                            <i class="fa-solid fa-bell" aria-hidden="true"></i>
+                            <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none"
+                                  id="header-notifications-badge"
+                                  aria-live="polite">
+                                0
+                                <span class="visually-hidden">unread notifications</span>
+                            </span>
+                        </button>
+                        <div class="dropdown-menu dropdown-menu-end p-0"
+                             id="header-notifications-panel"
+                             aria-labelledby="header-notifications-btn"
+                             style="width: 320px; max-width: 90vw;">
+                            <div class="d-flex align-items-center justify-content-between px-3 py-2 border-bottom">
+                                <strong class="small">Notifications</strong>
+                                <button type="button"
+                                        class="btn btn-sm btn-link text-decoration-none p-0 small"
+                                        id="header-notifications-mark-all">
+                                    Mark all read
+                                </button>
+                            </div>
+                            <div id="header-notifications-list"
+                                 style="max-height: 60vh; overflow-y: auto;">
+                                <div class="text-center text-muted small py-4" id="header-notifications-empty">
+                                    No notifications.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- User account button — shows sign-in or user menu -->
+                    <div class="dropdown" id="header-user-dropdown">
+                        <button type="button"
+                                class="btn btn-header-icon dropdown-toggle"
+                                data-bs-toggle="dropdown"
+                                aria-expanded="false"
+                                aria-label="Account"
+                                id="header-user-btn"
+                                title="Account">
+                            <i class="fa-solid fa-user" aria-hidden="true" id="header-user-icon"></i>
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="header-user-btn">
+                            <!-- Logged-out state (default) -->
+                            <li id="header-user-guest">
+                                <button class="dropdown-item" type="button" id="header-signin-btn">
+                                    <i class="fa-solid fa-right-to-bracket me-2" aria-hidden="true"></i> Sign In
+                                </button>
+                            </li>
+                            <li id="header-user-register-li">
+                                <button class="dropdown-item" type="button" id="header-register-btn">
+                                    <i class="fa-solid fa-user-plus me-2" aria-hidden="true"></i> Create Account
+                                </button>
+                            </li>
+                            <!-- ============================================
+                                 Logged-in state (hidden by default; visibility
+                                 toggled by user-auth.js). This menu now holds
+                                 only items that relate to the signed-in
+                                 person; app-wide Curator + Administration
+                                 sections live in the iHymns (logo) dropdown.
+                                 ============================================ -->
+                            <!-- Display name + role are clickable shortcuts that
+                                 deep-link to the Account & Profile tab on /settings. -->
+                            <li id="header-user-name" class="d-none">
+                                <a class="dropdown-item fw-semibold" href="/settings#tab-profile"
+                                   data-navigate="settings" id="header-user-display-name"></a>
+                            </li>
+                            <li id="header-user-role-li" class="d-none">
+                                <a class="dropdown-item small text-muted py-1" href="/settings#tab-profile"
+                                   data-navigate="settings" id="header-user-role-text"></a>
+                            </li>
+
+                            <!-- ── Account ── -->
+                            <li id="header-user-divider" class="d-none"><hr class="dropdown-divider"></li>
+                            <li id="header-user-settings-li" class="d-none">
+                                <a class="dropdown-item" href="/settings#tab-profile" data-navigate="settings">
+                                    <i class="fa-solid fa-gear me-2" aria-hidden="true"></i> Settings
+                                </a>
+                            </li>
+                            <li id="header-user-setlists-li" class="d-none">
+                                <a class="dropdown-item" href="/setlist" data-navigate="setlist">
+                                    <i class="fa-solid fa-list-ol me-2" aria-hidden="true"></i> My Set Lists
+                                </a>
+                            </li>
+                            <li id="header-user-sync-li" class="d-none">
+                                <button class="dropdown-item" type="button" id="header-sync-btn">
+                                    <i class="fa-solid fa-arrows-rotate me-2" aria-hidden="true"></i> Sync Set Lists
+                                </button>
+                            </li>
+
+                            <!-- ── Sign out ── -->
+                            <li id="header-user-divider2" class="d-none"><hr class="dropdown-divider"></li>
+                            <li id="header-user-signout-li" class="d-none">
+                                <button class="dropdown-item" type="button" id="header-signout-btn">
+                                    <i class="fa-solid fa-right-from-bracket me-2" aria-hidden="true"></i> Sign Out
+                                </button>
+                            </li>
+                        </ul>
+                    </div>
                 </div>
             </div>
         </nav>
@@ -660,7 +836,7 @@ if (!empty($breadcrumbItems)) {
                 <div class="spinner-border text-primary" role="presentation">
                     <span class="visually-hidden">Loading...</span>
                 </div>
-                <p class="mt-3 text-muted">Loading <?= htmlspecialchars($appName) ?>...</p>
+                <p class="mt-3 text-muted">Loading <?= htmlspecialchars($app["Application"]["Name"]) ?>...</p>
             </div>
         </div>
 
@@ -728,9 +904,14 @@ if (!empty($breadcrumbItems)) {
         <!-- Copyright & Version info -->
         <div class="footer-info" aria-label="Application information">
             <small>
-                <?= $appCopyright ?>
+                <?= $app["Application"]["Copyright"]["Full"] ?>
                 &nbsp;|&nbsp;
-                v<?= htmlspecialchars($versionDisplay) ?>
+                v<?= htmlspecialchars($versionDisplay) ?><?php
+                    /* Subtle data source indicator — Alpha/Beta only */
+                    if ($app["Application"]["Version"]["Development"]["Status"] !== null && isset($songData) && $songData->isJsonFallback()) {
+                        echo ' <span title="Using JSON fallback (MySQL not configured)" style="opacity:0.4;cursor:help">&#9679; json</span>';
+                    }
+                ?>
                 &nbsp;|&nbsp;
                 <a href="/terms" data-navigate="terms" class="footer-link">Terms</a>
                 &nbsp;|&nbsp;
@@ -839,12 +1020,12 @@ if (!empty($breadcrumbItems)) {
                 <div class="modal-header">
                     <h5 class="modal-title" id="disclaimer-modal-label">
                         <i class="fa-solid fa-hand-holding-heart me-2" aria-hidden="true"></i>
-                        Welcome to <?= htmlspecialchars($appName) ?>
+                        Welcome to <?= htmlspecialchars($app["Application"]["Name"]) ?>
                     </h5>
                 </div>
                 <div class="modal-body">
                     <p class="lead">
-                        <?= htmlspecialchars($appName) ?> is designed to assist with worship wherever you are.
+                        <?= htmlspecialchars($app["Application"]["Name"]) ?> is designed to assist with worship wherever you are.
                     </p>
                     <p>
                         The lyrics provided in this application are intended for personal worship
@@ -854,7 +1035,7 @@ if (!empty($breadcrumbItems)) {
                         covering the reproduction of song lyrics.
                     </p>
                     <p>
-                        By continuing to use <?= htmlspecialchars($appName) ?>, you confirm that:
+                        By continuing to use <?= htmlspecialchars($app["Application"]["Name"]) ?>, you confirm that:
                     </p>
                     <ul>
                         <li>You own one or more of the songbooks featured, <strong>or</strong></li>
@@ -1021,46 +1202,108 @@ if (!empty($breadcrumbItems)) {
 
     <!-- ================================================================
          iHymns Application Configuration — PHP to JavaScript bridge
+
+         Hardened (#526) — previously every field was its own inline
+         echo json_encode() call, which meant any throw inside one
+         corrupted the JS literal mid-output and killed SPA boot (the
+         exact root cause of #509). Now the entire config is built
+         server-side as a single PHP array, the only DB-touching call
+         (getSongbooks) is wrapped in try/catch with a [] fallback,
+         and the whole thing is encoded in one json_encode() call.
+         A transient DB failure now leaves the SPA bootable in a
+         degraded state (empty songbooks list) instead of dying.
          ================================================================ -->
+    <?php
+        try {
+            $iHymnsConfigSongbooks = $songData->getSongbooks();
+        } catch (\Throwable $e) {
+            error_log('[index.php] iHymnsConfig.songbooks fallback to [] — '
+                . $e->getMessage());
+            $iHymnsConfigSongbooks = [];
+        }
+
+        $iHymnsConfig = [
+            'appName'         => $app["Application"]["Name"],
+            'version'         => $app["Application"]["Version"]["Number"],
+            'versionDisplay'  => $versionDisplay,
+            'devStatus'       => $app["Application"]["Version"]["Development"]["Status"],
+            'appUrl'          => $app["Application"]["Website"]["URL"],
+            'apiUrl'          => '/api',
+            'dataUrl'         => '/api?action=songs_json',
+            'nativeApps'      => [
+                'ios'             => $iosApp['verified'] ? ($iosApp['storeUrl'] ?? $nativeApps['ios']) : null,
+                'iosVerified'     => $iosApp['verified'],
+                'android'         => $androidApp['verified'] ? ($androidApp['storeUrl'] ?? $nativeApps['android']) : null,
+                'androidVerified' => $androidApp['verified'],
+            ],
+            'features'        => APP_CONFIG['features'],
+            'fuseJsCdn'       => $libs['fusejs']['js_cdn'],
+            'fuseJsLocal'     => $libs['fusejs']['js_local'],
+            'toneJsCdn'       => $libs['tonejs']['js_cdn'],
+            'toneJsLocal'     => $libs['tonejs']['js_local'],
+            'pdfjsCdn'        => $libs['pdfjs']['js_cdn'],
+            'pdfjsWorkerCdn'  => $libs['pdfjs']['worker_cdn'],
+            'pdfjsLocal'      => $libs['pdfjs']['js_local'],
+            'pdfjsWorkerLocal'=> $libs['pdfjs']['worker_local'],
+            'audioBasePath'   => '/data/audio/',
+            'musicBasePath'   => '/data/music/',
+            'dnt'             => USER_DNT,
+            'locale'          => $locale,
+            'initialPath'     => $requestPath,
+            'songbooks'       => $iHymnsConfigSongbooks,
+            'storageBridgeUrl'=> APP_CONFIG['storage_bridge']['url'],
+            'analytics'       => [
+                'hasGa4'       => !empty(APP_CONFIG['analytics']['google_analytics_id']),
+                'hasClarity'   => !empty(APP_CONFIG['analytics']['clarity_id']),
+                'hasPlausible' => !empty(APP_CONFIG['analytics']['plausible_domain']),
+            ],
+        ];
+
+        /* Encode once. If encoding itself fails (e.g. invalid UTF-8 in a
+           songbook name), fall back to a minimal stub so the SPA still
+           boots — better than emitting `window.iHymnsConfig = ;` which
+           is invalid JS and would reproduce #509. */
+        $iHymnsConfigJson = json_encode($iHymnsConfig, JSON_UNESCAPED_SLASHES);
+        if ($iHymnsConfigJson === false) {
+            error_log('[index.php] json_encode($iHymnsConfig) failed: '
+                . json_last_error_msg());
+            $iHymnsConfigJson = json_encode([
+                'appName'    => 'iHymns',
+                'apiUrl'     => '/api',
+                'dataUrl'    => '/api?action=songs_json',
+                'songbooks'  => [],
+                'features'   => [],
+                'analytics'  => ['hasGa4' => false, 'hasClarity' => false, 'hasPlausible' => false],
+                'devStatus'  => null,
+                'dnt'        => false,
+                'locale'     => 'en',
+                'initialPath'=> '/',
+                /* Minimal stub — SPA boots in a degraded state. */
+            ]);
+        }
+    ?>
     <script nonce="<?= $cspNonce ?>">
-        /**
-         * Global application configuration object.
-         * Passes server-side PHP configuration to the client-side JavaScript.
-         */
-        window.iHymnsConfig = {
-            appName:        <?= json_encode($appName) ?>,
-            version:        <?= json_encode($appVersion) ?>,
-            versionDisplay: <?= json_encode($versionDisplay) ?>,
-            devStatus:      <?= json_encode($appDevStatus) ?>,
-            appUrl:         <?= json_encode($appUrl) ?>,
-            apiUrl:         '/api',
-            dataUrl:        '/data/songs.json',
-            nativeApps:     <?= json_encode(APP_CONFIG['native_apps']) ?>,
-            features:       <?= json_encode(APP_CONFIG['features']) ?>,
-            fuseJsCdn:      <?= json_encode($libs['fusejs']['js_cdn']) ?>,
-            fuseJsLocal:    <?= json_encode($libs['fusejs']['js_local']) ?>,
-            toneJsCdn:      <?= json_encode($libs['tonejs']['js_cdn']) ?>,
-            toneJsLocal:    <?= json_encode($libs['tonejs']['js_local']) ?>,
-            pdfjsCdn:       <?= json_encode($libs['pdfjs']['js_cdn']) ?>,
-            pdfjsWorkerCdn: <?= json_encode($libs['pdfjs']['worker_cdn']) ?>,
-            pdfjsLocal:     <?= json_encode($libs['pdfjs']['js_local']) ?>,
-            pdfjsWorkerLocal: <?= json_encode($libs['pdfjs']['worker_local']) ?>,
-            audioBasePath:  '/data/audio/',
-            musicBasePath:  '/data/music/',
-            dnt:            <?= json_encode(USER_DNT) ?>,
-            locale:         <?= json_encode($locale) ?>,
-            initialPath:    <?= json_encode($requestPath) ?>,
-            songbooks:      <?= json_encode($songData->getSongbooks()) ?>,
-            storageBridgeUrl: 'https://sync.ihymns.app/bridge.html',
-            analytics: {
-                hasGa4:       <?= json_encode(!empty(APP_CONFIG['analytics']['google_analytics_id'])) ?>,
-                hasClarity:   <?= json_encode(!empty(APP_CONFIG['analytics']['clarity_id'])) ?>,
-                hasPlausible: <?= json_encode(!empty(APP_CONFIG['analytics']['plausible_domain'])) ?>,
-            },
-        };
+        /* Single throw-site server-side; single json_encode boundary.
+           See the PHP block above for the hardening rationale. */
+        window.iHymnsConfig = <?= $iHymnsConfigJson ?>;
     </script>
 
-    <!-- iHymns Application Scripts (ES Modules) -->
-    <script src="/js/app.js?v=<?= urlencode($appVersion) ?>" type="module"></script>
+    <!-- iHymns Application Scripts (ES Modules)
+
+         Cache-buster combines the semver with the deploy-time commit-date
+         stamp (injected by the GH Actions pipeline into infoAppVer.php)
+         so every deploy produces a new URL even when the semver hasn't
+         bumped. Without the commit stamp, .htaccess' max-age=3600 holds
+         onto user-auth.js and peers for up to an hour after a deploy. -->
+    <?php
+        $_appJsStamp = preg_replace('/[^0-9]/', '',
+            (string)($app['Application']['Version']['Repo']['Commit']['Date'] ?? ''));
+        $_appJsVersion = $app['Application']['Version']['Number']
+            . ($_appJsStamp !== '' ? '-' . $_appJsStamp : '');
+    ?>
+    <script src="/js/app.js?v=<?= urlencode($_appJsVersion) ?>" type="module"></script>
+
+    <!-- Colour Vision Deficiency (CVD) SVG correction filters (#319) -->
+    <?php readfile(__DIR__ . DIRECTORY_SEPARATOR . 'assets' . DIRECTORY_SEPARATOR . 'cvd-filters.svg'); ?>
 </body>
 </html>

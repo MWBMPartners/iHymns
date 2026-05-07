@@ -1,0 +1,56 @@
+# ==========================================================================
+# iHymns — Admin Area (.htaccess)
+#
+# Copyright (c) 2026 iHymns. All rights reserved.
+#
+# PURPOSE:
+# Handles routing for the /manage/ admin area. This directory is
+# excluded from the main SPA rewrite rules and has its own auth system.
+#
+# ROUTING STRATEGY:
+#   Every /manage/<name> URL is resolved by checking whether a matching
+#   <name>.php (or <name>/index.php) exists on disk. This is deliberately
+#   generic — adding a new admin page is now a single-file change: drop
+#   /manage/foo.php and /manage/foo works immediately. Previously each
+#   new page also needed a per-URL rewrite rule here, and forgetting one
+#   silently broke the page (it fell through to the SPA's 404 shell,
+#   which surfaces as "Failed to load page").
+# ==========================================================================
+
+RewriteEngine On
+RewriteBase /manage/
+
+# ---- DirectoryIndex for /manage/ and /manage/editor/ ----
+DirectoryIndex index.php
+
+# ==========================================================================
+# Explicit rewrites that need special flags
+# ==========================================================================
+
+# /manage/editor/api → /manage/editor/api.php (preserve query string)
+RewriteRule ^editor/api$ editor/api.php [QSA,L]
+
+# ==========================================================================
+# Generic clean-URL rewrite:
+#   /manage/<name>       → /manage/<name>.php   (if <name>.php exists)
+#   /manage/<path>/<name> → same, at any depth
+#
+# Only fires when the request doesn't point to an existing file or
+# directory but a matching .php sibling does exist. QSA preserves query
+# strings for pages like /manage/groups?edit=3.
+# ==========================================================================
+
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteCond %{REQUEST_FILENAME}.php -f
+RewriteRule ^(.+?)/?$ $1.php [QSA,L]
+
+# ==========================================================================
+# Hide .php extensions — redirect direct /manage/foo.php to /manage/foo.
+# Uses THE_REQUEST so the check sees the original browser request, not
+# the internal rewrite produced by the rule above.
+# ==========================================================================
+
+RewriteCond %{THE_REQUEST} \.php[\s?/] [NC]
+RewriteCond %{REQUEST_URI} !^/manage/includes/ [NC]
+RewriteRule ^(.+)\.php$ /manage/$1 [R=301,L]

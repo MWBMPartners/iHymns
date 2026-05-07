@@ -17,6 +17,9 @@
  *   4. If either step fails, falls back to API-based substring search.
  *   5. Offline search works when songs.json is cached by service worker.
  */
+import { escapeHtml, verifiedBadge } from '../utils/html.js';
+import { toTitleCase } from '../utils/text.js';
+import { STORAGE_SEARCH_LYRICS, songbookLabel } from '../constants.js';
 
 export class Search {
     /**
@@ -71,13 +74,20 @@ export class Search {
         const searchInput = document.getElementById('search-input');
         if (searchInput) {
             searchInput.addEventListener('keydown', (e) => {
+                /* Let autocomplete handle arrow keys and Escape */
+                if (this._handleAutocompleteKeydown(e, searchInput)) return;
+
                 if (e.key === 'Enter') {
                     e.preventDefault();
+                    this._closeAutocomplete(searchInput);
                     const q = searchInput.value.trim();
                     this.toggleHeaderSearch(false);
                     this.app.router.navigate('/search' + (q ? '?q=' + encodeURIComponent(q) : ''));
                 }
             });
+
+            /* Autocomplete on input (#307) */
+            this._initAutocomplete(searchInput);
         }
 
         /* Clear button */
@@ -87,6 +97,7 @@ export class Search {
                 if (searchInput) {
                     searchInput.value = '';
                     clearBtn.classList.add('d-none');
+                    this._closeAutocomplete(searchInput);
                     searchInput.focus();
                 }
             });
@@ -206,6 +217,12 @@ export class Search {
 
             console.log(`[Search] Fuse.js index built: ${this.songsData.length} songs`);
 
+            /* Re-render Song of the Day if home page is active (#108) —
+               the home page may have rendered before song data finished loading */
+            if (document.getElementById('song-of-the-day') && this.app.songOfTheDay) {
+                this.app.songOfTheDay.renderHomeSection();
+            }
+
         } catch (error) {
             console.warn('[Search] Fuse.js loading failed, using API fallback:', error);
             this.fuseFailed = true;
@@ -231,13 +248,13 @@ export class Search {
 
         /* Restore lyrics toggle state from localStorage */
         if (lyricsToggle) {
-            this.lyricsSearchEnabled = localStorage.getItem('ihymns_search_lyrics') === 'true';
+            this.lyricsSearchEnabled = localStorage.getItem(STORAGE_SEARCH_LYRICS) === 'true';
             lyricsToggle.checked = this.lyricsSearchEnabled;
 
             lyricsToggle.addEventListener('change', () => {
                 this.lyricsSearchEnabled = lyricsToggle.checked;
-                localStorage.setItem('ihymns_search_lyrics', String(this.lyricsSearchEnabled));
-                this.app.syncStorage('ihymns_search_lyrics');
+                localStorage.setItem(STORAGE_SEARCH_LYRICS, String(this.lyricsSearchEnabled));
+                this.app.syncStorage(STORAGE_SEARCH_LYRICS);
 
                 /* Build lyrics index on first enable */
                 if (this.lyricsSearchEnabled && !this.fuseLyricsIndex && this.FuseClass && this.songsData) {
@@ -368,11 +385,11 @@ export class Search {
                 container.innerHTML = `
                     <div class="text-center text-muted py-4">
                         <i class="fa-solid fa-face-sad-tear fa-2x mb-2 opacity-50" aria-hidden="true"></i>
-                        <p>No results found for "<strong>${this.escapeHtml(query)}</strong>"</p>
+                        <p>No results found for "<strong>${escapeHtml(query)}</strong>"</p>
                         <small>Try different keywords or check your spelling</small>
                         <div class="mt-3">
                             <button type="button" class="btn btn-outline-primary btn-sm btn-request-song"
-                                    data-prefill="${this.escapeHtml(query)}">
+                                    data-prefill="${escapeHtml(query)}">
                                 <i class="fa-solid fa-paper-plane me-1" aria-hidden="true"></i>
                                 Can't find it? Request this song
                             </button>
@@ -471,6 +488,7 @@ export class Search {
         const response = await fetch(url, {
             headers: { 'X-Requested-With': 'XMLHttpRequest' }
         });
+        if (!response.ok) throw new Error(`Search API: HTTP ${response.status}`);
         const data = await response.json();
         return data.results || [];
     }
@@ -491,21 +509,24 @@ export class Search {
         html += '<div class="list-group">';
 
         results.forEach(song => {
-            const writers = (song.writers || []).join(', ');
+            /* Canonical separator is "; " (#495). Surname-first hymnal
+               citations legitimately contain commas inside a single
+               name ("Smith, John"), so comma is ambiguous. */
+            const writers = (song.writers || []).join('; ');
             const snippet = song.lyricsSnippet
-                ? `<small class="text-muted d-block fst-italic"><i class="fa-solid fa-music me-1" aria-hidden="true"></i>&ldquo;${this.escapeHtml(song.lyricsSnippet)}&rdquo;</small>`
+                ? `<small class="text-muted d-block fst-italic"><i class="fa-solid fa-music me-1" aria-hidden="true"></i>&ldquo;${escapeHtml(song.lyricsSnippet)}&rdquo;</small>`
                 : '';
             html += `
-                <a href="/song/${this.escapeHtml(song.id)}"
+                <a href="/song/${escapeHtml(song.id)}"
                    class="list-group-item list-group-item-action song-list-item"
                    data-navigate="song"
-                   data-song-id="${this.escapeHtml(song.id)}">
-                    <span class="song-number-badge" data-songbook="${this.escapeHtml(song.songbook || '')}">${song.number}</span>
+                   data-song-id="${escapeHtml(song.id)}">
+                    <span class="song-number-badge" data-songbook="${escapeHtml(song.songbook || '')}">${song.number}</span>
                     <div class="song-info flex-grow-1">
-                        <span class="song-title">${this.escapeHtml(song.title)}</span>
+                        <span class="song-title">${escapeHtml(toTitleCase(song.title))}${verifiedBadge(song)}</span>
                         <small class="text-muted d-block">
-                            ${this.escapeHtml(song.songbookName || '')}
-                            ${writers ? ' &middot; ' + this.escapeHtml(writers) : ''}
+                            ${songbookLabel(song.songbook, song.songbookName)}
+                            ${writers ? ' &middot; ' + escapeHtml(writers) : ''}
                         </small>
                         ${snippet}
                     </div>
@@ -517,15 +538,157 @@ export class Search {
         return html;
     }
 
+    /* =====================================================================
+     * AUTOCOMPLETE / SUGGESTIONS (#307)
+     * ===================================================================== */
+
     /**
-     * Escape HTML special characters to prevent XSS.
+     * Initialise autocomplete behaviour on a search input.
+     * Shows a dropdown of matching songs as the user types.
      *
-     * @param {string} str Input string
-     * @returns {string} Escaped string
+     * @param {HTMLInputElement} input The search input element
      */
-    escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str || '';
-        return div.innerHTML;
+    _initAutocomplete(input) {
+        let acTimer = null;
+
+        /* Ensure the input's parent is positioned for the dropdown */
+        const parent = input.closest('.input-group') || input.parentElement;
+        if (parent) parent.style.position = 'relative';
+
+        input.addEventListener('input', () => {
+            clearTimeout(acTimer);
+            const q = input.value.trim();
+            if (q.length < 2) {
+                this._closeAutocomplete(input);
+                return;
+            }
+            acTimer = setTimeout(() => this._showAutocomplete(input, q), 300);
+        });
+
+        /* Close autocomplete when input loses focus (with delay for click) */
+        input.addEventListener('blur', () => {
+            setTimeout(() => this._closeAutocomplete(input), 200);
+        });
     }
+
+    /**
+     * Show autocomplete suggestions below the input.
+     *
+     * @param {HTMLInputElement} input The search input
+     * @param {string} query Current query
+     */
+    _showAutocomplete(input, query) {
+        /* Use Fuse.js if available, otherwise skip (full search page handles it) */
+        if (!this.fuseIndex) return;
+
+        const results = this.fuseIndex.search(query, { limit: 8 });
+        if (results.length === 0) {
+            this._closeAutocomplete(input);
+            return;
+        }
+
+        /* Find or create dropdown */
+        const parent = input.closest('.input-group') || input.parentElement;
+        let dropdown = parent.querySelector('.search-autocomplete');
+        if (!dropdown) {
+            dropdown = document.createElement('div');
+            dropdown.className = 'search-autocomplete';
+            dropdown.setAttribute('role', 'listbox');
+            parent.appendChild(dropdown);
+        }
+
+        dropdown.innerHTML = results.map((r, i) => {
+            const song = r.item;
+            return `<a href="/song/${escapeHtml(song.id)}"
+                       class="search-autocomplete-item${i === 0 ? ' active' : ''}"
+                       data-navigate="song"
+                       data-song-id="${escapeHtml(song.id)}"
+                       data-index="${i}"
+                       role="option">
+                        <span class="song-num">${escapeHtml(song.songbook || '')} ${song.number || ''}</span>
+                        <span>${escapeHtml(toTitleCase(song.title || ''))}</span>
+                    </a>`;
+        }).join('');
+
+        /* Click handler for suggestions */
+        dropdown.querySelectorAll('.search-autocomplete-item').forEach(item => {
+            item.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                this._closeAutocomplete(input);
+                if (this.app.router) {
+                    this.app.router.navigate('/song/' + item.dataset.songId);
+                } else {
+                    window.location.href = item.href;
+                }
+            });
+        });
+    }
+
+    /**
+     * Close the autocomplete dropdown for a given input.
+     *
+     * @param {HTMLInputElement} input The search input
+     */
+    _closeAutocomplete(input) {
+        const parent = input.closest('.input-group') || input.parentElement;
+        const dropdown = parent?.querySelector('.search-autocomplete');
+        if (dropdown) dropdown.remove();
+    }
+
+    /**
+     * Handle keyboard navigation within the autocomplete dropdown.
+     * Returns true if the event was consumed.
+     *
+     * @param {KeyboardEvent} e The keydown event
+     * @param {HTMLInputElement} input The search input
+     * @returns {boolean} True if event was handled
+     */
+    _handleAutocompleteKeydown(e, input) {
+        const parent = input.closest('.input-group') || input.parentElement;
+        const dropdown = parent?.querySelector('.search-autocomplete');
+        if (!dropdown) return false;
+
+        const items = dropdown.querySelectorAll('.search-autocomplete-item');
+        if (items.length === 0) return false;
+
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            this._closeAutocomplete(input);
+            return true;
+        }
+
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            const activeItem = dropdown.querySelector('.search-autocomplete-item.active');
+            let idx = activeItem ? parseInt(activeItem.dataset.index, 10) : -1;
+
+            if (e.key === 'ArrowDown') {
+                idx = Math.min(idx + 1, items.length - 1);
+            } else {
+                idx = Math.max(idx - 1, 0);
+            }
+
+            items.forEach(item => item.classList.remove('active'));
+            items[idx]?.classList.add('active');
+            items[idx]?.scrollIntoView({ block: 'nearest' });
+            return true;
+        }
+
+        if (e.key === 'Enter') {
+            const activeItem = dropdown.querySelector('.search-autocomplete-item.active');
+            if (activeItem) {
+                e.preventDefault();
+                this._closeAutocomplete(input);
+                if (this.app.router) {
+                    this.app.router.navigate('/song/' + activeItem.dataset.songId);
+                } else {
+                    window.location.href = activeItem.href;
+                }
+                return true;
+            }
+        }
+
+        return false;
+    }
+
 }

@@ -8,4 +8,4 @@ Use `appWeb/` as the web application directory, not `web/`.
 
 **Why:** User explicitly requested this to maintain naming consistency with the original repo structure (appWeb/, appAppleIOS, etc.).
 
-**How to apply:** All web-related files, deployment paths, and documentation should reference `appWeb/`. The sub-structure is: `public_html/` (production), `public_html_beta/` (beta/dev target), `public_html_dev/` (alpha), `private_html/` (admin/editor).
+**How to apply:** All web-related files, deployment paths, and documentation should reference `appWeb/`. The sub-structure is: `public_html/` (single source, deployed to all environments), `data_share/` (shared data), `private_html/` (admin/editor).

@@ -63,37 +63,51 @@ const OUTPUT_FILE = path.join(PROJECT_ROOT, 'data', 'songs.json');
  *   - id:   Short abbreviation used as a unique identifier
  *   - name: Full human-readable songbook name
  */
+/**
+ * IETF BCP 47 language tag validation pattern.
+ * Supports: en, en-GB, fr-FR, zh-Hans-CN, etc.
+ * @see https://tools.ietf.org/html/bcp47
+ */
+const BCP47_PATTERN = /^[a-z]{2,3}(-[A-Z][a-z]{3})?(-[A-Z]{2})?(-[a-zA-Z0-9]+)*$/;
+
 const SONGBOOK_CONFIG = {
   'Carol Praise [CP]': {
     id: 'CP',
-    name: 'Carol Praise'
+    name: 'Carol Praise',
+    language: 'en'
   },
   'Junior Praise [JP]': {
     id: 'JP',
-    name: 'Junior Praise'
+    name: 'Junior Praise',
+    language: 'en'
   },
   'Mission Praise [MP]': {
     id: 'MP',
-    name: 'Mission Praise'
+    name: 'Mission Praise',
+    language: 'en'
   },
   'Seventh-day Adventist Hymnal [SDAH]': {
     id: 'SDAH',
-    name: 'Seventh-day Adventist Hymnal'
+    name: 'Seventh-day Adventist Hymnal',
+    language: 'en'
   },
   'The Church Hymnal [CH]': {
     id: 'CH',
-    name: 'The Church Hymnal'
+    name: 'The Church Hymnal',
+    language: 'en'
   },
   'Miscellaneous [Misc]': {
     id: 'Misc',
-    name: 'Miscellaneous'
+    name: 'Miscellaneous',
+    language: 'en'
   }
 };
 
 /**
  * COMPONENT_LABELS defines the keywords that indicate a song component type.
  * When a line matches one of these (case-insensitive), it signals the start
- * of that component type (e.g., "Refrain" starts a refrain section).
+ * of that component type. "Refrain" is kept for import compatibility but
+ * displays as "Chorus" in the UI (alias).
  */
 const COMPONENT_LABELS = [
   'refrain',
@@ -160,6 +174,38 @@ function extractTitleFromFilename(filename) {
 
   /* Fallback: return the filename without extension */
   return filename.replace(/\.txt$/i, '').trim() || 'Unknown Title';
+}
+
+/**
+ * extractLanguage()
+ *
+ * Detects the IETF BCP 47 language tag for a song. Checks for an explicit
+ * "Language: xx" metadata line in the file content (case-insensitive).
+ * Falls back to the songbook's default language if none is found.
+ *
+ * Supported metadata formats:
+ *   Language: en
+ *   Language: fr-FR
+ *   Language: zh-Hans-CN
+ *
+ * @param {string[]} allLines       - All lines of the song file
+ * @param {object}   songbookConfig - The songbook config with default language
+ * @returns {string} IETF BCP 47 language tag (e.g., 'en', 'fr-FR')
+ */
+function extractLanguage(allLines, songbookConfig) {
+  /* Scan for a "Language: xxx" metadata line (usually in credits at bottom) */
+  for (const line of allLines) {
+    const match = line.match(/^Language:\s*(.+)$/i);
+    if (match) {
+      const tag = match[1].trim();
+      if (BCP47_PATTERN.test(tag)) {
+        return tag;
+      }
+    }
+  }
+
+  /* Fall back to the songbook's configured default language */
+  return songbookConfig.language || 'en';
 }
 
 /**
@@ -326,27 +372,78 @@ function extractWritersFromCredits(creditLines) {
       continue;
     }
 
-    /* Check for "Words and music by <name>" — adds to both writers and composers */
+    /* Check for "Words and music by <name>" — adds to both writers and composers.
+     * Handles compound lines like "Words and Music by X © 2006 Publisher CCLI: 123" */
     const wordsAndMusicMatch = trimmed.match(/^words\s+and\s+music\s+by\s+(.+)$/i);
     if (wordsAndMusicMatch) {
-      /* Extract the name and add to both lists */
-      const name = wordsAndMusicMatch[1].trim();
-      writers.push(name);
-      composers.push(name);
+      let namePart = wordsAndMusicMatch[1].trim();
+
+      /* Split off copyright (© or "Copyright") */
+      const copySplit = namePart.match(/^(.+?)\s*[©]\s*(.+)$/);
+      if (copySplit) {
+        namePart = copySplit[1].replace(/[.,;]+$/, '').trim();
+        let copyText = copySplit[2].trim();
+        /* Extract CCLI number if embedded */
+        const ccliMatch = copyText.match(/^(.+?)\s*CCLI[:\s#]*(\d+)\s*$/i);
+        if (ccliMatch) {
+          copyText = ccliMatch[1].trim();
+          /* Store CCLI — we'll capture it below if not already set */
+        }
+        if (!copyright) copyright = copyText;
+      }
+
+      if (namePart) {
+        writers.push(namePart);
+        composers.push(namePart);
+      }
       continue;
     }
 
-    /* Check for "Words by <name>" — adds to writers only */
+    /* Check for "Words by <name>" — adds to writers only.
+     * Handle compound lines like "Words by X. Music by Y. © Copyright Z"
+     * by splitting at ". Music by" or ". ©" boundaries. */
     const wordsByMatch = trimmed.match(/^words\s+by\s+(.+)$/i);
     if (wordsByMatch) {
-      writers.push(wordsByMatch[1].trim());
+      let writerPart = wordsByMatch[1].trim();
+
+      /* Split off "Music by ..." if embedded in the same line */
+      const musicSplit = writerPart.match(/^(.+?)\.\s*Music\s+by\s+(.+)$/i);
+      if (musicSplit) {
+        writerPart = musicSplit[1].trim();
+        let composerPart = musicSplit[2].trim();
+        /* Split off copyright from composer part */
+        const copySplit2 = composerPart.match(/^(.+?)\.\s*[©(](.+)$/);
+        if (copySplit2) {
+          composerPart = copySplit2[1].trim();
+          if (!copyright) copyright = copySplit2[2].trim();
+        }
+        composers.push(composerPart);
+      }
+
+      /* Split off copyright if embedded after writer name */
+      const copySplit = writerPart.match(/^(.+?)\.\s*[©(](.+)$/);
+      if (copySplit) {
+        writerPart = copySplit[1].trim();
+        if (!copyright) copyright = copySplit[2].trim();
+      }
+
+      /* Remove trailing period from name */
+      writerPart = writerPart.replace(/\.$/, '').trim();
+      if (writerPart) writers.push(writerPart);
       continue;
     }
 
     /* Check for "Music by <name>" or "Music arranged by <name>" — adds to composers */
     const musicByMatch = trimmed.match(/^music\s+(?:arranged\s+)?by\s+(.+)$/i);
     if (musicByMatch) {
-      composers.push(musicByMatch[1].trim());
+      let composerPart = musicByMatch[1].trim();
+      /* Split off copyright if embedded */
+      const copySplit = composerPart.match(/^(.+?)\s*[©]\s*(.+)$/);
+      if (copySplit) {
+        composerPart = copySplit[1].replace(/[.,;]+$/, '').trim();
+        if (!copyright) copyright = copySplit[2].trim();
+      }
+      composers.push(composerPart);
       continue;
     }
 
@@ -369,8 +466,19 @@ function extractWritersFromCredits(creditLines) {
     }
   }
 
+  /* Deduplicate writers and composers (case-insensitive, keep first occurrence) */
+  const dedup = (arr) => {
+    const seen = new Set();
+    return arr.filter(name => {
+      const key = name.toLowerCase().replace(/\.\s*/g, ' ').trim();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+
   /* Return the extracted data */
-  return { writers, composers, copyright };
+  return { writers: dedup(writers), composers: dedup(composers), copyright };
 }
 
 /**
@@ -537,9 +645,12 @@ function parseSongFile(filePath, filename, songbookConfig) {
       /* Flush the previous component */
       flushComponent();
 
+      /* Normalise "refrain" → "chorus" so the canonical type is consistent (#265) */
+      const normalisedType = componentType === 'refrain' ? 'chorus' : componentType;
+
       /* Start a new component of the detected type (no number for these) */
       currentComponent = {
-        type: componentType,
+        type: normalisedType,
         number: null,
         lines: []
       };
@@ -601,22 +712,73 @@ function parseSongFile(filePath, filename, songbookConfig) {
   const hasSheetMusic = fs.existsSync(sheetMusicPath);
 
   /* -----------------------------------------------------------------------
-   * STEP 5: Construct and return the structured song object
+   * STEP 5: Generate song arrangement (#160)
+   *
+   * If the song has a refrain or chorus, auto-generate an arrangement
+   * that interleaves it after each verse. When absent, the renderer
+   * falls back to sequential component order.
    * ----------------------------------------------------------------------- */
-  return {
+  let arrangement = null;
+  const refrainIndex = components.findIndex(
+    c => c.type === 'refrain' || c.type === 'chorus'
+  );
+  if (refrainIndex !== -1) {
+    arrangement = [];
+    for (let i = 0; i < components.length; i++) {
+      const comp = components[i];
+      if (comp.type === 'verse') {
+        arrangement.push(i);
+        arrangement.push(refrainIndex);
+      } else if (i !== refrainIndex) {
+        /* Non-verse, non-refrain components (bridge, pre-chorus, etc.) */
+        arrangement.push(i);
+      }
+    }
+  }
+
+  /* -----------------------------------------------------------------------
+   * STEP 6: Determine copyright / public domain status (#225)
+   *
+   * A song is only considered public domain when the copyright field
+   * explicitly contains a recognised PD designation (case-insensitive):
+   *   "Public Domain", "PD", "PublicDomain", "PubDomain", "Pub Domain"
+   * An empty copyright field does NOT imply public domain — it simply
+   * means the copyright holder is unknown or unrecorded.
+   * Both lyrics and music share the same heuristic for now — Phase 2
+   * may split them with per-field metadata in the source files.
+   * ----------------------------------------------------------------------- */
+  const copyrightLower = (copyright || '').trim().toLowerCase();
+  const isPublicDomain = copyrightLower.includes('public domain')
+    || copyrightLower.includes('publicdomain')
+    || copyrightLower.includes('pubdomain')
+    || copyrightLower.includes('pub domain')
+    || copyrightLower === 'pd';
+
+  /* -----------------------------------------------------------------------
+   * STEP 7: Construct and return the structured song object
+   * ----------------------------------------------------------------------- */
+  const song = {
     id: songId,
     number: songNumber,
     title: title,
     songbook: songbookConfig.id,
     songbookName: songbookConfig.name,
+    language: extractLanguage(allLines, songbookConfig),
     writers: writers,
     composers: composers,
     copyright: copyright,
     ccli: '',
+    verified: false,
+    lyricsPublicDomain: isPublicDomain,
+    musicPublicDomain: isPublicDomain,
     hasAudio: hasAudio,
     hasSheetMusic: hasSheetMusic,
     components: components
   };
+  if (arrangement) {
+    song.arrangement = arrangement;
+  }
+  return song;
 }
 
 /**

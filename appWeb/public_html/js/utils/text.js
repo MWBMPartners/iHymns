@@ -20,15 +20,30 @@ const MINOR_WORDS = new Set([
     'of','on','or','so','the','to','up','yet',
 ]);
 
+/* Words following these punctuation marks start a new clause and are capitalised
+   regardless of the minor-word rule (e.g. "Alas! And Did My Saviour Bleed?"). */
+const CLAUSE_BREAK = /[.!?:—–]$/;
+
+function capFirstLetter(word) {
+    /* Skip leading quotes/punctuation (e.g. "come → "Come) and uppercase the first letter. */
+    const m = word.match(/^([^\p{L}]*)(\p{L})(.*)$/u);
+    return m ? m[1] + m[2].toUpperCase() + m[3] : word;
+}
+
+function stripPunct(word) {
+    return word.replace(/[^\p{L}\p{N}']/gu, '');
+}
+
 export function toTitleCase(str) {
     if (!str) return str || '';
-    return str
-        .toLowerCase()
-        .split(/\s+/)
-        .map((word, i, arr) => {
-            /* Always capitalise first and last word */
-            if (i === 0 || i === arr.length - 1 || !MINOR_WORDS.has(word)) {
-                word = word.charAt(0).toUpperCase() + word.slice(1);
+    const words = str.toLowerCase().split(/\s+/);
+    const last = words.length - 1;
+    return words
+        .map((word, i) => {
+            const newClause = i > 0 && CLAUSE_BREAK.test(words[i - 1]);
+            const isMinor = MINOR_WORDS.has(stripPunct(word));
+            if (i === 0 || i === last || newClause || !isMinor) {
+                word = capFirstLetter(word);
             }
             /* Capitalise each part of hyphenated words */
             return word.replace(/-\w/g, m => m.toUpperCase());

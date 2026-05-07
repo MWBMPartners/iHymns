@@ -14,6 +14,16 @@
  */
 
 import { toTitleCase } from '../utils/text.js';
+import { escapeHtml, verifiedBadge } from '../utils/html.js';
+import { userHasEntitlement } from './entitlements.js';
+import {
+    STORAGE_FAVORITES,
+    STORAGE_SETLISTS,
+    STORAGE_HISTORY,
+    STORAGE_SEARCH_HISTORY,
+    STORAGE_RECENT_SONGBOOKS,
+    songbookLabel,
+} from '../constants.js';
 
 export class Router {
     /**
@@ -37,6 +47,9 @@ export class Router {
      * Initialise the router — listen for popstate (back/forward) events.
      */
     init() {
+        /* Handle magic link login before any routing (#magic-link) */
+        this._handleMagicLink();
+
         /* Handle browser back/forward navigation */
         window.addEventListener('popstate', () => {
             this.handleCurrentRoute();
@@ -86,6 +99,23 @@ export class Router {
                 window.history.replaceState({ path: canonicalPath }, '', canonicalPath);
                 this.currentPath = canonicalPath;
             }
+        }
+
+        /* Login route: show auth modal instead of loading a page from API */
+        if (page === 'login') {
+            const token = new URLSearchParams(window.location.search).get('token');
+            if (token) {
+                /* Magic link with token — handled by _handleMagicLink() on init.
+                 * If we reach here via navigate(), handle it now. */
+                this._verifyMagicLinkToken(token);
+            } else {
+                /* No token — show the auth modal and go home */
+                this.app.userAuth?.showAuthModal('login');
+                window.history.replaceState({ path: '/' }, '', '/');
+                this.currentPath = '/';
+                await this.handleCurrentRoute();
+            }
+            return;
         }
 
         /* Update the active footer nav item */
@@ -160,6 +190,10 @@ export class Router {
                 return { page: 'terms', params: {} };
             case 'privacy':
                 return { page: 'privacy', params: {} };
+            case 'request-a-song':
+                return { page: 'request-a-song', params: {} };
+            case 'login':
+                return { page: 'login', params: {} };
             default:
                 return { page: 'not-found', params: {} };
         }
@@ -247,6 +281,15 @@ export class Router {
             /* Inject the new content */
             content.innerHTML = html;
 
+            /* Browsers intentionally do NOT run <script> tags inserted via
+               innerHTML, so any inline JS in the injected page template
+               (e.g. home.php's Popular Songs / Browse by Theme / Recently
+               Viewed fetches) silently no-ops. Replace each script node
+               with a freshly-created one so the browser parses and runs
+               it as if it had been in the original document. Preserves
+               type, src, async/defer and other attributes. */
+            this._executeInlineScripts(content);
+
             /* Complete loading bar and start enter transition */
             this.app.transitions.completeLoading();
             await this.app.transitions.pageIn(content);
@@ -265,6 +308,33 @@ export class Router {
                     Failed to load page. Please check your connection and try again.
                 </div>`;
             this.app.transitions.pageIn(content);
+        }
+    }
+
+    /**
+     * Re-create every <script> descendant of `root` so the browser actually
+     * executes it. `innerHTML` parses script tags but skips their execution
+     * by design — any JS in an injected page template would otherwise no-op
+     * silently. Re-created nodes preserve the original attributes (src,
+     * type, async, defer, nomodule, integrity, crossorigin) and replace
+     * the original in-place so document order is kept for side-effectful
+     * scripts that depend on it.
+     *
+     * @param {HTMLElement} root Container whose script descendants to run
+     * @private
+     */
+    _executeInlineScripts(root) {
+        if (!root) return;
+        const scripts = root.querySelectorAll('script');
+        for (const oldScript of scripts) {
+            const newScript = document.createElement('script');
+            for (const attr of oldScript.attributes) {
+                newScript.setAttribute(attr.name, attr.value);
+            }
+            if (!oldScript.src) {
+                newScript.textContent = oldScript.textContent;
+            }
+            oldScript.replaceWith(newScript);
         }
     }
 
@@ -305,6 +375,7 @@ export class Router {
             'help': 'Help — ' + appName,
             'terms': 'Terms of Use — ' + appName,
             'privacy': 'Privacy Policy — ' + appName,
+            'request-a-song': 'Request a Song — ' + appName,
         };
         document.title = titles[page] || appName;
     }
@@ -317,6 +388,11 @@ export class Router {
      * @param {object} params Route parameters
      */
     afterPageLoad(page, params) {
+        /* Re-bind any offline-download buttons in the freshly injected
+           HTML (#453 / #454). The helper idempotently ignores nodes
+           that already have handlers. */
+        import('./offline-ui.js').then(m => m.bootOfflineUi()).catch(() => {});
+
         /* Initialise favourites state on song pages */
         if (page === 'song') {
             this.app.favorites.initSongPage();
@@ -327,6 +403,18 @@ export class Router {
             this.app.compare.initSongPage();
             this.app.transpose.initSongPage();
             this.app.readingProgress.initSongPage();
+
+            /* Edit button — show only to users whose role carries the
+               `edit_songs` entitlement (#407). The PHP editor API
+               re-checks the same map server-side, so hiding the button
+               is purely a UX affordance. */
+            const editBtn = document.getElementById('btn-edit-song');
+            if (editBtn) {
+                const role = this.app.userAuth?.getUser()?.role;
+                if (userHasEntitlement('edit_songs', role)) {
+                    editBtn.classList.remove('d-none');
+                }
+            }
 
             /* Save Offline button — check cache state and bind click */
             const saveOfflineBtn = document.querySelector('.btn-save-offline');
@@ -358,7 +446,17 @@ export class Router {
                 if (songId) {
                     this.app.history.recordView(songId, title, songbook, number);
                     if (songbook) this.trackRecentSongbook(songbook);
+
+                    /* Record song view on server for history/popular tracking (#287) */
+                    fetch(`${this.apiUrl}?action=song_view`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ song_id: songId })
+                    }).catch(() => {}); // fire-and-forget
                 }
+
+                /* Load song translations (#352) — async, non-blocking */
+                this.loadTranslations(songId);
 
                 /* Load related songs (#118) — async, non-blocking */
                 this.loadRelatedSongs(songId);
@@ -370,6 +468,17 @@ export class Router {
             this.app.history.renderHomeSection();
             this.app.songOfTheDay.renderHomeSection();
             this.renderRecentSongbooks();
+
+            /* Popular Songs / Recently Viewed / Browse by Theme (#303,
+               #304, #305). Previously lived as an inline <script> at the
+               bottom of home.php, which relied on a re-parse shim in
+               loadPage() to execute after innerHTML injection. Pulling
+               it into a proper module and invoking it here removes that
+               transport dependency — the sections now run reliably
+               whenever the home page is shown. */
+            import('./home-page.js')
+                .then(m => m.initHomePage())
+                .catch(err => console.error('[Router] home-page init failed:', err));
         }
 
         /* Initialise favourites list on favorites page */
@@ -381,6 +490,18 @@ export class Router {
         if (page === 'settings') {
             this.app.settings.initSettingsPage();
         }
+
+        /* After the new page HTML is in the DOM, broadcast the current auth
+           state so any just-injected markup (Account card, sync bars, etc.)
+           lands in the correct logged-in/logged-out state. */
+        try {
+            document.dispatchEvent(new CustomEvent('ihymns:auth-changed', {
+                detail: {
+                    loggedIn: !!this.app.userAuth?.isLoggedIn(),
+                    user: this.app.userAuth?.getUser() ?? null,
+                },
+            }));
+        } catch { /* legacy browsers — ignore */ }
 
         /* Initialise set list page controls (#94) */
         if (page === 'setlist') {
@@ -413,6 +534,82 @@ export class Router {
         this.fixBadgeContrast();
     }
 
+    /* =====================================================================
+     * MAGIC LINK LOGIN
+     * ===================================================================== */
+
+    /**
+     * Check for a magic link token in the URL on page load.
+     * If `?token=` is present (typically on /login?token=...), verify
+     * the token with the API, store credentials, and redirect home.
+     * Called once during init() before any routing occurs.
+     */
+    _handleMagicLink() {
+        const params = new URLSearchParams(window.location.search);
+        const token = params.get('token');
+        if (!token) return;
+
+        /* Clear the token from the URL immediately to prevent re-triggering
+         * on refresh or back/forward navigation */
+        const cleanPath = window.location.pathname || '/';
+        window.history.replaceState({ path: cleanPath }, '', cleanPath);
+
+        /* Verify the token asynchronously */
+        this._verifyMagicLinkToken(token);
+    }
+
+    /**
+     * Verify a magic link token with the API and handle the result.
+     *
+     * On success: stores bearer token + user info, shows success toast,
+     * updates header state, triggers setlist sync, and navigates home.
+     *
+     * On error: shows error toast and navigates home.
+     *
+     * @param {string} token The magic link token from the URL
+     */
+    async _verifyMagicLinkToken(token) {
+        try {
+            const res = await fetch(`${this.apiUrl}?action=auth_email_login_verify`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                },
+                body: JSON.stringify({ token }),
+            });
+
+            const data = await res.json();
+
+            if (res.ok && data.token && data.user) {
+                /* Store credentials */
+                this.app.userAuth?.saveCredentials(data.token, data.user);
+
+                /* Update header to reflect logged-in state */
+                this.app.userAuth?._updateHeaderState();
+
+                /* Show success toast */
+                this.app.showToast('Signed in successfully!', 'success', 3000);
+
+                /* Trigger setlist sync in background */
+                this.app.userAuth?.triggerSetlistSync();
+            } else {
+                /* Token invalid or expired */
+                const message = data.error || 'Login link expired. Please request a new one.';
+                this.app.showToast(message, 'danger', 5000);
+            }
+        } catch {
+            this.app.showToast('Login link expired. Please request a new one.', 'danger', 5000);
+        }
+
+        /* Navigate to home (clear /login from URL if still there) */
+        if (window.location.pathname !== '/') {
+            window.history.replaceState({ path: '/' }, '', '/');
+            this.currentPath = null; /* Reset so handleCurrentRoute proceeds */
+            this.handleCurrentRoute();
+        }
+    }
+
     /**
      * Automatically set badge text colour (dark/light) based on the
      * computed background luminance.  Uses WCAG relative-luminance
@@ -424,20 +621,41 @@ export class Router {
         );
         if (!badges.length) return;
 
+        const toLinear = c => c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+        const rootStyles = getComputedStyle(document.documentElement);
+
         badges.forEach(badge => {
-            const bg = getComputedStyle(badge).backgroundColor;
-            if (!bg || bg === 'transparent' || bg === 'rgba(0, 0, 0, 0)') return;
+            let rgb = null;
 
-            /* Parse rgb(r, g, b) or rgba(r, g, b, a) */
-            const m = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
-            if (!m) return;
+            /* Try 1: read the solid CSS variable from data-songbook attribute (#159) */
+            const bookId = badge.dataset?.songbook
+                || badge.className?.match(/songbook-icon-(\w+)/)?.[1];
+            if (bookId) {
+                const solidColor = rootStyles.getPropertyValue(`--songbook-${bookId}-solid`).trim();
+                if (solidColor) {
+                    /* Parse hex (#rrggbb) or rgb() */
+                    const hex = solidColor.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+                    if (hex) {
+                        rgb = [parseInt(hex[1], 16), parseInt(hex[2], 16), parseInt(hex[3], 16)];
+                    } else {
+                        const rgbM = solidColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+                        if (rgbM) rgb = [parseInt(rgbM[1], 10), parseInt(rgbM[2], 10), parseInt(rgbM[3], 10)];
+                    }
+                }
+            }
 
-            const r = parseInt(m[1], 10) / 255;
-            const g = parseInt(m[2], 10) / 255;
-            const b = parseInt(m[3], 10) / 255;
+            /* Try 2: fall back to computed backgroundColor (for non-gradient badges) */
+            if (!rgb) {
+                const bg = getComputedStyle(badge).backgroundColor;
+                if (!bg || bg === 'transparent' || bg === 'rgba(0, 0, 0, 0)') return;
+                const m = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+                if (!m) return;
+                rgb = [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)];
+            }
 
-            /* sRGB → linear */
-            const toLinear = c => c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+            const r = rgb[0] / 255;
+            const g = rgb[1] / 255;
+            const b = rgb[2] / 255;
             const L = 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
 
             /* Light backgrounds (L > 0.4) get dark text; dark backgrounds get white */
@@ -452,19 +670,19 @@ export class Router {
     populateStats() {
         /* History data */
         let history = [];
-        try { history = JSON.parse(localStorage.getItem('ihymns_history')) || []; } catch {}
+        try { history = JSON.parse(localStorage.getItem(STORAGE_HISTORY)) || []; } catch {}
 
         /* Favourites data */
         let favorites = [];
-        try { favorites = JSON.parse(localStorage.getItem('ihymns_favorites')) || []; } catch {}
+        try { favorites = JSON.parse(localStorage.getItem(STORAGE_FAVORITES)) || []; } catch {}
 
         /* Set lists data */
         let setlists = [];
-        try { setlists = JSON.parse(localStorage.getItem('ihymns_setlists')) || []; } catch {}
+        try { setlists = JSON.parse(localStorage.getItem(STORAGE_SETLISTS)) || []; } catch {}
 
         /* Search history data */
         let searches = [];
-        try { searches = JSON.parse(localStorage.getItem('ihymns_search_history')) || []; } catch {}
+        try { searches = JSON.parse(localStorage.getItem(STORAGE_SEARCH_HISTORY)) || []; } catch {}
 
         /* Summary counts */
         const el = (id) => document.getElementById(id);
@@ -489,10 +707,10 @@ export class Router {
             if (container) {
                 container.innerHTML = sorted.map(s => `
                     <div class="d-flex align-items-center gap-2 mb-2">
-                        <a href="/song/${this.escapeHtml(s.id)}" class="text-decoration-none flex-grow-1 text-truncate"
-                           data-navigate="song" data-song-id="${this.escapeHtml(s.id)}">
-                            <span class="song-number-badge song-number-badge-sm" data-songbook="${this.escapeHtml(s.songbook)}">${s.number || '?'}</span>
-                            <span class="ms-1">${this.escapeHtml(toTitleCase(s.title))}</span>
+                        <a href="/song/${escapeHtml(s.id)}" class="text-decoration-none flex-grow-1 text-truncate"
+                           data-navigate="song" data-song-id="${escapeHtml(s.id)}">
+                            <span class="song-number-badge song-number-badge-sm" data-songbook="${escapeHtml(s.songbook)}">${s.number ?? ''}</span>
+                            <span class="ms-1">${escapeHtml(toTitleCase(s.title))}</span>
                         </a>
                         <div class="stats-bar-wrap">
                             <div class="stats-bar" style="width: ${(s.count / maxCount * 100).toFixed(0)}%"></div>
@@ -517,7 +735,7 @@ export class Router {
             if (container) {
                 container.innerHTML = sorted.map(([sb, count]) => `
                     <div class="d-flex align-items-center gap-2 mb-2">
-                        <span class="song-number-badge song-number-badge-sm" data-songbook="${this.escapeHtml(sb)}">${this.escapeHtml(sb)}</span>
+                        <span class="song-number-badge song-number-badge-sm" data-songbook="${escapeHtml(sb)}">${escapeHtml(sb)}</span>
                         <div class="stats-bar-wrap">
                             <div class="stats-bar bg-danger" style="width: ${(count / maxCount * 100).toFixed(0)}%"></div>
                         </div>
@@ -540,7 +758,7 @@ export class Router {
             if (container) {
                 container.innerHTML = '<div class="d-flex flex-wrap gap-2">' +
                     sorted.map(([term, count]) =>
-                        `<span class="badge bg-body-secondary text-body">${this.escapeHtml(term)} <span class="text-muted">(${count})</span></span>`
+                        `<span class="badge bg-body-secondary text-body">${escapeHtml(term)} <span class="text-muted">(${count})</span></span>`
                     ).join('') + '</div>';
             }
         }
@@ -562,6 +780,50 @@ export class Router {
         if (el('stats-views-today')) el('stats-views-today').textContent = today;
         if (el('stats-views-week')) el('stats-views-week').textContent = week;
         if (el('stats-views-month')) el('stats-views-month').textContent = month;
+    }
+
+    /**
+     * Fetch and render translation links for the current song (#352).
+     * Queries the API for songs linked as translations in other languages.
+     * Also checks the reverse direction (if this song is itself a translation).
+     *
+     * @param {string} songId The current song's ID
+     */
+    async loadTranslations(songId) {
+        const container = document.getElementById('song-translations');
+        const itemsEl = document.getElementById('song-translations-items');
+        if (!container || !itemsEl) return;
+
+        try {
+            const resp = await fetch(`${this.apiUrl}?action=song_translations&id=${encodeURIComponent(songId)}`);
+            if (!resp.ok) return;
+            const data = await resp.json();
+
+            const translations = data.translations || [];
+            if (translations.length === 0) return;
+
+            itemsEl.innerHTML = translations.map(tr => `
+                <a href="/song/${escapeHtml(tr.songId)}"
+                   class="list-group-item list-group-item-action song-list-item"
+                   data-navigate="song"
+                   data-song-id="${escapeHtml(tr.songId)}"
+                   role="listitem">
+                    <span class="song-number-badge">${tr.number || '?'}</span>
+                    <div class="song-info flex-grow-1">
+                        <span class="song-title">${escapeHtml(toTitleCase(tr.title))}${tr.verified ? ' <i class="fa-solid fa-circle-check text-success small" aria-hidden="true" title="Verified"></i>' : ''}</span>
+                        <small class="text-muted d-block">
+                            <i class="fa-solid fa-language me-1" aria-hidden="true"></i>${escapeHtml(tr.languageNativeName || tr.languageName || tr.language)}${tr.translator ? ` — ${escapeHtml(tr.translator)}` : ''}
+                        </small>
+                    </div>
+                    <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>
+                </a>
+            `).join('');
+
+            container.classList.remove('d-none');
+            this.fixBadgeContrast();
+        } catch (err) {
+            console.warn('[Router] Failed to load translations:', err.message);
+        }
     }
 
     /**
@@ -649,15 +911,15 @@ export class Router {
 
             /* Render related songs */
             itemsEl.innerHTML = related.map(({ song }) => `
-                <a href="/song/${this.escapeHtml(song.id)}"
+                <a href="/song/${escapeHtml(song.id)}"
                    class="list-group-item list-group-item-action song-list-item"
                    data-navigate="song"
-                   data-song-id="${this.escapeHtml(song.id)}"
+                   data-song-id="${escapeHtml(song.id)}"
                    role="listitem">
-                    <span class="song-number-badge" data-songbook="${this.escapeHtml(song.songbook)}">${song.number || '?'}</span>
+                    <span class="song-number-badge" data-songbook="${escapeHtml(song.songbook)}">${song.number ?? ''}</span>
                     <div class="song-info flex-grow-1">
-                        <span class="song-title">${this.escapeHtml(toTitleCase(song.title))}</span>
-                        <small class="text-muted d-block">${this.escapeHtml(song.songbookName || song.songbook)}</small>
+                        <span class="song-title">${escapeHtml(toTitleCase(song.title))}${verifiedBadge(song)}</span>
+                        <small class="text-muted d-block">${songbookLabel(song.songbook, song.songbookName)}</small>
                     </div>
                     <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>
                 </a>
@@ -797,11 +1059,6 @@ export class Router {
      * @param {string} str
      * @returns {string}
      */
-    escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str || '';
-        return div.innerHTML;
-    }
 
     /* =====================================================================
      * RECENT SONGBOOKS (#121)
@@ -814,7 +1071,7 @@ export class Router {
      */
     trackRecentSongbook(songbookId) {
         if (!songbookId) return;
-        const key = 'ihymns_recent_songbooks';
+        const key = STORAGE_RECENT_SONGBOOKS;
         let recent = [];
         try { recent = JSON.parse(localStorage.getItem(key)) || []; } catch {}
 
@@ -827,31 +1084,35 @@ export class Router {
     }
 
     /**
-     * Render recent songbook tabs on the home page.
-     * Shows pill-style tabs for quick navigation.
+     * Render recent songbook quick-access badges on the home page (#121, #162).
+     * Shows coloured squares with the songbook abbreviation inside them.
      */
     renderRecentSongbooks() {
         const container = document.getElementById('recent-songbooks');
         if (!container) return;
 
         let recent = [];
-        try { recent = JSON.parse(localStorage.getItem('ihymns_recent_songbooks')) || []; } catch {}
+        try { recent = JSON.parse(localStorage.getItem(STORAGE_RECENT_SONGBOOKS)) || []; } catch {}
 
         /* Only show if user has visited 2+ songbooks */
         if (recent.length < 2) return;
 
         const songbooks = this.config.songbooks || [];
 
-        const tabs = recent.map(id => {
+        const badges = recent.map(id => {
             const sb = songbooks.find(b => b.id === id);
             const name = sb?.name || id;
-            return `<a href="/songbook/${this.escapeHtml(id)}"
-                       class="btn btn-sm btn-outline-secondary rounded-pill"
+            return `<a href="/songbook/${escapeHtml(id)}"
+                       class="text-decoration-none text-center"
                        data-navigate="songbook"
-                       data-songbook-id="${this.escapeHtml(id)}"
-                       aria-label="${this.escapeHtml(name)}">
-                        <span class="songbook-icon songbook-icon-${this.escapeHtml(id)} me-1"></span>
-                        ${this.escapeHtml(id)}
+                       data-songbook-id="${escapeHtml(id)}"
+                       title="${escapeHtml(name)}"
+                       aria-label="${escapeHtml(name)}">
+                        <span class="song-number-badge d-flex align-items-center justify-content-center"
+                              data-songbook="${escapeHtml(id)}"
+                              style="width: 48px; height: 48px; border-radius: 12px; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.02em;">
+                            ${escapeHtml(id)}
+                        </span>
                     </a>`;
         }).join('');
 
@@ -862,8 +1123,11 @@ export class Router {
                     Recent
                 </small>
             </div>
-            <div class="d-flex flex-wrap gap-2">${tabs}</div>
+            <div class="d-flex flex-wrap gap-2">${badges}</div>
         `;
         container.classList.remove('d-none');
+
+        /* Fix badge text contrast for the songbook-coloured badges */
+        this.fixBadgeContrast();
     }
 }

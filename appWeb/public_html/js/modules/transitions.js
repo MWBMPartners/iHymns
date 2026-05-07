@@ -10,6 +10,8 @@
  * Respects the user's reduce-motion preference.
  */
 
+import { STORAGE_TRANSITION } from '../constants.js';
+
 export class Transitions {
     /**
      * @param {object} app Reference to the main iHymnsApp instance
@@ -33,7 +35,7 @@ export class Transitions {
      * Load the saved transition type from localStorage.
      */
     loadType() {
-        this.type = localStorage.getItem('ihymns_transition') || 'none';
+        this.type = localStorage.getItem(STORAGE_TRANSITION) || 'none';
     }
 
     /**
@@ -70,19 +72,18 @@ export class Transitions {
         el.classList.add('page-leaving');
 
         return new Promise(resolve => {
-            const onEnd = () => {
-                el.removeEventListener('transitionend', onEnd);
+            let resolved = false;
+            const done = () => {
+                if (resolved) return;
+                resolved = true;
+                el.removeEventListener('transitionend', done);
                 el.classList.remove('page-leaving');
                 resolve();
             };
-            el.addEventListener('transitionend', onEnd);
+            el.addEventListener('transitionend', done, { once: true });
 
             /* Safety timeout in case transitionend doesn't fire */
-            setTimeout(() => {
-                el.removeEventListener('transitionend', onEnd);
-                el.classList.remove('page-leaving');
-                resolve();
-            }, this.duration + 50);
+            setTimeout(done, this.duration + 50);
         });
     }
 
@@ -111,17 +112,17 @@ export class Transitions {
         el.classList.add('page-visible');
 
         return new Promise(resolve => {
-            const onEnd = () => {
-                el.removeEventListener('transitionend', onEnd);
+            let resolved = false;
+            const done = () => {
+                if (resolved) return;
+                resolved = true;
+                el.removeEventListener('transitionend', done);
                 resolve();
             };
-            el.addEventListener('transitionend', onEnd);
+            el.addEventListener('transitionend', done, { once: true });
 
             /* Safety timeout in case transitionend doesn't fire */
-            setTimeout(() => {
-                el.removeEventListener('transitionend', onEnd);
-                resolve();
-            }, this.duration + 50);
+            setTimeout(done, this.duration + 50);
         });
     }
 

@@ -142,7 +142,8 @@ $songbooks = $songData->getSongbooks();
                 </label>
                 <select class="form-select form-select-lg" id="page-numpad-songbook" aria-label="Select songbook for number search">
                     <?php foreach ($songbooks as $book): ?>
-                        <?php if (($book['songCount'] ?? 0) > 0): ?>
+                        <?php /* Exclude Misc — it has no numbering (#392) */ ?>
+                        <?php if (($book['songCount'] ?? 0) > 0 && $book['id'] !== 'Misc'): ?>
                             <option value="<?= htmlspecialchars($book['id']) ?>">
                                 <?= htmlspecialchars($book['name']) ?> (<?= htmlspecialchars($book['id']) ?>)
                             </option>

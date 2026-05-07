@@ -7,7 +7,7 @@
  *
  * PURPOSE:
  * Automates the build and packaging of the Web/Browser-based PWA.
- * Copies files from appWeb/public_html_beta/ to a dist/ directory,
+ * Copies files from appWeb/public_html/ to a dist/ directory,
  * minifies JS/CSS/HTML, injects version metadata, and prepares
  * the output for SFTP deployment.
  *
@@ -42,8 +42,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 
-/* Source directory (beta is the primary development target) */
-const SOURCE_DIR = path.join(PROJECT_ROOT, 'appWeb', 'public_html_beta');
+/* Source directory */
+const SOURCE_DIR = path.join(PROJECT_ROOT, 'appWeb', 'public_html');
 
 /* Output directory */
 const DIST_DIR = path.join(PROJECT_ROOT, 'dist', 'web');
