@@ -121,6 +121,10 @@ class SongData
     private bool $_componentLangColumn = false;
     private bool $_componentLangColumnChecked = false;
 
+    /** #892 — schema-probe result for tblSongs.ArrangementJson. */
+    private bool $_arrangementColumn = false;
+    private bool $_arrangementColumnChecked = false;
+
     /** Check if running in JSON fallback mode (no MySQL) */
     public function isJsonFallback(): bool { return $this->jsonMode; }
 
@@ -1588,12 +1592,18 @@ class SongData
            sorts under T in the un-numbered tail. Future enhancement:
            add a generated column TitleSortKey on tblSongs that
            strips the article at write-time. */
+        /* #892 — append ArrangementJson to the bulk-load SELECT only
+           when the column exists, so the Song Editor's `?action=load`
+           round-trip surfaces the persisted custom order. Pre-
+           migration deploys keep the legacy column list. */
+        $arrSelect = $this->_hasArrangementColumn() ? ', s.ArrangementJson AS arrangementJson' : '';
         $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title, s.SongbookAbbr AS songbook,
                        s.SongbookName AS songbookName, s.Language AS language, s.Copyright AS copyright,
                        s.TuneName AS tuneName, s.Ccli AS ccli, s.Iswc AS iswc,
                        s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
                        s.MusicPublicDomain AS musicPublicDomain,
                        s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
+                       {$arrSelect}
                 FROM tblSongs s
                 LEFT JOIN tblSongbooks b ON b.Abbreviation = s.SongbookAbbr
                 {$whereClause}
@@ -1625,6 +1635,13 @@ class SongData
                text inputs without null-checking every reader. */
             $row['tuneName'] = $row['tuneName'] ?? '';
             $row['iswc']     = $row['iswc']     ?? '';
+            /* #892 — decode the JSON int-array column when present.
+               Surfaces as `arrangement` to match the shape that the
+               Song Editor (`editor.js`) and pages/song.php both read. */
+            if (array_key_exists('arrangementJson', $row)) {
+                $row['arrangement'] = $this->_decodeArrangement($row['arrangementJson']);
+                unset($row['arrangementJson']);
+            }
             $songs[] = $row;
         }
         $stmt->close();
@@ -2324,6 +2341,11 @@ class SongData
      */
     private function _fetchSongRow(string $songId): ?array
     {
+        /* #892 — append ArrangementJson to the SELECT only when the
+           column exists. Pre-migration deploys keep the legacy
+           15-column shape so single-song reads don't 1054 on a
+           half-migrated install. */
+        $arrSelect = $this->_hasArrangementColumn() ? ', ArrangementJson AS arrangementJson' : '';
         $stmt = $this->db->prepare(
             "SELECT SongId AS id, Number AS number, Title AS title, SongbookAbbr AS songbook,
                     SongbookName AS songbookName, Language AS language, Copyright AS copyright,
@@ -2331,6 +2353,7 @@ class SongData
                     Verified AS verified, LyricsPublicDomain AS lyricsPublicDomain,
                     MusicPublicDomain AS musicPublicDomain,
                     HasAudio AS hasAudio, HasSheetMusic AS hasSheetMusic
+                    {$arrSelect}
              FROM tblSongs
              WHERE SongId = ?
              LIMIT 1"
@@ -2353,6 +2376,15 @@ class SongData
         $row['hasSheetMusic'] = (bool)$row['hasSheetMusic'];
         $row['tuneName'] = $row['tuneName'] ?? '';
         $row['iswc']     = $row['iswc']     ?? '';
+        /* #892 — decode the stored JSON int-array; the public render in
+           pages/song.php reads `$song['arrangement']` directly. The
+           helper drops malformed payloads (defensive) and returns NULL
+           when the column was unset, keeping the existing
+           "fallback to plain SortOrder" path live. */
+        if (array_key_exists('arrangementJson', $row)) {
+            $row['arrangement'] = $this->_decodeArrangement($row['arrangementJson']);
+            unset($row['arrangementJson']);
+        }
         $row['writers']      = $this->_getWriters($songId);
         $row['composers']    = $this->_getComposers($songId);
         $row['arrangers']    = $this->_getArrangers($songId);
@@ -2513,6 +2545,59 @@ class SongData
             $this->_componentLangColumn = false;
         }
         return $this->_componentLangColumn;
+    }
+
+    /**
+     * #892 — schema-probe for tblSongs.ArrangementJson. Same caching
+     * pattern as the component-language probe so editor-load (which
+     * reads ~3,600 rows) doesn't fire INFORMATION_SCHEMA per row.
+     * Pre-migration deploys return false and the SELECT skips the
+     * column, keeping the legacy 15-column shape intact.
+     */
+    private function _hasArrangementColumn(): bool
+    {
+        if ($this->_arrangementColumnChecked) {
+            return $this->_arrangementColumn;
+        }
+        $this->_arrangementColumnChecked = true;
+        try {
+            $stmt = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongs'
+                    AND COLUMN_NAME  = 'ArrangementJson' LIMIT 1"
+            );
+            $stmt->execute();
+            $this->_arrangementColumn = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+        } catch (\Throwable $_e) {
+            $this->_arrangementColumn = false;
+        }
+        return $this->_arrangementColumn;
+    }
+
+    /**
+     * #892 — Decode the JSON string read from tblSongs.ArrangementJson
+     * back into a plain int[]. Returns null when the column was NULL
+     * or when the stored payload is malformed (defensive — the JSON
+     * type validates well-formedness on write so this should be
+     * unreachable, but a hand-edited row shouldn't 500 the read).
+     */
+    private function _decodeArrangement($raw): ?array
+    {
+        if ($raw === null || $raw === '') return null;
+        if (is_array($raw)) {
+            $decoded = $raw;
+        } else {
+            $decoded = json_decode((string)$raw, true);
+            if (!is_array($decoded)) return null;
+        }
+        $out = [];
+        foreach ($decoded as $i) {
+            if (!is_int($i) && !(is_string($i) && ctype_digit($i))) return null;
+            $out[] = (int)$i;
+        }
+        return empty($out) ? null : $out;
     }
 
     /**
