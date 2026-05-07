@@ -69,14 +69,21 @@ $stats = $songData->getStats();
                         ? implode(', ', $bookLangNames)
                         : resolveLanguageName($bookLang);
                 ?>
-                <div class="col-12 col-sm-6 col-md-4 col-lg-3">
-                    <a href="/songbook/<?= htmlspecialchars($book['id']) ?>"
-                       class="card card-songbook h-100 text-decoration-none position-relative"
-                       data-navigate="songbook"
-                       data-songbook-id="<?= htmlspecialchars($book['id']) ?>"
-                       <?php if ($langCode !== ''): ?>data-songbook-language="<?= htmlspecialchars($bookLang) ?>"<?php endif; ?>
-                       <?php if ($bookLangsCsv !== ''): ?>data-songbook-languages="<?= htmlspecialchars($bookLangsCsv) ?>"<?php endif; ?>
-                       aria-label="Open <?= htmlspecialchars($book['name']) ?><?= $langCode !== '' ? ' (' . htmlspecialchars($langCode) . ')' : '' ?>">
+                <div class="col-12 col-sm-6 col-md-4 col-lg-3" id="songbook-<?= htmlspecialchars($book['id']) ?>">
+                    <div class="card card-songbook h-100 position-relative"
+                         data-songbook-id="<?= htmlspecialchars($book['id']) ?>"
+                         data-songbook-songs="<?= (int)$book['songCount'] ?>"
+                         <?php if ($langCode !== ''): ?>data-songbook-language="<?= htmlspecialchars($bookLang) ?>"<?php endif; ?>
+                         <?php if ($bookLangsCsv !== ''): ?>data-songbook-languages="<?= htmlspecialchars($bookLangsCsv) ?>"<?php endif; ?>>
+                        <!-- Stretched link covers the whole card; the
+                             absolute-positioned download button below
+                             stays clickable because its z-index sits
+                             above the link. Mirrors the home-page
+                             tile pattern (#453 / #785). -->
+                        <a href="/songbook/<?= htmlspecialchars($book['id']) ?>"
+                           class="stretched-link text-decoration-none text-reset"
+                           data-navigate="songbook"
+                           aria-label="Open <?= htmlspecialchars($book['name']) ?> — <?= number_format($book['songCount']) ?> songs<?= $langCode !== '' ? ' (' . htmlspecialchars($langCode) . ')' : '' ?>"></a>
                         <?php if ($langCode !== ''): ?>
                             <!-- #856 / #857: tooltip resolves the IETF tag to
                                  the full language name; when the book contains
@@ -123,11 +130,35 @@ $stats = $songData->getStats();
                                     </p>
                                     <?php endif; ?>
                                 </div>
-                                <!-- Arrow indicator -->
-                                <i class="fa-solid fa-chevron-right text-muted mt-1" aria-hidden="true"></i>
+                                <!-- "More to see" chevron. Hidden on xs
+                                     (portrait phone) where the absolute
+                                     [badge + download-button] cluster in
+                                     the top-right already occupies the
+                                     right side and full-width tiles need
+                                     every horizontal pixel for the title.
+                                     From sm up the tile is narrower per
+                                     column but the page chrome is more
+                                     spacious, so the chevron returns as
+                                     a navigation hint. -->
+                                <i class="fa-solid fa-chevron-right text-muted mt-1 d-none d-sm-block card-songbook-arrow"
+                                   aria-hidden="true"></i>
                             </div>
                         </div>
-                    </a>
+                        <!-- Offline-download button (#453). Hidden on
+                             browsers that don't support offline caching
+                             via body.offline-unsupported in app.css.
+                             On xs, this is the sole right-side
+                             affordance (the chevron is hidden); from sm
+                             up it sits in the corner with the chevron
+                             tucked underneath in the flex row. -->
+                        <button type="button"
+                                class="btn btn-sm btn-outline-secondary songbook-download-btn"
+                                data-songbook-download="<?= htmlspecialchars($book['id']) ?>"
+                                aria-label="Download <?= htmlspecialchars($book['name']) ?> for offline use"
+                                title="Download this songbook for offline use">
+                            <i class="fa-solid fa-cloud-arrow-down" aria-hidden="true"></i>
+                        </button>
+                    </div>
                 </div>
             <?php endif; ?>
         <?php endforeach; ?>

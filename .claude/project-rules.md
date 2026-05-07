@@ -143,6 +143,27 @@ These are project conventions worth knowing when touching adjacent code, establi
 
 - **Activity Log local-time + UA wrapping (#721 / #723).** The `/manage/activity-log` listing renders the When column in the user's local timezone via inline `Intl.DateTimeFormat`, falling back to UTC if Intl is unavailable. UA strings render in full (no server-side substr cap) with `.activity-ua { word-break: break-word; overflow-wrap: anywhere }` so long UAs wrap rather than truncate.
 
+## 12. Conventions established in the 2026-05 batch (#840–#852)
+
+These are the patterns and gotchas added during the catalogue-refresh batch. Read them before touching adjacent code.
+
+- **Works composition grouping (#840).** `tblWorks` carries an optional self-FK (`ParentWorkId`) so a "Messiah" can have nested "Part 1 / Part 2" works without a separate join table; `tblWorkSongs` joins to `tblSongs`; `tblWorkExternalLinks` is per-work. The `AppliesTo` SET on `tblExternalLinkTypes` was widened from `'song,songbook,creditperson'` to also include `'work'` — when adding a new entity-type that wants its own external links, widen this SET, add the per-entity table, AND make sure `external-link-detect.js` doesn't need any change (the module is entity-agnostic by design).
+
+- **DB-driven URL → provider detection (#841 / #845).** The decision tree for "URL X belongs to provider Y" used to live in a hand-rolled regex ladder embedded in three different editor pages. It's now: (a) `tblExternalLinkPatterns` keyed to `tblExternalLinkTypes`, (b) curator-editable at `/manage/external-link-types`, (c) consumed by `js/modules/external-link-detect.js` which prefers `window._iHymnsLinkTypes[].patterns` from the server, falling back to its bundled `RULES` when those haven't been seeded yet. Migration card 7a populates the patterns table from the bundled `RULES` so existing deployments get the same matches without code change. **Don't add a new provider regex inline — add a row to `tblExternalLinkPatterns` (or seed it via migration) and the module picks it up.**
+
+- **Responsive admin lists + sortable headers (#842 / #844).** Opt-in is two attributes: `<table class="admin-table-responsive">` and `data-col-priority` on each `<th>`/`<td>`. Sortable headers are a `<th data-sort-key="…">` + the shared `js/modules/admin-table-sort.js`. Pages that opt in: Credit People, Songbooks, Songbook Series, Works, plus six others tracked in #844. New admin lists should opt into both — the styles + module are zero-cost when the table has < 10 rows.
+
+- **Bulk-promote curator workflow (#846).** Promoting in-use Credit People into the register uses Levenshtein distance + token-set Jaccard similarity (cap 0.85) so "J. Smith" and "John Smith" cluster automatically; the curator confirms each cluster, the submit is a single transaction tagged with a shared `bulk_run_id` so the whole run can be reverted from the activity log if a duplicate slips through.
+
+- **CI/auto-merge resilience (#848 / #850 / #852).** Three lessons from the catalogue-refresh batch:
+  1. **Migration cards must render even on a no-action visit (#848).** The bug shipped in #847: `/manage/setup-database.php` had a `goto` that skipped the per-card render block when no `?action=…` was supplied, so a fresh visit showed only the bulk-run output panel. Fix: render the card grid unconditionally; the action handler runs above it and writes to a `$bulkOutput` buffer that the cards read.
+  2. **The CI guard that scans for unbalanced `<?php` tags must not trip on its own block-comment (#849).** When adding a guard like `grep -n '<?php' …`, escape the marker in the comment that explains what it does (we use `&lt;?php` in the surrounding markdown / a non-marker substitution in the heredoc) — otherwise the guard's own source matches its own pattern.
+  3. **Auto-Merge Alpha PRs workflow tolerates `gh pr merge --auto` non-zero exits (#850), and `Lint & Validate` runs on every PR with no path filter (#852).** The deadlock symptom: a workflow-only / docs-only PR has no required-check matches under the path filter, so `gh pr merge --auto` queues a merge that never fires; once we noticed, the fix was to drop the `paths:` filter on the `pull_request` trigger so every PR gets the lint job, and to make the auto-merge step swallow the "PR is fast-mergeable, no auto-merge needed" non-zero exit. Lesson: **path-filtered required checks + auto-merge is a footgun**; if a check is required for protection, it must run on every PR or the gate becomes vacuous on the filtered paths.
+
+- **`tblExternalLinkPatterns` migration deploy gate.** When patterns are pulled from the DB but the migration hasn't run yet, `js/modules/external-link-detect.js` falls back to its bundled `RULES` so editors keep working. Don't remove the fallback — it's the only thing keeping the editor functional during the rolling deploy of #845 across alpha → main.
+
+- **PR target = `alpha`, batch as one PR.** Re-emphasised by the #847 → #848 → #849 cascade: when a single feature ships in a chain of micro-PRs, each one triggers a deploy and verify cycle, and a mis-diagnosis cascades. The 2026-05 batch followed §10's one-PR rule for the main feature work (#840–#846 all in one PR per the global rule) and only span out separate PRs for the genuinely independent CI/auto-merge fixes that emerged afterwards.
+
 ## 11. Activity logging — what NEVER goes in `tblActivityLog.Details` (#535)
 
 Every meaningful action writes a row to `tblActivityLog` via

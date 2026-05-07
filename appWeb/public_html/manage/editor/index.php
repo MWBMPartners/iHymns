@@ -86,14 +86,19 @@ $currentUser = getCurrentUser();
     >
 
     <!-- Hidden file input for importing songs from an external file.
-         Accepts .json (curator-edited corpus) and .zip bulk archives.
-         A bulk-import ZIP mirrors the .SourceSongData/ folder layout
-         (#664) and may contain either plain-text .txt files (one per
-         song) OR OpenSong .xml files (#882). Both kinds may be mixed
-         in the same archive — the server dispatches per-entry by
-         extension. The zip path inserts directly into MySQL via the
+         Accepts .json (curator-edited corpus or VideoPsalm songbook)
+         and .zip bulk archives. A bulk-import ZIP mirrors the
+         .SourceSongData/ folder layout (#664) and may contain
+         plain-text .txt files (one per song), OpenSong .xml files
+         (#882), or VideoPsalm .json songbooks (#883). All three
+         kinds may be mixed in the same archive — the server
+         dispatches per-entry by extension and content shape. The zip
+         path inserts directly into MySQL via the
          /manage/editor/api.php?action=bulk_import_zip endpoint and
-         never overwrites existing songbook or song rows. -->
+         never overwrites existing songbook or song rows. A single
+         VideoPsalm .json file is routed to
+         action=bulk_import_videopsalm with the same insert-only
+         contract. -->
     <input
         type="file"
         id="fileInputImport"
@@ -223,7 +228,7 @@ $currentUser = getCurrentUser();
                 type="button"
                 class="btn btn-sm btn-amber"
                 id="btn-import"
-                title="Import songs from a JSON corpus (in-memory merge) or a .zip bulk archive. ZIPs accept the .SourceSongData layout (one .txt per song) or OpenSong .xml files in the same &lt;Hymnal&gt; [&lt;ABBR&gt;]/ folder shape. Bulk imports insert directly into MySQL and never overwrite existing rows."
+                title="Import songs from a JSON corpus (in-memory merge), a VideoPsalm songbook .json (whole-hymnal upload), or a .zip bulk archive. ZIPs accept the .SourceSongData layout (one .txt per song), OpenSong .xml files in the same &lt;Hymnal&gt; [&lt;ABBR&gt;]/ folder shape, or VideoPsalm .json songbooks at any depth. Bulk imports insert directly into MySQL and never overwrite existing rows."
             >
                 <i class="bi bi-box-arrow-in-down me-1"></i>Import
             </button>
@@ -358,6 +363,11 @@ $currentUser = getCurrentUser();
                     </button>
                     <button type="button" class="btn btn-sm btn-amber" id="btn-add-song" title="Add new song">
                         <i class="bi bi-plus-lg me-1"></i>Add
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-export-song"
+                            title="Export the currently-open song as JSON. Filename follows the &lt;#&gt; (&lt;ABBR&gt;) - &lt;Title&gt;[ (&lt;Tune&gt;)] convention so files sort numerically in Finder / Explorer."
+                            disabled>
+                        <i class="bi bi-box-arrow-down me-1"></i>Export
                     </button>
                     <button type="button" class="btn btn-sm btn-outline-danger" id="btn-delete-song" title="Delete selected song">
                         <i class="bi bi-trash me-1"></i>Delete
