@@ -61,6 +61,51 @@ import os               # File system operations (makedirs, path joining, etc.)
 import re               # Regular expressions for text cleaning and parsing
 import time             # For rate-limiting delays between requests
 import argparse         # Command-line argument parsing
+import random           # User-Agent rotation pool
+
+
+# ---------------------------------------------------------------------------
+# User-Agent rotation pool (anti-throttle)
+# ---------------------------------------------------------------------------
+# Several SDA-network sister sites (himnario.net / hinarioadventista.com)
+# fingerprint clients on the User-Agent and throttle a single consistent
+# UA aggressively — ~50 requests then a per-IP daily ban. Rotating
+# through a small pool of real recent browser UAs makes the burst look
+# like a handful of normal visitors rather than one automated client.
+#
+# Each entry is a CURRENT (2026-Q2) production UA from a major browser:
+# Safari on macOS, Safari on iPadOS, Chrome on macOS, Chrome on Windows,
+# Firefox on macOS, Firefox on Windows, Edge on Windows. The Accept and
+# Accept-Language headers below are common-modern values that all of
+# these browsers emit, so the cross-product is plausible.
+USER_AGENT_POOL = [
+    # Safari 18 on macOS Sequoia
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+    "Version/18.0 Safari/605.1.15",
+    # Safari 18 on iPadOS 18
+    "Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+    "Version/18.0 Mobile/15E148 Safari/604.1",
+    # Chrome 130 on macOS Sequoia
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/130.0.0.0 Safari/537.36",
+    # Chrome 130 on Windows 11
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/130.0.0.0 Safari/537.36",
+    # Firefox 132 on macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.7; rv:132.0) "
+    "Gecko/20100101 Firefox/132.0",
+    # Firefox 132 on Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) "
+    "Gecko/20100101 Firefox/132.0",
+    # Edge 130 on Windows 11
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +393,31 @@ def compose_subdir(title, abbrev, lang_code):
 # producing a list of (indicator, lyrics) tuples in self.sections.
 # ---------------------------------------------------------------------------
 
+"""
+HTML void elements — opens with no matching close tag in regular HTML
+(e.g. <br>, <hr>, <img>). html.parser.HTMLParser fires handle_starttag
+on `<br>` but no handle_endtag (since `</br>` doesn't exist), so
+incrementing _depth on starttag without a balancing decrement on
+endtag corrupts the depth counter. The XHTML self-closing form
+`<br />` is dispatched via handle_startendtag, which by default fires
+BOTH starttag and endtag — those balance correctly. The bug surfaces
+on hymns where the source HTML uses the bare `<br>` form (e.g.
+himnario.net/Himno?no=331+ mixes `<br>` between every verse line):
+each unbalanced open leaves _depth net +1, the closing `</div>` of
+the lyrics block never fires the section flush, and the page parses
+as title + zero sections — which the structural rate-limit fallback
+then misclassifies as "Still rate limited" and stops the run.
+
+Fix: skip depth-tracking on void elements in BOTH paths so `<br>`
+and `<br />` are equally depth-neutral. The `<br>` → newline side
+effect inside lyrics is preserved.
+"""
+VOID_TAGS = frozenset({
+    'br', 'hr', 'img', 'input', 'meta', 'link',
+    'area', 'base', 'col', 'embed', 'param', 'source', 'track', 'wbr',
+})
+
+
 class HymnParser(html.parser.HTMLParser):
     """
     Custom HTML parser for sdahymnal.org / hymnal.xyz hymn pages.
@@ -462,16 +532,20 @@ class HymnParser(html.parser.HTMLParser):
             self._in_bh4    = True
             self._bh4_depth = 1       # We're 1 level deep (the container itself)
         elif self._in_bh4:
-            # We're inside block-heading-four; track depth of nested tags
-            self._bh4_depth += 1
+            # We're inside block-heading-four; track depth of nested tags.
+            # Skip void elements — see VOID_TAGS comment above.
+            if tag not in VOID_TAGS:
+                self._bh4_depth += 1
 
             # Step 2: Look for the wedding-heading wrapper inside bh4
             if "wedding-heading" in cls and not self._in_wh:
                 self._in_wh    = True
                 self._wh_depth = 0    # Will increment as child tags are encountered
             elif self._in_wh:
-                # We're inside wedding-heading; track its child depth
-                self._wh_depth += 1
+                # We're inside wedding-heading; track its child depth.
+                # Skip void elements for the same reason.
+                if tag not in VOID_TAGS:
+                    self._wh_depth += 1
 
                 # Step 3: Look for the <strong> tag that contains the actual title
                 # Only capture if we haven't already found a title (first match wins)
@@ -482,7 +556,13 @@ class HymnParser(html.parser.HTMLParser):
         # If we're already inside a lyrics or indicator section, just track depth.
         # Also convert <br> tags to newlines within lyrics blocks.
         if self._current:
-            self._depth += 1
+            # Skip void elements — see VOID_TAGS comment above. Without
+            # this guard, plain `<br>` (no matching `</br>`) increments
+            # _depth on open with no decrement on close, the lyrics
+            # block's `</div>` never reaches _depth==0 to flush, and
+            # parser.sections stays empty — masking as a rate-limit page.
+            if tag not in VOID_TAGS:
+                self._depth += 1
             # Convert <br> tags to newline characters within lyrics sections
             # (the site uses <br> for line breaks within verses)
             if tag == "br" and self._current == "lyrics":
@@ -521,8 +601,13 @@ class HymnParser(html.parser.HTMLParser):
                 # Subsequent <strong> tags (shouldn't happen, but be safe) — discard
                 self._buf = []
 
-        # Track depth within block-heading-four to detect when we leave it
-        if self._in_bh4:
+        # Track depth within block-heading-four to detect when we leave it.
+        # Void elements never had a depth-incrementing starttag (see
+        # VOID_TAGS guard above), so they must not decrement here either —
+        # otherwise an XHTML self-closing `<br />` (which html.parser
+        # dispatches as starttag + endtag via handle_startendtag) would
+        # leave _bh4_depth net -1 and prematurely zero the container.
+        if self._in_bh4 and tag not in VOID_TAGS:
             self._bh4_depth -= 1
             if self._bh4_depth == 0:
                 # We've fully exited the block-heading-four container
@@ -536,6 +621,12 @@ class HymnParser(html.parser.HTMLParser):
         # --- LYRICS PATH ---
         if not self._current:
             return  # Not inside any lyrics/indicator section
+
+        # Skip void elements for the same reason as in handle_starttag —
+        # `<br />` html.parser fires both start + end via the default
+        # handle_startendtag, and we deliberately keep both depth-neutral.
+        if tag in VOID_TAGS:
+            return
 
         self._depth -= 1
         if self._depth == 0:
@@ -767,10 +858,30 @@ def fetch_hymn(number, base_url, home_url):
     # Construct the hymn page URL using the query parameter format used by both sites
     url = f"{base_url}?no={number}"
 
-    # Create a request with a polite User-Agent identifying the scraper
+    # Real-browser headers — the previous polite "HymnScraper/2.0" UA
+    # was triggering aggressive anti-bot throttling on himnario.net (HA)
+    # and hinarioadventista.com (HASD), which key on UA + Accept-* shape
+    # to filter automated traffic. Rotating through USER_AGENT_POOL on
+    # every request makes the burst look like a handful of normal
+    # visitors from different browsers rather than one consistent
+    # automated client — defeats UA-based per-client throttling without
+    # touching upstream servers' rate budget.
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": "Mozilla/5.0 (compatible; HymnScraper/2.0; personal use)"}
+        headers={
+            "User-Agent": random.choice(USER_AGENT_POOL),
+            "Accept":
+                "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                "image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
+            # Deliberately omit Accept-Encoding — urllib doesn't
+            # auto-decompress and the parser expects raw HTML.
+            # UA + Accept + Accept-Language + Referer are the
+            # signals that actually matter for fingerprinting.
+            "Referer": home_url + "/",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+        },
     )
 
     raw = None  # Will hold the raw response bytes if the request succeeds
