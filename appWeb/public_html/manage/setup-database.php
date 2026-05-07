@@ -235,6 +235,7 @@ $friendlyTitles = [
     'external-link-patterns'           => 'External-Link URL Patterns (#845)',
     'song-media'                       => 'Song Media Uploads (#853)',
     'song-component-language'          => 'Song Component Language Override (#858)',
+    'song-arrangement'                 => 'Song Arrangement Persistence (#892)',
     /* `recompute-songbook-songcount` no longer exposed via the dashboard
        (#818) — the SongCount Triggers migration above includes its own
        initial recompute. The CLI script stays on disk for emergency
@@ -295,6 +296,7 @@ $scriptMap = [
     'external-link-patterns'        => 'migrate-external-link-patterns.php',
     'song-media'                    => 'migrate-song-media.php',
     'song-component-language'       => 'migrate-song-component-language.php',
+    'song-arrangement'              => 'migrate-song-arrangement.php',
     'cleanup'     => 'cleanup.php',
     'backup'      => 'backup.php',
     'restore'     => 'restore.php',
@@ -345,6 +347,7 @@ $migrationOrder = [
     'external-link-patterns',
     'song-media',
     'song-component-language',
+    'song-arrangement',
 ];
 
 /* Per-migration card content (#816). Single source of truth for the
@@ -760,6 +763,20 @@ $migrationCards = [
                   . ' union. Idempotent.',
         'button' => 'Run Song Component Language Migration',
     ],
+    'song-arrangement' => [
+        'title'  => 'Song Arrangement Persistence (#892)',
+        'body'   => 'Adds <code>ArrangementJson JSON NULL</code> to'
+                  . ' <code>tblSongs</code> so the Song Editor\'s Structure-tab'
+                  . ' arrangement (an array of indices into <code>components[]</code>'
+                  . ' that allows repetition — e.g. a refrain played between every'
+                  . ' verse) can finally round-trip through save → reload. Pre-#892'
+                  . ' the editor rendered the chips and POSTed the field, but the'
+                  . ' server had no column to write into and silently dropped it.'
+                  . ' <code>NULL</code> = render in stored <code>SortOrder</code>'
+                  . ' (current behaviour); a JSON int-array overrides the order.'
+                  . ' Idempotent.',
+        'button' => 'Run Song Arrangement Migration',
+    ],
     /* recompute-songbook-songcount card removed (#818) — its work is
        now covered by the SongCount Triggers migration above, which
        runs an initial recompute as part of its installation. The
@@ -915,6 +932,9 @@ $migrationProbes = [
     /* Song component language: pending when the column is absent. */
     'song-component-language'            => static fn(\mysqli $db) =>
         !_migProbe_columnExists($db, 'tblSongComponents', 'Language'),
+    /* Song arrangement: pending when the column is absent. */
+    'song-arrangement'                   => static fn(\mysqli $db) =>
+        !_migProbe_columnExists($db, 'tblSongs', 'ArrangementJson'),
     /* Backfills run once after schema lands. They're idempotent so
        always-show is safe — but we can be smarter: pending when the
        new table has fewer rows than the legacy source had non-empty

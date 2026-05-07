@@ -141,6 +141,38 @@ function _ietfBcp47Validate(string $raw)
     return $tag;
 }
 
+/**
+ * Sanitise an incoming `arrangement` payload from the Song Editor (#892).
+ *
+ * The editor sends an int[] of indices into `components[]` (with
+ * repetition allowed — that is the entire reason this column exists,
+ * so a refrain can play between every verse). Anything outside that
+ * shape — null, empty array, non-integer entries, indices outside
+ * the components range — collapses to NULL so the public render
+ * falls back to plain stored SortOrder (the pre-#892 behaviour).
+ *
+ * Returning a JSON string (or null) so the caller can bind it
+ * straight into mysqli without a second encode step.
+ *
+ * @param mixed $raw            The decoded `arrangement` field from the request body.
+ * @param int   $componentCount Bound — every index must be 0 ≤ i < $componentCount.
+ * @return string|null          JSON-encoded int array, or null when the input is
+ *                              missing / empty / malformed / out-of-range.
+ */
+function _sanitiseArrangement($raw, int $componentCount): ?string
+{
+    if (!is_array($raw) || $componentCount <= 0) return null;
+    $clean = [];
+    foreach ($raw as $idx) {
+        if (!is_int($idx) && !(is_string($idx) && ctype_digit($idx))) return null;
+        $i = (int)$idx;
+        if ($i < 0 || $i >= $componentCount) return null;
+        $clean[] = $i;
+    }
+    if (empty($clean)) return null;
+    return json_encode(array_values($clean), JSON_UNESCAPED_UNICODE);
+}
+
 /* =========================================================================
  * BULK_IMPORT_ZIP constants (#664)
  *
@@ -321,16 +353,42 @@ switch ($action) {
             }
             $stmtSongbook->close();
 
+            /* #892 — schema-probe for tblSongs.ArrangementJson once
+               per bulk save so the per-song INSERT loop binds the
+               right column shape. Pre-migration deploys keep the
+               legacy 16-column INSERT. */
+            $hasArrangementCol = false;
+            try {
+                $arrProbe = $db->prepare(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                      WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME   = 'tblSongs'
+                        AND COLUMN_NAME  = 'ArrangementJson' LIMIT 1"
+                );
+                $arrProbe->execute();
+                $hasArrangementCol = $arrProbe->get_result()->fetch_row() !== null;
+                $arrProbe->close();
+            } catch (\Throwable $_e) { /* default false */ }
+
             /* Prepare song statements. tblSongs INSERT now carries the
                #497 TuneName + Iswc columns; both are nullable and bind
                as the string types below (mysqli emits NULL when the
                bound PHP value is null). */
-            $stmtSong = $db->prepare(
-                "INSERT INTO tblSongs (SongId, Number, Title, SongbookAbbr, SongbookName,
-                 Language, Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
-                 MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-            );
+            if ($hasArrangementCol) {
+                $stmtSong = $db->prepare(
+                    "INSERT INTO tblSongs (SongId, Number, Title, SongbookAbbr, SongbookName,
+                     Language, Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
+                     MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText, ArrangementJson)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                );
+            } else {
+                $stmtSong = $db->prepare(
+                    "INSERT INTO tblSongs (SongId, Number, Title, SongbookAbbr, SongbookName,
+                     Language, Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
+                     MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                );
+            }
             $stmtWriter     = $db->prepare("INSERT INTO tblSongWriters     (SongId, Name) VALUES (?, ?)");
             $stmtComposer   = $db->prepare("INSERT INTO tblSongComposers   (SongId, Name) VALUES (?, ?)");
             $stmtArranger   = $db->prepare("INSERT INTO tblSongArrangers   (SongId, Name) VALUES (?, ?)");
@@ -399,12 +457,31 @@ switch ($action) {
                 }
                 $lyricsText = implode("\n", $lyricsLines);
 
-                $stmtSong->bind_param(
-                    'sissssssssiiiiis',
-                    $songId, $number, $title, $songbookAbbr, $songbookName,
-                    $language, $copyright, $tuneName, $ccli, $iswc,
-                    $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText
-                );
+                if ($hasArrangementCol) {
+                    /* #892 — round-trip the per-song arrangement when
+                       the column is present. The bulk-save path is
+                       used by the legacy "save the entire songs.json"
+                       flow, which already carries `arrangement` per
+                       song in the JSON shape. */
+                    $arrangementJson = _sanitiseArrangement(
+                        $song['arrangement'] ?? null,
+                        is_array($song['components'] ?? null) ? count($song['components']) : 0
+                    );
+                    $stmtSong->bind_param(
+                        'sissssssssiiiiiss',
+                        $songId, $number, $title, $songbookAbbr, $songbookName,
+                        $language, $copyright, $tuneName, $ccli, $iswc,
+                        $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText,
+                        $arrangementJson
+                    );
+                } else {
+                    $stmtSong->bind_param(
+                        'sissssssssiiiiis',
+                        $songId, $number, $title, $songbookAbbr, $songbookName,
+                        $language, $copyright, $tuneName, $ccli, $iswc,
+                        $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText
+                    );
+                }
                 $stmtSong->execute();
 
                 /* Credit collections — one table each. The registry sync
@@ -1138,6 +1215,15 @@ switch ($action) {
         }
         $lyricsText = implode("\n", $lyricsLines);
 
+        /* #892 — sanitise the arrangement payload before the txn so any
+           validation rejection 400s the caller cleanly. The editor sends
+           an int[] of indices into components[] (repetition allowed —
+           the entire reason this column exists). NULL / empty / invalid
+           → store NULL so the public render falls back to plain
+           SortOrder (current pre-#892 behaviour). */
+        $componentCount = is_array($song['components'] ?? null) ? count($song['components']) : 0;
+        $arrangementJson = _sanitiseArrangement($song['arrangement'] ?? null, $componentCount);
+
         try {
             $db = getDbMysqli();
             $db->begin_transaction();
@@ -1154,31 +1240,80 @@ switch ($action) {
             }
             $action = $prevRow === null ? 'create' : 'edit';
 
-            /* UPSERT tblSongs — now carries TuneName + Iswc (#497). */
-            $upsert = $db->prepare(
-                'INSERT INTO tblSongs
-                    (SongId, Number, Title, SongbookAbbr, SongbookName, Language,
-                     Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
-                     MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                 ON DUPLICATE KEY UPDATE
-                    Number = VALUES(Number), Title = VALUES(Title),
-                    SongbookAbbr = VALUES(SongbookAbbr), SongbookName = VALUES(SongbookName),
-                    Language = VALUES(Language), Copyright = VALUES(Copyright),
-                    TuneName = VALUES(TuneName),
-                    Ccli = VALUES(Ccli), Iswc = VALUES(Iswc),
-                    Verified = VALUES(Verified),
-                    LyricsPublicDomain = VALUES(LyricsPublicDomain),
-                    MusicPublicDomain = VALUES(MusicPublicDomain),
-                    HasAudio = VALUES(HasAudio), HasSheetMusic = VALUES(HasSheetMusic),
-                    LyricsText = VALUES(LyricsText)'
-            );
-            $upsert->bind_param(
-                'sissssssssiiiiis',
-                $songId, $number, $title, $songbookAbbr, $songbookName,
-                $language, $copyright, $tuneName, $ccli, $iswc,
-                $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText
-            );
+            /* #892 — schema-probe for the optional ArrangementJson column.
+               Pre-migration deploys keep the legacy 16-column UPSERT; once
+               the column exists we add a 17th bound parameter so the
+               curator's chosen verse/refrain/verse… order finally
+               round-trips through save → reload. */
+            $hasArrangementCol = false;
+            try {
+                $arrProbe = $db->prepare(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                      WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME   = 'tblSongs'
+                        AND COLUMN_NAME  = 'ArrangementJson' LIMIT 1"
+                );
+                $arrProbe->execute();
+                $hasArrangementCol = $arrProbe->get_result()->fetch_row() !== null;
+                $arrProbe->close();
+            } catch (\Throwable $_e) { /* default false */ }
+
+            /* UPSERT tblSongs — now carries TuneName + Iswc (#497) and
+               ArrangementJson (#892) when the column exists. */
+            if ($hasArrangementCol) {
+                $upsert = $db->prepare(
+                    'INSERT INTO tblSongs
+                        (SongId, Number, Title, SongbookAbbr, SongbookName, Language,
+                         Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
+                         MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText,
+                         ArrangementJson)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     ON DUPLICATE KEY UPDATE
+                        Number = VALUES(Number), Title = VALUES(Title),
+                        SongbookAbbr = VALUES(SongbookAbbr), SongbookName = VALUES(SongbookName),
+                        Language = VALUES(Language), Copyright = VALUES(Copyright),
+                        TuneName = VALUES(TuneName),
+                        Ccli = VALUES(Ccli), Iswc = VALUES(Iswc),
+                        Verified = VALUES(Verified),
+                        LyricsPublicDomain = VALUES(LyricsPublicDomain),
+                        MusicPublicDomain = VALUES(MusicPublicDomain),
+                        HasAudio = VALUES(HasAudio), HasSheetMusic = VALUES(HasSheetMusic),
+                        LyricsText = VALUES(LyricsText),
+                        ArrangementJson = VALUES(ArrangementJson)'
+                );
+                $upsert->bind_param(
+                    'sissssssssiiiiiss',
+                    $songId, $number, $title, $songbookAbbr, $songbookName,
+                    $language, $copyright, $tuneName, $ccli, $iswc,
+                    $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText,
+                    $arrangementJson
+                );
+            } else {
+                $upsert = $db->prepare(
+                    'INSERT INTO tblSongs
+                        (SongId, Number, Title, SongbookAbbr, SongbookName, Language,
+                         Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
+                         MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     ON DUPLICATE KEY UPDATE
+                        Number = VALUES(Number), Title = VALUES(Title),
+                        SongbookAbbr = VALUES(SongbookAbbr), SongbookName = VALUES(SongbookName),
+                        Language = VALUES(Language), Copyright = VALUES(Copyright),
+                        TuneName = VALUES(TuneName),
+                        Ccli = VALUES(Ccli), Iswc = VALUES(Iswc),
+                        Verified = VALUES(Verified),
+                        LyricsPublicDomain = VALUES(LyricsPublicDomain),
+                        MusicPublicDomain = VALUES(MusicPublicDomain),
+                        HasAudio = VALUES(HasAudio), HasSheetMusic = VALUES(HasSheetMusic),
+                        LyricsText = VALUES(LyricsText)'
+                );
+                $upsert->bind_param(
+                    'sissssssssiiiiis',
+                    $songId, $number, $title, $songbookAbbr, $songbookName,
+                    $language, $copyright, $tuneName, $ccli, $iswc,
+                    $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText
+                );
+            }
             $upsert->execute();
             $upsert->close();
 
@@ -3245,19 +3380,60 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
            than half-succeeding. */
         $action = 'create';
         $previousData = null;
-        $insert = $db->prepare(
-            'INSERT INTO tblSongs
-                (SongId, Number, Title, SongbookAbbr, SongbookName, Language,
-                 Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
-                 MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-        );
-        $insert->bind_param(
-            'sissssssssiiiiis',
-            $songId, $number, $title, $songbookAbbr, $songbookName,
-            $language, $copyright, $tuneName, $ccli, $iswc,
-            $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText
-        );
+
+        /* #892 — schema-probe for tblSongs.ArrangementJson. The TXT /
+           OpenSong parsers in this file don't produce arrangements
+           today, so this is a no-op for current bulk imports — but
+           future parsers (e.g. a richer XML format) may carry one,
+           and the path needs to round-trip it through. */
+        $hasArrangementCol = false;
+        try {
+            $arrProbe = $db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongs'
+                    AND COLUMN_NAME  = 'ArrangementJson' LIMIT 1"
+            );
+            $arrProbe->execute();
+            $hasArrangementCol = $arrProbe->get_result()->fetch_row() !== null;
+            $arrProbe->close();
+        } catch (\Throwable $_e) { /* default false */ }
+
+        if ($hasArrangementCol) {
+            $arrangementJson = _sanitiseArrangement(
+                $song['arrangement'] ?? null,
+                count($song['components'] ?? [])
+            );
+            $insert = $db->prepare(
+                'INSERT INTO tblSongs
+                    (SongId, Number, Title, SongbookAbbr, SongbookName, Language,
+                     Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
+                     MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText,
+                     ArrangementJson)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            );
+            $insert->bind_param(
+                'sissssssssiiiiiss',
+                $songId, $number, $title, $songbookAbbr, $songbookName,
+                $language, $copyright, $tuneName, $ccli, $iswc,
+                $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText,
+                $arrangementJson
+            );
+        } else {
+            $insert = $db->prepare(
+                'INSERT INTO tblSongs
+                    (SongId, Number, Title, SongbookAbbr, SongbookName, Language,
+                     Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
+                     MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            );
+            $insert->bind_param(
+                'sissssssssiiiiis',
+                $songId, $number, $title, $songbookAbbr, $songbookName,
+                $language, $copyright, $tuneName, $ccli, $iswc,
+                $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText
+            );
+        }
         $insert->execute();
         $insert->close();
 
