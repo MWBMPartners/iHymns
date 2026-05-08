@@ -2427,6 +2427,7 @@ switch ($action) {
                 'SongsFailed'           => (int)($summary['songs_failed'] ?? 0),
                 'ErrorsJson'            => json_encode($summary['errors'] ?? [], JSON_UNESCAPED_UNICODE),
                 'PerSongbookJson'       => json_encode($summary['per_songbook'] ?? [], JSON_UNESCAPED_UNICODE),
+                'PhaseLabel'            => 'completed',
                 'TempPath'              => '',
             ];
             _bulkImport_jobMark($db, $jobId, 'completed', $completedExtras);
@@ -2633,11 +2634,12 @@ switch ($action) {
             }
 
             $userId = isset($currentUser['id']) ? (int)$currentUser['id'] : 0;
-            /* #906 — schema-probe for PerSongbookJson so a pre-migration
-               deploy returns a clean response without 1054. The probe
-               result is request-cached via a static so a polling client
-               doesn't fire a new probe per request. */
+            /* #906 / #907 — schema-probe for newer columns so a pre-
+               migration deploy returns a clean response without 1054.
+               Both probes are request-cached via static so a polling
+               client doesn't fire fresh probes per request. */
             static $hasPerSongbookCol = null;
+            static $hasPhaseLabelCol  = null;
             if ($hasPerSongbookCol === null) {
                 try {
                     $probeCol = $db->query(
@@ -2650,13 +2652,26 @@ switch ($action) {
                     if ($probeCol) $probeCol->close();
                 } catch (\Throwable $_e) { $hasPerSongbookCol = false; }
             }
+            if ($hasPhaseLabelCol === null) {
+                try {
+                    $probeCol = $db->query(
+                        "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                          WHERE TABLE_SCHEMA = DATABASE()
+                            AND TABLE_NAME   = 'tblBulkImportJobs'
+                            AND COLUMN_NAME  = 'PhaseLabel' LIMIT 1"
+                    );
+                    $hasPhaseLabelCol = $probeCol && $probeCol->fetch_row() !== null;
+                    if ($probeCol) $probeCol->close();
+                } catch (\Throwable $_e) { $hasPhaseLabelCol = false; }
+            }
             $perSongbookSelect = $hasPerSongbookCol ? ', PerSongbookJson' : ', NULL AS PerSongbookJson';
+            $phaseLabelSelect  = $hasPhaseLabelCol  ? ', PhaseLabel'      : ', NULL AS PhaseLabel';
             $stmt = $db->prepare(
                 'SELECT Id, UserId, Filename, SizeBytes, Status,
                         TotalEntries, ProcessedEntries,
                         SongbooksCreatedJson, SongbooksExistingJson,
                         SongsCreated, SongsSkippedExisting, SongsFailed,
-                        ErrorsJson' . $perSongbookSelect . ',
+                        ErrorsJson' . $perSongbookSelect . $phaseLabelSelect . ',
                         StartedAt, CompletedAt, CreatedAt, UpdatedAt
                    FROM tblBulkImportJobs
                   WHERE Id = ? AND UserId = ?
@@ -2704,6 +2719,10 @@ switch ($action) {
                        Pre-migration deploys return null (column read as
                        NULL via `, NULL AS PerSongbookJson` above). */
                     'per_songbook'            => $decode($row['PerSongbookJson'])       ?? null,
+                    /* #907 — current worker phase: walking-zip / parsing-songs /
+                       flushing-songbooks / completed. Pre-migration deploys
+                       return null and the frontend hides the phase label. */
+                    'phase_label'             => $row['PhaseLabel']                     ?? null,
                     'started_at'              => $row['StartedAt'],
                     'completed_at'            => $row['CompletedAt'],
                     'created_at'              => $row['CreatedAt'],
@@ -3882,14 +3901,29 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
     /* Initial progress write — set TotalEntries to the post-filter
        count so the polling endpoint's percentage uses the right
        denominator. We don't know it precisely until we've walked
-       once, so send the raw entry count as a ceiling. (#676) */
+       once, so send the raw entry count as a ceiling. (#676)
+       PhaseLabel (#907) gives the frontend a human-readable status
+       above the progress bar even at 0% — the curator never sees a
+       silent "0%" while the worker is doing real preflight work. */
     if ($jobDb !== null && $jobId !== null) {
         _bulkImport_jobMark($jobDb, $jobId, 'running', [
             'TotalEntries'     => (int)$entryCount,
             'ProcessedEntries' => 0,
+            'PhaseLabel'       => 'walking-zip',
         ]);
     }
     $progressFlushCounter = 0;
+
+    /* #907 — phase transition: walking-zip → parsing-songs. The
+       walk-and-classify above (entry count, format detection) was
+       phase 'walking-zip'; we're about to start the per-entry parse +
+       save loop, which is the bulk of the work and updates
+       ProcessedEntries every $PROGRESS_BATCH iterations. */
+    if ($jobDb !== null && $jobId !== null) {
+        _bulkImport_jobMark($jobDb, $jobId, 'running', [
+            'PhaseLabel' => 'parsing-songs',
+        ]);
+    }
 
     /* Single pass over the archive: for each .txt entry, parse the
        enclosing folder name to learn (songbook name, abbrev), upsert
@@ -4131,6 +4165,17 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
     }
 
     $zip->close();
+
+    /* #907 — phase transition: parsing-songs → flushing-songbooks.
+       The per-entry loop is done; we're now refreshing SongCount on
+       any newly-created songbooks. Brief phase but worth a label so
+       the bar at 100% briefly shows "Finalising…" rather than
+       lingering at "Parsing songs" with no progress. */
+    if ($jobDb !== null && $jobId !== null) {
+        _bulkImport_jobMark($jobDb, $jobId, 'running', [
+            'PhaseLabel' => 'flushing-songbooks',
+        ]);
+    }
 
     /* Refresh SongCount only for songbooks we created in this run.
        Existing songbooks are off-limits per the no-overwrite contract,
