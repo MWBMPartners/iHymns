@@ -236,6 +236,7 @@ $friendlyTitles = [
     'song-media'                       => 'Song Media Uploads (#853)',
     'song-component-language'          => 'Song Component Language Override (#858)',
     'song-arrangement'                 => 'Song Arrangement Persistence (#892)',
+    'bulk-import-per-songbook'         => 'Bulk-Import Per-Songbook Breakdown (#906)',
     /* `recompute-songbook-songcount` no longer exposed via the dashboard
        (#818) — the SongCount Triggers migration above includes its own
        initial recompute. The CLI script stays on disk for emergency
@@ -297,6 +298,7 @@ $scriptMap = [
     'song-media'                    => 'migrate-song-media.php',
     'song-component-language'       => 'migrate-song-component-language.php',
     'song-arrangement'              => 'migrate-song-arrangement.php',
+    'bulk-import-per-songbook'      => 'migrate-bulk-import-per-songbook.php',
     'cleanup'     => 'cleanup.php',
     'backup'      => 'backup.php',
     'restore'     => 'restore.php',
@@ -348,6 +350,7 @@ $migrationOrder = [
     'song-media',
     'song-component-language',
     'song-arrangement',
+    'bulk-import-per-songbook',
 ];
 
 /* Per-migration card content (#816). Single source of truth for the
@@ -777,6 +780,20 @@ $migrationCards = [
                   . ' Idempotent.',
         'button' => 'Run Song Arrangement Migration',
     ],
+    'bulk-import-per-songbook' => [
+        'title'  => 'Bulk-Import Per-Songbook Breakdown (#906)',
+        'body'   => 'Adds <code>PerSongbookJson JSON NULL</code> to'
+                  . ' <code>tblBulkImportJobs</code> so the bulk-import flow can'
+                  . ' persist a per-songbook breakdown of created / skipped /'
+                  . ' failed counts alongside the existing aggregate totals.'
+                  . ' Pre-#906 the import notification only said'
+                  . ' "Imported X new (Y skipped)" — the curator couldn\'t tell'
+                  . ' whether the skips were "songs already in DB" (legitimate'
+                  . ' skip) or parse failures (real bug). The new column carries'
+                  . ' enough detail to render a per-songbook table in the import'
+                  . ' summary. Idempotent.',
+        'button' => 'Run Bulk-Import Per-Songbook Migration',
+    ],
     /* recompute-songbook-songcount card removed (#818) — its work is
        now covered by the SongCount Triggers migration above, which
        runs an initial recompute as part of its installation. The
@@ -935,6 +952,9 @@ $migrationProbes = [
     /* Song arrangement: pending when the column is absent. */
     'song-arrangement'                   => static fn(\mysqli $db) =>
         !_migProbe_columnExists($db, 'tblSongs', 'ArrangementJson'),
+    /* Bulk-import per-songbook breakdown: pending when the column is absent. */
+    'bulk-import-per-songbook'           => static fn(\mysqli $db) =>
+        !_migProbe_columnExists($db, 'tblBulkImportJobs', 'PerSongbookJson'),
     /* Backfills run once after schema lands. They're idempotent so
        always-show is safe — but we can be smarter: pending when the
        new table has fewer rows than the legacy source had non-empty

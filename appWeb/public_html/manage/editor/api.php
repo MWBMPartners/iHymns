@@ -2413,7 +2413,12 @@ switch ($action) {
             $db = getDbMysqli();
             _bulkImport_jobMark($db, $jobId, 'running', ['StartedAt' => 'NOW()']);
             $summary = _bulkImport_processZip($persistPath, $db, $jobId);
-            _bulkImport_jobMark($db, $jobId, 'completed', [
+            /* #906 — persist the per-songbook breakdown alongside the
+               aggregate counts when the schema carries the column.
+               _bulkImport_jobMark()'s schema-probe + extras-merge
+               handles a pre-migration deploy gracefully (the unknown
+               column is dropped from the UPDATE). */
+            $completedExtras = [
                 'CompletedAt'           => 'NOW()',
                 'SongbooksCreatedJson'  => json_encode($summary['songbooks_created']  ?? [], JSON_UNESCAPED_UNICODE),
                 'SongbooksExistingJson' => json_encode($summary['songbooks_existing'] ?? [], JSON_UNESCAPED_UNICODE),
@@ -2421,8 +2426,10 @@ switch ($action) {
                 'SongsSkippedExisting'  => (int)($summary['songs_skipped_existing'] ?? 0),
                 'SongsFailed'           => (int)($summary['songs_failed'] ?? 0),
                 'ErrorsJson'            => json_encode($summary['errors'] ?? [], JSON_UNESCAPED_UNICODE),
+                'PerSongbookJson'       => json_encode($summary['per_songbook'] ?? [], JSON_UNESCAPED_UNICODE),
                 'TempPath'              => '',
-            ]);
+            ];
+            _bulkImport_jobMark($db, $jobId, 'completed', $completedExtras);
             @unlink($persistPath);
 
             /* Notify the curator so they find the result on their
@@ -2583,12 +2590,30 @@ switch ($action) {
             }
 
             $userId = isset($currentUser['id']) ? (int)$currentUser['id'] : 0;
+            /* #906 — schema-probe for PerSongbookJson so a pre-migration
+               deploy returns a clean response without 1054. The probe
+               result is request-cached via a static so a polling client
+               doesn't fire a new probe per request. */
+            static $hasPerSongbookCol = null;
+            if ($hasPerSongbookCol === null) {
+                try {
+                    $probeCol = $db->query(
+                        "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                          WHERE TABLE_SCHEMA = DATABASE()
+                            AND TABLE_NAME   = 'tblBulkImportJobs'
+                            AND COLUMN_NAME  = 'PerSongbookJson' LIMIT 1"
+                    );
+                    $hasPerSongbookCol = $probeCol && $probeCol->fetch_row() !== null;
+                    if ($probeCol) $probeCol->close();
+                } catch (\Throwable $_e) { $hasPerSongbookCol = false; }
+            }
+            $perSongbookSelect = $hasPerSongbookCol ? ', PerSongbookJson' : ', NULL AS PerSongbookJson';
             $stmt = $db->prepare(
                 'SELECT Id, UserId, Filename, SizeBytes, Status,
                         TotalEntries, ProcessedEntries,
                         SongbooksCreatedJson, SongbooksExistingJson,
                         SongsCreated, SongsSkippedExisting, SongsFailed,
-                        ErrorsJson,
+                        ErrorsJson' . $perSongbookSelect . ',
                         StartedAt, CompletedAt, CreatedAt, UpdatedAt
                    FROM tblBulkImportJobs
                   WHERE Id = ? AND UserId = ?
@@ -2630,6 +2655,12 @@ switch ($action) {
                     'songbooks_created'       => $decode($row['SongbooksCreatedJson'])  ?? [],
                     'songbooks_existing'      => $decode($row['SongbooksExistingJson']) ?? [],
                     'errors'                  => $decode($row['ErrorsJson'])            ?? [],
+                    /* #906 — per-songbook breakdown of created / skipped /
+                       failed counts so the frontend can render a per-book
+                       table without re-deriving from `errors[]` heuristics.
+                       Pre-migration deploys return null (column read as
+                       NULL via `, NULL AS PerSongbookJson` above). */
+                    'per_songbook'            => $decode($row['PerSongbookJson'])       ?? null,
                     'started_at'              => $row['StartedAt'],
                     'completed_at'            => $row['CompletedAt'],
                     'created_at'              => $row['CreatedAt'],
@@ -3573,6 +3604,32 @@ function _bulkImport_upsertSongbook(\mysqli $db, string $abbr, string $name, ?st
 function _bulkImport_jobMark(\mysqli $db, ?int $jobId, string $status, array $extra = []): void
 {
     if ($jobId === null || $jobId <= 0) return;
+
+    /* Schema-probe the columns on tblBulkImportJobs once per request
+       so newer columns (e.g. #906's PerSongbookJson) get dropped
+       from the UPDATE on pre-migration deploys. Without the filter,
+       a single unknown-column extra would 1054 the entire UPDATE
+       and the rest of the legit columns wouldn't get updated either.
+       Static-cached so the SELECT runs once even when this function
+       is called dozens of times during a long import. */
+    static $knownCols = null;
+    if ($knownCols === null) {
+        $knownCols = [];
+        try {
+            $r = $db->query(
+                "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblBulkImportJobs'"
+            );
+            if ($r) {
+                while ($row = $r->fetch_assoc()) {
+                    $knownCols[$row['COLUMN_NAME']] = true;
+                }
+                $r->close();
+            }
+        } catch (\Throwable $_e) { /* best-effort; empty map = filter rejects everything */ }
+    }
+
     /* Build the SET fragment — status always, plus any extras. */
     $setParts = ['Status = ?'];
     $bindTypes  = 's';
@@ -3582,6 +3639,11 @@ function _bulkImport_jobMark(\mysqli $db, ?int $jobId, string $status, array $ex
            caller can't accidentally splice user data into the SQL.
            tblBulkImportJobs columns only. */
         if (!preg_match('/^[A-Za-z][A-Za-z0-9]*$/', $col)) continue;
+        /* Schema gate — skip columns not present on this deploy.
+           Empty $knownCols (probe failed) falls through to the
+           pre-#906 behaviour and tries every extra; the catch below
+           still suppresses the resulting error. */
+        if (!empty($knownCols) && !isset($knownCols[$col])) continue;
         if ($val === 'NOW()') {
             $setParts[] = "{$col} = NOW()";
             continue;
@@ -3691,6 +3753,40 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
     $songsSkippedExisting     = 0;
     $songsFailed              = 0;
     $errors                   = [];
+
+    /* Per-songbook breakdown (#906). Keyed by abbreviation; carries
+       the songbook display name plus per-status counts so the import
+       summary can render a "HA: 0 created, 527 skipped, 0 failed"
+       row per book. Without this the curator sees only the aggregate
+       totals and can't tell which songbook accounts for the skips. */
+    $perSongbook              = [];   // abbr → ['name'=>str, 'created'=>int, 'skipped'=>int, 'failed'=>int, 'first_errors'=>[]]
+    $_perBookBump = static function (string $abbr, string $bookName, string $kind, ?string $errorMsg = null, ?string $entryName = null) use (&$perSongbook): void {
+        if ($abbr === '') $abbr = '_unknown';
+        if (!isset($perSongbook[$abbr])) {
+            $perSongbook[$abbr] = [
+                'abbr'         => $abbr,
+                'name'         => $bookName,
+                'created'      => 0,
+                'skipped'      => 0,
+                'failed'       => 0,
+                'first_errors' => [],
+            ];
+        }
+        if ($bookName !== '' && $perSongbook[$abbr]['name'] === '') {
+            $perSongbook[$abbr]['name'] = $bookName;
+        }
+        if (in_array($kind, ['created', 'skipped', 'failed'], true)) {
+            $perSongbook[$abbr][$kind]++;
+        }
+        if ($kind === 'failed' && $errorMsg !== null
+            && count($perSongbook[$abbr]['first_errors']) < 10
+        ) {
+            $perSongbook[$abbr]['first_errors'][] = [
+                'entry' => $entryName ?? '',
+                'error' => $errorMsg,
+            ];
+        }
+    };
 
     /* Initial progress write — set TotalEntries to the post-filter
        count so the polling endpoint's percentage uses the right
@@ -3807,14 +3903,17 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
                 if ($action === 'create') {
                     $songsCreated++;
                     $songsParsedByKind['videopsalm']++;
+                    $_perBookBump($vpAbbr, $vpName, 'created');
                 } elseif ($action === 'skipped') {
                     $songsSkippedExisting++;
+                    $_perBookBump($vpAbbr, $vpName, 'skipped');
                 } else {
                     $errors[] = [
                         'entry' => $name . ': ' . ($song['id'] ?? '?'),
                         'error' => 'save failed: ' . $saveErr,
                     ];
                     $songsFailed++;
+                    $_perBookBump($vpAbbr, $vpName, 'failed', 'save failed: ' . $saveErr, $name . ': ' . ($song['id'] ?? '?'));
                 }
             }
             continue;
@@ -3832,6 +3931,7 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
 
         if (!preg_match(_BULK_IMPORT_FOLDER_RE, $folder, $folderMatch)) {
             $errors[] = ['entry' => $name, 'error' => 'folder name does not match "<Title> [<ABBR>]"'];
+            $_perBookBump('_unknown', $folder, 'failed', 'folder name does not match "<Title> [<ABBR>]"', $name);
             continue;
         }
 
@@ -3850,6 +3950,7 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
                checked against the folder. */
             if (!preg_match(_BULK_IMPORT_FILE_RE, $file, $fileMatch)) {
                 $errors[] = ['entry' => $name, 'error' => 'filename does not match "<#> (<ABBR>) - <Title>.txt"'];
+                $_perBookBump($abbr, $bookName, 'failed', 'filename does not match "<#> (<ABBR>) - <Title>.txt"', $name);
                 continue;
             }
             $fileAbbr = strtoupper($fileMatch['abbr']);
@@ -3859,6 +3960,7 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
                     'entry' => $name,
                     'error' => "filename abbrev '$fileAbbr' does not match folder abbrev '$abbr'",
                 ];
+                $_perBookBump($abbr, $bookName, 'failed', "filename abbrev '$fileAbbr' does not match folder abbrev '$abbr'", $name);
                 continue;
             }
         } else {
@@ -3915,21 +4017,25 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
         if ($song === null) {
             $errors[] = ['entry' => $name, 'error' => 'parse failed: ' . $reason];
             $songsFailed++;
+            $_perBookBump($abbr, $bookName, 'failed', 'parse failed: ' . $reason, $name);
             continue;
         }
 
         [$action, $err] = _bulkImport_saveSong($db, $song);
         if ($action === 'create') {
             $songsCreated++;
+            $_perBookBump($abbr, $bookName, 'created');
         } elseif ($action === 'skipped') {
             /* Existing row — left untouched per the no-overwrite
                contract. Counted separately from failures so a curator
                can see at a glance how many imports were no-ops because
                the songs were already in the database. */
             $songsSkippedExisting++;
+            $_perBookBump($abbr, $bookName, 'skipped');
         } else {
             $errors[] = ['entry' => $name, 'error' => 'save failed: ' . $err];
             $songsFailed++;
+            $_perBookBump($abbr, $bookName, 'failed', 'save failed: ' . $err, $name);
         }
     }
 
@@ -3960,6 +4066,12 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
         'songs_failed'           => $songsFailed,
         'parsed_by_format'       => $songsParsedByKind,
         'errors'                 => $errors,
+        /* #906 — per-songbook breakdown so the import summary can
+           render "HA: 0 created, 527 skipped, 0 failed" rows instead
+           of just an aggregate. Re-keyed to a list (drop the abbr
+           keys) so the JSON shape is a stable array, not an object
+           whose keys depend on the input. */
+        'per_songbook'           => array_values($perSongbook),
     ];
 }
 
