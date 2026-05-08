@@ -155,29 +155,48 @@ SITES = {
     },
     # ---- #699 Phase A: multilingual sister sites confirmed to use the
     #      same DOM hooks (block-heading-three/four/five + wedding-heading).
+    # ---- Non-English sister sites. The `subdir` value uses the canonical
+    #      native-script title taken from sdahymnal.org's "Choose another
+    #      Hymnal" picker (#901, 2026-05-08). Source of truth: the JS array
+    #      embedded in https://www.sdahymnal.org's homepage that backs the
+    #      DevExpress combobox `cboLanguages_DDD_L` — extract via:
+    #        curl https://www.sdahymnal.org | grep cboLanguages | grep itemsInfo
+    #      Picker text format is `<NativeName> (<NativeLanguage>)`; we keep
+    #      the NativeName portion only (the language already lives in `lang`
+    #      → LANG_NAMES suffix) and append the bracketed [<ABBR>] so the
+    #      `compose_subdir()` regex still extracts an ASCII abbreviation.
+    #      The abbreviation in brackets MUST stay Latin / ASCII — it lands
+    #      in tblSongbooks.Abbreviation (VARCHAR(10), indexed) and is the
+    #      URL-safe slug for /songbook/<abbr> routes; non-ASCII would
+    #      break both.
     "ha": {
         "base_url":  "https://www.himnario.net/Himno",
         "home_url":  "https://www.himnario.net",
         "label":     "HA",
-        "subdir":    "Himnario Adventista [HA]",
+        "subdir":    "El Himnario Adventista (1962) [HA]",
         "lang":      "es",
     },
     "nha": {
-        # nuevohimnario.com is the modern Spanish hymnal — distinct from
-        # the classic himnario.net (which we map to "ha" above) — so it
-        # gets its own label + folder. Curators can run --site ha or
+        # nuevohimnario.com is the modern Spanish hymnal (2010) — distinct
+        # from the classic himnario.net (1962, mapped to "ha" above) — so
+        # it gets its own label + folder. Curators can run --site ha or
         # --site nha individually as needed.
         "base_url":  "https://www.nuevohimnario.com/Himno",
         "home_url":  "https://www.nuevohimnario.com",
         "label":     "NHA",
-        "subdir":    "Nuevo Himnario Adventista [NHA]",
+        "subdir":    "El Himnario Adventista Nuevo (2010) [NHA]",
         "lang":      "es",
     },
     "hasd": {
+        # Per the sdahymnal.org picker the canonical native title is just
+        # "Hinário Adventista" (matching the publisher's branding). Earlier
+        # versions of this manifest carried "Hinario Adventista do Setimo
+        # Dia" — that's the formal full English-style transliteration but
+        # not what the source site or its readers use.
         "base_url":  "https://www.hinarioadventista.com/Hino",
         "home_url":  "https://www.hinarioadventista.com",
         "label":     "HASD",
-        "subdir":    "Hinario Adventista do Setimo Dia [HASD]",
+        "subdir":    "Hinário Adventista [HASD]",
         "lang":      "pt",
     },
     "hl": {
@@ -187,7 +206,7 @@ SITES = {
         "base_url":  "https://www.hymnes.net/Cantique",
         "home_url":  "https://www.hymnes.net",
         "label":     "HL",
-        "subdir":    "Hymnes et Louanges [HL]",
+        "subdir":    "Hymnes et Louanges, Cantiques [HL]",
         "lang":      "fr",
     },
     "ia": {
@@ -214,13 +233,13 @@ SITES = {
     #      base_url so the scraper's `f"{base_url}?no={n}"` doesn't
     #      need to round-trip through urllib's IRI handling.
     "hac": {
-        # Serbian/Croatian (Latin script) — Hrišćanske Adventističke
-        # himne via himne.net. The site exposes 3 sub-songbooks but
-        # /Himna?no=N maps to the default (HAC-pesmarica).
+        # Serbian (Latin script) — Hrišćanske adventističke himne via
+        # himne.net. The site exposes 3 sub-songbooks but /Himna?no=N
+        # maps to the default volume.
         "base_url":  "https://www.himne.net/Himna",
         "home_url":  "https://www.himne.net",
         "label":     "HAC",
-        "subdir":    "HAC pesmarica [HAC]",
+        "subdir":    "Hrišćanske adventističke himne [HAC]",
         "lang":      "sr-Latn",   # Serbian, Latin script (composite IETF tag)
     },
     "hp": {
@@ -229,7 +248,7 @@ SITES = {
         "base_url":  "https://www.hristianskipesni.com/%D0%9F%D0%B5%D1%81%D0%B5%D0%BD",
         "home_url":  "https://www.hristianskipesni.com",
         "label":     "HP",
-        "subdir":    "Hristianski Pesni [HP]",
+        "subdir":    "Християнски песни [HP]",
         "lang":      "bg",
     },
     "hjp": {
@@ -238,25 +257,25 @@ SITES = {
         "base_url":  "https://www.hristijanskipesni.com/%D0%9F%D0%B5%D1%81%D0%BD%D0%B0",
         "home_url":  "https://www.hristijanskipesni.com",
         "label":     "HJP",
-        "subdir":    "Hristijanski Pesni [HJP]",
+        "subdir":    "Христијански песни [HJP]",
         "lang":      "mk",
     },
     "pes": {
-        # Serbian (Cyrillic) — Песмарица via pesmarica.net.
-        # Display URL is /Химна?no=N (SR: "hymn").
+        # Serbian (Cyrillic) — Хришћанске адвентистичке химне via
+        # pesmarica.net. Display URL is /Химна?no=N (SR: "hymn").
         "base_url":  "https://www.pesmarica.net/%D0%A5%D0%B8%D0%BC%D0%BD%D0%B0",
         "home_url":  "https://www.pesmarica.net",
         "label":     "PES",
-        "subdir":    "Pesmarica [PES]",
+        "subdir":    "Хришћанске адвентистичке химне [PES]",
         "lang":      "sr-Cyrl",   # Serbian, Cyrillic script
     },
     "pj": {
-        # Croatian — Kršćanske pjesme via pjesme.net.
+        # Croatian — Kršćanske adventističke himne via pjesme.net.
         # Display URL is /Himna?no=N (HR: "hymn").
         "base_url":  "https://www.pjesme.net/Himna",
         "home_url":  "https://www.pjesme.net",
         "label":     "PJ",
-        "subdir":    "Krscanske Pjesme [PJ]",
+        "subdir":    "Kršćanske adventističke himne [PJ]",
         "lang":      "hr",
     },
 }
