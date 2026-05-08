@@ -2457,6 +2457,36 @@ switch ($action) {
                     error_log('[bulk_import_zip] notification insert skipped: ' . $_e->getMessage());
                 }
             }
+
+            /* #908 — top-level summary row in tblActivityLog so the
+               activity-log viewer surfaces "Bulk import N: 3,321 new,
+               1,137 skipped, 4 failed" entries by default. Per-failure
+               rows (`import.bulk_entry_failed`) are written inside
+               _bulkImport_processZip; this is the "header" admins drill
+               from. Best-effort — a logActivity failure must not
+               poison the import result. */
+            if (function_exists('logActivity')) {
+                try {
+                    logActivity(
+                        'import.bulk_complete',
+                        'bulk_import_job',
+                        (string)$jobId,
+                        [
+                            'filename'             => $origName,
+                            'songs_created'        => (int)($summary['songs_created'] ?? 0),
+                            'songs_skipped'        => (int)($summary['songs_skipped_existing'] ?? 0),
+                            'songs_failed'         => (int)($summary['songs_failed'] ?? 0),
+                            'songbooks_created'    => $summary['songbooks_created'] ?? [],
+                            'songbooks_existing'   => $summary['songbooks_existing'] ?? [],
+                            'logged_failures'      => (int)($summary['logged_failures'] ?? 0),
+                            'omitted_failure_rows' => (int)($summary['omitted_failure_rows'] ?? 0),
+                        ],
+                        ((int)($summary['songs_failed'] ?? 0) > 0) ? 'failure' : 'success'
+                    );
+                } catch (\Throwable $_e) {
+                    error_log('[bulk_import_zip] activity log skipped: ' . $_e->getMessage());
+                }
+            }
         } catch (\Throwable $e) {
             error_log('[bulk_import_zip async worker] ' . $e->getMessage());
             try {
@@ -2468,6 +2498,19 @@ switch ($action) {
                     ),
                 ]);
             } catch (\Throwable $_) { /* DB itself is unreachable */ }
+            /* #908 — activity-log row for the worker-fatal case so
+               admins see the failure in the audit trail. */
+            if (function_exists('logActivity')) {
+                try {
+                    logActivity(
+                        'import.bulk_worker_failed',
+                        'bulk_import_job',
+                        (string)$jobId,
+                        ['filename' => $origName, 'error' => $e->getMessage()],
+                        'error'
+                    );
+                } catch (\Throwable $_) { /* best-effort */ }
+            }
             @unlink($persistPath);
         }
         return; /* worker is done; no further switch processing needed */
@@ -3760,7 +3803,18 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
        row per book. Without this the curator sees only the aggregate
        totals and can't tell which songbook accounts for the skips. */
     $perSongbook              = [];   // abbr → ['name'=>str, 'created'=>int, 'skipped'=>int, 'failed'=>int, 'first_errors'=>[]]
-    $_perBookBump = static function (string $abbr, string $bookName, string $kind, ?string $errorMsg = null, ?string $entryName = null) use (&$perSongbook): void {
+
+    /* Per-failure activity-log rows (#908). Capped at 100 per import
+       run to stay well under the per-request flood guard
+       (IHYMNS_LOG_PER_REQUEST_CAP = 200). Overflow writes a single
+       "and N more (truncated)" summary row at the end of the loop;
+       the full failure detail still lives in tblBulkImportJobs.ErrorsJson
+       for admins who need to drill into the omitted entries. */
+    $loggedFailures           = 0;
+    $loggedFailureCap         = 100;
+    $logActivityAvailable     = function_exists('logActivity');
+
+    $_perBookBump = static function (string $abbr, string $bookName, string $kind, ?string $errorMsg = null, ?string $entryName = null, ?int $songNum = null, ?string $phase = null) use (&$perSongbook, &$loggedFailures, $loggedFailureCap, $logActivityAvailable, $jobId): void {
         if ($abbr === '') $abbr = '_unknown';
         if (!isset($perSongbook[$abbr])) {
             $perSongbook[$abbr] = [
@@ -3785,6 +3839,43 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
                 'entry' => $entryName ?? '',
                 'error' => $errorMsg,
             ];
+        }
+
+        /* #908 — activity-log per-failure row. Only fires for the
+           'failed' kind; under the cap; and when logActivity() is
+           available (it's loaded by the editor bootstrap path but
+           guarded here so a future call from a context that didn't
+           load it doesn't 500). EntityId carries `<job_id>:<entry>`
+           so the activity-log viewer can filter to "all failures
+           from job N" via `EntityId LIKE '<job_id>:%'`. */
+        if ($kind === 'failed'
+            && $logActivityAvailable
+            && $jobId !== null
+            && $loggedFailures < $loggedFailureCap
+        ) {
+            $details = [
+                'entry'         => $entryName ?? '',
+                'error'         => $errorMsg ?? '',
+                'songbook_abbr' => $abbr === '_unknown' ? null : $abbr,
+                'phase'         => $phase ?? 'parse',
+            ];
+            if ($songNum !== null && $songNum > 0) {
+                $details['song_number'] = $songNum;
+            }
+            try {
+                logActivity(
+                    'import.bulk_entry_failed',
+                    'bulk_import_entry',
+                    (string)$jobId . ':' . ($entryName ?? ''),
+                    $details,
+                    'failure'
+                );
+                $loggedFailures++;
+            } catch (\Throwable $_e) {
+                /* logActivity is documented as best-effort and never
+                   throws — defensive catch in case a future change
+                   surfaces an exception. Bulk import must keep going. */
+            }
         }
     };
 
@@ -3913,7 +4004,7 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
                         'error' => 'save failed: ' . $saveErr,
                     ];
                     $songsFailed++;
-                    $_perBookBump($vpAbbr, $vpName, 'failed', 'save failed: ' . $saveErr, $name . ': ' . ($song['id'] ?? '?'));
+                    $_perBookBump($vpAbbr, $vpName, 'failed', 'save failed: ' . $saveErr, $name . ': ' . ($song['id'] ?? '?'), null, 'save');
                 }
             }
             continue;
@@ -3931,7 +4022,7 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
 
         if (!preg_match(_BULK_IMPORT_FOLDER_RE, $folder, $folderMatch)) {
             $errors[] = ['entry' => $name, 'error' => 'folder name does not match "<Title> [<ABBR>]"'];
-            $_perBookBump('_unknown', $folder, 'failed', 'folder name does not match "<Title> [<ABBR>]"', $name);
+            $_perBookBump('_unknown', $folder, 'failed', 'folder name does not match "<Title> [<ABBR>]"', $name, null, 'folder_regex');
             continue;
         }
 
@@ -3950,7 +4041,7 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
                checked against the folder. */
             if (!preg_match(_BULK_IMPORT_FILE_RE, $file, $fileMatch)) {
                 $errors[] = ['entry' => $name, 'error' => 'filename does not match "<#> (<ABBR>) - <Title>.txt"'];
-                $_perBookBump($abbr, $bookName, 'failed', 'filename does not match "<#> (<ABBR>) - <Title>.txt"', $name);
+                $_perBookBump($abbr, $bookName, 'failed', 'filename does not match "<#> (<ABBR>) - <Title>.txt"', $name, null, 'file_regex');
                 continue;
             }
             $fileAbbr = strtoupper($fileMatch['abbr']);
@@ -3960,7 +4051,7 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
                     'entry' => $name,
                     'error' => "filename abbrev '$fileAbbr' does not match folder abbrev '$abbr'",
                 ];
-                $_perBookBump($abbr, $bookName, 'failed', "filename abbrev '$fileAbbr' does not match folder abbrev '$abbr'", $name);
+                $_perBookBump($abbr, $bookName, 'failed', "filename abbrev '$fileAbbr' does not match folder abbrev '$abbr'", $name, $songNum ?: null, 'file_regex');
                 continue;
             }
         } else {
@@ -4017,7 +4108,7 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
         if ($song === null) {
             $errors[] = ['entry' => $name, 'error' => 'parse failed: ' . $reason];
             $songsFailed++;
-            $_perBookBump($abbr, $bookName, 'failed', 'parse failed: ' . $reason, $name);
+            $_perBookBump($abbr, $bookName, 'failed', 'parse failed: ' . $reason, $name, $songNum ?: null, 'parse');
             continue;
         }
 
@@ -4035,7 +4126,7 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
         } else {
             $errors[] = ['entry' => $name, 'error' => 'save failed: ' . $err];
             $songsFailed++;
-            $_perBookBump($abbr, $bookName, 'failed', 'save failed: ' . $err, $name);
+            $_perBookBump($abbr, $bookName, 'failed', 'save failed: ' . $err, $name, $songNum ?: null, 'save');
         }
     }
 
@@ -4057,6 +4148,28 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
         $cnt->close();
     }
 
+    /* #908 — overflow row when more failures occurred than the
+       per-failure activity-log cap allowed. The full failure list
+       still lives in tblBulkImportJobs.ErrorsJson; this row points
+       admins at the job for the omitted entries. */
+    $omittedFailures = max(0, $songsFailed - $loggedFailures);
+    if ($omittedFailures > 0 && $logActivityAvailable && $jobId !== null) {
+        try {
+            logActivity(
+                'import.bulk_entries_truncated',
+                'bulk_import_job',
+                (string)$jobId,
+                [
+                    'logged_failures' => $loggedFailures,
+                    'total_failures'  => $songsFailed,
+                    'omitted'         => $omittedFailures,
+                    'reason'          => 'per-failure activity-log cap reached; full list in tblBulkImportJobs.ErrorsJson',
+                ],
+                'failure'
+            );
+        } catch (\Throwable $_e) { /* best-effort */ }
+    }
+
     return [
         'ok'                     => true,
         'songbooks_created'      => $songbooksCreated,
@@ -4072,6 +4185,12 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
            keys) so the JSON shape is a stable array, not an object
            whose keys depend on the input. */
         'per_songbook'           => array_values($perSongbook),
+        /* #908 — counts of activity-log per-failure rows actually
+           written + how many were truncated. Lets the caller link
+           "Activity log filter `EntityId LIKE '<jobId>:%'`" to the
+           expected row count. */
+        'logged_failures'        => $loggedFailures,
+        'omitted_failure_rows'   => $omittedFailures,
     ];
 }
 
