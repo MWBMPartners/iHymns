@@ -2423,7 +2423,10 @@ body.reduce-motion .shortcuts-overlay {
     width: 0;
     height: 3px;
     background: var(--bs-primary, #6366f1);
-    z-index: 1030;
+    /* z-index above .app-header (1030) so the bar paints on top of the
+       header's blurred composite layer regardless of DOM order. Stays
+       below the modal / overlay band (1100). #899 */
+    z-index: 1031;
     transition: width 80ms linear;
     border-radius: 0 2px 2px 0;
     pointer-events: none;
