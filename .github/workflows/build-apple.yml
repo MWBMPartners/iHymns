@@ -16,12 +16,35 @@
 
 name: Apple Build & Distribution
 
+# TRIGGERS: workflow_dispatch only.
+#
+# The push trigger was removed in #904 to stop the workflow from
+# auto-firing on every change in `appApple/**`. The path filter was
+# tripping on the auto-generated `appApple/CHANGELOG.md` updates that
+# the Changelog workflow writes to beta on every commit — those then
+# rode along into main on the next beta→main promotion and triggered
+# this build, which fails because the Apple app code isn't yet ready
+# (no certificates / provisioning profiles / Xcode project wired up).
+#
+# When the Apple app is ready to build:
+#   1. Confirm Xcode project + fastlane setup compiles locally.
+#   2. Add the App Store Connect API key + provisioning profiles to
+#      repo secrets / Apple App Manager.
+#   3. Re-add the push trigger below, restricting `paths:` to actual
+#      source / project files (NOT including `appApple/CHANGELOG.md`):
+#
+#        push:
+#          branches: [beta, main]
+#          paths:
+#            - 'appApple/**'
+#            - '!appApple/CHANGELOG.md'
+#            - '.github/workflows/build-apple.yml'
+#
+#      Note: GH Actions doesn't support negation in `paths:` — instead
+#      use `paths-ignore: ['appApple/CHANGELOG.md', 'appApple/**/*.md']`
+#      with a complementary `paths:` whitelist OR a job-level
+#      `dorny/paths-filter` action.
 on:
-  push:
-    branches: [beta, main]
-    paths:
-      - 'appApple/**'
-      - '.github/workflows/build-apple.yml'
   workflow_dispatch:
     inputs:
       lane:
