@@ -39,12 +39,27 @@ const STORAGE_KEY     = 'ihymns:bulk-import-active-job';
 const POLL_INTERVAL_MS = 1500;
 const POLL_BACKOFF_MS  = 5000; // after an error, slow down rather than spam
 
+/* #907 — auto-dismiss windows for completion / failure states. The
+   curator gets enough time to read the result; hover-to-pause
+   suspends the timer for as long as the cursor is over the widget,
+   so a curator copying numbers from the summary doesn't have it
+   yanked away mid-read. */
+const AUTO_DISMISS_SUCCESS_MS = 15000; // 15s on a clean import
+const AUTO_DISMISS_FAILURE_MS = 45000; // 45s when something failed (more to read)
+
 /* In-module state. We never expose these directly — bootstrap
    path mounts the widget and stashes the polling timer here. */
-let widgetEl       = null;
-let pollTimer      = null;
-let activeJob      = null; // { jobId, filename, pollUrl }
-let isPollingNow   = false;
+let widgetEl         = null;
+let pollTimer        = null;
+let activeJob        = null; // { jobId, filename, pollUrl }
+let isPollingNow     = false;
+let autoDismissTimer = null;
+let autoDismissPaused = false;
+/* #907 — upload-phase tracking. The widget mounts BEFORE the upload
+   starts so the curator sees byte-level feedback during the upload.
+   `uploadState` is null once the job_id arrives and polling takes
+   over. */
+let uploadState      = null; // { filename, sizeBytes, loaded, total }
 
 /* ------------------------------------------------------------------
  * localStorage helpers — best-effort; private-browsing failures
@@ -92,10 +107,14 @@ function ensureWidget() {
     /* Inline styles so the widget works on every iHymns surface
        without a per-page CSS dependency. Conservative palette
        (theme-aware via CSS variables when present, opaque dark
-       fallback otherwise). */
+       fallback otherwise).
+       #907 — TOP-right (was bottom-right). The bulk-import widget
+       was getting overlapped by Bootstrap's app-toast queue, which
+       is also bottom-right by default. Moving to top-right gives
+       each surface its own corner with no z-index gymnastics. */
     widgetEl.style.cssText = `
         position: fixed;
-        bottom: 1rem;
+        top: 1rem;
         right: 1rem;
         z-index: 9999;
         min-width: 18rem;
@@ -112,7 +131,11 @@ function ensureWidget() {
 
     /* Initial markup — gets replaced wholesale by render() each
        poll. The skeleton just gives the user something to see while
-       the first poll is in flight. */
+       the first poll is in flight.
+       #907 — dismiss button is ALWAYS visible (was only shown after
+       completion). Mid-run dismiss closes the visible widget but
+       leaves the import running on the server; the curator can
+       check job state later via /manage/activity-log. */
     widgetEl.innerHTML = `
         <div class="d-flex align-items-center gap-2 mb-1">
             <i class="fa-solid fa-cloud-arrow-up"></i>
@@ -124,7 +147,7 @@ function ensureWidget() {
                     style="color: var(--text-secondary,#9ca3af);">
                 <i class="fa-solid fa-window-minimize"></i>
             </button>
-            <button type="button" class="btn btn-sm btn-link text-decoration-none p-0 d-none"
+            <button type="button" class="btn btn-sm btn-link text-decoration-none p-0"
                     data-bulk-action="dismiss"
                     aria-label="Dismiss"
                     title="Dismiss"
@@ -132,12 +155,31 @@ function ensureWidget() {
                 <i class="fa-solid fa-xmark"></i>
             </button>
         </div>
+        <div class="ihymns-bulk-import-phase text-muted small" data-phase
+             style="font-size:0.7rem; margin-bottom:0.15rem; display:none;"></div>
         <div class="ihymns-bulk-import-summary text-muted" style="font-size:0.75rem;">Connecting…</div>
         <div class="progress mt-2" style="height: 0.5rem;">
             <div class="progress-bar" role="progressbar"
                  style="width: 0%;" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
         </div>
     `;
+
+    /* #907 — hover pauses the auto-dismiss timer; mouse-leave resumes
+       it from where it was. The user can read the result without
+       it disappearing mid-glance. */
+    widgetEl.addEventListener('mouseenter', () => {
+        autoDismissPaused = true;
+        if (autoDismissTimer) { clearTimeout(autoDismissTimer); autoDismissTimer = null; }
+    });
+    widgetEl.addEventListener('mouseleave', () => {
+        autoDismissPaused = false;
+        /* If we were already in a final state, restart the dismiss
+           timer at its full duration on mouse-leave. Tiny extra
+           dismiss budget on hover-pause is acceptable for the UX win. */
+        const status = activeJob?._lastStatus;
+        if (status === 'completed') scheduleAutoDismiss(AUTO_DISMISS_SUCCESS_MS);
+        if (status === 'failed')    scheduleAutoDismiss(AUTO_DISMISS_FAILURE_MS);
+    });
 
     /* Click handlers via delegation so we don't have to re-bind
        after each render. */
@@ -151,6 +193,13 @@ function ensureWidget() {
             widgetEl.style.maxWidth = isMini ? 'unset' : '22rem';
             widgetEl.style.padding  = isMini ? '0.4rem 0.6rem' : '0.75rem 0.9rem';
         } else if (action === 'dismiss') {
+            /* #907 — dismiss is now always available. Mid-run
+               dismiss only closes the widget; the import keeps
+               running on the server. localStorage is cleared so the
+               next page-load doesn't auto-resume tracking — the
+               curator can verify completion via /manage/activity-log
+               or via the next page-load's own widget if they navigate
+               away and come back. */
             stopAndRemove();
             clearActiveJob();
         }
@@ -160,11 +209,32 @@ function ensureWidget() {
     return widgetEl;
 }
 
+/* #907 — helper: schedule an auto-dismiss timer. Idempotent — clears
+   any existing timer before starting a new one. Suspended while
+   `autoDismissPaused` is true (cursor over widget). */
+function scheduleAutoDismiss(ms) {
+    if (autoDismissTimer) { clearTimeout(autoDismissTimer); autoDismissTimer = null; }
+    if (autoDismissPaused) return; // hover suspends; mouseleave will reschedule
+    autoDismissTimer = setTimeout(() => {
+        autoDismissTimer = null;
+        stopAndRemove();
+        clearActiveJob();
+    }, ms);
+}
+
+/* #907 — translate worker phase labels into human-readable status text. */
+const PHASE_LABEL_TEXT = {
+    'walking-zip':         'Walking ZIP archive…',
+    'parsing-songs':       'Parsing songs…',
+    'flushing-songbooks':  'Finalising…',
+    'completed':           '',                        // hide on completion
+};
+
 function render(job) {
     if (!widgetEl) return;
     const summary  = widgetEl.querySelector('.ihymns-bulk-import-summary');
+    const phaseEl  = widgetEl.querySelector('[data-phase]');
     const bar      = widgetEl.querySelector('.progress-bar');
-    const dismiss  = widgetEl.querySelector('[data-bulk-action="dismiss"]');
     const titleEl  = widgetEl.querySelector('strong');
 
     if (!job) {
@@ -176,12 +246,17 @@ function render(job) {
     if (titleEl) titleEl.textContent = filename;
 
     const status   = job.status || 'queued';
+    const phase    = job.phase_label || null; // #907
     const total    = Number(job.total_entries || 0);
     const done     = Number(job.processed_entries || 0);
     const percent  = Number(job.percent || 0);
     const created  = Number(job.songs_created || 0);
     const skipped  = Number(job.songs_skipped_existing || 0);
     const failed   = Number(job.songs_failed || 0);
+
+    /* Stash status on activeJob so the hover handlers can decide
+       whether to reschedule auto-dismiss on mouse-leave. */
+    if (activeJob) activeJob._lastStatus = status;
 
     if (bar) {
         bar.style.width = Math.min(100, Math.max(0, percent)) + '%';
@@ -191,6 +266,15 @@ function render(job) {
         } else if (status === 'failed') {
             bar.style.background = '#dc2626';
         }
+    }
+
+    /* #907 — phase label above the summary. Hidden on pre-migration
+       deploys (phase_label = null) and on completion (no useful
+       phase to surface). */
+    if (phaseEl) {
+        const text = phase && phase !== 'completed' ? PHASE_LABEL_TEXT[phase] || phase : '';
+        phaseEl.textContent = text;
+        phaseEl.style.display = text ? 'block' : 'none';
     }
 
     if (summary) {
@@ -217,15 +301,52 @@ function render(job) {
         }
     }
 
-    /* Show the dismiss button only when the job is in a final
-       state — otherwise the user might dismiss a still-running
-       import and lose the tracking handle. */
-    if (dismiss) {
-        if (status === 'completed' || status === 'failed') {
-            dismiss.classList.remove('d-none');
-        } else {
-            dismiss.classList.add('d-none');
-        }
+    /* #907 — auto-dismiss on completion / failure. Pre-#907 the
+       widget stuck around indefinitely until the user found the ×
+       button (which was only visible after completion anyway).
+       Auto-dismiss runs after a generous delay and pauses on hover. */
+    if (status === 'completed' && !autoDismissTimer && !autoDismissPaused) {
+        scheduleAutoDismiss(failed > 0 ? AUTO_DISMISS_FAILURE_MS : AUTO_DISMISS_SUCCESS_MS);
+    } else if (status === 'failed' && !autoDismissTimer && !autoDismissPaused) {
+        scheduleAutoDismiss(AUTO_DISMISS_FAILURE_MS);
+    }
+}
+
+/* #907 — render the upload-phase state. Uses the same widget
+   skeleton as the polling render() but reads from `uploadState`
+   (loaded / total bytes) rather than the server's job row. */
+function renderUploadPhase() {
+    if (!widgetEl || !uploadState) return;
+    const titleEl  = widgetEl.querySelector('strong');
+    const phaseEl  = widgetEl.querySelector('[data-phase]');
+    const summary  = widgetEl.querySelector('.ihymns-bulk-import-summary');
+    const bar      = widgetEl.querySelector('.progress-bar');
+
+    const filename = uploadState.filename || 'import.zip';
+    const total    = Number(uploadState.total || uploadState.sizeBytes || 0);
+    const loaded   = Number(uploadState.loaded || 0);
+    const percent  = total > 0 ? Math.round((loaded / total) * 100) : 0;
+
+    if (titleEl) titleEl.textContent = filename;
+    if (phaseEl) {
+        phaseEl.textContent = 'Uploading…';
+        phaseEl.style.display = 'block';
+    }
+    if (bar) {
+        bar.style.width = Math.min(100, Math.max(0, percent)) + '%';
+        bar.setAttribute('aria-valuenow', String(percent));
+        bar.style.background = ''; // default theme accent
+    }
+    if (summary) {
+        const fmt = (b) => {
+            if (!b) return '0 B';
+            if (b < 1024) return b + ' B';
+            if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
+            return (b / 1024 / 1024).toFixed(1) + ' MB';
+        };
+        summary.textContent = total > 0
+            ? `${fmt(loaded)} / ${fmt(total)} (${percent}%)`
+            : `${fmt(loaded)} uploaded…`;
     }
 }
 
@@ -287,10 +408,13 @@ function pollOnce() {
 }
 
 function stopAndRemove() {
-    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    if (pollTimer)        { clearTimeout(pollTimer);        pollTimer = null; }
+    if (autoDismissTimer) { clearTimeout(autoDismissTimer); autoDismissTimer = null; }
     if (widgetEl && widgetEl.parentNode) widgetEl.parentNode.removeChild(widgetEl);
-    widgetEl  = null;
-    activeJob = null;
+    widgetEl     = null;
+    activeJob    = null;
+    uploadState  = null;
+    autoDismissPaused = false;
 }
 
 /* ------------------------------------------------------------------
@@ -320,18 +444,68 @@ export function bootBulkImportProgressWidget() {
 
 /**
  * Called by editor.js right after the upload returns its job_id.
- * Persists the handle to localStorage and starts the widget.
+ * Persists the handle to localStorage and starts polling — fires
+ * the first poll immediately rather than waiting POLL_INTERVAL_MS so
+ * the curator sees real worker state within ~100ms of upload return
+ * (#907).
  */
 export function startTracking({ jobId, filename, pollUrl }) {
-    activeJob = { jobId, filename, pollUrl };
+    /* Don't tear down the widget — if it's already mounted from
+       startUploadTracking() (#907), keep the same DOM node so the
+       transition from upload → polling is visually seamless. */
+    activeJob   = { jobId, filename, pollUrl };
+    uploadState = null;        // upload phase done; polling takes over
     writeActiveJob(activeJob);
-    /* Re-mount even if a stale widget existed (e.g. from a
-       previous import that's already complete). */
-    stopAndRemove();
-    activeJob = { jobId, filename, pollUrl };
     ensureWidget();
     render({ status: 'queued', filename });
+    /* Immediate first poll so the worker's current PhaseLabel /
+       progress lands within ~100ms of the upload return. */
     pollOnce();
+}
+
+/**
+ * #907 — called by editor.js BEFORE the upload starts. Mounts the
+ * widget in upload-tracking mode so the curator sees byte-level
+ * progress during the upload phase (which can be 60+s on a 38 MB
+ * ZIP under a constrained connection). Pre-#907 the widget mounted
+ * only after the server returned the job_id, leaving the upload
+ * phase entirely silent.
+ */
+export function startUploadTracking({ filename, sizeBytes }) {
+    uploadState = {
+        filename:  filename || 'import.zip',
+        sizeBytes: Number(sizeBytes || 0),
+        loaded:    0,
+        total:     Number(sizeBytes || 0),
+    };
+    /* Don't restore activeJob from localStorage — this is a fresh
+       upload, not a resumption. */
+    activeJob = null;
+    ensureWidget();
+    renderUploadPhase();
+}
+
+/**
+ * #907 — called by editor.js's `xhr.upload.onprogress` handler
+ * during the upload phase. Updates the loaded/total counters and
+ * re-renders. No-op if the widget isn't in upload mode (e.g. the
+ * upload completed and we transitioned to polling).
+ */
+export function updateUploadProgress({ loaded, total }) {
+    if (!uploadState) return;
+    uploadState.loaded = Number(loaded || 0);
+    if (total) uploadState.total = Number(total);
+    renderUploadPhase();
+}
+
+/**
+ * #907 — programmatic dismiss for editor.js's error path (server
+ * rejected the upload, no job to track). Tears down the widget +
+ * any auto-dismiss timer cleanly.
+ */
+export function dismiss() {
+    stopAndRemove();
+    clearActiveJob();
 }
 
 /* Convenience: surface a global so the legacy classic-script
@@ -342,5 +516,8 @@ if (typeof window !== 'undefined') {
     window.bulkImportProgress = {
         boot: bootBulkImportProgressWidget,
         startTracking,
+        startUploadTracking,
+        updateUploadProgress,
+        dismiss,
     };
 }

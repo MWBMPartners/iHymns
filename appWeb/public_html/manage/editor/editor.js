@@ -3217,63 +3217,95 @@ function importVideoPsalmSongbook(file) {
  * stays untouched.
  */
 function importBulkZip(file) {
-    /* Cheap UX hint while the multipart upload is climbing the
-       wire. The server response now lands almost immediately
-       once the upload completes (the server returns the job_id
-       and processes asynchronously per #676), so this toast is
-       only on screen for a few seconds before the persistent
-       progress widget takes over. */
-    showToast('Uploading ' + file.name + '…', 'info');
-
+    /* #907 — mount the progress widget IMMEDIATELY (before the upload
+       starts) so the curator sees byte-level feedback during the
+       upload phase. Pre-#907 the curator saw nothing for the entire
+       duration of the upload (could be 60+s on a 38 MB ZIP) — the
+       persistent widget only mounted AFTER the server returned the
+       job_id, which itself happens AFTER the full upload completes.
+       The widget is loaded as a dynamic ES-module import; if it fails
+       (broken deploy / offline / etc.) we fall through to a toast. */
     var fd = new FormData();
     fd.append('zip', file, file.name);
 
-    fetch(EDITOR_API_URL + '?action=bulk_import_zip', {
-        method:      'POST',
-        body:        fd,
-        credentials: 'same-origin',
-    }).then(function (res) {
-        return res.json().catch(function () {
-            return { error: 'Server returned an unparseable response (status ' + res.status + ').' };
-        }).then(function (data) {
-            return { ok: res.ok, data: data };
+    /* Hand the widget a synthetic "uploading" job up-front so it can
+       mount, start showing progress, and switch to real polling once
+       the server returns its job_id. */
+    var widgetReady = import('/js/modules/bulk-import-progress.js?v=' + Date.now())
+        .then(function (m) {
+            try {
+                m.startUploadTracking({ filename: file.name, sizeBytes: file.size });
+            } catch (_e) { /* startUploadTracking is opt-in; older bundles fall through */ }
+            return m;
+        })
+        .catch(function (err) {
+            try { console.warn('[bulk_import_zip] progress widget load failed:', err); } catch (_e) {}
+            showToast('Uploading ' + file.name + '…', 'info');
+            return null;
         });
-    }).then(function (out) {
+
+    /* XMLHttpRequest replaces fetch here SOLELY because fetch has no
+       upload-progress event in any production browser as of 2026.
+       xhr.upload.onprogress fires every ~50ms with byte counts. */
+    var uploadXhr = new XMLHttpRequest();
+    uploadXhr.open('POST', EDITOR_API_URL + '?action=bulk_import_zip', true);
+    uploadXhr.withCredentials = true;
+    uploadXhr.upload.onprogress = function (ev) {
+        if (!ev.lengthComputable) return;
+        widgetReady.then(function (m) {
+            if (m && typeof m.updateUploadProgress === 'function') {
+                m.updateUploadProgress({ loaded: ev.loaded, total: ev.total });
+            }
+        });
+    };
+    /* Promise wrapper so the rest of the existing flow stays
+       fetch-shaped. Resolves with `{ok, data}` like the prior code. */
+    var uploadPromise = new Promise(function (resolve) {
+        uploadXhr.onload = function () {
+            var data;
+            try { data = JSON.parse(uploadXhr.responseText); }
+            catch (_e) { data = { error: 'Server returned an unparseable response (status ' + uploadXhr.status + ').' }; }
+            resolve({ ok: uploadXhr.status >= 200 && uploadXhr.status < 300, data: data });
+        };
+        uploadXhr.onerror = function () {
+            resolve({ ok: false, data: { error: 'Network error while uploading.' } });
+        };
+        uploadXhr.send(fd);
+    });
+
+    uploadPromise.then(function (out) {
         if (!out.ok || !out.data || out.data.ok !== true) {
             var msg = (out.data && out.data.error) || 'Import failed.';
             showToast('Import failed: ' + msg, 'danger');
+            /* Tear down the upload-phase widget — server rejected the
+               upload, no job to track. */
+            widgetReady.then(function (m) {
+                if (m && typeof m.dismiss === 'function') m.dismiss();
+            });
             return;
         }
         var d = out.data;
 
-        /* Async path (#676) — the server returned a job_id; hand it
-           off to the persistent progress widget which polls the
-           status endpoint, survives navigation, and refreshes the
-           editor catalogue on completion. The widget is loaded as
-           an ES module from this classic-script context. */
+        /* Async path (#676) — the server returned a job_id; transition
+           the already-mounted widget from upload-tracking to job-
+           tracking. The first poll fires immediately inside
+           startTracking() so the curator sees server-side state
+           within ~100ms of upload completion (#907). */
         if (d.async && d.job_id) {
-            showToast('Import started — see progress widget.', 'success');
-            import('/js/modules/bulk-import-progress.js?v=' + Date.now())
-                .then(function (m) {
-                    m.startTracking({
-                        jobId:    d.job_id,
-                        filename: file.name,
-                        pollUrl:  d.poll_url
-                                || ('/manage/editor/api?action=bulk_import_status&job_id=' + d.job_id),
-                    });
-                })
-                .catch(function (err) {
-                    /* If the dynamic import fails (broken deploy /
-                       offline / etc.) the import itself still ran on
-                       the server — we just lose the live UI. Fall
-                       through to a manual-reload notice so the
-                       curator knows their data is on the way. */
-                    showToast(
-                        'Import is running in the background. Refresh the page in a minute to see results.',
-                        'info'
-                    );
-                    try { console.warn('[bulk_import_zip] progress widget load failed:', err); } catch (_e) {}
+            widgetReady.then(function (m) {
+                if (!m) {
+                    /* Widget failed to load — surface a fallback toast
+                       and let the user refresh later to see results. */
+                    showToast('Import is running in the background. Refresh the page in a minute to see results.', 'info');
+                    return;
+                }
+                m.startTracking({
+                    jobId:    d.job_id,
+                    filename: file.name,
+                    pollUrl:  d.poll_url
+                            || ('/manage/editor/api?action=bulk_import_status&job_id=' + d.job_id),
                 });
+            });
             return;
         }
 
