@@ -257,7 +257,9 @@ Migrations under `appWeb/.sql/migrate-*.php` add features incrementally (every o
 - External-links registry + backfills (#833) · External-link URL patterns (#845)
 - Works composition grouping (#840)
 - Song media uploads (#853) · Song component language overrides (#858)
-- Plus: bulk-import jobs, song revisions, credit-people registry, organisation licences, activity log, song-link suggestions, and many more.
+- Song arrangement persistence (#892) — `tblSongs.ArrangementJson` so the Song Editor's Structure-tab arrangement (e.g. "Verse 1, Verse 2, Verse 1, …" with refrain between verses) round-trips through save → reload.
+- Bulk-import diagnostics (#906 / #907) — `tblBulkImportJobs.PerSongbookJson` carries per-songbook created/skipped/failed counts so the import summary surfaces a per-book breakdown instead of an opaque "X skipped"; `tblBulkImportJobs.PhaseLabel` lets the worker advertise its current phase ("walking-zip", "parsing-songs", "flushing-songbooks") so the progress UI never shows a silent 0%.
+- Plus: bulk-import jobs (#676), song revisions, credit-people registry, organisation licences, activity log (#535), song-link suggestions, and many more.
 
 Run them via `/manage/setup-database` (web-based, with pending-state probes that auto-hide already-applied migrations) or via `php appWeb/.sql/migrate-<name>.php` from CLI.
 
