@@ -164,6 +164,43 @@ These are the patterns and gotchas added during the catalogue-refresh batch. Rea
 
 - **PR target = `alpha`, batch as one PR.** Re-emphasised by the #847 → #848 → #849 cascade: when a single feature ships in a chain of micro-PRs, each one triggers a deploy and verify cycle, and a mis-diagnosis cascades. The 2026-05 batch followed §10's one-PR rule for the main feature work (#840–#846 all in one PR per the global rule) and only span out separate PRs for the genuinely independent CI/auto-merge fixes that emerged afterwards.
 
+## 13. Bulk-import + long-running operation surfaces
+
+Established 2026-05-08/09 across #906 / #907 / #908. Every long-running operation that writes to multiple rows (bulk import, mass re-tag, batch language assignment) should follow these patterns.
+
+### 13.1 Surface skipped / failed counts per-entity, not just aggregate
+
+A "1,137 skipped" toast told a curator nothing — they had to query `tblSongs` directly to figure out the 1,137 was an exact match for HA + HASD content already in the DB. Always carry a per-entity breakdown alongside the aggregate, so the toast / status response can show "HA: 0 created, 527 skipped, 0 failed" rows. Captured in `tblBulkImportJobs.PerSongbookJson` (#906) and the `per_songbook` field of the status response. Apply the same shape to any future bulk operation: per-entity counters keyed by the entity's natural unit (songbook, songbook + language, user-batch, etc.).
+
+### 13.2 Don't lie about side effects — toast must reflect reality
+
+Long-running operations often have a UI affordance ("Imported X" / "Synced X" / "Sent X email") that fires on a 200 response. **The 200 must reflect the actual side effect, not the local code path's intent.** Anti-pattern: an endpoint that generates a token, persists it, and returns 200 + "code sent" while the actual `sendEmail()` is an `error_log()` TODO. The toast lies; the user thinks the operation succeeded; downstream paths break silently. Same applies to bulk-import: if 4,458 entries were attempted and only 3,321 created, the toast must say so — not just "imported successfully". See `api.php:1631 / 1751 / 7464` for the canonical anti-pattern (#898) and #909/#911 for how bulk-import's summary now carries `created/skipped/failed` separately.
+
+### 13.3 Activity-log every per-entity failure, with a sane cap + overflow row
+
+When a bulk operation produces N failures, **don't** lump them into a single `tblActivityLog` row that summarises "X failed". Write one structured `Details` row per failure (with a per-request cap to stay under `IHYMNS_LOG_PER_REQUEST_CAP`), plus an `entries_truncated` overflow row when the cap is hit. The full failure list still lives in the operation's job-table column; the per-failure rows make the activity-log viewer's filter/search useful. Reference: `_perBookBump()` in `_bulkImport_processZip()` after #908. Use `EntityId='<jobId>:<entry>'` so the viewer can filter to "all failures from job N" via `EntityId LIKE '<jobId>:%'`.
+
+### 13.4 Long-running UI must show *something* within 200ms
+
+A blank screen or "0%" indicator for any duration > 200ms is unacceptable. Three layers required:
+
+- **Upload phase**: use `XMLHttpRequest` (not `fetch`, which has no upload-progress event in any production browser as of 2026) and wire `xhr.upload.onprogress` to a byte-level UI before any server response is even parsed.
+- **First server-state response**: fire the polling fetch IMMEDIATELY (not on the polling timer) so worker state appears within ~100ms of upload return.
+- **Worker silence on preflight**: persist a `PhaseLabel` (or equivalent enum) per major worker transition so the UI can render "Walking ZIP archive…" / "Parsing songs…" / "Finalising…" above the percentage even while `ProcessedEntries` is still 0. See `tblBulkImportJobs.PhaseLabel` (#907) and `_bulkImport_processZip()`'s phase transitions.
+
+### 13.5 Long-running UI doesn't overlap general toasts
+
+Bootstrap's toast container lives bottom-right by default. Long-running indicators (bulk import, mass operations) should claim a different corner — typically **top-right** — so general-purpose toasts at bottom-right stay readable when an import is in flight. No z-index gymnastics, no shared real estate.
+
+### 13.6 Long-running UI must auto-dismiss + always be dismissable
+
+Two failure modes the curator hits:
+
+- **Stuck completion toast**: import finishes; toast sits forever; curator has to refresh the page to clear it. Fix: auto-dismiss after a reasonable window (we use 15s on success / 45s on failure to give time to read), with `mouseenter` pausing the timer and `mouseleave` rescheduling from the full duration.
+- **Mid-run with no escape**: import is running; curator wants to hide the indicator (it's blocking other UI); no × button is shown until completion. Fix: × button **always visible**. Mid-run dismiss closes the visible widget but leaves the operation running on the server — the curator can verify completion via `/manage/activity-log` later.
+
+Reference implementation: `bulk-import-progress.js` after #911.
+
 ## 11. Activity logging — what NEVER goes in `tblActivityLog.Details` (#535)
 
 Every meaningful action writes a row to `tblActivityLog` via
