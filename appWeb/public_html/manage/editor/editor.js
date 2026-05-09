@@ -140,15 +140,28 @@ function loadSongsFromURL(url) {
     /* Otherwise, try each candidate path in order until one succeeds. */
     var candidates = SONGS_URL_CANDIDATES.slice();
 
-    function tryNext() {
+    /* #925 — capture the most-recent candidate's error and surface it
+       in the final fallback toast. Pre-#925 the catch silently
+       discarded the error and tried the next candidate; if every
+       candidate failed (e.g. /api?action=load returns 500 with a real
+       exception), the curator only saw the bare "could not load from
+       any path" message and lost the diagnostic detail that the API
+       already returns in its `detail` field. */
+    function tryNext(lastErr) {
         if (candidates.length === 0) {
-            showToast('Could not load songs.json from any path. Use "Load JSON" to load manually.', 'warning');
+            var msg = 'Could not load songs.json from any path. Use "Load JSON" to load manually.';
+            if (lastErr && lastErr.message) {
+                msg += ' Last error: ' + lastErr.message;
+            }
+            showToast(msg, 'warning');
             return Promise.resolve();
         }
         var candidate = candidates.shift();
-        return _fetchAndParseSongs(candidate).catch(function () {
-            /* This path failed — try the next one */
-            return tryNext();
+        return _fetchAndParseSongs(candidate).catch(function (err) {
+            /* This path failed — try the next one, carrying the
+               error forward so we can surface it if every
+               candidate also fails. */
+            return tryNext(err);
         });
     }
 
