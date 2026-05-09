@@ -292,8 +292,15 @@ function logActivity(
                error_log line, so every logActivity() call after the
                proxy/VPN migration ran landed silently in the file
                log instead of tblActivityLog — the audit trail went
-               dark from #919 deploy until this fix shipped. */
-            $stmt->bind_param(
+               dark from #919 deploy until #924 shipped.
+               #926 — defensive `bindParamSafe()` from db_mysql.php
+               throws a context-named RuntimeException ("bind_param
+               mismatch in logActivity (post-#919) INSERT: …") if
+               the type string and arg count ever drift again,
+               instead of mysqli's generic message that originally
+               masked the regression. */
+            bindParamSafe(
+                'logActivity (post-#919) INSERT', $stmt,
                 'issssssssssssi',
                 $resolvedUserId,
                 $actionTrim,
@@ -311,7 +318,10 @@ function logActivity(
                 $duration
             );
         } else {
-            $stmt->bind_param(
+            /* #926 — same defensive helper for the legacy 11-col
+               INSERT (pre-migration deploys). */
+            bindParamSafe(
+                'logActivity (legacy) INSERT', $stmt,
                 'isssssssssi',
                 $resolvedUserId,
                 $actionTrim,
