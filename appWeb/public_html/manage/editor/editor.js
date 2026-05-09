@@ -167,9 +167,25 @@ function _fetchAndParseSongs(target) {
     /* Fetch the remote JSON file. */
     return fetch(target)
         .then(function (response) {
-            /* If the HTTP status indicates failure, throw so we land in .catch(). */
+            /* If the HTTP status indicates failure, try to read the
+               server's JSON error body so the toast shows the real
+               cause instead of a bare "HTTP 500". The editor's API
+               returns `{error, detail, file}` on the load path; older
+               / non-API fallback URLs (static songs.json) won't have
+               a body, so we fall through to the status-line message. */
             if (!response.ok) {
-                throw new Error('HTTP ' + response.status + ' ' + response.statusText);
+                return response.text().then(function (body) {
+                    var detail = '';
+                    try {
+                        var parsed = body ? JSON.parse(body) : null;
+                        if (parsed && typeof parsed === 'object') {
+                            detail = parsed.detail || parsed.error || '';
+                        }
+                    } catch (_e) { /* not JSON — ignore */ }
+                    var msg = 'HTTP ' + response.status + ' ' + response.statusText;
+                    if (detail) msg += ' — ' + detail;
+                    throw new Error(msg);
+                });
             }
             /* Parse the response body as JSON. */
             return response.json();

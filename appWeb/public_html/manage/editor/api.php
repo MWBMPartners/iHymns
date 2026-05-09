@@ -271,10 +271,29 @@ switch ($action) {
                whitespace inflates the 3,600-song payload by ~25% on
                the wire. */
             echo json_encode($fullData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
+            /* \Throwable (not \Exception) so PHP \Error subclasses —
+               TypeError, ValueError, mysqli_sql_exception edge cases
+               etc. — also land in the JSON 500 path instead of
+               escaping into an HTML fatal-error response that the
+               editor's toast can't read. */
             http_response_code(500);
-            error_log('[iHymns Editor] Failed to load song data: ' . $e->getMessage());
-            echo json_encode(['error' => 'Failed to load song data from database.']);
+            $logLine = sprintf(
+                '[iHymns Editor] Failed to load song data: %s: %s @ %s:%d',
+                get_class($e),
+                $e->getMessage(),
+                $e->getFile(),
+                $e->getLine()
+            );
+            error_log($logLine);
+            /* Endpoint is editor+ gated (auth check at the top of this
+               file), so returning the real exception class + message
+               is safe and gives the toast something actionable. */
+            echo json_encode([
+                'error'   => 'Failed to load song data from database.',
+                'detail'  => get_class($e) . ': ' . $e->getMessage(),
+                'file'    => basename($e->getFile()) . ':' . $e->getLine(),
+            ]);
         }
         break;
 
