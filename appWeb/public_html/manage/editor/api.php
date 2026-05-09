@@ -273,28 +273,20 @@ switch ($action) {
      * LOAD — Read all song data from MySQL and return as JSON
      * ----------------------------------------------------------------- */
     case 'load':
-        /* #929 — bump memory_limit for this admin-only bulk-corpus
-           endpoint. SongData::exportAsJson() builds the entire
-           ~12,370-song corpus as an in-memory PHP array (with
-           components, tags, alt titles, external links, works,
-           media) before json_encode, which crosses PHP's default
-           128 MB limit on the live catalogue. Bumping to 512 MB
-           gives ~5x headroom. The endpoint is auth-gated (top of
-           this file) and admin-only, so the resource cost isn't
-           curl-able anonymously. The longer-term fix is streaming
-           JSON or paginating; tracked as Phase C in #929. */
-        @ini_set('memory_limit', '512M');
+        /* #932 — serve the precomputed corpus cache instead of
+           rebuilding from MySQL on every editor open.
+           SongData::exportAsJson() costs ~140 MB of PHP-array memory
+           on the ~12,370-song corpus (#929 OOM); reading the static
+           cache via readfile() costs <2 MB and is ~50× faster end-to-end.
+           Cache is regenerated on each save_song / bulk-import write,
+           plus from the admin dashboard regenerate button. The 512 MB
+           ini_set lives inside songsCacheRegenerate() so it only
+           applies when actually rebuilding. */
+        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+            . DIRECTORY_SEPARATOR . 'songs_cache.php';
         try {
-            $songData = new SongData();
-            $fullData = $songData->exportAsJson();
-
-            header('Content-Type: application/json; charset=UTF-8');
             header('X-Content-Type-Options: nosniff');
-            /* No JSON_PRETTY_PRINT — the editor parses the response
-               with JSON.parse, nothing reads it by eye, and the extra
-               whitespace inflates the 3,600-song payload by ~25% on
-               the wire. */
-            echo json_encode($fullData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            songsCacheServe();
         } catch (\Throwable $e) {
             /* \Throwable (not \Exception) so PHP \Error subclasses —
                TypeError, ValueError, mysqli_sql_exception edge cases
@@ -1597,6 +1589,16 @@ switch ($action) {
             }
 
             $db->commit();
+
+            /* Refresh the on-disk songs cache so the editor's next
+               load (and the public PWA's next songs_json fetch) sees
+               the saved changes (#932). Best-effort — the user's save
+               has already committed; cache regen failure must not
+               undo it or surface as a save error. */
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+                . DIRECTORY_SEPARATOR . 'songs_cache.php';
+            songsCacheRegenerateBestEffort('editor.save_song');
+
             echo json_encode(['ok' => true, 'songId' => $songId, 'action' => $action]);
         } catch (\Throwable $e) {
             if (isset($db) && $db instanceof mysqli) {
@@ -2376,6 +2378,11 @@ switch ($action) {
                pre-#676 flow exactly. */
             try {
                 $summary = _bulkImport_processZip($tmpPath);
+                if ((int)($summary['songs_created'] ?? 0) > 0) {
+                    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+                        . DIRECTORY_SEPARATOR . 'songs_cache.php';
+                    songsCacheRegenerateBestEffort('bulk_import_zip.sync');
+                }
                 echo json_encode($summary, JSON_UNESCAPED_UNICODE);
             } catch (\Throwable $e) {
                 http_response_code(500);
@@ -2406,6 +2413,11 @@ switch ($action) {
             error_log('[bulk_import_zip] move_uploaded_file failed; falling back to sync path');
             try {
                 $summary = _bulkImport_processZip($tmpPath);
+                if ((int)($summary['songs_created'] ?? 0) > 0) {
+                    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+                        . DIRECTORY_SEPARATOR . 'songs_cache.php';
+                    songsCacheRegenerateBestEffort('bulk_import_zip.sync_fallback');
+                }
                 echo json_encode($summary, JSON_UNESCAPED_UNICODE);
             } catch (\Throwable $e) {
                 http_response_code(500);
@@ -2498,6 +2510,15 @@ switch ($action) {
             ];
             _bulkImport_jobMark($db, $jobId, 'completed', $completedExtras);
             @unlink($persistPath);
+
+            /* Regenerate the on-disk songs cache (#932) when the worker
+               actually wrote new songs. Skipped if the import was
+               all-existing or all-failed — nothing to refresh. */
+            if ((int)($summary['songs_created'] ?? 0) > 0) {
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+                    . DIRECTORY_SEPARATOR . 'songs_cache.php';
+                songsCacheRegenerateBestEffort('bulk_import_zip.async');
+            }
 
             /* Notify the curator so they find the result on their
                next page-load even if they walked away. Best-effort —
@@ -2640,6 +2661,12 @@ switch ($action) {
             $summary = _bulkImport_processVideoPsalm($body, $origName);
             if (!($summary['ok'] ?? false)) {
                 http_response_code(400);
+            } elseif (($summary['songs_created'] ?? 0) > 0) {
+                /* Songs were actually written — refresh the on-disk
+                   songs cache (#932). Best-effort; logged on failure. */
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+                    . DIRECTORY_SEPARATOR . 'songs_cache.php';
+                songsCacheRegenerateBestEffort('bulk_import_videopsalm');
             }
             echo json_encode($summary, JSON_UNESCAPED_UNICODE);
         } catch (\Throwable $e) {
