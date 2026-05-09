@@ -477,7 +477,13 @@ CREATE TABLE IF NOT EXISTS tblApiTokens (
 -- 48-character hex string (24 random bytes), 1-hour default expiry.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblPasswordResetTokens (
-    Token           VARCHAR(48)     NOT NULL PRIMARY KEY,
+    -- CHAR(64) holds the full sha256 hex of the raw token. Pre-#898
+    -- this column was VARCHAR(48), which silently truncated the 64-
+    -- char hash to 48. Lookups still worked (insert + lookup
+    -- truncated identically) but the on-disk hash was effectively
+    -- 192 bits instead of 256. The follow-up migration widens
+    -- existing installs in place.
+    Token           CHAR(64)        NOT NULL PRIMARY KEY,
     UserId          INT UNSIGNED    NOT NULL,
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     ExpiresAt       TIMESTAMP       NOT NULL,

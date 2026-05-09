@@ -239,6 +239,7 @@ $friendlyTitles = [
     'bulk-import-per-songbook'         => 'Bulk-Import Per-Songbook Breakdown (#906)',
     'bulk-import-phase-label'          => 'Bulk-Import Phase Label (#907)',
     'email-verification-tokens'        => 'Email Verification Tokens (#898)',
+    'password-reset-token-hash-width'  => 'Password Reset Token Hash Width (#898 follow-up)',
     /* `recompute-songbook-songcount` no longer exposed via the dashboard
        (#818) — the SongCount Triggers migration above includes its own
        initial recompute. The CLI script stays on disk for emergency
@@ -303,6 +304,7 @@ $scriptMap = [
     'bulk-import-per-songbook'      => 'migrate-bulk-import-per-songbook.php',
     'bulk-import-phase-label'       => 'migrate-bulk-import-phase-label.php',
     'email-verification-tokens'     => 'migrate-email-verification-tokens.php',
+    'password-reset-token-hash-width' => 'migrate-password-reset-token-hash-width.php',
     'cleanup'     => 'cleanup.php',
     'backup'      => 'backup.php',
     'restore'     => 'restore.php',
@@ -357,6 +359,7 @@ $migrationOrder = [
     'bulk-import-per-songbook',
     'bulk-import-phase-label',
     'email-verification-tokens',
+    'password-reset-token-hash-width',
 ];
 
 /* Per-migration card content (#816). Single source of truth for the
@@ -828,6 +831,17 @@ $migrationCards = [
                   . ' single-use, FK to <code>tblUsers</code> with cascade. Idempotent.',
         'button' => 'Run Email Verification Tokens Migration',
     ],
+    'password-reset-token-hash-width' => [
+        'title'  => 'Password Reset Token Hash Width (#898 follow-up)',
+        'body'   => 'Widens <code>tblPasswordResetTokens.Token</code> from'
+                  . ' <code>VARCHAR(48)</code> to <code>CHAR(64)</code> so the'
+                  . ' SHA-256 hex hash is stored at full width rather than'
+                  . ' silently truncated to 48 chars. Pre-existing rows hold a'
+                  . ' 48-char prefix and will fail to validate after the ALTER —'
+                  . ' since reset tokens expire in 1 hour, any in-flight tokens'
+                  . ' at deploy time naturally cycle out within the hour. Idempotent.',
+        'button' => 'Run Password Reset Token Hash Width Migration',
+    ],
     /* recompute-songbook-songcount card removed (#818) — its work is
        now covered by the SongCount Triggers migration above, which
        runs an initial recompute as part of its installation. The
@@ -995,6 +1009,25 @@ $migrationProbes = [
     /* Email verification tokens (#898): pending when the table is absent. */
     'email-verification-tokens'          => static fn(\mysqli $db) =>
         !_migProbe_tableExists($db, 'tblEmailVerificationTokens'),
+    /* Password reset token hash width (#898 follow-up): pending while
+       the column is still narrower than CHAR(64). */
+    'password-reset-token-hash-width'    => static fn(\mysqli $db) => (function (\mysqli $db): bool {
+        $stmt = $db->prepare(
+            "SELECT DATA_TYPE, CHARACTER_MAXIMUM_LENGTH
+               FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblPasswordResetTokens'
+                AND COLUMN_NAME  = 'Token'
+              LIMIT 1"
+        );
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if (!$row) return false; /* table missing — install.php will create it wide */
+        $len  = (int)($row['CHARACTER_MAXIMUM_LENGTH'] ?? 0);
+        $type = strtolower((string)$row['DATA_TYPE']);
+        return !($len >= 64 && $type === 'char');
+    })($db),
     /* Backfills run once after schema lands. They're idempotent so
        always-show is safe — but we can be smarter: pending when the
        new table has fewer rows than the legacy source had non-empty
