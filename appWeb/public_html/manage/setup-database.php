@@ -238,6 +238,7 @@ $friendlyTitles = [
     'song-arrangement'                 => 'Song Arrangement Persistence (#892)',
     'bulk-import-per-songbook'         => 'Bulk-Import Per-Songbook Breakdown (#906)',
     'bulk-import-phase-label'          => 'Bulk-Import Phase Label (#907)',
+    'email-verification-tokens'        => 'Email Verification Tokens (#898)',
     /* `recompute-songbook-songcount` no longer exposed via the dashboard
        (#818) — the SongCount Triggers migration above includes its own
        initial recompute. The CLI script stays on disk for emergency
@@ -301,6 +302,7 @@ $scriptMap = [
     'song-arrangement'              => 'migrate-song-arrangement.php',
     'bulk-import-per-songbook'      => 'migrate-bulk-import-per-songbook.php',
     'bulk-import-phase-label'       => 'migrate-bulk-import-phase-label.php',
+    'email-verification-tokens'     => 'migrate-email-verification-tokens.php',
     'cleanup'     => 'cleanup.php',
     'backup'      => 'backup.php',
     'restore'     => 'restore.php',
@@ -354,6 +356,7 @@ $migrationOrder = [
     'song-arrangement',
     'bulk-import-per-songbook',
     'bulk-import-phase-label',
+    'email-verification-tokens',
 ];
 
 /* Per-migration card content (#816). Single source of truth for the
@@ -814,6 +817,17 @@ $migrationCards = [
                   . ' isn\'t moving. Idempotent.',
         'button' => 'Run Bulk-Import Phase Label Migration',
     ],
+    'email-verification-tokens' => [
+        'title'  => 'Email Verification Tokens (#898)',
+        'body'   => 'Creates <code>tblEmailVerificationTokens</code> — single-use'
+                  . ' SHA-256-hashed tokens backing the verification email fired'
+                  . ' on password-based registration. Powered by the new'
+                  . ' <code>EmailService</code> abstraction; landed alongside the'
+                  . ' real-email-delivery work (replacing the three'
+                  . ' <code>error_log</code>-only auth flows). 24-hour expiry,'
+                  . ' single-use, FK to <code>tblUsers</code> with cascade. Idempotent.',
+        'button' => 'Run Email Verification Tokens Migration',
+    ],
     /* recompute-songbook-songcount card removed (#818) — its work is
        now covered by the SongCount Triggers migration above, which
        runs an initial recompute as part of its installation. The
@@ -978,6 +992,9 @@ $migrationProbes = [
     /* Bulk-import phase label: pending when the column is absent. */
     'bulk-import-phase-label'            => static fn(\mysqli $db) =>
         !_migProbe_columnExists($db, 'tblBulkImportJobs', 'PhaseLabel'),
+    /* Email verification tokens (#898): pending when the table is absent. */
+    'email-verification-tokens'          => static fn(\mysqli $db) =>
+        !_migProbe_tableExists($db, 'tblEmailVerificationTokens'),
     /* Backfills run once after schema lands. They're idempotent so
        always-show is safe — but we can be smarter: pending when the
        new table has fewer rows than the legacy source had non-empty

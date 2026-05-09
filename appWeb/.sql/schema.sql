@@ -521,6 +521,30 @@ CREATE TABLE IF NOT EXISTS tblEmailLoginTokens (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
+-- ----------------------------------------------------------------------------
+-- tblEmailVerificationTokens (#898)
+-- Single-use tokens for confirming a user's email address after password
+-- registration. Stores the SHA-256 hash of a 48-char hex token (raw token
+-- only ever lives in the email body); 24-hour expiry. On consumption,
+-- tblUsers.EmailVerified flips 0 -> 1 and the row is marked Used.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblEmailVerificationTokens (
+    TokenHash       CHAR(64)        NOT NULL PRIMARY KEY COMMENT 'sha256 of raw token',
+    UserId          INT UNSIGNED    NOT NULL,
+    Email           VARCHAR(255)    NOT NULL COMMENT 'Email at the moment the token was issued',
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ExpiresAt       TIMESTAMP       NOT NULL,
+    Used            TINYINT(1)      NOT NULL DEFAULT 0,
+
+    INDEX idx_User      (UserId),
+    INDEX idx_Expires   (ExpiresAt),
+
+    CONSTRAINT fk_VerifyTokens_User
+        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
 -- ============================================================================
 -- ACCESS TIERS & PURCHASES
 -- ============================================================================
