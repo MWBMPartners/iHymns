@@ -1480,3 +1480,113 @@ function completeEmailLogin(string $email, ?int $userId): array
         ],
     ];
 }
+
+/* =========================================================================
+ * EMAIL VERIFICATION (#898)
+ *
+ * Single-use tokens that flip tblUsers.EmailVerified 0 -> 1 when
+ * consumed. Backed by tblEmailVerificationTokens; raw token is only
+ * ever in the email body (delivery via EmailService); the table
+ * stores the SHA-256 hash so a DB dump never leaks live tokens.
+ * Default lifetime: 24 hours.
+ * ========================================================================= */
+
+/**
+ * Issue an email-verification token for a user. Caller is responsible
+ * for delivering the raw token via EmailService::sendTemplate(
+ * 'email-verification', ...). Any prior unused tokens for this user
+ * are invalidated to keep one outstanding token per user at a time.
+ *
+ * @return array{token:string, expiresAt:string}|null Null if the user
+ *         doesn't exist or has no email on file.
+ */
+function generateEmailVerificationToken(int $userId): ?array
+{
+    $db = getDbMysqli();
+
+    /* Look up the email + active status. */
+    $stmt = $db->prepare('SELECT Email, IsActive FROM tblUsers WHERE Id = ?');
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$row || (string)($row['Email'] ?? '') === '' || (int)$row['IsActive'] !== 1) {
+        return null;
+    }
+    $email = (string)$row['Email'];
+
+    /* 48-char hex (24 random bytes) raw token; SHA-256 hash on disk. */
+    $token = bin2hex(random_bytes(24));
+    $tokenHash = hash('sha256', $token);
+    $expiresAt = gmdate('c', time() + 86400); /* 24 hours */
+
+    /* Drop any prior outstanding tokens for this user. Single-token
+       invariant matches the password-reset table's
+       DELETE-then-INSERT pattern. */
+    $stmt = $db->prepare('DELETE FROM tblEmailVerificationTokens WHERE UserId = ?');
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $stmt->close();
+
+    $stmt = $db->prepare(
+        'INSERT INTO tblEmailVerificationTokens (TokenHash, UserId, Email, ExpiresAt) VALUES (?, ?, ?, ?)'
+    );
+    $stmt->bind_param('siss', $tokenHash, $userId, $email, $expiresAt);
+    $stmt->execute();
+    $stmt->close();
+
+    return ['token' => $token, 'expiresAt' => $expiresAt];
+}
+
+/**
+ * Consume an email-verification token. On success, flips
+ * tblUsers.EmailVerified to 1 and marks the row Used.
+ *
+ * @return array{userId:int, email:string}|null Null if the token is
+ *         invalid, expired, already used, or the address has changed
+ *         since issuance (anti-spoof: don't verify a stale address).
+ */
+function consumeEmailVerificationToken(string $token): ?array
+{
+    $token = trim($token);
+    if ($token === '' || strlen($token) > 64) {
+        return null;
+    }
+
+    $db = getDbMysqli();
+    $tokenHash = hash('sha256', $token);
+    $now = gmdate('c');
+    $stmt = $db->prepare(
+        'SELECT t.UserId, t.Email AS TokenEmail, u.Email AS CurrentEmail
+           FROM tblEmailVerificationTokens t
+           JOIN tblUsers u ON u.Id = t.UserId
+          WHERE t.TokenHash = ? AND t.ExpiresAt > ? AND t.Used = 0 AND u.IsActive = 1'
+    );
+    $stmt->bind_param('ss', $tokenHash, $now);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    if (!$row) {
+        return null;
+    }
+    /* Anti-spoof: the user's email must still match the address that
+       was on file when the token was issued. If the user changed it
+       in the meantime the old verification link must not be honoured. */
+    if (mb_strtolower((string)$row['TokenEmail']) !== mb_strtolower((string)$row['CurrentEmail'])) {
+        return null;
+    }
+
+    $userId = (int)$row['UserId'];
+    $stmt = $db->prepare('UPDATE tblUsers SET EmailVerified = 1 WHERE Id = ?');
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $stmt->close();
+
+    $stmt = $db->prepare('UPDATE tblEmailVerificationTokens SET Used = 1 WHERE TokenHash = ?');
+    $stmt->bind_param('s', $tokenHash);
+    $stmt->execute();
+    $stmt->close();
+
+    return ['userId' => $userId, 'email' => (string)$row['CurrentEmail']];
+}

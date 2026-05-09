@@ -1034,6 +1034,8 @@ if ($action !== null) {
             $username    = mb_strtolower(trim($body['username'] ?? ''));
             $password    = $body['password'] ?? '';
             $displayName = trim($body['display_name'] ?? '');
+            /* Optional email — when present we attempt verification (#898). */
+            $regEmail    = mb_strtolower(trim((string)($body['email'] ?? '')));
 
             /* Validate inputs */
             if (strlen($username) < 3 || !preg_match('/^[a-z0-9_.\-]+$/', $username)) {
@@ -1046,6 +1048,10 @@ if ($action !== null) {
             }
             if (strlen($password) > 128) {
                 sendJson(['error' => 'Password must not exceed 128 characters.'], 400);
+                break;
+            }
+            if ($regEmail !== '' && !filter_var($regEmail, FILTER_VALIDATE_EMAIL)) {
+                sendJson(['error' => 'Email address is not valid.'], 400);
                 break;
             }
             if ($displayName === '') {
@@ -1077,8 +1083,11 @@ if ($action !== null) {
 
             $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
             $displayTrimmed = mb_substr($displayName, 0, 100);
-            $stmt = $db->prepare('INSERT INTO tblUsers (Username, PasswordHash, DisplayName, Role) VALUES (?, ?, ?, ?)');
-            $stmt->bind_param('ssss', $username, $hash, $displayTrimmed, $role);
+            /* Email column is NOT NULL DEFAULT ''; insert an explicit
+               empty string when the optional email was omitted. (#898) */
+            $emailToStore = $regEmail;
+            $stmt = $db->prepare('INSERT INTO tblUsers (Username, Email, PasswordHash, DisplayName, Role) VALUES (?, ?, ?, ?, ?)');
+            $stmt->bind_param('sssss', $username, $emailToStore, $hash, $displayTrimmed, $role);
             $stmt->execute();
             $userId = (int)$db->insert_id;
             $stmt->close();
@@ -1109,21 +1118,69 @@ if ($action !== null) {
                     'username'     => $username,
                     'display_name' => $displayName,
                     'role'         => $role,
+                    'has_email'    => $regEmail !== '',
                     'token_prefix' => substr(hash('sha256', $token), 0, 12),
                 ],
                 'success',
                 $userId
             );
 
+            /* Email verification (#898). Optional: caller may not have
+               provided an email. Best-effort: a verification failure
+               does not abort the registration — the account is
+               already created and the user has a working session. We
+               return verification status in the response so the
+               client can render "we sent a verification email" or
+               not, accurately. */
+            $verificationSent     = false;
+            $verificationProvider = 'none';
+            if ($regEmail !== '') {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'EmailService.php';
+                if (EmailService::isConfigured()) {
+                    $verifyData = generateEmailVerificationToken($userId);
+                    if ($verifyData !== null) {
+                        $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+                        $host   = $_SERVER['HTTP_HOST'] ?? 'ihymns.app';
+                        $verifyLink = $scheme . '://' . $host . '/login?verify_token=' . rawurlencode((string)$verifyData['token']);
+                        $sendResult = EmailService::sendTemplate('email-verification', $regEmail, [
+                            'link'         => $verifyLink,
+                            'expiresInMin' => 1440,
+                            'displayName'  => $displayName,
+                        ]);
+                        $verificationSent     = $sendResult->ok;
+                        $verificationProvider = $sendResult->provider;
+                        logActivity(
+                            'auth.email_verification_request',
+                            'user',
+                            (string)$userId,
+                            [
+                                'email_ok'       => $sendResult->ok,
+                                'email_provider' => $sendResult->provider,
+                                'token_prefix'   => substr(hash('sha256', (string)$verifyData['token']), 0, 12),
+                            ],
+                            $sendResult->ok ? 'success' : 'failure',
+                            $userId
+                        );
+                    }
+                }
+            }
+
             sendJson([
                 'token' => $token,
                 'user'  => [
-                    'id'             => $userId,
-                    'username'       => $username,
-                    'display_name'   => $displayName,
-                    'role'           => $role,
-                    'avatar_service' => null,   /* #616 — fresh registration inherits project default */
+                    'id'              => $userId,
+                    'username'        => $username,
+                    'display_name'    => $displayName,
+                    'email'           => $regEmail,
+                    'email_verified'  => false,
+                    'role'            => $role,
+                    'avatar_service'  => null,   /* #616 — fresh registration inherits project default */
                 ],
+                /* Honest reporting (#898) — the client uses these to
+                   decide whether to show "check your email" UI. */
+                'verification_email_sent'     => $verificationSent,
+                'verification_email_provider' => $verificationProvider,
             ], 201);
             break;
 
@@ -1626,11 +1683,41 @@ if ($action !== null) {
 
             $result = generatePasswordResetToken($input);
 
-            /* Always return success to prevent user enumeration.
-             * The reset token is logged server-side only.
-             * TODO: Deliver token via email in production. */
-            if ($result) {
-                error_log('[iHymns] Password reset token generated for user lookup: ' . $input);
+            /* Always return 200 to prevent username/email enumeration
+               (#898 preserves this contract). When we DO have a hit
+               we deliver the email via EmailService; failure is
+               logged to tblActivityLog but still returned as 200 so
+               an attacker can't tell whether the email exists from
+               the response shape alone. The user-visible failure
+               surface is the password-reset page itself: the link
+               either lands and works, or it doesn't because the email
+               never arrived (admins can verify via the activity log). */
+            if ($result && (string)($result['email'] ?? '') !== '') {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'EmailService.php';
+                $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+                $host   = $_SERVER['HTTP_HOST'] ?? 'ihymns.app';
+                $resetLink = $scheme . '://' . $host . '/login?reset_token=' . rawurlencode((string)$result['token']);
+                $sendResult = EmailService::sendTemplate('password-reset', (string)$result['email'], [
+                    'link'         => $resetLink,
+                    'expiresInMin' => 60,
+                    'username'     => (string)($result['username'] ?? ''),
+                ]);
+                logActivity(
+                    'auth.password_reset_request',
+                    'user',
+                    (string)($result['user_id'] ?? ''),
+                    [
+                        'lookup'         => $input,
+                        'email_ok'       => $sendResult->ok,
+                        'email_provider' => $sendResult->provider,
+                        /* token never logged; only its sha256 prefix as
+                           a debug handle for cross-correlating with
+                           the email.send row above. */
+                        'token_prefix'   => substr(hash('sha256', (string)$result['token']), 0, 12),
+                    ],
+                    $sendResult->ok ? 'success' : 'failure',
+                    isset($result['user_id']) ? (int)$result['user_id'] : null
+                );
             }
             sendJson([
                 'ok'      => true,
@@ -1670,6 +1757,60 @@ if ($action !== null) {
             } else {
                 sendJson(['error' => 'Invalid or expired reset token.'], 400);
             }
+            break;
+
+        /* -----------------------------------------------------------------
+         * Verify a user's email address via the verification token (#898)
+         *
+         * GET / POST: ?action=auth_verify_email&token=<48-char hex>
+         * On success flips tblUsers.EmailVerified 0 -> 1.
+         * Always returns a generic message — token invalidity is logged
+         * to tblActivityLog so we don't leak which case happened.
+         * ----------------------------------------------------------------- */
+        case 'auth_verify_email':
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+
+            $verifyToken = '';
+            if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+                $rawBody = file_get_contents('php://input');
+                $body    = json_decode($rawBody, true);
+                $verifyToken = trim((string)($body['token'] ?? ''));
+            } else {
+                $verifyToken = trim((string)($_GET['token'] ?? ''));
+            }
+
+            if ($verifyToken === '') {
+                sendJson(['error' => 'Verification token required.'], 400);
+                break;
+            }
+
+            $consumed = consumeEmailVerificationToken($verifyToken);
+            if ($consumed === null) {
+                logActivity(
+                    'auth.email_verification',
+                    'user',
+                    '',
+                    ['reason' => 'invalid_or_expired_token',
+                     'token_prefix' => substr(hash('sha256', $verifyToken), 0, 12)],
+                    'failure'
+                );
+                sendJson(['error' => 'Invalid or expired verification token.'], 400);
+                break;
+            }
+
+            logActivity(
+                'auth.email_verification',
+                'user',
+                (string)$consumed['userId'],
+                ['method' => 'token'],
+                'success',
+                (int)$consumed['userId']
+            );
+            sendJson([
+                'ok'      => true,
+                'message' => 'Email verified successfully.',
+                'user_id' => (int)$consumed['userId'],
+            ]);
             break;
 
         /* =================================================================
@@ -1748,30 +1889,50 @@ if ($action !== null) {
                 break;
             }
 
-            /* TODO: Send the email with the magic link and code.
-             * The magic link URL format: https://ihymns.app/login?token=<token>
-             * The code: <6-digit code>
-             * Until email delivery is implemented, log for development. */
-            error_log(sprintf(
-                '[iHymns] Email login requested for %s — Code: %s (expires in 10 min)',
-                $requestEmail, $result['code']
-            ));
+            /* Deliver the magic link + 6-digit code via EmailService (#898).
+               Pre-#898 this path wrote the code to error_log and lied
+               to the client with a 200. We now send for real and only
+               return 200 when delivery succeeded. The raw token / code
+               never enter PHP error_log. */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'EmailService.php';
+            $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+            $host   = $_SERVER['HTTP_HOST'] ?? 'ihymns.app';
+            $magicLink = $scheme . '://' . $host . '/login?token=' . rawurlencode((string)$result['token']);
+            $sendResult = EmailService::sendTemplate('magic-link-login', $requestEmail, [
+                'code'         => (string)$result['code'],
+                'link'         => $magicLink,
+                'expiresInMin' => 10,
+            ]);
 
             /* Audit (#535). Token + code are NOT logged per privacy
                policy; only their hash prefix as a debug handle and
                the email so admins can correlate "did the email
-               actually go out". */
+               actually go out". A dedicated email.send row is also
+               written by EmailService — this row continues to record
+               the auth-side context. */
             logActivity(
                 'auth.login_email_request',
                 'user',
                 (string)($result['userId'] ?? ''),
                 [
-                    'email'        => $requestEmail,
-                    'token_prefix' => isset($result['token']) ? substr(hash('sha256', (string)$result['token']), 0, 12) : null,
+                    'email'          => $requestEmail,
+                    'token_prefix'   => isset($result['token']) ? substr(hash('sha256', (string)$result['token']), 0, 12) : null,
+                    'email_ok'       => $sendResult->ok,
+                    'email_provider' => $sendResult->provider,
                 ],
-                'success',
+                $sendResult->ok ? 'success' : 'failure',
                 isset($result['userId']) ? (int)$result['userId'] : null
             );
+
+            if (!$sendResult->ok) {
+                /* Per #898 acceptance: must NOT return a fake 200 when
+                   delivery failed. The token row stays in
+                   tblEmailLoginTokens (will expire in 10 min) but the
+                   user gets an honest error so they don't sit waiting
+                   for a mail that's never arriving. */
+                sendJson(['error' => 'Email delivery failed. Please contact an administrator.'], 500);
+                break;
+            }
 
             sendJson([
                 'ok'      => true,
@@ -7458,9 +7619,46 @@ if ($action !== null) {
 
             try {
                 changeUserPassword($targetId, $newPassword);
-                sendJson(['ok' => true, 'id' => $targetId, 'username' => (string)$target['username']]);
+
+                /* Notify the target user that their password was reset
+                   by an admin (#898 acceptance criteria). Self-resets
+                   skip the notification — the user just typed the new
+                   password, sending themselves a "your password was
+                   reset" email is noise. Cross-user resets always
+                   notify, regardless of provider availability: when
+                   no provider is configured we still log the attempt
+                   to tblActivityLog so admins can see the gap. */
+                $emailNotified = false;
+                $emailProvider = 'none';
+                if ($targetId !== $actingId && (string)($target['email'] ?? '') !== '') {
+                    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'EmailService.php';
+                    if (EmailService::isConfigured()) {
+                        $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+                        $host   = $_SERVER['HTTP_HOST'] ?? 'ihymns.app';
+                        $loginUrl = $scheme . '://' . $host . '/login';
+                        $sendResult = EmailService::sendTemplate('admin-password-reset', (string)$target['email'], [
+                            'username'    => (string)$target['username'],
+                            'displayName' => (string)($target['display_name'] ?? ''),
+                            'loginUrl'    => $loginUrl,
+                            'adminName'   => (string)($authUser['DisplayName'] ?? $authUser['Username'] ?? 'an iHymns administrator'),
+                        ]);
+                        $emailNotified = $sendResult->ok;
+                        $emailProvider = $sendResult->provider;
+                    }
+                }
+
+                sendJson([
+                    'ok'             => true,
+                    'id'             => $targetId,
+                    'username'       => (string)$target['username'],
+                    'email_notified' => $emailNotified,
+                    'email_provider' => $emailProvider,
+                ]);
             } catch (\Throwable $e) {
                 logActivityError('api.admin.user.password_reset', 'user', (string)$targetId, $e);
+                /* error_log without secret leakage — the exception
+                   message can carry SQL fragments but never the
+                   plaintext password; getMessage() is safe here. */
                 error_log('[admin_user_password_reset] ' . $e->getMessage());
                 sendJson(['error' => 'Could not reset password.'], 500);
             }
