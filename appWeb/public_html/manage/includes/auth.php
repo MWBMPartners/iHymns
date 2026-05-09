@@ -1264,8 +1264,15 @@ function generateEmailLoginToken(string $email, string $clientIp = ''): ?array
     $stmt->close();
     $userId = $existingUser ? (int)$existingUser['Id'] : null;
 
-    /* Generate token (48-char hex) and code (6-digit numeric) */
+    /* Generate token (48-char hex raw, sha256-hashed on disk) and
+       code (6-digit numeric, plaintext on disk).
+       Code stays plaintext on purpose: ~20 bits of entropy is too low
+       for hashing to add real defence (a 1M-entry rainbow is trivial),
+       so we rely on the existing single-use + 10-minute expiry +
+       email-scoped lookup. The high-entropy Token is the magic-link
+       leg; that one we do hash. (#898 follow-up) */
     $token = bin2hex(random_bytes(24));
+    $tokenHash = hash('sha256', $token);
     $code  = str_pad((string)random_int(0, 999999), 6, '0', STR_PAD_LEFT);
     $expiresAt = gmdate('c', time() + 600); /* 10 minutes */
 
@@ -1279,13 +1286,16 @@ function generateEmailLoginToken(string $email, string $clientIp = ''): ?array
 
     /* Insert new token. UserId is nullable when the email doesn't
        match an existing user yet (first-login flow); mysqli passes
-       NULL correctly with type 'i' when the bound variable is null. */
+       NULL correctly with type 'i' when the bound variable is null.
+       The Token column stores the SHA-256 hex hash of the raw
+       token; the raw token is returned to the caller and only ever
+       leaves the server inside the outbound email body. */
     $stmt = $db->prepare(
         'INSERT INTO tblEmailLoginTokens (Email, UserId, Token, Code, ExpiresAt, IpAddress)
          VALUES (?, ?, ?, ?, ?, ?)'
     );
     $stmt->bind_param('sissss',
-        $email, $userId, $token, $code, $expiresAt, $clientIp);
+        $email, $userId, $tokenHash, $code, $expiresAt, $clientIp);
     $stmt->execute();
     $stmt->close();
 
@@ -1311,11 +1321,15 @@ function verifyEmailLoginToken(string $token): ?array
     }
 
     $db = getDbMysqli();
+    /* Hash the supplied raw token and look up by hash (#898 follow-up).
+       Raw tokens never enter the table; storing only the sha256 hex
+       means a DB dump can't be replayed against the verify endpoint. */
+    $tokenHash = hash('sha256', $token);
     $stmt = $db->prepare(
         'SELECT Id, Email, UserId FROM tblEmailLoginTokens
          WHERE Token = ? AND Used = 0 AND ExpiresAt > NOW()'
     );
-    $stmt->bind_param('s', $token);
+    $stmt->bind_param('s', $tokenHash);
     $stmt->execute();
     $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();

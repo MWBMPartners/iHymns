@@ -509,8 +509,17 @@ CREATE TABLE IF NOT EXISTS tblEmailLoginTokens (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
     Email           VARCHAR(255)    NOT NULL COMMENT 'Email address the token was sent to',
     UserId          INT UNSIGNED    NULL COMMENT 'FK to tblUsers if email matches existing account',
-    Token           VARCHAR(64)     NOT NULL UNIQUE COMMENT '48-char hex token for magic link',
-    Code            VARCHAR(6)      NOT NULL COMMENT '6-digit numeric code for manual entry',
+    -- Stores sha256(raw token) hex (64 chars). The raw 48-char hex
+    -- token only ever lives in the outbound email body. Pre-#898
+    -- this column held the raw token; the follow-up migration drops
+    -- any unused rows and flips the storage discipline.
+    Token           VARCHAR(64)     NOT NULL UNIQUE COMMENT 'sha256 hex of raw 48-char hex magic-link token',
+    -- Code stays plaintext: 6-digit numeric is ~20 bits of entropy,
+    -- below the threshold where hashing provides meaningful defence
+    -- against an attacker with the table contents. The defence-in-
+    -- depth here is single-use + 10-minute expiry + email-scoped
+    -- lookup, all enforced by tblEmailLoginTokens itself.
+    Code            VARCHAR(6)      NOT NULL COMMENT '6-digit numeric code for manual entry (plaintext)',
     Used            TINYINT(1)      NOT NULL DEFAULT 0,
     ExpiresAt       TIMESTAMP       NOT NULL,
     IpAddress       VARCHAR(45)     NOT NULL DEFAULT '' COMMENT 'IP that requested the token',
