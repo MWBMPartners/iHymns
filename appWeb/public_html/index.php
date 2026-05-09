@@ -109,6 +109,12 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+/* Mirror every uncaught \Throwable + PHP fatal into tblActivityLog so
+   curators reading /manage/activity-log see every public-site error
+   alongside admin events. Chains to the 503-emitting bootstrap
+   safety net registered above. */
+installGlobalActivityLogHandlers('index');
 
 /* Channel gate (#407) — alpha / beta subdomains require the user to
    hold access_alpha / access_beta entitlements. Never gates production

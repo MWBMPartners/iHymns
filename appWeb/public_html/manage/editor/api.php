@@ -62,6 +62,12 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
    `function_exists('logActivity')` is always true inside this
    endpoint and the helper is available unconditionally. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+/* Mirror every uncaught \Throwable + PHP fatal in any editor-API
+   case (save_song, bulk_import_*, typeaheads, load) into
+   tblActivityLog. Per-case try/catches still write their own
+   contextual rows — this is the safety net for failures that
+   escape them entirely. */
+installGlobalActivityLogHandlers('editor_api');
 
 /**
  * Cached check for the tblSongArtists table (#587). The table arrives
