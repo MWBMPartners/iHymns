@@ -979,23 +979,55 @@ CREATE TABLE IF NOT EXISTS tblActivityLog (
     Result          ENUM('success','failure','error') NOT NULL DEFAULT 'success'
                     COMMENT 'success = OK; failure = user-side reject; error = server-side exception (#535)',
     Details         JSON            NULL COMMENT 'Additional context (before/after diff, error message, request body)',
-    IpAddress       VARCHAR(45)     NOT NULL DEFAULT '',
+    IpAddress       VARCHAR(45)     NOT NULL DEFAULT '' COMMENT 'Real client IP after proxy resolution (CF-Connecting-IP / X-Forwarded-For / REMOTE_ADDR), IPv6-capable',
+    IpProxyChain    VARCHAR(255)    NULL COMMENT 'Comma-separated proxy chain from X-Forwarded-For; last hop = proxy that delivered to PHP',
+    ProxyVpnIndicator VARCHAR(50)   NULL COMMENT 'Heuristic/external classification: none | cloudflare | xff | datacentre | vpn | tor | proxy',
+    ProxyVpnDetail  JSON            NULL COMMENT 'Provider / score / source headers — populated by heuristic resolver + (future) external lookup',
     UserAgent       VARCHAR(500)    NOT NULL DEFAULT '' COMMENT 'Truncated UA — useful for "mobile vs desktop" debugging (#535)',
     RequestId       CHAR(16)        NOT NULL DEFAULT '' COMMENT 'Per-HTTP-request correlation ID; groups every row from one request (#535)',
     Method          VARCHAR(10)     NOT NULL DEFAULT '' COMMENT 'HTTP method (GET/POST/etc) for HTTP-driven events; blank for cron/system (#535)',
     DurationMs      INT UNSIGNED    NULL COMMENT 'Wall-clock duration of the logged operation in milliseconds (#535)',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    INDEX idx_User      (UserId),
-    INDEX idx_Action    (Action),
-    INDEX idx_Entity    (EntityType, EntityId),
-    INDEX idx_Created   (CreatedAt),
-    INDEX idx_Result    (Result),
-    INDEX idx_RequestId (RequestId),
+    INDEX idx_User              (UserId),
+    INDEX idx_Action            (Action),
+    INDEX idx_Entity            (EntityType, EntityId),
+    INDEX idx_Created           (CreatedAt),
+    INDEX idx_Result            (Result),
+    INDEX idx_RequestId         (RequestId),
+    INDEX idx_ProxyVpnIndicator (ProxyVpnIndicator),
 
     CONSTRAINT fk_Log_User
         FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
         ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------
+-- tblIpReputation
+--
+-- Cache table for proxy/VPN classification of client IPs. Keyed by
+-- IpAddress; one row per unique client. The activity-log resolver
+-- reads through this table on every request, only paying the
+-- external-lookup latency on the first request from a new IP within
+-- the configured TTL window.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblIpReputation (
+    IpAddress      VARCHAR(45)  NOT NULL PRIMARY KEY,
+    Indicator      VARCHAR(50)  NULL
+                   COMMENT 'cloudflare | xff | datacentre | vpn | tor | proxy | none',
+    Provider       VARCHAR(100) NULL
+                   COMMENT 'Provider name from external lookup (e.g. NordVPN, AWS, Cloudflare WARP)',
+    Score          SMALLINT     NULL
+                   COMMENT 'Confidence score 0-100 if the lookup source provides one',
+    Detail         JSON         NULL
+                   COMMENT 'Raw lookup response, kept for forensic + audit',
+    Source         VARCHAR(50)  NOT NULL DEFAULT ''
+                   COMMENT 'header | ipqs | maxmind | ipinfo | manual',
+    LookedUpAt     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ExpiresAt      TIMESTAMP    NULL,
+
+    INDEX idx_Indicator (Indicator),
+    INDEX idx_Expires   (ExpiresAt)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
