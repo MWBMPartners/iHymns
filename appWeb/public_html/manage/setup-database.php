@@ -239,6 +239,12 @@ $friendlyTitles = [
     'bulk-import-per-songbook'         => 'Bulk-Import Per-Songbook Breakdown (#906)',
     'bulk-import-phase-label'          => 'Bulk-Import Phase Label (#907)',
     'activity-log-proxy-vpn'           => 'Activity Log Proxy/VPN + Per-Request',
+    /* No-op file-touch (force-deploy 2026-05-09) — the previous SFTP
+       deploy of #919 skipped this file under lftp `--only-newer`
+       because the local file mtime didn't surpass the remote's
+       prior-deploy mtime. This whitespace nudge gives the next
+       deploy a fresh-mtime file to upload, getting the new
+       activity-log-proxy-vpn card onto the dashboard. */
     /* `recompute-songbook-songcount` no longer exposed via the dashboard
        (#818) — the SongCount Triggers migration above includes its own
        initial recompute. The CLI script stays on disk for emergency
