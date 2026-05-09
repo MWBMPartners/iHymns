@@ -279,8 +279,22 @@ function logActivity(
         $proxyIndTrim   = $proxyInd   !== null ? substr($proxyInd,   0, 50)  : null;
 
         if ($hasProxyCols) {
+            /* 14 placeholders → 14 type chars: 1×'i' (UserId)
+               + 12×'s' (Action / EntityType / EntityId / Result /
+               Details / IpAddress / IpProxyChain / ProxyVpnIndicator /
+               ProxyVpnDetail / UserAgent / RequestId / Method)
+               + 1×'i' (DurationMs).
+               #923 — was previously `'isssssssssssssi'` (15 chars,
+               one extra 's'), which made bind_param throw
+               `Number of elements in type definition string
+               doesn't match number of bind variables`. The catch at
+               the bottom of this function swallows the throw to an
+               error_log line, so every logActivity() call after the
+               proxy/VPN migration ran landed silently in the file
+               log instead of tblActivityLog — the audit trail went
+               dark from #919 deploy until this fix shipped. */
             $stmt->bind_param(
-                'isssssssssssssi',
+                'issssssssssssi',
                 $resolvedUserId,
                 $actionTrim,
                 $entityTrim,
