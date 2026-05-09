@@ -238,9 +238,16 @@ $friendlyTitles = [
     'song-arrangement'                 => 'Song Arrangement Persistence (#892)',
     'bulk-import-per-songbook'         => 'Bulk-Import Per-Songbook Breakdown (#906)',
     'bulk-import-phase-label'          => 'Bulk-Import Phase Label (#907)',
+    'activity-log-proxy-vpn'           => 'Activity Log Proxy/VPN + Per-Request',
     'email-verification-tokens'        => 'Email Verification Tokens (#898)',
     'password-reset-token-hash-width'  => 'Password Reset Token Hash Width (#898 follow-up)',
     'email-login-token-hashing'        => 'Email Login Token Hashing (#898 follow-up)',
+    /* No-op file-touch (force-deploy 2026-05-09) — the previous SFTP
+       deploy of #919 skipped this file under lftp `--only-newer`
+       because the local file mtime didn't surpass the remote's
+       prior-deploy mtime. This whitespace nudge gives the next
+       deploy a fresh-mtime file to upload, getting the new
+       activity-log-proxy-vpn card onto the dashboard. */
     /* `recompute-songbook-songcount` no longer exposed via the dashboard
        (#818) — the SongCount Triggers migration above includes its own
        initial recompute. The CLI script stays on disk for emergency
@@ -304,6 +311,7 @@ $scriptMap = [
     'song-arrangement'              => 'migrate-song-arrangement.php',
     'bulk-import-per-songbook'      => 'migrate-bulk-import-per-songbook.php',
     'bulk-import-phase-label'       => 'migrate-bulk-import-phase-label.php',
+    'activity-log-proxy-vpn'        => 'migrate-activity-log-proxy-vpn.php',
     'email-verification-tokens'     => 'migrate-email-verification-tokens.php',
     'password-reset-token-hash-width' => 'migrate-password-reset-token-hash-width.php',
     'email-login-token-hashing'     => 'migrate-email-login-token-hashing.php',
@@ -360,6 +368,7 @@ $migrationOrder = [
     'song-arrangement',
     'bulk-import-per-songbook',
     'bulk-import-phase-label',
+    'activity-log-proxy-vpn',
     'email-verification-tokens',
     'password-reset-token-hash-width',
     'email-login-token-hashing',
@@ -823,6 +832,24 @@ $migrationCards = [
                   . ' isn\'t moving. Idempotent.',
         'button' => 'Run Bulk-Import Phase Label Migration',
     ],
+    'activity-log-proxy-vpn' => [
+        'title'  => 'Activity Log Proxy/VPN + Per-Request',
+        'body'   => 'Adds <code>IpProxyChain</code>, <code>ProxyVpnIndicator</code>'
+                  . ' and <code>ProxyVpnDetail</code> columns to <code>tblActivityLog</code>'
+                  . ' so every audit row records the real client IP (resolved'
+                  . ' through Cloudflare / X-Forwarded-For / X-Real-IP), the'
+                  . ' intermediate proxy chain, and a heuristic + (future)'
+                  . ' external classification of whether the request came'
+                  . ' through a VPN, TOR exit, datacentre, or generic proxy.'
+                  . ' Also adds a new <code>tblIpReputation</code> cache table'
+                  . ' that the future external-lookup integration writes'
+                  . ' through to, so a busy IP doesn\'t pay the lookup'
+                  . ' latency on every subsequent request. Pairs with the'
+                  . ' per-request shutdown logger that records every'
+                  . ' dynamic-PHP request (action=request.success / .failure'
+                  . ' / .error) with status code + duration. Idempotent.',
+        'button' => 'Run Activity Log Proxy/VPN Migration',
+    ],
     'email-verification-tokens' => [
         'title'  => 'Email Verification Tokens (#898)',
         'body'   => 'Creates <code>tblEmailVerificationTokens</code> — single-use'
@@ -1022,6 +1049,9 @@ $migrationProbes = [
     /* Bulk-import phase label: pending when the column is absent. */
     'bulk-import-phase-label'            => static fn(\mysqli $db) =>
         !_migProbe_columnExists($db, 'tblBulkImportJobs', 'PhaseLabel'),
+    /* Activity-log proxy/vpn columns: pending when ProxyVpnIndicator is absent. */
+    'activity-log-proxy-vpn'             => static fn(\mysqli $db) =>
+        !_migProbe_columnExists($db, 'tblActivityLog', 'ProxyVpnIndicator'),
     /* Email verification tokens (#898): pending when the table is absent. */
     'email-verification-tokens'          => static fn(\mysqli $db) =>
         !_migProbe_tableExists($db, 'tblEmailVerificationTokens'),

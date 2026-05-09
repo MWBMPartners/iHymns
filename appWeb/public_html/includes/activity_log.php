@@ -207,43 +207,135 @@ function logActivity(
     }
 
     $resolvedUserId = activityLogResolveUserId($userId);
-    $ip             = (string)($_SERVER['REMOTE_ADDR']     ?? '');
+    /* Real client IP + proxy chain + heuristic indicator (#proxy-vpn).
+       Honours CF-Connecting-IP / X-Forwarded-For / X-Real-IP so that
+       behind Cloudflare or any reverse proxy the audit trail records
+       the actual visitor's IP, not the proxy's. The resolver also
+       computes a proxy/VPN indicator + classification detail; both
+       columns are NULL on a pre-migration deployment, in which case
+       the bind_param below sends them as NULL and MySQL accepts. */
+    [$ip, $proxyChain, $proxyInd, $proxyDetail] = activityLogResolveClientIp();
+    $proxyDetailJson = $proxyDetail !== null
+        ? json_encode($proxyDetail, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR)
+        : null;
+    if ($proxyDetailJson === false) $proxyDetailJson = null;
+
     $ua             = substr((string)($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 500);
     $method         = strtoupper((string)($_SERVER['REQUEST_METHOD']  ?? ''));
     $rid            = activityLogRequestId();
 
     try {
         $db = getDbMysqli();
-        $stmt = $db->prepare(
-            'INSERT INTO tblActivityLog
-                (UserId, Action, EntityType, EntityId, Result, Details,
-                 IpAddress, UserAgent, RequestId, Method, DurationMs, CreatedAt)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())'
-        );
+        /* The new IpProxyChain / ProxyVpnIndicator / ProxyVpnDetail
+           columns ship via migrate-activity-log-proxy-vpn.php. On
+           pre-migration deployments INSERTing into the new column
+           list would 1054. Probe once per process and degrade to
+           the legacy 11-column INSERT if absent. */
+        static $hasProxyCols = null;
+        if ($hasProxyCols === null) {
+            try {
+                $probe = $db->prepare(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                      WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME   = 'tblActivityLog'
+                        AND COLUMN_NAME  = 'ProxyVpnIndicator' LIMIT 1"
+                );
+                $probe->execute();
+                $hasProxyCols = (bool)$probe->get_result()->fetch_row();
+                $probe->close();
+            } catch (\Throwable $_e) {
+                $hasProxyCols = false;
+            }
+        }
+
+        if ($hasProxyCols) {
+            $stmt = $db->prepare(
+                'INSERT INTO tblActivityLog
+                    (UserId, Action, EntityType, EntityId, Result, Details,
+                     IpAddress, IpProxyChain, ProxyVpnIndicator, ProxyVpnDetail,
+                     UserAgent, RequestId, Method, DurationMs, CreatedAt)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())'
+            );
+        } else {
+            $stmt = $db->prepare(
+                'INSERT INTO tblActivityLog
+                    (UserId, Action, EntityType, EntityId, Result, Details,
+                     IpAddress, UserAgent, RequestId, Method, DurationMs, CreatedAt)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())'
+            );
+        }
         /* Types: UserId(i nullable), Action(s), EntityType(s), EntityId(s),
-           Result(s), Details(s nullable), IpAddress(s), UserAgent(s),
-           RequestId(s), Method(s), DurationMs(i nullable). mysqli passes
-           NULL correctly when the bound variable is null even with type
-           'i' or 's'. */
+           Result(s), Details(s nullable), IpAddress(s), [IpProxyChain(s nullable),
+           ProxyVpnIndicator(s nullable), ProxyVpnDetail(s nullable),]
+           UserAgent(s), RequestId(s), Method(s), DurationMs(i nullable).
+           mysqli passes NULL correctly when the bound variable is null even
+           with type 'i' or 's'. */
         $actionTrim   = substr($action,     0, 50);
         $entityTrim   = substr($entityType, 0, 50);
         $entityIdTrim = substr($entityId,   0, 50);
         $methodTrim   = substr($method,     0, 10);
         $duration     = $durationMs !== null ? max(0, $durationMs) : null;
-        $stmt->bind_param(
-            'isssssssssi',
-            $resolvedUserId,
-            $actionTrim,
-            $entityTrim,
-            $entityIdTrim,
-            $result,
-            $detailsJson,
-            $ip,
-            $ua,
-            $rid,
-            $methodTrim,
-            $duration
-        );
+        $proxyChainTrim = $proxyChain !== null ? substr($proxyChain, 0, 255) : null;
+        $proxyIndTrim   = $proxyInd   !== null ? substr($proxyInd,   0, 50)  : null;
+
+        if ($hasProxyCols) {
+            /* 14 placeholders → 14 type chars: 1×'i' (UserId)
+               + 12×'s' (Action / EntityType / EntityId / Result /
+               Details / IpAddress / IpProxyChain / ProxyVpnIndicator /
+               ProxyVpnDetail / UserAgent / RequestId / Method)
+               + 1×'i' (DurationMs).
+               #923 — was previously `'isssssssssssssi'` (15 chars,
+               one extra 's'), which made bind_param throw
+               `Number of elements in type definition string
+               doesn't match number of bind variables`. The catch at
+               the bottom of this function swallows the throw to an
+               error_log line, so every logActivity() call after the
+               proxy/VPN migration ran landed silently in the file
+               log instead of tblActivityLog — the audit trail went
+               dark from #919 deploy until #924 shipped.
+               #926 — defensive `bindParamSafe()` from db_mysql.php
+               throws a context-named RuntimeException ("bind_param
+               mismatch in logActivity (post-#919) INSERT: …") if
+               the type string and arg count ever drift again,
+               instead of mysqli's generic message that originally
+               masked the regression. */
+            bindParamSafe(
+                'logActivity (post-#919) INSERT', $stmt,
+                'issssssssssssi',
+                $resolvedUserId,
+                $actionTrim,
+                $entityTrim,
+                $entityIdTrim,
+                $result,
+                $detailsJson,
+                $ip,
+                $proxyChainTrim,
+                $proxyIndTrim,
+                $proxyDetailJson,
+                $ua,
+                $rid,
+                $methodTrim,
+                $duration
+            );
+        } else {
+            /* #926 — same defensive helper for the legacy 11-col
+               INSERT (pre-migration deploys). */
+            bindParamSafe(
+                'logActivity (legacy) INSERT', $stmt,
+                'isssssssssi',
+                $resolvedUserId,
+                $actionTrim,
+                $entityTrim,
+                $entityIdTrim,
+                $result,
+                $detailsJson,
+                $ip,
+                $ua,
+                $rid,
+                $methodTrim,
+                $duration
+            );
+        }
         $stmt->execute();
         $stmt->close();
         activityLogWriteCount($count + 1);
@@ -281,4 +373,484 @@ function logActivityError(
         ),
         'error'
     );
+}
+
+/* =========================================================================
+ * IP / PROXY / VPN RESOLUTION
+ *
+ * Behind any reverse proxy (Cloudflare, AWS ALB, nginx) REMOTE_ADDR
+ * is the proxy's IP, not the visitor's. The audit trail must record
+ * the real client so a curator triaging suspicious traffic isn't
+ * looking at one of three Cloudflare IPs for every request.
+ *
+ * Resolution chain (first match wins):
+ *   1. CF-Connecting-IP            — Cloudflare-fronted requests.
+ *      Trusted only when REMOTE_ADDR is in a Cloudflare IP range OR
+ *      we can detect the Cloudflare path another way (CF-Ray header).
+ *   2. X-Real-IP                   — common nginx reverse-proxy header.
+ *      Trusted only when REMOTE_ADDR looks like a private/loopback
+ *      address (the proxy and PHP are on the same host).
+ *   3. X-Forwarded-For             — generic proxy chain. First IP in
+ *      the chain is the original client; subsequent entries are
+ *      intermediaries. Same trust gate as X-Real-IP.
+ *   4. REMOTE_ADDR                 — direct connection, no proxy.
+ *
+ * Heuristic indicator (returned alongside the IP):
+ *   - 'cloudflare' — CF-Connecting-IP / CF-Ray present.
+ *   - 'xff'        — X-Forwarded-For present, no CF.
+ *   - 'datacentre' — REMOTE_ADDR in a known cloud datacentre range
+ *                    AND no proxy headers present (suggests a
+ *                    cloud-hosted client / scraper).
+ *   - 'tor'        — REMOTE_ADDR matches a TOR exit-node entry in
+ *                    tblIpReputation (populated by future external
+ *                    lookup; null indicator until then).
+ *   - 'vpn'        — external lookup classified as VPN (future).
+ *   - 'proxy'      — external lookup classified as generic proxy.
+ *   - 'none'       — no proxy/vpn signal detected.
+ * ========================================================================= */
+
+/**
+ * Resolve the real client IP, intermediate proxy chain, and a
+ * heuristic proxy/VPN indicator for the current PHP request.
+ *
+ * Returns a 4-tuple:
+ *   [string $clientIp, ?string $proxyChain, ?string $indicator, ?array $detail]
+ *
+ *   - $clientIp   — best-guess real client IP. Always non-empty for
+ *                   real HTTP requests; empty string only when
+ *                   REMOTE_ADDR itself is unset (CLI / cron).
+ *   - $proxyChain — comma-separated intermediate proxies (last hop
+ *                   = proxy that delivered the request to PHP).
+ *                   NULL when there's no proxy.
+ *   - $indicator  — one of cloudflare / xff / datacentre / tor / vpn
+ *                   / proxy / none, or NULL if pre-migration deploys
+ *                   want to skip writing the column entirely.
+ *   - $detail     — extra context for the JSON column: { source,
+ *                   provider?, score?, headers? }. NULL when there's
+ *                   nothing to record.
+ *
+ * Cached for the lifetime of the PHP request — every call from
+ * logActivity() within a single request shares one resolution.
+ *
+ * @return array{0:string,1:?string,2:?string,3:?array}
+ */
+function activityLogResolveClientIp(): array
+{
+    static $cache = null;
+    if ($cache !== null) return $cache;
+
+    $remote = (string)($_SERVER['REMOTE_ADDR'] ?? '');
+    /* Header reads — every header that any common proxy might
+       inject. Most are absent on most requests; this is a cheap
+       associative read so the size doesn't matter. */
+    $cfConnecting = (string)($_SERVER['HTTP_CF_CONNECTING_IP'] ?? '');
+    $cfRay        = (string)($_SERVER['HTTP_CF_RAY']           ?? '');
+    $xRealIp      = (string)($_SERVER['HTTP_X_REAL_IP']        ?? '');
+    $xff          = (string)($_SERVER['HTTP_X_FORWARDED_FOR']  ?? '');
+
+    $clientIp   = $remote;
+    $proxyChain = null;
+    $indicator  = null;
+    $detail     = null;
+
+    if ($cfConnecting !== '' && $cfRay !== '') {
+        /* Cloudflare-fronted: CF-Connecting-IP carries the original
+           client. The presence of CF-Ray confirms this path (a
+           spoofed CF-Connecting-IP without the matching Ray would
+           need to also forge Cloudflare's TLS cert chain — not the
+           same threat model as a header injection). */
+        $clientIp   = $cfConnecting;
+        $proxyChain = $remote;
+        $indicator  = 'cloudflare';
+        $detail     = [
+            'source'  => 'header',
+            'headers' => ['cf-connecting-ip' => true, 'cf-ray' => $cfRay],
+        ];
+    } elseif ($xff !== '' && _activityLogIsTrustedProxyHop($remote)) {
+        /* X-Forwarded-For from a trusted reverse proxy. Take the
+           first hop (the original client) and record the rest as
+           the proxy chain. */
+        $hops = array_map('trim', explode(',', $xff));
+        $hops = array_values(array_filter($hops, static fn($h) => $h !== ''));
+        if (!empty($hops)) {
+            $clientIp   = $hops[0];
+            $rest       = array_slice($hops, 1);
+            $rest[]     = $remote;
+            $proxyChain = implode(',', $rest);
+            $indicator  = 'xff';
+            $detail     = [
+                'source'  => 'header',
+                'headers' => ['x-forwarded-for' => $xff],
+            ];
+        }
+    } elseif ($xRealIp !== '' && _activityLogIsTrustedProxyHop($remote)) {
+        $clientIp   = $xRealIp;
+        $proxyChain = $remote;
+        $indicator  = 'xff';
+        $detail     = [
+            'source'  => 'header',
+            'headers' => ['x-real-ip' => $xRealIp],
+        ];
+    }
+
+    /* External / cache-backed lookup (TOR / VPN / datacentre / proxy
+       classification beyond what headers tell us). When the helper
+       returns a result, it OVERRIDES the header-derived indicator —
+       a request that came through Cloudflare AND a TOR exit on the
+       client side should be flagged 'tor', not 'cloudflare'. The
+       heuristic 'cloudflare' tag is preserved in the detail blob. */
+    $reputation = activityLogIpReputation($clientIp);
+    if ($reputation !== null) {
+        $indicator = $reputation['indicator'] ?? $indicator;
+        $detail    = array_merge($detail ?? [], [
+            'reputation_provider' => $reputation['provider'] ?? null,
+            'reputation_score'    => $reputation['score']    ?? null,
+            'reputation_source'   => $reputation['source']   ?? null,
+        ]);
+    }
+
+    /* Fall back to 'none' when every signal said clean — distinguishes
+       "we checked, no proxy" from "we never recorded an indicator on
+       this row" (legacy pre-migration). NULL stays NULL only when
+       the resolver was called pre-migration AND no header signal
+       fired AND the reputation cache returned nothing. */
+    if ($indicator === null) {
+        $indicator = 'none';
+    }
+
+    /* IP-format sanity: cap to the column width (45). For an
+       attacker-controlled header that smuggled a comma-separated
+       blob through some intermediate proxy that didn't strip it,
+       this prevents the cap from flooding the audit row. */
+    if (strlen($clientIp) > 45) {
+        $clientIp = substr($clientIp, 0, 45);
+    }
+
+    return $cache = [$clientIp, $proxyChain, $indicator, $detail];
+}
+
+/**
+ * Recognise a trusted reverse-proxy hop. Used by the IP resolver to
+ * decide whether to honour X-Forwarded-For / X-Real-IP from the
+ * given REMOTE_ADDR — those headers are attacker-controllable on
+ * any direct connection, so we ONLY trust them when the connecting
+ * peer is a known proxy.
+ *
+ * Trust rules (any one matches):
+ *   - Loopback (127.0.0.0/8, ::1) — local reverse proxy on the
+ *     same host (very common nginx → php-fpm setup).
+ *   - RFC 1918 private ranges — proxy on the same internal network
+ *     (typical containerised / k8s deployment).
+ *   - APP_CONFIG['trusted_proxies'] — admin-configured external
+ *     proxy IPs / CIDRs (out of scope for this PR; future-proofed).
+ */
+function _activityLogIsTrustedProxyHop(string $ip): bool
+{
+    if ($ip === '') return false;
+    /* Loopback */
+    if ($ip === '127.0.0.1' || $ip === '::1' || str_starts_with($ip, '127.')) return true;
+    /* RFC 1918 IPv4 private */
+    if (str_starts_with($ip, '10.')) return true;
+    if (str_starts_with($ip, '192.168.')) return true;
+    if (preg_match('/^172\.(1[6-9]|2[0-9]|3[0-1])\./', $ip)) return true;
+    /* Unique local IPv6 (fc00::/7) */
+    if (preg_match('/^f[cd][0-9a-f]{2}:/i', $ip)) return true;
+    return false;
+}
+
+/**
+ * Read the cached proxy/VPN classification for the given IP, or
+ * trigger the external lookup if configured + missing. Returns
+ * NULL when there's no cached entry AND no external lookup is
+ * configured — the resolver then falls back to header-only
+ * heuristics.
+ *
+ * Per-request memoisation so the same IP isn't re-queried on every
+ * logActivity() call within one request.
+ *
+ * @return array{indicator:string, provider:?string, score:?int, source:string}|null
+ */
+function activityLogIpReputation(string $ip): ?array
+{
+    static $cache = [];
+    if ($ip === '') return null;
+    if (array_key_exists($ip, $cache)) return $cache[$ip];
+
+    /* Cache table read. Returns the latest non-expired row. The
+       table itself ships with migrate-activity-log-proxy-vpn.php;
+       on pre-migration deploys the SELECT 500s and we degrade to
+       null. */
+    try {
+        $db = getDbMysqli();
+        $stmt = $db->prepare(
+            'SELECT Indicator, Provider, Score, Source
+               FROM tblIpReputation
+              WHERE IpAddress = ?
+                AND (ExpiresAt IS NULL OR ExpiresAt > NOW())
+              LIMIT 1'
+        );
+        $stmt->bind_param('s', $ip);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if ($row && !empty($row['Indicator'])) {
+            return $cache[$ip] = [
+                'indicator' => (string)$row['Indicator'],
+                'provider'  => $row['Provider'] !== null ? (string)$row['Provider'] : null,
+                'score'     => $row['Score']    !== null ? (int)$row['Score']       : null,
+                'source'    => (string)$row['Source'],
+            ];
+        }
+    } catch (\Throwable $_e) {
+        /* Pre-migration deploy or DB unreachable — fall through to
+           the external-lookup attempt and ultimately to null. */
+    }
+
+    /* External lookup (IPQualityScore / MaxMind / ipinfo). Disabled
+       by default — admin enables via APP_CONFIG['ip_reputation'].
+       The lookup is best-effort and writes through to tblIpReputation
+       on success so the cost is paid once per IP per TTL window. */
+    $result = _activityLogExternalIpLookup($ip);
+    if ($result !== null) {
+        return $cache[$ip] = $result;
+    }
+
+    return $cache[$ip] = null;
+}
+
+/**
+ * Stub for the external IP-reputation lookup. Reads
+ * APP_CONFIG['ip_reputation'] for a configured provider and credentials;
+ * returns NULL when nothing is configured (the default state — no
+ * external service is wired up yet, so this PR ships heuristic-only
+ * coverage).
+ *
+ * The follow-up integration will plug in IPQualityScore / MaxMind
+ * GeoIP2 Anonymous IP / ipinfo.io here. The function signature +
+ * return shape are fixed by this PR so the integration is a drop-in.
+ *
+ * @return array{indicator:string, provider:?string, score:?int, source:string}|null
+ */
+function _activityLogExternalIpLookup(string $ip): ?array
+{
+    $cfg = (defined('APP_CONFIG') && is_array(APP_CONFIG))
+        ? (APP_CONFIG['ip_reputation'] ?? null)
+        : null;
+    if (!is_array($cfg) || empty($cfg['enabled']) || empty($cfg['provider'])) {
+        return null;
+    }
+    /* Concrete providers will live in a separate ip_reputation.php
+       module so this file doesn't grow third-party HTTP clients.
+       Until then, return null and rely on the header heuristic. */
+    return null;
+}
+
+/* =========================================================================
+ * PER-REQUEST ACTIVITY LOG
+ *
+ * Per the user requirement: "every dynamic request should be logged,
+ * including 2xx successes — not just errors." Without this, the audit
+ * trail captured edits + auth events + exceptions but never the
+ * baseline "this user loaded this page at this time" record. With it,
+ * /manage/activity-log can answer questions like "when did this IP
+ * last hit /api?action=songs" or "show me every request from
+ * suspected-VPN clients in the past 7 days".
+ *
+ * Volume note: enabled on every entry point that calls
+ * installGlobalActivityLogHandlers(). Skipped on static assets
+ * (those don't reach PHP). For very chatty endpoints (range-byte
+ * media streaming, polling status endpoints) the row count climbs
+ * quickly — see project-rules.md retention policy for pruning.
+ * ========================================================================= */
+
+/**
+ * Register a shutdown handler that writes one tblActivityLog row per
+ * dynamic-PHP request, capturing the HTTP status code, method, URL
+ * path, duration, and IP/proxy classification.
+ *
+ * Action shape:
+ *   - 'request.success' for 2xx / 3xx
+ *   - 'request.failure' for 4xx
+ *   - 'request.error'   for 5xx
+ *
+ * EntityType = $source label (matches installGlobalActivityLogHandlers).
+ * EntityId   = empty string.
+ * Result     = success | failure | error (mirrors the HTTP class).
+ * Details    = { status, path, query, duration_ms }
+ *
+ * Idempotent — calling twice with the same source registers two
+ * shutdown handlers, but the second is a no-op because we record
+ * the row from the first. Callers should call this exactly once per
+ * entry point.
+ *
+ * @param string $source The same label used by
+ *                       installGlobalActivityLogHandlers — 'api',
+ *                       'index', 'editor_api', 'manage', 'og_image',
+ *                       'sitemap', 'song_media'.
+ */
+function installRequestActivityLogger(string $source): void
+{
+    static $installed = false;
+    if ($installed) return;
+    $installed = true;
+
+    $startedAt = microtime(true);
+    register_shutdown_function(function () use ($source, $startedAt): void {
+        try {
+            $status = http_response_code();
+            if ($status === false) $status = 200;
+            $statusInt = (int)$status;
+            $action = match (true) {
+                $statusInt >= 500 => 'request.error',
+                $statusInt >= 400 => 'request.failure',
+                default            => 'request.success',
+            };
+            $result = match (true) {
+                $statusInt >= 500 => 'error',
+                $statusInt >= 400 => 'failure',
+                default            => 'success',
+            };
+            $duration = (int)round((microtime(true) - $startedAt) * 1000);
+            $path = (string)($_SERVER['REQUEST_URI'] ?? '');
+            /* Strip query string for the `path` field; preserve in
+               its own field so common queries are filterable. */
+            $qpos  = strpos($path, '?');
+            $query = $qpos !== false ? substr($path, $qpos + 1) : '';
+            $path  = $qpos !== false ? substr($path, 0, $qpos)   : $path;
+
+            logActivity(
+                $action,
+                $source,
+                '',
+                [
+                    'status'      => $statusInt,
+                    'path'        => substr($path,  0, 255),
+                    'query'       => substr($query, 0, 255),
+                    'duration_ms' => $duration,
+                ],
+                $result,
+                null,
+                $duration
+            );
+        } catch (\Throwable $_e) {
+            /* Per-request logger must never compound an existing
+               failure. Best-effort. */
+        }
+    });
+}
+
+/**
+ * Install global PHP error handlers that mirror every uncaught
+ * \Throwable + every fatal-class PHP error into tblActivityLog.
+ *
+ * Without this, an uncaught exception or PHP fatal in any request
+ * never reaches the audit trail — only error_log catches it,
+ * which lives outside the curator-visible /manage/activity-log
+ * surface. Curators triaging a 500 should be able to find every
+ * incident from the same UI, regardless of whether the failing
+ * code happened to wrap itself in a try/catch.
+ *
+ * Two handlers are registered:
+ *   1. set_exception_handler — fires on any uncaught \Throwable.
+ *      Logs `uncaught.throwable` with class + message + file/line.
+ *   2. register_shutdown_function — fires on PHP fatals (parse,
+ *      out-of-memory, type-error during property init, etc.) that
+ *      don't surface as catchable throwables. Logs `fatal.php_error`.
+ *
+ * Both handlers are best-effort — wrapped in their own try/catch so
+ * a logging-time failure cannot compound the original error or stop
+ * the response from being emitted. The shutdown handler also
+ * cooperates with any prior shutdown handler (e.g. api.php's JSON
+ * 500 emitter) — order is "first registered, first run", so any
+ * earlier-registered response emitter still controls the body; we
+ * only add the audit row.
+ *
+ * Idempotent — calling twice replaces the previous handler with
+ * one that has the same source label, but doesn't double-log.
+ *
+ * @param string $source The `EntityType` to record. Use a stable
+ *                       identifier of the entry point so curators
+ *                       can filter — e.g. 'api', 'editor_api',
+ *                       'manage'. Anything ≤ 50 chars.
+ *
+ * @return void
+ */
+function installGlobalActivityLogHandlers(string $source): void
+{
+    /* Per-request shutdown logger — writes one Action='request.*'
+       row at end of every dynamic request. Installed alongside the
+       throwable/fatal handlers below so a single
+       installGlobalActivityLogHandlers() call covers both the
+       "every successful 2xx" and "every uncaught exception" cases.
+       Idempotent — see installRequestActivityLogger(). */
+    installRequestActivityLogger($source);
+
+    /* Probe the currently-registered exception handler so we can
+       chain to it — important on /api.php which registers its own
+       JSON-emitting handler EARLIER in the bootstrap. We swap a
+       temp closure in to read the previous handler back, then
+       restore so our real handler can wrap it. set_exception_handler
+       returns the prior handler (or null) when called. */
+    $prevExceptionHandler = set_exception_handler(static function (): void {});
+    restore_exception_handler();
+    set_exception_handler(function (\Throwable $e) use ($source, $prevExceptionHandler): void {
+        try {
+            logActivityError(
+                'uncaught.throwable',
+                $source,
+                '',
+                $e,
+                ['request_id' => activityLogRequestId()]
+            );
+        } catch (\Throwable $_) {
+            /* Logging itself failed — swallow so we still hand
+               off to whatever prior handler wanted to emit a
+               response. */
+        }
+        if ($prevExceptionHandler !== null) {
+            /* Hand control back to the prior handler so its
+               response-emission path runs unchanged. */
+            try {
+                ($prevExceptionHandler)($e);
+            } catch (\Throwable $_) { /* ignore */ }
+        } else {
+            /* No prior handler — re-throw so PHP's default kicks
+               in (logs to stderr / shows the configured error
+               page). Without this re-throw the request would
+               silently 200 with whatever partial body was buffered. */
+            error_log(
+                '[activity_log] uncaught throwable in ' . $source . ': '
+                . get_class($e) . ': ' . $e->getMessage()
+                . ' @ ' . basename($e->getFile()) . ':' . $e->getLine()
+            );
+        }
+    });
+
+    /* Shutdown handler for fatal-class errors (E_ERROR, E_PARSE,
+       E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR). These are NOT
+       catchable as throwables — they only surface via error_get_last
+       at shutdown. */
+    register_shutdown_function(function () use ($source): void {
+        $err = error_get_last();
+        $fatalMask = E_ERROR | E_PARSE | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR;
+        if (!$err || !($err['type'] & $fatalMask)) return;
+        try {
+            logActivity(
+                'fatal.php_error',
+                $source,
+                '',
+                [
+                    'message'    => (string)($err['message'] ?? ''),
+                    'file'       => basename((string)($err['file'] ?? '?')),
+                    'line'       => (int)($err['line'] ?? 0),
+                    'type'       => (int)($err['type'] ?? 0),
+                    'request_id' => activityLogRequestId(),
+                ],
+                'error'
+            );
+        } catch (\Throwable $_) {
+            /* Best-effort — a logging failure during shutdown
+               cannot be allowed to interfere with the response. */
+        }
+    });
 }

@@ -68,6 +68,13 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
    as anything in the /manage/ stack runs. Best-effort, never throws. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
           . DIRECTORY_SEPARATOR . 'activity_log.php';
+/* Mirror every uncaught \Throwable + PHP fatal across the entire
+   /manage/* admin surface into tblActivityLog. Every admin page
+   requires this auth bootstrap first, so installing the global
+   handler here covers all of them — schema-audit, organisations,
+   credit-people, songbooks, setup-database, etc. — without each
+   page having to remember to register its own. */
+installGlobalActivityLogHandlers('manage');
 
 /* =========================================================================
  * SESSION CONFIGURATION

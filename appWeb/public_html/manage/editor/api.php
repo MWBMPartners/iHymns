@@ -55,6 +55,19 @@ if (!$currentUser || !hasRole($currentUser['role'], 'editor')) {
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
+/* logActivity / logActivityError — needed by every action that
+   wants to write a tblActivityLog row (save_song, bulk_import_*,
+   load failure path). Was previously imported transitively in
+   some call sites and absent in others; pulling it here means
+   `function_exists('logActivity')` is always true inside this
+   endpoint and the helper is available unconditionally. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+/* Mirror every uncaught \Throwable + PHP fatal in any editor-API
+   case (save_song, bulk_import_*, typeaheads, load) into
+   tblActivityLog. Per-case try/catches still write their own
+   contextual rows — this is the safety net for failures that
+   escape them entirely. */
+installGlobalActivityLogHandlers('editor_api');
 
 /**
  * Cached check for the tblSongArtists table (#587). The table arrives
@@ -271,10 +284,52 @@ switch ($action) {
                whitespace inflates the 3,600-song payload by ~25% on
                the wire. */
             echo json_encode($fullData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
+            /* \Throwable (not \Exception) so PHP \Error subclasses —
+               TypeError, ValueError, mysqli_sql_exception edge cases
+               etc. — also land in the JSON 500 path instead of
+               escaping into an HTML fatal-error response that the
+               editor's toast can't read. */
             http_response_code(500);
-            error_log('[iHymns Editor] Failed to load song data: ' . $e->getMessage());
-            echo json_encode(['error' => 'Failed to load song data from database.']);
+            $logLine = sprintf(
+                '[iHymns Editor] Failed to load song data: %s: %s @ %s:%d',
+                get_class($e),
+                $e->getMessage(),
+                $e->getFile(),
+                $e->getLine()
+            );
+            error_log($logLine);
+
+            /* Persist the failure to tblActivityLog so the curator who
+               hit the 500 (and the curator triaging from the activity
+               log later) sees the same exception class + message +
+               file:line that the toast surfaces. Best-effort —
+               logActivityError swallows its own failures so a logging
+               outage can't compound the original 500. */
+            $stack = $e->getTraceAsString();
+            logActivityError(
+                'editor.load_failed',
+                'song_corpus',
+                '',
+                $e,
+                [
+                    /* Truncate the trace defensively — tblActivityLog.Details
+                       is JSON, so MySQL imposes its own size limit and a
+                       full PHP backtrace can blow past 64 KB on a deep
+                       call stack. 4 KB is plenty to identify the failing
+                       frame without flooding the table. */
+                    'trace' => mb_substr($stack, 0, 4096),
+                ]
+            );
+
+            /* Endpoint is editor+ gated (auth check at the top of this
+               file), so returning the real exception class + message
+               is safe and gives the toast something actionable. */
+            echo json_encode([
+                'error'   => 'Failed to load song data from database.',
+                'detail'  => get_class($e) . ': ' . $e->getMessage(),
+                'file'    => basename($e->getFile()) . ':' . $e->getLine(),
+            ]);
         }
         break;
 

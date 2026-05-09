@@ -140,15 +140,28 @@ function loadSongsFromURL(url) {
     /* Otherwise, try each candidate path in order until one succeeds. */
     var candidates = SONGS_URL_CANDIDATES.slice();
 
-    function tryNext() {
+    /* #925 — capture the most-recent candidate's error and surface it
+       in the final fallback toast. Pre-#925 the catch silently
+       discarded the error and tried the next candidate; if every
+       candidate failed (e.g. /api?action=load returns 500 with a real
+       exception), the curator only saw the bare "could not load from
+       any path" message and lost the diagnostic detail that the API
+       already returns in its `detail` field. */
+    function tryNext(lastErr) {
         if (candidates.length === 0) {
-            showToast('Could not load songs.json from any path. Use "Load JSON" to load manually.', 'warning');
+            var msg = 'Could not load songs.json from any path. Use "Load JSON" to load manually.';
+            if (lastErr && lastErr.message) {
+                msg += ' Last error: ' + lastErr.message;
+            }
+            showToast(msg, 'warning');
             return Promise.resolve();
         }
         var candidate = candidates.shift();
-        return _fetchAndParseSongs(candidate).catch(function () {
-            /* This path failed — try the next one */
-            return tryNext();
+        return _fetchAndParseSongs(candidate).catch(function (err) {
+            /* This path failed — try the next one, carrying the
+               error forward so we can surface it if every
+               candidate also fails. */
+            return tryNext(err);
         });
     }
 
@@ -167,9 +180,25 @@ function _fetchAndParseSongs(target) {
     /* Fetch the remote JSON file. */
     return fetch(target)
         .then(function (response) {
-            /* If the HTTP status indicates failure, throw so we land in .catch(). */
+            /* If the HTTP status indicates failure, try to read the
+               server's JSON error body so the toast shows the real
+               cause instead of a bare "HTTP 500". The editor's API
+               returns `{error, detail, file}` on the load path; older
+               / non-API fallback URLs (static songs.json) won't have
+               a body, so we fall through to the status-line message. */
             if (!response.ok) {
-                throw new Error('HTTP ' + response.status + ' ' + response.statusText);
+                return response.text().then(function (body) {
+                    var detail = '';
+                    try {
+                        var parsed = body ? JSON.parse(body) : null;
+                        if (parsed && typeof parsed === 'object') {
+                            detail = parsed.detail || parsed.error || '';
+                        }
+                    } catch (_e) { /* not JSON — ignore */ }
+                    var msg = 'HTTP ' + response.status + ' ' + response.statusText;
+                    if (detail) msg += ' — ' + detail;
+                    throw new Error(msg);
+                });
             }
             /* Parse the response body as JSON. */
             return response.json();

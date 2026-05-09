@@ -149,6 +149,12 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'card_layout.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+/* Mirror every uncaught \Throwable + PHP fatal into tblActivityLog
+   so curators reading /manage/activity-log see every server-side
+   incident, not just the ones that happen to be in a try/catch.
+   Chains to the JSON-emitting handler installed at the top of this
+   file — order is "log to activity, then hand to the JSON emitter". */
+installGlobalActivityLogHandlers('api');
 /* Shared songbook validators (#719 PR 2a). Same rules used by
    /manage/songbooks.php so a tweak to abbrev / colour / IETF-tag
    grammar lands on the web admin and the API surface in one go. */
