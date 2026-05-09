@@ -111,14 +111,37 @@ if (($_GET['export'] ?? '') === 'csv') {
        up. The legacy `CreatedAt` column is preserved for back-compat
        with any existing report tooling but should be considered
        deprecated — `CreatedAtUtc` is the new canonical value. */
-    fputcsv($out, [
+    /* New columns from migrate-activity-log-proxy-vpn.php — schema-
+       probe before SELECTing them so a pre-migration deploy keeps
+       exporting cleanly with the legacy header set. */
+    $hasProxyCols = false;
+    try {
+        $probe = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblActivityLog'
+                AND COLUMN_NAME  = 'ProxyVpnIndicator' LIMIT 1"
+        );
+        $probe->execute();
+        $hasProxyCols = (bool)$probe->get_result()->fetch_row();
+        $probe->close();
+    } catch (\Throwable $_e) { /* fall through to legacy export */ }
+
+    $headerRow = [
         'Id', 'CreatedAt', 'CreatedAtUtc', 'Username', 'Action', 'EntityType', 'EntityId',
         'Result', 'IpAddress', 'UserAgent', 'RequestId', 'Method', 'DurationMs', 'Details',
-    ]);
+    ];
+    if ($hasProxyCols) {
+        array_splice($headerRow, 9, 0, ['IpProxyChain', 'ProxyVpnIndicator', 'ProxyVpnDetail']);
+    }
+    fputcsv($out, $headerRow);
+    $proxyColsSql = $hasProxyCols
+        ? ', a.IpProxyChain, a.ProxyVpnIndicator, a.ProxyVpnDetail'
+        : '';
     $stmt = $db->prepare(
         'SELECT a.Id, a.CreatedAt, UNIX_TIMESTAMP(a.CreatedAt) AS CreatedAtTs,
                 u.Username, a.Action, a.EntityType, a.EntityId,
-                a.Result, a.IpAddress, a.UserAgent, a.RequestId, a.Method,
+                a.Result, a.IpAddress' . $proxyColsSql . ', a.UserAgent, a.RequestId, a.Method,
                 a.DurationMs, a.Details
            FROM tblActivityLog a
            LEFT JOIN tblUsers u ON u.Id = a.UserId
@@ -132,12 +155,22 @@ if (($_GET['export'] ?? '') === 'csv') {
     while ($row = $res->fetch_assoc()) {
         $ts        = (int)($row['CreatedAtTs'] ?? 0);
         $createdUtc = $ts > 0 ? gmdate('Y-m-d\TH:i:s\Z', $ts) : '';
-        fputcsv($out, [
+        $csvRow = [
             $row['Id'], $row['CreatedAt'], $createdUtc, $row['Username'] ?? '', $row['Action'],
             $row['EntityType'], $row['EntityId'], $row['Result'],
-            $row['IpAddress'], $row['UserAgent'] ?? '', $row['RequestId'] ?? '',
-            $row['Method'] ?? '', $row['DurationMs'] ?? '', $row['Details'] ?? '',
-        ]);
+            $row['IpAddress'],
+        ];
+        if ($hasProxyCols) {
+            $csvRow[] = $row['IpProxyChain']      ?? '';
+            $csvRow[] = $row['ProxyVpnIndicator'] ?? '';
+            $csvRow[] = $row['ProxyVpnDetail']    ?? '';
+        }
+        $csvRow[] = $row['UserAgent']  ?? '';
+        $csvRow[] = $row['RequestId']  ?? '';
+        $csvRow[] = $row['Method']     ?? '';
+        $csvRow[] = $row['DurationMs'] ?? '';
+        $csvRow[] = $row['Details']    ?? '';
+        fputcsv($out, $csvRow);
     }
     $stmt->close();
     fclose($out);
@@ -170,10 +203,29 @@ try {
        default = OS), so suffixing 'Z' on the string would lie when the
        server isn't in UTC. UNIX_TIMESTAMP() is always UTC seconds and
        side-steps that whole class of bug. */
+    /* Schema-probe for the proxy/VPN columns added by
+       migrate-activity-log-proxy-vpn.php. Pre-migration deploys
+       skip them entirely so the SELECT compiles. */
+    $hasProxyCols = false;
+    try {
+        $probe = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblActivityLog'
+                AND COLUMN_NAME  = 'ProxyVpnIndicator' LIMIT 1"
+        );
+        $probe->execute();
+        $hasProxyCols = (bool)$probe->get_result()->fetch_row();
+        $probe->close();
+    } catch (\Throwable $_e) { /* fall through */ }
+    $proxyColsSql = $hasProxyCols
+        ? ', a.IpProxyChain, a.ProxyVpnIndicator, a.ProxyVpnDetail'
+        : '';
+
     $stmt = $db->prepare(
         'SELECT a.Id, a.CreatedAt, UNIX_TIMESTAMP(a.CreatedAt) AS CreatedAtTs,
                 a.Action, a.EntityType, a.EntityId, a.Result,
-                a.Details, a.IpAddress, a.UserAgent, a.RequestId, a.Method,
+                a.Details, a.IpAddress' . $proxyColsSql . ', a.UserAgent, a.RequestId, a.Method,
                 a.DurationMs, u.Username
            FROM tblActivityLog a
            LEFT JOIN tblUsers u ON u.Id = a.UserId
@@ -445,6 +497,29 @@ $buildQuery = function (array $overrides = []) {
                             </td>
                             <td class="text-muted small">
                                 <?= htmlspecialchars((string)$r['IpAddress'], ENT_QUOTES, 'UTF-8') ?>
+                                <?php
+                                /* Proxy/VPN indicator badge — shown inline under
+                                   the IP when classification is something other
+                                   than 'none'. Pre-migration deploys (column not
+                                   selected) skip the badge entirely. */
+                                $pind = (string)($r['ProxyVpnIndicator'] ?? '');
+                                if ($pind !== '' && $pind !== 'none'):
+                                    $pcls = match ($pind) {
+                                        'vpn', 'tor'    => 'bg-warning text-dark',
+                                        'datacentre',
+                                        'proxy'         => 'bg-secondary',
+                                        'cloudflare',
+                                        'xff'           => 'bg-info text-dark',
+                                        default          => 'bg-secondary',
+                                    };
+                                    $ptitle = trim((string)($r['IpProxyChain'] ?? ''));
+                                ?>
+                                    <br>
+                                    <span class="badge <?= $pcls ?>"
+                                          title="<?= htmlspecialchars($ptitle !== '' ? "Proxy chain: $ptitle" : '', ENT_QUOTES, 'UTF-8') ?>">
+                                        <?= htmlspecialchars($pind, ENT_QUOTES, 'UTF-8') ?>
+                                    </span>
+                                <?php endif; ?>
                             </td>
                             <td>
                                 <a class="request-id-pill"
