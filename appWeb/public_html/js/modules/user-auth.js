@@ -232,17 +232,28 @@ export class UserAuth {
      * @param {string} username
      * @param {string} password
      * @param {string} displayName
-     * @returns {Promise<{ success: boolean, error?: string }>}
+     * @param {string} [email] Optional email — when present and an email
+     *        provider is configured server-side, the new account
+     *        receives a verification email (#898).
+     * @returns {Promise<{ success: boolean, error?: string,
+     *                     verificationEmailSent?: boolean,
+     *                     verificationEmailProvider?: string }>}
      */
-    async register(username, password, displayName) {
+    async register(username, password, displayName, email = '') {
+        const payload = { username, password, display_name: displayName };
+        if (email) payload.email = email;
         const r = await this._postJson(
             `${this.app.config.apiUrl}?action=auth_register`,
-            { username, password, display_name: displayName },
+            payload,
             'Registration failed.'
         );
         if (!r.ok) return { success: false, error: r.error };
         this.saveCredentials(r.data.token, r.data.user);
-        return { success: true };
+        return {
+            success: true,
+            verificationEmailSent:     !!r.data.verification_email_sent,
+            verificationEmailProvider: r.data.verification_email_provider || 'none',
+        };
     }
 
     /**
@@ -890,6 +901,18 @@ export class UserAuth {
                                 <input type="text" class="form-control" id="auth-username"
                                        placeholder="Username" autocomplete="username" required>
                             </div>
+                            <!-- Email is captured on signup so the new account can
+                                 receive a verification email when an email provider
+                                 is configured (#898). Optional today — accounts
+                                 created without one stay EmailVerified=0 and can
+                                 add an address later via account settings. -->
+                            <div class="mb-3" id="auth-email-group" style="display:${mode === 'register' ? '' : 'none'}">
+                                <label for="auth-email-register" class="form-label">
+                                    Email <small class="text-secondary">(optional, for password resets)</small>
+                                </label>
+                                <input type="email" class="form-control" id="auth-email-register"
+                                       placeholder="you@example.com" autocomplete="email">
+                            </div>
                             <div class="mb-3">
                                 <label for="auth-password" class="form-label">Password</label>
                                 <input type="password" class="form-control" id="auth-password"
@@ -1052,6 +1075,8 @@ export class UserAuth {
             modal.querySelector('#auth-modal-title').textContent = isReg ? 'Create Account' : 'Sign In';
             modal.querySelector('#auth-submit-text').textContent = isReg ? 'Create Account' : 'Sign In';
             modal.querySelector('#auth-display-name-group').style.display = isReg ? '' : 'none';
+            const emailGroup = modal.querySelector('#auth-email-group');
+            if (emailGroup) emailGroup.style.display = isReg ? '' : 'none';
             modal.querySelector('#auth-forgot-link-wrapper').style.display = isReg ? 'none' : '';
             modal.querySelector('#auth-toggle').innerHTML = isReg
                 ? 'Already have an account? <strong>Sign in</strong>'
@@ -1288,6 +1313,7 @@ export class UserAuth {
             const username = modal.querySelector('#auth-username')?.value.trim();
             const password = modal.querySelector('#auth-password')?.value;
             const displayName = modal.querySelector('#auth-display-name')?.value.trim();
+            const email = modal.querySelector('#auth-email-register')?.value.trim() || '';
             const errorEl = modal.querySelector('#auth-error');
             const spinner = modal.querySelector('#auth-submit-spinner');
             const submitBtn = modal.querySelector('#auth-submit-btn');
@@ -1305,7 +1331,7 @@ export class UserAuth {
 
             let result;
             if (currentMode === 'register') {
-                result = await this.register(username, password, displayName || username);
+                result = await this.register(username, password, displayName || username, email);
             } else {
                 result = await this.login(username, password);
             }
@@ -1317,10 +1343,19 @@ export class UserAuth {
                 bsModal.hide();
                 this._updateHeaderState();
                 this.app.setList?.renderSyncBar();
-                this.app.showToast(
-                    currentMode === 'register' ? 'Account created! Syncing setlists...' : 'Signed in! Syncing setlists...',
-                    'success', 3000
-                );
+                /* Honest toast (#898). When the user supplied an email
+                   AND the verification email actually went out, tell
+                   them to check it. Otherwise stay quiet about email
+                   so we never claim delivery that didn't happen. */
+                let toastMsg;
+                if (currentMode === 'register' && result.verificationEmailSent) {
+                    toastMsg = 'Account created! Check your email to verify your address. Syncing setlists...';
+                } else if (currentMode === 'register') {
+                    toastMsg = 'Account created! Syncing setlists...';
+                } else {
+                    toastMsg = 'Signed in! Syncing setlists...';
+                }
+                this.app.showToast(toastMsg, 'success', 4000);
                 this.triggerSetlistSync();
             } else {
                 errorEl.textContent = result.error;
