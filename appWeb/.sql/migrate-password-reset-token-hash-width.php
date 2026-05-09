@@ -14,55 +14,62 @@ declare(strict_types=1);
  *
  * @migration-modifies tblPasswordResetTokens.Token
  *
- * Pre-existing rows hold a 48-char prefix; lookups for them stay
- * functional (the lookup query also produces a 64-char hash, but the
- * primary-key match against an old row would now fail). Reset tokens
- * expire in 1 hour, so any in-flight tokens at deploy time naturally
- * cycle out within the hour and the issue self-resolves.
+ * Pre-existing rows hold a 48-char prefix; the post-ALTER lookup
+ * computes a 64-char hash that won't match a 48-char-prefix row.
+ * Reset tokens expire in 1 hour, so any in-flight tokens at deploy
+ * time naturally cycle out within the hour and the issue self-resolves.
  *
  * Idempotent — re-running is a no-op when the column is already wide.
  *
  * USAGE:
  *   CLI:  php appWeb/.sql/migrate-password-reset-token-hash-width.php
- *   Web:  /manage/setup-database -> "Password Reset Token Hash Width" button
+ *   Web:  /manage/setup-database -> "Password Reset Token Hash Width (#898 follow-up)" button
  *
  * @requires PHP 8.1+ with mysqli extension
  */
 
-$isCli = (php_sapi_name() === 'cli');
-
-if (!$isCli && !defined('IHYMNS_SETUP_DASHBOARD')) {
-    header('Content-Type: text/plain; charset=UTF-8');
-    header('X-Content-Type-Options: nosniff');
-    header('Cache-Control: no-store');
+if (PHP_SAPI === 'cli') {
+    if (!function_exists('getDbMysqli')) {
+        require_once dirname(__DIR__) . '/public_html/includes/db_mysql.php';
+    }
+    $isCli = true;
+} else {
+    if (!defined('IHYMNS_SETUP_DASHBOARD')) {
+        if (!function_exists('isAuthenticated')) {
+            require_once dirname(__DIR__) . '/public_html/manage/includes/auth.php';
+        }
+        if (!isAuthenticated()) {
+            http_response_code(401);
+            exit('Authentication required.');
+        }
+        $u = getCurrentUser();
+        if (!$u || $u['role'] !== 'global_admin') {
+            http_response_code(403);
+            exit('Global admin required.');
+        }
+    }
+    if (!function_exists('getDbMysqli')) {
+        require_once dirname(__DIR__) . '/public_html/includes/db_mysql.php';
+    }
+    $isCli = false;
 }
 
-function _migPwResetWidth_output(string $msg): void {
+function _migPwResetWidth_out(string $line): void
+{
     global $isCli;
-    echo $msg . ($isCli ? "\n" : "<br>\n");
-    if (!$isCli) flush();
+    echo $line . ($isCli ? "\n" : "<br>\n");
+    if ($isCli) flush();
 }
 
-$credFile = dirname(__DIR__) . DIRECTORY_SEPARATOR . '.auth' . DIRECTORY_SEPARATOR . 'db_credentials.php';
-if (!file_exists($credFile)) {
-    _migPwResetWidth_output('ERROR: MySQL credentials not found. Run install.php first.');
-    return;
-}
-require_once $credFile;
+_migPwResetWidth_out('Password Reset Token Hash Width migration starting (#898 follow-up)…');
 
-_migPwResetWidth_output('');
-_migPwResetWidth_output('=== iHymns - Password Reset Token Hash Width Migration (#898 follow-up) ===');
-_migPwResetWidth_output('');
-
-$mysqli = new mysqli(MYSQL_HOST, MYSQL_USER, MYSQL_PASS, MYSQL_DB);
-if ($mysqli->connect_errno) {
-    _migPwResetWidth_output('ERROR: MySQL connection failed: ' . $mysqli->connect_error);
-    return;
+$mysqli = getDbMysqli();
+if (!$mysqli) {
+    throw new \RuntimeException('Could not connect to database.');
 }
-$mysqli->set_charset('utf8mb4');
 
 /* Probe the current column width before touching it. */
-$probe = $mysqli->query(
+$stmt = $mysqli->prepare(
     "SELECT DATA_TYPE, CHARACTER_MAXIMUM_LENGTH
        FROM INFORMATION_SCHEMA.COLUMNS
       WHERE TABLE_SCHEMA = DATABASE()
@@ -70,41 +77,35 @@ $probe = $mysqli->query(
         AND COLUMN_NAME  = 'Token'
       LIMIT 1"
 );
-$row = $probe ? $probe->fetch_assoc() : null;
-if ($probe) { $probe->close(); }
+$stmt->execute();
+$row = $stmt->get_result()->fetch_assoc();
+$stmt->close();
 
 if (!$row) {
-    _migPwResetWidth_output('SKIP: tblPasswordResetTokens.Token column not found '
-                          . '(table may not exist yet — run install.php first).');
-    $mysqli->close();
+    _migPwResetWidth_out('[skip] tblPasswordResetTokens.Token column not found '
+                       . '(table may not exist yet — run install.php first).');
+    _migPwResetWidth_out('Password Reset Token Hash Width migration finished (#898 follow-up).');
     return;
 }
 
 $len  = (int)($row['CHARACTER_MAXIMUM_LENGTH'] ?? 0);
 $type = strtolower((string)$row['DATA_TYPE']);
 if ($len >= 64 && $type === 'char') {
-    _migPwResetWidth_output('SKIP: tblPasswordResetTokens.Token is already CHAR(64) — no change needed.');
-    _migPwResetWidth_output('');
-    _migPwResetWidth_output('Migration complete (no changes needed).');
-    $mysqli->close();
+    _migPwResetWidth_out('[skip] tblPasswordResetTokens.Token is already CHAR(64).');
+    _migPwResetWidth_out('Password Reset Token Hash Width migration finished (#898 follow-up).');
     return;
 }
 
-_migPwResetWidth_output("Current column: {$type}({$len}) — widening to CHAR(64)...");
+_migPwResetWidth_out("Current column: {$type}({$len}) — widening to CHAR(64)…");
 
 if (!$mysqli->query('ALTER TABLE tblPasswordResetTokens MODIFY Token CHAR(64) NOT NULL')) {
-    _migPwResetWidth_output('ERROR: ALTER TABLE failed: ' . $mysqli->error);
-    $mysqli->close();
-    return;
+    throw new \RuntimeException(
+        'ALTER TABLE tblPasswordResetTokens MODIFY Token CHAR(64) failed: ' . $mysqli->error
+    );
 }
 
-_migPwResetWidth_output('MODIFIED: tblPasswordResetTokens.Token -> CHAR(64) NOT NULL');
-_migPwResetWidth_output('');
-_migPwResetWidth_output('Note: any password-reset tokens created before this migration ran');
-_migPwResetWidth_output('hold a 48-char prefix and will fail to validate. They expire in 1');
-_migPwResetWidth_output('hour, so any user who started a reset just before deploy needs to');
-_migPwResetWidth_output('request a fresh link.');
-_migPwResetWidth_output('');
-_migPwResetWidth_output('Migration complete.');
-
-$mysqli->close();
+_migPwResetWidth_out('[add ] tblPasswordResetTokens.Token -> CHAR(64) NOT NULL.');
+_migPwResetWidth_out('Note: any password-reset tokens created before this migration ran');
+_migPwResetWidth_out('hold a 48-char prefix and will fail to validate. They expire in 1');
+_migPwResetWidth_out('hour, so any user mid-reset needs to request a fresh link.');
+_migPwResetWidth_out('Password Reset Token Hash Width migration finished (#898 follow-up).');
