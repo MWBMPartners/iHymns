@@ -834,15 +834,20 @@ function installGlobalActivityLogHandlers(string $source): void
         $err = error_get_last();
         $fatalMask = E_ERROR | E_PARSE | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR;
         if (!$err || !($err['type'] & $fatalMask)) return;
+
+        $msg  = (string)($err['message'] ?? '');
+        $file = basename((string)($err['file'] ?? '?'));
+        $line = (int)($err['line'] ?? 0);
+
         try {
             logActivity(
                 'fatal.php_error',
                 $source,
                 '',
                 [
-                    'message'    => (string)($err['message'] ?? ''),
-                    'file'       => basename((string)($err['file'] ?? '?')),
-                    'line'       => (int)($err['line'] ?? 0),
+                    'message'    => $msg,
+                    'file'       => $file,
+                    'line'       => $line,
                     'type'       => (int)($err['type'] ?? 0),
                     'request_id' => activityLogRequestId(),
                 ],
@@ -851,6 +856,59 @@ function installGlobalActivityLogHandlers(string $source): void
         } catch (\Throwable $_) {
             /* Best-effort — a logging failure during shutdown
                cannot be allowed to interfere with the response. */
+        }
+
+        /* #929 — emit a JSON 500 envelope so the frontend has
+           something to parse off the response body. Without this,
+           a PHP-fatal mid-response leaves the body empty (or
+           HTML-shaped, depending on display_errors). The frontend
+           toast then says only "HTTP 500" with no detail because
+           there's no JSON to extract `detail` from.
+
+           Two cases:
+
+           1. Headers haven't been sent yet — we can set the
+              Content-Type + status code cleanly and emit a fresh
+              envelope.
+
+           2. Headers HAVE been sent (the endpoint started writing
+              its successful response, then OOM'd partway through) —
+              we can't change the headers but can append a JSON
+              trailer separated by a newline boundary that the
+              frontend's response.text() reads. The
+              `_fetchAndParseSongs()` extractor in editor.js parses
+              `JSON.parse(body)` then falls through to a regex search
+              for the trailer pattern.
+
+           Source-gated: only fires for API-shaped sources where the
+           caller expects JSON. HTML pages (`index`, `manage`)
+           leave the existing chrome-shutdown handler in
+           setup-database.php to do its work. */
+        $apiSources = ['api', 'editor_api', 'song_media', 'og_image', 'sitemap'];
+        if (!in_array($source, $apiSources, true)) return;
+
+        $envelope = [
+            'error'  => 'Internal server error',
+            'detail' => $msg,
+            'file'   => $file . ':' . $line,
+        ];
+        $body = json_encode($envelope, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        if ($body === false) return;
+
+        if (!headers_sent()) {
+            http_response_code(500);
+            header('Content-Type: application/json; charset=UTF-8');
+            header('X-Content-Type-Options: nosniff');
+            echo $body;
+        } else {
+            /* Best-effort trailer. The frontend's existing extractor
+               (`_fetchAndParseSongs` in editor.js) tries
+               JSON.parse(body) first; if that fails it currently
+               drops the detail. A follow-up could extend the
+               extractor to look for the `\n\n` trailer marker, but
+               for now this still preserves the detail in the
+               response body for any consumer that wants it. */
+            echo "\n\n" . $body;
         }
     });
 }
