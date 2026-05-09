@@ -55,6 +55,13 @@ if (!$currentUser || !hasRole($currentUser['role'], 'editor')) {
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
+/* logActivity / logActivityError — needed by every action that
+   wants to write a tblActivityLog row (save_song, bulk_import_*,
+   load failure path). Was previously imported transitively in
+   some call sites and absent in others; pulling it here means
+   `function_exists('logActivity')` is always true inside this
+   endpoint and the helper is available unconditionally. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
 
 /**
  * Cached check for the tblSongArtists table (#587). The table arrives
@@ -286,6 +293,29 @@ switch ($action) {
                 $e->getLine()
             );
             error_log($logLine);
+
+            /* Persist the failure to tblActivityLog so the curator who
+               hit the 500 (and the curator triaging from the activity
+               log later) sees the same exception class + message +
+               file:line that the toast surfaces. Best-effort —
+               logActivityError swallows its own failures so a logging
+               outage can't compound the original 500. */
+            $stack = $e->getTraceAsString();
+            logActivityError(
+                'editor.load_failed',
+                'song_corpus',
+                '',
+                $e,
+                [
+                    /* Truncate the trace defensively — tblActivityLog.Details
+                       is JSON, so MySQL imposes its own size limit and a
+                       full PHP backtrace can blow past 64 KB on a deep
+                       call stack. 4 KB is plenty to identify the failing
+                       frame without flooding the table. */
+                    'trace' => mb_substr($stack, 0, 4096),
+                ]
+            );
+
             /* Endpoint is editor+ gated (auth check at the top of this
                file), so returning the real exception class + message
                is safe and gives the toast something actionable. */
