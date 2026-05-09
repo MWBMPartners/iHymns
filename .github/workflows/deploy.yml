@@ -131,6 +131,19 @@ jobs:
             echo "Full deploy requested via [deploy all]"
             echo "has_changes=true" >> $GITHUB_OUTPUT
             echo "full_deploy=true" >> $GITHUB_OUTPUT
+            # Drop --only-newer so lftp mirror compares size+content
+            # rather than mtime — mtime alone is unreliable in CI
+            # because actions/checkout sets every file's mtime to the
+            # checkout time, which can be EARLIER than the remote's
+            # prior-deploy mtime if the previous deploy ran later
+            # than this one's checkout step. That's the failure mode
+            # that left #919's setup-database.php diff stranded on
+            # the runner during deploy 280 even though the diff
+            # itself was real (the file got [deploy all]'d in #920
+            # and STILL didn't upload because that flag was being
+            # ignored). With --only-newer dropped, lftp re-uploads
+            # any file whose size or content differs.
+            echo "mirror_newer_flag=" >> $GITHUB_OUTPUT
           else
             # Check last 5 commits for changes in the source directory OR
             # the sibling directories we also deploy (.sql, .auth).
@@ -140,10 +153,12 @@ jobs:
             if [[ -z "$CHANGED" ]]; then
               echo "has_changes=false" >> $GITHUB_OUTPUT
               echo "full_deploy=false" >> $GITHUB_OUTPUT
+              echo "mirror_newer_flag=--only-newer" >> $GITHUB_OUTPUT
               echo "No deployable files changed in $SOURCE_DIR"
             else
               echo "has_changes=true" >> $GITHUB_OUTPUT
               echo "full_deploy=false" >> $GITHUB_OUTPUT
+              echo "mirror_newer_flag=--only-newer" >> $GITHUB_OUTPUT
               echo "Changed files:"
               echo "$CHANGED"
             fi
@@ -318,7 +333,7 @@ jobs:
           cat > /tmp/lftp_script.txt <<LFTP_EOF
           set sftp:connect-program "ssh -o StrictHostKeyChecking=no -i $HOME/.ssh/deploy_key -p ${SFTP_PORT}"
           open sftp://${SFTP_USER}@${SFTP_HOST}:${SFTP_PORT}
-          mirror --reverse --delete --verbose --only-newer --no-empty-dirs $LFTP_EXCLUDES ${SOURCE_DIR} ${REMOTE_PATH}
+          mirror --reverse --delete --verbose ${{ steps.changes.outputs.mirror_newer_flag }} --no-empty-dirs $LFTP_EXCLUDES ${SOURCE_DIR} ${REMOTE_PATH}
           bye
           LFTP_EOF
           lftp -f /tmp/lftp_script.txt
@@ -336,7 +351,7 @@ jobs:
         run: |
           lftp -u "${SFTP_USER},${SFTP_PASS}" \
             -e "set sftp:auto-confirm yes; set ssl:verify-certificate no; \
-            mirror --reverse --delete --verbose --only-newer --no-empty-dirs \
+            mirror --reverse --delete --verbose ${{ steps.changes.outputs.mirror_newer_flag }} --no-empty-dirs \
             $LFTP_EXCLUDES \
             ${SOURCE_DIR} ${REMOTE_PATH}; bye" \
             "sftp://${SFTP_HOST}:${SFTP_PORT}"
@@ -394,7 +409,7 @@ jobs:
           cat > /tmp/lftp_private.txt <<LFTP_EOF
           set sftp:connect-program "ssh -o StrictHostKeyChecking=no -i $HOME/.ssh/deploy_key -p ${SFTP_PORT}"
           open sftp://${SFTP_USER}@${SFTP_HOST}:${SFTP_PORT}
-          mirror --reverse --delete --verbose --only-newer --no-empty-dirs $LFTP_EXCLUDES appWeb/private_html/ ${REMOTE_PATH}
+          mirror --reverse --delete --verbose ${{ steps.changes.outputs.mirror_newer_flag }} --no-empty-dirs $LFTP_EXCLUDES appWeb/private_html/ ${REMOTE_PATH}
           bye
           LFTP_EOF
           lftp -f /tmp/lftp_private.txt
@@ -419,7 +434,7 @@ jobs:
           fi
           lftp -u "${SFTP_USER},${SFTP_PASS}" \
             -e "set sftp:auto-confirm yes; set ssl:verify-certificate no; \
-            mirror --reverse --delete --verbose --only-newer --no-empty-dirs \
+            mirror --reverse --delete --verbose ${{ steps.changes.outputs.mirror_newer_flag }} --no-empty-dirs \
             $LFTP_EXCLUDES \
             appWeb/private_html/ ${REMOTE_PATH}; bye" \
             "sftp://${SFTP_HOST}:${SFTP_PORT}"
@@ -450,7 +465,7 @@ jobs:
           cat > /tmp/lftp_datashare.txt <<LFTP_EOF
           set sftp:connect-program "ssh -o StrictHostKeyChecking=no -i $HOME/.ssh/deploy_key -p ${SFTP_PORT}"
           open sftp://${SFTP_USER}@${SFTP_HOST}:${SFTP_PORT}
-          mirror --reverse --verbose --only-newer --no-empty-dirs $LFTP_EXCLUDES appWeb/data_share/ ${DATA_SHARE_PATH}
+          mirror --reverse --verbose ${{ steps.changes.outputs.mirror_newer_flag }} --no-empty-dirs $LFTP_EXCLUDES appWeb/data_share/ ${DATA_SHARE_PATH}
           bye
           LFTP_EOF
           lftp -f /tmp/lftp_datashare.txt
@@ -470,7 +485,7 @@ jobs:
           echo "Deploying data_share to: $DATA_SHARE_PATH"
           lftp -u "${SFTP_USER},${SFTP_PASS}" \
             -e "set sftp:auto-confirm yes; set ssl:verify-certificate no; \
-            mirror --reverse --verbose --only-newer --no-empty-dirs \
+            mirror --reverse --verbose ${{ steps.changes.outputs.mirror_newer_flag }} --no-empty-dirs \
             $LFTP_EXCLUDES \
             appWeb/data_share/ ${DATA_SHARE_PATH}; bye" \
             "sftp://${SFTP_HOST}:${SFTP_PORT}"
@@ -499,7 +514,7 @@ jobs:
           cat > /tmp/lftp_sql.txt <<LFTP_EOF
           set sftp:connect-program "ssh -o StrictHostKeyChecking=no -i $HOME/.ssh/deploy_key -p ${SFTP_PORT}"
           open sftp://${SFTP_USER}@${SFTP_HOST}:${SFTP_PORT}
-          mirror --reverse --delete --verbose --only-newer --no-empty-dirs $LFTP_EXCLUDES appWeb/.sql/ ${SQL_PATH}
+          mirror --reverse --delete --verbose ${{ steps.changes.outputs.mirror_newer_flag }} --no-empty-dirs $LFTP_EXCLUDES appWeb/.sql/ ${SQL_PATH}
           bye
           LFTP_EOF
           lftp -f /tmp/lftp_sql.txt
@@ -519,7 +534,7 @@ jobs:
           echo "Deploying .sql to: $SQL_PATH"
           lftp -u "${SFTP_USER},${SFTP_PASS}" \
             -e "set sftp:auto-confirm yes; set ssl:verify-certificate no; \
-            mirror --reverse --delete --verbose --only-newer --no-empty-dirs \
+            mirror --reverse --delete --verbose ${{ steps.changes.outputs.mirror_newer_flag }} --no-empty-dirs \
             $LFTP_EXCLUDES \
             appWeb/.sql/ ${SQL_PATH}; bye" \
             "sftp://${SFTP_HOST}:${SFTP_PORT}"
@@ -550,7 +565,7 @@ jobs:
           cat > /tmp/lftp_auth.txt <<LFTP_EOF
           set sftp:connect-program "ssh -o StrictHostKeyChecking=no -i $HOME/.ssh/deploy_key -p ${SFTP_PORT}"
           open sftp://${SFTP_USER}@${SFTP_HOST}:${SFTP_PORT}
-          mirror --reverse --verbose --only-newer --no-empty-dirs --exclude ^db_credentials\.php$ $LFTP_EXCLUDES appWeb/.auth/ ${AUTH_PATH}
+          mirror --reverse --verbose ${{ steps.changes.outputs.mirror_newer_flag }} --no-empty-dirs --exclude ^db_credentials\.php$ $LFTP_EXCLUDES appWeb/.auth/ ${AUTH_PATH}
           bye
           LFTP_EOF
           lftp -f /tmp/lftp_auth.txt
@@ -570,7 +585,7 @@ jobs:
           echo "Deploying .auth to: $AUTH_PATH (excluding db_credentials.php)"
           lftp -u "${SFTP_USER},${SFTP_PASS}" \
             -e "set sftp:auto-confirm yes; set ssl:verify-certificate no; \
-            mirror --reverse --verbose --only-newer --no-empty-dirs \
+            mirror --reverse --verbose ${{ steps.changes.outputs.mirror_newer_flag }} --no-empty-dirs \
             --exclude ^db_credentials\.php$ $LFTP_EXCLUDES \
             appWeb/.auth/ ${AUTH_PATH}; bye" \
             "sftp://${SFTP_HOST}:${SFTP_PORT}"
