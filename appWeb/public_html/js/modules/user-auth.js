@@ -596,6 +596,137 @@ export class UserAuth {
     }
 
     /* =====================================================================
+     * EMAIL-LINK URL PARAMS (#898 follow-up)
+     * The transactional emails carry click-throughs of the form
+     *   /login?token=<48hex>          (magic-link sign-in)
+     *   /login?reset_token=<48hex>    (forgot-password reset)
+     *   /login?verify_token=<48hex>   (post-signup verification)
+     * Without a client-side handler these links just land on the home
+     * page and the user has to copy/paste manually. This consumer
+     * detects each variant on boot, dispatches the matching API call,
+     * surfaces a result toast, and strips the param from the URL via
+     * history.replaceState so a refresh won't re-fire it.
+     * ===================================================================== */
+
+    /**
+     * Inspect the current URL, act on any auth-link query param, and
+     * scrub it from the address bar. Best-effort — silent on no match,
+     * never throws so a malformed URL can't take the page down.
+     */
+    async _consumeAuthUrlParams() {
+        let params;
+        try {
+            params = new URL(window.location.href).searchParams;
+        } catch (_e) {
+            return;
+        }
+        const magicToken  = (params.get('token')         || '').trim();
+        const resetToken  = (params.get('reset_token')   || '').trim();
+        const verifyToken = (params.get('verify_token')  || '').trim();
+        if (!magicToken && !resetToken && !verifyToken) return;
+
+        /* Drop the consumed param(s) from the address bar before any
+           network call so a back-button or refresh doesn't replay it
+           (single-use tokens would already be Used by then; keeping
+           the param visible would only cause a confusing
+           "invalid token" toast on the second hit). */
+        const stripped = new URL(window.location.href);
+        ['token', 'reset_token', 'verify_token'].forEach(p => stripped.searchParams.delete(p));
+        try {
+            window.history.replaceState({}, '', stripped.toString());
+        } catch (_e) { /* ignore — replaceState is fine on https origins */ }
+
+        if (verifyToken) {
+            await this._handleVerifyEmailToken(verifyToken);
+            return;
+        }
+        if (resetToken) {
+            this._handleResetTokenLink(resetToken);
+            return;
+        }
+        if (magicToken) {
+            await this._handleMagicLinkToken(magicToken);
+            return;
+        }
+    }
+
+    async _handleVerifyEmailToken(token) {
+        try {
+            const r = await fetch(
+                `${this.app.config.apiUrl}?action=auth_verify_email&token=${encodeURIComponent(token)}`,
+                { method: 'GET', headers: { 'X-Requested-With': 'XMLHttpRequest' } }
+            );
+            const data = await r.json().catch(() => ({}));
+            if (r.ok && data.ok) {
+                this.app.showToast?.('Email address verified. Thanks!', 'success', 4000);
+            } else {
+                this.app.showToast?.(
+                    data.error || 'Verification link is invalid or has expired.',
+                    'warning', 5000
+                );
+            }
+        } catch {
+            this.app.showToast?.('Could not verify email — network error.', 'warning', 4000);
+        }
+    }
+
+    async _handleMagicLinkToken(token) {
+        try {
+            const r = await fetch(`${this.app.config.apiUrl}?action=auth_email_login_verify`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                body: JSON.stringify({ token }),
+            });
+            const data = await r.json().catch(() => ({}));
+            if (r.ok && data.token && data.user) {
+                this.saveCredentials(data.token, data.user);
+                this._updateHeaderState();
+                this.app.setList?.renderSyncBar();
+                this.app.showToast?.('Signed in! Syncing setlists...', 'success', 3000);
+                this.triggerSetlistSync();
+            } else {
+                this.app.showToast?.(
+                    data.error || 'Sign-in link is invalid or has expired. Please request a new one.',
+                    'warning', 5000
+                );
+            }
+        } catch {
+            this.app.showToast?.('Could not complete sign-in — network error.', 'warning', 4000);
+        }
+    }
+
+    /**
+     * Reset-password links open the auth modal in forgot-password
+     * mode with the token pre-filled, so the user only has to type
+     * their new password. Mirrors the flow that runs after a
+     * successful "Send Reset Token" submission.
+     */
+    _handleResetTokenLink(token) {
+        this.showAuthModal('login');
+        /* showAuthModal builds the DOM synchronously; the form
+           elements are present immediately. Defer one tick so the
+           Bootstrap modal's show transition doesn't fight the
+           focus call. */
+        setTimeout(() => {
+            const modal = document.getElementById('user-auth-modal');
+            if (!modal) return;
+            modal.querySelector('#auth-form')?.style.setProperty('display', 'none');
+            modal.querySelector('#auth-toggle')?.style.setProperty('display', 'none');
+            modal.querySelector('#auth-forgot-link-wrapper')?.style.setProperty('display', 'none');
+            modal.querySelector('#auth-email-toggle-wrapper')?.style.setProperty('display', 'none');
+            modal.querySelector('#auth-forgot-section')?.classList.remove('d-none');
+            modal.querySelector('#auth-forgot-form')?.classList.add('d-none');
+            const resetForm = modal.querySelector('#auth-reset-form');
+            if (resetForm) {
+                resetForm.classList.remove('d-none');
+                const tokenInput = modal.querySelector('#auth-reset-token');
+                if (tokenInput) tokenInput.value = token;
+                modal.querySelector('#auth-reset-password')?.focus();
+            }
+        }, 50);
+    }
+
+    /* =====================================================================
      * HEADER USER MENU — Toggle logged-in / logged-out state
      * ===================================================================== */
 
@@ -606,6 +737,12 @@ export class UserAuth {
      */
     initUserMenu() {
         this._updateHeaderState();
+
+        /* #898 follow-up — auto-consume any /login?{token,reset_token,
+           verify_token}=... params landed via a transactional email.
+           Fire-and-forget so the rest of the menu wires up regardless
+           of whether the click-through has already been used. */
+        this._consumeAuthUrlParams().catch(() => { /* non-fatal */ });
 
         /* Refresh cached user info + bump the server-side sliding expiry
            once per boot (#390). Fire-and-forget: never blocks the UI, and
