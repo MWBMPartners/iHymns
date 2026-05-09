@@ -273,6 +273,17 @@ switch ($action) {
      * LOAD — Read all song data from MySQL and return as JSON
      * ----------------------------------------------------------------- */
     case 'load':
+        /* #929 — bump memory_limit for this admin-only bulk-corpus
+           endpoint. SongData::exportAsJson() builds the entire
+           ~12,370-song corpus as an in-memory PHP array (with
+           components, tags, alt titles, external links, works,
+           media) before json_encode, which crosses PHP's default
+           128 MB limit on the live catalogue. Bumping to 512 MB
+           gives ~5x headroom. The endpoint is auth-gated (top of
+           this file) and admin-only, so the resource cost isn't
+           curl-able anonymously. The longer-term fix is streaming
+           JSON or paginating; tracked as Phase C in #929. */
+        @ini_set('memory_limit', '512M');
         try {
             $songData = new SongData();
             $fullData = $songData->exportAsJson();

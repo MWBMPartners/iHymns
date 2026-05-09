@@ -762,6 +762,13 @@ if ($action !== null) {
          * Includes ETag for efficient browser caching.
          * ----------------------------------------------------------------- */
         case 'songs_json':
+            /* #929 — same memory bump as the editor's `?action=load`.
+               This endpoint serves the corpus to the public PWA
+               (cached for offline) and to native clients; on the
+               ~12,370-song catalogue it crosses PHP's default 128 MB.
+               Phase C in #929 tracks the structural fix (streaming
+               or pagination); 512 MB unblocks the catalogue today. */
+            @ini_set('memory_limit', '512M');
             $jsonData = json_encode(
                 $songData->exportAsJson(),
                 JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
