@@ -28,48 +28,69 @@ declare(strict_types=1);
  * the helper changes deployed leaves new rows unhashed; running the
  * helper changes without this leaves old rows that lookups can't
  * match (they expire in 10 min anyway). Apply the migration as part
- * of the same deploy. (#898 follow-up)
+ * of the same deploy.
  *
  * @migration-modifies tblEmailLoginTokens (drops unused rows)
  *
  * USAGE:
  *   CLI:  php appWeb/.sql/migrate-email-login-token-hashing.php
- *   Web:  /manage/setup-database -> "Email Login Token Hashing" button
+ *   Web:  /manage/setup-database -> "Email Login Token Hashing (#898 follow-up)" button
  *
  * @requires PHP 8.1+ with mysqli extension
  */
 
-$isCli = (php_sapi_name() === 'cli');
-
-if (!$isCli && !defined('IHYMNS_SETUP_DASHBOARD')) {
-    header('Content-Type: text/plain; charset=UTF-8');
-    header('X-Content-Type-Options: nosniff');
-    header('Cache-Control: no-store');
+if (PHP_SAPI === 'cli') {
+    if (!function_exists('getDbMysqli')) {
+        require_once dirname(__DIR__) . '/public_html/includes/db_mysql.php';
+    }
+    $isCli = true;
+} else {
+    if (!defined('IHYMNS_SETUP_DASHBOARD')) {
+        if (!function_exists('isAuthenticated')) {
+            require_once dirname(__DIR__) . '/public_html/manage/includes/auth.php';
+        }
+        if (!isAuthenticated()) {
+            http_response_code(401);
+            exit('Authentication required.');
+        }
+        $u = getCurrentUser();
+        if (!$u || $u['role'] !== 'global_admin') {
+            http_response_code(403);
+            exit('Global admin required.');
+        }
+    }
+    if (!function_exists('getDbMysqli')) {
+        require_once dirname(__DIR__) . '/public_html/includes/db_mysql.php';
+    }
+    $isCli = false;
 }
 
-function _migEmailLoginHash_output(string $msg): void {
+function _migEmailLoginHash_out(string $line): void
+{
     global $isCli;
-    echo $msg . ($isCli ? "\n" : "<br>\n");
-    if (!$isCli) flush();
+    echo $line . ($isCli ? "\n" : "<br>\n");
+    if ($isCli) flush();
 }
 
-$credFile = dirname(__DIR__) . DIRECTORY_SEPARATOR . '.auth' . DIRECTORY_SEPARATOR . 'db_credentials.php';
-if (!file_exists($credFile)) {
-    _migEmailLoginHash_output('ERROR: MySQL credentials not found. Run install.php first.');
-    return;
+function _migEmailLoginHash_tableExists(\mysqli $db, string $table): bool
+{
+    $stmt = $db->prepare(
+        'SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1'
+    );
+    $stmt->bind_param('s', $table);
+    $stmt->execute();
+    $exists = $stmt->get_result()->fetch_row() !== null;
+    $stmt->close();
+    return $exists;
 }
-require_once $credFile;
 
-_migEmailLoginHash_output('');
-_migEmailLoginHash_output('=== iHymns - Email Login Token Hashing Migration (#898 follow-up) ===');
-_migEmailLoginHash_output('');
+_migEmailLoginHash_out('Email Login Token Hashing migration starting (#898 follow-up)…');
 
-$mysqli = new mysqli(MYSQL_HOST, MYSQL_USER, MYSQL_PASS, MYSQL_DB);
-if ($mysqli->connect_errno) {
-    _migEmailLoginHash_output('ERROR: MySQL connection failed: ' . $mysqli->connect_error);
-    return;
+$mysqli = getDbMysqli();
+if (!$mysqli) {
+    throw new \RuntimeException('Could not connect to database.');
 }
-$mysqli->set_charset('utf8mb4');
 
 /* Sentinel-driven idempotency. */
 $sentinelKey = 'email_login_token_hashed';
@@ -81,25 +102,13 @@ $check->execute();
 $sentinelRow = $check->get_result()->fetch_row();
 $check->close();
 if ($sentinelRow && (string)$sentinelRow[0] === '1') {
-    _migEmailLoginHash_output('SKIP: sentinel email_login_token_hashed=1 already set.');
-    _migEmailLoginHash_output('');
-    _migEmailLoginHash_output('Migration complete (no changes needed).');
-    $mysqli->close();
+    _migEmailLoginHash_out('[skip] sentinel email_login_token_hashed=1 already set.');
+    _migEmailLoginHash_out('Email Login Token Hashing migration finished (#898 follow-up).');
     return;
 }
 
-/* Confirm the table exists; nothing to do if a fresh install already
-   has the new schema. */
-$probe = $mysqli->query(
-    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-      WHERE TABLE_SCHEMA = DATABASE()
-        AND TABLE_NAME   = 'tblEmailLoginTokens' LIMIT 1"
-);
-$tableExists = $probe && $probe->fetch_row();
-if ($probe) { $probe->close(); }
-
-if (!$tableExists) {
-    _migEmailLoginHash_output('SKIP: tblEmailLoginTokens not present yet — running install.php / fresh install.');
+if (!_migEmailLoginHash_tableExists($mysqli, 'tblEmailLoginTokens')) {
+    _migEmailLoginHash_out('[skip] tblEmailLoginTokens not present yet — fresh install / install.php first.');
 } else {
     /* Drop any rows holding raw tokens. The new helpers will start
        writing sha256-hashed values; mixing the two would let a
@@ -110,14 +119,12 @@ if (!$tableExists) {
     $rowCount = (int)($countRow[0] ?? 0);
     if ($rowCount > 0) {
         if (!$mysqli->query('DELETE FROM tblEmailLoginTokens')) {
-            _migEmailLoginHash_output('ERROR: DELETE failed: ' . $mysqli->error);
-            $mysqli->close();
-            return;
+            throw new \RuntimeException('DELETE FROM tblEmailLoginTokens failed: ' . $mysqli->error);
         }
-        _migEmailLoginHash_output("CLEARED: {$rowCount} legacy row(s) from tblEmailLoginTokens.");
-        _migEmailLoginHash_output('Any user mid-sign-in will need to request a fresh code.');
+        _migEmailLoginHash_out("[purge] cleared {$rowCount} legacy row(s) from tblEmailLoginTokens.");
+        _migEmailLoginHash_out('        any user mid-sign-in needs to request a fresh code.');
     } else {
-        _migEmailLoginHash_output('OK: tblEmailLoginTokens already empty — nothing to clear.');
+        _migEmailLoginHash_out('[ok  ] tblEmailLoginTokens already empty — nothing to clear.');
     }
 }
 
@@ -131,13 +138,10 @@ $set = $mysqli->prepare(
 $one = '1';
 $set->bind_param('sss', $sentinelKey, $one, $desc);
 if (!$set->execute()) {
-    _migEmailLoginHash_output('WARN: could not set sentinel (' . $mysqli->error . '); migration body still ran.');
+    _migEmailLoginHash_out('[warn] could not set sentinel (' . $mysqli->error . '); migration body still ran.');
 } else {
-    _migEmailLoginHash_output('SENTINEL: tblAppSettings.email_login_token_hashed = 1');
+    _migEmailLoginHash_out('[mark] tblAppSettings.email_login_token_hashed = 1.');
 }
 $set->close();
 
-_migEmailLoginHash_output('');
-_migEmailLoginHash_output('Migration complete.');
-
-$mysqli->close();
+_migEmailLoginHash_out('Email Login Token Hashing migration finished (#898 follow-up).');
