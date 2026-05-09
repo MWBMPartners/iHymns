@@ -282,3 +282,111 @@ function logActivityError(
         'error'
     );
 }
+
+/**
+ * Install global PHP error handlers that mirror every uncaught
+ * \Throwable + every fatal-class PHP error into tblActivityLog.
+ *
+ * Without this, an uncaught exception or PHP fatal in any request
+ * never reaches the audit trail — only error_log catches it,
+ * which lives outside the curator-visible /manage/activity-log
+ * surface. Curators triaging a 500 should be able to find every
+ * incident from the same UI, regardless of whether the failing
+ * code happened to wrap itself in a try/catch.
+ *
+ * Two handlers are registered:
+ *   1. set_exception_handler — fires on any uncaught \Throwable.
+ *      Logs `uncaught.throwable` with class + message + file/line.
+ *   2. register_shutdown_function — fires on PHP fatals (parse,
+ *      out-of-memory, type-error during property init, etc.) that
+ *      don't surface as catchable throwables. Logs `fatal.php_error`.
+ *
+ * Both handlers are best-effort — wrapped in their own try/catch so
+ * a logging-time failure cannot compound the original error or stop
+ * the response from being emitted. The shutdown handler also
+ * cooperates with any prior shutdown handler (e.g. api.php's JSON
+ * 500 emitter) — order is "first registered, first run", so any
+ * earlier-registered response emitter still controls the body; we
+ * only add the audit row.
+ *
+ * Idempotent — calling twice replaces the previous handler with
+ * one that has the same source label, but doesn't double-log.
+ *
+ * @param string $source The `EntityType` to record. Use a stable
+ *                       identifier of the entry point so curators
+ *                       can filter — e.g. 'api', 'editor_api',
+ *                       'manage'. Anything ≤ 50 chars.
+ *
+ * @return void
+ */
+function installGlobalActivityLogHandlers(string $source): void
+{
+    /* Probe the currently-registered exception handler so we can
+       chain to it — important on /api.php which registers its own
+       JSON-emitting handler EARLIER in the bootstrap. We swap a
+       temp closure in to read the previous handler back, then
+       restore so our real handler can wrap it. set_exception_handler
+       returns the prior handler (or null) when called. */
+    $prevExceptionHandler = set_exception_handler(static function (): void {});
+    restore_exception_handler();
+    set_exception_handler(function (\Throwable $e) use ($source, $prevExceptionHandler): void {
+        try {
+            logActivityError(
+                'uncaught.throwable',
+                $source,
+                '',
+                $e,
+                ['request_id' => activityLogRequestId()]
+            );
+        } catch (\Throwable $_) {
+            /* Logging itself failed — swallow so we still hand
+               off to whatever prior handler wanted to emit a
+               response. */
+        }
+        if ($prevExceptionHandler !== null) {
+            /* Hand control back to the prior handler so its
+               response-emission path runs unchanged. */
+            try {
+                ($prevExceptionHandler)($e);
+            } catch (\Throwable $_) { /* ignore */ }
+        } else {
+            /* No prior handler — re-throw so PHP's default kicks
+               in (logs to stderr / shows the configured error
+               page). Without this re-throw the request would
+               silently 200 with whatever partial body was buffered. */
+            error_log(
+                '[activity_log] uncaught throwable in ' . $source . ': '
+                . get_class($e) . ': ' . $e->getMessage()
+                . ' @ ' . basename($e->getFile()) . ':' . $e->getLine()
+            );
+        }
+    });
+
+    /* Shutdown handler for fatal-class errors (E_ERROR, E_PARSE,
+       E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR). These are NOT
+       catchable as throwables — they only surface via error_get_last
+       at shutdown. */
+    register_shutdown_function(function () use ($source): void {
+        $err = error_get_last();
+        $fatalMask = E_ERROR | E_PARSE | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR;
+        if (!$err || !($err['type'] & $fatalMask)) return;
+        try {
+            logActivity(
+                'fatal.php_error',
+                $source,
+                '',
+                [
+                    'message'    => (string)($err['message'] ?? ''),
+                    'file'       => basename((string)($err['file'] ?? '?')),
+                    'line'       => (int)($err['line'] ?? 0),
+                    'type'       => (int)($err['type'] ?? 0),
+                    'request_id' => activityLogRequestId(),
+                ],
+                'error'
+            );
+        } catch (\Throwable $_) {
+            /* Best-effort — a logging failure during shutdown
+               cannot be allowed to interfere with the response. */
+        }
+    });
+}
