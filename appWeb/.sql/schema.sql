@@ -477,7 +477,13 @@ CREATE TABLE IF NOT EXISTS tblApiTokens (
 -- 48-character hex string (24 random bytes), 1-hour default expiry.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblPasswordResetTokens (
-    Token           VARCHAR(48)     NOT NULL PRIMARY KEY,
+    -- CHAR(64) holds the full sha256 hex of the raw token. Pre-#898
+    -- this column was VARCHAR(48), which silently truncated the 64-
+    -- char hash to 48. Lookups still worked (insert + lookup
+    -- truncated identically) but the on-disk hash was effectively
+    -- 192 bits instead of 256. The follow-up migration widens
+    -- existing installs in place.
+    Token           CHAR(64)        NOT NULL PRIMARY KEY,
     UserId          INT UNSIGNED    NOT NULL,
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     ExpiresAt       TIMESTAMP       NOT NULL,
@@ -503,8 +509,17 @@ CREATE TABLE IF NOT EXISTS tblEmailLoginTokens (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
     Email           VARCHAR(255)    NOT NULL COMMENT 'Email address the token was sent to',
     UserId          INT UNSIGNED    NULL COMMENT 'FK to tblUsers if email matches existing account',
-    Token           VARCHAR(64)     NOT NULL UNIQUE COMMENT '48-char hex token for magic link',
-    Code            VARCHAR(6)      NOT NULL COMMENT '6-digit numeric code for manual entry',
+    -- Stores sha256(raw token) hex (64 chars). The raw 48-char hex
+    -- token only ever lives in the outbound email body. Pre-#898
+    -- this column held the raw token; the follow-up migration drops
+    -- any unused rows and flips the storage discipline.
+    Token           VARCHAR(64)     NOT NULL UNIQUE COMMENT 'sha256 hex of raw 48-char hex magic-link token',
+    -- Code stays plaintext: 6-digit numeric is ~20 bits of entropy,
+    -- below the threshold where hashing provides meaningful defence
+    -- against an attacker with the table contents. The defence-in-
+    -- depth here is single-use + 10-minute expiry + email-scoped
+    -- lookup, all enforced by tblEmailLoginTokens itself.
+    Code            VARCHAR(6)      NOT NULL COMMENT '6-digit numeric code for manual entry (plaintext)',
     Used            TINYINT(1)      NOT NULL DEFAULT 0,
     ExpiresAt       TIMESTAMP       NOT NULL,
     IpAddress       VARCHAR(45)     NOT NULL DEFAULT '' COMMENT 'IP that requested the token',
@@ -516,6 +531,30 @@ CREATE TABLE IF NOT EXISTS tblEmailLoginTokens (
     INDEX idx_Expires   (ExpiresAt),
 
     CONSTRAINT fk_EmailLogin_User
+        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblEmailVerificationTokens (#898)
+-- Single-use tokens for confirming a user's email address after password
+-- registration. Stores the SHA-256 hash of a 48-char hex token (raw token
+-- only ever lives in the email body); 24-hour expiry. On consumption,
+-- tblUsers.EmailVerified flips 0 -> 1 and the row is marked Used.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblEmailVerificationTokens (
+    TokenHash       CHAR(64)        NOT NULL PRIMARY KEY COMMENT 'sha256 of raw token',
+    UserId          INT UNSIGNED    NOT NULL,
+    Email           VARCHAR(255)    NOT NULL COMMENT 'Email at the moment the token was issued',
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ExpiresAt       TIMESTAMP       NOT NULL,
+    Used            TINYINT(1)      NOT NULL DEFAULT 0,
+
+    INDEX idx_User      (UserId),
+    INDEX idx_Expires   (ExpiresAt),
+
+    CONSTRAINT fk_VerifyTokens_User
         FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
         ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

@@ -239,6 +239,9 @@ $friendlyTitles = [
     'bulk-import-per-songbook'         => 'Bulk-Import Per-Songbook Breakdown (#906)',
     'bulk-import-phase-label'          => 'Bulk-Import Phase Label (#907)',
     'activity-log-proxy-vpn'           => 'Activity Log Proxy/VPN + Per-Request',
+    'email-verification-tokens'        => 'Email Verification Tokens (#898)',
+    'password-reset-token-hash-width'  => 'Password Reset Token Hash Width (#898 follow-up)',
+    'email-login-token-hashing'        => 'Email Login Token Hashing (#898 follow-up)',
     /* No-op file-touch (force-deploy 2026-05-09) — the previous SFTP
        deploy of #919 skipped this file under lftp `--only-newer`
        because the local file mtime didn't surpass the remote's
@@ -309,6 +312,9 @@ $scriptMap = [
     'bulk-import-per-songbook'      => 'migrate-bulk-import-per-songbook.php',
     'bulk-import-phase-label'       => 'migrate-bulk-import-phase-label.php',
     'activity-log-proxy-vpn'        => 'migrate-activity-log-proxy-vpn.php',
+    'email-verification-tokens'     => 'migrate-email-verification-tokens.php',
+    'password-reset-token-hash-width' => 'migrate-password-reset-token-hash-width.php',
+    'email-login-token-hashing'     => 'migrate-email-login-token-hashing.php',
     'cleanup'     => 'cleanup.php',
     'backup'      => 'backup.php',
     'restore'     => 'restore.php',
@@ -363,6 +369,9 @@ $migrationOrder = [
     'bulk-import-per-songbook',
     'bulk-import-phase-label',
     'activity-log-proxy-vpn',
+    'email-verification-tokens',
+    'password-reset-token-hash-width',
+    'email-login-token-hashing',
 ];
 
 /* Per-migration card content (#816). Single source of truth for the
@@ -841,6 +850,41 @@ $migrationCards = [
                   . ' / .error) with status code + duration. Idempotent.',
         'button' => 'Run Activity Log Proxy/VPN Migration',
     ],
+    'email-verification-tokens' => [
+        'title'  => 'Email Verification Tokens (#898)',
+        'body'   => 'Creates <code>tblEmailVerificationTokens</code> — single-use'
+                  . ' SHA-256-hashed tokens backing the verification email fired'
+                  . ' on password-based registration. Powered by the new'
+                  . ' <code>EmailService</code> abstraction; landed alongside the'
+                  . ' real-email-delivery work (replacing the three'
+                  . ' <code>error_log</code>-only auth flows). 24-hour expiry,'
+                  . ' single-use, FK to <code>tblUsers</code> with cascade. Idempotent.',
+        'button' => 'Run Email Verification Tokens Migration',
+    ],
+    'password-reset-token-hash-width' => [
+        'title'  => 'Password Reset Token Hash Width (#898 follow-up)',
+        'body'   => 'Widens <code>tblPasswordResetTokens.Token</code> from'
+                  . ' <code>VARCHAR(48)</code> to <code>CHAR(64)</code> so the'
+                  . ' SHA-256 hex hash is stored at full width rather than'
+                  . ' silently truncated to 48 chars. Pre-existing rows hold a'
+                  . ' 48-char prefix and will fail to validate after the ALTER —'
+                  . ' since reset tokens expire in 1 hour, any in-flight tokens'
+                  . ' at deploy time naturally cycle out within the hour. Idempotent.',
+        'button' => 'Run Password Reset Token Hash Width Migration',
+    ],
+    'email-login-token-hashing' => [
+        'title'  => 'Email Login Token Hashing (#898 follow-up)',
+        'body'   => 'Flips <code>tblEmailLoginTokens.Token</code> storage from raw'
+                  . ' (48-char hex) to SHA-256-hashed (64-char hex). The auth.php'
+                  . ' helpers now hash on insert and on lookup; this migration'
+                  . ' clears any pre-existing rows so a stale plaintext row can\'t'
+                  . ' shadow a freshly-hashed one. Magic-link tokens expire in 10'
+                  . ' minutes — any user mid-sign-in at deploy time needs a fresh'
+                  . ' code. The 6-digit Code column stays plaintext (low entropy;'
+                  . ' the defence is single-use + email-scoped lookup + expiry).'
+                  . ' Idempotent via a sentinel in <code>tblAppSettings</code>.',
+        'button' => 'Run Email Login Token Hashing Migration',
+    ],
     /* recompute-songbook-songcount card removed (#818) — its work is
        now covered by the SongCount Triggers migration above, which
        runs an initial recompute as part of its installation. The
@@ -1008,6 +1052,39 @@ $migrationProbes = [
     /* Activity-log proxy/vpn columns: pending when ProxyVpnIndicator is absent. */
     'activity-log-proxy-vpn'             => static fn(\mysqli $db) =>
         !_migProbe_columnExists($db, 'tblActivityLog', 'ProxyVpnIndicator'),
+    /* Email verification tokens (#898): pending when the table is absent. */
+    'email-verification-tokens'          => static fn(\mysqli $db) =>
+        !_migProbe_tableExists($db, 'tblEmailVerificationTokens'),
+    /* Password reset token hash width (#898 follow-up): pending while
+       the column is still narrower than CHAR(64). */
+    'password-reset-token-hash-width'    => static fn(\mysqli $db) => (function (\mysqli $db): bool {
+        $stmt = $db->prepare(
+            "SELECT DATA_TYPE, CHARACTER_MAXIMUM_LENGTH
+               FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblPasswordResetTokens'
+                AND COLUMN_NAME  = 'Token'
+              LIMIT 1"
+        );
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if (!$row) return false; /* table missing — install.php will create it wide */
+        $len  = (int)($row['CHARACTER_MAXIMUM_LENGTH'] ?? 0);
+        $type = strtolower((string)$row['DATA_TYPE']);
+        return !($len >= 64 && $type === 'char');
+    })($db),
+    /* Email login token hashing (#898 follow-up): pending until the
+       sentinel row in tblAppSettings flips to '1'. */
+    'email-login-token-hashing'          => static fn(\mysqli $db) => (function (\mysqli $db): bool {
+        $stmt = $db->prepare(
+            "SELECT SettingValue FROM tblAppSettings WHERE SettingKey = 'email_login_token_hashed' LIMIT 1"
+        );
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_row();
+        $stmt->close();
+        return !($row && (string)$row[0] === '1');
+    })($db),
     /* Backfills run once after schema lands. They're idempotent so
        always-show is safe — but we can be smarter: pending when the
        new table has fewer rows than the legacy source had non-empty

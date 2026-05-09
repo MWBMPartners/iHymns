@@ -17,11 +17,12 @@ declare(strict_types=1);
  * recorded so the audit trail shows "an admin changed SMTP creds at
  * timestamp X" without writing the password into the log).
  *
- * The send-mechanism (PHPMailer / curl-based SMTP) is OUT OF SCOPE
- * for this PR — the configuration storage is in place so whoever
- * implements the sender hits a populated tblAppSettings on day one.
- * The "Send test email" button stub is wired but reports "Not yet
- * implemented" so admins know what to expect.
+ * Real send-mechanism landed in #898 via includes/EmailService.php
+ * (SendGrid / Mailgun / SES drivers; SMTP driver is a documented TODO
+ * — admins should pick one of the API providers in the meantime).
+ * The "Send test email" button posts to test_email and renders the
+ * EmailSendResult inline so admins can verify provider config without
+ * triggering a real auth flow.
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
@@ -72,7 +73,7 @@ $EMAIL_SETTINGS = [
 
 $EMAIL_SERVICE_OPTIONS = [
     'none'     => 'None — email login disabled',
-    'smtp'     => 'SMTP (any provider with SMTP relay)',
+    'smtp'     => 'SMTP — not yet implemented (#898 follow-up)',
     'sendgrid' => 'SendGrid',
     'mailgun'  => 'Mailgun',
     'ses'      => 'AWS SES',
@@ -162,19 +163,66 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $saveError = 'Save failed: ' . $e->getMessage();
             }
         } elseif ($action === 'test_email') {
-            /* Stub: until the actual sender (PHPMailer / curl-SMTP) is
-               wired up, just acknowledge and surface the configured
-               provider so the admin can verify their save round-tripped.
-               The "Not yet implemented" copy below sets expectations
-               clearly — see #768's out-of-scope section. */
-            $current = $loadSettings($db, ['email_service']);
-            $service = $current['email_service'] ?? 'none';
-            $testResult = [
-                'ok'      => false,
-                'message' => 'Send-test stub: provider is "' . $service . '". '
-                           . 'Send-mechanism implementation is tracked separately — '
-                           . 'configuration is persisted and ready for the sender to consume.',
-            ];
+            /* Real send (#898) — replaces the previous stub. Uses
+               EmailService::send() with an ad-hoc payload targeting
+               the current admin's own email so the button is harmless
+               even if a typo lands in From. The EmailSendResult is
+               mirrored into the alert and a structured email.send
+               row goes into tblActivityLog. */
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'EmailService.php';
+            /* The save_email branch above may have just changed the
+               provider config in this same request; reset the cache
+               so the test reads the fresh values. */
+            EmailService::resetCache();
+            /* Reload current settings so the alert text reflects the
+               just-saved provider (the page-level $currentSettings
+               below is fetched after this block runs). */
+            $current = $loadSettings($db, array_keys($EMAIL_SETTINGS));
+            $providerLabel = (string)($current['email_service'] ?? 'none');
+
+            $adminEmail = trim((string)($currentUser['email'] ?? ''));
+            if ($adminEmail === '' || !filter_var($adminEmail, FILTER_VALIDATE_EMAIL)) {
+                $testResult = [
+                    'ok'      => false,
+                    'message' => 'Send-test failed: your admin account has no valid email address on file. '
+                               . 'Set one in Users -> your row -> Edit, then retry.',
+                ];
+            } elseif (!EmailService::isConfigured()) {
+                $testResult = [
+                    'ok'      => false,
+                    'message' => 'Send-test failed: provider is "' . $providerLabel . '". Pick a real provider and Save before testing.',
+                ];
+            } else {
+                $stamp    = gmdate('Y-m-d H:i:s') . ' UTC';
+                $bodyHtml = '<h1>iHymns email delivery test</h1>'
+                          . '<p>This is a delivery test from <strong>' . htmlspecialchars($providerLabel, ENT_QUOTES, 'UTF-8') . '</strong>'
+                          . ' at <strong>' . htmlspecialchars($stamp, ENT_QUOTES, 'UTF-8') . '</strong>.</p>'
+                          . '<p>If you received this, your email provider is correctly configured.</p>';
+                $bodyText = "iHymns email delivery test from {$providerLabel} at {$stamp}.\n\n"
+                          . "If you received this, your email provider is correctly configured.\n";
+                $sendResult = EmailService::send(
+                    $adminEmail,
+                    'iHymns email delivery test (' . $providerLabel . ')',
+                    $bodyHtml,
+                    $bodyText
+                );
+                if ($sendResult->ok) {
+                    $testResult = [
+                        'ok'      => true,
+                        'message' => 'Test email dispatched via ' . $sendResult->provider
+                                   . (($sendResult->providerMessageId ?? '') !== '' ? ' (Message-Id: ' . $sendResult->providerMessageId . ')' : '')
+                                   . '. Check ' . $adminEmail . ' to confirm delivery.',
+                    ];
+                } else {
+                    $testResult = [
+                        'ok'      => false,
+                        'message' => 'Test email FAILED via ' . $sendResult->provider
+                                   . ' (' . ($sendResult->errorClass ?? 'Error') . '): '
+                                   . (string)$sendResult->error
+                                   . '. See the Activity Log "email.send" row for the full record.',
+                    ];
+                }
+            }
         }
     }
 }
@@ -473,7 +521,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                                     </ul>
                                 </li>
                                 <li><strong>Set the From address</strong> to a mailbox the provider allows you to send from (usually a domain you own + verified).</li>
-                                <li><strong>Save configuration</strong> here. Use <strong>Send test email</strong> to verify (once the sender is implemented; tracked separately).</li>
+                                <li><strong>Save configuration</strong> here. Use <strong>Send test email</strong> to verify — note: SMTP driver is not yet implemented (#898 follow-up); pick SendGrid, Mailgun, or AWS SES for a working transactional provider in the meantime.</li>
                             </ol>
                             <p class="text-secondary mb-0"><strong>Tip:</strong> if Send test fails with <em>auth failed</em>, the username/password is wrong or the provider hasn't enabled SMTP for the account. If it fails with <em>relay denied</em>, the From address isn't verified for that account.</p>
                         </div>

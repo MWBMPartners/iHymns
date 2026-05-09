@@ -1271,8 +1271,15 @@ function generateEmailLoginToken(string $email, string $clientIp = ''): ?array
     $stmt->close();
     $userId = $existingUser ? (int)$existingUser['Id'] : null;
 
-    /* Generate token (48-char hex) and code (6-digit numeric) */
+    /* Generate token (48-char hex raw, sha256-hashed on disk) and
+       code (6-digit numeric, plaintext on disk).
+       Code stays plaintext on purpose: ~20 bits of entropy is too low
+       for hashing to add real defence (a 1M-entry rainbow is trivial),
+       so we rely on the existing single-use + 10-minute expiry +
+       email-scoped lookup. The high-entropy Token is the magic-link
+       leg; that one we do hash. (#898 follow-up) */
     $token = bin2hex(random_bytes(24));
+    $tokenHash = hash('sha256', $token);
     $code  = str_pad((string)random_int(0, 999999), 6, '0', STR_PAD_LEFT);
     $expiresAt = gmdate('c', time() + 600); /* 10 minutes */
 
@@ -1286,13 +1293,16 @@ function generateEmailLoginToken(string $email, string $clientIp = ''): ?array
 
     /* Insert new token. UserId is nullable when the email doesn't
        match an existing user yet (first-login flow); mysqli passes
-       NULL correctly with type 'i' when the bound variable is null. */
+       NULL correctly with type 'i' when the bound variable is null.
+       The Token column stores the SHA-256 hex hash of the raw
+       token; the raw token is returned to the caller and only ever
+       leaves the server inside the outbound email body. */
     $stmt = $db->prepare(
         'INSERT INTO tblEmailLoginTokens (Email, UserId, Token, Code, ExpiresAt, IpAddress)
          VALUES (?, ?, ?, ?, ?, ?)'
     );
     $stmt->bind_param('sissss',
-        $email, $userId, $token, $code, $expiresAt, $clientIp);
+        $email, $userId, $tokenHash, $code, $expiresAt, $clientIp);
     $stmt->execute();
     $stmt->close();
 
@@ -1318,11 +1328,15 @@ function verifyEmailLoginToken(string $token): ?array
     }
 
     $db = getDbMysqli();
+    /* Hash the supplied raw token and look up by hash (#898 follow-up).
+       Raw tokens never enter the table; storing only the sha256 hex
+       means a DB dump can't be replayed against the verify endpoint. */
+    $tokenHash = hash('sha256', $token);
     $stmt = $db->prepare(
         'SELECT Id, Email, UserId FROM tblEmailLoginTokens
          WHERE Token = ? AND Used = 0 AND ExpiresAt > NOW()'
     );
-    $stmt->bind_param('s', $token);
+    $stmt->bind_param('s', $tokenHash);
     $stmt->execute();
     $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();
@@ -1486,4 +1500,114 @@ function completeEmailLogin(string $email, ?int $userId): array
             'role'         => $user['Role'],
         ],
     ];
+}
+
+/* =========================================================================
+ * EMAIL VERIFICATION (#898)
+ *
+ * Single-use tokens that flip tblUsers.EmailVerified 0 -> 1 when
+ * consumed. Backed by tblEmailVerificationTokens; raw token is only
+ * ever in the email body (delivery via EmailService); the table
+ * stores the SHA-256 hash so a DB dump never leaks live tokens.
+ * Default lifetime: 24 hours.
+ * ========================================================================= */
+
+/**
+ * Issue an email-verification token for a user. Caller is responsible
+ * for delivering the raw token via EmailService::sendTemplate(
+ * 'email-verification', ...). Any prior unused tokens for this user
+ * are invalidated to keep one outstanding token per user at a time.
+ *
+ * @return array{token:string, expiresAt:string}|null Null if the user
+ *         doesn't exist or has no email on file.
+ */
+function generateEmailVerificationToken(int $userId): ?array
+{
+    $db = getDbMysqli();
+
+    /* Look up the email + active status. */
+    $stmt = $db->prepare('SELECT Email, IsActive FROM tblUsers WHERE Id = ?');
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$row || (string)($row['Email'] ?? '') === '' || (int)$row['IsActive'] !== 1) {
+        return null;
+    }
+    $email = (string)$row['Email'];
+
+    /* 48-char hex (24 random bytes) raw token; SHA-256 hash on disk. */
+    $token = bin2hex(random_bytes(24));
+    $tokenHash = hash('sha256', $token);
+    $expiresAt = gmdate('c', time() + 86400); /* 24 hours */
+
+    /* Drop any prior outstanding tokens for this user. Single-token
+       invariant matches the password-reset table's
+       DELETE-then-INSERT pattern. */
+    $stmt = $db->prepare('DELETE FROM tblEmailVerificationTokens WHERE UserId = ?');
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $stmt->close();
+
+    $stmt = $db->prepare(
+        'INSERT INTO tblEmailVerificationTokens (TokenHash, UserId, Email, ExpiresAt) VALUES (?, ?, ?, ?)'
+    );
+    $stmt->bind_param('siss', $tokenHash, $userId, $email, $expiresAt);
+    $stmt->execute();
+    $stmt->close();
+
+    return ['token' => $token, 'expiresAt' => $expiresAt];
+}
+
+/**
+ * Consume an email-verification token. On success, flips
+ * tblUsers.EmailVerified to 1 and marks the row Used.
+ *
+ * @return array{userId:int, email:string}|null Null if the token is
+ *         invalid, expired, already used, or the address has changed
+ *         since issuance (anti-spoof: don't verify a stale address).
+ */
+function consumeEmailVerificationToken(string $token): ?array
+{
+    $token = trim($token);
+    if ($token === '' || strlen($token) > 64) {
+        return null;
+    }
+
+    $db = getDbMysqli();
+    $tokenHash = hash('sha256', $token);
+    $now = gmdate('c');
+    $stmt = $db->prepare(
+        'SELECT t.UserId, t.Email AS TokenEmail, u.Email AS CurrentEmail
+           FROM tblEmailVerificationTokens t
+           JOIN tblUsers u ON u.Id = t.UserId
+          WHERE t.TokenHash = ? AND t.ExpiresAt > ? AND t.Used = 0 AND u.IsActive = 1'
+    );
+    $stmt->bind_param('ss', $tokenHash, $now);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    if (!$row) {
+        return null;
+    }
+    /* Anti-spoof: the user's email must still match the address that
+       was on file when the token was issued. If the user changed it
+       in the meantime the old verification link must not be honoured. */
+    if (mb_strtolower((string)$row['TokenEmail']) !== mb_strtolower((string)$row['CurrentEmail'])) {
+        return null;
+    }
+
+    $userId = (int)$row['UserId'];
+    $stmt = $db->prepare('UPDATE tblUsers SET EmailVerified = 1 WHERE Id = ?');
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $stmt->close();
+
+    $stmt = $db->prepare('UPDATE tblEmailVerificationTokens SET Used = 1 WHERE TokenHash = ?');
+    $stmt->bind_param('s', $tokenHash);
+    $stmt->execute();
+    $stmt->close();
+
+    return ['userId' => $userId, 'email' => (string)$row['CurrentEmail']];
 }
