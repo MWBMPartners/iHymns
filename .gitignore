@@ -228,6 +228,23 @@ appWeb/public_html/vendor/
 # ----------------------------------------------------------------------------
 # Source Scraped Song data
 # ----------------------------------------------------------------------------
+# `.SourceSongData/*` is the legacy path (some files are tracked beneath
+# it for the original 5 English songbooks). The `*` glob lets the rule
+# ignore newly-added files without breaking the existing tracked tree.
 .SourceSongData/*
+# `SourceSongData/` is the newer no-leading-dot convention used by every
+# scrape since 2026-04 (#699 multilingual; #663 CIS) — nothing under
+# it is tracked, so we ignore the whole tree.
+SourceSongData/
 *_debug_*_raw.html
 *_debug_*_skipped.html
+
+# ----------------------------------------------------------------------------
+# GitHub Wiki sibling clone (#958)
+# ----------------------------------------------------------------------------
+# GitHub stores wikis as a separate git repo (`<project>.wiki.git`); cloning
+# it alongside the main repo lets Claude / IDEs read wiki content without a
+# network round-trip. The clone is its own repository — never commit it
+# inside the main repo.
+iHymns.wiki/
+iHymns.wiki.git/
