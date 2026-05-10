@@ -309,7 +309,16 @@ export function bootSongMediaEditor(root) {
             showState('empty');
             return;
         }
-        elBlocks.innerHTML = KIND_ORDER.map(blockMarkup).join('');
+        /* #938 — visually separate the four media kinds. The blockMarkup
+           output had no inter-block spacing, so Audio / Sheet music /
+           MIDI / MusicXML ran together and the curator had to read
+           carefully to find the boundary. Wrap each non-first block in
+           a top-margin + top-border separator. */
+        elBlocks.innerHTML = KIND_ORDER.map((kind, i) => {
+            const html = blockMarkup(kind);
+            if (i === 0) return html;
+            return `<div class="mt-4 pt-4 border-top border-secondary border-opacity-25">${html}</div>`;
+        }).join('');
         showState('ready');
         bindBlockHandlers();
     }
