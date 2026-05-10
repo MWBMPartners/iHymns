@@ -261,11 +261,19 @@ function saveSongs() {
 
     /* Validate only the songs we're about to save. The user should
        never be blocked from saving a fix on song X because song Y (that
-       they never opened) is missing a field. */
-    var errors = validateSongsByIds(ids);
-    if (errors.length > 0) {
-        errors.forEach(function (msg) { showToast(msg, 'danger'); });
+       they never opened) is missing a field. #961 — split into hard
+       errors (block) and warnings (toast then proceed). Saved a real
+       case where a song in an Official-flagged songbook didn't have
+       a number yet — the curator wanted to capture the lyrics first
+       and number later. */
+    var validation = validateSongsByIds(ids);
+    if (validation.errors.length > 0) {
+        validation.errors.forEach(function (msg) { showToast(msg, 'danger'); });
         return;
+    }
+    if (validation.warnings.length > 0) {
+        validation.warnings.forEach(function (msg) { showToast(msg, 'warning'); });
+        /* fall through — warnings are informational, save proceeds */
     }
 
     /* Refresh the generatedAt timestamp so any subsequent export
@@ -2837,6 +2845,14 @@ function attachCreditAutocomplete(input, row, kind, onChange) {
  *
  * @returns {string[]} An array of human-readable error messages. Empty = valid.
  */
+/* #961 — both validateSongData() and validateSongsByIds() now return
+   { errors: [...], warnings: [...] }. The split lets the save handlers
+   block on genuine integrity problems (missing id / title / songbook /
+   components) while passing along soft cautions (e.g. missing number
+   on an official songbook) as informational toasts that DON'T block
+   the save. The server's save_song handler already accepts NULL number
+   when no value is provided, so the warning is purely user-facing —
+   the data path remains correct either way. */
 function validateSongData() {
     /* Accumulator for error messages. */
     var errors = [];
@@ -2853,6 +2869,7 @@ function validateSongData() {
     }, Object.create(null));
 
     /* Iterate over every song. */
+    var warnings = [];
     songData.songs.forEach(function (song, i) {
         /* Build a label for this song to make errors identifiable. */
         var label = 'Song [' + i + '] (' + (song.title || 'no title') + ')';
@@ -2872,13 +2889,18 @@ function validateSongData() {
             errors.push(label + ': missing or empty "songbook".');
         }
 
-        /* number is required only when the song's songbook is flagged
-           IsOfficial=1. Unofficial songbooks (Misc and any other
-           custom collection) keep number as nullable since their
-           songs typically aren't numbered in the source. (#392) */
+        /* #961 — number is WARNING-only when the songbook is flagged
+           IsOfficial=1 and no number is supplied. The save proceeds
+           (server accepts NULL number gracefully), and a non-blocking
+           toast surfaces the gap so the curator notices. Previously
+           this was a hard error that blocked the save entirely —
+           unhelpful when the curator legitimately doesn't have the
+           number yet, or when the songbook is flagged Official by
+           mistake. The "official requires number" expectation lives
+           in the songbook's metadata, not in this validator. (#392) */
         var isOfficial = !!officialByAbbr[(song.songbook || '').trim()];
         if (isOfficial && (song.number == null || String(song.number).trim() === '')) {
-            errors.push(label + ': missing "number" (required for official songbooks).');
+            warnings.push(label + ': no "number" supplied. The songbook is flagged Official — saved as NULL.');
         }
 
         /* components must be a non-empty array. */
@@ -2887,8 +2909,7 @@ function validateSongData() {
         }
     });
 
-    /* Return the collected errors (empty array means everything is valid). */
-    return errors;
+    return { errors: errors, warnings: warnings };
 }
 
 /**
@@ -2905,6 +2926,7 @@ function validateSongData() {
 function validateSongsByIds(ids) {
     var wanted = new Set(ids);
     var errors = [];
+    var warnings = [];
     /* Same IsOfficial map as validateSongData() — number is required
        only when the song's songbook is flagged IsOfficial=1. (#392) */
     var officialByAbbr = (songData.songbooks || []).reduce(function (map, b) {
@@ -2924,15 +2946,18 @@ function validateSongsByIds(ids) {
         if (!song.songbook || typeof song.songbook !== 'string' || song.songbook.trim() === '') {
             errors.push(label + ': missing or empty "songbook".');
         }
+        /* #961 — see validateSongData() for the rationale. Missing
+           number on an official songbook is now a non-blocking
+           warning, not a hard error. The server accepts NULL. */
         var isOfficial = !!officialByAbbr[(song.songbook || '').trim()];
         if (isOfficial && (song.number == null || String(song.number).trim() === '')) {
-            errors.push(label + ': missing "number" (required for official songbooks).');
+            warnings.push(label + ': no "number" supplied. The songbook is flagged Official — saved as NULL.');
         }
         if (!Array.isArray(song.components) || song.components.length === 0) {
             errors.push(label + ': must have at least one component.');
         }
     });
-    return errors;
+    return { errors: errors, warnings: warnings };
 }
 
 /* ========================================================================
@@ -3584,7 +3609,11 @@ function scheduleAutoSave() {
         _autoSaveTimer = null;
         if (_autoSaveRunning)      return;
         if (modifiedSongIds.size === 0) return;
-        if (validateSongData().length > 0) return;
+        /* #961 — auto-save only blocks on hard errors; warnings are
+           informational (and we don't surface them on auto-save to
+           avoid toast spam when the user pauses on an in-progress
+           edit). The user gets the warning on manual Save instead. */
+        if (validateSongData().errors.length > 0) return;
 
         _autoSaveRunning = true;
         var text = document.getElementById('status-text');
@@ -4194,12 +4223,19 @@ function bindGlobalEventListeners() {
     var validateBtn = document.getElementById('btn-validate');
     if (validateBtn) {
         validateBtn.addEventListener('click', function () {
-            var errors = validateSongData();
-            if (errors.length === 0) {
+            /* #961 — split errors (toast danger) from warnings
+               (toast warning). The standalone Validate button is the
+               one place where surfacing warnings is unambiguously
+               useful — the curator explicitly asked for a check. */
+            var validation = validateSongData();
+            if (validation.errors.length === 0 && validation.warnings.length === 0) {
                 showToast('All songs are valid.', 'success');
             } else {
-                errors.forEach(function (msg) {
+                validation.errors.forEach(function (msg) {
                     showToast(msg, 'danger');
+                });
+                validation.warnings.forEach(function (msg) {
+                    showToast(msg, 'warning');
                 });
             }
         });
