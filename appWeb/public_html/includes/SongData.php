@@ -249,7 +249,18 @@ class SongData
         $totalSongs = (int)$result->fetch_assoc()['total'];
         $stmt->close();
 
-        $stmt = $this->db->prepare("SELECT COUNT(*) AS total FROM tblSongbooks");
+        /* #963 — only count songbooks that have at least one song.
+           Empty placeholder rows in tblSongbooks would otherwise
+           inflate the home-page "N Songbooks" badge and the PWA
+           cache's meta.totalSongbooks. */
+        $stmt = $this->db->prepare(
+            "SELECT COUNT(*) AS total
+               FROM tblSongbooks b
+              WHERE EXISTS (
+                  SELECT 1 FROM tblSongs s
+                   WHERE s.SongbookAbbr = b.Abbreviation
+              )"
+        );
         $stmt->execute();
         $result = $stmt->get_result();
         $totalSongbooks = (int)$result->fetch_assoc()['total'];
@@ -2242,9 +2253,21 @@ class SongData
             ];
         }
 
+        /* #963 — only count songbooks that have at least one song.
+           Mirrors getMeta()'s SQL-side filter so every surface reads
+           the same number whether it comes from the live DB
+           (this method) or the precomputed static cache (getMeta()
+           feeds exportAsJson()). */
+        $populatedSongbooks = 0;
+        foreach ($songbooks as $book) {
+            if ((int)($book['songCount'] ?? 0) > 0) {
+                $populatedSongbooks++;
+            }
+        }
+
         return [
             'totalSongs'     => $totalSongs,
-            'totalSongbooks' => count($songbooks),
+            'totalSongbooks' => $populatedSongbooks,
             'songbooks'      => $bookStats,
         ];
     }
