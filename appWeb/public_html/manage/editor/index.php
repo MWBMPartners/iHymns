@@ -26,7 +26,7 @@ requireEditor();
 $currentUser = getCurrentUser();
 ?>
 <!DOCTYPE html>
-<html lang="en" data-bs-theme="dark">
+<html lang="en">
 <head>
     <!-- =================================================================
          HEAD — Meta, Bootstrap 5.3 CDN, Bootstrap Icons, Page Title
@@ -36,6 +36,14 @@ $currentUser = getCurrentUser();
 
     <!-- Page title shown in the browser tab -->
     <title>iHymns Song Editor</title>
+
+    <!-- #955 — synchronous theme resolver. Sets data-bs-theme,
+         data-ihymns-theme, data-ihymns-contrast, data-ihymns-cvd
+         from localStorage BEFORE any CSS loads so the editor paints
+         with the correct theme. The Song Editor has its own bespoke
+         <head> (doesn't go through head-libs.php), so we include the
+         partial directly. -->
+    <?php require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-theme-init.php'; ?>
 
     <!-- Bootstrap 5.3 CSS — loaded from CDN for convenience (no local dependency) -->
     <link

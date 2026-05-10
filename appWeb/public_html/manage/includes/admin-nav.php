@@ -137,9 +137,12 @@ $_avatarUrlLarge = userAvatarUrl($_userEmail, 64, $_userAvatarSvc);
                     <i class="bi bi-search" aria-hidden="true"></i>
                 </button>
 
-                <!-- Theme toggle — same shape as main site but admin is
-                     currently always dark. Offered anyway so admins can
-                     temporarily switch for screenshots / demos. -->
+                <!-- Theme toggle — picks Light / Dark / System and persists
+                     to localStorage.ihymns_theme so the choice survives
+                     page reloads and is shared with the public site
+                     (#955). For high-contrast / CVD modes, users go to
+                     the public-site Settings page; admin pages still
+                     pick those preferences up via admin-theme-init.php. -->
                 <div class="dropdown">
                     <button type="button"
                             class="btn btn-header-icon dropdown-toggle"
@@ -162,6 +165,26 @@ $_avatarUrlLarge = userAvatarUrl($_userEmail, 64, $_userAvatarSvc);
                         </button></li>
                     </ul>
                 </div>
+                <script>
+                /* #955 — admin theme dropdown handler. Maps the BS-docs
+                   data-bs-theme-value attribute (light/dark/auto) onto
+                   the public-site storage key (ihymns_theme; with auto →
+                   system) and re-applies via the helper exposed by
+                   admin-theme-init.php. Idempotent — re-runs no-op. */
+                (function () {
+                    var KEY = 'ihymns_theme';
+                    document.querySelectorAll('[data-bs-theme-value]').forEach(function (btn) {
+                        btn.addEventListener('click', function () {
+                            var v = btn.getAttribute('data-bs-theme-value');
+                            var t = (v === 'auto') ? 'system' : v;
+                            try { localStorage.setItem(KEY, t); } catch (_e) { /* private browsing */ }
+                            if (typeof window.iHymnsAdminApplyTheme === 'function') {
+                                window.iHymnsAdminApplyTheme(t);
+                            }
+                        });
+                    });
+                })();
+                </script>
 
                 <!-- Account dropdown (#579) — single circular avatar
                      button at every viewport, matching the main-app

@@ -33,6 +33,11 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
+/* #955 — synchronous theme resolver MUST run before any CSS link
+   so the browser has the correct data-bs-theme / data-ihymns-theme
+   attributes set before computing layout. No FOUC. */
+require __DIR__ . DIRECTORY_SEPARATOR . 'admin-theme-init.php';
+
 $_bs = APP_CONFIG['libraries']['bootstrap'] ?? null;
 if ($_bs && !empty($_bs['css_cdn'])):
     ?>
