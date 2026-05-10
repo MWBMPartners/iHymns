@@ -1430,7 +1430,7 @@ if ($action !== '') {
 <!DOCTYPE html>
 <!-- IHYMNS_APPLY_ALL_CHROME_v3 — if you can see this comment in View Source,
      the chrome-first render is reaching the browser. (#817 round 2) -->
-<html lang="en" data-bs-theme="dark">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -1743,7 +1743,7 @@ if ($hasCredentials && defined('DB_HOST')) {
  * ========================================================================= */
 ?>
 <!DOCTYPE html>
-<html lang="en" data-bs-theme="dark">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
