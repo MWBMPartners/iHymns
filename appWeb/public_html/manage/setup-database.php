@@ -211,6 +211,7 @@ $friendlyTitles = [
     'credit-people-slug'               => 'Credit People Slug + public page (#588)',
     'credit-people-name-parts'         => 'Credit People Structured Name (FirstNames / Surname / Suffix) (#934)',
     'catalogues'                       => 'Catalogues — many-to-many song grouping (#941)',
+    'backfill-works-from-iswc'         => 'Backfill Works from existing ISWCs (#942)',
     'user-avatar-service'              => 'Per-user Avatar Service (#616)',
     'organisation-licences'            => 'Multiple Licence Types per Organisation (#640)',
     'songbook-affiliations'            => 'Songbook Affiliations Registry (#670)',
@@ -286,6 +287,7 @@ $scriptMap = [
     'credit-people-slug' => 'migrate-credit-people-slug.php',
     'credit-people-name-parts' => 'migrate-credit-people-name-parts.php',
     'catalogues' => 'migrate-catalogues.php',
+    'backfill-works-from-iswc' => 'backfill-works-from-iswc.php',
     'user-avatar-service' => 'migrate-user-avatar-service.php',
     'organisation-licences' => 'migrate-organisation-licences.php',
     'songbook-affiliations' => 'migrate-songbook-affiliations.php',
@@ -345,6 +347,7 @@ $migrationOrder = [
     'credit-people-slug',
     'credit-people-name-parts',
     'catalogues',
+    'backfill-works-from-iswc',
     'user-avatar-service',
     'organisation-licences',
     'songbook-affiliations',
@@ -476,6 +479,17 @@ $migrationCards = [
                   . ' bio, lifespan, external links, and a discography grouped by role'
                   . ' across the six song-credit tables. Idempotent — safe to re-run.',
         'button' => 'Run Credit People Slug Migration',
+    ],
+    'backfill-works-from-iswc' => [
+        'title'  => 'Backfill Works from existing ISWCs (#942)',
+        'body'   => 'Walks <code>tblSongs.Iswc</code> and creates one <code>tblWorks</code> row per'
+                  . ' distinct ISWC, then links every song carrying that ISWC into <code>tblWorkSongs</code>.'
+                  . ' Title for new Works is derived from the most-common Title across member songs;'
+                  . ' the lowest-numbered member is flagged <code>IsCanonical=1</code>. Idempotent —'
+                  . ' re-runs add only the genuinely missing memberships and never overwrite a'
+                  . ' curator\'s existing Work row. External-API enrichment (ISWCnet / MusicBrainz / MRO IDs)'
+                  . ' is a separate follow-up (#943).',
+        'button' => 'Backfill Works from ISWCs',
     ],
     'catalogues' => [
         'title'  => 'Catalogues — many-to-many song grouping (#941)',
@@ -1015,6 +1029,23 @@ $migrationProbes = [
     'credit-people-slug'                 => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblCreditPeople', 'Slug'),
     'credit-people-name-parts'           => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblCreditPeople', 'Surname'),
     'catalogues'                         => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblCatalogues'),
+    /* #942 — pending whenever any ISWC-tagged song doesn't have a
+       matching tblWorks row. Re-runnable: as new ISWCs land in
+       tblSongs, the probe surfaces them as outstanding work. */
+    'backfill-works-from-iswc'           => static function (\mysqli $db): bool {
+        if (!_migProbe_tableExists($db, 'tblWorks')) return false;
+        try {
+            $r = $db->query(
+                "SELECT 1 FROM tblSongs s
+                  WHERE s.Iswc IS NOT NULL AND TRIM(s.Iswc) <> ''
+                    AND NOT EXISTS (SELECT 1 FROM tblWorks w WHERE w.Iswc = s.Iswc)
+                  LIMIT 1"
+            );
+            $pending = $r && $r->fetch_row() !== null;
+            if ($r) $r->close();
+            return $pending;
+        } catch (\Throwable $_e) { return false; }
+    },
     'user-avatar-service'                => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblUsers', 'AvatarService'),
     'organisation-licences'              => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblOrganisationLicences'),
     'songbook-affiliations'              => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongbookAffiliations'),
