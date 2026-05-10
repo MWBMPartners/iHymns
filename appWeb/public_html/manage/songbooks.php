@@ -1009,6 +1009,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 /* Self-populate the affiliation registry so the next
                    open of the typeahead surfaces this value (#670). */
                 $registerAffiliation($affiliation);
+                /* #961 — refresh the on-disk songs cache so the Song
+                   Editor's view of songbooks (incl. IsOfficial flag)
+                   stays current. Best-effort — a regen failure must
+                   not undo the create that just committed. */
+                require_once dirname(__DIR__) . DIRECTORY_SEPARATOR
+                    . 'includes' . DIRECTORY_SEPARATOR . 'songs_cache.php';
+                songsCacheRegenerateBestEffort('songbooks.create');
                 $success = "Songbook '{$abbr}' created.";
                 break;
             }
@@ -1535,6 +1542,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $registerAffiliation($affiliation);
                     }
 
+                    /* #961 — refresh the on-disk songs cache so the
+                       Song Editor's IsOfficial-aware validator (and
+                       every other client-side consumer) sees the
+                       fresh flag value on next load. Best-effort. */
+                    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR
+                        . 'includes' . DIRECTORY_SEPARATOR . 'songs_cache.php';
+                    songsCacheRegenerateBestEffort('songbooks.update');
                     $success = $abbrChanged
                         ? "Songbook '{$oldAbbr}' → '{$newAbbr}'" . ($alsoRename ? ' (song references updated).' : ' (song references kept — resolve manually).')
                         : "Songbook '{$oldAbbr}' updated.";
@@ -1613,6 +1627,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'abbreviation' => $abbr,
                 ]);
 
+                /* #961 — refresh the songs cache so the deleted
+                   songbook stops appearing in the Song Editor's
+                   dropdown on next load. */
+                require_once dirname(__DIR__) . DIRECTORY_SEPARATOR
+                    . 'includes' . DIRECTORY_SEPARATOR . 'songs_cache.php';
+                songsCacheRegenerateBestEffort('songbooks.delete');
+
                 $success = "Songbook '{$abbr}' deleted.";
                 break;
             }
@@ -1683,6 +1704,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'abbreviation' => $abbr,
                         'song_count'   => $songCount,
                     ]);
+
+                    /* #961 — cascade-delete removed many songs + a
+                       songbook from the catalogue. Regenerate the
+                       cache so the public site stops serving the
+                       phantom rows. */
+                    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR
+                        . 'includes' . DIRECTORY_SEPARATOR . 'songs_cache.php';
+                    songsCacheRegenerateBestEffort('songbooks.delete_cascade');
 
                     $success = "Songbook '{$abbr}' deleted along with {$songCount} song"
                              . ($songCount === 1 ? '' : 's')
