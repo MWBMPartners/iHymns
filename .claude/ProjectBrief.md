@@ -247,3 +247,39 @@ Active in-flight items deferred from earlier batches (will land in their own PRs
 New deferred items from the 2026-05 batch:
 - **#838** — credit-people external-links editor on the new schema (legacy `tblCreditPersonLinks` still read-fallback).
 - **#839** — chip-list editor for song external links in `/manage/editor`.
+
+---
+
+Last updated: 2026-05-10 — refreshed at the close of the post-#852 catch-up batches (v0.50→v0.110):
+
+### Major batches landed since 2026-05-04
+
+**Activity-log + auth-resilience cluster (#917–#931).** Real email delivery for magic-link, reset, register, admin force-reset (#922 closes #898 P0/security); per-request rows + IPv6/proxy/VPN resolution in `tblActivityLog` (#919); every uncaught throwable + PHP fatal mirrored to the activity log (#918); editor 5xx error detail surfaced in the toast (#927); defensive `bindParamSafe()` wrapper that prevents the silent activity-log regression class of bug (#928, retrofit of `activity_log.php` after `'isssssssssssssi'`-vs-14-placeholder typo); migrations use `getDbMysqli()` instead of bogus `MYSQL_HOST` constants (#930).
+
+**Songs static cache (#933).** Replaces on-demand `SongData::exportAsJson()` rebuild on every editor open / PWA cold-start with a precomputed on-disk cache regenerated on save. Per-request peak memory drops from ~140 MB to <2 MB; wire size drops from 5.96 MB to 928 KB on gzip-9. Save-hook regen wired into editor `save_song` + four bulk-import flows; manual regenerate button on `/manage/data-health`. Reverts #931's 512 MB band-aid.
+
+**Credit-people structured-name split (#935).** Adds `FirstNames` / `Surname` / `Suffix` columns to `tblCreditPeople` alongside the canonical `Name`. Backfill heuristic peels Jr/III/PhD trailing suffixes; comma-inverted "Wesley, Charles" handled. Group / special-case rows leave the three columns NULL. `Name` is recomposed on individual saves so all 30 read sites keep working unchanged.
+
+**Quick-wins batch (#948).** Seven commits in one PR: rebuild-bug fix on `/manage/song-link-suggestions` (script lived at project-root `tools/` but only `appWeb/public_html/` deploys — #937); inline labels on `/manage/my-organisations` licence-row inputs (#936); visual separation between media-kind blocks in the Song Editor's Media tab (#938); design-intent doc-comment for the future PD-gating tier (#939, lyrics-PD and music-PD must be checked independently); public song-page metadata becomes navigation — Tune name → `/tune/<slug>`, CCLI # → SongSelect new tab, ISWC → `/iswc/<code>`, plus credits-block parity + Works-graph translations (#940); Catalogues many-to-many song grouping concept (#941, schema + admin CRUD at `/manage/catalogues`); one-shot Works backfill from existing ISWC values (#942).
+
+**Docs port + version bump (#950).** Recovered durable engineering content stranded on the auto-undeleted `claude/chore-claude-context-sync` branch into `.claude/project-rules.md` Section 14 (HTTP-block triage, void-element parsers, per-origin browser state) and a Cross-environment data sharing subsection here. Version 0.100.0 → 0.110.0.
+
+**Centralised link styling (#952).** Kills Bootstrap default `<a>` blue + solid-underline site-wide; replaces with `.song-meta-link`-style muted dotted-underline + accent on hover. Bootstrap component classes (`.btn`, `.nav-link`, `.dropdown-item`, `.breadcrumb-item a`) keep their styling via specificity. Credits-block author / composer footer is now clickable too (parity with the header).
+
+### In-flight (PRs awaiting merge)
+
+- **#954** — one-line catalogues dark-mode regression fix (will be superseded by #956).
+- **#956** — admin pages obey user theme preference (Light / Dark / High-contrast / CVD / System) via the new `admin-theme-init.php` synchronous resolver in `<head>`. Drops hardcoded `data-bs-theme="dark"` from every admin page; admin-nav theme dropdown now persists to `localStorage.ihymns_theme` and round-trips with the public site.
+
+### New tracking issues (deferred, full design captured)
+
+- **#943** — Works ISWC API integration (ISWCnet + MusicBrainz + MRO IDs).
+- **#944** — UI i18n + Translator role + Roles admin area.
+- **#945** — Naming cleanup: User Groups / Access Tiers / Roles / Entitlements / Licence Types vocabulary audit.
+- **#946** — Analytics expansion (user/referral/entry-exit) + external platform integration (GA4 / Plausible / Matomo).
+- **#947** — Login forms: Cloudflare Turnstile / reCAPTCHA / hCaptcha admin-configurable CAPTCHA.
+
+### Open priority items
+
+1. **#945 (naming cleanup)** — most-impactful of the deferred large issues; every other large issue (especially #944 i18n) benefits from clearer vocabulary first.
+2. **DB-isolation diagnostic queries** from `project_db_environment_isolation_open.md` memo — cheap to run now that #898's email delivery is live; confirms whether the missing-user-signup hypothesis is closed.
