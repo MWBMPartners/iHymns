@@ -1519,7 +1519,7 @@ CREATE TABLE IF NOT EXISTS tblSongLinks (
 
 -- ----------------------------------------------------------------------------
 -- tblSongLinkSuggestions (#808) — pre-computed pairwise similarity scores.
--- Populated by tools/build-song-link-suggestions.php; consumed by the
+-- Populated by appWeb/public_html/includes/tools/build-song-link-suggestions.php; consumed by the
 -- /manage/song-link-suggestions admin page. Pairs are stored canonically
 -- with SongIdA < SongIdB so each unordered pair has at most one row.
 -- ----------------------------------------------------------------------------

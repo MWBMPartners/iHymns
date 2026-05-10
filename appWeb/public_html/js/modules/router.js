@@ -281,6 +281,18 @@ export class Router {
                    /works/<slug> accepted as a forgiving alias matching
                    the people / person convention. */
                 return { page: 'work', params: { slug: segments[1] || '' } };
+            case 'tune':
+                /* #940 — /tune/<slug> lists every song that uses the
+                   named tune. Slugified upstream (lowercase + hyphen-
+                   separated). Empty / unknown slug renders the page's
+                   own friendly empty state. */
+                return { page: 'tune', params: { slug: segments[1] || '' } };
+            case 'iswc':
+                /* #940 — /iswc/<code> lists every song that shares the
+                   ISWC. The code is the standard T-NNN.NNN.NNN-N format
+                   url-encoded; the page handler decodes and strips
+                   non-T/digit characters defensively. */
+                return { page: 'iswc', params: { code: segments[1] || '' } };
             case 'help':
                 return { page: 'help', params: {} };
             case 'terms':
@@ -354,6 +366,12 @@ export class Router {
         /* Person page (#588) carries `slug`, not `id`. */
         if (params.slug) {
             url.searchParams.set('slug', params.slug);
+        }
+        /* #940 — ISWC pages key on the `code` parameter (the actual
+           ISWC value, not a slug — the format T-NNN.NNN.NNN-N is
+           already canonical). */
+        if (params.code) {
+            url.searchParams.set('code', params.code);
         }
         /* Request-a-song deep-link prefill (#666) — forwarded straight
            through to the partial so it can echo them into the input

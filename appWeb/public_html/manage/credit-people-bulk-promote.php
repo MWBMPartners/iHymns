@@ -57,7 +57,7 @@ const _CP_BULK_CREDIT_TABLES = [
 
 /**
  * Cheap normalised-name similarity in [0, 1]. Mirrors the scoring
- * shape from tools/build-song-link-suggestions.php (#808): lowercase,
+ * shape from includes/tools/build-song-link-suggestions.php (#808 / #937): lowercase,
  * strip punctuation, collapse whitespace, then 1 - (edit-distance /
  * max-length). Token-set bonus boosts "John Newton" vs "Newton, John".
  *

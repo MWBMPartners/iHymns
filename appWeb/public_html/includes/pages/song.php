@@ -445,15 +445,24 @@ try {
                  (#599) — same wrapper class, same icon styling, same
                  bold-label-then-value pattern — so the song header
                  reads as a single consistent credit block instead of
-                 the credits + a smaller dimmer Tune line. The link
-                 target `/tune/<slug>` is reserved for a future
-                 cross-reference listing (#494); until that ships we
-                 still render the value as plain text. -->
-            <?php if ($tuneName !== ''): ?>
+                 the credits + a smaller dimmer Tune line.
+                 #940 — tune is now a link to `/tune/<slug>` listing
+                 every song that uses that tune; lets a worship leader
+                 mix-n-match lyrics across hymns with the same melody. -->
+            <?php if ($tuneName !== ''):
+                $_tuneSlug = strtolower(trim(preg_replace('/[^A-Za-z0-9]+/', '-', $tuneName), '-'));
+                ?>
                 <div class="song-meta mb-3">
                     <p class="mb-0 song-credit-row" data-credit-kind="tune">
                         <i class="fa-solid fa-music me-2 text-muted" aria-hidden="true"></i>
-                        <strong>Tune:</strong> <?= htmlspecialchars($tuneName) ?>
+                        <strong>Tune:</strong>
+                        <?php if ($_tuneSlug !== ''): ?>
+                            <a href="/tune/<?= htmlspecialchars($_tuneSlug) ?>"
+                               data-navigate="tune"
+                               title="See all songs that use this tune"><?= htmlspecialchars($tuneName) ?></a>
+                        <?php else: ?>
+                            <?= htmlspecialchars($tuneName) ?>
+                        <?php endif; ?>
                     </p>
                 </div>
             <?php endif; ?>
@@ -564,16 +573,34 @@ try {
                     <?php endif; ?>
                     <?php if (!empty($ccli) || $iswc !== ''): ?>
                         <div class="song-id-row d-flex flex-wrap column-gap-4 row-gap-1">
-                            <?php if (!empty($ccli)): ?>
+                            <?php if (!empty($ccli)):
+                                /* #940 — link the CCLI number itself to SongSelect.
+                                   Per the spec the link opens in a new tab. */
+                                $_ccliEnc = rawurlencode((string)$ccli);
+                                ?>
                                 <span class="small text-muted">
                                     <i class="fa-solid fa-hashtag me-2" aria-hidden="true"></i>
-                                    <strong>CCLI Song #</strong>&nbsp;<?= htmlspecialchars($ccli) ?>
+                                    <strong>CCLI Song #</strong>&nbsp;<a
+                                        href="https://songselect.ccli.com/songs/<?= htmlspecialchars($_ccliEnc) ?>"
+                                        target="_blank"
+                                        rel="noopener noreferrer external"
+                                        title="View on CCLI SongSelect (opens in new tab)"><?= htmlspecialchars($ccli) ?></a>
                                 </span>
                             <?php endif; ?>
-                            <?php if ($iswc !== ''): ?>
+                            <?php if ($iswc !== ''):
+                                /* #940 — link the ISWC to an internal page listing
+                                   every song that shares this code. Internal rather
+                                   than external to ISWCnet because catalogue
+                                   navigation is more useful than a search-result
+                                   redirect. The route is /iswc/<encoded-iswc>. */
+                                $_iswcEnc = rawurlencode((string)$iswc);
+                                ?>
                                 <span class="small text-muted" title="International Standard Musical Work Code">
                                     <i class="fa-solid fa-barcode me-2" aria-hidden="true"></i>
-                                    <strong>ISWC:</strong>&nbsp;<?= htmlspecialchars($iswc) ?>
+                                    <strong>ISWC:</strong>&nbsp;<a
+                                        href="/iswc/<?= htmlspecialchars($_iswcEnc) ?>"
+                                        data-navigate="iswc"
+                                        title="See all songs sharing this ISWC"><?= htmlspecialchars($iswc) ?></a>
                                 </span>
                             <?php endif; ?>
                         </div>
@@ -828,6 +855,8 @@ try {
     <?php if (
         !empty($_creditRows) && $_hasAnyCredit
         || $tuneName !== ''
+        || !empty($ccli)
+        || $iswc !== ''
         || (!$fullyPublicDomain && !empty($copyright))
         || $fullyPublicDomain
     ): ?>
@@ -842,9 +871,44 @@ try {
                     </div>
                 <?php endforeach; ?>
             <?php endif; ?>
-            <?php if ($tuneName !== ''): ?>
+            <?php if ($tuneName !== ''):
+                /* #940 — same link as the header, mirrored in the
+                   after-lyrics credits block for parity. */
+                $_tuneSlugFooter = strtolower(trim(preg_replace('/[^A-Za-z0-9]+/', '-', $tuneName), '-'));
+                ?>
                 <div data-credit-kind="tune">
-                    <strong>Tune:</strong> <?= htmlspecialchars($tuneName) ?>
+                    <strong>Tune:</strong>
+                    <?php if ($_tuneSlugFooter !== ''): ?>
+                        <a href="/tune/<?= htmlspecialchars($_tuneSlugFooter) ?>"
+                           data-navigate="tune"
+                           title="See all songs that use this tune"><?= htmlspecialchars($tuneName) ?></a>
+                    <?php else: ?>
+                        <?= htmlspecialchars($tuneName) ?>
+                    <?php endif; ?>
+                </div>
+            <?php endif; ?>
+            <?php if (!empty($ccli)):
+                /* #940 — CCLI / ISWC are surfaced in the credits block
+                   too so a viewer who's scrolled past the masthead can
+                   still see (and click) the catalogue identifiers. */
+                $_ccliEncFooter = rawurlencode((string)$ccli);
+                ?>
+                <div data-credit-kind="ccli">
+                    <strong>CCLI Song #</strong>
+                    <a href="https://songselect.ccli.com/songs/<?= htmlspecialchars($_ccliEncFooter) ?>"
+                       target="_blank"
+                       rel="noopener noreferrer external"
+                       title="View on CCLI SongSelect (opens in new tab)"><?= htmlspecialchars($ccli) ?></a>
+                </div>
+            <?php endif; ?>
+            <?php if ($iswc !== ''):
+                $_iswcEncFooter = rawurlencode((string)$iswc);
+                ?>
+                <div data-credit-kind="iswc" title="International Standard Musical Work Code">
+                    <strong>ISWC:</strong>
+                    <a href="/iswc/<?= htmlspecialchars($_iswcEncFooter) ?>"
+                       data-navigate="iswc"
+                       title="See all songs sharing this ISWC"><?= htmlspecialchars($iswc) ?></a>
                 </div>
             <?php endif; ?>
             <?php if ($fullyPublicDomain): ?>
