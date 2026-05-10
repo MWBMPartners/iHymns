@@ -95,6 +95,23 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 - Auto-bumped via conventional commits on push to `beta` (single source of truth)
 - Alpha builds display commit date timestamp (yyyymmddhhmmss) in footer
 
+### Cross-environment data sharing
+
+The three subdomains (`dev.ihymns.app` = alpha, `beta.ihymns.app` = beta, `www.ihymns.app` = main) connect to **one shared MySQL** at `mysql.MWBMpartners.ltd:3306` / DB name `ihymns`. There is no separate alpha-DB / beta-DB / prod-DB.
+
+State sharing across subdomains is **asymmetric** — easy to misdiagnose if you forget which axis is per-origin and which is `.ihymns.app`-scoped:
+
+| Layer | Scope | Notes |
+| --- | --- | --- |
+| MySQL row data | shared | One DB. A row written on alpha is immediately visible to beta + main. |
+| `ihymns_auth` cookie | `.ihymns.app` | Set by `setAuthTokenCookie()` / `_authCookieOpts()`. Cross-subdomain auth IS designed to work. |
+| `ihymns_sync` cookie | `.ihymns.app` | Lightweight settings sync (theme, font size, default songbook) via `js/modules/subdomain-sync.js`. Only path for cross-subdomain settings. |
+| Bearer token in localStorage | per-origin | W3C spec — each subdomain has its own. The cookie fallback in `getAuthBearerToken()` covers the gap. |
+| Service-worker cache | per-origin | Most common cause of "alpha data not appearing on main" symptoms when the underlying DB row is verified-present. |
+| Setlist / favourite localStorage | per-origin | Sharing across subdomains requires explicit DB sync via the auth flow, not magic. |
+
+When debugging "subdomain X has the data but Y doesn't", follow the diagnostic sequence in `.claude/project-rules.md` Section 14.3.
+
 ---
 
 ## 🎨 Design

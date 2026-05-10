@@ -225,3 +225,46 @@ is free-form, which makes it tempting to dump request bodies wholesale.
 When in doubt, log the field NAME but not the field VALUE. A row that
 says `{ "fields": ["PasswordHash"] }` is fine; one that includes the
 hash itself is a bug.
+
+## 14. Conventions established post-#852 (HTTP / parser / browser-state)
+
+Durable patterns extracted from the diagnostic / scraper / auth-audit work after the catalogue-refresh batch. Read these before similar work — each rule has been paid for in real debugging time.
+
+### 14.1 Triage durable HTTP blocks via browser → curl → script (NOT VPN/UA swaps)
+
+When a scraper, fetcher, or any HTTP-driven script reports a block / rate-limit / wall that **survives across multiple sessions, networks, VPN endpoints, and User-Agents**, do NOT keep iterating on the network/UA dimension. Run a three-tier triage:
+
+1. Does the URL load in a normal browser on the same network? If no, it's truly a server-side block; VPN/UA swap may help.
+2. Does `curl` with realistic headers fetch the same content? If no, the block is at the HTTP-client level (TLS fingerprint, header order, ALPN); upgrade the client.
+3. Does the script's parser produce the right shape from that same byte stream? If no, **the bug is in our code**, not theirs.
+
+Only after steps 1–3 rule everything out, suspect a server-side bug.
+
+**Apply this whenever a "rate limit" survives more than ~3 attempted variations on the network/UA axis.** Real precedent: HA hymn 331 wall, 2026-05-07. Multiple sessions worth of VPN swaps + residential UA pools were spent on what turned out to be a parser bug (Section 14.2). `curl` with a Safari UA on the same machine returned full hymn HTML in 1.6s every time.
+
+### 14.2 Custom HTML parsers must keep void elements depth-neutral
+
+When writing or maintaining a depth-tracking HTML parser (subclass of `html.parser.HTMLParser` in Python or equivalent in any language), HTML void elements (`<br>`, `<hr>`, `<img>`, `<input>`, `<meta>`, `<link>`, `<area>`, `<base>`, `<col>`, `<embed>`, `<param>`, `<source>`, `<track>`, `<wbr>`) must NOT contribute to the depth counter on either `handle_starttag` or `handle_endtag`.
+
+Reason: `<br>` (no closing tag) fires only `handle_starttag`, while `<br />` (XHTML self-closing) fires both via `handle_startendtag`'s default. Treating either consistently — both increment + decrement, OR both skipped — keeps depth balanced.
+
+The bug shape is: title parses but no sections / children, page looks empty, structural rate-limit fallback misfires. That's the signature.
+
+Reference implementation: `.importers/scrapers/SDAHymnals_SDAHymnal.org.py` after PR #894. Don't repeat the depth-mistake pattern in any new parser.
+
+### 14.3 Per-origin browser state vs cross-origin cookies — known confusion
+
+iHymns runs at `dev.ihymns.app` (alpha), `beta.ihymns.app` (beta), and `www.ihymns.app` (main) sharing one MySQL DB. The shape of cross-subdomain state-sharing is asymmetric and easy to misdiagnose:
+
+- **Server-side auth via the `ihymns_auth` cookie** is `Domain=.ihymns.app`-scoped (set by `setAuthTokenCookie()` / `_authCookieOpts()` in `api.php`), so a server-side render or API call on any subdomain reads it. Cross-subdomain auth IS designed to work.
+- **Client-side bearer token in localStorage** is per-origin by W3C spec — each subdomain has its own. The frontend reads `localStorage.getItem('ihymns_auth_token')` and attaches it as `Authorization: Bearer …`. If main's localStorage is empty, the JS sets no Authorization header, but the browser still sends the `ihymns_auth` cookie automatically (default `credentials: 'same-origin'`), so the server still authenticates via the cookie fallback in `getAuthBearerToken()`.
+- **Cross-subdomain settings sync** (theme, font size, default songbook, etc.) goes via the `ihymns_sync` cookie at `.ihymns.app` scope — see `js/modules/subdomain-sync.js`. This is the ONLY lightweight-settings sharing mechanism; large data (setlists, favourites) is excluded by design.
+- **Service-worker caches** are per-origin too. A stale `?action=user_setlists` GET response on main can persist after the alpha-side sync wrote the new row to the shared DB. **Per-origin SW cache is the most common cause of "alpha data not appearing on main" symptoms** when the underlying DB row is verified-present.
+- **localStorage data** (setlists, favourites, history) is per-origin; sharing across subdomains requires explicit DB sync via the auth flow, not magic.
+
+**Diagnostic sequence when "subdomain X has the data but Y doesn't":**
+
+1. Confirm the data actually exists in the shared DB via `/manage/setup-database`'s tables panel or a direct SQL query.
+2. On Y, DevTools → Application → check `ihymns_auth` cookie (Domain should be `.ihymns.app`, not the subdomain).
+3. On Y, run `fetch('/api?action=user_setlists').then(r=>r.json())` in the console — if it returns the data fresh, the SW cache is the culprit; unregister via DevTools → Application → Service Workers → Unregister, reload.
+4. Only after steps 1–3 rule everything out, suspect a server-side bug.
