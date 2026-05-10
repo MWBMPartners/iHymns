@@ -553,28 +553,43 @@ $csrf = csrfToken();
                                 <tr>
                                     <td><code><?= htmlspecialchars((string)$l['LicenceType']) ?></code></td>
                                     <td>
-                                        <form method="POST" class="d-inline-flex align-items-center gap-1">
+                                        <form method="POST" class="d-inline-flex align-items-center gap-1 flex-wrap">
                                             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                                             <input type="hidden" name="action" value="licence_change">
                                             <input type="hidden" name="org_id"     value="<?= $orgId ?>">
                                             <input type="hidden" name="licence_id" value="<?= (int)($l['Id'] ?? 0) ?>">
+                                            <!-- #936: inline labels so each input is self-describing
+                                                 without depending on the table-header alignment, which
+                                                 doesn't work here because the form is contained inside
+                                                 a single cell with colspan="3" trailing it. -->
+                                            <span class="text-muted small" aria-hidden="true">№</span>
                                             <input type="text" name="licence_number"
                                                    class="form-control form-control-sm py-0"
                                                    value="<?= htmlspecialchars((string)$l['LicenceNumber']) ?>"
+                                                   title="Licence number"
+                                                   aria-label="Licence number"
+                                                   placeholder="Licence number"
                                                    style="width: 10rem;">
+                                            <span class="text-muted small" aria-hidden="true">Expires</span>
                                             <input type="date" name="expires_at"
                                                    class="form-control form-control-sm py-0"
                                                    value="<?= htmlspecialchars(substr((string)($l['ExpiresAt'] ?? ''), 0, 10)) ?>"
+                                                   title="Licence expiration date"
+                                                   aria-label="Licence expiration date"
                                                    style="width: 9rem;">
                                             <div class="form-check form-check-inline mb-0">
                                                 <input class="form-check-input" type="checkbox" name="is_active" value="1"
-                                                       <?= !empty($l['IsActive']) ? 'checked' : '' ?>>
+                                                       <?= !empty($l['IsActive']) ? 'checked' : '' ?>
+                                                       title="Licence is currently active"
+                                                       aria-label="Licence is currently active">
                                                 <label class="form-check-label small">active</label>
                                             </div>
                                             <input type="text" name="notes"
                                                    class="form-control form-control-sm py-0"
                                                    value="<?= htmlspecialchars((string)($l['Notes'] ?? '')) ?>"
-                                                   placeholder="notes" style="width: 11rem;">
+                                                   title="Notes"
+                                                   aria-label="Licence notes"
+                                                   placeholder="Notes" style="width: 11rem;">
                                             <button type="submit" class="btn btn-sm btn-outline-info py-0 px-2" title="Save">
                                                 <i class="bi bi-check2"></i>
                                             </button>
