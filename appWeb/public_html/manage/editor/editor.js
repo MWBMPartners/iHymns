@@ -2109,9 +2109,16 @@ function bindTagSearchInput() {
             var item = document.createElement('button');
             item.type = 'button';
             item.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center';
+            /* #958 — s.usage is a count from the tag_search API but
+               it's still an untrusted string from the server's
+               perspective. Coerce to a non-negative integer before
+               interpolation; defends against a stored-XSS path where
+               a malicious tag-row could carry a string usage value. */
+            var usageNum = parseInt(s.usage, 10);
+            if (!Number.isFinite(usageNum) || usageNum < 0) usageNum = 0;
             item.innerHTML =
                 '<span>' + escapeHtmlSafe(s.name) + '</span>' +
-                '<span class="badge bg-secondary">' + s.usage + '</span>';
+                '<span class="badge bg-secondary">' + usageNum + '</span>';
             item.addEventListener('click', function () {
                 var song = findSongById(currentSongId);
                 if (song) addSongTag(song, s.name);
@@ -2761,9 +2768,15 @@ function attachCreditAutocomplete(input, row, kind, onChange) {
             var kindsBadge = (s.kinds && s.kinds.length)
                 ? '<small class="text-muted">' + escapeHtmlSafe(s.kinds.join(' · ')) + '</small>'
                 : '';
+            /* #958 — same coerce-to-integer pattern as the tag-search
+               sink above. `s.usage` from the credit_search API is a
+               count, but defence-in-depth: coerce before interpolation
+               so a stored-XSS via a string `usage` is impossible. */
+            var creditUsageNum = parseInt(s.usage, 10);
+            if (!Number.isFinite(creditUsageNum) || creditUsageNum < 0) creditUsageNum = 0;
             item.innerHTML =
                 '<span><strong>' + escapeHtmlSafe(s.name) + '</strong> ' + kindsBadge + '</span>' +
-                '<span class="badge bg-secondary">' + (s.usage || 0) + '</span>';
+                '<span class="badge bg-secondary">' + creditUsageNum + '</span>';
             item.addEventListener('click', function (e) {
                 e.preventDefault();
                 input.value = s.name;

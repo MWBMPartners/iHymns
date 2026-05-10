@@ -456,7 +456,7 @@ export class Favorites {
                            data-song-id="${escapeHtml(fav.id)}"
                            aria-label="Select ${escapeHtml(toTitleCase(fav.title))}"
                            onclick="event.stopPropagation()">
-                    <span class="song-number-badge" data-songbook="${escapeHtml(fav.songbook)}">${fav.number ?? ''}</span>
+                    <span class="song-number-badge" data-songbook="${escapeHtml(fav.songbook)}">${escapeHtml(String(fav.number ?? ''))}</span>
                     <div class="song-info flex-grow-1">
                         <span class="song-title">${escapeHtml(toTitleCase(fav.title))}${verifiedBadge(fav)}</span>
                         <small class="text-muted d-block">${songbookLabel(fav.songbook)}${tagsHtml}</small>
@@ -535,15 +535,28 @@ export class Favorites {
 
         if (toolbar) toolbar.classList.toggle('d-none', !this.selectMode);
 
-        /* In select mode, clicks toggle checkboxes instead of navigating */
+        /* In select mode, clicks toggle checkboxes instead of
+           navigating. We strip `href` to disable native anchor
+           navigation. To restore, we REBUILD from `data-song-id`
+           (escapeHtml'd at row creation in loadFavoritesList) rather
+           than round-tripping the previous href through a data
+           attribute — the round-trip pattern trips CodeQL's "DOM text
+           reinterpreted as HTML" rule even when the source is
+           trusted (#958). */
         listItems.forEach(item => {
             if (this.selectMode) {
-                item.setAttribute('data-original-href', item.getAttribute('href'));
                 item.removeAttribute('href');
                 item.addEventListener('click', this._handleSelectClick);
             } else {
-                const original = item.getAttribute('data-original-href');
-                if (original) item.setAttribute('href', original);
+                const songId = item.dataset.songId;
+                if (songId) {
+                    /* dataset.songId is read back as a string, but
+                       it was set via escapeHtml() in loadFavoritesList,
+                       so any HTML-special chars are already entities.
+                       Anchor-href reads strings as URL-text, not HTML,
+                       so the `/song/<id>` shape is safe. */
+                    item.setAttribute('href', '/song/' + encodeURIComponent(songId));
+                }
                 item.removeEventListener('click', this._handleSelectClick);
             }
         });
