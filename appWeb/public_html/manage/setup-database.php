@@ -210,6 +210,7 @@ $friendlyTitles = [
     'song-artists'                     => 'Songs Artist credit (#587)',
     'credit-people-slug'               => 'Credit People Slug + public page (#588)',
     'credit-people-name-parts'         => 'Credit People Structured Name (FirstNames / Surname / Suffix) (#934)',
+    'catalogues'                       => 'Catalogues — many-to-many song grouping (#941)',
     'user-avatar-service'              => 'Per-user Avatar Service (#616)',
     'organisation-licences'            => 'Multiple Licence Types per Organisation (#640)',
     'songbook-affiliations'            => 'Songbook Affiliations Registry (#670)',
@@ -284,6 +285,7 @@ $scriptMap = [
     'song-artists'  => 'migrate-song-artists.php',
     'credit-people-slug' => 'migrate-credit-people-slug.php',
     'credit-people-name-parts' => 'migrate-credit-people-name-parts.php',
+    'catalogues' => 'migrate-catalogues.php',
     'user-avatar-service' => 'migrate-user-avatar-service.php',
     'organisation-licences' => 'migrate-organisation-licences.php',
     'songbook-affiliations' => 'migrate-songbook-affiliations.php',
@@ -342,6 +344,7 @@ $migrationOrder = [
     'song-artists',
     'credit-people-slug',
     'credit-people-name-parts',
+    'catalogues',
     'user-avatar-service',
     'organisation-licences',
     'songbook-affiliations',
@@ -473,6 +476,16 @@ $migrationCards = [
                   . ' bio, lifespan, external links, and a discography grouped by role'
                   . ' across the six song-credit tables. Idempotent — safe to re-run.',
         'button' => 'Run Credit People Slug Migration',
+    ],
+    'catalogues' => [
+        'title'  => 'Catalogues — many-to-many song grouping (#941)',
+        'body'   => 'Adds <code>tblCatalogues</code> + <code>tblCatalogueSongs</code> so songs can'
+                  . ' be tagged into free-form thematic / curatorial groupings (Christmas, Modern'
+                  . ' worship, Public-Domain only, denominational affiliations, …) — orthogonal to'
+                  . ' the existing songbook hierarchy. One song can sit in many catalogues; admin'
+                  . ' CRUD lives at <a href="/manage/catalogues">/manage/catalogues</a>.'
+                  . ' Idempotent — safe to re-run.',
+        'button' => 'Run Catalogues Migration',
     ],
     'credit-people-name-parts' => [
         'title'  => 'Credit People Structured Name (#934)',
@@ -1001,6 +1014,7 @@ $migrationProbes = [
     'song-artists'                       => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongArtists'),
     'credit-people-slug'                 => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblCreditPeople', 'Slug'),
     'credit-people-name-parts'           => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblCreditPeople', 'Surname'),
+    'catalogues'                         => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblCatalogues'),
     'user-avatar-service'                => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblUsers', 'AvatarService'),
     'organisation-licences'              => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblOrganisationLicences'),
     'songbook-affiliations'              => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongbookAffiliations'),
