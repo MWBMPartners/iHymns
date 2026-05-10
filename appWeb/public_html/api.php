@@ -363,6 +363,23 @@ if ($page !== null) {
             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'work.php';
             break;
 
+        case 'tune':
+            /* #940 — /tune/<slug> public page listing every song that
+               uses the named tune. Empty slug → friendly empty-state
+               page rather than a hard error. */
+            $tuneSlug = isset($_GET['slug']) ? trim($_GET['slug']) : '';
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'tune.php';
+            break;
+
+        case 'iswc':
+            /* #940 — /iswc/<code> public page listing every song that
+               shares the ISWC code (T-NNN.NNN.NNN-N format). The page
+               normalises the code defensively (strips non-T/digit
+               characters, uppercases the leading T). */
+            $iswcCode = isset($_GET['code']) ? trim($_GET['code']) : '';
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'iswc.php';
+            break;
+
         case 'help':
             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'help.php';
             break;
@@ -2611,6 +2628,137 @@ if ($action !== null) {
                 }
             }
             $stmt->close();
+
+            /* #940 — Works-graph translations. Two songs that sit anywhere
+               in the same Work's tree (ancestor, descendant, sibling at any
+               depth) and carry a different language are translations of
+               each other. The Works graph is rooted by ISWC where available
+               (#840), so this catches translations that haven't been
+               explicitly linked via tblSongTranslations. Schema-probed —
+               pre-#840 deployments silently skip. */
+            try {
+                $wprobe = $db->query(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                      WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME = 'tblWorkSongs' LIMIT 1"
+                );
+                $hasWorks = $wprobe && $wprobe->fetch_row() !== null;
+                if ($wprobe) $wprobe->close();
+            } catch (\Throwable $_e) { $hasWorks = false; }
+
+            if ($hasWorks) {
+                /* Find this song's Work memberships, then walk to the
+                   tree root (ParentWorkId IS NULL), then walk down to
+                   collect every member song. We do this in one CTE-free
+                   query with three steps to keep MySQL 5.7 compatibility. */
+                $stmt = $db->prepare('SELECT WorkId FROM tblWorkSongs WHERE SongId = ?');
+                $stmt->bind_param('s', $translationSongId);
+                $stmt->execute();
+                $directWorkIds = array_column(
+                    $stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'WorkId'
+                );
+                $stmt->close();
+
+                /* Walk to root for each direct Work, collecting the
+                   ancestor chain. Bounded depth (10) so a malformed
+                   self-cycle can't infinite-loop. */
+                $rootWorkIds = [];
+                foreach ($directWorkIds as $wid) {
+                    $cursor = (int)$wid;
+                    $depth = 0;
+                    while ($cursor > 0 && $depth < 10) {
+                        $stmt = $db->prepare('SELECT ParentWorkId FROM tblWorks WHERE Id = ?');
+                        $stmt->bind_param('i', $cursor);
+                        $stmt->execute();
+                        $row = $stmt->get_result()->fetch_assoc();
+                        $stmt->close();
+                        if (!$row) break;
+                        if ($row['ParentWorkId'] === null) {
+                            $rootWorkIds[$cursor] = true;
+                            break;
+                        }
+                        $cursor = (int)$row['ParentWorkId'];
+                        $depth++;
+                    }
+                }
+
+                /* Walk down from each root to collect every descendant.
+                   Iterative BFS so a deep tree doesn't blow the stack. */
+                $descendantWorkIds = [];
+                $frontier = array_keys($rootWorkIds);
+                while (!empty($frontier)) {
+                    foreach ($frontier as $f) {
+                        $descendantWorkIds[(int)$f] = true;
+                    }
+                    $placeholders = implode(',', array_fill(0, count($frontier), '?'));
+                    $types = str_repeat('i', count($frontier));
+                    $stmt = $db->prepare(
+                        "SELECT Id FROM tblWorks WHERE ParentWorkId IN ($placeholders)"
+                    );
+                    $stmt->bind_param($types, ...$frontier);
+                    $stmt->execute();
+                    $next = array_column(
+                        $stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id'
+                    );
+                    $stmt->close();
+                    /* Filter out already-visited so a cycle (which
+                       shouldn't happen but isn't schema-prevented)
+                       doesn't loop. */
+                    $frontier = array_values(array_filter(
+                        $next,
+                        fn($n) => !isset($descendantWorkIds[(int)$n])
+                    ));
+                }
+
+                /* Pull every member song of the tree, joining for
+                   display fields + language tag. */
+                if (!empty($descendantWorkIds)) {
+                    $allWorkIds = array_keys($descendantWorkIds);
+                    $placeholders = implode(',', array_fill(0, count($allWorkIds), '?'));
+                    $types = str_repeat('i', count($allWorkIds));
+                    $stmt = $db->prepare(
+                        "SELECT s.SongId      AS songId,
+                                s.Language    AS language,
+                                s.Title       AS title,
+                                s.Number      AS number,
+                                l.Name        AS languageName,
+                                l.NativeName  AS languageNativeName
+                           FROM tblWorkSongs ws
+                           JOIN tblSongs s ON s.SongId = ws.SongId
+                           LEFT JOIN tblLanguages l ON l.Code = s.Language
+                          WHERE ws.WorkId IN ($placeholders)"
+                    );
+                    $stmt->bind_param($types, ...$allWorkIds);
+                    $stmt->execute();
+                    $currentLang = '';
+                    /* Find the current song's own language to filter
+                       out same-language Works members (they're not
+                       translations — they're the same hymn in the
+                       same language, possibly different songbooks). */
+                    foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $row) {
+                        if ((string)$row['songId'] === $translationSongId) {
+                            $currentLang = (string)$row['language'];
+                            break;
+                        }
+                    }
+                    /* Re-fetch to walk all rows (the MYSQLI result is
+                       single-pass and was consumed by the lang lookup). */
+                    $stmt->execute();
+                    foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $row) {
+                        $sid = (string)$row['songId'];
+                        if (!empty($seen[$sid])) continue;
+                        if ($sid === $translationSongId) continue;
+                        if ((string)$row['language'] === $currentLang) continue;
+                        $row['translator'] = '';
+                        $row['verified']   = false;
+                        $row['number']     = (int)$row['number'];
+                        $row['source']     = 'works_graph';
+                        $seen[$sid] = true;
+                        $translations[] = $row;
+                    }
+                    $stmt->close();
+                }
+            }
 
             sendJson(['translations' => $translations, 'sourceId' => $translationSongId]);
             break;
