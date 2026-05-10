@@ -9,8 +9,10 @@ declare(strict_types=1);
  * can one-click link them as the same hymn (writing into
  * tblSongLinks) or dismiss them (writing into
  * tblSongLinkSuggestionsDismissed). The producer side of the
- * pipeline is tools/build-song-link-suggestions.php — this page
- * only consumes that table.
+ * pipeline is appWeb/public_html/includes/tools/build-song-link-suggestions.php
+ * (relocated from project-root tools/ in #937 so it actually deploys —
+ * lftp only mirrors public_html/ to the remote). This page only
+ * consumes the populated table.
  *
  * Entitlement: edit_songs (curators who can fix song metadata
  * are the same set who should triage candidate links).
@@ -69,7 +71,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
            flash so the curator sees what was rebuilt. */
         ob_start();
         try {
-            require dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'tools' . DIRECTORY_SEPARATOR . 'build-song-link-suggestions.php';
+            require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes'
+                . DIRECTORY_SEPARATOR . 'tools'
+                . DIRECTORY_SEPARATOR . 'build-song-link-suggestions.php';
             $output = ob_get_clean();
             $flash = 'Rebuilt suggestion list. ' . strip_tags(str_replace('<br>', ' · ', $output));
         } catch (\Throwable $e) {

@@ -27,18 +27,25 @@ declare(strict_types=1);
  * Idempotent — every run TRUNCATEs and rebuilds tblSongLinkSuggestions.
  *
  * USAGE:
- *   php tools/build-song-link-suggestions.php           # default 0.80 threshold
- *   php tools/build-song-link-suggestions.php 0.75      # custom threshold
+ *   php appWeb/public_html/includes/tools/build-song-link-suggestions.php           # default 0.80 threshold
+ *   php appWeb/public_html/includes/tools/build-song-link-suggestions.php 0.75      # custom threshold
  *
  *   Web entry: /manage/song-link-suggestions?action=rebuild
+ *
+ * NOTE: Lives under appWeb/public_html/includes/ rather than the project-root
+ * tools/ directory because the deploy pipeline only mirrors public_html to the
+ * remote — a project-root tools/ would be missing on the server (#937). The
+ * includes/ tree is web-blocked by the parent .htaccess (Deny from all on
+ * `includes/`), so this script is reachable only via PHP require, never as
+ * a direct HTTP GET.
  */
 
 if (PHP_SAPI === 'cli') {
-    require_once __DIR__ . '/../appWeb/public_html/includes/db_mysql.php';
+    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'db_mysql.php';
     $isCli = true;
 } else {
     /* Web callers must have already set up auth before requiring this file. */
-    require_once __DIR__ . '/../appWeb/public_html/includes/db_mysql.php';
+    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'db_mysql.php';
     $isCli = false;
 }
 
