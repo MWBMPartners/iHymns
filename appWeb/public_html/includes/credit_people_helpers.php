@@ -143,6 +143,107 @@ function normaliseCreditPersonIpi(mixed $raw): array
 }
 
 /**
+ * Compose a person's display name from the structured columns added in
+ * #934. The result is what gets written back into tblCreditPeople.Name
+ * so the ~30 read sites that already query Name continue to see the
+ * canonical display string.
+ *
+ * Empty/null parts collapse cleanly: composePersonName('John', 'Newton', null)
+ * returns "John Newton"; ('', 'Anonymous', '') returns "Anonymous"; all-empty
+ * returns ''.
+ */
+function composePersonName(?string $first, ?string $surname, ?string $suffix): string
+{
+    $parts = array_filter(
+        [trim((string)$first), trim((string)$surname), trim((string)$suffix)],
+        static fn(string $p): bool => $p !== ''
+    );
+    return preg_replace('/\s+/', ' ', implode(' ', $parts)) ?? '';
+}
+
+/**
+ * Best-effort split of a free-text Name into [firstNames, surname, suffix].
+ * Used by the migration backfill (#934) and any other code that needs to
+ * decompose a legacy single-string name on the fly.
+ *
+ * Heuristic:
+ *   - Comma-inverted form ("Wesley, Charles") flips to "Charles Wesley".
+ *   - Trailing tokens matching the suffix pattern peel off into Suffix
+ *     (one or more — handles "John Smith III PhD").
+ *   - The new last token becomes Surname; everything before is FirstNames.
+ *   - A single-token name (e.g. "Madonna") goes entirely into Surname so
+ *     "ORDER BY Surname" sorts naturally.
+ *
+ * Returns ['', '', ''] on empty input. Callers that need to handle the
+ * "single-name surname might really be a first name" case can inspect
+ * the returned firstNames === '' and decide policy.
+ *
+ * @return array{0:string,1:string,2:string} [firstNames, surname, suffix]
+ */
+function decomposePersonName(string $name): array
+{
+    $name = trim(preg_replace('/\s+/', ' ', $name) ?? '');
+    if ($name === '') {
+        return ['', '', ''];
+    }
+    if (str_contains($name, ',')) {
+        $parts = array_map('trim', explode(',', $name, 2));
+        if (count($parts) === 2 && $parts[0] !== '' && $parts[1] !== '') {
+            $name = $parts[1] . ' ' . $parts[0];
+        }
+    }
+    $tokens = preg_split('/\s+/', $name) ?: [];
+    $tokens = array_values(array_filter($tokens, static fn(string $t): bool => $t !== ''));
+    if (empty($tokens)) {
+        return ['', '', ''];
+    }
+    $suffixPattern = '/^(?:Jr|Sr|II|III|IV|V|VI|VII|VIII|PhD|Ph\.D\.|MD|M\.D\.|Esq|Esq\.|D\.D\.|D\.Min\.|MA|M\.A\.|BA|B\.A\.)$/i';
+    $suffixParts = [];
+    while (count($tokens) > 1) {
+        $tail     = $tokens[count($tokens) - 1];
+        $tailNorm = rtrim($tail, '.,');
+        if (preg_match($suffixPattern, $tail) || preg_match($suffixPattern, $tailNorm)) {
+            array_unshift($suffixParts, array_pop($tokens));
+            continue;
+        }
+        break;
+    }
+    $suffix = implode(' ', $suffixParts);
+    if (count($tokens) === 1) {
+        return ['', $tokens[0], $suffix];
+    }
+    $surname    = (string)array_pop($tokens);
+    $firstNames = implode(' ', $tokens);
+    return [$firstNames, $surname, $suffix];
+}
+
+/**
+ * Cached check for the FirstNames / Surname / Suffix columns from #934.
+ * Mirrors creditPeopleFlagsColumnsExist()'s pattern — admin INSERT /
+ * UPDATE paths gate the new columns on this so a partly-migrated
+ * install still saves rather than throwing "Unknown column".
+ */
+function creditPeopleNamePartsColumnsExist(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) return $cached;
+    try {
+        $stmt = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblCreditPeople'
+                AND COLUMN_NAME  = 'Surname' LIMIT 1"
+        );
+        $stmt->execute();
+        $cached = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+    } catch (\Throwable $_e) {
+        $cached = false;
+    }
+    return $cached;
+}
+
+/**
  * Cached check for the IsSpecialCase / IsGroup columns from
  * #584/#585 (#630). Both ship together via
  * migrate-credit-people-flags.php; detecting one is sufficient to

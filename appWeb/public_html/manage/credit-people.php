@@ -228,6 +228,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $isGroup       = !empty($_POST['is_group'])        ? 1 : 0;
                 if ($isSpecialCase && $isGroup) { $isGroup = 0; }
 
+                /* #934 — structured-name parts. Only meaningful for
+                   individuals; for Group / Special-case rows we leave
+                   them NULL and use Name as-is. For individuals, Name
+                   is recomputed from the three parts so the canonical
+                   spelling stays consistent regardless of what the
+                   client posted. */
+                $firstNamesRaw = trim((string)($_POST['first_names'] ?? ''));
+                $surnameRaw    = trim((string)($_POST['surname']     ?? ''));
+                $suffixRaw     = trim((string)($_POST['suffix']      ?? ''));
+                $isIndividual  = (!$isSpecialCase && !$isGroup);
+                if ($isIndividual && ($firstNamesRaw !== '' || $surnameRaw !== '')) {
+                    $name = composePersonName($firstNamesRaw, $surnameRaw, $suffixRaw);
+                }
+                $firstNames = $isIndividual && $firstNamesRaw !== '' ? $firstNamesRaw : null;
+                $surname    = $isIndividual && $surnameRaw    !== '' ? $surnameRaw    : null;
+                $suffix     = $isIndividual && $suffixRaw     !== '' ? $suffixRaw     : null;
+
                 if ($name === '')                       { $error = 'Name is required.'; break; }
                 if (mb_strlen($name) > 255)             { $error = 'Name must be 255 characters or fewer.'; break; }
                 if ($birthDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $birthDate)) { $error = 'Birth date must be YYYY-MM-DD.'; break; }
@@ -252,7 +269,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                        column", which is what surfaced as the
                        "Database error" banner before #635 unmasked it. */
                     $hasFlagsCols = _cpFlagsColumnsExist($db);
-                    if ($hasFlagsCols) {
+                    /* #934 — name-parts columns only present after the
+                       structured-name migration. Pre-migration installs
+                       fall through to the legacy INSERT shape; the three
+                       parts simply aren't persisted yet. */
+                    $hasNameParts = creditPeopleNamePartsColumnsExist($db);
+                    if ($hasFlagsCols && $hasNameParts) {
+                        $stmt = $db->prepare(
+                            'INSERT INTO tblCreditPeople
+                                (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate,
+                                 IsSpecialCase, IsGroup, FirstNames, Surname, Suffix)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                        );
+                        $stmt->bind_param('ssssssiisss',
+                            $name, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
+                            $isSpecialCase, $isGroup,
+                            $firstNames, $surname, $suffix
+                        );
+                    } elseif ($hasFlagsCols) {
                         $stmt = $db->prepare(
                             'INSERT INTO tblCreditPeople
                                 (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate, IsSpecialCase, IsGroup)
@@ -348,6 +382,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $isGroup       = !empty($_POST['is_group'])        ? 1 : 0;
                 if ($isSpecialCase && $isGroup) { $isGroup = 0; }
 
+                /* #934 — structured-name parts. For individuals we
+                   recompose Name from the three fields and persist all
+                   four columns; the rename guard below still rejects a
+                   genuine Name change so curators can refine FirstNames
+                   / Surname / Suffix without triggering it as long as
+                   the composed Name matches the stored Name. For Group
+                   / Special-case rows the three columns get NULL'd. */
+                $firstNamesRaw = trim((string)($_POST['first_names'] ?? ''));
+                $surnameRaw    = trim((string)($_POST['surname']     ?? ''));
+                $suffixRaw     = trim((string)($_POST['suffix']      ?? ''));
+                $isIndividual  = (!$isSpecialCase && !$isGroup);
+                if ($isIndividual && ($firstNamesRaw !== '' || $surnameRaw !== '')) {
+                    $name = composePersonName($firstNamesRaw, $surnameRaw, $suffixRaw);
+                }
+                $firstNames = $isIndividual && $firstNamesRaw !== '' ? $firstNamesRaw : null;
+                $surname    = $isIndividual && $surnameRaw    !== '' ? $surnameRaw    : null;
+                $suffix     = $isIndividual && $suffixRaw     !== '' ? $suffixRaw     : null;
+
                 if ($id <= 0)                           { $error = 'Person id missing.'; break; }
                 if ($name === '')                       { $error = 'Name is required.'; break; }
                 if ($birthDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $birthDate)) { $error = 'Birth date must be YYYY-MM-DD.'; break; }
@@ -377,7 +429,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     /* Gate the flag-column writes on column existence
                        (#630). Same partly-migrated tolerance as the
                        add path. */
-                    if (_cpFlagsColumnsExist($db)) {
+                    /* #934 — name-parts columns gate. When present they
+                       update alongside the existing fields; pre-migration
+                       installs fall through to the legacy UPDATE shape. */
+                    $hasNamePartsCols = creditPeopleNamePartsColumnsExist($db);
+                    if (_cpFlagsColumnsExist($db) && $hasNamePartsCols) {
+                        $stmt = $db->prepare(
+                            'UPDATE tblCreditPeople
+                                SET Notes = ?, BirthPlace = ?, BirthDate = ?,
+                                    DeathPlace = ?, DeathDate = ?,
+                                    IsSpecialCase = ?, IsGroup = ?,
+                                    FirstNames = ?, Surname = ?, Suffix = ?
+                              WHERE Id = ?'
+                        );
+                        $stmt->bind_param('sssssiisssi',
+                            $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
+                            $isSpecialCase, $isGroup,
+                            $firstNames, $surname, $suffix, $id);
+                    } elseif (_cpFlagsColumnsExist($db)) {
                         $stmt = $db->prepare(
                             'UPDATE tblCreditPeople
                                 SET Notes = ?, BirthPlace = ?, BirthDate = ?,
@@ -911,6 +980,15 @@ try {
         ? ', p.IsSpecialCase, p.IsGroup'
         : ', 0 AS IsSpecialCase, 0 AS IsGroup';
 
+    /* #934 — pull the structured-name columns when present so the Edit
+       drawer can pre-fill the three split fields. On a partly-migrated
+       install (column missing) we surface NULLs and the form falls back
+       to its single-Name behaviour. */
+    $hasNameParts = creditPeopleNamePartsColumnsExist($db);
+    $namePartCols = $hasNameParts
+        ? ', p.FirstNames, p.Surname, p.Suffix'
+        : ', NULL AS FirstNames, NULL AS Surname, NULL AS Suffix';
+
     $registrySql = "
         SELECT p.Id,
                p.Name,
@@ -923,6 +1001,7 @@ try {
                (SELECT COUNT(*) FROM tblCreditPersonLinks l WHERE l.CreditPersonId = p.Id) AS LinkCount,
                (SELECT COUNT(*) FROM tblCreditPersonIPI   i WHERE i.CreditPersonId = p.Id) AS IPICount
                {$flagCols}
+               {$namePartCols}
           FROM tblCreditPeople p
     ";
     $stmt = $db->prepare($registrySql);
@@ -1034,6 +1113,12 @@ try {
         $byName[$name]['ipi_count']   = (int)$r['IPICount'];
         $byName[$name]['is_special_case'] = (int)($r['IsSpecialCase'] ?? 0);
         $byName[$name]['is_group']        = (int)($r['IsGroup']        ?? 0);
+        /* #934 — structured-name parts surface to JS so the Edit drawer
+           can pre-fill the three split fields. NULL on partly-migrated
+           installs; the drawer's default-to-Name fallback handles that. */
+        $byName[$name]['first_names'] = $r['FirstNames'] ?? null;
+        $byName[$name]['surname']     = $r['Surname']    ?? null;
+        $byName[$name]['suffix']      = $r['Suffix']     ?? null;
         /* Full child rows for the Edit drawer's pre-fill. Empty arrays
            default for registry rows with no children — the drawer's JS
            handles the empty case as "no rows yet". */
@@ -1676,7 +1761,33 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             <input type="hidden" name="action" id="cp-drawer-action" value="add">
             <input type="hidden" name="id"     id="cp-drawer-id"     value="">
 
-            <!-- Identity -->
+            <!-- Identity — structured name fields (#934). Hidden when
+                 the row is flagged as a Group / Special case (those keep
+                 the single-Name flow because "Hillsong United" or
+                 "Anonymous" don't have first/last/suffix parts). For
+                 individuals these three fields drive the canonical Name;
+                 the Name input below is the read-only preview that the
+                 server actually persists. -->
+            <div data-flag-section="name-parts" class="row g-2">
+                <div class="col-7">
+                    <label class="form-label small mb-1" for="cp-drawer-first-names">First name(s)</label>
+                    <input type="text" class="form-control form-control-sm" id="cp-drawer-first-names" name="first_names" maxlength="255" placeholder="e.g. Cecil Frances Humphreys">
+                </div>
+                <div class="col-5">
+                    <label class="form-label small mb-1" for="cp-drawer-suffix">Suffix</label>
+                    <input type="text" class="form-control form-control-sm" id="cp-drawer-suffix" name="suffix" maxlength="32" placeholder="Jr, III, PhD…">
+                </div>
+                <div class="col-12">
+                    <label class="form-label small mb-1" for="cp-drawer-surname">Surname</label>
+                    <input type="text" class="form-control form-control-sm" id="cp-drawer-surname" name="surname" maxlength="255" placeholder="e.g. Alexander">
+                </div>
+            </div>
+
+            <!-- Identity — canonical Name. For individuals it's
+                 auto-composed from First + Surname + Suffix above and
+                 rendered read-only as a preview. For Group / Special
+                 case rows the three split fields are hidden and this is
+                 the primary input. -->
             <div>
                 <label class="form-label small mb-1" for="cp-drawer-name">Name <span class="text-danger">*</span></label>
                 <input type="text" class="form-control form-control-sm" id="cp-drawer-name" name="name" maxlength="255" required>
@@ -2003,6 +2114,26 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 /* #584 / #585 — pre-tick the classification flags. */
                 document.getElementById('cp-drawer-is-special-case').checked = !!person.is_special_case;
                 document.getElementById('cp-drawer-is-group').checked        = !!person.is_group;
+                /* #934 — pre-fill the structured-name fields. If the row
+                   has them populated, use those directly. If they're
+                   NULL (legacy / partly-migrated install) AND this is
+                   an individual, decompose Name client-side as a
+                   starting point — curators can refine on save. */
+                const isIndividual = !person.is_group && !person.is_special_case;
+                if (person.first_names || person.surname || person.suffix) {
+                    firstNamesIn.value = person.first_names || '';
+                    surnameIn.value    = person.surname     || '';
+                    suffixIn.value     = person.suffix      || '';
+                } else if (isIndividual && person.name) {
+                    const decomposed = decomposeNameClient(person.name);
+                    firstNamesIn.value = decomposed.first;
+                    surnameIn.value    = decomposed.surname;
+                    suffixIn.value     = decomposed.suffix;
+                } else {
+                    firstNamesIn.value = '';
+                    surnameIn.value    = '';
+                    suffixIn.value     = '';
+                }
                 applyFlagLabels();
                 (person.links || []).forEach(l => addLinkRow(l));
                 (person.ipi   || []).forEach(r => addIpiRow(r));
@@ -2018,6 +2149,65 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             const deathDateIn   = document.getElementById('cp-drawer-death-date');
             const addIpiButton  = document.getElementById('cp-add-ipi-btn');
             const ipiSection    = document.querySelector('[data-flag-section="ipi"]');
+            /* #934 — structured-name field references + helpers. */
+            const firstNamesIn  = document.getElementById('cp-drawer-first-names');
+            const surnameIn     = document.getElementById('cp-drawer-surname');
+            const suffixIn      = document.getElementById('cp-drawer-suffix');
+            const namePartsBox  = document.querySelector('[data-flag-section="name-parts"]');
+
+            /* Compose the Name preview from the three split fields.
+               Mirrors composePersonName() server-side: trim + collapse
+               consecutive whitespace + drop empty parts. */
+            function composeNameClient(first, surname, suffix) {
+                const parts = [first, surname, suffix]
+                    .map(s => (s || '').trim())
+                    .filter(s => s !== '');
+                return parts.join(' ').replace(/\s+/g, ' ');
+            }
+            /* Mirrors decomposePersonName() — used to seed the three
+               fields on edit when they're NULL. Keep the regex in sync
+               with the PHP-side helper if either changes. */
+            function decomposeNameClient(name) {
+                const trimmed = (name || '').trim().replace(/\s+/g, ' ');
+                if (trimmed === '') return { first: '', surname: '', suffix: '' };
+                let work = trimmed;
+                if (work.includes(',')) {
+                    const idx = work.indexOf(',');
+                    const head = work.slice(0, idx).trim();
+                    const tail = work.slice(idx + 1).trim();
+                    if (head !== '' && tail !== '') work = tail + ' ' + head;
+                }
+                const tokens = work.split(/\s+/).filter(t => t !== '');
+                if (tokens.length === 0) return { first: '', surname: '', suffix: '' };
+                const SUFFIX_RE = /^(?:Jr|Sr|II|III|IV|V|VI|VII|VIII|PhD|Ph\.D\.|MD|M\.D\.|Esq|Esq\.|D\.D\.|D\.Min\.|MA|M\.A\.|BA|B\.A\.)$/i;
+                const suffixParts = [];
+                while (tokens.length > 1) {
+                    const tail = tokens[tokens.length - 1];
+                    const tailNorm = tail.replace(/[.,]+$/, '');
+                    if (SUFFIX_RE.test(tail) || SUFFIX_RE.test(tailNorm)) {
+                        suffixParts.unshift(tokens.pop());
+                        continue;
+                    }
+                    break;
+                }
+                const suffix = suffixParts.join(' ');
+                if (tokens.length === 1) return { first: '', surname: tokens[0], suffix };
+                const surname = tokens.pop();
+                return { first: tokens.join(' '), surname, suffix };
+            }
+            /* Live-update the Name field as the curator types into the
+               three split inputs. Only fires for individuals — group /
+               special-case flows leave Name as direct input. */
+            function syncNameFromParts() {
+                if (specialCaseCb?.checked || groupCb?.checked) return;
+                const composed = composeNameClient(
+                    firstNamesIn?.value, surnameIn?.value, suffixIn?.value
+                );
+                if (nameIn) nameIn.value = composed;
+            }
+            firstNamesIn?.addEventListener('input', syncNameFromParts);
+            surnameIn?.addEventListener('input',    syncNameFromParts);
+            suffixIn?.addEventListener('input',     syncNameFromParts);
 
             function applyFlagLabels() {
                 const isGroup       = !!groupCb?.checked;
@@ -2059,6 +2249,33 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                         inp.disabled = ipiDisabled;
                     });
                     ipiSection.classList.toggle('opacity-50', ipiDisabled);
+                }
+
+                /* #934 — hide the structured-name fields for Group /
+                   Special-case rows (they don't have first/last/suffix
+                   semantics) and switch the canonical Name field to
+                   direct input. For individuals show the three split
+                   fields and re-enable the live-compose into Name. */
+                const splitHidden = isGroup || isSpecialCase;
+                if (namePartsBox) namePartsBox.classList.toggle('d-none', splitHidden);
+                if (firstNamesIn) firstNamesIn.disabled = splitHidden;
+                if (surnameIn)    surnameIn.disabled    = splitHidden;
+                if (suffixIn)     suffixIn.disabled     = splitHidden;
+                if (nameIn) {
+                    /* Direct Name input is allowed for groups/special
+                       cases (or for individuals on the "add to registry"
+                       path). On Edit-individual, the Rename-action rule
+                       still applies — server rejects a Name change that
+                       contradicts the existing canonical spelling. */
+                    if (splitHidden) {
+                        nameIn.readOnly = (idIn?.value && actionIn?.value === 'update_person');
+                    } else {
+                        /* Individual row: Name preview reflects the
+                           three split fields, so it's never directly
+                           edited. */
+                        nameIn.readOnly = true;
+                        syncNameFromParts();
+                    }
                 }
             }
             specialCaseCb?.addEventListener('change', () => {

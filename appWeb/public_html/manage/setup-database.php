@@ -209,6 +209,7 @@ $friendlyTitles = [
     'credit-people-flags'              => 'Credit People Flags (#584, #585)',
     'song-artists'                     => 'Songs Artist credit (#587)',
     'credit-people-slug'               => 'Credit People Slug + public page (#588)',
+    'credit-people-name-parts'         => 'Credit People Structured Name (FirstNames / Surname / Suffix) (#934)',
     'user-avatar-service'              => 'Per-user Avatar Service (#616)',
     'organisation-licences'            => 'Multiple Licence Types per Organisation (#640)',
     'songbook-affiliations'            => 'Songbook Affiliations Registry (#670)',
@@ -282,6 +283,7 @@ $scriptMap = [
     'credit-people-flags' => 'migrate-credit-people-flags.php',
     'song-artists'  => 'migrate-song-artists.php',
     'credit-people-slug' => 'migrate-credit-people-slug.php',
+    'credit-people-name-parts' => 'migrate-credit-people-name-parts.php',
     'user-avatar-service' => 'migrate-user-avatar-service.php',
     'organisation-licences' => 'migrate-organisation-licences.php',
     'songbook-affiliations' => 'migrate-songbook-affiliations.php',
@@ -339,6 +341,7 @@ $migrationOrder = [
     'credit-people-flags',
     'song-artists',
     'credit-people-slug',
+    'credit-people-name-parts',
     'user-avatar-service',
     'organisation-licences',
     'songbook-affiliations',
@@ -470,6 +473,18 @@ $migrationCards = [
                   . ' bio, lifespan, external links, and a discography grouped by role'
                   . ' across the six song-credit tables. Idempotent — safe to re-run.',
         'button' => 'Run Credit People Slug Migration',
+    ],
+    'credit-people-name-parts' => [
+        'title'  => 'Credit People Structured Name (#934)',
+        'body'   => 'Adds <code>FirstNames</code>, <code>Surname</code> and <code>Suffix</code>'
+                  . ' columns to <code>tblCreditPeople</code> so the registry can distinguish'
+                  . ' "Cecil Frances Humphreys / Alexander" from "Charles / Wesley / Jr".'
+                  . ' Backfills the three fields from each row\'s existing <code>Name</code>'
+                  . ' using a heuristic that peels trailing suffixes (Jr, III, PhD…) and'
+                  . ' assumes the last token is the surname. Group / special-case rows are'
+                  . ' skipped — those keep <code>Name</code> as-is. Idempotent — safe to re-run;'
+                  . ' a curator\'s manual edits are never overwritten on re-run.',
+        'button' => 'Run Credit People Structured-Name Migration',
     ],
     'user-avatar-service' => [
         'title'  => 'Per-user avatar service (#616)',
@@ -985,6 +1000,7 @@ $migrationProbes = [
     'credit-people-flags'                => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblCreditPeople', 'IsSpecialCase'),
     'song-artists'                       => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongArtists'),
     'credit-people-slug'                 => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblCreditPeople', 'Slug'),
+    'credit-people-name-parts'           => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblCreditPeople', 'Surname'),
     'user-avatar-service'                => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblUsers', 'AvatarService'),
     'organisation-licences'              => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblOrganisationLicences'),
     'songbook-affiliations'              => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongbookAffiliations'),
