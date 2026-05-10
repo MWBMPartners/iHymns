@@ -398,6 +398,61 @@ body {
 }
 
 /* ==========================================================================
+   2.5  GLOBAL LINK DEFAULTS (#951)
+
+   Kills Bootstrap / browser-default `<a>` styling (bright blue + solid
+   underline) that visually shouts against iHymns' otherwise-muted
+   palette. Replaces it with the same look the writer-credit links have
+   used since #145 — inherits the surrounding text colour, no solid
+   underline, subtle dotted bottom-border that becomes solid + accent
+   on hover.
+
+   Bootstrap component classes (`.btn`, `.nav-link`, `.dropdown-item`,
+   `.breadcrumb-item a`, `.alert-link`, `.page-link`, `.list-group-item-
+   action`, `.navbar-brand`, etc.) carry their own explicit `color` /
+   `text-decoration` declarations and win on specificity (one-class
+   selector beats one-element selector), so chrome links keep their
+   existing styling. Only naked `<a>` tags inherit this default.
+
+   Loaded on every page (public + admin) — `app.css` is included from
+   both the public head and `manage/includes/head-libs.php`, so this
+   rule is genuinely global.
+
+   For semantic clarity, prose links inside the song page still tag
+   themselves with `.song-meta-link` — the visual outcome is identical
+   to this default, but the class makes the intent explicit and lets
+   future tweaks target it without disturbing the global default.
+   ========================================================================== */
+
+a {
+    color: inherit;
+    text-decoration: none;
+    border-bottom: 1px dotted var(--bs-secondary-color, #6c757d);
+    transition: color var(--transition-fast, 150ms ease),
+                border-color var(--transition-fast, 150ms ease);
+}
+
+a:hover {
+    color: var(--accent-solid, var(--bs-primary));
+    border-bottom-style: solid;
+    border-bottom-color: var(--accent-solid, var(--bs-primary));
+    text-decoration: none;
+}
+
+/* Visited inherits — no purple "you've been here" tint. */
+a:visited {
+    color: inherit;
+}
+
+/* Anchors that wrap an image / icon-only / no-text-content shouldn't
+   carry a dotted underline. Add `.link-bare` to opt-out, e.g.
+   `<a class="link-bare" href="..."><i class="bi-x"></i></a>`. */
+a.link-bare,
+a.link-bare:hover {
+    border-bottom: none;
+}
+
+/* ==========================================================================
    3. LAYOUT — Header, Footer, Main Content
    ========================================================================== */
 
@@ -2794,24 +2849,35 @@ body.reduce-motion .related-songs-chevron {
 }
 
 /* =========================================================================
- * WRITER/COMPOSER LINKS (#145)
+ * SONG META LINKS — was .writer-link (#145 / #951)
+ *
+ * Inline credit-row links — author / composer / adapter / translator /
+ * tune / CCLI / ISWC and any other inline metadata that should be a
+ * navigable link without screaming "I'M A LINK" in browser-default
+ * blue. Inherits the surrounding text colour, no underline, subtle
+ * dotted bottom-border that becomes solid + accent on hover.
+ *
+ * Renamed from .writer-link in #951 because the same style now applies
+ * to non-writer credits (tune, CCLI, ISWC). The bare global `a` rule
+ * above handles the "kill browser blue" concern; this class adds the
+ * explicit visual link-affordance for prose-flow links.
  * ========================================================================= */
 
-.writer-link {
+.song-meta-link {
     color: inherit;
     text-decoration: none;
     border-bottom: 1px dotted var(--bs-secondary-color, #6c757d);
     transition: color var(--transition-fast), border-color var(--transition-fast);
 }
 
-.writer-link:hover {
+.song-meta-link:hover {
     color: var(--accent-solid, var(--bs-primary));
     border-bottom-style: solid;
     border-bottom-color: var(--accent-solid, var(--bs-primary));
     text-decoration: none;
 }
 
-.writer-link:focus-visible {
+.song-meta-link:focus-visible {
     outline: 2px solid var(--accent-solid, var(--bs-primary));
     outline-offset: 2px;
     border-radius: 2px;

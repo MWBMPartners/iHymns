@@ -432,7 +432,7 @@ try {
                             <i class="<?= htmlspecialchars($rowIcon) ?> me-2 text-muted" aria-hidden="true"></i>
                             <strong><?= htmlspecialchars($rowLabel) ?>:</strong>
                             <?php foreach ($rowNames as $i => $name): ?><a href="/people/<?= htmlspecialchars(urlencode(strtolower(str_replace(' ', '-', $name)))) ?>"
-                                   class="writer-link"
+                                   class="song-meta-link"
                                    data-navigate="person"><?= htmlspecialchars($name) ?></a><?php if ($i < count($rowNames) - 1): ?>;&nbsp;<?php endif; ?><?php endforeach; ?>
                         </p>
                     <?php endforeach; ?>
@@ -458,6 +458,7 @@ try {
                         <strong>Tune:</strong>
                         <?php if ($_tuneSlug !== ''): ?>
                             <a href="/tune/<?= htmlspecialchars($_tuneSlug) ?>"
+                               class="song-meta-link"
                                data-navigate="tune"
                                title="See all songs that use this tune"><?= htmlspecialchars($tuneName) ?></a>
                         <?php else: ?>
@@ -582,6 +583,7 @@ try {
                                     <i class="fa-solid fa-hashtag me-2" aria-hidden="true"></i>
                                     <strong>CCLI Song #</strong>&nbsp;<a
                                         href="https://songselect.ccli.com/songs/<?= htmlspecialchars($_ccliEnc) ?>"
+                                        class="song-meta-link"
                                         target="_blank"
                                         rel="noopener noreferrer external"
                                         title="View on CCLI SongSelect (opens in new tab)"><?= htmlspecialchars($ccli) ?></a>
@@ -599,6 +601,7 @@ try {
                                     <i class="fa-solid fa-barcode me-2" aria-hidden="true"></i>
                                     <strong>ISWC:</strong>&nbsp;<a
                                         href="/iswc/<?= htmlspecialchars($_iswcEnc) ?>"
+                                        class="song-meta-link"
                                         data-navigate="iswc"
                                         title="See all songs sharing this ISWC"><?= htmlspecialchars($iswc) ?></a>
                                 </span>
@@ -867,7 +870,15 @@ try {
                     <?php if (empty($rowNames)) continue; ?>
                     <div data-credit-kind="<?= htmlspecialchars($rowId) ?>">
                         <strong><?= htmlspecialchars($rowLabel) ?>:</strong>
-                        <?= htmlspecialchars(implode('; ', $rowNames)) ?>
+                        <?php /* #951 — credits-block author / composer / etc. now
+                                 click through to the same /people/<slug> page the
+                                 header credits do. Same .song-meta-link styling so
+                                 the footer reads as a muted parity copy of the
+                                 header, not a separate visual treatment. */
+                              foreach ($rowNames as $i => $name): ?><a
+                            href="/people/<?= htmlspecialchars(urlencode(strtolower(str_replace(' ', '-', $name)))) ?>"
+                            class="song-meta-link"
+                            data-navigate="person"><?= htmlspecialchars($name) ?></a><?php if ($i < count($rowNames) - 1): ?>;&nbsp;<?php endif; ?><?php endforeach; ?>
                     </div>
                 <?php endforeach; ?>
             <?php endif; ?>
@@ -880,6 +891,7 @@ try {
                     <strong>Tune:</strong>
                     <?php if ($_tuneSlugFooter !== ''): ?>
                         <a href="/tune/<?= htmlspecialchars($_tuneSlugFooter) ?>"
+                           class="song-meta-link"
                            data-navigate="tune"
                            title="See all songs that use this tune"><?= htmlspecialchars($tuneName) ?></a>
                     <?php else: ?>
@@ -896,6 +908,7 @@ try {
                 <div data-credit-kind="ccli">
                     <strong>CCLI Song #</strong>
                     <a href="https://songselect.ccli.com/songs/<?= htmlspecialchars($_ccliEncFooter) ?>"
+                       class="song-meta-link"
                        target="_blank"
                        rel="noopener noreferrer external"
                        title="View on CCLI SongSelect (opens in new tab)"><?= htmlspecialchars($ccli) ?></a>
@@ -907,6 +920,7 @@ try {
                 <div data-credit-kind="iswc" title="International Standard Musical Work Code">
                     <strong>ISWC:</strong>
                     <a href="/iswc/<?= htmlspecialchars($_iswcEncFooter) ?>"
+                       class="song-meta-link"
                        data-navigate="iswc"
                        title="See all songs sharing this ISWC"><?= htmlspecialchars($iswc) ?></a>
                 </div>
