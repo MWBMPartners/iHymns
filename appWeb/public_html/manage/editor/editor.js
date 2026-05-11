@@ -2050,11 +2050,33 @@ function addSongTag(song, tagName) {
             loadSongTags(song);
             showToast('Added tag "' + tagName + '".', 'success');
         } else if (data && data.added === 0) {
-            showToast(
-                'Tag couldn\'t be applied. Save the song first, then re-add — ' +
-                'tags need a saved song to attach to.',
-                'warning'
-            );
+            /* Tell apart the three "0 added" failure modes using the
+               server's new diagnostic fields (#960 follow-up). */
+            var missing = Array.isArray(data.missingSongs)  ? data.missingSongs  : [];
+            var dupes   = Array.isArray(data.alreadyTagged) ? data.alreadyTagged : [];
+            if (missing.length > 0) {
+                showToast(
+                    'Tag couldn\'t be applied — this song isn\'t in the catalogue (id: "' +
+                    missing[0] + '"). If you just added the song, click Save first; ' +
+                    'otherwise refresh the editor to pick up the persisted id.',
+                    'warning'
+                );
+            } else if (dupes.length > 0) {
+                /* Refresh the tag list — the assigned-tags panel is
+                   showing a stale view; the tag actually IS attached. */
+                delete song.tags;
+                loadSongTags(song);
+                showToast(
+                    'Tag "' + tagName + '" was already attached — refreshed the list to show it.',
+                    'info'
+                );
+            } else {
+                showToast(
+                    'Tag couldn\'t be applied (server returned 0 added). ' +
+                    'Check the network tab for details.',
+                    'warning'
+                );
+            }
         } else {
             showToast((data && data.error) || 'Failed to add tag.', 'danger');
         }

@@ -1887,9 +1887,32 @@ switch ($action) {
 
         $totalAdded = 0;
         $totalRemoved = 0;
+        $missingSongs   = []; /* IDs the client sent that aren't in tblSongs (FK would fail) */
+        $alreadyTagged  = []; /* (songId, tagName) pairs the request was a no-op for (duplicate PK) */
         try {
             $db = getDbMysqli();
             $db->begin_transaction();
+
+            /* Pre-validate songIds against tblSongs so a missing row
+               surfaces as a real diagnostic instead of being
+               silently swallowed by INSERT IGNORE downstream
+               (which would just bump affected_rows=0 and trigger the
+               misleading "Save the song first" toast even when the
+               song WAS saved but its persisted SongId differs from
+               the editor's local copy). #960-follow-up */
+            if (!empty($songIds)) {
+                $place      = implode(',', array_fill(0, count($songIds), '?'));
+                $checkStmt  = $db->prepare("SELECT SongId FROM tblSongs WHERE SongId IN ($place)");
+                $checkStmt->bind_param(str_repeat('s', count($songIds)), ...$songIds);
+                $checkStmt->execute();
+                $found = [];
+                $res   = $checkStmt->get_result();
+                while ($r = $res->fetch_assoc()) { $found[$r['SongId']] = true; }
+                $checkStmt->close();
+                foreach ($songIds as $sid) {
+                    if (!isset($found[$sid])) { $missingSongs[] = $sid; }
+                }
+            }
 
             /* Resolve / create tag rows for each ADD name. Keep a map of
                Name -> Id so we can insert mapping rows. The
@@ -1914,17 +1937,36 @@ switch ($action) {
                 $stmt->close();
             }
 
-            /* Insert mapping rows (ignore duplicates). */
+            /* Insert mapping rows (ignore duplicates). Skip songIds
+               we already know are missing from tblSongs — INSERT
+               IGNORE would just no-op on them and inflate the false
+               "tag couldn't be applied" hit. TaggedBy is bound as a
+               nullable INT (not 0) so a request from a session with
+               no resolved user id doesn't trip fk_TagMap_User on
+               servers where Id=0 doesn't exist. */
             if (!empty($addIds) && !empty($songIds)) {
-                $userId = (int)($currentUser['id'] ?? 0);
-                $stmt = $db->prepare(
+                $userId    = isset($currentUser['id']) ? (int)$currentUser['id'] : null;
+                $stmt      = $db->prepare(
                     'INSERT IGNORE INTO tblSongTagMap (SongId, TagId, TaggedBy) VALUES (?, ?, ?)'
                 );
+                /* Reverse-lookup so a 0-affected-rows result can be
+                   reported back to the client as "this song already
+                   has this tag" instead of the generic save-first
+                   toast. */
+                $tagNameById = array_flip($addIds);
                 foreach ($songIds as $sid) {
+                    if (in_array($sid, $missingSongs, true)) continue;
                     foreach ($addIds as $tagId) {
                         $stmt->bind_param('sii', $sid, $tagId, $userId);
                         $stmt->execute();
-                        $totalAdded += $db->affected_rows > 0 ? 1 : 0;
+                        if ($db->affected_rows > 0) {
+                            $totalAdded++;
+                        } else {
+                            $alreadyTagged[] = [
+                                'songId'  => $sid,
+                                'tagName' => $tagNameById[$tagId] ?? (string)$tagId,
+                            ];
+                        }
                     }
                 }
                 $stmt->close();
@@ -1968,6 +2010,14 @@ switch ($action) {
                 'songsAffected' => count($songIds),
                 'added'         => $totalAdded,
                 'removed'       => $totalRemoved,
+                /* #960-follow-up — diagnostics so the client can
+                   tell apart the three "0 added" failure modes
+                   (song missing in DB / already tagged / nothing
+                   asked for) instead of falling back to a generic
+                   "Save the song first" toast. Empty arrays when
+                   nothing went wrong. */
+                'missingSongs'  => $missingSongs,
+                'alreadyTagged' => $alreadyTagged,
             ]);
         } catch (\Throwable $e) {
             if (isset($db) && $db instanceof mysqli) {
