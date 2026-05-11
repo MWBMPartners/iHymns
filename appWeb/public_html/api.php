@@ -4410,7 +4410,18 @@ if ($action !== null) {
             $body = json_decode($rawBody, true);
             $viewSongId = trim($body['song_id'] ?? '');
 
-            if (!preg_match('/^[A-Za-z]+-\d+$/', $viewSongId)) {
+            /* Accept both the legacy <ABBREV>-<NUMBER> format
+               (e.g. HA-0520) AND the synthetic "song-<ts>-<rand>"
+               format used by songs created in non-official
+               songbooks where the per-songbook number is NULL
+               (#392 / PR #740). The old `^[A-Za-z]+-\d+$` regex
+               rejected the synthetic shape, which meant any view
+               of a newly-created Psalty/Misc song never landed
+               in tblSongHistory — and Recently Viewed on the home
+               page silently skipped them despite repeat visits.
+               Matches the same character class + length used
+               everywhere else SongId is validated. */
+            if (!preg_match('/^[A-Za-z0-9_-]{1,32}$/', $viewSongId)) {
                 sendJson(['error' => 'Invalid song ID.'], 400);
                 break;
             }
