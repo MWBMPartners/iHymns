@@ -274,7 +274,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                        fall through to the legacy INSERT shape; the three
                        parts simply aren't persisted yet. */
                     $hasNameParts = creditPeopleNamePartsColumnsExist($db);
-                    if ($hasFlagsCols && $hasNameParts) {
+                    /* Slug — NOT NULL DEFAULT '' with UNIQUE uk_Slug
+                       per migrate-credit-people-slug.php. Every INSERT
+                       MUST carry a slug or it'll trip the orphan
+                       empty-Slug collision documented in
+                       migrate-credit-people-slug-rebackfill.php.
+                       Returns '' when the column doesn't exist yet so
+                       a pre-migration install can still INSERT — the
+                       helper omits the column conditionally below. */
+                    $slug         = generateUniqueCreditPersonSlug($db, $name);
+                    $hasSlugCol   = $slug !== '';
+                    if ($hasFlagsCols && $hasNameParts && $hasSlugCol) {
+                        $stmt = $db->prepare(
+                            'INSERT INTO tblCreditPeople
+                                (Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate,
+                                 IsSpecialCase, IsGroup, FirstNames, Surname, Suffix)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                        );
+                        $stmt->bind_param('sssssssiisss',
+                            $name, $slug, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
+                            $isSpecialCase, $isGroup,
+                            $firstNames, $surname, $suffix
+                        );
+                    } elseif ($hasFlagsCols && $hasNameParts) {
                         $stmt = $db->prepare(
                             'INSERT INTO tblCreditPeople
                                 (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate,
@@ -286,6 +308,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $isSpecialCase, $isGroup,
                             $firstNames, $surname, $suffix
                         );
+                    } elseif ($hasFlagsCols && $hasSlugCol) {
+                        $stmt = $db->prepare(
+                            'INSERT INTO tblCreditPeople
+                                (Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate, IsSpecialCase, IsGroup)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                        );
+                        $stmt->bind_param('sssssssii',
+                            $name, $slug, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
+                            $isSpecialCase, $isGroup
+                        );
                     } elseif ($hasFlagsCols) {
                         $stmt = $db->prepare(
                             'INSERT INTO tblCreditPeople
@@ -295,6 +327,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $stmt->bind_param('ssssssii',
                             $name, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
                             $isSpecialCase, $isGroup
+                        );
+                    } elseif ($hasSlugCol) {
+                        $stmt = $db->prepare(
+                            'INSERT INTO tblCreditPeople
+                                (Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate)
+                             VALUES (?, ?, ?, ?, ?, ?, ?)'
+                        );
+                        $stmt->bind_param('sssssss',
+                            $name, $slug, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate
                         );
                     } else {
                         $stmt = $db->prepare(
@@ -577,11 +618,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     if ($regRow) {
                         $id = (int)$regRow[0];
                     } else {
-                        $ins = $db->prepare('INSERT INTO tblCreditPeople (Name) VALUES (?)');
-                        $ins->bind_param('s', $sourceName);
-                        $ins->execute();
-                        $id = (int)$db->insert_id;
-                        $ins->close();
+                        /* Route through the shared helper so the new
+                           registry row carries a Slug — direct
+                           `INSERT (Name)` would default Slug='' and
+                           collide on uk_Slug whenever the orphan
+                           empty-Slug row exists. */
+                        $id = registerCreditPersonByName($db, $sourceName);
                     }
                 }
 
@@ -686,19 +728,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                    path can assume both sides have a registry id. */
                 $resolvePersonId = static function (int $id, string $name) use ($db): int {
                     if ($id > 0)       return $id;
-                    if ($name === '')  return 0;
-                    $stmt = $db->prepare('SELECT Id FROM tblCreditPeople WHERE Name = ?');
-                    $stmt->bind_param('s', $name);
-                    $stmt->execute();
-                    $row = $stmt->get_result()->fetch_row();
-                    $stmt->close();
-                    if ($row) return (int)$row[0];
-                    $ins = $db->prepare('INSERT INTO tblCreditPeople (Name) VALUES (?)');
-                    $ins->bind_param('s', $name);
-                    $ins->execute();
-                    $newId = (int)$db->insert_id;
-                    $ins->close();
-                    return $newId;
+                    /* registerCreditPersonByName handles the
+                       lookup-or-insert with a slug — same shape this
+                       closure used to have, minus the empty-slug
+                       collision footgun. */
+                    return registerCreditPersonByName($db, $name);
                 };
                 $sourceId = $resolvePersonId($sourceId, $sourceName);
                 $targetId = $resolvePersonId($targetId, $targetName);

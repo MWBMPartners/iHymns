@@ -209,6 +209,7 @@ $friendlyTitles = [
     'credit-people-flags'              => 'Credit People Flags (#584, #585)',
     'song-artists'                     => 'Songs Artist credit (#587)',
     'credit-people-slug'               => 'Credit People Slug + public page (#588)',
+    'credit-people-slug-rebackfill'    => 'Credit People Slug re-backfill (audit follow-up)',
     'credit-people-name-parts'         => 'Credit People Structured Name (FirstNames / Surname / Suffix) (#934)',
     'catalogues'                       => 'Catalogues — many-to-many song grouping (#941)',
     'backfill-works-from-iswc'         => 'Backfill Works from existing ISWCs (#942)',
@@ -285,6 +286,7 @@ $scriptMap = [
     'credit-people-flags' => 'migrate-credit-people-flags.php',
     'song-artists'  => 'migrate-song-artists.php',
     'credit-people-slug' => 'migrate-credit-people-slug.php',
+    'credit-people-slug-rebackfill' => 'migrate-credit-people-slug-rebackfill.php',
     'credit-people-name-parts' => 'migrate-credit-people-name-parts.php',
     'catalogues' => 'migrate-catalogues.php',
     'backfill-works-from-iswc' => 'backfill-works-from-iswc.php',
@@ -345,6 +347,7 @@ $migrationOrder = [
     'credit-people-flags',
     'song-artists',
     'credit-people-slug',
+    'credit-people-slug-rebackfill',
     'credit-people-name-parts',
     'catalogues',
     'backfill-works-from-iswc',
@@ -479,6 +482,20 @@ $migrationCards = [
                   . ' bio, lifespan, external links, and a discography grouped by role'
                   . ' across the six song-credit tables. Idempotent — safe to re-run.',
         'button' => 'Run Credit People Slug Migration',
+    ],
+    'credit-people-slug-rebackfill' => [
+        'title'  => 'Credit People Slug re-backfill (audit follow-up)',
+        'body'   => 'Data-fix counterpart to the slug-on-every-insert sweep across the eight'
+                  . ' <code>INSERT INTO tblCreditPeople</code> call sites. Several admin paths'
+                  . ' (Add Person, Rename / Merge auto-register, the editor save_song auto-promote)'
+                  . ' historically omitted <code>Slug</code> from the INSERT — the column\'s'
+                  . ' <code>NOT NULL DEFAULT \'\'</code> declaration meant the first such row landed'
+                  . ' with <code>Slug=\'\'</code> and every subsequent INSERT tripped the UNIQUE'
+                  . ' <code>uk_Slug</code> constraint. This migration finds any registry row whose'
+                  . ' <code>Slug</code> is empty / NULL and assigns a collision-safe slug computed'
+                  . ' from <code>Name</code>. Idempotent — re-running only touches rows that still'
+                  . ' need a slug.',
+        'button' => 'Re-backfill Empty Slugs',
     ],
     'backfill-works-from-iswc' => [
         'title'  => 'Backfill Works from existing ISWCs (#942)',
@@ -1027,6 +1044,17 @@ $migrationProbes = [
     'credit-people-flags'                => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblCreditPeople', 'IsSpecialCase'),
     'song-artists'                       => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongArtists'),
     'credit-people-slug'                 => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblCreditPeople', 'Slug'),
+    /* Pending whenever any registry row still has an empty / NULL
+       Slug — e.g. the orphan row that triggered the "Duplicate entry
+       '' for uk_Slug" reports. Re-runnable: as call-site INSERTs
+       are corrected the probe self-clears. */
+    'credit-people-slug-rebackfill'      => static function (\mysqli $db): bool {
+        if (!_migProbe_columnExists($db, 'tblCreditPeople', 'Slug')) return false;
+        $res = $db->query("SELECT 1 FROM tblCreditPeople WHERE Slug = '' OR Slug IS NULL LIMIT 1");
+        $needs = $res && $res->fetch_row() !== null;
+        if ($res) $res->close();
+        return $needs;
+    },
     'credit-people-name-parts'           => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblCreditPeople', 'Surname'),
     'catalogues'                         => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblCatalogues'),
     /* #942 — pending whenever any ISWC-tagged song doesn't have a

@@ -9430,7 +9430,25 @@ if ($action !== null) {
                     /* #630 — flag columns may not exist on a partly-
                        migrated install. Skip them when absent. */
                     $hasFlagsCols = creditPeopleFlagsColumnsExist($db);
-                    if ($hasFlagsCols) {
+                    /* Slug — NOT NULL DEFAULT '' with UNIQUE uk_Slug
+                       per migrate-credit-people-slug.php. Every INSERT
+                       MUST carry a slug or it'll trip the orphan
+                       empty-Slug collision. The helper returns '' when
+                       the column doesn't exist yet so a pre-migration
+                       install can still INSERT. */
+                    $slug       = generateUniqueCreditPersonSlug($db, $name);
+                    $hasSlugCol = $slug !== '';
+                    if ($hasFlagsCols && $hasSlugCol) {
+                        $stmt = $db->prepare(
+                            'INSERT INTO tblCreditPeople
+                                (Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate, IsSpecialCase, IsGroup)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                        );
+                        $stmt->bind_param('sssssssii',
+                            $name, $slug, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
+                            $isSpecialCase, $isGroup
+                        );
+                    } elseif ($hasFlagsCols) {
                         $stmt = $db->prepare(
                             'INSERT INTO tblCreditPeople
                                 (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate, IsSpecialCase, IsGroup)
@@ -9439,6 +9457,15 @@ if ($action !== null) {
                         $stmt->bind_param('ssssssii',
                             $name, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
                             $isSpecialCase, $isGroup
+                        );
+                    } elseif ($hasSlugCol) {
+                        $stmt = $db->prepare(
+                            'INSERT INTO tblCreditPeople
+                                (Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate)
+                             VALUES (?, ?, ?, ?, ?, ?, ?)'
+                        );
+                        $stmt->bind_param('sssssss',
+                            $name, $slug, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate
                         );
                     } else {
                         $stmt = $db->prepare(

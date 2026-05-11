@@ -454,11 +454,12 @@ switch ($action) {
             $stmtTranslator = $db->prepare("INSERT INTO tblSongTranslators (SongId, Name) VALUES (?, ?)");
             /* Silently keep the credit-people registry in sync with every
                name that lands in the five song-credit tables (#545).
-               INSERT IGNORE on the unique Name index — adding a name
-               that's already in the registry is a no-op. The registry
-               row carries no metadata at this point; the People page
-               (/manage/credit-people) is where that gets enriched. */
-            $stmtRegistry = $db->prepare("INSERT IGNORE INTO tblCreditPeople (Name) VALUES (?)");
+               Route through the shared helper so the new row carries
+               a Slug — direct `INSERT IGNORE (Name)` would default
+               Slug='' and silently no-op on every new credit once an
+               orphan empty-Slug row exists. The helper does its own
+               existence check so concurrent saves stay idempotent. */
+            require_once dirname(dirname(__DIR__)) . '/includes/credit_people_helpers.php';
             $stmtComponent  = $db->prepare(
                 "INSERT INTO tblSongComponents (SongId, Type, Number, SortOrder, LinesJson)
                  VALUES (?, ?, ?, ?, ?)"
@@ -555,8 +556,11 @@ switch ($action) {
                 foreach ($song['adaptors']    ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtAdaptor->bind_param('ss', $songId, $v);    $stmtAdaptor->execute();    $regNames[$v] = true; } }
                 foreach ($song['translators'] ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtTranslator->bind_param('ss', $songId, $v); $stmtTranslator->execute(); $regNames[$v] = true; } }
                 foreach (array_keys($regNames) as $regName) {
-                    $stmtRegistry->bind_param('s', $regName);
-                    $stmtRegistry->execute();
+                    /* registerCreditPersonByName handles the lookup-
+                       or-insert with a slug — same end-state as the
+                       old `INSERT IGNORE (Name)` but no silent
+                       no-op on the orphan empty-Slug collision. */
+                    registerCreditPersonByName($db, $regName);
                 }
 
                 /* Components */
@@ -1487,32 +1491,26 @@ switch ($action) {
                Name-only INSERT IGNORE path. */
             if (!empty($regParts)) {
                 $partsCols = creditPeopleNamePartsColumnsExist($db);
-                /* Defensive two-step (INSERT IGNORE → targeted UPDATE
-                   by Name) instead of ON DUPLICATE KEY UPDATE.
-                   migrate-credit-people-slug.php declares
-                   `Slug VARCHAR(255) NOT NULL DEFAULT ''` with a
-                   UNIQUE index. If an orphan empty-Slug row exists
-                   in the registry (we've seen one in the wild), an
-                   INSERT that omits Slug collides on uk_Slug and
-                   ODKU would target THAT orphan row, overwriting
-                   FirstNames/Surname/Suffix with the new person's
-                   parts — silent corruption. INSERT IGNORE turns
-                   the slug collision into a no-op, then the
-                   targeted UPDATE-by-Name only ever touches a row
-                   whose Name actually matches. The full slug-on-
-                   every-insert fix lives in a follow-up audit PR. */
-                $stmtRegistry = $db->prepare('INSERT IGNORE INTO tblCreditPeople (Name) VALUES (?)');
-                foreach (array_keys($regParts) as $regName) {
-                    $stmtRegistry->bind_param('s', $regName);
-                    $stmtRegistry->execute();
+                /* Route every auto-promote through the shared registry
+                   helper. It computes a collision-safe Slug for the
+                   new row and idempotently no-ops when Name already
+                   exists — which means the orphan empty-Slug row
+                   that the IGNORE+UPDATE hotfix had to dodge can't
+                   block legit promotes anymore once
+                   migrate-credit-people-slug-rebackfill.php has run. */
+                foreach ($regParts as $regName => $p) {
+                    registerCreditPersonByName($db, $regName, $partsCols ? $p : null);
                 }
-                $stmtRegistry->close();
 
                 if ($partsCols) {
-                    /* Backfill structured parts only when the
-                       registry row currently has them empty —
-                       same "never overwrite a curated value"
-                       guarantee as the ODKU clause we replaced. */
+                    /* Existing registry rows may already exist
+                       without FirstNames/Surname/Suffix populated;
+                       backfill those (only when currently empty)
+                       so a song-save also enriches pre-existing
+                       Name-only registry rows. The helper above
+                       only sets parts for BRAND NEW inserts; this
+                       handles the existing-row case. Never
+                       overwrites a curated value. */
                     $stmtParts = $db->prepare(
                         'UPDATE tblCreditPeople
                             SET FirstNames = COALESCE(NULLIF(FirstNames, ""), ?),

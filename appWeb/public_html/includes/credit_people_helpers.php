@@ -244,6 +244,165 @@ function creditPeopleNamePartsColumnsExist(\mysqli $db): bool
 }
 
 /**
+ * Slugify a person's name for the URL component. Lower-cases, strips
+ * combining marks, collapses non-letter/digit runs to single hyphens.
+ * Mirrors the migration-time slugify in migrate-credit-people-slug.php
+ * — when both implementations drift, the backfill stops being idempotent
+ * with new inserts.
+ *
+ * Returns '' for an empty / punctuation-only name; callers should fall
+ * back to a stable default (e.g. 'person') in that case.
+ */
+function slugifyCreditPersonName(string $name): string
+{
+    $s = mb_strtolower(trim($name));
+    if (class_exists('Normalizer')) {
+        $s = \Normalizer::normalize($s, \Normalizer::FORM_KD);
+        $s = preg_replace('/\p{M}+/u', '', $s) ?? '';
+    }
+    $slug = preg_replace('/[^\p{L}\p{N}]+/u', '-', $s) ?? '';
+    return trim($slug, '-');
+}
+
+/**
+ * Generate a unique slug for a tblCreditPeople row.
+ *
+ * Computes the base slug from $name, then appends -2 / -3 / … until the
+ * candidate isn't already taken. When $excludeId is provided, the row
+ * with that Id is excluded from the collision check — needed by UPDATE
+ * paths so a curator renaming a row doesn't collide with the row's own
+ * existing slug.
+ *
+ * Returns 'person' (or 'person-2', etc.) when the input slugifies to
+ * empty — keeps the UNIQUE constraint satisfied without a NOT NULL
+ * violation, and stays consistent with the migration's fallback.
+ *
+ * Schema-tolerant: if the Slug column doesn't exist yet (pre-migration
+ * install), returns '' so callers can omit the column from the INSERT.
+ */
+function generateUniqueCreditPersonSlug(\mysqli $db, string $name, ?int $excludeId = null): string
+{
+    /* If the column hasn't been added yet, no slug is needed. */
+    static $hasSlugCol = null;
+    if ($hasSlugCol === null) {
+        try {
+            $probe = $db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblCreditPeople'
+                    AND COLUMN_NAME  = 'Slug' LIMIT 1"
+            );
+            $probe->execute();
+            $hasSlugCol = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) {
+            $hasSlugCol = false;
+        }
+    }
+    if (!$hasSlugCol) return '';
+
+    $base = slugifyCreditPersonName($name);
+    if ($base === '') $base = 'person';
+
+    /* Pull all taken slugs that share this base prefix in one query.
+       VARCHAR(255) with utf8mb4_unicode_ci, indexed via idx_Slug + the
+       uk_Slug unique key — the LIKE scan stays fast even on a large
+       registry. */
+    $like = $base . '%';
+    if ($excludeId !== null) {
+        $stmt = $db->prepare('SELECT Slug FROM tblCreditPeople WHERE Slug LIKE ? AND Id <> ?');
+        $stmt->bind_param('si', $like, $excludeId);
+    } else {
+        $stmt = $db->prepare('SELECT Slug FROM tblCreditPeople WHERE Slug LIKE ?');
+        $stmt->bind_param('s', $like);
+    }
+    $stmt->execute();
+    $taken = [];
+    $res   = $stmt->get_result();
+    while ($r = $res->fetch_row()) { $taken[(string)$r[0]] = true; }
+    $stmt->close();
+
+    if (!isset($taken[$base])) return $base;
+    $suffix = 2;
+    while (isset($taken[$base . '-' . $suffix])) { $suffix++; }
+    return $base . '-' . $suffix;
+}
+
+/**
+ * Idempotent "register this name in the registry" helper.
+ *
+ * Looks up tblCreditPeople by Name and returns the existing Id if a row
+ * already matches. Otherwise INSERTs a new row carrying:
+ *   - Name        (the trimmed input)
+ *   - Slug        (computed via generateUniqueCreditPersonSlug if the
+ *                  column exists)
+ *   - FirstNames  | OPTIONAL — only set when the name-parts columns
+ *   - Surname     | from PR #935 are present AND $parts is supplied;
+ *   - Suffix      | otherwise these are simply omitted from the INSERT
+ *
+ * Returns the row's Id (existing or new). Returns 0 only when $name is
+ * empty — callers should guard.
+ *
+ * This is the canonical insertion point for the registry — every other
+ * path that previously called `INSERT INTO tblCreditPeople (Name)` and
+ * silently relied on `NOT NULL DEFAULT ''` Slug semantics MUST route
+ * through here, or it will trip the `Duplicate entry '' for uk_Slug`
+ * UNIQUE collision the moment an orphan empty-Slug row exists.
+ */
+function registerCreditPersonByName(
+    \mysqli $db,
+    string  $name,
+    ?array  $parts = null
+): int {
+    $name = trim($name);
+    if ($name === '') return 0;
+
+    /* Fast path: row already exists. */
+    $stmt = $db->prepare('SELECT Id FROM tblCreditPeople WHERE Name = ? LIMIT 1');
+    $stmt->bind_param('s', $name);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_row();
+    $stmt->close();
+    if ($row) return (int)$row[0];
+
+    /* Slug is computed even if the column is technically nullable —
+       generateUniqueCreditPersonSlug() returns '' when the column
+       isn't present yet (pre-migration), in which case we just omit
+       it from the INSERT. */
+    $slug          = generateUniqueCreditPersonSlug($db, $name);
+    $hasSlugCol    = $slug !== '';
+    $hasNamePartCols = creditPeopleNamePartsColumnsExist($db);
+    $first  = $parts['first']   ?? null;
+    $surname= $parts['surname'] ?? null;
+    $suffix = $parts['suffix']  ?? null;
+    if ($first  !== null && trim((string)$first)  === '') $first  = null;
+    if ($surname!== null && trim((string)$surname)=== '') $surname= null;
+    if ($suffix !== null && trim((string)$suffix) === '') $suffix = null;
+
+    if ($hasSlugCol && $hasNamePartCols) {
+        $sql   = 'INSERT INTO tblCreditPeople (Name, Slug, FirstNames, Surname, Suffix) VALUES (?, ?, ?, ?, ?)';
+        $stmt  = $db->prepare($sql);
+        $stmt->bind_param('sssss', $name, $slug, $first, $surname, $suffix);
+    } elseif ($hasSlugCol) {
+        $sql   = 'INSERT INTO tblCreditPeople (Name, Slug) VALUES (?, ?)';
+        $stmt  = $db->prepare($sql);
+        $stmt->bind_param('ss', $name, $slug);
+    } elseif ($hasNamePartCols) {
+        $sql   = 'INSERT INTO tblCreditPeople (Name, FirstNames, Surname, Suffix) VALUES (?, ?, ?, ?)';
+        $stmt  = $db->prepare($sql);
+        $stmt->bind_param('ssss', $name, $first, $surname, $suffix);
+    } else {
+        $sql   = 'INSERT INTO tblCreditPeople (Name) VALUES (?)';
+        $stmt  = $db->prepare($sql);
+        $stmt->bind_param('s', $name);
+    }
+    $stmt->execute();
+    $newId = (int)$db->insert_id;
+    $stmt->close();
+    return $newId;
+}
+
+/**
  * Cached check for the IsSpecialCase / IsGroup columns from
  * #584/#585 (#630). Both ship together via
  * migrate-credit-people-flags.php; detecting one is sufficient to
