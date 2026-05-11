@@ -1487,30 +1487,47 @@ switch ($action) {
                Name-only INSERT IGNORE path. */
             if (!empty($regParts)) {
                 $partsCols = creditPeopleNamePartsColumnsExist($db);
+                /* Defensive two-step (INSERT IGNORE → targeted UPDATE
+                   by Name) instead of ON DUPLICATE KEY UPDATE.
+                   migrate-credit-people-slug.php declares
+                   `Slug VARCHAR(255) NOT NULL DEFAULT ''` with a
+                   UNIQUE index. If an orphan empty-Slug row exists
+                   in the registry (we've seen one in the wild), an
+                   INSERT that omits Slug collides on uk_Slug and
+                   ODKU would target THAT orphan row, overwriting
+                   FirstNames/Surname/Suffix with the new person's
+                   parts — silent corruption. INSERT IGNORE turns
+                   the slug collision into a no-op, then the
+                   targeted UPDATE-by-Name only ever touches a row
+                   whose Name actually matches. The full slug-on-
+                   every-insert fix lives in a follow-up audit PR. */
+                $stmtRegistry = $db->prepare('INSERT IGNORE INTO tblCreditPeople (Name) VALUES (?)');
+                foreach (array_keys($regParts) as $regName) {
+                    $stmtRegistry->bind_param('s', $regName);
+                    $stmtRegistry->execute();
+                }
+                $stmtRegistry->close();
+
                 if ($partsCols) {
-                    $stmtRegistry = $db->prepare(
-                        'INSERT INTO tblCreditPeople (Name, FirstNames, Surname, Suffix)
-                              VALUES (?, ?, ?, ?)
-                         ON DUPLICATE KEY UPDATE
-                              FirstNames = COALESCE(NULLIF(FirstNames, ""), VALUES(FirstNames)),
-                              Surname    = COALESCE(NULLIF(Surname,    ""), VALUES(Surname)),
-                              Suffix     = COALESCE(NULLIF(Suffix,     ""), VALUES(Suffix))'
+                    /* Backfill structured parts only when the
+                       registry row currently has them empty —
+                       same "never overwrite a curated value"
+                       guarantee as the ODKU clause we replaced. */
+                    $stmtParts = $db->prepare(
+                        'UPDATE tblCreditPeople
+                            SET FirstNames = COALESCE(NULLIF(FirstNames, ""), ?),
+                                Surname    = COALESCE(NULLIF(Surname,    ""), ?),
+                                Suffix     = COALESCE(NULLIF(Suffix,     ""), ?)
+                          WHERE Name = ?'
                     );
                     foreach ($regParts as $regName => $p) {
                         $first   = $p['first']   !== '' ? $p['first']   : null;
                         $surname = $p['surname'] !== '' ? $p['surname'] : null;
                         $suffix  = $p['suffix']  !== '' ? $p['suffix']  : null;
-                        $stmtRegistry->bind_param('ssss', $regName, $first, $surname, $suffix);
-                        $stmtRegistry->execute();
+                        $stmtParts->bind_param('ssss', $first, $surname, $suffix, $regName);
+                        $stmtParts->execute();
                     }
-                    $stmtRegistry->close();
-                } else {
-                    $stmtRegistry = $db->prepare('INSERT IGNORE INTO tblCreditPeople (Name) VALUES (?)');
-                    foreach (array_keys($regParts) as $regName) {
-                        $stmtRegistry->bind_param('s', $regName);
-                        $stmtRegistry->execute();
-                    }
-                    $stmtRegistry->close();
+                    $stmtParts->close();
                 }
             }
 
