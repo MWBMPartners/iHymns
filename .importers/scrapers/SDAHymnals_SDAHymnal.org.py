@@ -801,13 +801,29 @@ RATE_LIMIT_PHRASES = [
     # pages parse as fake successful hymns.
     "desculpe, mas você chegou o limite de hoje",
     "limite de hoje",
+    # Italian — innarioavventista.com (IA).
+    # Discovered 2026-05-10 (#967): IA went silent after the daily
+    # quota and started returning a page whose title was
+    # "Siamo Spiacenti, Ma Per Oggi Hai Raggiunto Il Limite." with
+    # at least one block-heading-five-shaped element — defeating
+    # BOTH the phrase-list check (no IT entry yet) and the structural
+    # fallback (parser.sections was non-empty). Result: ~9,500
+    # garbage files saved before the eventual end-of-hymnal redirect.
+    # The verbatim title is the most specific signature; the shorter
+    # "raggiunto il limite" fragment is added as belt-and-braces and
+    # is unlikely to appear in real hymn lyrics.
+    "siamo spiacenti, ma per oggi hai raggiunto il limite",
+    "raggiunto il limite",
     # Other languages: add phrases here as they're observed. The
     # structural fallback below catches new languages without code
     # changes — these explicit phrases just avoid the 60s retry pause
-    # on the first hit.
+    # on the first hit. **The IA bug above also showed the structural
+    # fallback isn't perfect** (some walls render with at least one
+    # section-shaped element); when adding a new language, prefer
+    # capturing the verbatim phrase from the observed page rather
+    # than relying on the structural fallback alone.
     # TODO: ES (himnario.net / nuevohimnario.com)
     # TODO: FR (hymnes.net)
-    # TODO: IT (innarioavventista.com)
     # TODO: HR / SR-Latn (himne.net / pjesme.net)
     # TODO: BG (hristianskipesni.com)
     # TODO: MK (hristijanskipesni.com)
