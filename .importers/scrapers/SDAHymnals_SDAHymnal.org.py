@@ -62,6 +62,9 @@ import re               # Regular expressions for text cleaning and parsing
 import time             # For rate-limiting delays between requests
 import argparse         # Command-line argument parsing
 import random           # User-Agent rotation pool
+import gzip             # Response decompression (#968 — we now send
+import zlib             #   Accept-Encoding so the server compresses;
+                        #   urllib doesn't auto-decompress)
 
 
 # ---------------------------------------------------------------------------
@@ -78,33 +81,75 @@ import random           # User-Agent rotation pool
 # Firefox on macOS, Firefox on Windows, Edge on Windows. The Accept and
 # Accept-Language headers below are common-modern values that all of
 # these browsers emit, so the cross-product is plausible.
+# (#967 / #968) Each pool entry now carries both the UA string AND the
+# per-browser Client-Hints (sec-ch-ua, sec-ch-ua-mobile,
+# sec-ch-ua-platform). A bare UA without matching Client-Hints is the
+# tell that flags us to competent WAFs — real Chrome 130 always emits
+# sec-ch-ua-* alongside its UA. Safari and Firefox don't emit those
+# headers at all, so their entries carry an empty hints dict. Sec-Fetch-*
+# (sec-fetch-dest/mode/site/user) are universal across modern browsers
+# on navigation requests and applied per-fetch in fetch_hymn_page()
+# rather than baked into the pool.
 USER_AGENT_POOL = [
-    # Safari 18 on macOS Sequoia
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/605.1.15 (KHTML, like Gecko) "
-    "Version/18.0 Safari/605.1.15",
-    # Safari 18 on iPadOS 18
-    "Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) "
-    "AppleWebKit/605.1.15 (KHTML, like Gecko) "
-    "Version/18.0 Mobile/15E148 Safari/604.1",
-    # Chrome 130 on macOS Sequoia
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/130.0.0.0 Safari/537.36",
-    # Chrome 130 on Windows 11
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/130.0.0.0 Safari/537.36",
-    # Firefox 132 on macOS
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.7; rv:132.0) "
-    "Gecko/20100101 Firefox/132.0",
-    # Firefox 132 on Windows
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) "
-    "Gecko/20100101 Firefox/132.0",
-    # Edge 130 on Windows 11
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
+    # Safari 18 on macOS Sequoia — no Client-Hints emitted by Safari.
+    {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+              "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+              "Version/18.0 Safari/605.1.15",
+        "hints": {},
+    },
+    # Safari 18 on iPadOS 18 — no Client-Hints.
+    {
+        "ua": "Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) "
+              "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+              "Version/18.0 Mobile/15E148 Safari/604.1",
+        "hints": {},
+    },
+    # Chrome 130 on macOS Sequoia.
+    {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+              "AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/130.0.0.0 Safari/537.36",
+        "hints": {
+            "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"macOS"',
+        },
+    },
+    # Chrome 130 on Windows 11.
+    {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+              "AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/130.0.0.0 Safari/537.36",
+        "hints": {
+            "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+        },
+    },
+    # Firefox 132 on macOS — no Client-Hints (Firefox doesn't emit them).
+    {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.7; rv:132.0) "
+              "Gecko/20100101 Firefox/132.0",
+        "hints": {},
+    },
+    # Firefox 132 on Windows — no Client-Hints.
+    {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) "
+              "Gecko/20100101 Firefox/132.0",
+        "hints": {},
+    },
+    # Edge 130 on Windows 11 — emits "Microsoft Edge" alongside Chromium.
+    {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+              "AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
+        "hints": {
+            "sec-ch-ua": '"Chromium";v="130", "Microsoft Edge";v="130", "Not?A_Brand";v="99"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+        },
+    },
 ]
 
 
@@ -865,6 +910,37 @@ def _is_rate_limit_page(html_text, parser):
     return False
 
 
+def _read_response_body(resp):
+    """
+    Read the response body, decompressing if the server returned
+    `Content-Encoding: gzip` or `deflate`.
+
+    The scraper now sends `Accept-Encoding: gzip, deflate` (#968) so its
+    request fingerprint matches what every real browser asks for —
+    a Chrome-/Edge-/Safari-/Firefox-claiming UA that omits Accept-Encoding
+    is the kind of thing a competent WAF flags. urllib doesn't
+    auto-decompress, so we have to do it here before the HTML parser
+    sees raw bytes.
+
+    `br` (Brotli) is deliberately NOT requested: the scraper's "no
+    third-party dependencies" rule (see module docstring) forbids the
+    `brotli` pip package, and asking for `br` without being able to
+    decode it would be its own fingerprint giveaway.
+    """
+    raw = resp.read()
+    encoding = (resp.headers.get('Content-Encoding') or '').lower().strip()
+    if encoding == 'gzip':
+        return gzip.decompress(raw)
+    if encoding == 'deflate':
+        # raw zlib stream (no gzip header) — some servers send
+        # this without the standard wrapper, so try both shapes.
+        try:
+            return zlib.decompress(raw)
+        except zlib.error:
+            return zlib.decompress(raw, -zlib.MAX_WBITS)
+    return raw
+
+
 def fetch_hymn(number, base_url, home_url):
     """
     Fetch a single hymn page from the website and parse it into structured data.
@@ -901,23 +977,45 @@ def fetch_hymn(number, base_url, home_url):
     # visitors from different browsers rather than one consistent
     # automated client — defeats UA-based per-client throttling without
     # touching upstream servers' rate budget.
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": random.choice(USER_AGENT_POOL),
-            "Accept":
-                "text/html,application/xhtml+xml,application/xml;q=0.9,"
-                "image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
-            # Deliberately omit Accept-Encoding — urllib doesn't
-            # auto-decompress and the parser expects raw HTML.
-            # UA + Accept + Accept-Language + Referer are the
-            # signals that actually matter for fingerprinting.
-            "Referer": home_url + "/",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-        },
-    )
+    #
+    # (#968 follow-up) Each pool entry is a {"ua", "hints"} dict. The
+    # `hints` carry per-browser Client-Hints (sec-ch-ua, sec-ch-ua-mobile,
+    # sec-ch-ua-platform) — Chrome and Edge always emit these alongside
+    # their UA, and a competent WAF flags a request that claims a
+    # Chromium UA but omits them. Safari and Firefox don't emit them at
+    # all, so their entries carry an empty hints dict (the resulting
+    # request is correctly Client-Hints-free, matching what those
+    # browsers actually send).
+    #
+    # Sec-Fetch-* headers (dest / mode / site / user) are emitted by
+    # every modern browser on top-level navigation requests — Chrome,
+    # Edge, Firefox, Safari 16+ — so they're applied universally below.
+    # Accept-Encoding gzip,deflate is now sent (real browsers always
+    # request compression); the response is decompressed before the
+    # parser sees it.
+    pool_entry = random.choice(USER_AGENT_POOL)
+    headers = {
+        "User-Agent": pool_entry["ua"],
+        "Accept":
+            "text/html,application/xhtml+xml,application/xml;q=0.9,"
+            "image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
+        "Accept-Encoding": "gzip, deflate",
+        "Referer": home_url + "/",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        # Top-level navigation request from the home page (Referer above).
+        # `same-origin` matches what a click on a hymn-list anchor would
+        # send; navigating from the home page to /Hymn?no=N is same-site.
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-User": "?1",
+    }
+    # Merge per-UA Client-Hints (only for Chromium-family UAs).
+    headers.update(pool_entry["hints"])
+
+    req = urllib.request.Request(url, headers=headers)
 
     raw = None  # Will hold the raw response bytes if the request succeeds
 
@@ -945,7 +1043,7 @@ def fetch_hymn(number, base_url, home_url):
                     print(f"\n  Hymn {number}: redirected to home — reached end.")
                     return None  # Signal to stop scraping entirely
 
-                raw = resp.read()
+                raw = _read_response_body(resp)
             break  # Success — exit the retry loop
 
         except urllib.error.HTTPError as e:
@@ -1013,7 +1111,7 @@ def fetch_hymn(number, base_url, home_url):
         # One retry after the cooldown period
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
-                raw2 = resp.read()
+                raw2 = _read_response_body(resp)
             html_text2 = raw2.decode("utf-8", errors="replace")
 
             # Re-parse so the structural check can re-evaluate
