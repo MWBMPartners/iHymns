@@ -245,12 +245,44 @@ export class SongOfTheDay {
     }
 
     /**
-     * Filter a songs[] array against a set of primary subtags. An
-     * empty subtags array returns the full songs array (no filter).
-     * Untagged songs (no `language` field) ALWAYS pass — we treat
-     * them as "multi-lingual / not specified" rather than "exclude
-     * because we don't know", matching the songbook-language-filter
-     * module's behaviour for tiles.
+     * Build a lookup from songbook abbreviation → array of primary
+     * subtags drawn from the songbook's `languages` field (#857).
+     * Cached on the instance — songbooksData is loaded once per
+     * page-load by the search module. Empty map on pre-#857 deploys.
+     */
+    getSongbookLanguagesMap() {
+        if (this._sbLangMap) return this._sbLangMap;
+        const map = Object.create(null);
+        const books = this.app.search?.songbooksData || [];
+        for (const b of books) {
+            const id = (b?.id || '').toUpperCase();
+            if (!id) continue;
+            const langs = Array.isArray(b.languages) ? b.languages : [];
+            map[id] = langs.map(l => String(l).toLowerCase().split('-', 1)[0]).filter(Boolean);
+        }
+        this._sbLangMap = map;
+        return map;
+    }
+
+    /**
+     * Filter a songs[] array against a set of primary subtags.
+     *
+     * Empty subtags array → no filter (returns input).
+     * Untagged songs (no detectable language AND songbook has no
+     * languages metadata) ALWAYS pass — we treat them as
+     * "multi-lingual / not specified", matching the songbook-language-
+     * filter module's behaviour for tiles.
+     *
+     * Language source preference (#audit-follow-up):
+     *   1. If the song's parent songbook has a NON-AMBIGUOUS languages
+     *      set (length === 1), that single subtag is authoritative —
+     *      this corrects the case where a bulk-import mis-tagged every
+     *      song in a non-English songbook (e.g. HAC) as `language:'en'`
+     *      while the songbook itself is correctly marked as Croatian.
+     *   2. Otherwise, fall back to the song's own `language` field —
+     *      legitimate for multi-language songbooks where individual
+     *      songs carry the authoritative tag.
+     *   3. Empty → untagged → pass.
      *
      * @param {Array} songs
      * @param {string[]} subtags Lowercase primary subtags; empty = no filter
@@ -259,11 +291,21 @@ export class SongOfTheDay {
     filterSongsByLanguage(songs, subtags) {
         if (!subtags || subtags.length === 0) return songs;
         const set = new Set(subtags.map(s => s.toLowerCase()));
+        const bookMap = this.getSongbookLanguagesMap();
         return songs.filter(s => {
-            const lang = (s.language || '').toLowerCase();
-            if (!lang) return true; /* untagged → always pass */
-            const primary = lang.split('-', 1)[0];
-            return set.has(primary);
+            const bookId    = (s.songbook || '').toUpperCase();
+            const bookLangs = bookMap[bookId] || [];
+            let candidates;
+            if (bookLangs.length === 1) {
+                /* Unambiguous: the songbook itself is single-language. */
+                candidates = [bookLangs[0]];
+            } else {
+                const lang = (s.language || '').toLowerCase();
+                if (lang) candidates = [lang.split('-', 1)[0]];
+                else      candidates = bookLangs;
+            }
+            if (candidates.length === 0) return true; /* untagged → always pass */
+            return candidates.some(c => set.has(c));
         });
     }
 

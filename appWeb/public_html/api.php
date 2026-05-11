@@ -4410,7 +4410,18 @@ if ($action !== null) {
             $body = json_decode($rawBody, true);
             $viewSongId = trim($body['song_id'] ?? '');
 
-            if (!preg_match('/^[A-Za-z]+-\d+$/', $viewSongId)) {
+            /* Accept both the legacy <ABBREV>-<NUMBER> format
+               (e.g. HA-0520) AND the synthetic "song-<ts>-<rand>"
+               format used by songs created in non-official
+               songbooks where the per-songbook number is NULL
+               (#392 / PR #740). The old `^[A-Za-z]+-\d+$` regex
+               rejected the synthetic shape, which meant any view
+               of a newly-created Psalty/Misc song never landed
+               in tblSongHistory — and Recently Viewed on the home
+               page silently skipped them despite repeat visits.
+               Matches the same character class + length used
+               everywhere else SongId is validated. */
+            if (!preg_match('/^[A-Za-z0-9_-]{1,32}$/', $viewSongId)) {
                 sendJson(['error' => 'Invalid song ID.'], 400);
                 break;
             }
@@ -9430,7 +9441,25 @@ if ($action !== null) {
                     /* #630 — flag columns may not exist on a partly-
                        migrated install. Skip them when absent. */
                     $hasFlagsCols = creditPeopleFlagsColumnsExist($db);
-                    if ($hasFlagsCols) {
+                    /* Slug — NOT NULL DEFAULT '' with UNIQUE uk_Slug
+                       per migrate-credit-people-slug.php. Every INSERT
+                       MUST carry a slug or it'll trip the orphan
+                       empty-Slug collision. The helper returns '' when
+                       the column doesn't exist yet so a pre-migration
+                       install can still INSERT. */
+                    $slug       = generateUniqueCreditPersonSlug($db, $name);
+                    $hasSlugCol = $slug !== '';
+                    if ($hasFlagsCols && $hasSlugCol) {
+                        $stmt = $db->prepare(
+                            'INSERT INTO tblCreditPeople
+                                (Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate, IsSpecialCase, IsGroup)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                        );
+                        $stmt->bind_param('sssssssii',
+                            $name, $slug, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
+                            $isSpecialCase, $isGroup
+                        );
+                    } elseif ($hasFlagsCols) {
                         $stmt = $db->prepare(
                             'INSERT INTO tblCreditPeople
                                 (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate, IsSpecialCase, IsGroup)
@@ -9439,6 +9468,15 @@ if ($action !== null) {
                         $stmt->bind_param('ssssssii',
                             $name, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
                             $isSpecialCase, $isGroup
+                        );
+                    } elseif ($hasSlugCol) {
+                        $stmt = $db->prepare(
+                            'INSERT INTO tblCreditPeople
+                                (Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate)
+                             VALUES (?, ?, ?, ?, ?, ?, ?)'
+                        );
+                        $stmt->bind_param('sssssss',
+                            $name, $slug, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate
                         );
                     } else {
                         $stmt = $db->prepare(

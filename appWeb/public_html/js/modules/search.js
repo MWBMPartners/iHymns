@@ -178,6 +178,12 @@ export class Search {
             const data = await response.json();
 
             this.songsData = data.songs || [];
+            /* Capture the songbook index alongside songs so other
+               modules (Song of the Day, language filters, …) can
+               consult per-songbook metadata — primary `language`,
+               `languages` array, `isOfficial`, etc. — without an
+               extra round-trip. */
+            this.songbooksData = Array.isArray(data.songbooks) ? data.songbooks : [];
             this.FuseClass = Fuse;
 
             /* Prepare lyricsText field for lyrics search (#93) */

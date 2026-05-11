@@ -881,12 +881,40 @@ if ($hasSchema) {
     </div>
 
     <script>
-    (function () {
+    /* The inline page script runs BEFORE admin-footer.php loads
+       Bootstrap JS (#974 follow-up — symptom: Edit / Delete pencil/
+       trash buttons "do nothing"). Eagerly calling
+       bootstrap.Modal.getOrCreateInstance() threw ReferenceError
+       on Bootstrap-not-loaded-yet and aborted the IIFE, which meant
+       window.openWorkEditModal never got assigned and clicking the
+       inline-onclick handler silently failed.
+
+       Two fixes layered for defence-in-depth:
+       1. Wrap the IIFE in DOMContentLoaded so it runs after the
+          rest of the page (including admin-footer's <script src>)
+          is parsed.
+       2. Lazy-instantiate the modals via getOrCreateInstance INSIDE
+          openWorkEditModal / openWorkDeleteModal so even if Bootstrap
+          loads async / defers, the call happens at click-time
+          (guaranteed to be after page-load). */
+    document.addEventListener('DOMContentLoaded', function () {
         const modalEl   = document.getElementById('workEditModal');
         const delModal  = document.getElementById('workDeleteModal');
         if (!modalEl) return;
-        const editModal = bootstrap.Modal.getOrCreateInstance(modalEl);
-        const deleteModal = bootstrap.Modal.getOrCreateInstance(delModal);
+        let editModal = null;
+        let deleteModal = null;
+        function ensureModal(el, slot) {
+            if (slot === 'edit'   && editModal)   return editModal;
+            if (slot === 'delete' && deleteModal) return deleteModal;
+            if (typeof bootstrap === 'undefined' || !bootstrap.Modal) {
+                console.error('[works] Bootstrap JS not loaded yet; modal cannot open.');
+                return null;
+            }
+            const inst = bootstrap.Modal.getOrCreateInstance(el);
+            if (slot === 'edit')   editModal   = inst;
+            if (slot === 'delete') deleteModal = inst;
+            return inst;
+        }
         const tbody = document.getElementById('edit-work-members-tbody');
         const linkRowsEl = document.getElementById('edit-work-ext-links-rows');
         const addLinkBtn = document.getElementById('edit-work-ext-link-add-btn');
@@ -1100,14 +1128,16 @@ if ($hasSchema) {
             if (sugBox) { sugBox.style.display = 'none'; sugBox.innerHTML = ''; }
             if (search) search.value = '';
 
-            editModal.show();
+            const inst = ensureModal(modalEl, 'edit');
+            if (inst) inst.show();
         };
         window.openWorkDeleteModal = function (row) {
             document.getElementById('delete-work-id').value = row.id;
             document.getElementById('delete-work-name-label').textContent = row.title || '';
-            deleteModal.show();
+            const inst = ensureModal(delModal, 'delete');
+            if (inst) inst.show();
         };
-    })();
+    });
     </script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>

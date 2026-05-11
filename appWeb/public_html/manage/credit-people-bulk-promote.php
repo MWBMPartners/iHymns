@@ -159,11 +159,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     $stmt->close();
                     if ($existing) { $skipped++; continue; }
 
-                    $stmt = $db->prepare('INSERT INTO tblCreditPeople (Name) VALUES (?)');
-                    $stmt->bind_param('s', $name);
-                    $stmt->execute();
-                    $newId = (int)$db->insert_id;
-                    $stmt->close();
+                    /* Route through the shared registry helper so the
+                       new row carries a Slug — direct
+                       `INSERT (Name)` would default Slug='' and
+                       collide on uk_Slug after the first such row. */
+                    require_once dirname(__DIR__) . '/includes/credit_people_helpers.php';
+                    $newId = registerCreditPersonByName($db, $name);
 
                     if (function_exists('logActivity')) {
                         logActivity('credit_person.bulk_register', 'credit_person', (string)$newId, [

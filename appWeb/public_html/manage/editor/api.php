@@ -454,11 +454,12 @@ switch ($action) {
             $stmtTranslator = $db->prepare("INSERT INTO tblSongTranslators (SongId, Name) VALUES (?, ?)");
             /* Silently keep the credit-people registry in sync with every
                name that lands in the five song-credit tables (#545).
-               INSERT IGNORE on the unique Name index — adding a name
-               that's already in the registry is a no-op. The registry
-               row carries no metadata at this point; the People page
-               (/manage/credit-people) is where that gets enriched. */
-            $stmtRegistry = $db->prepare("INSERT IGNORE INTO tblCreditPeople (Name) VALUES (?)");
+               Route through the shared helper so the new row carries
+               a Slug — direct `INSERT IGNORE (Name)` would default
+               Slug='' and silently no-op on every new credit once an
+               orphan empty-Slug row exists. The helper does its own
+               existence check so concurrent saves stay idempotent. */
+            require_once dirname(dirname(__DIR__)) . '/includes/credit_people_helpers.php';
             $stmtComponent  = $db->prepare(
                 "INSERT INTO tblSongComponents (SongId, Type, Number, SortOrder, LinesJson)
                  VALUES (?, ?, ?, ?, ?)"
@@ -555,8 +556,11 @@ switch ($action) {
                 foreach ($song['adaptors']    ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtAdaptor->bind_param('ss', $songId, $v);    $stmtAdaptor->execute();    $regNames[$v] = true; } }
                 foreach ($song['translators'] ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtTranslator->bind_param('ss', $songId, $v); $stmtTranslator->execute(); $regNames[$v] = true; } }
                 foreach (array_keys($regNames) as $regName) {
-                    $stmtRegistry->bind_param('s', $regName);
-                    $stmtRegistry->execute();
+                    /* registerCreditPersonByName handles the lookup-
+                       or-insert with a slug — same end-state as the
+                       old `INSERT IGNORE (Name)` but no silent
+                       no-op on the orphan empty-Slug collision. */
+                    registerCreditPersonByName($db, $regName);
                 }
 
                 /* Components */
@@ -1487,32 +1491,26 @@ switch ($action) {
                Name-only INSERT IGNORE path. */
             if (!empty($regParts)) {
                 $partsCols = creditPeopleNamePartsColumnsExist($db);
-                /* Defensive two-step (INSERT IGNORE → targeted UPDATE
-                   by Name) instead of ON DUPLICATE KEY UPDATE.
-                   migrate-credit-people-slug.php declares
-                   `Slug VARCHAR(255) NOT NULL DEFAULT ''` with a
-                   UNIQUE index. If an orphan empty-Slug row exists
-                   in the registry (we've seen one in the wild), an
-                   INSERT that omits Slug collides on uk_Slug and
-                   ODKU would target THAT orphan row, overwriting
-                   FirstNames/Surname/Suffix with the new person's
-                   parts — silent corruption. INSERT IGNORE turns
-                   the slug collision into a no-op, then the
-                   targeted UPDATE-by-Name only ever touches a row
-                   whose Name actually matches. The full slug-on-
-                   every-insert fix lives in a follow-up audit PR. */
-                $stmtRegistry = $db->prepare('INSERT IGNORE INTO tblCreditPeople (Name) VALUES (?)');
-                foreach (array_keys($regParts) as $regName) {
-                    $stmtRegistry->bind_param('s', $regName);
-                    $stmtRegistry->execute();
+                /* Route every auto-promote through the shared registry
+                   helper. It computes a collision-safe Slug for the
+                   new row and idempotently no-ops when Name already
+                   exists — which means the orphan empty-Slug row
+                   that the IGNORE+UPDATE hotfix had to dodge can't
+                   block legit promotes anymore once
+                   migrate-credit-people-slug-rebackfill.php has run. */
+                foreach ($regParts as $regName => $p) {
+                    registerCreditPersonByName($db, $regName, $partsCols ? $p : null);
                 }
-                $stmtRegistry->close();
 
                 if ($partsCols) {
-                    /* Backfill structured parts only when the
-                       registry row currently has them empty —
-                       same "never overwrite a curated value"
-                       guarantee as the ODKU clause we replaced. */
+                    /* Existing registry rows may already exist
+                       without FirstNames/Surname/Suffix populated;
+                       backfill those (only when currently empty)
+                       so a song-save also enriches pre-existing
+                       Name-only registry rows. The helper above
+                       only sets parts for BRAND NEW inserts; this
+                       handles the existing-row case. Never
+                       overwrites a curated value. */
                     $stmtParts = $db->prepare(
                         'UPDATE tblCreditPeople
                             SET FirstNames = COALESCE(NULLIF(FirstNames, ""), ?),
@@ -1673,6 +1671,122 @@ switch ($action) {
                         'revision_id'   => $revisionId,
                     ]
                 );
+            }
+
+            /* ISWC auto-link to tblWorks (admin audit follow-up).
+               When this song carries an ISWC the editor expects a
+               matching Work row to exist so the public /song page
+               can show the "Part of work X" panel and so the Works
+               admin reflects every catalogued composition. The
+               batch backfill-works-from-iswc migration handles
+               existing rows; this block keeps the invariant on
+               every NEW save. Schema-tolerant: silently skips when
+               tblWorks isn't present yet (pre-migration installs). */
+            if ($iswc !== null && $iswc !== '') {
+                try {
+                    /* Probe schema once per request. */
+                    static $hasWorksSchema = null;
+                    if ($hasWorksSchema === null) {
+                        $probe = $db->prepare(
+                            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                              WHERE TABLE_SCHEMA = DATABASE()
+                                AND TABLE_NAME   IN ('tblWorks', 'tblWorkSongs')"
+                        );
+                        $probe->execute();
+                        $hasWorksSchema = count($probe->get_result()->fetch_all()) === 2;
+                        $probe->close();
+                    }
+                    if ($hasWorksSchema) {
+                        /* Look for an existing Work keyed on this ISWC. */
+                        $wStmt = $db->prepare('SELECT Id FROM tblWorks WHERE Iswc = ? LIMIT 1');
+                        $wStmt->bind_param('s', $iswc);
+                        $wStmt->execute();
+                        $wRow = $wStmt->get_result()->fetch_row();
+                        $wStmt->close();
+
+                        if ($wRow) {
+                            $workId = (int)$wRow[0];
+                        } else {
+                            /* Create a new Work — Title mirrors this song's
+                               title; Slug derived from Title with
+                               collision suffix to satisfy uq_slug. */
+                            $slugBase = mb_strtolower(trim((string)$title));
+                            if (class_exists('Normalizer')) {
+                                $slugBase = \Normalizer::normalize($slugBase, \Normalizer::FORM_KD);
+                                $slugBase = preg_replace('/\p{M}+/u', '', $slugBase) ?? '';
+                            }
+                            $slugBase = preg_replace('/[^\p{L}\p{N}]+/u', '-', $slugBase) ?? '';
+                            $slugBase = trim((string)$slugBase, '-');
+                            if ($slugBase === '') $slugBase = 'work';
+                            if (mb_strlen($slugBase) > 76) $slugBase = mb_substr($slugBase, 0, 76);
+
+                            $slug      = $slugBase;
+                            $slugCheck = $db->prepare('SELECT 1 FROM tblWorks WHERE Slug = ? LIMIT 1');
+                            $suffix    = 1;
+                            while (true) {
+                                $slugCheck->bind_param('s', $slug);
+                                $slugCheck->execute();
+                                $taken = $slugCheck->get_result()->fetch_row() !== null;
+                                if (!$taken) break;
+                                $suffix++;
+                                $slug = $slugBase . '-' . $suffix;
+                            }
+                            $slugCheck->close();
+
+                            $notes = sprintf('Auto-created from ISWC %s when song %s was saved.', $iswc, $songId);
+                            $wIns  = $db->prepare(
+                                'INSERT INTO tblWorks (Iswc, Title, Slug, Notes) VALUES (?, ?, ?, ?)'
+                            );
+                            $wIns->bind_param('ssss', $iswc, $title, $slug, $notes);
+                            $wIns->execute();
+                            $workId = (int)$db->insert_id;
+                            $wIns->close();
+
+                            if (function_exists('logActivity')) {
+                                logActivity('work.auto_create', 'work', (string)$workId, [
+                                    'iswc'      => $iswc,
+                                    'title'     => $title,
+                                    'slug'      => $slug,
+                                    'source'    => 'song_editor.save_song',
+                                    'song_id'   => $songId,
+                                ]);
+                            }
+                        }
+
+                        /* Idempotent membership. IsCanonical defaults to 0
+                           — the first member of a brand-new Work is
+                           promoted to canonical inline via a follow-up
+                           UPDATE only when no canonical member exists. */
+                        $linkStmt = $db->prepare(
+                            'INSERT IGNORE INTO tblWorkSongs (WorkId, SongId, IsCanonical, SortOrder)
+                             VALUES (?, ?, 0, 0)'
+                        );
+                        $linkStmt->bind_param('is', $workId, $songId);
+                        $linkStmt->execute();
+                        $linkStmt->close();
+
+                        $canonStmt = $db->prepare(
+                            'SELECT 1 FROM tblWorkSongs WHERE WorkId = ? AND IsCanonical = 1 LIMIT 1'
+                        );
+                        $canonStmt->bind_param('i', $workId);
+                        $canonStmt->execute();
+                        $hasCanon = $canonStmt->get_result()->fetch_row() !== null;
+                        $canonStmt->close();
+                        if (!$hasCanon) {
+                            $upd = $db->prepare(
+                                'UPDATE tblWorkSongs SET IsCanonical = 1 WHERE WorkId = ? AND SongId = ?'
+                            );
+                            $upd->bind_param('is', $workId, $songId);
+                            $upd->execute();
+                            $upd->close();
+                        }
+                    }
+                } catch (\Throwable $_e) {
+                    /* Best-effort — Works linkage must never block the
+                       core song save. The user's edit is already
+                       captured in tblSongs + tblSongRevisions. */
+                    error_log('[editor save_song] Works auto-link failed: ' . $_e->getMessage());
+                }
             }
 
             $db->commit();
@@ -1887,9 +2001,32 @@ switch ($action) {
 
         $totalAdded = 0;
         $totalRemoved = 0;
+        $missingSongs   = []; /* IDs the client sent that aren't in tblSongs (FK would fail) */
+        $alreadyTagged  = []; /* (songId, tagName) pairs the request was a no-op for (duplicate PK) */
         try {
             $db = getDbMysqli();
             $db->begin_transaction();
+
+            /* Pre-validate songIds against tblSongs so a missing row
+               surfaces as a real diagnostic instead of being
+               silently swallowed by INSERT IGNORE downstream
+               (which would just bump affected_rows=0 and trigger the
+               misleading "Save the song first" toast even when the
+               song WAS saved but its persisted SongId differs from
+               the editor's local copy). #960-follow-up */
+            if (!empty($songIds)) {
+                $place      = implode(',', array_fill(0, count($songIds), '?'));
+                $checkStmt  = $db->prepare("SELECT SongId FROM tblSongs WHERE SongId IN ($place)");
+                $checkStmt->bind_param(str_repeat('s', count($songIds)), ...$songIds);
+                $checkStmt->execute();
+                $found = [];
+                $res   = $checkStmt->get_result();
+                while ($r = $res->fetch_assoc()) { $found[$r['SongId']] = true; }
+                $checkStmt->close();
+                foreach ($songIds as $sid) {
+                    if (!isset($found[$sid])) { $missingSongs[] = $sid; }
+                }
+            }
 
             /* Resolve / create tag rows for each ADD name. Keep a map of
                Name -> Id so we can insert mapping rows. The
@@ -1914,17 +2051,36 @@ switch ($action) {
                 $stmt->close();
             }
 
-            /* Insert mapping rows (ignore duplicates). */
+            /* Insert mapping rows (ignore duplicates). Skip songIds
+               we already know are missing from tblSongs — INSERT
+               IGNORE would just no-op on them and inflate the false
+               "tag couldn't be applied" hit. TaggedBy is bound as a
+               nullable INT (not 0) so a request from a session with
+               no resolved user id doesn't trip fk_TagMap_User on
+               servers where Id=0 doesn't exist. */
             if (!empty($addIds) && !empty($songIds)) {
-                $userId = (int)($currentUser['id'] ?? 0);
-                $stmt = $db->prepare(
+                $userId    = isset($currentUser['id']) ? (int)$currentUser['id'] : null;
+                $stmt      = $db->prepare(
                     'INSERT IGNORE INTO tblSongTagMap (SongId, TagId, TaggedBy) VALUES (?, ?, ?)'
                 );
+                /* Reverse-lookup so a 0-affected-rows result can be
+                   reported back to the client as "this song already
+                   has this tag" instead of the generic save-first
+                   toast. */
+                $tagNameById = array_flip($addIds);
                 foreach ($songIds as $sid) {
+                    if (in_array($sid, $missingSongs, true)) continue;
                     foreach ($addIds as $tagId) {
                         $stmt->bind_param('sii', $sid, $tagId, $userId);
                         $stmt->execute();
-                        $totalAdded += $db->affected_rows > 0 ? 1 : 0;
+                        if ($db->affected_rows > 0) {
+                            $totalAdded++;
+                        } else {
+                            $alreadyTagged[] = [
+                                'songId'  => $sid,
+                                'tagName' => $tagNameById[$tagId] ?? (string)$tagId,
+                            ];
+                        }
                     }
                 }
                 $stmt->close();
@@ -1968,6 +2124,14 @@ switch ($action) {
                 'songsAffected' => count($songIds),
                 'added'         => $totalAdded,
                 'removed'       => $totalRemoved,
+                /* #960-follow-up — diagnostics so the client can
+                   tell apart the three "0 added" failure modes
+                   (song missing in DB / already tagged / nothing
+                   asked for) instead of falling back to a generic
+                   "Save the song first" toast. Empty arrays when
+                   nothing went wrong. */
+                'missingSongs'  => $missingSongs,
+                'alreadyTagged' => $alreadyTagged,
             ]);
         } catch (\Throwable $e) {
             if (isset($db) && $db instanceof mysqli) {

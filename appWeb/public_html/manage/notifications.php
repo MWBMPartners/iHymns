@@ -162,7 +162,14 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     'INSERT INTO tblNotifications (UserId, Type, Title, Body, ActionUrl)
                      VALUES (?, ?, ?, ?, ?)'
                 );
-                $actionUrlForBind = $actionUrl !== '' ? $actionUrl : null;
+                /* tblNotifications.ActionUrl is NOT NULL DEFAULT '' —
+                   binding NULL on a blank optional field threw
+                   `Column 'ActionUrl' cannot be null` and the request
+                   500'd (blank white screen the user reported). The
+                   schema accepts '' to mean "no deep link"; consumers
+                   already treat empty strings as no-link, so swap
+                   the NULL fallback for ''. */
+                $actionUrlForBind = $actionUrl !== '' ? $actionUrl : '';
                 $count = 0;
                 foreach ($recipients as $uid) {
                     $stmt->bind_param('issss', $uid, $type, $title, $body, $actionUrlForBind);
