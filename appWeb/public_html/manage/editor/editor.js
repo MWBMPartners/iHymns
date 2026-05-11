@@ -1851,6 +1851,13 @@ var CREDIT_KIND_FOR_KEY = {
     artists:     'artist',     /* #587 */
 };
 
+/* #960 — Each credit is now stored in-memory as a structured-parts
+   object `{first, surname, suffix}`. Legacy entries that come in as
+   bare strings (from /api?action=load) are normalised on first
+   render and the song[key] slot is rewritten in place. The wire
+   format on save (autoSaveSongsPerSong → save_song) is upgraded to
+   send `{name, first, surname, suffix}` — the server accepts both
+   shapes for back-compat. */
 function renderCreditChipList(song, key, containerId, addLabel) {
     var container = document.getElementById(containerId);
     if (!container) return;
@@ -1859,12 +1866,24 @@ function renderCreditChipList(song, key, containerId, addLabel) {
 
     var kind = CREDIT_KIND_FOR_KEY[key] || null;
 
-    song[key].forEach(function (name, i) {
-        var row = createDynamicInputRow(
-            name,
-            function (newVal) { song[key][i] = newVal; markModified(song.id); },
-            function ()       { song[key].splice(i, 1); markModified(song.id);
-                                renderCreditChipList(song, key, containerId, addLabel); },
+    song[key].forEach(function (entry, i) {
+        /* Normalise once on render — converts a legacy
+           string-credit into {first, surname, suffix} in place so
+           every subsequent read sees the structured shape. */
+        var parts = normaliseCreditParts(entry);
+        song[key][i] = parts;
+
+        var row = createCreditNameRow(
+            parts,
+            function (newParts) {
+                song[key][i] = newParts;
+                markModified(song.id);
+            },
+            function () {
+                song[key].splice(i, 1);
+                markModified(song.id);
+                renderCreditChipList(song, key, containerId, addLabel);
+            },
             kind
         );
         container.appendChild(row);
@@ -1875,7 +1894,7 @@ function renderCreditChipList(song, key, containerId, addLabel) {
     addBtn.className = 'btn btn-sm btn-outline-primary mt-2';
     addBtn.textContent = '+ ' + addLabel;
     addBtn.addEventListener('click', function () {
-        song[key].push('');
+        song[key].push({ first: '', surname: '', suffix: '' });
         markModified(song.id);
         renderCreditChipList(song, key, containerId, addLabel);
     });
@@ -2683,6 +2702,274 @@ function initSongLinksControls() {
     }
 }
 
+/* ------------------------------------------------------------------
+ * #960 — Structured-name helpers (JS mirror of composePersonName /
+ * decomposePersonName in includes/credit_people_helpers.php).
+ *
+ * The Credits-tab chip lists render three inputs per credit
+ * (FirstNames / Surname / Suffix) but the on-disk wire format and
+ * tblSongWriters/Composers/... rows continue to store a single
+ * composed `Name`. These two helpers are the single source of
+ * truth for going between those shapes on the client.
+ *
+ * Behaviour MUST stay byte-equal to the PHP implementation so a
+ * name typed in the editor round-trips identically through save →
+ * load → re-edit.
+ * ------------------------------------------------------------------ */
+
+/* Suffix tokens recognised by decomposePersonNameJs. Mirror of the
+   regex literal in PHP decomposePersonName(). Extend in lockstep. */
+var CREDIT_NAME_SUFFIX_PATTERN = /^(?:Jr|Sr|II|III|IV|V|VI|VII|VIII|PhD|Ph\.D\.|MD|M\.D\.|Esq|Esq\.|D\.D\.|D\.Min\.|MA|M\.A\.|BA|B\.A\.)$/i;
+
+function composePersonNameJs(first, surname, suffix) {
+    var parts = [];
+    [first, surname, suffix].forEach(function (p) {
+        var t = (p == null ? '' : String(p)).trim();
+        if (t !== '') parts.push(t);
+    });
+    return parts.join(' ').replace(/\s+/g, ' ');
+}
+
+function decomposePersonNameJs(name) {
+    var s = (name == null ? '' : String(name)).replace(/\s+/g, ' ').trim();
+    if (s === '') return { first: '', surname: '', suffix: '' };
+    if (s.indexOf(',') !== -1) {
+        var idx   = s.indexOf(',');
+        var lhs   = s.slice(0, idx).trim();
+        var rhs   = s.slice(idx + 1).trim();
+        if (lhs !== '' && rhs !== '') s = rhs + ' ' + lhs;
+    }
+    var tokens = s.split(/\s+/).filter(function (t) { return t !== ''; });
+    if (tokens.length === 0) return { first: '', surname: '', suffix: '' };
+    var suffixParts = [];
+    while (tokens.length > 1) {
+        var tail     = tokens[tokens.length - 1];
+        var tailNorm = tail.replace(/[.,]+$/, '');
+        if (CREDIT_NAME_SUFFIX_PATTERN.test(tail) || CREDIT_NAME_SUFFIX_PATTERN.test(tailNorm)) {
+            suffixParts.unshift(tokens.pop());
+            continue;
+        }
+        break;
+    }
+    var suffix = suffixParts.join(' ');
+    if (tokens.length === 1) return { first: '', surname: tokens[0], suffix: suffix };
+    var surname = tokens.pop();
+    var first   = tokens.join(' ');
+    return { first: first, surname: surname, suffix: suffix };
+}
+
+/* Normalise any per-credit value into a structured-parts object.
+   Accepts: legacy string ("John Newton"), already-structured object
+   ({first, surname, suffix}), or null/undefined. Used everywhere the
+   chip list reads the in-memory song.<credits>[i] entry. */
+function normaliseCreditParts(entry) {
+    if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+        return {
+            first:   (entry.first   != null ? String(entry.first)   : '').trim(),
+            surname: (entry.surname != null ? String(entry.surname) : '').trim(),
+            suffix:  (entry.suffix  != null ? String(entry.suffix)  : '').trim(),
+        };
+    }
+    if (typeof entry === 'string') return decomposePersonNameJs(entry);
+    return { first: '', surname: '', suffix: '' };
+}
+
+/* Shorthand for "render this credit entry as a single string" —
+   handles both legacy string entries (pre-#960 in-flight data, CSV
+   export when reading the live array directly) and the new
+   structured-parts shape. The non-credit dynamic lists elsewhere
+   in the editor never call this. */
+function creditEntryAsString(entry) {
+    if (typeof entry === 'string') return entry;
+    var p = normaliseCreditParts(entry);
+    return composePersonNameJs(p.first, p.surname, p.suffix);
+}
+
+/* ------------------------------------------------------------------
+ * createCreditNameRow(parts, onChange, onRemove, creditKind)  — #960
+ *
+ * Per-credit row used by the Credits tab. Renders three inputs:
+ * FirstNames / Surname / Suffix. Fires onChange({first, surname,
+ * suffix}) on every keystroke. Surname is the discriminative field
+ * for the live-search popover (mirroring how curators search the
+ * People page); selecting a suggestion overwrites all three inputs
+ * from the matched registry row.
+ *
+ * The legacy `createDynamicInputRow` single-input factory remains
+ * for any non-credit dynamic-list use; this helper is the shape
+ * Writers / Composers / Arrangers / Adaptors / Translators /
+ * Artists all use post-#960.
+ * ------------------------------------------------------------------ */
+function createCreditNameRow(parts, onChange, onRemove, creditKind) {
+    var row = document.createElement('div');
+    row.className = 'input-group input-group-sm mb-1 position-relative credit-chip-row';
+
+    function mkInput(field, placeholder) {
+        var el = document.createElement('input');
+        el.type = 'text';
+        el.className = 'form-control credit-name-' + field + '-input';
+        el.placeholder = placeholder;
+        el.autocomplete = 'off';
+        el.value = parts[field] || '';
+        el.setAttribute('aria-label', placeholder);
+        el.addEventListener('input', function () {
+            parts[field] = el.value;
+            onChange({
+                first:   parts.first   || '',
+                surname: parts.surname || '',
+                suffix:  parts.suffix  || '',
+            });
+        });
+        return el;
+    }
+
+    var firstEl   = mkInput('first',   'First names');
+    var surnameEl = mkInput('surname', 'Surname');
+    var suffixEl  = mkInput('suffix',  'Suffix');
+
+    var removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'btn btn-outline-danger';
+    removeBtn.innerHTML = '&times;';
+    removeBtn.title = 'Remove';
+    removeBtn.addEventListener('click', function () { onRemove(); });
+
+    row.appendChild(firstEl);
+    row.appendChild(surnameEl);
+    row.appendChild(suffixEl);
+    row.appendChild(removeBtn);
+
+    /* Typeahead — the popover is owned by the row, fed by whichever
+       of First/Surname input currently has focus. Suffix doesn't
+       trigger search (rarely discriminative on its own). A pick
+       overwrites all three inputs from the matched registry row
+       so a curated "John Newton" with structured columns lands
+       cleanly into the chip. */
+    if (creditKind) {
+        attachStructuredCreditAutocomplete(row, parts, firstEl, surnameEl, creditKind, onChange);
+    }
+
+    return row;
+}
+
+/* Live-search popover for the structured Credit row. Mirrors
+   attachCreditAutocomplete (the legacy single-input one) but:
+     - Listens on TWO inputs (first + surname).
+     - Sends q=<focused input value> to /api?action=credit_search.
+     - Updates all three parts inputs from the chosen suggestion.
+     - When credit_search returns `first`/`surname`/`suffix` for a
+       registry-matched row, prefers those over a client-side
+       decompose of the composed Name. Pre-enhancement servers
+       (no parts in response) fall back to decomposePersonNameJs(). */
+function attachStructuredCreditAutocomplete(row, parts, firstEl, surnameEl, kind, onChange) {
+    var popover = document.createElement('div');
+    popover.className = 'list-group position-absolute w-100 shadow d-none credit-suggestions-popover';
+    popover.style.zIndex = '1050';
+    popover.style.top = '100%';
+    popover.style.left = '0';
+    popover.style.maxHeight = '220px';
+    popover.style.overflowY = 'auto';
+    row.appendChild(popover);
+
+    var debounceTimer = null;
+
+    function close() {
+        popover.classList.add('d-none');
+        popover.innerHTML = '';
+    }
+
+    function applyPick(s) {
+        /* Prefer structured parts from the server when present;
+           otherwise decompose the composed name client-side. The
+           outer onChange call updates the song object once, after
+           all three field values are in place. */
+        var picked;
+        if (s.first != null || s.surname != null || s.suffix != null) {
+            picked = {
+                first:   s.first   != null ? String(s.first)   : '',
+                surname: s.surname != null ? String(s.surname) : '',
+                suffix:  s.suffix  != null ? String(s.suffix)  : '',
+            };
+        } else {
+            picked = decomposePersonNameJs(s.name || '');
+        }
+        parts.first   = picked.first;
+        parts.surname = picked.surname;
+        parts.suffix  = picked.suffix;
+        firstEl.value   = picked.first;
+        surnameEl.value = picked.surname;
+        /* The suffix input is the third <input> inside row. */
+        var suffixEl = row.querySelector('.credit-name-suffix-input');
+        if (suffixEl) suffixEl.value = picked.suffix;
+        onChange({ first: parts.first, surname: parts.surname, suffix: parts.suffix });
+    }
+
+    function render(suggestions) {
+        popover.innerHTML = '';
+        if (!suggestions.length) { close(); return; }
+        suggestions.forEach(function (s) {
+            var item = document.createElement('button');
+            item.type = 'button';
+            item.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center py-1';
+            var kindsBadge = (s.kinds && s.kinds.length)
+                ? '<small class="text-muted">' + escapeHtmlSafe(s.kinds.join(' · ')) + '</small>'
+                : '';
+            var creditUsageNum = parseInt(s.usage, 10);
+            if (!Number.isFinite(creditUsageNum) || creditUsageNum < 0) creditUsageNum = 0;
+            item.innerHTML =
+                '<span><strong>' + escapeHtmlSafe(s.name || '') + '</strong> ' + kindsBadge + '</span>' +
+                '<span class="badge bg-secondary">' + creditUsageNum + '</span>';
+            item.addEventListener('click', function (e) {
+                e.preventDefault();
+                applyPick(s);
+                close();
+            });
+            popover.appendChild(item);
+        });
+        popover.classList.remove('d-none');
+    }
+
+    function fetchSuggestions(q) {
+        var url = EDITOR_API_URL + '?action=credit_search' +
+                  '&q='    + encodeURIComponent(q) +
+                  '&kind=any&limit=12';
+        fetch(url, { credentials: 'same-origin' })
+            .then(function (r) {
+                if (!r.ok) {
+                    return r.text().then(function (body) {
+                        throw new Error('credit_search ' + r.status + ': ' + body.slice(0, 200));
+                    });
+                }
+                return r.json();
+            })
+            .then(function (data) {
+                render(Array.isArray(data.suggestions) ? data.suggestions : []);
+            })
+            .catch(function (err) {
+                console.warn('[editor] credit_search failed:', err && err.message);
+                close();
+            });
+    }
+
+    function wire(inputEl) {
+        inputEl.addEventListener('input', function () {
+            clearTimeout(debounceTimer);
+            var q = inputEl.value.trim();
+            if (q.length < 1) { close(); return; }
+            debounceTimer = setTimeout(function () { fetchSuggestions(q); }, 180);
+        });
+        inputEl.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') close();
+        });
+    }
+    wire(firstEl);
+    wire(surnameEl);
+
+    document.addEventListener('click', function (e) {
+        if (!row.contains(e.target)) close();
+    });
+}
+
 /**
  * createDynamicInputRow(value, onChange, onRemove)
  * ------------------------------------------------
@@ -3060,8 +3347,8 @@ function exportCSV() {
             csvEscape(String(song.number || '')),
             csvEscape(song.title || ''),
             csvEscape(song.songbook || ''),
-            csvEscape((song.writers || []).join('; ')),
-            csvEscape((song.composers || []).join('; ')),
+            csvEscape((song.writers   || []).map(creditEntryAsString).join('; ')),
+            csvEscape((song.composers || []).map(creditEntryAsString).join('; ')),
             csvEscape(song.ccli || ''),
             String((song.components || []).length)
         ];
@@ -3498,8 +3785,9 @@ function renderPreview(song) {
     if (song.writers && song.writers.length > 0) {
         var writersEl = document.createElement('p');
         writersEl.className = 'text-muted small mt-3';
-        /* "; " separator (#495). */
-        writersEl.textContent = 'Writers: ' + song.writers.join('; ');
+        /* "; " separator (#495); creditEntryAsString handles the
+           post-#960 structured-parts shape. */
+        writersEl.textContent = 'Writers: ' + song.writers.map(creditEntryAsString).join('; ');
         container.appendChild(writersEl);
     }
     if (song.copyright) {
@@ -3655,6 +3943,46 @@ function scheduleAutoSave() {
     }, _autoSaveDelayMs);
 }
 
+/* #960 — Pre-save serialiser. The Credits-tab chip lists store
+   each credit as a structured-parts object {first, surname,
+   suffix}; the save_song endpoint accepts either a bare string
+   (legacy) or {name, first, surname, suffix} (post-#960). We
+   send the richer shape so the server can populate
+   tblCreditPeople.FirstNames/Surname/Suffix on auto-promote.
+   Non-credit fields pass through untouched. */
+function serialiseSongForSave(song) {
+    var creditKeys = ['writers', 'composers', 'arrangers', 'adaptors', 'translators', 'artists'];
+    var out = {};
+    Object.keys(song || {}).forEach(function (k) { out[k] = song[k]; });
+    creditKeys.forEach(function (k) {
+        if (!Array.isArray(out[k])) return;
+        out[k] = out[k].map(function (entry) {
+            if (typeof entry === 'string') {
+                var parts = decomposePersonNameJs(entry);
+                return {
+                    name:    entry.trim(),
+                    first:   parts.first,
+                    surname: parts.surname,
+                    suffix:  parts.suffix,
+                };
+            }
+            var p = normaliseCreditParts(entry);
+            return {
+                name:    composePersonNameJs(p.first, p.surname, p.suffix),
+                first:   p.first,
+                surname: p.surname,
+                suffix:  p.suffix,
+            };
+        }).filter(function (entry) {
+            /* Drop completely-empty credit rows (no name parts
+               typed) — keeps the existing "skip blank chip"
+               behaviour from the legacy string path. */
+            return entry.name !== '';
+        });
+    });
+    return out;
+}
+
 /**
  * autoSaveSongsPerSong(ids)
  * -------------------------
@@ -3676,7 +4004,7 @@ function autoSaveSongsPerSong(ids) {
             return fetch(EDITOR_API_URL + '?action=save_song', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(song),
+                body: JSON.stringify(serialiseSongForSave(song)),
             }).then(function (res) {
                 return res.json().then(function (data) {
                     if (res.ok && data.ok) {

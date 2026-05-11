@@ -1417,31 +1417,101 @@ switch ($action) {
                    without a special case. */
                 $creditInserts['artists'] = 'INSERT INTO tblSongArtists (SongId, Name) VALUES (?, ?)';
             }
-            $regNames = [];
+            /* #960 — Each credit can arrive as either a legacy
+               string ("John Newton") OR a structured-parts object
+               ({name, first, surname, suffix}). The new chip-list
+               editor sends the latter so the registry write below
+               can populate FirstNames / Surname / Suffix on
+               auto-promote (PR #935 columns). Normalise into a
+               uniform array shape up front. */
+            require_once dirname(dirname(__DIR__)) . '/includes/credit_people_helpers.php';
+            $regParts = []; /* keyed by composed Name → ['first'=>…,'surname'=>…,'suffix'=>…] */
+            $normaliseCreditEntry = static function ($v) {
+                if (is_string($v)) {
+                    $name = trim($v);
+                    if ($name === '') return null;
+                    [$first, $surname, $suffix] = decomposePersonName($name);
+                    return ['name' => $name, 'first' => $first, 'surname' => $surname, 'suffix' => $suffix];
+                }
+                if (!is_array($v)) return null;
+                $first   = trim((string)($v['first']   ?? ''));
+                $surname = trim((string)($v['surname'] ?? ''));
+                $suffix  = trim((string)($v['suffix']  ?? ''));
+                /* Prefer a client-composed `name` for byte-equal
+                   round-tripping; otherwise compose from parts. If
+                   parts are empty and the only thing the client
+                   sent is a `name` string, decompose it. */
+                $name = trim((string)($v['name'] ?? ''));
+                if ($name === '') {
+                    $name = composePersonName($first, $surname, $suffix);
+                } elseif ($first === '' && $surname === '' && $suffix === '') {
+                    [$first, $surname, $suffix] = decomposePersonName($name);
+                }
+                if ($name === '') return null;
+                return ['name' => $name, 'first' => $first, 'surname' => $surname, 'suffix' => $suffix];
+            };
+
             foreach ($creditInserts as $key => $sql) {
                 $stmt = $db->prepare($sql);
-                foreach ($song[$key] ?? [] as $name) {
-                    if (!is_string($name) || $name === '') continue;
-                    $stmt->bind_param('ss', $songId, $name);
+                foreach ($song[$key] ?? [] as $raw) {
+                    $entry = $normaliseCreditEntry($raw);
+                    if ($entry === null) continue;
+                    $stmt->bind_param('ss', $songId, $entry['name']);
                     $stmt->execute();
-                    $regNames[$name] = true;
+                    /* Keep the richest parts seen for this name across
+                       all five role lists — if "J. Newton" was typed
+                       in Writers and "John Newton" in Composers, the
+                       structured-parts version wins for the registry
+                       upsert. (Both arrived as separate junction rows
+                       above; this dedup only affects the registry.) */
+                    if (!isset($regParts[$entry['name']])
+                        || ($regParts[$entry['name']]['first'] === '' && $regParts[$entry['name']]['surname'] === '' && $regParts[$entry['name']]['suffix'] === '')
+                    ) {
+                        $regParts[$entry['name']] = [
+                            'first'   => $entry['first'],
+                            'surname' => $entry['surname'],
+                            'suffix'  => $entry['suffix'],
+                        ];
+                    }
                 }
                 $stmt->close();
             }
-            /* Silently keep the credit-people registry in sync (#545).
-               INSERT IGNORE on the unique Name index — names already in
-               the registry are no-ops. The registry row carries no
-               metadata at this point; the People page
-               (/manage/credit-people) is where that gets enriched.
-               Deduped above so a name credited in multiple roles on the
-               same song fires once, not five times. */
-            if (!empty($regNames)) {
-                $stmtRegistry = $db->prepare('INSERT IGNORE INTO tblCreditPeople (Name) VALUES (?)');
-                foreach (array_keys($regNames) as $regName) {
-                    $stmtRegistry->bind_param('s', $regName);
-                    $stmtRegistry->execute();
+            /* Silently keep the credit-people registry in sync
+               (#545 / #960). When the FirstNames / Surname / Suffix
+               columns exist (PR #935 migration applied), upsert the
+               structured parts too — but only fill them in when the
+               existing row's parts are NULL/empty, so a curated
+               edit on the /manage/credit-people page never gets
+               overwritten by an auto-promote from the editor.
+               Pre-migration installs fall back to the legacy
+               Name-only INSERT IGNORE path. */
+            if (!empty($regParts)) {
+                $partsCols = creditPeopleNamePartsColumnsExist($db);
+                if ($partsCols) {
+                    $stmtRegistry = $db->prepare(
+                        'INSERT INTO tblCreditPeople (Name, FirstNames, Surname, Suffix)
+                              VALUES (?, ?, ?, ?)
+                         ON DUPLICATE KEY UPDATE
+                              FirstNames = COALESCE(NULLIF(FirstNames, ""), VALUES(FirstNames)),
+                              Surname    = COALESCE(NULLIF(Surname,    ""), VALUES(Surname)),
+                              Suffix     = COALESCE(NULLIF(Suffix,     ""), VALUES(Suffix))'
+                    );
+                    foreach ($regParts as $regName => $p) {
+                        $first   = $p['first']   !== '' ? $p['first']   : null;
+                        $surname = $p['surname'] !== '' ? $p['surname'] : null;
+                        $suffix  = $p['suffix']  !== '' ? $p['suffix']  : null;
+                        $stmtRegistry->bind_param('ssss', $regName, $first, $surname, $suffix);
+                        $stmtRegistry->execute();
+                    }
+                    $stmtRegistry->close();
+                } else {
+                    $stmtRegistry = $db->prepare('INSERT IGNORE INTO tblCreditPeople (Name) VALUES (?)');
+                    foreach (array_keys($regParts) as $regName) {
+                        $stmtRegistry->bind_param('s', $regName);
+                        $stmtRegistry->execute();
+                    }
+                    $stmtRegistry->close();
                 }
-                $stmtRegistry->close();
             }
 
             /* #858 — schema-probe for the optional Language column.
@@ -2162,11 +2232,35 @@ switch ($action) {
             }
             /* `usage` is a MySQL reserved word, so backtick it explicitly
                to avoid any edge-case parser drift between server versions
-               or strict-mode configurations. (#593) */
-            $sql = "SELECT Name, GROUP_CONCAT(DISTINCT kindLabel) AS kinds, SUM(cnt) AS `usage`
+               or strict-mode configurations. (#593)
+
+               #960 — when the FirstNames/Surname/Suffix columns from
+               PR #935 exist, LEFT JOIN tblCreditPeople so a
+               registry-matched name surfaces its structured parts in
+               the response. The chip-list editor uses these to
+               populate all three inputs on suggestion click,
+               preferring curated parts over a client-side decompose
+               of the composed Name. Pre-migration installs return
+               NULLs and the client falls back to decomposing. */
+            require_once dirname(dirname(__DIR__)) . '/includes/credit_people_helpers.php';
+            $partsCols = creditPeopleNamePartsColumnsExist($db);
+            $partsSelect  = $partsCols
+                ? ', cp.FirstNames AS first_names, cp.Surname AS surname, cp.Suffix AS suffix'
+                : '';
+            $partsJoin    = $partsCols
+                ? 'LEFT JOIN tblCreditPeople cp ON cp.Name = u.Name'
+                : '';
+            /* ONLY_FULL_GROUP_BY requires every non-aggregated select
+               column to appear in GROUP BY. Group on the raw column
+               refs (not the aliased forms). */
+            $partsGroupBy = $partsCols
+                ? ', cp.FirstNames, cp.Surname, cp.Suffix'
+                : '';
+            $sql = "SELECT u.Name, GROUP_CONCAT(DISTINCT u.kindLabel) AS kinds, SUM(u.cnt) AS `usage`{$partsSelect}
                     FROM (" . implode(' UNION ALL ', $unionParts) . ") u
-                    GROUP BY Name
-                    ORDER BY `usage` DESC, Name ASC
+                    {$partsJoin}
+                    GROUP BY u.Name{$partsGroupBy}
+                    ORDER BY `usage` DESC, u.Name ASC
                     LIMIT ?";
             $types   .= 'i';
             $params[] = $limit;
@@ -2177,11 +2271,23 @@ switch ($action) {
             $res = $stmt->get_result();
             $suggestions = [];
             while ($row = $res->fetch_assoc()) {
-                $suggestions[] = [
+                $entry = [
                     'name'  => $row['Name'],
                     'usage' => (int)$row['usage'],
                     'kinds' => $row['kinds'] !== null ? explode(',', $row['kinds']) : [],
                 ];
+                if ($partsCols) {
+                    /* Only emit parts keys when the registry row actually
+                       had any — keeps the payload light and lets the
+                       client choose between server parts and a
+                       client-side decompose. */
+                    if (($row['first_names'] ?? '') !== '' || ($row['surname'] ?? '') !== '' || ($row['suffix'] ?? '') !== '') {
+                        $entry['first']   = (string)($row['first_names'] ?? '');
+                        $entry['surname'] = (string)($row['surname']     ?? '');
+                        $entry['suffix']  = (string)($row['suffix']      ?? '');
+                    }
+                }
+                $suggestions[] = $entry;
             }
             $stmt->close();
             echo json_encode(['suggestions' => $suggestions]);
