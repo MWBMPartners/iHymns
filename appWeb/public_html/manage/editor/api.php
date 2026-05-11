@@ -1673,6 +1673,122 @@ switch ($action) {
                 );
             }
 
+            /* ISWC auto-link to tblWorks (admin audit follow-up).
+               When this song carries an ISWC the editor expects a
+               matching Work row to exist so the public /song page
+               can show the "Part of work X" panel and so the Works
+               admin reflects every catalogued composition. The
+               batch backfill-works-from-iswc migration handles
+               existing rows; this block keeps the invariant on
+               every NEW save. Schema-tolerant: silently skips when
+               tblWorks isn't present yet (pre-migration installs). */
+            if ($iswc !== null && $iswc !== '') {
+                try {
+                    /* Probe schema once per request. */
+                    static $hasWorksSchema = null;
+                    if ($hasWorksSchema === null) {
+                        $probe = $db->prepare(
+                            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                              WHERE TABLE_SCHEMA = DATABASE()
+                                AND TABLE_NAME   IN ('tblWorks', 'tblWorkSongs')"
+                        );
+                        $probe->execute();
+                        $hasWorksSchema = count($probe->get_result()->fetch_all()) === 2;
+                        $probe->close();
+                    }
+                    if ($hasWorksSchema) {
+                        /* Look for an existing Work keyed on this ISWC. */
+                        $wStmt = $db->prepare('SELECT Id FROM tblWorks WHERE Iswc = ? LIMIT 1');
+                        $wStmt->bind_param('s', $iswc);
+                        $wStmt->execute();
+                        $wRow = $wStmt->get_result()->fetch_row();
+                        $wStmt->close();
+
+                        if ($wRow) {
+                            $workId = (int)$wRow[0];
+                        } else {
+                            /* Create a new Work — Title mirrors this song's
+                               title; Slug derived from Title with
+                               collision suffix to satisfy uq_slug. */
+                            $slugBase = mb_strtolower(trim((string)$title));
+                            if (class_exists('Normalizer')) {
+                                $slugBase = \Normalizer::normalize($slugBase, \Normalizer::FORM_KD);
+                                $slugBase = preg_replace('/\p{M}+/u', '', $slugBase) ?? '';
+                            }
+                            $slugBase = preg_replace('/[^\p{L}\p{N}]+/u', '-', $slugBase) ?? '';
+                            $slugBase = trim((string)$slugBase, '-');
+                            if ($slugBase === '') $slugBase = 'work';
+                            if (mb_strlen($slugBase) > 76) $slugBase = mb_substr($slugBase, 0, 76);
+
+                            $slug      = $slugBase;
+                            $slugCheck = $db->prepare('SELECT 1 FROM tblWorks WHERE Slug = ? LIMIT 1');
+                            $suffix    = 1;
+                            while (true) {
+                                $slugCheck->bind_param('s', $slug);
+                                $slugCheck->execute();
+                                $taken = $slugCheck->get_result()->fetch_row() !== null;
+                                if (!$taken) break;
+                                $suffix++;
+                                $slug = $slugBase . '-' . $suffix;
+                            }
+                            $slugCheck->close();
+
+                            $notes = sprintf('Auto-created from ISWC %s when song %s was saved.', $iswc, $songId);
+                            $wIns  = $db->prepare(
+                                'INSERT INTO tblWorks (Iswc, Title, Slug, Notes) VALUES (?, ?, ?, ?)'
+                            );
+                            $wIns->bind_param('ssss', $iswc, $title, $slug, $notes);
+                            $wIns->execute();
+                            $workId = (int)$db->insert_id;
+                            $wIns->close();
+
+                            if (function_exists('logActivity')) {
+                                logActivity('work.auto_create', 'work', (string)$workId, [
+                                    'iswc'      => $iswc,
+                                    'title'     => $title,
+                                    'slug'      => $slug,
+                                    'source'    => 'song_editor.save_song',
+                                    'song_id'   => $songId,
+                                ]);
+                            }
+                        }
+
+                        /* Idempotent membership. IsCanonical defaults to 0
+                           — the first member of a brand-new Work is
+                           promoted to canonical inline via a follow-up
+                           UPDATE only when no canonical member exists. */
+                        $linkStmt = $db->prepare(
+                            'INSERT IGNORE INTO tblWorkSongs (WorkId, SongId, IsCanonical, SortOrder)
+                             VALUES (?, ?, 0, 0)'
+                        );
+                        $linkStmt->bind_param('is', $workId, $songId);
+                        $linkStmt->execute();
+                        $linkStmt->close();
+
+                        $canonStmt = $db->prepare(
+                            'SELECT 1 FROM tblWorkSongs WHERE WorkId = ? AND IsCanonical = 1 LIMIT 1'
+                        );
+                        $canonStmt->bind_param('i', $workId);
+                        $canonStmt->execute();
+                        $hasCanon = $canonStmt->get_result()->fetch_row() !== null;
+                        $canonStmt->close();
+                        if (!$hasCanon) {
+                            $upd = $db->prepare(
+                                'UPDATE tblWorkSongs SET IsCanonical = 1 WHERE WorkId = ? AND SongId = ?'
+                            );
+                            $upd->bind_param('is', $workId, $songId);
+                            $upd->execute();
+                            $upd->close();
+                        }
+                    }
+                } catch (\Throwable $_e) {
+                    /* Best-effort — Works linkage must never block the
+                       core song save. The user's edit is already
+                       captured in tblSongs + tblSongRevisions. */
+                    error_log('[editor save_song] Works auto-link failed: ' . $_e->getMessage());
+                }
+            }
+
             $db->commit();
 
             /* Refresh the on-disk songs cache so the editor's next
