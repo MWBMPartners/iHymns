@@ -72,11 +72,13 @@ sys.stdout.reconfigure(line_buffering=True)
 import http.cookiejar   # Cookie management for maintaining login session
 import html.parser       # Base class for custom HTML parsers (no BeautifulSoup)
 import gzip              # For decompressing gzip-encoded HTTP responses
+import zlib              # For deflate decompression (alongside gzip, #971)
 import os                # File system operations (makedirs, path joining, etc.)
 import re                # Regular expressions for HTML parsing and text processing
 import time              # For rate-limiting delays between requests
 import argparse          # Command-line argument parsing
 import getpass           # Secure password input (hides characters while typing)
+import random            # UA-pool rotation + jittered request delay (#971)
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +96,29 @@ INDEX_URL   = f"{BASE}/songs/page/"
 
 # Default delay between HTTP requests (seconds). 1.2s is chosen to be
 # respectful to the server while keeping scraping at a reasonable speed.
+#
+# (#971) The runtime sleep uses `random.uniform(DELAY_JITTER_MIN, DELAY_JITTER_MAX)`
+# scaled around DELAY so the inter-request gap varies between requests —
+# a fixed-interval cadence is itself a bot tell. Real browsing has
+# significant variance (15-90s for full reading, but click-throughs can
+# be sub-second). The jitter window 0.6x-1.8x DELAY puts each gap in
+# roughly the bottom of the human range while keeping the AVERAGE near
+# the configured DELAY for accounting purposes.
 DELAY       = 1.2
+DELAY_JITTER_MIN = 0.6   # multiplier on DELAY for the shortest gap
+DELAY_JITTER_MAX = 1.8   # multiplier on DELAY for the longest gap
+
+
+def _jittered_delay(base_delay):
+    """
+    Return a random delay between `base_delay * DELAY_JITTER_MIN` and
+    `base_delay * DELAY_JITTER_MAX`. Used in place of `time.sleep(DELAY)`
+    to defeat fixed-cadence pattern detection. (#971)
+    """
+    return random.uniform(
+        base_delay * DELAY_JITTER_MIN,
+        base_delay * DELAY_JITTER_MAX,
+    )
 
 # Default output directory (relative to where the script is run)
 DEFAULT_OUT = "./hymns"
@@ -102,6 +126,100 @@ DEFAULT_OUT = "./hymns"
 # Global debug flag — set to True via --debug CLI argument to dump HTML
 # responses for troubleshooting login/parsing issues
 DEBUG       = False
+
+
+# ---------------------------------------------------------------------------
+# User-Agent rotation pool + per-UA Client-Hints (#971)
+# ---------------------------------------------------------------------------
+# Ported from .importers/scrapers/SDAHymnals_SDAHymnal.org.py (#967 / #970).
+# Each entry pairs a real-browser UA with the Client-Hints that browser
+# actually emits — a Chrome-claiming UA without sec-ch-ua-* is the kind
+# of mismatch a competent WAF (Sucuri, Cloudflare, Akamai) flags
+# immediately. Safari and Firefox don't emit Client-Hints; their entries
+# carry an empty hints dict so the resulting request is correctly
+# Client-Hints-free, matching what those browsers actually send.
+#
+# missionpraise.com sits behind the Sucuri WAF (per existing inline
+# comments in this file), which is known to fingerprint header SHAPE.
+# A rotating pool with matching hints presents the burst as a handful
+# of different visitors rather than one consistent automated client.
+USER_AGENT_POOL = [
+    # Safari 18 on macOS Sequoia — no Client-Hints emitted by Safari.
+    {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+              "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+              "Version/18.0 Safari/605.1.15",
+        "hints": {},
+    },
+    # Safari 18 on iPadOS 18 — no Client-Hints.
+    {
+        "ua": "Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) "
+              "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+              "Version/18.0 Mobile/15E148 Safari/604.1",
+        "hints": {},
+    },
+    # Chrome 130 on macOS Sequoia.
+    {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+              "AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/130.0.0.0 Safari/537.36",
+        "hints": {
+            "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"macOS"',
+        },
+    },
+    # Chrome 130 on Windows 11.
+    {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+              "AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/130.0.0.0 Safari/537.36",
+        "hints": {
+            "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+        },
+    },
+    # Firefox 132 on macOS — no Client-Hints (Firefox doesn't emit them).
+    {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.7; rv:132.0) "
+              "Gecko/20100101 Firefox/132.0",
+        "hints": {},
+    },
+    # Firefox 132 on Windows — no Client-Hints.
+    {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) "
+              "Gecko/20100101 Firefox/132.0",
+        "hints": {},
+    },
+    # Edge 130 on Windows 11 — emits "Microsoft Edge" alongside Chromium.
+    {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+              "AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
+        "hints": {
+            "sec-ch-ua": '"Chromium";v="130", "Microsoft Edge";v="130", "Not?A_Brand";v="99"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+        },
+    },
+]
+
+
+def _pick_browser_identity():
+    """
+    Return a header dict ready to drop into `opener.addheaders` — a
+    randomly-chosen UA pool entry expanded into header tuples,
+    including matching Client-Hints for Chromium-family UAs (and
+    none for Safari / Firefox, which don't emit them). Called from
+    make_opener() once per session and could in principle be called
+    per-request if even tighter rotation is wanted later.
+    """
+    entry = random.choice(USER_AGENT_POOL)
+    headers = [("User-Agent", entry["ua"])]
+    for k, v in entry["hints"].items():
+        headers.append((k, v))
+    return headers
 
 # HTML5 void elements — these tags have no closing tag, so they must NOT
 # affect depth tracking. Without this exclusion, each <br> (etc.) inflates
@@ -212,17 +330,26 @@ def make_opener():
 
     # Set default headers that mimic a real browser to avoid WAF blocks.
     # These headers are sent with every request made through this opener.
-    opener.addheaders = [
-        # User-Agent string mimicking Chrome on macOS
-        ("User-Agent",
-         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36 Edg/145.0.0.0"),
-        # Accept header indicating we prefer HTML but accept anything
+    #
+    # (#971) The User-Agent (and matching Client-Hints, when the chosen
+    # UA is Chromium-family) come from the rotating USER_AGENT_POOL via
+    # _pick_browser_identity() — replaces the previous hardcoded single
+    # Chrome/Edge 145 UA which made every session look identical to the
+    # WAF. The base header set below is the universal-on-every-modern-
+    # browser shape; per-UA Client-Hints are spliced in by the helper.
+    #
+    # Note on Accept-Encoding: keeping `gzip, deflate, br` from the
+    # original to match what real browsers send. The br branch is
+    # exercised by the existing _read_response logic at line ~795; if
+    # a future server starts sending Brotli, that code will need a
+    # third-party `brotli` package OR a downgrade to `gzip, deflate`.
+    # Today missionpraise.com responds with gzip, so no change needed.
+    opener.addheaders = _pick_browser_identity() + [
         ("Accept",
          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,"
          "image/webp,image/apng,*/*;q=0.8"),
         ("Accept-Language", "en-GB,en;q=0.9"),
-        ("Accept-Encoding", "gzip, deflate, br"),      # We handle gzip decompression
+        ("Accept-Encoding", "gzip, deflate, br"),      # decompression handled below
         ("Connection", "keep-alive"),                    # Reuse TCP connections
         ("Upgrade-Insecure-Requests", "1"),              # Standard browser header
         # Sec-Fetch-* headers: modern security headers that WAFs use to verify
@@ -1668,7 +1795,7 @@ def process_song(opener, title, url, book, output_dir, no_files, delay, file_cac
         print(f"✗ ({reason})")
         log_skip(book_dir, label, padded, title, url, reason)
         _dump_skip_html(book_dir, label, padded, title, url, reason, html_text)
-        time.sleep(delay)
+        time.sleep(_jittered_delay(delay))
         return "skipped"
 
     # Check for subscription paywall (song not included in user's plan)
@@ -1676,7 +1803,7 @@ def process_song(opener, title, url, book, output_dir, no_files, delay, file_cac
         print("✗ (not in subscription)")
         log_skip(book_dir, label, padded, title, url, "song not part of subscription")
         _dump_skip_html(book_dir, label, padded, title, url, "not in subscription", html_text)
-        time.sleep(delay)
+        time.sleep(_jittered_delay(delay))
         return "skipped"
 
     # Check for WAF block on the song page (can happen on individual pages)
@@ -1684,7 +1811,7 @@ def process_song(opener, title, url, book, output_dir, no_files, delay, file_cac
         print("✗ (blocked by firewall)")
         log_skip(book_dir, label, padded, title, url, "blocked by WAF/firewall")
         _dump_skip_html(book_dir, label, padded, title, url, "blocked by WAF/firewall", html_text)
-        time.sleep(delay)
+        time.sleep(_jittered_delay(delay))
         return "skipped"
 
     # --- Parse the song page HTML ---
@@ -1694,7 +1821,7 @@ def process_song(opener, title, url, book, output_dir, no_files, delay, file_cac
     # If the parser couldn't find a title, retry once — this may be a transient
     # issue like a session hiccup or a partially-loaded page
     if not sp.title:
-        time.sleep(delay * 2)  # Longer delay before retry
+        time.sleep(_jittered_delay(delay * 2))  # Longer delay before retry
         html_text, _ = fetch_text(opener, url)
         if html_text and "loginform" not in html_text:
             sp = SongParser()
@@ -1727,7 +1854,7 @@ def process_song(opener, title, url, book, output_dir, no_files, delay, file_cac
         print("✗ (no title parsed)")
         log_skip(book_dir, label, padded, title, url, "parser found no title in page HTML")
         _dump_skip_html(book_dir, label, padded, title, url, "no title parsed", html_text)
-        time.sleep(delay)
+        time.sleep(_jittered_delay(delay))
         return "skipped"
 
     # Build the structured song data dict
@@ -1837,14 +1964,14 @@ def process_song(opener, title, url, book, output_dir, no_files, delay, file_cac
                 file_cache.add(fname)  # Add to cache so we don't re-download
 
             # Brief delay between downloads (30% of normal delay)
-            time.sleep(delay * 0.3)
+            time.sleep(_jittered_delay(delay * 0.3))
 
     # Print the status line with download indicators:
     # [W,M,A] = newly downloaded words/music/audio (uppercase)
     # [w,m,a] = already existed (lowercase)
     file_str = f" [{','.join(file_results)}]" if file_results else ""
     print(f"✓{file_str}")
-    time.sleep(delay)  # Rate limit between songs
+    time.sleep(_jittered_delay(delay))  # Rate limit between songs
     return "saved"
 
 
@@ -2013,7 +2140,7 @@ def crawl_and_scrape(opener, books, output_dir, no_files, start_page=1, delay=DE
             print(f"           ⏭  all {page_existed} songs on this page already exist")
 
         page += 1
-        time.sleep(delay)   # Rate limit between index pages
+        time.sleep(_jittered_delay(delay))   # Rate limit between index pages
 
     # If --song was specified but never found, warn the user
     if song_number is not None and saved == 0 and skipped == 0:
