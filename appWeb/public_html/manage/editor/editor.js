@@ -4678,14 +4678,83 @@ function init() {
         /* After successful load, populate the songbook dropdown with real data. */
         populateSongbookFilterDropdown();
 
-        /* Deep-link support (#407): /manage/editor/?song=<SongId> opens
-           directly on that song when it exists in songData. Used by the
-           Edit button on the public song view. */
+        /* Deep-link support.
+
+           #407 — /manage/editor/?song=<SongId> opens directly on the
+                   named song when it exists in songData. Used by the
+                   Edit button on the public song view.
+
+           Missing-Numbers prefill — /manage/editor/?songbook=<ABBR>
+                   with either ?number=<N> or #number=<N> opens a
+                   blank new-song draft pre-filled with the songbook
+                   abbreviation, songbook display name, and the song
+                   number. Used by the "Open in editor" button on
+                   /manage/missing-numbers so the curator lands ready
+                   to type lyrics instead of facing an empty list and
+                   having to re-discover what to enter. */
         try {
-            var sid = new URLSearchParams(window.location.search).get('song');
+            var qs   = new URLSearchParams(window.location.search);
+            var hash = String(window.location.hash || '').replace(/^#/, '');
+            var sid  = qs.get('song');
             if (sid && Array.isArray(songData.songs)
                 && songData.songs.some(function (s) { return s.id === sid; })) {
                 selectSong(sid);
+                return;
+            }
+            var prefillBook = qs.get('songbook');
+            /* Number can arrive either as a query param (?number=N) or
+               as the legacy fragment (#number=N) the missing-numbers
+               page emits. Both shapes work. */
+            var prefillNum  = qs.get('number');
+            if (!prefillNum && hash.indexOf('number=') === 0) {
+                prefillNum = hash.slice('number='.length);
+            }
+            if (prefillBook && prefillNum && /^\d+$/.test(prefillNum)) {
+                var prefillNumInt = parseInt(prefillNum, 10);
+                /* If the (songbook, number) combo already exists in
+                   songData, jump to that song instead of creating a
+                   duplicate draft — protects against double-clicks
+                   on the missing-numbers link and from a curator
+                   navigating back to the editor with stale data. */
+                var existing = (Array.isArray(songData.songs) ? songData.songs : []).find(function (s) {
+                    return s.songbook === prefillBook
+                        && parseInt(s.number, 10) === prefillNumInt;
+                });
+                if (existing) {
+                    selectSong(existing.id);
+                    return;
+                }
+                /* Resolve the songbook display name from songData.songbooks
+                   so the new draft carries both abbreviation and full
+                   name (the editor displays the full name in the
+                   header chip; abbreviation drives the SongId). */
+                var bookRow = (Array.isArray(songData.songbooks) ? songData.songbooks : []).find(function (b) {
+                    return (b.id || b.abbreviation) === prefillBook;
+                });
+                var bookName = bookRow ? (bookRow.name || prefillBook) : prefillBook;
+
+                /* Spawn a draft via the same addNewSong() entry point
+                   the toolbar uses, then patch the songbook + number
+                   fields. addNewSong() runs selectSong() internally,
+                   so after the patches we mark the song modified +
+                   re-render so the sidebar label shows the new number
+                   instead of "New Song". */
+                addNewSong();
+                var draft = songData.songs[songData.songs.length - 1];
+                if (draft) {
+                    draft.songbook     = prefillBook;
+                    draft.songbookName = bookName;
+                    draft.number       = prefillNumInt;
+                    /* Title stays "New Song" — the curator types the
+                       real title themselves. Pre-filling a stub
+                       title would obscure what still needs entering. */
+                    if (typeof markModified === 'function') markModified(draft.id);
+                    if (typeof renderSongList === 'function') renderSongList();
+                    selectSong(draft.id);
+                    if (typeof showToast === 'function') {
+                        showToast('Pre-filled new song for ' + bookName + ' #' + prefillNumInt + ' — enter lyrics + metadata to save.', 'info');
+                    }
+                }
             }
         } catch (_e) { /* malformed URL — ignore */ }
     });
