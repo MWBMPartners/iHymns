@@ -197,6 +197,24 @@ return [
         ],
         'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblCreditPeople', 'Surname'),
     ],
+    'credit-people-aliases' => [
+        'script' => 'migrate-credit-people-aliases.php',
+        'card' => [
+            'title'  => 'Credit People AKA / Aliases',
+            'body'   => 'Adds <code>tblCreditPersonAliases</code> — MusicBrainz-style alternative'
+                      . ' names per credit-person. Each alias carries a Type (legal / artist /'
+                      . ' pseudonym / nickname / maiden / search-hint / misspelling / other), an'
+                      . ' optional IETF BCP 47 Locale for transliterations'
+                      . ' ("John Doe" en ↔ "ジョン・ドウ" ja), an <code>IsPrimary</code> flag for'
+                      . ' the preferred display form, plus optional <code>SortName</code> /'
+                      . ' <code>Note</code>. Searched alongside the canonical <code>Name</code> in'
+                      . ' admin filter, editor typeahead and site search; surfaced as JSON-LD'
+                      . ' <code>alternateName</code> on the public <code>/people/&lt;slug&gt;</code>'
+                      . ' page. Bulk-import auto-detects "Smith (a.k.a. Jones)" patterns. Idempotent.',
+            'button' => 'Run Credit People Aliases Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblCreditPersonAliases'),
+    ],
     'catalogues' => [
         'script' => 'migrate-catalogues.php',
         'card' => [

@@ -71,6 +71,22 @@ if ($personName === '') {
     $personName = _personSlugToName($personSlug);
 }
 
+/* AKA / aliases — pull every alternative name attached to this
+   registry row so the header card can render "Also known as: …" and
+   the JSON-LD block can emit alternateName. Schema-tolerant: returns
+   an empty array on installs that haven't run the aliases migration. */
+$personAliases = [];
+if ($person && isset($person['Id'])) {
+    if (!function_exists('loadCreditPersonAliases')) {
+        require_once dirname(__DIR__) . '/credit_people_helpers.php';
+    }
+    try {
+        $personAliases = loadCreditPersonAliases($db, (int)$person['Id']);
+    } catch (\Throwable $_e) {
+        $personAliases = [];
+    }
+}
+
 /* ---------------------------------------------------------------------- */
 /* 2. Discography by role — count + list across all six credit tables.    */
 /* ---------------------------------------------------------------------- */
@@ -298,6 +314,37 @@ foreach ($discography as $rk => $entry) {
                     <small class="text-muted fw-normal ms-1"><?= htmlspecialchars($lifespanText) ?></small>
                 <?php endif; ?>
             </h1>
+            <?php if (!empty($personAliases)):
+                /* AKA names render directly under the title so a visitor
+                   arriving via the canonical-name URL sees every name
+                   this person is also known as. Search-hint and
+                   misspelling rows are hidden — they exist to make the
+                   internal search match, not for public display. */
+                $publicAliases = array_filter(
+                    $personAliases,
+                    static fn(array $a): bool => !in_array($a['Type'], ['search-hint', 'misspelling'], true)
+                );
+            ?>
+                <?php if ($publicAliases): ?>
+                    <p class="text-muted small mb-1">
+                        <i class="fa-solid fa-arrows-left-right me-1" aria-hidden="true"></i>
+                        Also known as:
+                        <?php
+                            $rendered = array_map(static function (array $a): string {
+                                $name = htmlspecialchars((string)$a['Name']);
+                                /* Locale tag in <small> trailing the alias
+                                   so a transliteration like "ジョン・ドウ (ja)" reads
+                                   naturally. */
+                                if (!empty($a['Locale'])) {
+                                    $name .= ' <small class="text-muted">(' . htmlspecialchars((string)$a['Locale']) . ')</small>';
+                                }
+                                return $name;
+                            }, $publicAliases);
+                            echo implode(', ', $rendered);
+                        ?>
+                    </p>
+                <?php endif; ?>
+            <?php endif; ?>
             <?php if (!empty($rolesForBadges)): ?>
                 <p class="text-muted small mb-1">
                     <?= htmlspecialchars(implode(' &middot; ', $rolesForBadges)) ?>
@@ -471,5 +518,33 @@ foreach ($discography as $rk => $entry) {
             </div>
         </div>
     <?php endforeach; ?>
+
+    <?php
+        /* JSON-LD Person schema (#claude/credit-people-aliases-v2). Emit
+           an alternateName entry for every alias so search engines and
+           knowledge-graph consumers learn that "John Newton" and his
+           common variants ("J. Newton", "Newton, John") are the same
+           person. Search-hint / misspelling aliases are included here
+           too — schema.org alternateName is a non-display catalogue of
+           known synonyms, so search engines benefit from the broader
+           set the public header skipped. */
+        if ($person && (!empty($publicAliases) || !empty($personAliases))):
+            $ldNames = array_values(array_unique(array_map(
+                static fn(array $a): string => (string)$a['Name'],
+                $personAliases
+            )));
+            $ldType = ((int)($person['IsGroup'] ?? 0) === 1) ? 'MusicGroup' : 'Person';
+            $ld = [
+                '@context'      => 'https://schema.org',
+                '@type'         => $ldType,
+                'name'          => $personName,
+                'alternateName' => count($ldNames) === 1 ? $ldNames[0] : $ldNames,
+            ];
+    ?>
+        <script type="application/ld+json"><?= json_encode(
+            $ld,
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+        ) ?></script>
+    <?php endif; ?>
 
 </section>

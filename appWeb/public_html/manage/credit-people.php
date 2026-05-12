@@ -97,8 +97,10 @@ $logCreditPerson = static function (string $action, string $entityId, array $det
  * ---------------------------------------------------------------------- */
 $LINK_TYPE_CATALOGUE = CREDIT_PERSON_LINK_TYPE_CATALOGUE;
 $LINK_TYPE_KEYS      = CREDIT_PERSON_LINK_TYPE_KEYS;
+$ALIAS_TYPES         = CREDIT_PERSON_ALIAS_TYPES;
 $normaliseLinks      = static fn(mixed $raw): array => normaliseCreditPersonLinks($raw);
 $normaliseIpi        = static fn(mixed $raw): array => normaliseCreditPersonIpi($raw);
+$normaliseAliases    = static fn(mixed $raw): array => normaliseCreditPersonAliases($raw);
 
 /* Wrapper kept under the original snake_case private-prefix name so
    existing call sites in this file keep working without further
@@ -218,8 +220,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $deathPlace  = trim((string)($_POST['death_place']  ?? '')) ?: null;
                 $deathDate   = trim((string)($_POST['death_date']   ?? '')) ?: null;
                 $notes       = $notesRaw !== '' ? $notesRaw : null;
-                $links       = $normaliseLinks($_POST['links'] ?? null);
-                $ipi         = $normaliseIpi($_POST['ipi']     ?? null);
+                $links       = $normaliseLinks($_POST['links']     ?? null);
+                $ipi         = $normaliseIpi($_POST['ipi']         ?? null);
+                $aliases     = $normaliseAliases($_POST['aliases'] ?? null);
                 /* #584 / #585 — classification flags. The two are
                    mutually exclusive in the UI; if both arrive we
                    prefer special-case (it's the more constraining
@@ -377,6 +380,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
                         $ipiStmt->close();
                     }
+                    /* AKA / alias rows — schema-tolerant (helper no-ops
+                       cleanly on installs that haven't run the
+                       migrate-credit-people-aliases.php migration yet). */
+                    if ($aliases) {
+                        replaceCreditPersonAliases($db, $newId, $aliases);
+                    }
                     $db->commit();
 
                     $logCreditPerson('add', (string)$newId, [
@@ -417,8 +426,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $deathPlace  = trim((string)($_POST['death_place']  ?? '')) ?: null;
                 $deathDate   = trim((string)($_POST['death_date']   ?? '')) ?: null;
                 $notes       = $notesRaw !== '' ? $notesRaw : null;
-                $links       = $normaliseLinks($_POST['links'] ?? null);
-                $ipi         = $normaliseIpi($_POST['ipi']     ?? null);
+                $links       = $normaliseLinks($_POST['links']     ?? null);
+                $ipi         = $normaliseIpi($_POST['ipi']         ?? null);
+                $aliases     = $normaliseAliases($_POST['aliases'] ?? null);
                 $isSpecialCase = !empty($_POST['is_special_case']) ? 1 : 0;
                 $isGroup       = !empty($_POST['is_group'])        ? 1 : 0;
                 if ($isSpecialCase && $isGroup) { $isGroup = 0; }
@@ -550,6 +560,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
                         $ipiStmt->close();
                     }
+                    /* Replace the alias set unconditionally — the curator's
+                       posted list is the new truth; an empty list deletes
+                       any pre-existing aliases. Schema-tolerant on installs
+                       that haven't run migrate-credit-people-aliases.php. */
+                    replaceCreditPersonAliases($db, $id, $aliases);
                     $db->commit();
 
                     /* Compute the changed-fields list for audit. The
@@ -1048,8 +1063,9 @@ try {
        child tables are small (a handful of rows per person, low
        hundreds total), so loading them all is cheaper than fetching
        per-person on demand from JS. */
-    $linksByPerson = [];
-    $ipiByPerson   = [];
+    $linksByPerson   = [];
+    $ipiByPerson     = [];
+    $aliasesByPerson = [];
     $stmt = $db->prepare(
         'SELECT Id, CreditPersonId, LinkType, Url, Label, SortOrder
            FROM tblCreditPersonLinks
@@ -1083,6 +1099,14 @@ try {
     }
     $stmt->close();
 
+    /* AKA / aliases — bulk load alongside links + IPI so the Edit
+       drawer's pre-fill can populate the chip-list without an extra
+       round-trip. Schema-tolerant: pre-migration installs return an
+       empty array (the helper checks INFORMATION_SCHEMA first). */
+    $personIds = [];
+    foreach ($registryRows as $r) { $personIds[] = (int)$r['Id']; }
+    $aliasesByPerson = loadCreditPersonAliasesBulk($db, $personIds);
+
     /* Merge — keyed by Name. A name may appear in usage only,
        registry only, or both. */
     $byName = [];
@@ -1109,6 +1133,7 @@ try {
             'is_group'        => 0,   /* #585 */
             'links'       => [],
             'ipi'         => [],
+            'aliases'     => [],
         ];
     }
     foreach ($registryRows as $r) {
@@ -1156,8 +1181,9 @@ try {
         /* Full child rows for the Edit drawer's pre-fill. Empty arrays
            default for registry rows with no children — the drawer's JS
            handles the empty case as "no rows yet". */
-        $byName[$name]['links'] = $linksByPerson[(int)$r['Id']] ?? [];
-        $byName[$name]['ipi']   = $ipiByPerson[(int)$r['Id']]   ?? [];
+        $byName[$name]['links']   = $linksByPerson[(int)$r['Id']]   ?? [];
+        $byName[$name]['ipi']     = $ipiByPerson[(int)$r['Id']]     ?? [];
+        $byName[$name]['aliases'] = $aliasesByPerson[(int)$r['Id']] ?? [];
     }
 
     /* Sort: highest-usage first, then alphabetical. Registry-only
@@ -1412,13 +1438,24 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                                 'total'       => $p['total'],
                                 'links'       => $p['links'],
                                 'ipi'         => $p['ipi'],
+                                'aliases'     => $p['aliases'] ?? [],
                             ], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE);
                             $isSpecial = !empty($p['is_special_case']);
                             $isGroup   = !empty($p['is_group']);
+                            /* AKA names flattened into the row's data-aka
+                               attribute so the existing client-side filter
+                               matches a typed query against aliases too —
+                               critical for the "I remember Cecil under her
+                               maiden name" workflow. Empty when the row
+                               has no aliases (the JS treats undefined as
+                               "no aliases to consider"). */
+                            $akaList = array_map(static fn(array $a): string => (string)$a['Name'], $p['aliases'] ?? []);
+                            $akaAttr = implode(' · ', $akaList);
                         ?>
                             <tr data-roles="<?= htmlspecialchars($rolesCsv) ?>"
                                 data-registry-only="<?= $isRegistryOnly ? '1' : '0' ?>"
                                 data-haystack="<?= htmlspecialchars($haystack) ?>"
+                                data-aka="<?= htmlspecialchars($akaAttr) ?>"
                                 data-classification="<?= $isSpecial ? 'special' : ($isGroup ? 'group' : 'individual') ?>"
                                 data-person='<?= htmlspecialchars($personJson, ENT_QUOTES) ?>'>
                                 <td data-col-priority="primary" class="person-name <?= $isSpecial ? 'fst-italic' : '' ?>">
@@ -1433,6 +1470,12 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                                     <?php endif; ?>
                                     <?php if ($isGroup): ?>
                                         <span class="badge bg-info-subtle text-info-emphasis ms-1" style="font-size: 0.6rem;">Group</span>
+                                    <?php endif; ?>
+                                    <?php if (!empty($p['aliases'])): ?>
+                                        <div class="text-secondary small mt-1" title="Alternative names that also match in search">
+                                            <i class="bi bi-arrow-left-right me-1" aria-hidden="true"></i>
+                                            AKA: <?= htmlspecialchars(implode(', ', array_map(static fn($a) => (string)$a['Name'], $p['aliases']))) ?>
+                                        </div>
                                     <?php endif; ?>
                                     <?php if ($p['notes']): ?>
                                         <span class="text-secondary small ms-2" title="<?= htmlspecialchars($p['notes']) ?>">
@@ -1908,6 +1951,25 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 <div class="form-text small">A single individual can hold more than one IPI Name Number when they're registered under different performing names.</div>
             </div>
 
+            <!-- AKA / aliases — repeating sub-form. Mirrors the
+                 MusicBrainz alias model in a slimmed-down shape: each
+                 row carries a Name, a Type (legal / artist / pseudonym /
+                 nickname / maiden / search-hint / misspelling / other)
+                 and an optional Locale tag for transliterations
+                 (ja, ru-Latn, …). Surfaced as JSON-LD alternateName on
+                 /people/<slug> and searched alongside the canonical
+                 Name in editor typeahead + the admin filter. -->
+            <div>
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <label class="form-label small mb-0">AKA / Aliases</label>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="cp-add-alias-btn">
+                        <i class="bi bi-plus me-1"></i>Add alias
+                    </button>
+                </div>
+                <div id="cp-aliases-container" class="d-flex flex-column gap-2"></div>
+                <div class="form-text small">Alternative names that should match this person in search — legal name, stage name, common misspellings, transliterations. Each alias carries a type and optional locale tag.</div>
+            </div>
+
             <!-- Notes -->
             <div>
                 <label class="form-label small mb-1" for="cp-drawer-notes">Notes</label>
@@ -1958,6 +2020,28 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             </button>
         </div>
     </template>
+    <template id="cp-alias-row-template">
+        <div class="d-flex gap-1 align-items-start cp-alias-row" data-row-kind="alias">
+            <input type="text" class="form-control form-control-sm" name="aliases[{i}][name]"
+                   placeholder="Alternative name" maxlength="255" required>
+            <select class="form-select form-select-sm" style="min-width: 130px; max-width: 170px;"
+                    name="aliases[{i}][type]">
+                <?php foreach ($ALIAS_TYPES as $key => $label): ?>
+                    <option value="<?= htmlspecialchars($key) ?>"<?= $key === 'other' ? ' selected' : '' ?>>
+                        <?= htmlspecialchars($label) ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
+            <input type="text" class="form-control form-control-sm" style="max-width: 90px;"
+                   name="aliases[{i}][locale]" placeholder="Locale" maxlength="35"
+                   title="Optional IETF BCP 47 tag for transliterations (ja, ru-Latn, zh-Hans, …)">
+            <input type="hidden" name="aliases[{i}][sort_order]" value="{i}">
+            <button type="button" class="btn btn-sm btn-outline-danger cp-row-remove"
+                    title="Remove this alias" aria-label="Remove this alias">
+                <i class="bi bi-x" aria-hidden="true"></i>
+            </button>
+        </div>
+    </template>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 
@@ -1990,6 +2074,13 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 const rows = tbody.querySelectorAll('tr:not(.empty-row)');
                 rows.forEach(row => {
                     const haystack    = row.dataset.haystack || '';
+                    /* Include AKA names in the search haystack so a
+                       query for the alias spelling matches the row of
+                       the canonical name (e.g. typing the maiden name
+                       finds the post-marriage row). Lower-cased on the
+                       client because PHP wrote it as the raw display
+                       form. */
+                    const akaHaystack = (row.dataset.aka || '').toLowerCase();
                     const roles       = (row.dataset.roles || '').split(',').filter(Boolean);
                     const isRegOnly   = row.dataset.registryOnly === '1';
                     let matchRole = true;
@@ -1998,7 +2089,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                     } else if (activeFilter !== 'all') {
                         matchRole = roles.includes(activeFilter);
                     }
-                    const matchSearch = q === '' || haystack.includes(q);
+                    const matchSearch = q === '' || haystack.includes(q) || akaHaystack.includes(q);
                     const show = matchRole && matchSearch;
                     row.classList.toggle('no-match', !show);
                     if (show) visibleCount++;
@@ -2034,16 +2125,20 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             const nameIn    = document.getElementById('cp-drawer-name');
             const linksBox  = document.getElementById('cp-links-container');
             const ipiBox    = document.getElementById('cp-ipi-container');
+            const aliasBox  = document.getElementById('cp-aliases-container');
             const linkTpl   = document.getElementById('cp-link-row-template');
             const ipiTpl    = document.getElementById('cp-ipi-row-template');
+            const aliasTpl  = document.getElementById('cp-alias-row-template');
             const addBtn    = document.getElementById('cp-add-btn');
             const addLinkBtn= document.getElementById('cp-add-link-btn');
             const addIpiBtn = document.getElementById('cp-add-ipi-btn');
+            const addAliasBtn = document.getElementById('cp-add-alias-btn');
             if (!drawerEl || !form) return;
 
             const drawer = bootstrap.Offcanvas.getOrCreateInstance(drawerEl);
-            let linkIndex = 0;
-            let ipiIndex  = 0;
+            let linkIndex  = 0;
+            let ipiIndex   = 0;
+            let aliasIndex = 0;
 
             /* Append a new sub-form row, optionally pre-filled. The
                template's {i} placeholders get replaced with the
@@ -2080,13 +2175,33 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 if (typeof applyFlagLabels === 'function') applyFlagLabels();
                 return row;
             }
+            function addAliasRow(prefill) {
+                if (!aliasTpl) return null;
+                const html = aliasTpl.innerHTML.replaceAll('{i}', String(aliasIndex++));
+                aliasBox.insertAdjacentHTML('beforeend', html);
+                const row = aliasBox.lastElementChild;
+                if (prefill) {
+                    row.querySelector('input[name$="[name]"]').value    = prefill.Name    || prefill.name    || '';
+                    const typeSel = row.querySelector('select[name$="[type]"]');
+                    if (typeSel) typeSel.value = prefill.Type || prefill.type || 'other';
+                    const localeIn = row.querySelector('input[name$="[locale]"]');
+                    if (localeIn) localeIn.value = prefill.Locale || prefill.locale || '';
+                    const ord = row.querySelector('input[name$="[sort_order]"]');
+                    if (ord && (prefill.SortOrder !== undefined || prefill.sort_order !== undefined)) {
+                        ord.value = prefill.SortOrder ?? prefill.sort_order;
+                    }
+                }
+                return row;
+            }
 
             function resetDrawer() {
                 form.reset();
-                linksBox.innerHTML = '';
-                ipiBox.innerHTML   = '';
-                linkIndex = 0;
-                ipiIndex  = 0;
+                linksBox.innerHTML  = '';
+                ipiBox.innerHTML    = '';
+                if (aliasBox) aliasBox.innerHTML = '';
+                linkIndex  = 0;
+                ipiIndex   = 0;
+                aliasIndex = 0;
             }
 
             /* Open empty drawer for Add. */
@@ -2169,8 +2284,9 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                     suffixIn.value     = '';
                 }
                 applyFlagLabels();
-                (person.links || []).forEach(l => addLinkRow(l));
-                (person.ipi   || []).forEach(r => addIpiRow(r));
+                (person.links   || []).forEach(l => addLinkRow(l));
+                (person.ipi     || []).forEach(r => addIpiRow(r));
+                (person.aliases || []).forEach(a => addAliasRow(a));
                 drawer.show();
             });
 
@@ -2322,8 +2438,9 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             });
 
             /* Add-row buttons inside the drawer. */
-            addLinkBtn?.addEventListener('click', () => addLinkRow());
-            addIpiBtn?.addEventListener('click',  () => addIpiRow());
+            addLinkBtn?.addEventListener('click',  () => addLinkRow());
+            addIpiBtn?.addEventListener('click',   () => addIpiRow());
+            addAliasBtn?.addEventListener('click', () => addAliasRow());
 
             /* Remove-row delegation. */
             drawerEl.addEventListener('click', (ev) => {

@@ -556,11 +556,64 @@ switch ($action) {
                 foreach ($song['adaptors']    ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtAdaptor->bind_param('ss', $songId, $v);    $stmtAdaptor->execute();    $regNames[$v] = true; } }
                 foreach ($song['translators'] ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtTranslator->bind_param('ss', $songId, $v); $stmtTranslator->execute(); $regNames[$v] = true; } }
                 foreach (array_keys($regNames) as $regName) {
-                    /* registerCreditPersonByName handles the lookup-
-                       or-insert with a slug — same end-state as the
-                       old `INSERT IGNORE (Name)` but no silent
-                       no-op on the orphan empty-Slug collision. */
-                    registerCreditPersonByName($db, $regName);
+                    /* AKA / alias auto-detection. parseCreditPersonAliasHints
+                       only fires on conservative patterns (explicit
+                       a.k.a. / aka / "also known as" markers, or a
+                       slash-separated A / B with both halves looking
+                       like person names). Bare parentheticals like
+                       "(b. 1850)" are deliberately NOT matched —
+                       biographical content stays attached to the
+                       primary name. When no marker is detected,
+                       parseCreditPersonAliasHints returns
+                       ['name' => $regName, 'aliases' => []] so the
+                       legacy path runs unchanged.
+
+                       Registers the PRIMARY name as the registry row
+                       (so later edits land on the canonical form) and
+                       fires replaceCreditPersonAliases() to attach
+                       the discovered aliases. The 'other' Type marks
+                       them as auto-detected so a curator can re-classify
+                       (legal / artist / etc.) in the chip-list editor. */
+                    $hint    = parseCreditPersonAliasHints($regName);
+                    $primary = $hint['name'] !== '' ? $hint['name'] : $regName;
+                    $cpId    = registerCreditPersonByName($db, $primary);
+                    if (!empty($hint['aliases']) && $cpId > 0 && creditPeopleAliasesTableExists($db)) {
+                        $existing = loadCreditPersonAliases($db, $cpId);
+                        $merged   = $existing;
+                        $byName   = [];
+                        foreach ($merged as $a) { $byName[mb_strtolower($a['Name'])] = true; }
+                        $idx = count($merged);
+                        foreach ($hint['aliases'] as $aliasName) {
+                            if (isset($byName[mb_strtolower($aliasName)])) continue;
+                            $merged[] = [
+                                'Name'      => $aliasName,
+                                'SortName'  => null,
+                                'Type'      => 'other',
+                                'Locale'    => null,
+                                'IsPrimary' => 0,
+                                'SortOrder' => $idx++,
+                                'Note'      => 'auto-detected from bulk-import',
+                            ];
+                            $byName[mb_strtolower($aliasName)] = true;
+                        }
+                        /* Re-shape into the normaliser-friendly form
+                           (lower-case keys). replaceCreditPersonAliases
+                           deletes the existing set + re-inserts; passing
+                           the union keeps every prior alias intact
+                           alongside the new auto-detected ones. */
+                        $shaped = array_map(static function (array $a): array {
+                            return [
+                                'name'       => $a['Name'],
+                                'sort_name'  => $a['SortName']  ?? null,
+                                'type'       => $a['Type']      ?? 'other',
+                                'locale'     => $a['Locale']    ?? null,
+                                'is_primary' => (int)($a['IsPrimary'] ?? 0),
+                                'sort_order' => (int)($a['SortOrder'] ?? 0),
+                                'note'       => $a['Note']      ?? null,
+                            ];
+                        }, $merged);
+                        replaceCreditPersonAliases($db, $cpId, $shaped);
+                    }
                 }
 
                 /* Components */
@@ -2410,6 +2463,24 @@ switch ($action) {
                                  WHERE Name LIKE ?";
                 $params[] = $like;
                 $types   .= 's';
+
+                /* AKA / aliases — when the typed query matches an alias,
+                   surface the CANONICAL parent name (not the alias) so
+                   clicking the suggestion still chips in the canonical
+                   form. The 'alias' kindLabel signals to the client UI
+                   that this row was matched via an alternative name —
+                   the chip can render a small "via AKA: <alias>" hint
+                   if it wants. Schema-tolerant: silently skipped on
+                   installs where tblCreditPersonAliases isn't present. */
+                require_once dirname(dirname(__DIR__)) . '/includes/credit_people_helpers.php';
+                if (creditPeopleAliasesTableExists($db)) {
+                    $unionParts[] = "SELECT cp.Name, 'alias' AS kindLabel, 0 AS cnt
+                                     FROM tblCreditPersonAliases a
+                                     JOIN tblCreditPeople cp ON cp.Id = a.CreditPersonId
+                                     WHERE a.Name LIKE ?";
+                    $params[] = $like;
+                    $types   .= 's';
+                }
             }
             /* `usage` is a MySQL reserved word, so backtick it explicitly
                to avoid any edge-case parser drift between server versions
