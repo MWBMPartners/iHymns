@@ -1280,7 +1280,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                     name<?= $totalInUseUnregistered === 1 ? '' : 's' ?> cited on at least one song
                     <em>aren't</em> in the registry yet.
                 </span>
-                <a href="/manage/credit-people-bulk-promote" class="btn btn-sm btn-info ms-auto">
+                <a href="/manage/credit-people-bulk-promote" class="btn btn-sm btn-amber-solid ms-auto">
                     <i class="bi bi-magic me-1"></i>Bulk promote with fuzzy-match
                 </a>
             </div>
