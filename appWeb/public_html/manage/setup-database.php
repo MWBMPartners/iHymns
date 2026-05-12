@@ -1193,19 +1193,154 @@ $migrationProbes = [
         $stmt->close();
         return !($row && (string)$row[0] === '1');
     })($db),
-    /* Backfills run once after schema lands. They're idempotent so
-       always-show is safe — but we can be smarter: pending when the
-       new table has fewer rows than the legacy source had non-empty
-       values. Simpler heuristic: pending if the new table is empty
-       AND the legacy source has data. */
-    'backfill-songbook-links'            => static fn(\mysqli $db) => true,
-    'backfill-credit-person-links'       => static fn(\mysqli $db) => true,
-    /* Data-only backfills — applied state isn't cheap to detect
-       reliably from schema alone. Default to "always show" so a
-       curator can always re-run; re-runs are idempotent. */
-    'cldr-native-names'                  => static fn(\mysqli $db) => true,
-    'tag-titlecase'                      => static fn(\mysqli $db) => true,
-    'backfill-legacy-songbook-languages' => static fn(\mysqli $db) => true,
+    /* Backfill: tblSongbooks.{WebsiteUrl,InternetArchiveUrl,WikipediaUrl}
+       → tblSongbookExternalLinks. Pending whenever any non-empty source
+       URL on a songbook has no corresponding row in the destination for
+       its mapped link type. Self-clears once every legacy URL has a
+       mirror; re-runs are idempotent. Schema-tolerant: returns false
+       (already-applied) when the destination tables aren't present yet
+       — the migration itself no-ops in that case anyway. */
+    'backfill-songbook-links'            => static function (\mysqli $db): bool {
+        if (!_migProbe_tableExists($db, 'tblSongbookExternalLinks')
+            || !_migProbe_tableExists($db, 'tblExternalLinkTypes')
+            || !_migProbe_tableExists($db, 'tblSongbooks')) {
+            return false;
+        }
+        $mappings = [
+            'WebsiteUrl'         => 'official-website',
+            'InternetArchiveUrl' => 'internet-archive',
+            'WikipediaUrl'       => 'wikipedia',
+        ];
+        foreach ($mappings as $col => $slug) {
+            if (!_migProbe_columnExists($db, 'tblSongbooks', $col)) continue;
+            try {
+                $stmt = $db->prepare(
+                    "SELECT 1
+                       FROM tblSongbooks b
+                       JOIN tblExternalLinkTypes lt ON lt.Slug = ?
+                      WHERE b.`{$col}` IS NOT NULL
+                        AND LENGTH(TRIM(b.`{$col}`)) > 0
+                        AND NOT EXISTS (
+                              SELECT 1 FROM tblSongbookExternalLinks x
+                               WHERE x.SongbookId = b.Id
+                                 AND x.LinkTypeId = lt.Id
+                                 AND x.Url        = b.`{$col}`
+                            )
+                      LIMIT 1"
+                );
+                $stmt->bind_param('s', $slug);
+                $stmt->execute();
+                $needs = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($needs) return true;
+            } catch (\Throwable $_e) { /* fall through to next column */ }
+        }
+        return false;
+    },
+    /* Backfill: tblCreditPersonLinks (legacy free-text) → tblCreditPersonExternalLinks.
+       Pending while any legacy row has no matching mirror keyed on
+       (CreditPersonId, Url). The slug resolution is done in PHP at
+       migration time; the probe just needs to confirm "every legacy
+       URL is represented in the new table for the same person". */
+    'backfill-credit-person-links'       => static function (\mysqli $db): bool {
+        if (!_migProbe_tableExists($db, 'tblCreditPersonExternalLinks')
+            || !_migProbe_tableExists($db, 'tblCreditPersonLinks')) {
+            return false;
+        }
+        try {
+            $res = $db->query(
+                "SELECT 1
+                   FROM tblCreditPersonLinks l
+                  WHERE NOT EXISTS (
+                        SELECT 1 FROM tblCreditPersonExternalLinks x
+                         WHERE x.CreditPersonId = l.CreditPersonId
+                           AND x.Url            = l.Url
+                  )
+                  LIMIT 1"
+            );
+            $needs = $res && $res->fetch_row() !== null;
+            if ($res) $res->close();
+            return $needs;
+        } catch (\Throwable $_e) { return false; }
+    },
+    /* CLDR native-names overlay — pending when any tblLanguages row whose
+       Code is covered by cldr-native-names.json still has an empty
+       NativeName. Self-clears once the overlay has run; a curator who
+       manually clears one cell will re-surface the card for re-run, but
+       the migration's UPDATE…WHERE NativeName <> ? clause means it won't
+       clobber a curator edit on re-run. JSON load is one-shot per probe
+       call (~10 KB file). */
+    'cldr-native-names'                  => static function (\mysqli $db): bool {
+        if (!_migProbe_columnExists($db, 'tblLanguages', 'NativeName')) {
+            return false;
+        }
+        $jsonPath = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . '.sql'
+                  . DIRECTORY_SEPARATOR . 'data'
+                  . DIRECTORY_SEPARATOR . 'cldr-native-names.json';
+        if (!is_readable($jsonPath)) return false;
+        $decoded = json_decode((string)@file_get_contents($jsonPath), true);
+        if (!is_array($decoded) || empty($decoded['languages'])) return false;
+        $codes = array_map('strtolower', array_keys($decoded['languages']));
+        if (!$codes) return false;
+        try {
+            $placeholders = implode(',', array_fill(0, count($codes), '?'));
+            $types        = str_repeat('s', count($codes));
+            $stmt = $db->prepare(
+                "SELECT 1 FROM tblLanguages
+                  WHERE Code IN ({$placeholders})
+                    AND (NativeName IS NULL OR NativeName = '')
+                  LIMIT 1"
+            );
+            $stmt->bind_param($types, ...$codes);
+            $stmt->execute();
+            $needs = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            return $needs;
+        } catch (\Throwable $_e) { return false; }
+    },
+    /* Tag title-case backfill — pending when any tblSongTags.Name fails
+       the canonical-form check applied by migrate-tag-titlecase.php
+       (trim, collapse whitespace, mb_convert_case TITLE_SIMPLE). The
+       cheap-SQL approximation catches the common drift modes (leading
+       / trailing whitespace, double internal spaces, lower-cased first
+       letter) — sufficient to flip the card off once the backfill has
+       run. New rows are normalised by the bulk_tag handler at insert
+       time so the probe stays clean. */
+    'tag-titlecase'                      => static function (\mysqli $db): bool {
+        if (!_migProbe_tableExists($db, 'tblSongTags')) return false;
+        try {
+            $res = $db->query(
+                "SELECT 1 FROM tblSongTags
+                  WHERE Name <> TRIM(Name)
+                     OR Name LIKE '%  %'
+                     OR BINARY LEFT(Name, 1) <> UPPER(LEFT(Name, 1))
+                  LIMIT 1"
+            );
+            $needs = $res && $res->fetch_row() !== null;
+            if ($res) $res->close();
+            return $needs;
+        } catch (\Throwable $_e) { return false; }
+    },
+    /* Legacy songbook languages — pending when any of the 5 hard-coded
+       legacy abbreviations still has NULL / empty Language. Self-clears
+       once the backfill has run; the WHERE clause matches the migration's
+       own targeting (Abbreviation IN list + Language IS NULL/empty). */
+    'backfill-legacy-songbook-languages' => static function (\mysqli $db): bool {
+        if (!_migProbe_columnExists($db, 'tblSongbooks', 'Language')) {
+            return false;
+        }
+        try {
+            $res = $db->query(
+                "SELECT 1 FROM tblSongbooks
+                  WHERE Abbreviation IN ('CP','JP','MP','SDAH','CH')
+                    AND (Language IS NULL OR Language = '')
+                  LIMIT 1"
+            );
+            $needs = $res && $res->fetch_row() !== null;
+            if ($res) $res->close();
+            return $needs;
+        } catch (\Throwable $_e) { return false; }
+    },
     /* Pending whenever any single-language songbook has at least one
        member song whose primary language subtag disagrees with the
        songbook's — i.e. the HAC-style mis-tag pattern still has
