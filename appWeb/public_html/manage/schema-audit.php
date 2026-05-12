@@ -265,11 +265,11 @@ if ($audit !== null) {
                             <?= count($rows) ?> column<?= count($rows) === 1 ? '' : 's' ?>
                         </span>
                     </div>
-                    <table class="table table-sm align-middle mb-0">
+                    <table class="table table-sm align-middle mb-0 admin-table-fixed">
                         <thead>
                             <tr class="text-muted small">
-                                <th>Column</th>
-                                <th>Status</th>
+                                <th style="width: 200px;">Column</th>
+                                <th style="width: 120px;">Status</th>
                                 <th>Notes</th>
                             </tr>
                         </thead>

@@ -1089,3 +1089,36 @@ body:has(.navbar-admin) .modal-content.bg-dark {
         display: none !important;
     }
 }
+
+/* ----------------------------------------------------------------------------
+   FIXED-WIDTH COLUMN ALIGNMENT
+
+   `<table class="table admin-table-fixed">` switches to a fixed-layout
+   table where every column width is honoured exactly as declared via
+   an inline `style="width: 200px"` on each <th>. Use this when a page
+   renders MULTIPLE sibling tables that share the same column structure
+   (Schema Audit's per-table reports, for example) and the default
+   content-driven sizing causes neighbouring tables to misalign with
+   each other.
+
+       <th style="width: 200px;">Column</th>
+       <th style="width: 120px;">Status</th>
+       <th>Notes</th>              <!-- no width = takes the remainder -->
+
+   Combined with `table-layout: fixed` this makes column widths
+   deterministic and identical across every table on the page; long
+   content overflows or wraps according to the cell's own styling
+   rather than stretching the column.
+---------------------------------------------------------------------------- */
+.admin-table-fixed {
+    table-layout: fixed;
+    width: 100%;
+}
+
+/* Long content (column names rendered in <code>) shouldn't blow out
+   the fixed column — wrap at word boundaries, fall back to character
+   wrapping for unbreakable strings. */
+.admin-table-fixed td code {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
