@@ -98,6 +98,23 @@ function schemaAuditParseSchema(string $schemaSql): array
            every comma in a comment vanishes alongside the comment. */
         $body = preg_replace('/--[^\n]*/', '', $body);
 
+        /* Strip COMMENT '…' clauses BEFORE the comma-split. SQL column
+           comments routinely contain commas, apostrophes, parentheses,
+           and the occasional `\'`-style backslash-escape that MySQL
+           accepts but the per-char string-state tracker below doesn't
+           recognise. Pre-stripping the whole `COMMENT '…'` segment
+           sidesteps every one of those edge cases — comments don't
+           carry column-identity information so dropping them entirely
+           is safe. The regex matches non-greedy up to the next `'`
+           that's NOT preceded by `\` or doubled — handles both
+           `'foo''s bar'` (SQL-standard `''` escape) and `'foo\'s bar'`
+           (MySQL backslash extension). */
+        $body = preg_replace(
+            "/\\bCOMMENT\\s+'(?:[^'\\\\]|\\\\.|'')*'/i",
+            '',
+            $body
+        ) ?? $body;
+
         /* Split into top-level segments at commas, ignoring commas
            inside parentheses (so ENUM('success','failure','error')
            stays in one segment, not three). Each segment is exactly

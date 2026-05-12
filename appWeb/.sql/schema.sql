@@ -1439,6 +1439,7 @@ CREATE TABLE IF NOT EXISTS tblBulkImportJobs (
     SongsSkippedExisting     INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'INSERT-only contract: existing SongIds are left untouched',
     SongsFailed              INT UNSIGNED NOT NULL DEFAULT 0,
     ErrorsJson               JSON NULL COMMENT 'Per-entry [{entry, error}, …] from the parser / save path',
+    SkippedSongIdsJson       JSON NULL COMMENT 'JSON array of SongIds the worker skipped because the row already existed. Powers the bulk-import completion notification\'s "Download skipped SongIds" CSV button.',
     PerSongbookJson          JSON NULL COMMENT 'Per-songbook breakdown of created / skipped / failed counts so the import-summary notification can render a per-book table instead of a single aggregate (#906)',
     PhaseLabel               VARCHAR(64) NULL DEFAULT NULL COMMENT 'Human-readable phase the worker is currently in (walking-zip, parsing-songs, flushing-songbooks, …). Lets the polling frontend show progress text before the percentage starts moving (#907)',
     StartedAt                TIMESTAMP NULL DEFAULT NULL COMMENT 'When the worker began processing (post-fastcgi_finish_request)',

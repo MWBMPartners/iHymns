@@ -162,6 +162,23 @@ function ensureWidget() {
             <div class="progress-bar" role="progressbar"
                  style="width: 0%;" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
         </div>
+        <!-- Per-songbook breakdown + download skipped CSV button.
+             Rendered only after status == 'completed' and only when
+             the deploy carries the #906 PerSongbookJson column /
+             the SkippedSongIdsJson column. Pre-migration deploys
+             skip this section entirely so no UX regression. -->
+        <div class="ihymns-bulk-import-detail mt-2" data-detail style="display:none;">
+            <div data-perbook-table style="font-size:0.7rem; max-height:9rem; overflow:auto;
+                 border:1px solid var(--card-border,#374151); border-radius:0.25rem;
+                 padding:0.25rem 0.4rem; margin-bottom:0.35rem;"></div>
+            <a class="btn btn-sm btn-outline-secondary w-100"
+               data-skipped-csv-link
+               style="font-size:0.7rem; display:none;"
+               download>
+                <i class="fa-solid fa-download me-1"></i>
+                Download skipped SongIds (CSV)
+            </a>
+        </div>
     `;
 
     /* #907 — hover pauses the auto-dismiss timer; mouse-leave resumes
@@ -286,18 +303,68 @@ function render(job) {
                 `${created.toLocaleString()} new, ${skipped.toLocaleString()} skipped` +
                 (failed > 0 ? `, ${failed.toLocaleString()} failed` : '');
         } else if (status === 'completed') {
+            /* Spell out the skip reason inline so the curator never
+               has to guess what "X skipped" means. Today every skip
+               is "already in the database" (INSERT-only contract). */
+            const skippedClause = skipped > 0
+                ? ` (<strong>${skipped.toLocaleString()}</strong> already in the database`
+                + (failed > 0 ? `, ${failed.toLocaleString()} failed` : '')
+                + ')'
+                : (failed > 0 ? ` (${failed.toLocaleString()} failed)` : '');
             summary.innerHTML =
                 `<i class="fa-solid fa-check-circle" style="color:#16a34a;"></i> ` +
-                `Imported <strong>${created.toLocaleString()}</strong> new ` +
-                `(${skipped.toLocaleString()} skipped` +
-                (failed > 0 ? `, ${failed.toLocaleString()} failed` : '') +
-                `).`;
+                `Imported <strong>${created.toLocaleString()}</strong> new` +
+                skippedClause + '.';
         } else if (status === 'failed') {
             const errs = Array.isArray(job.errors) ? job.errors : [];
             const first = errs.length ? escapeHtml(errs[0].error || 'see logs') : 'see server logs';
             summary.innerHTML =
                 `<i class="fa-solid fa-triangle-exclamation" style="color:#dc2626;"></i> ` +
                 `Import failed: ${first}`;
+        }
+    }
+
+    /* Per-songbook breakdown + skipped-CSV download. Only on completion;
+       only when the backend supplied the data (pre-migration deploys
+       return null for per_songbook and empty string for skipped_csv_url
+       so this block remains hidden). */
+    const detail   = widgetEl.querySelector('[data-detail]');
+    const perBook  = widgetEl.querySelector('[data-perbook-table]');
+    const csvLink  = widgetEl.querySelector('[data-skipped-csv-link]');
+    if (detail && perBook && csvLink) {
+        const perBookData = Array.isArray(job.per_songbook) ? job.per_songbook : [];
+        const csvUrl      = typeof job.skipped_csv_url === 'string' ? job.skipped_csv_url : '';
+        if (status === 'completed' && (perBookData.length > 0 || csvUrl !== '')) {
+            if (perBookData.length > 0) {
+                /* One row per songbook: "<abbr> (<name>) — N new / M already in DB / F failed".
+                   Books with zero activity are dropped to keep the panel readable. */
+                const rows = perBookData
+                    .filter(b => (b.created|0) + (b.skipped|0) + (b.failed|0) > 0)
+                    .map(b => {
+                        const abbr = escapeHtml(b.abbr || '');
+                        const name = b.name ? ` <span class="text-muted">(${escapeHtml(b.name)})</span>` : '';
+                        const c = (b.created|0).toLocaleString();
+                        const s = (b.skipped|0).toLocaleString();
+                        const f = (b.failed|0).toLocaleString();
+                        const failPart = (b.failed|0) > 0 ? ` · <span style="color:#dc2626;">${f} failed</span>` : '';
+                        return `<div><code>${abbr}</code>${name} — `
+                             + `<strong>${c}</strong> new · `
+                             + `${s} already in DB${failPart}</div>`;
+                    });
+                perBook.innerHTML = rows.length ? rows.join('') :
+                    '<div class="text-muted">(no per-songbook detail recorded)</div>';
+            } else {
+                perBook.innerHTML = '<div class="text-muted">(no per-songbook detail recorded)</div>';
+            }
+            if (csvUrl !== '') {
+                csvLink.href = csvUrl;
+                csvLink.style.display = 'inline-block';
+            } else {
+                csvLink.style.display = 'none';
+            }
+            detail.style.display = 'block';
+        } else {
+            detail.style.display = 'none';
         }
     }
 
