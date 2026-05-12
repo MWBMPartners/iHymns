@@ -87,6 +87,17 @@ function schemaAuditParseSchema(string $schemaSql): array
            declarations. (#722) */
         $body = preg_replace('/\/\*.*?\*\//s', '', $body);
 
+        /* Strip `--` line comments from the body BEFORE splitting at
+           commas. SQL `--` comments often contain prose with commas
+           ("VARCHAR(48), which silently truncated", "the defence is
+           single-use, all enforced by …"). Without this strip, the
+           comma inside the comment splits the segment, and whatever
+           word follows the comma in the comment becomes a phantom
+           column name (the column-extraction regex matches `^[A-Za-z_]
+           [A-Za-z0-9_]*\s+`). Pre-stripping `--` to end-of-line means
+           every comma in a comment vanishes alongside the comment. */
+        $body = preg_replace('/--[^\n]*/', '', $body);
+
         /* Split into top-level segments at commas, ignoring commas
            inside parentheses (so ENUM('success','failure','error')
            stays in one segment, not three). Each segment is exactly
