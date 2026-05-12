@@ -208,6 +208,41 @@ if (!preg_match('/require\s+__DIR__\s*\.\s*[^;]*migration-registry\.php/m', $set
     echo "PASS: setup-database.php requires includes/migration-registry.php\n";
 }
 
+/* ---------------------------------------------------------------------- *
+ * Assertion 5 — no probe interpolates a superglobal into SQL.
+ *
+ * Any value entering a SQL string MUST be bound via $stmt->bind_param —
+ * never string-interpolated. The most common SQL-injection vector is
+ * concatenating a $_GET / $_POST / $_REQUEST / $_COOKIE / $_SERVER /
+ * $_FILES value directly into a query. This regex catches the obvious
+ * shapes: `query("..." . $_X[...]` and `query("...{$_X[...]}...")` and
+ * `prepare("...{$_X[...]}...")` (prepare with interpolation defeats
+ * the binding). Hardcoded `{$col}` interpolation from a fixed PHP
+ * array is allowed — the regex specifically targets superglobals.
+ * ---------------------------------------------------------------------- */
+$sqlInjectionPatterns = [
+    /* Concatenation: query("..." . $_GET["x"]) */
+    '/->(query|prepare|real_query)\s*\([^)]*\.\s*\$_(GET|POST|REQUEST|COOKIE|SERVER|FILES)\b/i',
+    /* Curly interpolation inside a string literal: query("...{$_GET[...]}...") */
+    '/->(query|prepare|real_query)\s*\(\s*"[^"]*\{\s*\$_(GET|POST|REQUEST|COOKIE|SERVER|FILES)\b/i',
+];
+$hits = [];
+foreach ($sqlInjectionPatterns as $p) {
+    if (preg_match_all($p, $registrySrc, $m, PREG_OFFSET_CAPTURE)) {
+        foreach ($m[0] as $hit) {
+            $line = substr_count(substr($registrySrc, 0, $hit[1]), "\n") + 1;
+            $hits[] = "  - line $line: " . trim($hit[0]);
+        }
+    }
+}
+if ($hits) {
+    $failures++;
+    fwrite(STDERR, "FAIL: " . count($hits) . " probe(s) interpolate a superglobal into SQL — bind via \$stmt->bind_param() instead:\n");
+    foreach ($hits as $h) fwrite(STDERR, "$h\n");
+} else {
+    echo "PASS: no probe interpolates a superglobal into SQL\n";
+}
+
 if ($failures > 0) {
     fwrite(STDERR, "\n$failures assertion(s) failed.\n");
     exit(1);
