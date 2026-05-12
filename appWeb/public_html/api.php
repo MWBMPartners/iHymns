@@ -9449,8 +9449,9 @@ if ($action !== null) {
             $deathPlace  = trim((string)($body['death_place']  ?? '')) ?: null;
             $deathDate   = trim((string)($body['death_date']   ?? '')) ?: null;
             $notes       = $notesRaw !== '' ? $notesRaw : null;
-            $links       = normaliseCreditPersonLinks($body['links'] ?? null);
-            $ipi         = normaliseCreditPersonIpi($body['ipi']     ?? null);
+            $links       = normaliseCreditPersonLinks($body['links']   ?? null);
+            $ipi         = normaliseCreditPersonIpi($body['ipi']       ?? null);
+            $aliases     = normaliseCreditPersonAliases($body['aliases'] ?? null);
             $isSpecialCase = !empty($body['is_special_case']) ? 1 : 0;
             $isGroup       = !empty($body['is_group'])        ? 1 : 0;
             /* Mutually exclusive in the UI; if both arrive we prefer
@@ -9561,6 +9562,11 @@ if ($action !== null) {
                         }
                         $ipiStmt->close();
                     }
+                    /* AKA / alias names — schema-tolerant: replaceCreditPersonAliases
+                       no-ops cleanly on installs where the aliases table isn't present. */
+                    if ($aliases) {
+                        replaceCreditPersonAliases($db, $newId, $aliases);
+                    }
                     $db->commit();
                 } catch (\Throwable $txErr) {
                     $db->rollback();
@@ -9568,16 +9574,17 @@ if ($action !== null) {
                 }
 
                 logActivity('api.admin.credit_person.add', 'credit_person', (string)$newId, [
-                    'name'       => $name,
-                    'fields'     => array_filter([
+                    'name'        => $name,
+                    'fields'      => array_filter([
                         'birth_place' => $birthPlace,
                         'birth_date'  => $birthDate,
                         'death_place' => $deathPlace,
                         'death_date'  => $deathDate,
                         'notes'       => $notes,
                     ], static fn($v) => $v !== null),
-                    'link_count' => count($links),
-                    'ipi_count'  => count($ipi),
+                    'link_count'  => count($links),
+                    'ipi_count'   => count($ipi),
+                    'alias_count' => count($aliases),
                 ]);
 
                 sendJson([
@@ -9623,8 +9630,9 @@ if ($action !== null) {
             $deathPlace  = trim((string)($body['death_place']  ?? '')) ?: null;
             $deathDate   = trim((string)($body['death_date']   ?? '')) ?: null;
             $notes       = $notesRaw !== '' ? $notesRaw : null;
-            $links       = normaliseCreditPersonLinks($body['links'] ?? null);
-            $ipi         = normaliseCreditPersonIpi($body['ipi']     ?? null);
+            $links       = normaliseCreditPersonLinks($body['links']   ?? null);
+            $ipi         = normaliseCreditPersonIpi($body['ipi']       ?? null);
+            $aliases     = normaliseCreditPersonAliases($body['aliases'] ?? null);
             $isSpecialCase = !empty($body['is_special_case']) ? 1 : 0;
             $isGroup       = !empty($body['is_group'])        ? 1 : 0;
             if ($isSpecialCase && $isGroup) { $isGroup = 0; }
@@ -9724,6 +9732,11 @@ if ($action !== null) {
                         }
                         $ipiStmt->close();
                     }
+                    /* Replace the alias set unconditionally — the curator's
+                       submitted list is the new truth, an empty list deletes
+                       all aliases. Schema-tolerant on installs where the
+                       table is absent (helper no-ops). */
+                    replaceCreditPersonAliases($db, $id, $aliases);
                     $db->commit();
                 } catch (\Throwable $txErr) {
                     $db->rollback();
@@ -9745,11 +9758,12 @@ if ($action !== null) {
                 }
 
                 logActivity('api.admin.credit_person.update', 'credit_person', (string)$id, [
-                    'name'       => $name,
-                    'fields'     => $changed,
-                    'before'     => array_intersect_key($beforeRow, array_flip($changed)),
-                    'after'      => array_intersect_key($afterRow,  array_flip($changed)),
-                    'link_count' => count($links),
+                    'name'        => $name,
+                    'fields'      => $changed,
+                    'before'      => array_intersect_key($beforeRow, array_flip($changed)),
+                    'after'       => array_intersect_key($afterRow,  array_flip($changed)),
+                    'link_count'  => count($links),
+                    'alias_count' => count($aliases),
                     'ipi_count'  => count($ipi),
                 ]);
 

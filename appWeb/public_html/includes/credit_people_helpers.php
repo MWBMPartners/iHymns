@@ -429,3 +429,275 @@ function creditPeopleFlagsColumnsExist(\mysqli $db): bool
     }
     return $cached;
 }
+
+
+/* =========================================================================
+ * CREDIT PERSON ALIASES (AKA names)
+ *
+ * Shared helpers for the MusicBrainz-style alias model
+ * (tblCreditPersonAliases — see migrate-credit-people-aliases.php).
+ * Used by:
+ *   - /api.php's admin_credit_person_add / _update handlers
+ *   - /manage/credit-people.php form handler
+ *   - /people/<slug>'s public render (alias list + JSON-LD)
+ *   - bulk-import's "(a.k.a. …)" pattern detector
+ * ========================================================================= */
+
+const CREDIT_PERSON_ALIAS_TYPES = [
+    'legal'         => 'Legal name',
+    'artist'        => 'Artist / performing name',
+    'pseudonym'     => 'Pseudonym / pen name',
+    'nickname'      => 'Nickname',
+    'maiden'        => 'Maiden name',
+    'search-hint'   => 'Search hint',
+    'misspelling'   => 'Common misspelling',
+    'other'         => 'Other',
+];
+
+const CREDIT_PERSON_ALIAS_TYPE_KEYS = [
+    'legal','artist','pseudonym','nickname','maiden','search-hint','misspelling','other',
+];
+
+/**
+ * Schema-tolerant probe for the aliases table — returns false on installs
+ * that haven't run migrate-credit-people-aliases.php yet so consuming
+ * code can branch cheaply rather than throw on every load.
+ */
+function creditPeopleAliasesTableExists(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) return $cached;
+    try {
+        $stmt = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblCreditPersonAliases' LIMIT 1"
+        );
+        $stmt->execute();
+        $cached = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+    } catch (\Throwable $_e) {
+        $cached = false;
+    }
+    return $cached;
+}
+
+/**
+ * Normalise inbound alias payload (form-encoded or JSON-decoded) into
+ * a list of INSERT-ready row arrays. Drops rows with empty Name, clamps
+ * Type to the allow-list, defaults SortOrder to the input index.
+ *
+ * @param mixed $raw Form / JSON-decoded array; non-array → []
+ * @return list<array{name:string,sort_name:?string,type:string,locale:?string,is_primary:int,sort_order:int,note:?string}>
+ */
+function normaliseCreditPersonAliases(mixed $raw): array
+{
+    if (!is_array($raw)) return [];
+    $out  = [];
+    $seen = []; /* dedupe by (lower-cased) name within the request */
+    foreach ($raw as $i => $row) {
+        if (!is_array($row)) continue;
+        $name = trim((string)($row['name'] ?? ''));
+        if ($name === '') continue;
+        if (mb_strlen($name) > 255) $name = mb_substr($name, 0, 255);
+        $key = mb_strtolower($name);
+        if (isset($seen[$key])) continue;
+        $seen[$key] = true;
+
+        $type = trim((string)($row['type'] ?? 'other'));
+        if (!in_array($type, CREDIT_PERSON_ALIAS_TYPE_KEYS, true)) $type = 'other';
+
+        $sortName = trim((string)($row['sort_name'] ?? ''));
+        $locale   = trim((string)($row['locale']    ?? ''));
+        $note     = trim((string)($row['note']      ?? ''));
+
+        $out[] = [
+            'name'        => $name,
+            'sort_name'   => $sortName !== '' ? mb_substr($sortName, 0, 255) : null,
+            'type'        => $type,
+            'locale'      => $locale   !== '' ? mb_substr($locale, 0, 35)    : null,
+            'is_primary'  => !empty($row['is_primary']) ? 1 : 0,
+            'sort_order'  => (int)($row['sort_order'] ?? $i),
+            'note'        => $note     !== '' ? mb_substr($note, 0, 255)     : null,
+        ];
+    }
+    return $out;
+}
+
+/**
+ * Replace all rows in tblCreditPersonAliases for a credit person with
+ * the supplied set. Run inside the same transaction as the parent
+ * INSERT/UPDATE so a downstream failure rolls back cleanly. Schema-
+ * tolerant: silently no-ops on installs where the table is absent.
+ *
+ * @param list<array> $aliases  Output of normaliseCreditPersonAliases()
+ */
+function replaceCreditPersonAliases(\mysqli $db, int $creditPersonId, array $aliases): void
+{
+    if (!creditPeopleAliasesTableExists($db)) return;
+
+    $del = $db->prepare('DELETE FROM tblCreditPersonAliases WHERE CreditPersonId = ?');
+    $del->bind_param('i', $creditPersonId);
+    $del->execute();
+    $del->close();
+
+    if (!$aliases) return;
+
+    $ins = $db->prepare(
+        'INSERT INTO tblCreditPersonAliases
+             (CreditPersonId, Name, SortName, Type, Locale, IsPrimary, SortOrder, Note)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    );
+    foreach ($aliases as $a) {
+        $cpId      = $creditPersonId;
+        $name      = $a['name'];
+        $sortName  = $a['sort_name'];
+        $type      = $a['type'];
+        $locale    = $a['locale'];
+        $isPrimary = (int)$a['is_primary'];
+        $sortOrder = (int)$a['sort_order'];
+        $note      = $a['note'];
+        $ins->bind_param(
+            'issssiis',
+            $cpId, $name, $sortName, $type, $locale, $isPrimary, $sortOrder, $note
+        );
+        $ins->execute();
+    }
+    $ins->close();
+}
+
+/**
+ * Fetch every alias for one credit-person, ordered by IsPrimary DESC
+ * then SortOrder ASC then Id ASC so the curator's preferred display
+ * form is first.
+ *
+ * @return list<array{Id:int,Name:string,SortName:?string,Type:string,Locale:?string,IsPrimary:int,SortOrder:int,Note:?string}>
+ */
+function loadCreditPersonAliases(\mysqli $db, int $creditPersonId): array
+{
+    if (!creditPeopleAliasesTableExists($db)) return [];
+    $stmt = $db->prepare(
+        'SELECT Id, Name, SortName, Type, Locale, IsPrimary, SortOrder, Note
+           FROM tblCreditPersonAliases
+          WHERE CreditPersonId = ?
+       ORDER BY IsPrimary DESC, SortOrder ASC, Id ASC'
+    );
+    $stmt->bind_param('i', $creditPersonId);
+    $stmt->execute();
+    $out = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+    foreach ($out as &$r) {
+        $r['Id']        = (int)$r['Id'];
+        $r['IsPrimary'] = (int)$r['IsPrimary'];
+        $r['SortOrder'] = (int)$r['SortOrder'];
+    }
+    unset($r);
+    return $out;
+}
+
+/**
+ * Bulk-load aliases for many credit-people in one round-trip, grouped
+ * by CreditPersonId. Used by /manage/credit-people's list-view render
+ * so the page doesn't issue N queries when surfacing aliases inline.
+ *
+ * @param list<int> $personIds
+ * @return array<int, list<array>>  CreditPersonId → list of alias rows
+ */
+function loadCreditPersonAliasesBulk(\mysqli $db, array $personIds): array
+{
+    $personIds = array_values(array_filter(array_map('intval', $personIds), fn($v) => $v > 0));
+    if (!$personIds || !creditPeopleAliasesTableExists($db)) return [];
+    $placeholders = implode(',', array_fill(0, count($personIds), '?'));
+    $types        = str_repeat('i', count($personIds));
+    $stmt = $db->prepare(
+        "SELECT CreditPersonId, Id, Name, SortName, Type, Locale, IsPrimary, SortOrder, Note
+           FROM tblCreditPersonAliases
+          WHERE CreditPersonId IN ($placeholders)
+       ORDER BY CreditPersonId ASC, IsPrimary DESC, SortOrder ASC, Id ASC"
+    );
+    $stmt->bind_param($types, ...$personIds);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+    $grouped = [];
+    foreach ($rows as $r) {
+        $pid = (int)$r['CreditPersonId'];
+        unset($r['CreditPersonId']);
+        $r['Id']        = (int)$r['Id'];
+        $r['IsPrimary'] = (int)$r['IsPrimary'];
+        $r['SortOrder'] = (int)$r['SortOrder'];
+        $grouped[$pid][] = $r;
+    }
+    return $grouped;
+}
+
+/**
+ * Detect alias patterns inside a free-text credit string, used by the
+ * bulk-import flow to auto-promote "a.k.a." annotations into proper
+ * alias rows. Recognises:
+ *
+ *   "Smith (a.k.a. Jones)"        → primary=Smith, alias=Jones
+ *   "Smith (aka Jones)"           → ditto
+ *   "Smith / Jones"               → primary=Smith, alias=Jones
+ *   "Smith (Jones)"               → primary=Smith, alias=Jones (parenthetical)
+ *   "Smith, also known as Jones"  → ditto
+ *
+ * Returns ['name' => <canonical>, 'aliases' => list<string>]. Pass-through
+ * for strings with no recognisable pattern: ['name' => $raw, 'aliases' => []].
+ *
+ * Conservative — only fires on patterns that are unambiguously
+ * alias markers. Bare parenthetical "(b. 1850)" is left alone (the
+ * Smith-and-Jones case is distinguished by the absence of digits /
+ * non-name characters inside the parens).
+ */
+function parseCreditPersonAliasHints(string $raw): array
+{
+    $raw = trim($raw);
+    if ($raw === '') return ['name' => '', 'aliases' => []];
+
+    $aliases = [];
+    $primary = $raw;
+
+    /* Pattern 1 — explicit a.k.a. / aka / also known as. The optional
+       trailing comma/period before the marker gets stripped from the
+       primary so "Smith, also known as Jones" lands as primary=Smith,
+       not "Smith," with a trailing comma. */
+    if (preg_match('/^(.+?)\s*[,.]?\s*(?:\(\s*)?(?:a\.?k\.?a\.?|also\s+known\s+as)\s+([^)]+?)\s*\)?\s*$/i', $raw, $m)) {
+        $primary = rtrim(trim($m[1]), " ,.");
+        $aliasText = trim($m[2]);
+        if ($aliasText !== '') {
+            /* Split on slash / semicolon / " or " so multiple aliases work. */
+            foreach (preg_split('/\s*(?:\/|;| or )\s*/i', $aliasText) as $a) {
+                $a = trim($a);
+                if ($a !== '' && $a !== $primary) $aliases[] = $a;
+            }
+        }
+        return ['name' => $primary, 'aliases' => $aliases];
+    }
+
+    /* Pattern 2 — parenthetical name without explicit marker.
+       Requires the parens to contain letter-only content (no digits,
+       no commas, no dates), and to look like a name (≥2 letters). */
+    if (preg_match('/^(.+?)\s*\(\s*([\p{L}][\p{L}\s\.\-\']+)\s*\)\s*$/u', $raw, $m)) {
+        $inner = trim($m[2]);
+        /* Reject biography-ish content. */
+        if (!preg_match('/\d|,|^b\.|^d\.|^born\b|^died\b/iu', $inner)) {
+            $primary   = trim($m[1]);
+            $aliases[] = $inner;
+            return ['name' => $primary, 'aliases' => $aliases];
+        }
+    }
+
+    /* Pattern 3 — "A / B" without slash being a date or path. Only
+       split when both sides look like person names (≥2 letters, no
+       digits, no slashes themselves). */
+    if (preg_match('/^([\p{L}][\p{L}\s\.\-\']+?)\s+\/\s+([\p{L}][\p{L}\s\.\-\']+)$/u', $raw, $m)) {
+        $left  = trim($m[1]);
+        $right = trim($m[2]);
+        if ($left !== '' && $right !== '' && $left !== $right) {
+            return ['name' => $left, 'aliases' => [$right]];
+        }
+    }
+
+    return ['name' => $raw, 'aliases' => []];
+}

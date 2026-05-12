@@ -1778,6 +1778,40 @@ CREATE TABLE IF NOT EXISTS tblCreditPersonExternalLinks (
 
 
 -- ----------------------------------------------------------------------------
+-- tblCreditPersonAliases — AKA / alternative names for searchability.
+-- MusicBrainz-style alias model: one row per (person, name) with a Type
+-- classification, optional Locale tag for transliterations, and an
+-- IsPrimary flag for the preferred display form within a locale.
+-- Searched alongside Name in site search + admin filter + editor
+-- typeahead. /people/<slug> renders aliases under the bio header and
+-- emits JSON-LD alternateName.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblCreditPersonAliases (
+    Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    CreditPersonId  INT UNSIGNED NOT NULL,
+    Name            VARCHAR(255) NOT NULL COMMENT 'Display form of the alias',
+    SortName        VARCHAR(255) NULL COMMENT 'Surname-first sortable form; NULL = derive from Name',
+    Type            ENUM('legal','artist','pseudonym','nickname','maiden','search-hint','misspelling','other')
+                                 NOT NULL DEFAULT 'other'
+                                 COMMENT 'MusicBrainz-style alias classification',
+    Locale          VARCHAR(35)  NULL COMMENT 'Optional IETF BCP 47 tag for transliterations (ja, ru-Latn, zh-Hans, …)',
+    IsPrimary       TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '1 = preferred display form in this Locale',
+    SortOrder       INT UNSIGNED NOT NULL DEFAULT 0,
+    Note            VARCHAR(255) NULL,
+    CreatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_person_name (CreditPersonId, Name),
+    INDEX idx_person (CreditPersonId),
+    INDEX idx_name   (Name),
+    INDEX idx_type   (Type),
+
+    CONSTRAINT fk_alias_person
+        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
 -- tblSongAlternativeTitles (#832) — multiple "also known as" titles per song.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblSongAlternativeTitles (
