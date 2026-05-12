@@ -927,6 +927,23 @@ return [
         'probe' => static fn(\mysqli $db) =>
             !_migProbe_columnExists($db, 'tblBulkImportJobs', 'PhaseLabel'),
     ],
+    'bulk-import-skipped-songids' => [
+        'script' => 'migrate-bulk-import-skipped-songids.php',
+        'card' => [
+            'title'  => 'Bulk-Import Skipped SongIds',
+            'body'   => 'Adds <code>SkippedSongIdsJson JSON NULL</code> to'
+                      . ' <code>tblBulkImportJobs</code> so the worker can record every'
+                      . ' SongId it left untouched (INSERT-only contract). The bulk-import'
+                      . ' completion notification gains a "Download skipped SongIds"'
+                      . ' button that streams the contents as a CSV — lets the curator'
+                      . ' audit specifically WHICH rows the import refused to overwrite'
+                      . ' after a re-upload, instead of staring at an opaque "4,661 skipped"'
+                      . ' aggregate count. Idempotent.',
+            'button' => 'Run Bulk-Import Skipped-SongIds Migration',
+        ],
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_columnExists($db, 'tblBulkImportJobs', 'SkippedSongIdsJson'),
+    ],
     'activity-log-proxy-vpn' => [
         'script' => 'migrate-activity-log-proxy-vpn.php',
         'card' => [

@@ -2791,6 +2791,7 @@ switch ($action) {
                 'SongsSkippedExisting'  => (int)($summary['songs_skipped_existing'] ?? 0),
                 'SongsFailed'           => (int)($summary['songs_failed'] ?? 0),
                 'ErrorsJson'            => json_encode($summary['errors'] ?? [], JSON_UNESCAPED_UNICODE),
+                'SkippedSongIdsJson'    => json_encode($summary['skipped_song_ids'] ?? [], JSON_UNESCAPED_UNICODE),
                 'PerSongbookJson'       => json_encode($summary['per_songbook'] ?? [], JSON_UNESCAPED_UNICODE),
                 'PhaseLabel'            => 'completed',
                 'TempPath'              => '',
@@ -3099,6 +3100,24 @@ switch ($action) {
                        Pre-migration deploys return null (column read as
                        NULL via `, NULL AS PerSongbookJson` above). */
                     'per_songbook'            => $decode($row['PerSongbookJson'])       ?? null,
+                    /* Skip reason is uniform today — every skip means the
+                       SongId already existed in tblSongs (INSERT-only
+                       contract). Future skip classes (parse-fail, invalid-
+                       songbook) would surface as 'failed' under the
+                       current pipeline, not 'skipped', so this string is
+                       safe as a static label for now. The completion
+                       notification renders it inline so the curator never
+                       has to guess what the aggregate "X skipped" count
+                       means. */
+                    'skip_reason'             => 'existing-in-db',
+                    /* URL the frontend's "Download skipped SongIds"
+                       button POSTs to. Resolves on the server side to
+                       SkippedSongIdsJson + a lookup against tblSongs
+                       to add the canonical Title and Songbook columns.
+                       Empty string when the import had zero skips. */
+                    'skipped_csv_url'         => (int)$row['SongsSkippedExisting'] > 0
+                        ? '/manage/editor/api?action=bulk_import_skipped_csv&job_id=' . (int)$row['Id']
+                        : '',
                     /* #907 — current worker phase: walking-zip / parsing-songs /
                        flushing-songbooks / completed. Pre-migration deploys
                        return null and the frontend hides the phase label. */
@@ -3113,6 +3132,138 @@ switch ($action) {
             error_log('[bulk_import_status] ' . $e->getMessage());
             http_response_code(500);
             echo json_encode(['error' => 'Status query failed.']);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * BULK_IMPORT_SKIPPED_CSV — stream a CSV of every SongId the worker
+     * skipped on a completed bulk-import job, joined to tblSongs for the
+     * canonical Title + Songbook columns. Powers the "Download skipped
+     * SongIds" button on the completion notification so a curator can
+     * audit exactly which rows the import refused to overwrite.
+     *
+     * Every skip in today's pipeline is "SongId already exists in DB"
+     * (INSERT-only contract on _bulkImport_saveSong) — reflected in the
+     * static "existing-in-db" string in the Reason column. If future
+     * skip classes are introduced, expand SkippedSongIdsJson to a
+     * keyed-object shape and surface the per-row reason here.
+     *
+     * GET /manage/editor/api?action=bulk_import_skipped_csv&job_id=N
+     *
+     * 403 if the calling user doesn't own the job (matches
+     * bulk_import_status's ownership check).
+     * 404 if the job doesn't exist, hasn't completed, or its
+     *      SkippedSongIdsJson column is empty/null.
+     * 410 if the deployment hasn't run the
+     *      migrate-bulk-import-skipped-songids.php migration yet.
+     * ----------------------------------------------------------------- */
+    case 'bulk_import_skipped_csv':
+        $jobId = (int)($_GET['job_id'] ?? 0);
+        if ($jobId <= 0) {
+            http_response_code(400);
+            echo json_encode(['error' => 'job_id required.']);
+            break;
+        }
+        try {
+            $db = getDbMysqli();
+
+            /* Schema-probe — pre-migration deploys return a clear 410
+               instead of a 500 with a missing-column error. */
+            $probe = $db->query(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblBulkImportJobs'
+                    AND COLUMN_NAME  = 'SkippedSongIdsJson' LIMIT 1"
+            );
+            $hasCol = $probe && $probe->fetch_row() !== null;
+            if ($probe) $probe->close();
+            if (!$hasCol) {
+                http_response_code(410);
+                echo json_encode([
+                    'error'            => 'Skipped-CSV download requires migrate-bulk-import-skipped-songids.php.',
+                    'migration_needed' => true,
+                ]);
+                break;
+            }
+
+            $userId = isset($currentUser['id']) ? (int)$currentUser['id'] : 0;
+            $stmt = $db->prepare(
+                'SELECT Filename, Status, SkippedSongIdsJson
+                   FROM tblBulkImportJobs
+                  WHERE Id = ? AND UserId = ? LIMIT 1'
+            );
+            $stmt->bind_param('ii', $jobId, $userId);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if (!$row) {
+                http_response_code(404);
+                echo json_encode(['error' => 'Job not found.']);
+                break;
+            }
+            if ((string)$row['Status'] !== 'completed') {
+                http_response_code(409);
+                echo json_encode(['error' => 'Job is not yet completed.']);
+                break;
+            }
+            $skipped = json_decode((string)($row['SkippedSongIdsJson'] ?? '[]'), true);
+            if (!is_array($skipped) || !$skipped) {
+                http_response_code(404);
+                echo json_encode(['error' => 'No skipped SongIds recorded for this job.']);
+                break;
+            }
+
+            /* Look up Title + Songbook for each SongId in one bound IN()
+               query. Preserve the original skip-order in the CSV so the
+               curator sees rows in the same order the worker processed
+               them. */
+            $placeholders = implode(',', array_fill(0, count($skipped), '?'));
+            $types        = str_repeat('s', count($skipped));
+            $look = $db->prepare(
+                "SELECT SongId, Title, SongbookAbbr, SongbookName
+                   FROM tblSongs WHERE SongId IN ({$placeholders})"
+            );
+            $look->bind_param($types, ...$skipped);
+            $look->execute();
+            $rowsBySongId = [];
+            $res = $look->get_result();
+            while ($r = $res->fetch_assoc()) {
+                $rowsBySongId[(string)$r['SongId']] = $r;
+            }
+            $look->close();
+
+            /* CSV streaming. fputcsv on php://output handles RFC 4180
+               quoting + UTF-8. The BOM prefix gets Excel to treat the
+               file as UTF-8 instead of mojibake-decoding it as
+               Windows-1252. */
+            $safeName = preg_replace('/[^A-Za-z0-9._-]+/', '_',
+                          'skipped-songids-job-' . $jobId . '-' . pathinfo((string)$row['Filename'], PATHINFO_FILENAME) . '.csv'
+                        ) ?? 'skipped-songids.csv';
+            header('Content-Type: text/csv; charset=UTF-8');
+            header('Content-Disposition: attachment; filename="' . $safeName . '"');
+            header('Cache-Control: no-store, no-cache, must-revalidate');
+            echo "\xEF\xBB\xBF"; /* UTF-8 BOM */
+            $out = fopen('php://output', 'w');
+            fputcsv($out, ['SongId', 'Title', 'SongbookAbbr', 'SongbookName', 'Reason']);
+            foreach ($skipped as $sid) {
+                $sid = (string)$sid;
+                $r   = $rowsBySongId[$sid] ?? null;
+                fputcsv($out, [
+                    $sid,
+                    $r ? (string)$r['Title'] : '',
+                    $r ? (string)$r['SongbookAbbr'] : '',
+                    $r ? (string)$r['SongbookName'] : '',
+                    'existing-in-db',
+                ]);
+            }
+            fclose($out);
+            /* Don't fall through to the JSON-encoding default at the
+               bottom of the switch — we've already streamed a CSV. */
+            return;
+        } catch (\Throwable $e) {
+            error_log('[bulk_import_skipped_csv] ' . $e->getMessage());
+            http_response_code(500);
+            echo json_encode(['error' => 'Skipped-CSV download failed.']);
         }
         break;
 
@@ -4196,6 +4347,13 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
     $songsFailed              = 0;
     $errors                   = [];
 
+    /* Skipped SongIds collector. Persisted as a JSON array on the job
+       row so the "Download skipped SongIds" button on the completion
+       notification can stream them as a CSV. Recording every skip
+       costs ~10 bytes per entry — a 5,000-song re-import lands at
+       ~50 KB of JSON, comfortably within the column. */
+    $skippedSongIds           = [];
+
     /* Per-songbook breakdown (#906). Keyed by abbreviation; carries
        the songbook display name plus per-status counts so the import
        summary can render a "HA: 0 created, 527 skipped, 0 failed"
@@ -4412,6 +4570,9 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
                 } elseif ($action === 'skipped') {
                     $songsSkippedExisting++;
                     $_perBookBump($vpAbbr, $vpName, 'skipped');
+                    if (isset($song['id']) && $song['id'] !== '') {
+                        $skippedSongIds[] = (string)$song['id'];
+                    }
                 } else {
                     $errors[] = [
                         'entry' => $name . ': ' . ($song['id'] ?? '?'),
@@ -4534,9 +4695,15 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
             /* Existing row — left untouched per the no-overwrite
                contract. Counted separately from failures so a curator
                can see at a glance how many imports were no-ops because
-               the songs were already in the database. */
+               the songs were already in the database. Record the SongId
+               so the completion notification's "Download skipped SongIds"
+               button can stream them as a CSV (audit which exact rows
+               the import refused to overwrite). */
             $songsSkippedExisting++;
             $_perBookBump($abbr, $bookName, 'skipped');
+            if (isset($song['id']) && $song['id'] !== '') {
+                $skippedSongIds[] = (string)$song['id'];
+            }
         } else {
             $errors[] = ['entry' => $name, 'error' => 'save failed: ' . $err];
             $songsFailed++;
@@ -4610,6 +4777,11 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
            keys) so the JSON shape is a stable array, not an object
            whose keys depend on the input. */
         'per_songbook'           => array_values($perSongbook),
+        /* Skipped SongIds — every SongId the worker left untouched
+           because the row already existed in tblSongs. Persisted to
+           tblBulkImportJobs.SkippedSongIdsJson and surfaced by the
+           completion notification's "Download skipped SongIds" CSV. */
+        'skipped_song_ids'       => $skippedSongIds,
         /* #908 — counts of activity-log per-failure rows actually
            written + how many were truncated. Lets the caller link
            "Activity log filter `EntityId LIKE '<jobId>:%'`" to the
