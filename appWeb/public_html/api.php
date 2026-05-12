@@ -211,10 +211,53 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $xrw = $_SERVER['HTTP_X_REQUESTED_WITH'] ?? '';
     if ($xrw !== 'XMLHttpRequest') {
-        sendJson([
-            'error' => 'Cross-site POST blocked: missing or invalid X-Requested-With header.',
-        ], 403);
-        exit;
+        /* No-JS fallback path (#711). One public endpoint —
+           `?action=song_request_submit` — accepts a native HTML form
+           POST so the /request page still works when the page's
+           <script type="module"> never loads (CSP fail, SW cache miss,
+           syntax error). HTML <form> elements cannot set custom
+           headers, so they can never carry X-Requested-With; the
+           CSRF protection for this path is a same-origin check on
+           Origin / Referer instead. Browsers attach both headers
+           automatically and cannot be forged across origins, so a
+           cross-site CSRF attempt would carry a different host and
+           get rejected here.
+
+           This block intentionally allows ONLY song_request_submit —
+           every other POST endpoint stays on the strict
+           X-Requested-With requirement. If a new endpoint ever needs
+           a no-JS path, extend this allow-list explicitly. */
+        $action = (string)($_GET['action'] ?? '');
+        $noJsAllowedActions = ['song_request_submit'];
+        $passesSameOrigin = false;
+        if (in_array($action, $noJsAllowedActions, true)) {
+            $host    = (string)($_SERVER['HTTP_HOST'] ?? '');
+            $origin  = (string)($_SERVER['HTTP_ORIGIN']  ?? '');
+            $referer = (string)($_SERVER['HTTP_REFERER'] ?? '');
+            /* Extract host:port from Origin / Referer URLs and compare
+               to the request's Host header. parse_url() returns null
+               for the missing-field case, str-cast normalises that to
+               '' so an empty header doesn't accidentally match an
+               empty host. */
+            if ($origin !== '') {
+                $originHost = (string)parse_url($origin, PHP_URL_HOST);
+                $originPort = parse_url($origin, PHP_URL_PORT);
+                if ($originPort) $originHost .= ':' . $originPort;
+                $passesSameOrigin = ($originHost !== '' && strcasecmp($originHost, $host) === 0);
+            }
+            if (!$passesSameOrigin && $referer !== '') {
+                $refererHost = (string)parse_url($referer, PHP_URL_HOST);
+                $refererPort = parse_url($referer, PHP_URL_PORT);
+                if ($refererPort) $refererHost .= ':' . $refererPort;
+                $passesSameOrigin = ($refererHost !== '' && strcasecmp($refererHost, $host) === 0);
+            }
+        }
+        if (!$passesSameOrigin) {
+            sendJson([
+                'error' => 'Cross-site POST blocked: missing or invalid X-Requested-With header.',
+            ], 403);
+            exit;
+        }
     }
 }
 
