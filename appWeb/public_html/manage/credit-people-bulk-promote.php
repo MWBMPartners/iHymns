@@ -530,8 +530,30 @@ if (!empty($registryByName)) {
 
     <script>
     (function () {
+        /* Real fuzzy-match options carry a `data-score` attribute (set
+           on lines ~495-497 of the per-row render); the full-registry
+           fallback options below the divider do NOT. The bulk-promote
+           UX relies on this distinction so a row with zero real matches
+           can never silently auto-resolve into "whichever registry row
+           happens to be first alphabetically" — which is exactly the
+           data-destruction class of bug fixed in this commit. */
+        const isFuzzyMatchOption = (opt) =>
+            opt && opt.value && !opt.disabled && opt.hasAttribute('data-score');
+        const hasFuzzyMatch = (mergeSelect) => {
+            if (!mergeSelect) return false;
+            for (const opt of mergeSelect.options) {
+                if (isFuzzyMatchOption(opt)) return true;
+            }
+            return false;
+        };
+
         /* Toggle the merge-target select disabled state with the row's
-           action picker. */
+           action picker. Auto-picks the highest-scoring fuzzy match
+           when the row becomes a merge — but ONLY when a real fuzzy
+           match exists. Rows with no fuzzy match stay on the
+           "— pick target —" placeholder so the curator must consciously
+           pick a destination instead of accidentally inheriting the
+           first registry entry. (#claude/fix-bulk-promote-auto-resolve) */
         document.querySelectorAll('.row-action-select').forEach(sel => {
             const row = sel.closest('tr');
             const target = row?.querySelector('.row-merge-select');
@@ -539,9 +561,15 @@ if (!empty($registryByName)) {
                 if (!target) return;
                 target.disabled = (sel.value !== 'merge');
                 if (sel.value === 'merge' && !target.value) {
-                    /* Pre-pick the first option that isn't the placeholder. */
+                    /* Pre-pick only from real fuzzy matches, never from
+                       the registry-fallback list. If no fuzzy match
+                       exists, leave the placeholder — the curator's
+                       explicit choice is required. */
                     for (const opt of target.options) {
-                        if (opt.value && !opt.disabled) { target.value = opt.value; break; }
+                        if (isFuzzyMatchOption(opt)) {
+                            target.value = opt.value;
+                            break;
+                        }
                     }
                 }
             };
@@ -549,20 +577,43 @@ if (!empty($registryByName)) {
             sync();
         });
 
-        /* Bulk-action buttons. */
+        /* Bulk-action buttons.
+
+           "Auto-resolve flagged matches" should ONLY change rows that
+           have a flagged fuzzy match — not every row that happens to
+           have a non-empty merge dropdown (every row does, because the
+           full registry is always available as a fallback). Pre-fix,
+           the check was `merge.options.length > 1`, which caught
+           literally every row and then the sync() handler above
+           defaulted them all to the first non-placeholder option =
+           whichever person was first in registryOptions. That's the
+           "every candidate merged to Cecil Frances Alexander"
+           data-destruction bug the screenshot showed. */
         document.addEventListener('click', (ev) => {
             const btn = ev.target.closest('[data-action]');
             if (!btn) return;
             const action = btn.getAttribute('data-action');
             if (action === 'auto-resolve') {
+                let flipped = 0;
                 document.querySelectorAll('.row-action-select').forEach(sel => {
                     const row = sel.closest('tr');
                     const merge = row?.querySelector('.row-merge-select');
-                    if (merge && merge.options.length > 1) {
+                    if (hasFuzzyMatch(merge)) {
                         sel.value = 'merge';
                         sel.dispatchEvent(new Event('change'));
+                        flipped++;
                     }
                 });
+                /* Light-touch feedback so the curator knows when "no
+                   matches to auto-resolve" is the real answer instead
+                   of staring at an unchanged page. */
+                if (flipped === 0) {
+                    window.alert(
+                        'No candidate rows have a flagged fuzzy match to auto-resolve.\n\n'
+                        + 'Lower the Match threshold (or raise Min total uses) to surface '
+                        + 'more potential matches, or set the candidates individually.'
+                    );
+                }
             } else if (action === 'set-all') {
                 const value = btn.getAttribute('data-value');
                 document.querySelectorAll('.row-action-select').forEach(sel => {
