@@ -131,6 +131,7 @@ $ENTITLEMENT_LABELS = [
     'manage_entitlements'       => ['Manage entitlements',           'Edit this map itself — Global Admin only'],
     'manage_configuration'      => ['Manage system configuration',   'Email service, system flags — Global Admin only (#768)'],
     'manage_notifications'      => ['Manage notifications',          'Compose & broadcast in-app notifications — Global Admin only (#813)'],
+    'view_api_docs'             => ['View API docs',                  'Browse the OpenAPI spec via Swagger UI at /manage/api-docs'],
 ];
 
 $entLabel = static function (string $key) use ($ENTITLEMENT_LABELS): array {

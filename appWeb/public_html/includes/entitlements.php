@@ -146,6 +146,14 @@ const ENTITLEMENTS = [
 
     /* Meta */
     'manage_entitlements'  => ['global_admin'],
+
+    /* API Docs (Swagger UI) — curator-and-up may inspect the OpenAPI
+       3.0 spec rendered in-browser. Surfaces request/response shapes
+       + a "Try it out" runner for any endpoint the user's own token
+       is allowed to call. Editor / Curator role is enough because
+       the spec itself isn't sensitive — every endpoint is enforced
+       server-side regardless of whether a curator can read the docs. */
+    'view_api_docs'        => ['editor', 'admin', 'global_admin'],
 ];
 
 /**

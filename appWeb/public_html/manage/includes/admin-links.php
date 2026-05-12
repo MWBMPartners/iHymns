@@ -82,6 +82,7 @@ $_adminLinks = [
     ['notifications',        '/manage/notifications',          'bi-bell',            'Notifications',         'manage_notifications',        'Operations' ],
 
     ['help',                 '/manage/help',                   'bi-life-preserver',  'Help / Guides',         null,                          'Help'       ],
+    ['api-docs',             '/manage/api-docs',               'bi-file-earmark-code', 'API Docs (Swagger UI)', 'view_api_docs',             'Help'       ],
 ];
 
 /**
