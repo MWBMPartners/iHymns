@@ -479,37 +479,99 @@ if (!empty($registryByName)) {
                                     <?php endif; ?>
                                 </td>
                                 <td data-col-priority="primary">
+                                    <?php
+                                        /* Single-dropdown UX (replaces the legacy dual-select that
+                                           pre-#claude/bulk-promote-ux silently auto-merged every
+                                           no-match row into whichever registry person sorted first
+                                           alphabetically — a data-destruction footgun, fixed in PR #980
+                                           and then folded down to this single picker so the curator's
+                                           choice is always concrete and explicit).
+
+                                           Option values:
+                                             register      — INSERT a brand-new tblCreditPeople row.
+                                             merge:<id>    — fold this candidate into the named registry
+                                                             row. The numeric Id is split out by the
+                                                             form-submit JS into the legacy `merge_to[]`
+                                                             POST shape the server still consumes
+                                                             (kept unchanged so this PR is UX-only).
+                                             other         — reveal the secondary picker showing the
+                                                             full registry list for rows where none of
+                                                             the auto-surfaced fuzzy matches is the
+                                                             right target.
+                                             skip          — leave this candidate alone this run.
+
+                                           Default pre-selection:
+                                             - With a fuzzy match → merge:<best-match-id> (the
+                                               highest-scoring suggestion is the obvious default).
+                                             - Without a fuzzy match → register (the safe answer for
+                                               unknown names — never silently inherit a registry
+                                               person the curator didn't see). */
+                                        $rawName    = $c['name'];
+                                        $bestId     = $hasMatch ? (int)$c['matches'][0]['id'] : 0;
+                                        $defaultVal = $hasMatch ? "merge:{$bestId}" : 'register';
+
+                                        /* Pre-compute the "other registry person" list — every
+                                           registry row that ISN'T already surfaced as a fuzzy
+                                           match. Rendered into the secondary picker so a curator
+                                           CAN reach the full registry when none of the suggested
+                                           merge targets is right. Hidden by default. */
+                                        $otherRegistry = [];
+                                        foreach ($registryOptions as $regName) {
+                                            $alreadyShown = false;
+                                            foreach ($c['matches'] as $m) {
+                                                if ($m['name'] === $regName) { $alreadyShown = true; break; }
+                                            }
+                                            if (!$alreadyShown) $otherRegistry[] = $regName;
+                                        }
+                                    ?>
                                     <div class="d-flex flex-column gap-1">
-                                        <select name="row_action[<?= htmlspecialchars($c['name']) ?>]"
-                                                class="form-select form-select-sm row-action-select"
-                                                data-default-value="<?= $hasMatch ? 'merge' : 'register' ?>">
-                                            <option value="register" <?= $hasMatch ? '' : 'selected' ?>>Register as new</option>
-                                            <option value="merge"   <?= $hasMatch ? 'selected' : '' ?>>Merge into existing…</option>
-                                            <option value="skip">Skip</option>
-                                        </select>
-                                        <select name="merge_to[<?= htmlspecialchars($c['name']) ?>]"
-                                                class="form-select form-select-sm row-merge-select"
-                                                <?= $hasMatch ? '' : 'disabled' ?>>
-                                            <option value="">— pick target —</option>
-                                            <?php foreach ($c['matches'] as $m): ?>
-                                                <option value="<?= (int)$m['id'] ?>" data-score="<?= number_format($m['score'], 3, '.', '') ?>">
-                                                    <?= htmlspecialchars($m['name']) ?> (<?= round($m['score'] * 100) ?>%)
+                                        <select class="form-select form-select-sm row-action-select"
+                                                data-row-default="<?= htmlspecialchars($defaultVal, ENT_QUOTES, 'UTF-8') ?>">
+                                            <option value="register" <?= $defaultVal === 'register' ? 'selected' : '' ?>>
+                                                Register as new
+                                            </option>
+                                            <?php foreach ($c['matches'] as $m):
+                                                $optVal = 'merge:' . (int)$m['id'];
+                                            ?>
+                                                <option value="<?= htmlspecialchars($optVal, ENT_QUOTES, 'UTF-8') ?>"
+                                                        data-score="<?= number_format($m['score'], 3, '.', '') ?>"
+                                                        <?= $optVal === $defaultVal ? 'selected' : '' ?>>
+                                                    Merge into <?= htmlspecialchars($m['name']) ?>
+                                                    (<?= round($m['score'] * 100) ?>%)
                                                 </option>
                                             <?php endforeach; ?>
-                                            <?php if ($hasMatch): ?>
-                                                <option disabled>──────────</option>
+                                            <?php if ($otherRegistry): ?>
+                                                <option value="other">Merge into other registry person…</option>
                                             <?php endif; ?>
-                                            <?php foreach ($registryOptions as $regName):
-                                                /* Skip rows already shown above as fuzzy matches. */
-                                                $alreadyShown = false;
-                                                foreach ($c['matches'] as $m) { if ($m['name'] === $regName) { $alreadyShown = true; break; } }
-                                                if ($alreadyShown) continue;
-                                            ?>
+                                            <option value="skip">Skip</option>
+                                        </select>
+
+                                        <!-- Secondary registry picker. Only shown after the curator
+                                             picks "Merge into other registry person…" in the main
+                                             select. Renders the full registry list (excluding
+                                             names already surfaced as fuzzy matches above) so the
+                                             curator can reach an unsuggested target without
+                                             leaving the page. -->
+                                        <select class="form-select form-select-sm row-other-select d-none"
+                                                aria-label="Choose other registry person">
+                                            <option value="">— pick registry person —</option>
+                                            <?php foreach ($otherRegistry as $regName): ?>
                                                 <option value="<?= (int)($registryByName[$regName] ?? 0) ?>">
                                                     <?= htmlspecialchars($regName) ?>
                                                 </option>
                                             <?php endforeach; ?>
                                         </select>
+
+                                        <!-- Hidden inputs that carry the POST shape the server
+                                             expects (row_action + merge_to). The JS keeps them
+                                             in sync with the visible select on every change so
+                                             form-submit doesn't need a serialise step. -->
+                                        <input type="hidden" name="row_action[<?= htmlspecialchars($rawName) ?>]"
+                                               class="row-action-hidden"
+                                               value="<?= $defaultVal === 'register' ? 'register' : ($defaultVal === 'skip' ? 'skip' : 'merge') ?>">
+                                        <input type="hidden" name="merge_to[<?= htmlspecialchars($rawName) ?>]"
+                                               class="row-merge-hidden"
+                                               value="<?= $hasMatch ? (int)$c['matches'][0]['id'] : '' ?>">
                                     </div>
                                 </td>
                             </tr>
@@ -530,83 +592,115 @@ if (!empty($registryByName)) {
 
     <script>
     (function () {
-        /* Real fuzzy-match options carry a `data-score` attribute (set
-           on lines ~495-497 of the per-row render); the full-registry
-           fallback options below the divider do NOT. The bulk-promote
-           UX relies on this distinction so a row with zero real matches
-           can never silently auto-resolve into "whichever registry row
-           happens to be first alphabetically" — which is exactly the
-           data-destruction class of bug fixed in this commit. */
-        const isFuzzyMatchOption = (opt) =>
-            opt && opt.value && !opt.disabled && opt.hasAttribute('data-score');
-        const hasFuzzyMatch = (mergeSelect) => {
-            if (!mergeSelect) return false;
-            for (const opt of mergeSelect.options) {
-                if (isFuzzyMatchOption(opt)) return true;
-            }
-            return false;
-        };
+        /* Single-dropdown bulk-promote UX (#claude/bulk-promote-ux).
+           Replaces the pre-#980 dual-select that silently auto-merged
+           every no-match row into whichever registry person sorted
+           first alphabetically — a data-destruction footgun. PR #980
+           added defensive gating; this rewrite folds the merge-target
+           list into the action select so every option the curator sees
+           is concrete and explicit.
 
-        /* Toggle the merge-target select disabled state with the row's
-           action picker. Auto-picks the highest-scoring fuzzy match
-           when the row becomes a merge — but ONLY when a real fuzzy
-           match exists. Rows with no fuzzy match stay on the
-           "— pick target —" placeholder so the curator must consciously
-           pick a destination instead of accidentally inheriting the
-           first registry entry. (#claude/fix-bulk-promote-auto-resolve) */
-        document.querySelectorAll('.row-action-select').forEach(sel => {
-            const row = sel.closest('tr');
-            const target = row?.querySelector('.row-merge-select');
-            const sync = () => {
-                if (!target) return;
-                target.disabled = (sel.value !== 'merge');
-                if (sel.value === 'merge' && !target.value) {
-                    /* Pre-pick only from real fuzzy matches, never from
-                       the registry-fallback list. If no fuzzy match
-                       exists, leave the placeholder — the curator's
-                       explicit choice is required. */
-                    for (const opt of target.options) {
-                        if (isFuzzyMatchOption(opt)) {
-                            target.value = opt.value;
-                            break;
-                        }
-                    }
-                }
+           Each row has:
+             - one visible <select class="row-action-select"> whose
+               options carry one of:
+                   register
+                   merge:<targetId>   (one per fuzzy match, sorted by score)
+                   other              (reveals .row-other-select)
+                   skip
+             - one hidden <select class="row-other-select"> with the
+               full registry list, shown only after picking 'other'.
+             - two hidden <input> fields:
+                   .row-action-hidden  (name="row_action[<name>]")
+                   .row-merge-hidden   (name="merge_to[<name>]")
+               that carry the POST shape the server still consumes
+               unchanged (kept stable so this PR is UX-only). */
+        const isFuzzyMatchOption = (opt) =>
+            opt && opt.value && opt.value.startsWith('merge:') && opt.hasAttribute('data-score');
+
+        function rowParts(rowOrSel) {
+            const row = rowOrSel.closest ? rowOrSel.closest('tr') : rowOrSel;
+            return {
+                row,
+                main:   row.querySelector('.row-action-select'),
+                other:  row.querySelector('.row-other-select'),
+                hAct:   row.querySelector('.row-action-hidden'),
+                hMerge: row.querySelector('.row-merge-hidden'),
             };
-            sel.addEventListener('change', sync);
-            sync();
+        }
+
+        /* Sync hidden POST fields to whatever the visible selects
+           currently carry. Runs on every change of either select and
+           on initial page load so the first form-submit always reflects
+           the curator's actual choice. */
+        function syncRow(p) {
+            const val = p.main.value;
+            if (val === 'register' || val === 'skip') {
+                p.hAct.value = val;
+                p.hMerge.value = '';
+                p.other.classList.add('d-none');
+                return;
+            }
+            if (val === 'other') {
+                p.other.classList.remove('d-none');
+                /* Until the curator picks a target, leave the hidden
+                   merge_to empty — the server's per-row merge handler
+                   rejects merge with targetId<=0 as 'failed' so the
+                   row simply doesn't promote. Far better than silently
+                   merging into the first registry option. */
+                p.hAct.value = 'merge';
+                p.hMerge.value = p.other.value || '';
+                return;
+            }
+            if (val.startsWith('merge:')) {
+                p.hAct.value = 'merge';
+                p.hMerge.value = val.slice('merge:'.length);
+                p.other.classList.add('d-none');
+                return;
+            }
+            /* Defensive fallback — unknown shape collapses to Skip
+               rather than to a random merge. */
+            p.hAct.value = 'skip';
+            p.hMerge.value = '';
+            p.other.classList.add('d-none');
+        }
+
+        document.querySelectorAll('.row-action-select').forEach(sel => {
+            const p = rowParts(sel);
+            sel.addEventListener('change', () => syncRow(p));
+            if (p.other) {
+                p.other.addEventListener('change', () => {
+                    if (p.main.value === 'other') syncRow(p);
+                });
+            }
+            syncRow(p);
         });
 
-        /* Bulk-action buttons.
-
-           "Auto-resolve flagged matches" should ONLY change rows that
-           have a flagged fuzzy match — not every row that happens to
-           have a non-empty merge dropdown (every row does, because the
-           full registry is always available as a fallback). Pre-fix,
-           the check was `merge.options.length > 1`, which caught
-           literally every row and then the sync() handler above
-           defaulted them all to the first non-placeholder option =
-           whichever person was first in registryOptions. That's the
-           "every candidate merged to Cecil Frances Alexander"
-           data-destruction bug the screenshot showed. */
+        /* Bulk action buttons. */
         document.addEventListener('click', (ev) => {
             const btn = ev.target.closest('[data-action]');
             if (!btn) return;
             const action = btn.getAttribute('data-action');
             if (action === 'auto-resolve') {
+                /* Pick the highest-scoring fuzzy-match option on every
+                   row that has one. Rows with no fuzzy match are NOT
+                   touched (they stay on whatever the curator had —
+                   typically Register-as-new) so the no-data-destruction
+                   guarantee from PR #980 holds even after this rewrite. */
                 let flipped = 0;
                 document.querySelectorAll('.row-action-select').forEach(sel => {
-                    const row = sel.closest('tr');
-                    const merge = row?.querySelector('.row-merge-select');
-                    if (hasFuzzyMatch(merge)) {
-                        sel.value = 'merge';
+                    let bestOpt = null;
+                    let bestScore = -1;
+                    for (const opt of sel.options) {
+                        if (!isFuzzyMatchOption(opt)) continue;
+                        const s = parseFloat(opt.getAttribute('data-score') || '0');
+                        if (s > bestScore) { bestScore = s; bestOpt = opt; }
+                    }
+                    if (bestOpt) {
+                        sel.value = bestOpt.value;
                         sel.dispatchEvent(new Event('change'));
                         flipped++;
                     }
                 });
-                /* Light-touch feedback so the curator knows when "no
-                   matches to auto-resolve" is the real answer instead
-                   of staring at an unchanged page. */
                 if (flipped === 0) {
                     window.alert(
                         'No candidate rows have a flagged fuzzy match to auto-resolve.\n\n'
@@ -615,6 +709,8 @@ if (!empty($registryByName)) {
                     );
                 }
             } else if (action === 'set-all') {
+                /* "Set all to Register as new" / "Set all to Skip"
+                   buttons just dispatch a value-set + change event. */
                 const value = btn.getAttribute('data-value');
                 document.querySelectorAll('.row-action-select').forEach(sel => {
                     sel.value = value;
