@@ -45,6 +45,27 @@ function schemaAuditParseSchema(string $schemaSql): array
 {
     $tables = [];
 
+    /* Strip block comments from the WHOLE input before pattern-matching.
+       Migration PHP files often contain a docblock like:
+
+           /**
+            * Schema:
+            *   CREATE TABLE tblFoo (
+            *       Id  auto-increment PK
+            *       ...
+            *   )
+            * /
+
+       Without this strip, the regex below greedily-but-cheaply matches
+       from the docblock's `CREATE TABLE tblFoo (` through to the FIRST
+       subsequent `) ENGINE=…` — which is the real SQL further down the
+       file. The matched body then spans the docblock + every line of
+       PHP between, and the first column-shaped segment turns out to be
+       a PHP type hint like `string` instead of `Id`. Pre-stripping
+       block comments removes the docblock entirely so the regex only
+       sees the real SQL string. (#722 parser fix follow-up.) */
+    $schemaSql = preg_replace('/\/\*.*?\*\//s', '', $schemaSql) ?? $schemaSql;
+
     /* `s` flag so `.` matches newlines inside the parenthesised body. */
     $matched = preg_match_all(
         '/CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+(tbl\w+)\s*\((.*?)\)\s*ENGINE\s*=/is',
@@ -178,6 +199,52 @@ function schemaAuditScanMigrations(string $sqlDir): array
         )) {
             foreach ($matches as $m) {
                 $coverage[$m[1] . '.' . $m[2]][] = $base;
+            }
+        }
+    }
+
+    /* Signal 4 — RENAME TABLE old TO new. Second pass over all files so
+       coverage attributed to the old name (via CREATE TABLE in an
+       earlier migration) gets re-attributed to the new name. Without
+       this, the IETF migration's `CREATE TABLE tblScripts` shows up in
+       the dictionary under the old name even though every other place
+       in the codebase references `tblLanguageScripts`. (Multi-step
+       renames within a single migration chain are handled by iterating
+       to a fixed point — small file count, cheap.) */
+    $renames = [];
+    foreach ($files as $file) {
+        $contents = @file_get_contents($file);
+        if ($contents === false) continue;
+        /* Strip PHP block comments so a docblock's "RENAME TABLE" prose
+           example doesn't get picked up as a real rename. */
+        $stripped = preg_replace('/\/\*.*?\*\//s', '', $contents) ?? $contents;
+        if (preg_match_all(
+            '/RENAME\s+TABLE\s+(tbl\w+)\s+TO\s+(tbl\w+)/is',
+            $stripped,
+            $matches,
+            PREG_SET_ORDER
+        )) {
+            foreach ($matches as $m) {
+                $renames[$m[1]] = $m[2];
+            }
+        }
+    }
+    if ($renames) {
+        $changed = true;
+        while ($changed) {
+            $changed = false;
+            foreach ($renames as $old => $new) {
+                foreach (array_keys($coverage) as $key) {
+                    if (strpos($key, $old . '.') !== 0) continue;
+                    $col    = substr($key, strlen($old) + 1);
+                    $newKey = $new . '.' . $col;
+                    $coverage[$newKey] = array_merge(
+                        $coverage[$newKey] ?? [],
+                        $coverage[$key]
+                    );
+                    unset($coverage[$key]);
+                    $changed = true;
+                }
             }
         }
     }

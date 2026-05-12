@@ -190,6 +190,32 @@ jobs:
           fi
 
       # -----------------------------------------------------------------------
+      # Step 5b: Migration registry sanity
+      # Asserts (1) every entry in $migrationOrder has a matching
+      # $migrationProbes entry, and (2) no probe is hardcoded to
+      # `=> true`. Both regressions are silent at runtime — the
+      # symptom only surfaces as "Apply all pending migrations" never
+      # reaching 0 on the Database Setup page.
+      # -----------------------------------------------------------------------
+      - name: Migration registry sanity
+        run: |
+          echo "Running migration-registry sanity test..."
+          php tests/php/test-migration-registry.php
+
+      # -----------------------------------------------------------------------
+      # Step 5c: Schema-coverage drift guard
+      # Asserts every table / column created by an appWeb/.sql/migrate-*.php
+      # script is also declared in appWeb/.sql/schema.sql. Catches the
+      # "migration adds it but schema.sql never picks it up" class of
+      # drift that the Schema Audit page (#518) surfaces at runtime as
+      # "Orphan in DB".
+      # -----------------------------------------------------------------------
+      - name: Schema-coverage drift guard
+        run: |
+          echo "Running schema-coverage drift guard..."
+          php tests/php/test-schema-coverage.php
+
+      # -----------------------------------------------------------------------
       # Step 6: Validate JSON files
       # Checks that critical JSON files are valid using Node.js
       # Validates: data/songs.json, manifest.json (in both beta and production)
