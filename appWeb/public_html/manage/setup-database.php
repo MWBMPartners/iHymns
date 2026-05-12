@@ -221,6 +221,7 @@ $friendlyTitles = [
     'ietf-bcp47-language'              => 'IETF BCP 47 Language Tagging (#681)',
     'bulk-import-jobs'                 => 'Bulk Import Jobs Tracking (#676)',
     'backfill-legacy-songbook-languages' => 'Backfill Legacy Songbook Languages (#735)',
+    'backfill-song-language-from-songbook' => 'Backfill Song Language from Songbook (audit follow-up)',
     'user-preferred-languages'         => 'User Preferred Languages Column (#736)',
     'iana-language-subtag-registry'    => 'IETF BCP 47 Reference Data (#738)',
     'cldr-native-names'                => 'CLDR Native Names Overlay',
@@ -298,6 +299,7 @@ $scriptMap = [
     'ietf-bcp47-language'    => 'migrate-ietf-bcp47-language.php',
     'bulk-import-jobs'       => 'migrate-bulk-import-jobs.php',
     'backfill-legacy-songbook-languages' => 'migrate-backfill-legacy-songbook-languages.php',
+    'backfill-song-language-from-songbook' => 'migrate-backfill-song-language-from-songbook.php',
     'user-preferred-languages' => 'migrate-user-preferred-languages.php',
     'iana-language-subtag-registry' => 'migrate-iana-language-subtag-registry.php',
     'cldr-native-names' => 'migrate-cldr-native-names.php',
@@ -359,6 +361,7 @@ $migrationOrder = [
     'ietf-bcp47-language',
     'bulk-import-jobs',
     'backfill-legacy-songbook-languages',
+    'backfill-song-language-from-songbook',
     'user-preferred-languages',
     'iana-language-subtag-registry',
     'cldr-native-names',
@@ -611,6 +614,22 @@ $migrationCards = [
                   . ' songbook lands. Idempotent — re-running is safe; rows already set'
                   . ' (e.g. <code>en-GB</code>, <code>en-US</code>) are not touched.',
         'button' => 'Run Legacy Songbook Language Backfill',
+    ],
+    'backfill-song-language-from-songbook' => [
+        'title'  => 'Backfill song language from songbook (audit follow-up)',
+        'body'   => 'Several bulk-import passes landed every song in a non-English songbook'
+                  . ' tagged <code>language=\'en\'</code> — HAC is the documented example: the'
+                  . ' songbook itself was correctly marked Croatian, but every member song'
+                  . ' carries the English tag. This walks every songbook that DECLARES a'
+                  . ' single primary language (<code>tblSongbooks.Language</code> non-empty)'
+                  . ' and rewrites any member song whose primary language subtag disagrees.'
+                  . ' Conservative: songbooks with no Language declared are left alone'
+                  . ' (multi-language books like Misc), and a song already carrying a more'
+                  . ' specific tag whose primary matches (<code>en-GB</code> inside an'
+                  . ' <code>en</code> songbook) is preserved. Re-runnable.'
+                  . ' Run <code>/manage/data-health → Regenerate songs.json cache</code>'
+                  . ' afterwards so the public PWA picks up the new tags.',
+        'button' => 'Run Song Language Backfill',
     ],
     'user-preferred-languages' => [
         'title'  => 'User preferred languages column (#736)',
@@ -1187,6 +1206,57 @@ $migrationProbes = [
     'cldr-native-names'                  => static fn(\mysqli $db) => true,
     'tag-titlecase'                      => static fn(\mysqli $db) => true,
     'backfill-legacy-songbook-languages' => static fn(\mysqli $db) => true,
+    /* Pending whenever any single-language songbook has at least one
+       member song whose primary language subtag disagrees with the
+       songbook's — i.e. the HAC-style mis-tag pattern still has
+       rows to fix. Self-clears once the backfill has run, so the
+       card disappears from the pending list. Schema-tolerant: returns
+       false if either Language column isn't present yet. */
+    'backfill-song-language-from-songbook' => static function (\mysqli $db): bool {
+        try {
+            $colS = $db->query(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME = 'tblSongs'
+                    AND COLUMN_NAME = 'Language' LIMIT 1"
+            );
+            if (!$colS || $colS->fetch_row() === null) {
+                if ($colS) $colS->close();
+                return false;
+            }
+            $colS->close();
+            $colB = $db->query(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME = 'tblSongbooks'
+                    AND COLUMN_NAME = 'Language' LIMIT 1"
+            );
+            if (!$colB || $colB->fetch_row() === null) {
+                if ($colB) $colB->close();
+                return false;
+            }
+            $colB->close();
+            /* Detect any single-language songbook with at least one
+               member whose primary language subtag differs. */
+            $res = $db->query(
+                "SELECT 1
+                   FROM tblSongs s
+                   JOIN tblSongbooks b ON b.Abbreviation = s.SongbookAbbr
+                  WHERE b.Language IS NOT NULL AND b.Language <> ''
+                    AND (
+                          s.Language IS NULL OR s.Language = ''
+                       OR LOWER(SUBSTRING_INDEX(s.Language, '-', 1))
+                          <> LOWER(SUBSTRING_INDEX(b.Language, '-', 1))
+                    )
+                  LIMIT 1"
+            );
+            $needs = $res && $res->fetch_row() !== null;
+            if ($res) $res->close();
+            return $needs;
+        } catch (\Throwable $_e) {
+            return false;
+        }
+    },
 ];
 /* Captured during bulk-run so the failure can be surfaced as a visible
    banner ABOVE the (potentially long, scrollable) output panel. (#720) */
