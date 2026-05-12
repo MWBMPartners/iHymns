@@ -195,6 +195,59 @@ if ($audit !== null) {
                 </div>
             </div>
 
+            <?php
+                /* Action-item rollup. Surfaces the specific column names
+                   for the uncovered + missing buckets directly under the
+                   banner — saves the curator scrolling the per-table grid
+                   to find the two needles in a 78-table haystack. Orphans
+                   are informational only so they don't land here; they
+                   stay in the per-table tables below. */
+                $uncoveredList = [];
+                $missingList   = [];
+                foreach ($audit['byTable'] as $tbl => $rows) {
+                    foreach ($rows as $r) {
+                        if ($r['status'] === 'uncovered') {
+                            $uncoveredList[] = "{$tbl}.{$r['col']}";
+                        } elseif ($r['status'] === 'missing') {
+                            $migName = $r['migration'] ?? '?';
+                            $missingList[] = "{$tbl}.{$r['col']} (via {$migName})";
+                        }
+                    }
+                }
+            ?>
+            <?php if ($uncoveredList || $missingList): ?>
+                <div class="card-admin p-3 mb-4 border-warning">
+                    <h2 class="h6 mb-2">
+                        <i class="bi bi-list-check me-1"></i>
+                        Action items
+                    </h2>
+                    <?php if ($uncoveredList): ?>
+                        <p class="small text-secondary mb-1">
+                            <strong class="text-danger">Uncovered</strong> &mdash;
+                            in <code>schema.sql</code> but no migration adds them.
+                            File a bug and write a migration:
+                        </p>
+                        <ul class="small mb-3">
+                            <?php foreach ($uncoveredList as $entry): ?>
+                                <li><code><?= htmlspecialchars($entry) ?></code></li>
+                            <?php endforeach; ?>
+                        </ul>
+                    <?php endif; ?>
+                    <?php if ($missingList): ?>
+                        <p class="small text-secondary mb-1">
+                            <strong class="text-warning">Missing</strong> &mdash;
+                            a migration covers each. Run via
+                            <a href="/manage/setup-database" class="link-light">Database Setup</a>:
+                        </p>
+                        <ul class="small mb-0">
+                            <?php foreach ($missingList as $entry): ?>
+                                <li><code><?= htmlspecialchars($entry) ?></code></li>
+                            <?php endforeach; ?>
+                        </ul>
+                    <?php endif; ?>
+                </div>
+            <?php endif; ?>
+
             <!-- Per-table reports -->
             <?php foreach ($audit['byTable'] as $tbl => $rows):
                 $hasIssues = _schemaAudit_tableHasIssues($rows);
