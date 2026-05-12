@@ -626,7 +626,26 @@ return [
                       . ' recompute remains the safety net.',
             'button' => 'Run SongCount Triggers Migration',
         ],
-        'probe' => static fn(\mysqli $db) => !_migProbe_triggerExists($db, 'trg_songs_songcount_ai'),
+        /* Two-signal probe: applied when EITHER the AFTER INSERT trigger
+           exists OR the migration left its `songcount_triggers_attempted`
+           sentinel in tblAppSettings. The sentinel covers the host-disallows-
+           CREATE-TRIGGER case where the migration's friendly-skip path
+           (#815) runs the initial recompute but never installs the trigger
+           — pre-sentinel this card stayed pending forever even after
+           successful runs. */
+        'probe' => static function (\mysqli $db): bool {
+            if (_migProbe_triggerExists($db, 'trg_songs_songcount_ai')) return false;
+            try {
+                $stmt = $db->prepare(
+                    "SELECT SettingValue FROM tblAppSettings
+                      WHERE SettingKey = 'songcount_triggers_attempted' LIMIT 1"
+                );
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                return !($row && (string)$row[0] === '1');
+            } catch (\Throwable $_e) { return true; }
+        },
     ],
     'songbook-compilers' => [
         'script' => 'migrate-songbook-compilers.php',

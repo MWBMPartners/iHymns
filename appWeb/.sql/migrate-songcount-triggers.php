@@ -265,3 +265,29 @@ if (!$res) {
 _migSCTrig_out('');
 _migSCTrig_out('SongCount triggers migration finished (#793).');
 _migSCTrig_out('Future INSERT / UPDATE / DELETE on tblSongs will keep tblSongbooks.SongCount honest automatically.');
+
+/* Mark the migration as attempted so the dashboard's pending-probe can
+   flip "pending → applied" on hosts where CREATE TRIGGER was denied. The
+   trigger-presence probe alone leaves this card stuck pending forever on
+   hosts that disallow trigger creation (shared MySQL hosts pre-MySQL-8.0
+   typically require SUPER for CREATE TRIGGER, or deny it outright via
+   policy). The migration is idempotent + the recompute path runs every
+   time, so "attempted = applied" is the right semantics for the
+   dashboard. (#claude/fix-songcount-triggers-probe follow-up.) */
+$_sentinelStmt = $db->prepare(
+    'INSERT INTO tblAppSettings (SettingKey, SettingValue, Description)
+     VALUES (?, ?, ?)
+     ON DUPLICATE KEY UPDATE SettingValue = VALUES(SettingValue), Description = VALUES(Description)'
+);
+$_sentinelKey  = 'songcount_triggers_attempted';
+$_sentinelVal  = '1';
+$_sentinelDesc = 'SongCount triggers migration ran (#793). Value 1 regardless of '
+               . 'whether CREATE TRIGGER succeeded — recompute path runs on every '
+               . 'pass so the cache stays correct even when triggers are denied.';
+$_sentinelStmt->bind_param('sss', $_sentinelKey, $_sentinelVal, $_sentinelDesc);
+if (!$_sentinelStmt->execute()) {
+    _migSCTrig_out('[warn] could not set sentinel (' . $db->error . '); migration body still ran.');
+} else {
+    _migSCTrig_out('[mark] tblAppSettings.songcount_triggers_attempted = 1.');
+}
+$_sentinelStmt->close();
