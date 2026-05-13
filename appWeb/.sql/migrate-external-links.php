@@ -195,6 +195,25 @@ $seedTypes = [
     ['musicbrainz-recording','MusicBrainz recording','information', 'song',                 1, 'bi-music-note',      92],
     ['musicbrainz-artist',   'MusicBrainz artist',   'information', 'person',               0, 'bi-person-vcard',    93],
     ['goodreads-author',     'Goodreads author',     'information', 'person',               0, 'bi-book',            94],
+
+    /* Media databases — film / TV / streaming / anime / games. AppliesTo
+       deliberately wide (song,songbook,person,work) since iHymns data
+       is the seed for the upcoming iLyrics DB + MeedyaDB and these
+       providers want to live on every entity type. */
+    ['imdb',                 'IMDb',                 'information', 'song,songbook,person,work', 1, 'bi-film',           120],
+    ['tmdb',                 'The Movie DB (TMDB)',  'information', 'song,songbook,person,work', 1, 'bi-film',           121],
+    ['thetvdb',              'TheTVDB',              'information', 'song,songbook,person,work', 1, 'bi-tv',             122],
+    ['letterboxd',           'Letterboxd',           'information', 'song,songbook,person,work', 1, 'bi-film',           123],
+    ['rotten-tomatoes',      'Rotten Tomatoes',      'information', 'song,songbook,person,work', 1, 'bi-star',           124],
+    ['metacritic',           'Metacritic',           'information', 'song,songbook,person,work', 1, 'bi-star-half',      125],
+    ['allmovie',             'AllMovie',             'information', 'song,songbook,person,work', 1, 'bi-film',           126],
+    ['tvmaze',               'TVmaze',               'information', 'song,songbook,person,work', 1, 'bi-tv',             127],
+    ['trakt',                'Trakt',                'information', 'song,songbook,person,work', 1, 'bi-tv',             128],
+    ['justwatch',            'JustWatch',            'information', 'song,songbook,person,work', 1, 'bi-search',         129],
+    ['myanimelist',          'MyAnimeList',          'information', 'song,songbook,person,work', 1, 'bi-collection-play',130],
+    ['anidb',                'AniDB',                'information', 'song,songbook,person,work', 1, 'bi-collection-play',131],
+    ['igdb',                 'IGDB',                 'information', 'song,songbook,person,work', 1, 'bi-controller',     132],
+
     ['linkedin',             'LinkedIn',             'social',      'person',               0, 'bi-linkedin',        100],
     ['twitter-x',            'Twitter / X',          'social',      'person',               0, 'bi-twitter-x',       101],
     ['instagram',            'Instagram',            'social',      'person',               0, 'bi-instagram',       102],
