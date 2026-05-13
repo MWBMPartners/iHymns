@@ -226,6 +226,14 @@ $seedRows = [
     ['mastodon',              'mastodon.online',   null,        0, 221],
     ['mastodon',              'mas.to',            null,        0, 222],
     ['mastodon',              'fosstodon.org',     null,        0, 223],
+
+    /* MusicBrainz-parity additions (#1003) */
+    ['myspace',               'myspace.com',       null,        1, 224, 'Legacy social network — still hosts many older artist pages'],
+    ['allmusic',              'allmusic.com',      null,        1, 165, 'Sister site to AllMovie'],
+    ['lastfm',                'last.fm',           null,        1, 145, 'Suffix match covers www.last.fm'],
+    ['bandsintown',           'bandsintown.com',   null,        1, 75,  'Suffix match covers www.bandsintown.com'],
+    ['genius',                'genius.com',        null,        1, 36,  'Suffix match covers www.genius.com — lyrics + annotations'],
+    ['muzikum',               'muzikum.eu',        null,        1, 37,  'Lyrics + translations site'],
 ];
 
 /* Resolve slugs to LinkTypeIds in one query. */

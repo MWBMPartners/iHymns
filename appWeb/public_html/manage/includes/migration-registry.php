@@ -917,6 +917,55 @@ return [
             return !$present;
         },
     ],
+    'musicbrainz-style-links' => [
+        'script' => 'migrate-musicbrainz-style-links.php',
+        'card' => [
+            'title'  => 'MusicBrainz-Parity External Links',
+            'body'   => 'Adds Myspace, AllMusic, Last.fm, Bandsintown, Genius and'
+                      . ' Muzikum.eu to <code>tblExternalLinkTypes</code> (#833) with'
+                      . ' patterns in <code>tblExternalLinkPatterns</code> (#845) — the'
+                      . ' set of providers commonly surfaced on a MusicBrainz artist'
+                      . ' page that iHymns didn\'t yet detect. Idempotent — link types'
+                      . ' upsert by Slug, patterns guard on (LinkTypeId, Host, PathPrefix).',
+            'button' => 'Run MusicBrainz-Parity External Links Migration',
+        ],
+        /* Sentinel: 'allmusic' is the most distinctive of the six new slugs
+           and is unlikely to collide with anything a curator would manually
+           seed. Same single-sentinel pattern as extra-streaming-platforms. */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_tableExists($db, 'tblExternalLinkTypes')
+                || !_migProbe_tableExists($db, 'tblExternalLinkPatterns')) {
+                return false;
+            }
+            $stmt = $db->prepare(
+                'SELECT 1 FROM tblExternalLinkTypes WHERE Slug = ? LIMIT 1'
+            );
+            $sentinel = 'allmusic';
+            $stmt->bind_param('s', $sentinel);
+            $stmt->execute();
+            $present = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            return !$present;
+        },
+    ],
+    'credit-person-identifiers' => [
+        'script' => 'migrate-credit-person-identifiers.php',
+        'card' => [
+            'title'  => 'Credit-Person Identifiers (IPI + ISNI)',
+            'body'   => 'Creates <code>tblCreditPersonIdentifiers</code> — a unified'
+                      . ' MusicBrainz-style identifier table that holds both IPI Name'
+                      . ' Numbers (#545) and the new ISNI (International Standard Name'
+                      . ' Identifier) rows side by side, with <code>IdentifierType</code>'
+                      . ' discriminating. Backfills every existing'
+                      . ' <code>tblCreditPersonIPI</code> row over with'
+                      . ' <code>IdentifierType = \'ipi\'</code>. The legacy table stays in'
+                      . ' place as a one-release rollback snapshot and gets dropped in a'
+                      . ' follow-up migration. Idempotent — re-runs use a NOT EXISTS guard.',
+            'button' => 'Run Credit-Person Identifiers Migration',
+        ],
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblCreditPersonIdentifiers'),
+    ],
     'song-media' => [
         'script' => 'migrate-song-media.php',
         'card' => [

@@ -208,6 +208,42 @@ function normaliseCreditPersonIpi(mixed $raw): array
 }
 
 /**
+ * Normalise the per-person ISNI sub-form. Same row shape as IPI so the
+ * unified tblCreditPersonIdentifiers INSERT path can treat both flows
+ * identically — the only thing that differs is the IdentifierType value
+ * the caller binds when persisting.
+ *
+ * Light validation: trims hyphens / spaces and uppercases the trailing X
+ * (ISNI checksum digit) since ISNI is a 16-character ID conventionally
+ * displayed in groups of four separated by spaces or hyphens. Stored
+ * representation is the bare digits/X so two equivalent renderings
+ * collide on the UNIQUE constraint.
+ *
+ * @param mixed $raw Form / JSON-decoded array; non-array → []
+ * @return list<array{number:string,name_used:?string,notes:?string}>
+ */
+function normaliseCreditPersonIsni(mixed $raw): array
+{
+    if (!is_array($raw)) return [];
+    $out = [];
+    foreach ($raw as $row) {
+        if (!is_array($row)) continue;
+        $raw_id = trim((string)($row['number'] ?? ''));
+        if ($raw_id === '') continue;
+        /* Collapse separators + uppercase the X check character so
+           "0000 0001 2103 2683" and "0000-0001-2103-2683" both store
+           as 0000000121032683. */
+        $bare = strtoupper(preg_replace('/[\s\-]+/', '', $raw_id) ?? $raw_id);
+        $out[] = [
+            'number'    => $bare,
+            'name_used' => trim((string)($row['name_used'] ?? '')) ?: null,
+            'notes'     => trim((string)($row['notes']     ?? '')) ?: null,
+        ];
+    }
+    return $out;
+}
+
+/**
  * Compose a person's display name from the structured columns added in
  * #934. The result is what gets written back into tblCreditPeople.Name
  * so the ~30 read sites that already query Name continue to see the

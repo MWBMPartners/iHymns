@@ -117,6 +117,15 @@
         { slug: 'instagram',             hosts: ['instagram.com'] },
         { slug: 'facebook',              hosts: ['facebook.com', 'm.facebook.com', 'fb.com'] },
         { slug: 'mastodon',              hosts: ['mastodon.social', 'mastodon.online', 'mas.to', 'fosstodon.org'] },
+
+        /* MusicBrainz-parity additions — providers commonly surfaced on
+           the MusicBrainz artist page that iHymns didn't yet detect. */
+        { slug: 'myspace',               hosts: ['myspace.com'] },
+        { slug: 'allmusic',              hosts: ['allmusic.com'] },
+        { slug: 'lastfm',                hosts: ['last.fm'] },
+        { slug: 'bandsintown',           hosts: ['bandsintown.com'] },
+        { slug: 'genius',                hosts: ['genius.com'] },
+        { slug: 'muzikum',               hosts: ['muzikum.eu'] },
     ];
 
     function lowerHost(h) { return (h || '').toLowerCase(); }

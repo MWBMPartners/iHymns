@@ -6426,7 +6426,7 @@ paths:
                 keep_ipi_ids:
                   type: array
                   items: { type: integer }
-                  description: tblCreditPersonIPI.Id values from the source side to migrate.
+                  description: tblCreditPersonIdentifiers.Id values (IPI and/or ISNI rows) from the source side to migrate. Kept for backwards-compat naming after the IPI/ISNI unification.
       responses:
         "200":
           description: Merge completed

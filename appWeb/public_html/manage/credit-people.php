@@ -98,6 +98,7 @@ $logCreditPerson = static function (string $action, string $entityId, array $det
 $ALIAS_TYPES         = CREDIT_PERSON_ALIAS_TYPES;
 $normaliseLinks      = static fn(\mysqli $db, mixed $raw): array => normaliseCreditPersonLinks($db, $raw);
 $normaliseIpi        = static fn(mixed $raw): array => normaliseCreditPersonIpi($raw);
+$normaliseIsni       = static fn(mixed $raw): array => normaliseCreditPersonIsni($raw);
 $normaliseAliases    = static fn(mixed $raw): array => normaliseCreditPersonAliases($raw);
 
 /* External-link type registry — pulled inside each action handler
@@ -226,6 +227,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $notes       = $notesRaw !== '' ? $notesRaw : null;
                 $links       = $normaliseLinks($db, $_POST['links']     ?? null);
                 $ipi         = $normaliseIpi($_POST['ipi']         ?? null);
+                $isni        = $normaliseIsni($_POST['isni']        ?? null);
                 $aliases     = $normaliseAliases($_POST['aliases'] ?? null);
                 /* #584 / #585 — classification flags. The two are
                    mutually exclusive in the UI; if both arrive we
@@ -371,18 +373,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
                         $linkStmt->close();
                     }
-                    if ($ipi) {
-                        $ipiStmt = $db->prepare(
-                            'INSERT INTO tblCreditPersonIPI
-                                (CreditPersonId, IPINumber, NameUsed, Notes)
-                             VALUES (?, ?, ?, ?)'
+                    if ($ipi || $isni) {
+                        $idStmt = $db->prepare(
+                            'INSERT INTO tblCreditPersonIdentifiers
+                                (CreditPersonId, IdentifierType, IdentifierValue, NameUsed, Notes)
+                             VALUES (?, ?, ?, ?, ?)'
                         );
+                        $type = 'ipi';
                         foreach ($ipi as $r) {
-                            $ipiStmt->bind_param('isss',
-                                $newId, $r['number'], $r['name_used'], $r['notes']);
-                            $ipiStmt->execute();
+                            $idStmt->bind_param('issss',
+                                $newId, $type, $r['number'], $r['name_used'], $r['notes']);
+                            $idStmt->execute();
                         }
-                        $ipiStmt->close();
+                        $type = 'isni';
+                        foreach ($isni as $r) {
+                            $idStmt->bind_param('issss',
+                                $newId, $type, $r['number'], $r['name_used'], $r['notes']);
+                            $idStmt->execute();
+                        }
+                        $idStmt->close();
                     }
                     /* AKA / alias rows — schema-tolerant (helper no-ops
                        cleanly on installs that haven't run the
@@ -403,6 +412,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         ], static fn($v) => $v !== null),
                         'link_count'  => count($links),
                         'ipi_count'   => count($ipi),
+                        'isni_count'  => count($isni),
                     ]);
                     $success = "Person '{$name}' added to the registry.";
                 } catch (\Throwable $e) {
@@ -432,6 +442,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $notes       = $notesRaw !== '' ? $notesRaw : null;
                 $links       = $normaliseLinks($db, $_POST['links']     ?? null);
                 $ipi         = $normaliseIpi($_POST['ipi']         ?? null);
+                $isni        = $normaliseIsni($_POST['isni']        ?? null);
                 $aliases     = $normaliseAliases($_POST['aliases'] ?? null);
                 $isSpecialCase = !empty($_POST['is_special_case']) ? 1 : 0;
                 $isGroup       = !empty($_POST['is_group'])        ? 1 : 0;
@@ -547,22 +558,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $linkStmt->close();
                     }
 
-                    $del = $db->prepare('DELETE FROM tblCreditPersonIPI WHERE CreditPersonId = ?');
+                    $del = $db->prepare('DELETE FROM tblCreditPersonIdentifiers WHERE CreditPersonId = ?');
                     $del->bind_param('i', $id);
                     $del->execute();
                     $del->close();
-                    if ($ipi) {
-                        $ipiStmt = $db->prepare(
-                            'INSERT INTO tblCreditPersonIPI
-                                (CreditPersonId, IPINumber, NameUsed, Notes)
-                             VALUES (?, ?, ?, ?)'
+                    if ($ipi || $isni) {
+                        $idStmt = $db->prepare(
+                            'INSERT INTO tblCreditPersonIdentifiers
+                                (CreditPersonId, IdentifierType, IdentifierValue, NameUsed, Notes)
+                             VALUES (?, ?, ?, ?, ?)'
                         );
+                        $type = 'ipi';
                         foreach ($ipi as $r) {
-                            $ipiStmt->bind_param('isss',
-                                $id, $r['number'], $r['name_used'], $r['notes']);
-                            $ipiStmt->execute();
+                            $idStmt->bind_param('issss',
+                                $id, $type, $r['number'], $r['name_used'], $r['notes']);
+                            $idStmt->execute();
                         }
-                        $ipiStmt->close();
+                        $type = 'isni';
+                        foreach ($isni as $r) {
+                            $idStmt->bind_param('issss',
+                                $id, $type, $r['number'], $r['name_used'], $r['notes']);
+                            $idStmt->execute();
+                        }
+                        $idStmt->close();
                     }
                     /* Replace the alias set unconditionally — the curator's
                        posted list is the new truth; an empty list deletes
@@ -595,6 +613,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'after'      => array_intersect_key($afterRow,  array_flip($changed)),
                         'link_count' => count($links),
                         'ipi_count'  => count($ipi),
+                        'isni_count' => count($isni),
                     ]);
                     $success = "Person '{$name}' updated.";
                 } catch (\Throwable $e) {
@@ -808,7 +827,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $sourceLinkIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
                     $stmt->close();
 
-                    $stmt = $db->prepare('SELECT Id FROM tblCreditPersonIPI WHERE CreditPersonId = ?');
+                    $stmt = $db->prepare('SELECT Id FROM tblCreditPersonIdentifiers WHERE CreditPersonId = ?');
                     $stmt->bind_param('i', $sourceId);
                     $stmt->execute();
                     $sourceIpiIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
@@ -837,7 +856,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $toMove = array_intersect($keepIpi, array_map('intval', $sourceIpiIds));
                         if ($toMove) {
                             $upd = $db->prepare(
-                                'UPDATE tblCreditPersonIPI SET CreditPersonId = ? WHERE Id = ? AND CreditPersonId = ?'
+                                'UPDATE tblCreditPersonIdentifiers SET CreditPersonId = ? WHERE Id = ? AND CreditPersonId = ?'
                             );
                             foreach ($toMove as $iid) {
                                 $upd->bind_param('iii', $targetId, $iid, $sourceId);
@@ -1052,7 +1071,8 @@ try {
                p.DeathDate,
                p.UpdatedAt,
                (SELECT COUNT(*) FROM tblCreditPersonExternalLinks l WHERE l.CreditPersonId = p.Id) AS LinkCount,
-               (SELECT COUNT(*) FROM tblCreditPersonIPI   i WHERE i.CreditPersonId = p.Id) AS IPICount
+               (SELECT COUNT(*) FROM tblCreditPersonIdentifiers i WHERE i.CreditPersonId = p.Id AND i.IdentifierType = 'ipi')  AS IPICount,
+               (SELECT COUNT(*) FROM tblCreditPersonIdentifiers i WHERE i.CreditPersonId = p.Id AND i.IdentifierType = 'isni') AS ISNICount
                {$flagCols}
                {$namePartCols}
           FROM tblCreditPeople p
@@ -1069,6 +1089,7 @@ try {
        per-person on demand from JS. */
     $linksByPerson   = [];
     $ipiByPerson     = [];
+    $isniByPerson    = [];
     $aliasesByPerson = [];
     $stmt = $db->prepare(
         'SELECT Id, CreditPersonId, LinkTypeId, Url, Note, SortOrder, Verified
@@ -1094,18 +1115,23 @@ try {
     $linkTypesForPerson = loadExternalLinkTypesFor($db, 'person');
 
     $stmt = $db->prepare(
-        'SELECT Id, CreditPersonId, IPINumber, NameUsed, Notes
-           FROM tblCreditPersonIPI
-          ORDER BY CreditPersonId ASC, Id ASC'
+        'SELECT Id, CreditPersonId, IdentifierType, IdentifierValue, NameUsed, Notes
+           FROM tblCreditPersonIdentifiers
+          ORDER BY CreditPersonId ASC, IdentifierType ASC, Id ASC'
     );
     $stmt->execute();
     foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $r) {
-        $ipiByPerson[(int)$r['CreditPersonId']][] = [
+        $row = [
             'id'        => (int)$r['Id'],
-            'number'    => (string)$r['IPINumber'],
+            'number'    => (string)$r['IdentifierValue'],
             'name_used' => $r['NameUsed'],
             'notes'     => $r['Notes'],
         ];
+        if ($r['IdentifierType'] === 'isni') {
+            $isniByPerson[(int)$r['CreditPersonId']][] = $row;
+        } else {
+            $ipiByPerson[(int)$r['CreditPersonId']][] = $row;
+        }
     }
     $stmt->close();
 
@@ -1193,6 +1219,7 @@ try {
            handles the empty case as "no rows yet". */
         $byName[$name]['links']   = $linksByPerson[(int)$r['Id']]   ?? [];
         $byName[$name]['ipi']     = $ipiByPerson[(int)$r['Id']]     ?? [];
+        $byName[$name]['isni']    = $isniByPerson[(int)$r['Id']]    ?? [];
         $byName[$name]['aliases'] = $aliasesByPerson[(int)$r['Id']] ?? [];
     }
 
@@ -1448,6 +1475,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                                 'total'       => $p['total'],
                                 'links'       => $p['links'],
                                 'ipi'         => $p['ipi'],
+                                'isni'        => $p['isni'] ?? [],
                                 'aliases'     => $p['aliases'] ?? [],
                             ], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE);
                             $isSpecial = !empty($p['is_special_case']);
@@ -1797,7 +1825,8 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                                 Source has no links or IPI numbers — nothing to migrate.
                             </div>
                             <div id="cp-merge-children-links"  class="mb-2"></div>
-                            <div id="cp-merge-children-ipi"></div>
+                            <div id="cp-merge-children-ipi"   class="mb-2"></div>
+                            <div id="cp-merge-children-isni"></div>
                         </div>
 
                         <div class="alert alert-warning py-2 small mb-2">
@@ -1961,6 +1990,26 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 <div class="form-text small">A single individual can hold more than one IPI Name Number when they're registered under different performing names.</div>
             </div>
 
+            <!-- ISNI numbers — repeating sub-form. ISNI (International
+                 Standard Name Identifier) is the ISO 27729 successor to
+                 disparate per-domain identifier schemes — one 16-digit
+                 code covering authors, composers, performers, researchers
+                 across libraries / publishers / collecting societies.
+                 Stored alongside IPI in tblCreditPersonIdentifiers with
+                 IdentifierType discriminator. Most people will have one
+                 ISNI, but the schema mirrors IPI's "multiple rows allowed"
+                 shape so we never have to migrate again. -->
+            <div data-flag-section="isni">
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <label class="form-label small mb-0">ISNI</label>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="cp-add-isni-btn">
+                        <i class="bi bi-plus me-1"></i>Add ISNI
+                    </button>
+                </div>
+                <div id="cp-isni-container" class="d-flex flex-column gap-2"></div>
+                <div class="form-text small">ISNI is a 16-digit ISO 27729 identifier (look it up at <a href="https://isni.org" target="_blank" rel="noopener">isni.org</a>). Spaces and hyphens are stripped on save — paste either "0000 0001 2103 2683" or "0000000121032683".</div>
+            </div>
+
             <!-- AKA / aliases — repeating sub-form. Mirrors the
                  MusicBrainz alias model in a slimmed-down shape: each
                  row carries a Name, a Type (legal / artist / pseudonym /
@@ -2116,6 +2165,37 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             </div>
         </div>
     </template>
+    <template id="cp-isni-row-template">
+        <div class="card bg-dark border-secondary cp-isni-row" data-row-kind="isni">
+            <div class="card-body py-2">
+                <div class="d-flex align-items-start gap-2">
+                    <div class="flex-grow-1">
+                        <div class="row g-2 mb-1">
+                            <div class="col-12 col-md-4">
+                                <input type="text" class="form-control form-control-sm"
+                                       name="isni[{i}][number]" placeholder="ISNI (16 digits)"
+                                       pattern="[0-9 \-]{16,24}[0-9Xx]?" required>
+                            </div>
+                            <div class="col-12 col-md-8">
+                                <input type="text" class="form-control form-control-sm"
+                                       name="isni[{i}][name_used]" placeholder="Name used (optional)">
+                            </div>
+                        </div>
+                        <div class="row g-2">
+                            <div class="col-12">
+                                <input type="text" class="form-control form-control-sm"
+                                       name="isni[{i}][notes]" placeholder="Notes (optional)">
+                            </div>
+                        </div>
+                    </div>
+                    <button type="button" class="btn btn-sm btn-outline-danger cp-row-remove"
+                            title="Remove this ISNI" aria-label="Remove this ISNI">
+                        <i class="bi bi-x" aria-hidden="true"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </template>
     <template id="cp-alias-row-template">
         <div class="card bg-dark border-secondary cp-alias-row" data-row-kind="alias">
             <div class="card-body py-2">
@@ -2236,19 +2316,23 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             const nameIn    = document.getElementById('cp-drawer-name');
             const linksBox  = document.getElementById('cp-links-container');
             const ipiBox    = document.getElementById('cp-ipi-container');
+            const isniBox   = document.getElementById('cp-isni-container');
             const aliasBox  = document.getElementById('cp-aliases-container');
             const linkTpl   = document.getElementById('cp-link-row-template');
             const ipiTpl    = document.getElementById('cp-ipi-row-template');
+            const isniTpl   = document.getElementById('cp-isni-row-template');
             const aliasTpl  = document.getElementById('cp-alias-row-template');
             const addBtn    = document.getElementById('cp-add-btn');
             const addLinkBtn= document.getElementById('cp-add-link-btn');
             const addIpiBtn = document.getElementById('cp-add-ipi-btn');
+            const addIsniBtn= document.getElementById('cp-add-isni-btn');
             const addAliasBtn = document.getElementById('cp-add-alias-btn');
             if (!drawerEl || !form) return;
 
             const drawer = bootstrap.Offcanvas.getOrCreateInstance(drawerEl);
             let linkIndex  = 0;
             let ipiIndex   = 0;
+            let isniIndex  = 0;
             let aliasIndex = 0;
 
             /* Wire each credit-people link row to the shared
@@ -2305,6 +2389,18 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 if (typeof applyFlagLabels === 'function') applyFlagLabels();
                 return row;
             }
+            function addIsniRow(prefill) {
+                const html = isniTpl.innerHTML.replaceAll('{i}', String(isniIndex++));
+                isniBox.insertAdjacentHTML('beforeend', html);
+                const row = isniBox.lastElementChild;
+                if (prefill) {
+                    row.querySelector('input[name$="[number]"]').value    = prefill.number    || '';
+                    row.querySelector('input[name$="[name_used]"]').value = prefill.name_used || '';
+                    row.querySelector('input[name$="[notes]"]').value     = prefill.notes     || '';
+                }
+                if (typeof applyFlagLabels === 'function') applyFlagLabels();
+                return row;
+            }
             function addAliasRow(prefill) {
                 if (!aliasTpl) return null;
                 const html = aliasTpl.innerHTML.replaceAll('{i}', String(aliasIndex++));
@@ -2328,9 +2424,11 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 form.reset();
                 linksBox.innerHTML  = '';
                 ipiBox.innerHTML    = '';
+                if (isniBox)  isniBox.innerHTML  = '';
                 if (aliasBox) aliasBox.innerHTML = '';
                 linkIndex  = 0;
                 ipiIndex   = 0;
+                isniIndex  = 0;
                 aliasIndex = 0;
             }
 
@@ -2416,6 +2514,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 applyFlagLabels();
                 (person.links   || []).forEach(l => addLinkRow(l));
                 (person.ipi     || []).forEach(r => addIpiRow(r));
+                (person.isni    || []).forEach(r => addIsniRow(r));
                 (person.aliases || []).forEach(a => addAliasRow(a));
                 drawer.show();
             });
@@ -2429,6 +2528,8 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             const deathDateIn   = document.getElementById('cp-drawer-death-date');
             const addIpiButton  = document.getElementById('cp-add-ipi-btn');
             const ipiSection    = document.querySelector('[data-flag-section="ipi"]');
+            const addIsniButton = document.getElementById('cp-add-isni-btn');
+            const isniSection   = document.querySelector('[data-flag-section="isni"]');
             /* #934 — structured-name field references + helpers. */
             const firstNamesIn  = document.getElementById('cp-drawer-first-names');
             const surnameIn     = document.getElementById('cp-drawer-surname');
@@ -2522,13 +2623,21 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
 
                 /* Disable the Add IPI button + every existing IPI row's
                    inputs. The container holds the rows added via the
-                   template so we walk the children. */
+                   template so we walk the children. Same treatment for
+                   the parallel ISNI section. */
                 if (addIpiButton) addIpiButton.disabled = ipiDisabled;
                 if (ipiSection) {
                     ipiSection.querySelectorAll('input').forEach(inp => {
                         inp.disabled = ipiDisabled;
                     });
                     ipiSection.classList.toggle('opacity-50', ipiDisabled);
+                }
+                if (addIsniButton) addIsniButton.disabled = ipiDisabled;
+                if (isniSection) {
+                    isniSection.querySelectorAll('input').forEach(inp => {
+                        inp.disabled = ipiDisabled;
+                    });
+                    isniSection.classList.toggle('opacity-50', ipiDisabled);
                 }
 
                 /* #934 — hide the structured-name fields for Group /
@@ -2570,13 +2679,14 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             /* Add-row buttons inside the drawer. */
             addLinkBtn?.addEventListener('click',  () => addLinkRow());
             addIpiBtn?.addEventListener('click',   () => addIpiRow());
+            addIsniBtn?.addEventListener('click',  () => addIsniRow());
             addAliasBtn?.addEventListener('click', () => addAliasRow());
 
             /* Remove-row delegation. */
             drawerEl.addEventListener('click', (ev) => {
                 const remove = ev.target.closest('.cp-row-remove');
                 if (!remove) return;
-                const row = remove.closest('.cp-link-row, .cp-ipi-row, .cp-alias-row');
+                const row = remove.closest('.cp-link-row, .cp-ipi-row, .cp-isni-row, .cp-alias-row');
                 if (row) row.remove();
             });
         })();
@@ -2657,6 +2767,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             const childrenEmpty = document.getElementById('cp-merge-children-empty');
             const linksBox   = document.getElementById('cp-merge-children-links');
             const ipiBox     = document.getElementById('cp-merge-children-ipi');
+            const isniBoxMerge = document.getElementById('cp-merge-children-isni');
             const submitBtn  = document.getElementById('cp-merge-submit');
 
             /* Build the all-people index once on page load (#626). Used
@@ -2730,13 +2841,18 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                     targetSel.appendChild(opt);
                 });
 
-                /* Source children — render each link + IPI as a
-                   checkbox row (default checked = keep on target). */
+                /* Source children — render each link + IPI + ISNI as a
+                   checkbox row (default checked = keep on target). IPI
+                   and ISNI both POST under keep_ipi_ids[] since they're
+                   now the same `tblCreditPersonIdentifiers` table; the
+                   wire-protocol field name is kept for back-compat. */
                 linksBox.innerHTML = '';
                 ipiBox.innerHTML   = '';
+                if (isniBoxMerge) isniBoxMerge.innerHTML = '';
                 const links = person.links || [];
                 const ipi   = person.ipi   || [];
-                if (links.length === 0 && ipi.length === 0) {
+                const isni  = person.isni  || [];
+                if (links.length === 0 && ipi.length === 0 && isni.length === 0) {
                     childrenEmpty.classList.remove('d-none');
                 } else {
                     childrenEmpty.classList.add('d-none');
@@ -2777,6 +2893,23 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                                            + (r.notes ? '— ' + r.notes : '')
                                            + '</label>';
                             ipiBox.appendChild(wrap);
+                        });
+                    }
+                    if (isni.length && isniBoxMerge) {
+                        const head = document.createElement('div');
+                        head.className = 'small text-secondary mb-1 mt-2';
+                        head.textContent = 'ISNI (' + isni.length + ')';
+                        isniBoxMerge.appendChild(head);
+                        isni.forEach(r => {
+                            const wrap = document.createElement('div');
+                            wrap.className = 'form-check small';
+                            wrap.innerHTML = '<input class="form-check-input" type="checkbox" name="keep_ipi_ids[]" value="' + r.id + '" id="cp-merge-isni-' + r.id + '" checked>'
+                                           + '<label class="form-check-label" for="cp-merge-isni-' + r.id + '">'
+                                           + '<code class="me-1">' + r.number + '</code>'
+                                           + (r.name_used ? '(as ' + r.name_used + ') ' : '')
+                                           + (r.notes ? '— ' + r.notes : '')
+                                           + '</label>';
+                            isniBoxMerge.appendChild(wrap);
                         });
                     }
                 }
