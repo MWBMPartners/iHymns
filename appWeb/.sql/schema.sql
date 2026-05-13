@@ -255,6 +255,48 @@ CREATE TABLE IF NOT EXISTS tblSongArtists (
 
 
 -- ----------------------------------------------------------------------------
+-- tblPlaces
+-- Canonical registry of geographic places (suburb / city / state / country)
+-- backed by a live geocoder lookup (Photon primary, Nominatim fallback —
+-- both OpenStreetMap-derived). Other tables FK in here for consistent
+-- place names across the catalogue. The geocoder identity (Provider +
+-- OsmType + OsmId) is the natural key — a curator picking "Sydney" twice
+-- in two different editors resolves to the same row. DisplayName is the
+-- full hierarchical label as returned by the geocoder; Name is the short
+-- label (city / village name). Latitude / Longitude are stored so future
+-- map widgets don't need a re-fetch. Created via migrate-places.php.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblPlaces (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    Provider        VARCHAR(20)     NOT NULL DEFAULT 'osm' COMMENT 'Geocoder family the OsmType/OsmId pair is namespaced under',
+    OsmType         CHAR(1)         NULL COMMENT 'N=node, W=way, R=relation; NULL for manually-entered places',
+    OsmId           BIGINT          NULL COMMENT 'OSM object id within OsmType; NULL for manually-entered places',
+    DisplayName     VARCHAR(500)    NOT NULL COMMENT 'Full hierarchical label as returned by the geocoder',
+    Name            VARCHAR(255)    NULL COMMENT 'Short label (city / village / suburb)',
+    Suburb          VARCHAR(255)    NULL,
+    City            VARCHAR(255)    NULL COMMENT 'City / town / village level (collapsed from OSM city/town/village/hamlet keys)',
+    County          VARCHAR(255)    NULL,
+    Region          VARCHAR(255)    NULL COMMENT 'State / province / region',
+    Country         VARCHAR(255)    NULL,
+    CountryCode     CHAR(2)         NULL COMMENT 'ISO-3166-1 alpha-2, lowercase',
+    Latitude        DECIMAL(10,7)   NULL,
+    Longitude       DECIMAL(10,7)   NULL,
+    PlaceType       VARCHAR(50)     NULL COMMENT 'Geocoder-reported type: city, town, village, state, country, …',
+    CreatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                    ON UPDATE CURRENT_TIMESTAMP,
+
+    /* Natural key — a Provider+OsmType+OsmId triple identifies a unique
+       geocoder object. NULL OsmId rows (manual entries) are exempt from
+       the uniqueness constraint because MySQL treats NULLs as distinct,
+       which is the behaviour we want. */
+    UNIQUE KEY uk_OsmRef (Provider, OsmType, OsmId),
+    INDEX idx_DisplayName (DisplayName),
+    INDEX idx_CountryCode (CountryCode)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
 -- tblCreditPeople (#545)
 -- Registry of people credited on songs. Holds the canonical Name plus
 -- optional biographical metadata. The five song-credit tables above
@@ -290,8 +332,14 @@ CREATE TABLE IF NOT EXISTS tblCreditPeople (
     Suffix          VARCHAR(64)     NULL,
     Notes           TEXT            NULL,
     BirthPlace      VARCHAR(255)    NULL,
+    /* FK into tblPlaces; nullable for legacy / free-text rows where
+       no canonical place was picked from the geocoder. BirthPlace
+       stays alongside as a denormalised display string so reports
+       and read paths don't need a JOIN. */
+    BirthPlaceId    INT UNSIGNED    NULL,
     BirthDate       DATE            NULL,
     DeathPlace      VARCHAR(255)    NULL,
+    DeathPlaceId    INT UNSIGNED    NULL,
     DeathDate       DATE            NULL,
     CreatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -299,7 +347,16 @@ CREATE TABLE IF NOT EXISTS tblCreditPeople (
 
     UNIQUE KEY uk_Name (Name),
     INDEX idx_Name (Name),
-    INDEX idx_Slug (Slug)
+    INDEX idx_Slug (Slug),
+    INDEX idx_BirthPlaceId (BirthPlaceId),
+    INDEX idx_DeathPlaceId (DeathPlaceId),
+
+    CONSTRAINT fk_CreditPeople_BirthPlace
+        FOREIGN KEY (BirthPlaceId) REFERENCES tblPlaces(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_CreditPeople_DeathPlace
+        FOREIGN KEY (DeathPlaceId) REFERENCES tblPlaces(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 

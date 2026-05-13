@@ -47,6 +47,12 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    admin_credit_person_* API endpoints in /api.php so a tweak to the
    link-type set or the row-shape rules lands on both surfaces. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'credit_people_helpers.php';
+/* Places registry helper — exposes placesUpsertFromPayload() +
+   creditPeoplePlaceIdColumnsExist(), used by the add / update_person
+   handlers to persist BirthPlaceId / DeathPlaceId alongside the
+   legacy BirthPlace / DeathPlace display strings. Schema-tolerant —
+   no-ops on installs that haven't run migrate-places.php yet. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -223,6 +229,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $birthDate   = trim((string)($_POST['birth_date']   ?? '')) ?: null;
                 $deathPlace  = trim((string)($_POST['death_place']  ?? '')) ?: null;
                 $deathDate   = trim((string)($_POST['death_date']   ?? '')) ?: null;
+                /* Places registry FKs — the live-autocomplete module
+                   in js/modules/place-search.js fills these hidden
+                   inputs with the tblPlaces.Id of the picked
+                   candidate. Empty when the curator typed free text,
+                   in which case we persist the display string only.
+                   Schema-tolerant: the per-place UPDATE below skips
+                   itself when migrate-places.php hasn't run yet. */
+                $birthPlaceId = (int)($_POST['birth_place_id'] ?? 0) ?: null;
+                $deathPlaceId = (int)($_POST['death_place_id'] ?? 0) ?: null;
                 $notes       = $notesRaw !== '' ? $notesRaw : null;
                 $links       = $normaliseLinks($db, $_POST['links']     ?? null);
                 $ipi         = $normaliseIpi($_POST['ipi']         ?? null);
@@ -358,6 +373,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $newId = (int)$db->insert_id;
                     $stmt->close();
 
+                    /* Places FK assignment — separate UPDATE so the
+                       multi-branch INSERT shapes above don't have to
+                       care about the place-id columns. Skipped when
+                       migrate-places.php hasn't landed yet. */
+                    if (creditPeoplePlaceIdColumnsExist($db)) {
+                        $stmt = $db->prepare(
+                            'UPDATE tblCreditPeople
+                                SET BirthPlaceId = ?, DeathPlaceId = ?
+                              WHERE Id = ?'
+                        );
+                        $stmt->bind_param('iii', $birthPlaceId, $deathPlaceId, $newId);
+                        $stmt->execute();
+                        $stmt->close();
+                    }
+
                     if ($links) {
                         $linkStmt = $db->prepare(
                             'INSERT INTO tblCreditPersonExternalLinks
@@ -429,6 +459,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $birthDate   = trim((string)($_POST['birth_date']   ?? '')) ?: null;
                 $deathPlace  = trim((string)($_POST['death_place']  ?? '')) ?: null;
                 $deathDate   = trim((string)($_POST['death_date']   ?? '')) ?: null;
+                $birthPlaceId = (int)($_POST['birth_place_id'] ?? 0) ?: null;
+                $deathPlaceId = (int)($_POST['death_place_id'] ?? 0) ?: null;
                 $notes       = $notesRaw !== '' ? $notesRaw : null;
                 $links       = $normaliseLinks($db, $_POST['links']     ?? null);
                 $ipi         = $normaliseIpi($_POST['ipi']         ?? null);
@@ -524,6 +556,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                     $stmt->execute();
                     $stmt->close();
+
+                    /* Places FK assignment — written unconditionally
+                       so unsetting a previously-picked place clears
+                       the FK back to NULL. Schema-tolerant — skipped
+                       on installs that haven't run migrate-places.php
+                       yet. */
+                    if (creditPeoplePlaceIdColumnsExist($db)) {
+                        $stmt = $db->prepare(
+                            'UPDATE tblCreditPeople
+                                SET BirthPlaceId = ?, DeathPlaceId = ?
+                              WHERE Id = ?'
+                        );
+                        $stmt->bind_param('iii', $birthPlaceId, $deathPlaceId, $id);
+                        $stmt->execute();
+                        $stmt->close();
+                    }
 
                     /* Child rows: DELETE then INSERT — simpler than
                        diffing and the per-person row counts are small
@@ -1042,6 +1090,16 @@ try {
         ? ', p.FirstNames, p.Surname, p.Suffix'
         : ', NULL AS FirstNames, NULL AS Surname, NULL AS Suffix';
 
+    /* Places registry FKs — present after migrate-places.php has
+       landed. Surfaced to JS so the Edit drawer can pre-fill the
+       hidden place-id inputs alongside the visible display string
+       (the place-search module re-uses these to mark the input as
+       "already picked" without re-fetching). */
+    $hasPlaceIds = creditPeoplePlaceIdColumnsExist($db);
+    $placeIdCols = $hasPlaceIds
+        ? ', p.BirthPlaceId, p.DeathPlaceId'
+        : ', NULL AS BirthPlaceId, NULL AS DeathPlaceId';
+
     $registrySql = "
         SELECT p.Id,
                p.Name,
@@ -1055,6 +1113,7 @@ try {
                (SELECT COUNT(*) FROM tblCreditPersonIPI   i WHERE i.CreditPersonId = p.Id) AS IPICount
                {$flagCols}
                {$namePartCols}
+               {$placeIdCols}
           FROM tblCreditPeople p
     ";
     $stmt = $db->prepare($registrySql);
@@ -1133,8 +1192,10 @@ try {
             'registry_id' => null,
             'notes'       => null,
             'birth_place' => null,
+            'birth_place_id' => null,
             'birth_date'  => null,
             'death_place' => null,
+            'death_place_id' => null,
             'death_date'  => null,
             'updated_at'  => null,
             'link_count'  => 0,
@@ -1161,8 +1222,10 @@ try {
                 'registry_id' => null,
                 'notes'       => null,
                 'birth_place' => null,
+                'birth_place_id' => null,
                 'birth_date'  => null,
                 'death_place' => null,
+                'death_place_id' => null,
                 'death_date'  => null,
                 'updated_at'  => null,
                 'link_count'  => 0,
@@ -1173,10 +1236,12 @@ try {
         }
         $byName[$name]['registry_id'] = (int)$r['Id'];
         $byName[$name]['notes']       = $r['Notes'];
-        $byName[$name]['birth_place'] = $r['BirthPlace'];
-        $byName[$name]['birth_date']  = $r['BirthDate'];
-        $byName[$name]['death_place'] = $r['DeathPlace'];
-        $byName[$name]['death_date']  = $r['DeathDate'];
+        $byName[$name]['birth_place']    = $r['BirthPlace'];
+        $byName[$name]['birth_place_id'] = isset($r['BirthPlaceId']) ? (int)$r['BirthPlaceId'] : null;
+        $byName[$name]['birth_date']     = $r['BirthDate'];
+        $byName[$name]['death_place']    = $r['DeathPlace'];
+        $byName[$name]['death_place_id'] = isset($r['DeathPlaceId']) ? (int)$r['DeathPlaceId'] : null;
+        $byName[$name]['death_date']     = $r['DeathDate'];
         $byName[$name]['updated_at']  = $r['UpdatedAt'];
         $byName[$name]['link_count']  = (int)$r['LinkCount'];
         $byName[$name]['ipi_count']   = (int)$r['IPICount'];
@@ -1432,8 +1497,10 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                                 'name'        => $p['name'],
                                 'notes'       => $p['notes'],
                                 'birth_place' => $p['birth_place'],
+                                'birth_place_id' => $p['birth_place_id'] ?? null,
                                 'birth_date'  => $p['birth_date'],
                                 'death_place' => $p['death_place'],
+                                'death_place_id' => $p['death_place_id'] ?? null,
                                 'death_date'  => $p['death_date'],
                                 'is_special_case' => (int)($p['is_special_case'] ?? 0),
                                 'is_group'        => (int)($p['is_group']        ?? 0),
@@ -1911,7 +1978,8 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                     <label class="form-label small mb-1" for="cp-drawer-birth-place">
                         <span data-flag-label="individual">Birth place</span><span data-flag-label="group" class="d-none">Founded location</span>
                     </label>
-                    <input type="text" class="form-control form-control-sm" id="cp-drawer-birth-place" name="birth_place" maxlength="255" placeholder="e.g. London, England">
+                    <input type="text" class="form-control form-control-sm" id="cp-drawer-birth-place" name="birth_place" maxlength="255" placeholder="Start typing — e.g. London…">
+                    <input type="hidden" id="cp-drawer-birth-place-id" name="birth_place_id" value="">
                 </div>
                 <div class="col-5">
                     <label class="form-label small mb-1" for="cp-drawer-birth-date">
@@ -1927,7 +1995,8 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                     <label class="form-label small mb-1" for="cp-drawer-death-place">
                         <span data-flag-label="individual">Death place</span><span data-flag-label="group" class="d-none">Disbandment location</span>
                     </label>
-                    <input type="text" class="form-control form-control-sm" id="cp-drawer-death-place" name="death_place" maxlength="255">
+                    <input type="text" class="form-control form-control-sm" id="cp-drawer-death-place" name="death_place" maxlength="255" placeholder="Start typing — e.g. Cardiff…">
+                    <input type="hidden" id="cp-drawer-death-place-id" name="death_place_id" value="">
                 </div>
                 <div class="col-5">
                     <label class="form-label small mb-1" for="cp-drawer-death-date">
@@ -2164,6 +2233,30 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
         bootSortableTables();
     </script>
 
+    <!-- Live location autocomplete on the Birth / Death place inputs.
+         Backed by /manage/places-api.php (Photon + Nominatim) with a
+         tblPlaces upsert on pick so two curators picking "Sydney"
+         resolve to the same registry row. Schema-tolerant — the API
+         endpoint returns a 503 with a clear message when
+         migrate-places.php hasn't run yet, which the module treats
+         as "leave hidden id empty, persist display string only". -->
+    <script src="/js/modules/place-search.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/place-search.js') ?>"></script>
+    <script>
+        (function () {
+            if (!window.iHymnsPlaceSearch) return;
+            const birthIn = document.getElementById('cp-drawer-birth-place');
+            const deathIn = document.getElementById('cp-drawer-death-place');
+            const birthIdIn = document.getElementById('cp-drawer-birth-place-id');
+            const deathIdIn = document.getElementById('cp-drawer-death-place-id');
+            if (birthIn && birthIdIn) {
+                window.iHymnsPlaceSearch.attach(birthIn, { hiddenIdInput: birthIdIn });
+            }
+            if (deathIn && deathIdIn) {
+                window.iHymnsPlaceSearch.attach(deathIn, { hiddenIdInput: deathIdIn });
+            }
+        })();
+    </script>
+
     <script>
         /* Client-side search + filter. The list is small enough that
            re-applying both predicates over every row on every keystroke
@@ -2332,6 +2425,12 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 linkIndex  = 0;
                 ipiIndex   = 0;
                 aliasIndex = 0;
+                /* form.reset() doesn't reset hidden inputs whose
+                   default value is empty — explicitly clear the
+                   place-id sidecars so a previous open's pick
+                   doesn't leak into the next session. */
+                document.getElementById('cp-drawer-birth-place-id').value = '';
+                document.getElementById('cp-drawer-death-place-id').value = '';
             }
 
             /* Open empty drawer for Add. */
@@ -2386,8 +2485,10 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                     nameHelp.textContent = 'This name is already credited on songs — adding to the registry lets you attach biographical metadata. The Name field is the canonical spelling that the song-credit tables already use; editing it here would create a mismatch, so leave it as-is and use Rename later if you need to change it.';
                 }
                 document.getElementById('cp-drawer-birth-place').value = person.birth_place || '';
+                document.getElementById('cp-drawer-birth-place-id').value = person.birth_place_id ? String(person.birth_place_id) : '';
                 document.getElementById('cp-drawer-birth-date').value  = person.birth_date  || '';
                 document.getElementById('cp-drawer-death-place').value = person.death_place || '';
+                document.getElementById('cp-drawer-death-place-id').value = person.death_place_id ? String(person.death_place_id) : '';
                 document.getElementById('cp-drawer-death-date').value  = person.death_date  || '';
                 document.getElementById('cp-drawer-notes').value       = person.notes       || '';
                 /* #584 / #585 — pre-tick the classification flags. */

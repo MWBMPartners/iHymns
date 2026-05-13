@@ -1093,4 +1093,23 @@ return [
             return !($row && (string)$row[0] === '1');
         })($db),
     ],
+    'places' => [
+        'script' => 'migrate-places.php',
+        'card' => [
+            'title'  => 'Places Registry',
+            'body'   => 'Creates <code>tblPlaces</code> as the canonical registry of geographic'
+                      . ' locations (suburb / city / state / country) and adds'
+                      . ' <code>BirthPlaceId</code> + <code>DeathPlaceId</code> FK columns to'
+                      . ' <code>tblCreditPeople</code>. Powers the live location autocomplete'
+                      . ' (Photon + Nominatim, both OpenStreetMap) in the Credit People edit'
+                      . ' drawer\'s Birth / Death place fields so two curators picking'
+                      . ' &ldquo;Sydney&rdquo; resolve to the same row instead of two'
+                      . ' near-identical strings. Legacy <code>BirthPlace</code> /'
+                      . ' <code>DeathPlace</code> VARCHAR columns stay alongside as'
+                      . ' denormalised display strings so reports + read paths don\'t need a'
+                      . ' JOIN on every read. Idempotent — safe to re-run.',
+            'button' => 'Run Places Registry Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblPlaces'),
+    ],
 ];
