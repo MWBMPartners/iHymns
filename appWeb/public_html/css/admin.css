@@ -101,6 +101,24 @@ a:not(.btn):not(.nav-link):not(.dropdown-item):hover {
     color: var(--accent-end);
 }
 
+/* Anchors dressed up as buttons should render identically to their
+   <button> equivalents. The global `a { border-bottom: 1px dotted }`
+   rule in app.css §2.5 (#951) gives every <a> a muted underline; on
+   <a class="btn-…"> the underline collides visually with the button
+   border so the bulk-promote anchor on /manage/credit-people looked
+   subtly different from the <button>-tag "Add person" right next to
+   it. Pin every .btn anchor to a solid border-bottom matching the
+   rest of the button's border so the cascade lands on identical
+   pixels regardless of element type. */
+a.btn,
+a.btn:hover,
+a.btn:focus,
+a.btn:active {
+    border-bottom-style: solid;
+    border-bottom-color: inherit;
+    text-decoration: none;
+}
+
 /* Shared admin page container. Replaces the inline per-page
    `style="max-width: NNNNpx"` pattern — the hard caps meant every
    admin dashboard left 300–700 px of dead space on 1440–1920 desktops.

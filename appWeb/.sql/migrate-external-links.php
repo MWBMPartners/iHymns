@@ -161,7 +161,7 @@ $seedTypes = [
     ['internet-archive',     'Internet Archive',     'read',        'songbook',             1, 'bi-archive',         30],
     ['open-library',         'Open Library',         'read',        'songbook',             1, 'bi-book-half',       31],
     ['archive-misc',         'Other archive',        'read',        'song,songbook,person', 1, 'bi-archive',         39],
-    ['oclc-worldcat',        'WorldCat / OCLC',      'authority',   'songbook',             0, 'bi-card-list',       40],
+    ['oclc-worldcat',        'WorldCat / OCLC',      'authority',   'song,songbook,person,work', 1, 'bi-card-list',       40],
     ['viaf',                 'VIAF authority',       'authority',   'songbook,person',      0, 'bi-card-list',       41],
     ['loc-name-authority',   'LoC name authority',   'authority',   'songbook,person',      0, 'bi-card-list',       42],
     ['find-a-grave',         'Find a Grave',         'authority',   'person',               0, 'bi-flower2',         43],
@@ -234,6 +234,7 @@ $seedTypes = [
     ['bandsintown',          'Bandsintown',          'information', 'person',               0, 'bi-ticket-perforated', 26],
     ['genius',               'Genius',               'information', 'song,person',          1, 'bi-file-text',       27],
     ['muzikum',              'Muzikum.eu',           'information', 'song,person',          1, 'bi-file-text',       28],
+    ['secondhandsongs',      'SecondHandSongs',      'information', 'song,songbook,person,work', 1, 'bi-music-note-list', 93],
     ['other',                'Other',                'other',       'song,songbook,person', 1, 'bi-link-45deg',      999],
 ];
 
