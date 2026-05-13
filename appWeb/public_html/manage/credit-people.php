@@ -2007,7 +2007,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                     </button>
                 </div>
                 <div id="cp-isni-container" class="d-flex flex-column gap-2"></div>
-                <div class="form-text small">ISNI is a 16-digit ISO 27729 identifier (look it up at <a href="https://isni.org" target="_blank" rel="noopener">isni.org</a>). Spaces and hyphens are stripped on save — paste either "0000 0001 2103 2683" or "0000000121032683".</div>
+                <div class="form-text small">ISNI is a 16-character ISO 27729 identifier (look it up at <a href="https://isni.org" target="_blank" rel="noopener">isni.org</a>). Paste any separator style — "0000 0001 2103 2683", "0000-0001-2103-2683", or just "0000000121032683" — it's normalised to the canonical "NNNN NNNN NNNN NNNX" form on save.</div>
             </div>
 
             <!-- AKA / aliases — repeating sub-form. Mirrors the
@@ -2172,9 +2172,11 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                     <div class="flex-grow-1">
                         <div class="row g-2 mb-1">
                             <div class="col-12 col-md-4">
-                                <input type="text" class="form-control form-control-sm"
-                                       name="isni[{i}][number]" placeholder="ISNI (16 digits)"
-                                       pattern="[0-9 \-]{16,24}[0-9Xx]?" required>
+                                <input type="text" class="form-control form-control-sm cp-isni-number"
+                                       name="isni[{i}][number]" placeholder="0000 0000 0000 0000"
+                                       inputmode="numeric"
+                                       title="16 characters: 15 digits + checksum (digit or X). Spaces / hyphens accepted on input — stored canonically as four space-separated groups of four."
+                                       required>
                             </div>
                             <div class="col-12 col-md-8">
                                 <input type="text" class="form-control form-control-sm"
@@ -2389,14 +2391,44 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 if (typeof applyFlagLabels === 'function') applyFlagLabels();
                 return row;
             }
+            /* Mirror of PHP's canonicaliseIsni() — strips every non-[0-9X]
+               character (any separator the curator paints with), upper-
+               cases, and regroups a 16-char result into "NNNN NNNN NNNN NNNX".
+               Non-16-char inputs stay as the cleaned string so the server-
+               side normaliser produces a matching value. */
+            function canonicaliseIsniJS(raw) {
+                const clean = (raw || '').toUpperCase().replace(/[^0-9X]/g, '');
+                if (/^\d{15}[0-9X]$/.test(clean)) {
+                    return clean.slice(0, 4) + ' '
+                         + clean.slice(4, 8) + ' '
+                         + clean.slice(8, 12) + ' '
+                         + clean.slice(12, 16);
+                }
+                return clean;
+            }
             function addIsniRow(prefill) {
                 const html = isniTpl.innerHTML.replaceAll('{i}', String(isniIndex++));
                 isniBox.insertAdjacentHTML('beforeend', html);
                 const row = isniBox.lastElementChild;
+                const numIn = row.querySelector('input.cp-isni-number');
                 if (prefill) {
-                    row.querySelector('input[name$="[number]"]').value    = prefill.number    || '';
+                    if (numIn) numIn.value = prefill.number || '';
                     row.querySelector('input[name$="[name_used]"]').value = prefill.name_used || '';
                     row.querySelector('input[name$="[notes]"]').value     = prefill.notes     || '';
+                }
+                /* Reformat on blur so the curator sees the canonical
+                   "NNNN NNNN NNNN NNNX" shape before submit — matches
+                   what the server-side normaliser will store. Live
+                   formatting (input event) would fight the cursor;
+                   blur is the standard pattern for credit-card-style
+                   masking. */
+                if (numIn) {
+                    numIn.addEventListener('blur', () => {
+                        const canonical = canonicaliseIsniJS(numIn.value);
+                        if (canonical && canonical !== numIn.value) {
+                            numIn.value = canonical;
+                        }
+                    });
                 }
                 if (typeof applyFlagLabels === 'function') applyFlagLabels();
                 return row;

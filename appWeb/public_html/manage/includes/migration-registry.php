@@ -966,6 +966,42 @@ return [
         'probe' => static fn(\mysqli $db) =>
             !_migProbe_tableExists($db, 'tblCreditPersonIdentifiers'),
     ],
+    'canonicalise-existing-isni' => [
+        'script' => 'migrate-canonicalise-existing-isni.php',
+        'card' => [
+            'title'  => 'Canonicalise Existing ISNI Rows',
+            'body'   => 'Re-formats every existing ISNI row in'
+                      . ' <code>tblCreditPersonIdentifiers</code> through the same'
+                      . ' <code>canonicaliseIsni()</code> helper the runtime save path'
+                      . ' uses — turning bare-digit storage like'
+                      . ' <code>0000000121032683</code> into the canonical ISO 27729'
+                      . ' display form <code>0000 0001 2103 2683</code>. Search,'
+                      . ' link-out (<code>https://isni.org/isni/&lt;bare&gt;</code>)'
+                      . ' and the <code>uk_PersonIdValue</code> UNIQUE constraint all'
+                      . ' work better when every ISNI matches the same shape. Idempotent —'
+                      . ' rows already canonical are no-ops; duplicate-key races (same'
+                      . ' person, two stored renderings of the same ISNI) drop the'
+                      . ' redundant row in favour of the canonical one.',
+            'button' => 'Run ISNI Canonicalisation Migration',
+        ],
+        /* Pending when any ISNI row in the identifiers table isn\'t already
+           in canonical "NNNN NNNN NNNN NNNX" form. Gated on the prerequisite
+           table existing so this card stays hidden on fresh installs that
+           haven\'t run migrate-credit-person-identifiers yet. */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_tableExists($db, 'tblCreditPersonIdentifiers')) {
+                return false;
+            }
+            $sql = "SELECT 1 FROM tblCreditPersonIdentifiers
+                     WHERE IdentifierType = 'isni'
+                       AND IdentifierValue NOT REGEXP '^[0-9]{4} [0-9]{4} [0-9]{4} [0-9]{3}[0-9X]$'
+                     LIMIT 1";
+            $res = $db->query($sql);
+            $hasNonCanonical = $res && $res->fetch_row() !== null;
+            if ($res) $res->close();
+            return (bool)$hasNonCanonical;
+        },
+    ],
     'song-media' => [
         'script' => 'migrate-song-media.php',
         'card' => [
