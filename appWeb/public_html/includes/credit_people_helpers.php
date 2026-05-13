@@ -213,11 +213,19 @@ function normaliseCreditPersonIpi(mixed $raw): array
  * identically — the only thing that differs is the IdentifierType value
  * the caller binds when persisting.
  *
- * Light validation: trims hyphens / spaces and uppercases the trailing X
- * (ISNI checksum digit) since ISNI is a 16-character ID conventionally
- * displayed in groups of four separated by spaces or hyphens. Stored
- * representation is the bare digits/X so two equivalent renderings
- * collide on the UNIQUE constraint.
+ * ISNI canonical form is "NNNN NNNN NNNN NNNX" — 16 characters total
+ * (15 digits + a checksum that may be 'X' to encode value 10), grouped
+ * in four blocks separated by single spaces. We normalise to that form
+ * on save so search, link-out (https://isni.org/isni/<bare>), and the
+ * UNIQUE constraint all collide cleanly regardless of what the curator
+ * pasted ("0000-0001-2103-2683", "0000:0001:2103:2683", or just the
+ * 16 bare digits all land at "0000 0001 2103 2683").
+ *
+ * Inputs that don't normalise to the 16-char shape (typo, partial paste,
+ * deliberately weird format) are stored as the cleaned uppercased version
+ * with all separators stripped — the curator can spot the problem on
+ * re-open and fix it. UNIQUE still works because the same bad input
+ * normalises to the same cleaned string.
  *
  * @param mixed $raw Form / JSON-decoded array; non-array → []
  * @return list<array{number:string,name_used:?string,notes:?string}>
@@ -230,17 +238,37 @@ function normaliseCreditPersonIsni(mixed $raw): array
         if (!is_array($row)) continue;
         $raw_id = trim((string)($row['number'] ?? ''));
         if ($raw_id === '') continue;
-        /* Collapse separators + uppercase the X check character so
-           "0000 0001 2103 2683" and "0000-0001-2103-2683" both store
-           as 0000000121032683. */
-        $bare = strtoupper(preg_replace('/[\s\-]+/', '', $raw_id) ?? $raw_id);
         $out[] = [
-            'number'    => $bare,
+            'number'    => canonicaliseIsni($raw_id),
             'name_used' => trim((string)($row['name_used'] ?? '')) ?: null,
             'notes'     => trim((string)($row['notes']     ?? '')) ?: null,
         ];
     }
     return $out;
+}
+
+/**
+ * Format an ISNI input string in its canonical "NNNN NNNN NNNN NNNX"
+ * shape. Strips every non-[0-9X] character (handles spaces, hyphens,
+ * en/em-dashes, colons, dots, NBSP, …) and uppercases. A 16-character
+ * cleaned result that matches the ISNI pattern is regrouped into four
+ * space-separated blocks of four. Anything else is returned as the
+ * cleaned uppercased string so the UNIQUE constraint still collapses
+ * duplicate inputs that disagree only on separator style.
+ */
+function canonicaliseIsni(string $raw): string
+{
+    /* Uppercase first so the trailing X check-digit lands correctly,
+       then drop every non-[0-9X] character. This handles every
+       separator a curator might paste without enumerating them. */
+    $clean = preg_replace('/[^0-9X]/', '', strtoupper($raw)) ?? '';
+    if (preg_match('/^\d{15}[0-9X]$/', $clean) === 1) {
+        return substr($clean, 0, 4) . ' '
+             . substr($clean, 4, 4) . ' '
+             . substr($clean, 8, 4) . ' '
+             . substr($clean, 12, 4);
+    }
+    return $clean;
 }
 
 /**
