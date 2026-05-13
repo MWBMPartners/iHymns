@@ -1025,6 +1025,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
  * ---------------------------------------------------------------------- */
 
 $people = [];
+$countryOptions = [];
 
 try {
     $db = getDbMysqli();
@@ -1100,6 +1101,21 @@ try {
         ? ', p.BirthPlaceId, p.DeathPlaceId'
         : ', NULL AS BirthPlaceId, NULL AS DeathPlaceId';
 
+    /* Country / region surface (places sweep follow-up) — LEFT JOIN
+       to tblPlaces on the birth-place FK so the list page can filter
+       by country. The JOIN is only added when both the FK columns
+       on tblCreditPeople AND tblPlaces itself are present. A row
+       without a picked place (or on a pre-migration install) gets
+       NULL country and falls under the "All" filter only. */
+    $hasPlacesTable = placesTableExists($db);
+    if ($hasPlaceIds && $hasPlacesTable) {
+        $countryCols = ', bp.Country AS BirthCountry, bp.CountryCode AS BirthCountryCode';
+        $countryJoin = ' LEFT JOIN tblPlaces bp ON bp.Id = p.BirthPlaceId';
+    } else {
+        $countryCols = ', NULL AS BirthCountry, NULL AS BirthCountryCode';
+        $countryJoin = '';
+    }
+
     $registrySql = "
         SELECT p.Id,
                p.Name,
@@ -1114,7 +1130,9 @@ try {
                {$flagCols}
                {$namePartCols}
                {$placeIdCols}
+               {$countryCols}
           FROM tblCreditPeople p
+          {$countryJoin}
     ";
     $stmt = $db->prepare($registrySql);
     $stmt->execute();
@@ -1242,6 +1260,10 @@ try {
         $byName[$name]['death_place']    = $r['DeathPlace'];
         $byName[$name]['death_place_id'] = isset($r['DeathPlaceId']) ? (int)$r['DeathPlaceId'] : null;
         $byName[$name]['death_date']     = $r['DeathDate'];
+        /* Birth-country surface for the list-page filter (places
+           follow-up). NULL on rows that have no picked place. */
+        $byName[$name]['birth_country']      = $r['BirthCountry']     ?? null;
+        $byName[$name]['birth_country_code'] = $r['BirthCountryCode'] ?? null;
         $byName[$name]['updated_at']  = $r['UpdatedAt'];
         $byName[$name]['link_count']  = (int)$r['LinkCount'];
         $byName[$name]['ipi_count']   = (int)$r['IPICount'];
@@ -1273,6 +1295,19 @@ try {
     });
 
     $people = array_values($byName);
+
+    /* Build the country-filter option list — deduplicated set of
+       birth-country (code, label) pairs that actually appear on a
+       registered person, sorted by label. NULL codes drop out so
+       the select only offers what's filterable. */
+    $countryOptions = [];
+    foreach ($people as $_p) {
+        $cc = (string)($_p['birth_country_code'] ?? '');
+        $cn = (string)($_p['birth_country']      ?? '');
+        if ($cc === '' || isset($countryOptions[$cc])) continue;
+        $countryOptions[$cc] = $cn !== '' ? $cn : strtoupper($cc);
+    }
+    uasort($countryOptions, 'strcasecmp');
 } catch (\Throwable $e) {
     error_log('[manage/credit-people.php] load failed: ' . $e->getMessage());
     logActivityError('admin.credit_people.list', 'credit_person', '', $e);
@@ -1429,7 +1464,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                         </button>
                     </div>
                 </div>
-                <div class="col-md-5">
+                <div class="col-md-4">
                     <div class="btn-group btn-group-sm flex-wrap" role="group" aria-label="Filter by role">
                         <button type="button" class="btn btn-outline-secondary filter-btn active" data-filter="all">All</button>
                         <button type="button" class="btn btn-outline-secondary filter-btn" data-filter="writer">Writers</button>
@@ -1440,7 +1475,18 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                         <button type="button" class="btn btn-outline-secondary filter-btn" data-filter="registry-only">Registry-only</button>
                     </div>
                 </div>
-                <div class="col-md-2 text-md-end">
+                <div class="col-md-2">
+                    <?php if (!empty($countryOptions)): ?>
+                        <label for="cp-country-filter" class="visually-hidden">Filter by birth country</label>
+                        <select id="cp-country-filter" class="form-select form-select-sm" aria-label="Filter by birth country">
+                            <option value="">Any country</option>
+                            <?php foreach ($countryOptions as $_cc => $_cname): ?>
+                                <option value="<?= htmlspecialchars((string)$_cc) ?>"><?= htmlspecialchars((string)$_cname) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    <?php endif; ?>
+                </div>
+                <div class="col-md-1 text-md-end">
                     <button type="button" class="btn btn-amber-solid btn-sm" id="cp-add-btn">
                         <i class="bi bi-plus-circle me-1"></i>Add person
                     </button>
@@ -1534,6 +1580,8 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                                 data-haystack="<?= htmlspecialchars($haystack) ?>"
                                 data-aka="<?= htmlspecialchars($akaAttr) ?>"
                                 data-classification="<?= $isSpecial ? 'special' : ($isGroup ? 'group' : 'individual') ?>"
+                                data-country-code="<?= htmlspecialchars((string)($p['birth_country_code'] ?? '')) ?>"
+                                data-country="<?= htmlspecialchars((string)($p['birth_country'] ?? '')) ?>"
                                 data-person='<?= htmlspecialchars($personJson, ENT_QUOTES) ?>'>
                                 <td data-col-priority="primary" class="person-name <?= $isSpecial ? 'fst-italic' : '' ?>">
                                     <?php if ($isGroup): ?>
@@ -2268,9 +2316,11 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             const tbody    = document.getElementById('cp-tbody');
             const empty    = document.getElementById('cp-empty-row');
             const buttons  = document.querySelectorAll('.filter-btn');
+            const countrySel = document.getElementById('cp-country-filter');
             if (!input || !tbody) return;
 
-            let activeFilter = 'all';
+            let activeFilter   = 'all';
+            let activeCountry  = '';
 
             function apply() {
                 const q = input.value.trim().toLowerCase();
@@ -2287,14 +2337,16 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                     const akaHaystack = (row.dataset.aka || '').toLowerCase();
                     const roles       = (row.dataset.roles || '').split(',').filter(Boolean);
                     const isRegOnly   = row.dataset.registryOnly === '1';
+                    const country     = (row.dataset.countryCode || '').toLowerCase();
                     let matchRole = true;
                     if (activeFilter === 'registry-only') {
                         matchRole = isRegOnly;
                     } else if (activeFilter !== 'all') {
                         matchRole = roles.includes(activeFilter);
                     }
-                    const matchSearch = q === '' || haystack.includes(q) || akaHaystack.includes(q);
-                    const show = matchRole && matchSearch;
+                    const matchSearch  = q === '' || haystack.includes(q) || akaHaystack.includes(q);
+                    const matchCountry = activeCountry === '' || country === activeCountry;
+                    const show = matchRole && matchSearch && matchCountry;
                     row.classList.toggle('no-match', !show);
                     if (show) visibleCount++;
                 });
@@ -2309,6 +2361,12 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 activeFilter = b.dataset.filter || 'all';
                 apply();
             }));
+            if (countrySel) {
+                countrySel.addEventListener('change', () => {
+                    activeCountry = (countrySel.value || '').toLowerCase();
+                    apply();
+                });
+            }
         })();
 
         /* =========================================================================
