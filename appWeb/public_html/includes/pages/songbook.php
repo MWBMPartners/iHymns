@@ -203,11 +203,17 @@ if ($book === null) {
                data-navigate="song"
                data-song-id="<?= htmlspecialchars($song['id']) ?>"
                role="listitem"
-               aria-label="Song <?= (int)$song['number'] ?>: <?= htmlspecialchars(toTitleCase($song['title'])) ?>">
-                <!-- Song number badge -->
-                <span class="song-number-badge" data-songbook="<?= htmlspecialchars($bookId) ?>" aria-hidden="true">
-                    <?= (int)$song['number'] ?>
-                </span>
+               aria-label="<?= isset($song['number']) && $song['number'] !== null ? 'Song ' . (int)$song['number'] . ': ' : '' ?><?= htmlspecialchars(toTitleCase($song['title'])) ?>">
+                <!-- Song number badge — left empty when the song has no
+                     songbook position (Number IS NULL, e.g. Misc or
+                     unofficial-songbook songs). The CSS rule
+                     `.song-number-badge:empty::before` then renders a
+                     book glyph as the fallback (#392). -->
+                <span class="song-number-badge" data-songbook="<?= htmlspecialchars($bookId) ?>" aria-hidden="true"><?php
+                    if (isset($song['number']) && $song['number'] !== null && (int)$song['number'] > 0) {
+                        echo (int)$song['number'];
+                    }
+                ?></span>
                 <!-- Song info -->
                 <div class="song-info flex-grow-1">
                     <span class="song-title"><?= htmlspecialchars(toTitleCase($song['title'])) ?><?php if (!empty($song['verified'])): ?><span class="verified-badge" title="Verified lyrics" aria-label="Verified lyrics"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.15"/><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M7.5 12.5L10.5 15.5L16.5 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><?php endif; ?></span>

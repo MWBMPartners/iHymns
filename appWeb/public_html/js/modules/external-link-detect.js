@@ -183,15 +183,36 @@
      *
      * @param {HTMLElement} rowEl  The card containing both inputs.
      * @param {object} [opts]
-     * @param {boolean} [opts.respectManualChoice=true]
+     * @param {boolean}  [opts.respectManualChoice=true]
+     * @param {string}   [opts.urlSelector]    CSS selector for the URL input.
+     *                                          Default matches both the
+     *                                          canonical ext_link_urls[]
+     *                                          field and any <input type="url">.
+     * @param {string}   [opts.selectSelector] CSS selector for the provider
+     *                                          <select>. Default targets
+     *                                          ext_link_type_ids[].
+     * @param {function} [opts.slugLookup]     (slug, selectEl) => optionValue.
+     *                                          Override the default lookup
+     *                                          (which cross-references
+     *                                          window._iHymnsLinkTypes by id)
+     *                                          when the consuming surface
+     *                                          uses a different vocabulary.
      * @returns {Function} teardown that removes the listeners.
      */
     function attachAutoDetect(rowEl, opts) {
         if (!rowEl) return function () {};
-        var settings = Object.assign({ respectManualChoice: true }, opts || {});
-        var urlInput  = rowEl.querySelector('input[type="url"], input[name="ext_link_urls[]"]');
-        var providerSelect = rowEl.querySelector('select[name="ext_link_type_ids[]"]');
+        var settings = Object.assign({
+            respectManualChoice: true,
+            urlSelector:    'input[type="url"], input[name="ext_link_urls[]"]',
+            selectSelector: 'select[name="ext_link_type_ids[]"]',
+            slugLookup:     null,
+        }, opts || {});
+        var urlInput  = rowEl.querySelector(settings.urlSelector);
+        var providerSelect = rowEl.querySelector(settings.selectSelector);
         if (!urlInput || !providerSelect) return function () {};
+        var lookupFn = (typeof settings.slugLookup === 'function')
+            ? settings.slugLookup
+            : function (slug, sel) { return slugToOptionValue(sel, slug); };
 
         function onSelectChange() {
             /* Only stamp 'user picked' when the resulting value is a
@@ -206,7 +227,7 @@
             if (settings.respectManualChoice && providerSelect.dataset.userPicked === '1') return;
             var slug = detectFromUrl(urlInput.value);
             if (!slug) return;
-            var nextValue = slugToOptionValue(providerSelect, slug);
+            var nextValue = lookupFn(slug, providerSelect);
             if (!nextValue) return;
             if (providerSelect.value === nextValue) return;
             providerSelect.value = nextValue;

@@ -24,6 +24,16 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
 requireEditor();
 
 $currentUser = getCurrentUser();
+
+/* External-link type registry for the Song-Editor Links tab (#833).
+   Empty array on pre-migration installs — the Links tab still
+   renders but the dropdown shows the empty-state hint. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+    . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
+$linkTypesForSong = [];
+try {
+    $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
+} catch (\Throwable $_e) { /* probe failure → empty registry */ }
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -485,6 +495,24 @@ $currentUser = getCurrentUser();
                             aria-selected="false"
                         >
                             <i class="bi bi-people me-1"></i>Credits
+                        </button>
+                    </li>
+
+                    <!-- Links tab trigger (#833) — external website links
+                         (Hymnary.org, Wikipedia, YouTube performances, etc.)
+                         attached to this song via tblSongExternalLinks. -->
+                    <li class="nav-item" role="presentation">
+                        <button
+                            class="nav-link"
+                            id="tab-links"
+                            data-bs-toggle="tab"
+                            data-bs-target="#panel-links"
+                            type="button"
+                            role="tab"
+                            aria-controls="panel-links"
+                            aria-selected="false"
+                        >
+                            <i class="bi bi-link-45deg me-1"></i>Links
                         </button>
                     </li>
 
@@ -1110,6 +1138,59 @@ $currentUser = getCurrentUser();
 
 
                     <!-- -------------------------------------------------
+                         LINKS TAB PANEL (#833)
+                         External website links per song (Hymnary.org,
+                         Wikipedia, YouTube, Spotify, etc.) — same
+                         tblExternalLinkTypes-backed registry and shared
+                         row-builder module that powers the songbook
+                         + work admin pages. Auto-detect maps the
+                         pasted URL to the matching provider so the
+                         curator's dropdown selection is one less
+                         click in the common case.
+                         ------------------------------------------------- -->
+                    <div
+                        class="tab-pane fade"
+                        id="panel-links"
+                        role="tabpanel"
+                        aria-labelledby="tab-links"
+                    >
+                        <div class="form-section">
+                            <h6 class="section-title">
+                                <i class="bi bi-link-45deg me-1"></i>External links
+                            </h6>
+                            <div class="text-muted small mb-3">
+                                Hymnary.org · Internet Archive scans · Wikipedia ·
+                                YouTube performances · Spotify recordings · etc.
+                                Paste a URL — the provider dropdown auto-detects.
+                                <em>Verified</em> means a curator has eyeballed
+                                the URL and confirmed it's correct.
+                            </div>
+
+                            <?php
+                                /* Re-use the shared partial from manage/includes/partials.
+                                   The Song Editor lives one folder deeper than the rest
+                                   of /manage so the path resolves through the partial's
+                                   directory rather than the editor's own. */
+                                $containerId    = 'edit-song-ext-links-rows';
+                                $addBtnId       = 'edit-song-ext-link-add-btn';
+                                $heading        = 'External links';
+                                $helpText       = '';
+                                $useCardHeading = false;
+                                require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes'
+                                    . DIRECTORY_SEPARATOR . 'partials'
+                                    . DIRECTORY_SEPARATOR . 'external-links-section.php';
+                            ?>
+
+                            <div class="form-text small mt-3" style="color: var(--ih-text-muted);">
+                                Save the song to persist link changes.
+                                Existing links are loaded automatically on song open.
+                            </div>
+                        </div>
+                    </div>
+                    <!-- END Links Tab Panel -->
+
+
+                    <!-- -------------------------------------------------
                          TAGS TAB PANEL (#496)
                          Per-song tag assignment. Chips show current tags
                          (× to remove). Autocomplete input searches
@@ -1455,6 +1536,18 @@ $currentUser = getCurrentUser();
             </div>
         </div>
     </div>
+
+    <!-- External-link provider auto-detect + shared card-list editor (#833 / #841).
+         Loaded before editor.js so the global module objects are
+         available when the editor mounts the Links tab. The Song
+         Editor has its own <head> (no head-libs.php), so we include
+         the scripts directly here. -->
+    <?php $_editorPublicRoot = dirname(__DIR__, 2); ?>
+    <script src="/js/modules/external-link-detect.js?v=<?= filemtime($_editorPublicRoot . '/js/modules/external-link-detect.js') ?>"></script>
+    <script src="/js/modules/external-links-editor.js?v=<?= filemtime($_editorPublicRoot . '/js/modules/external-links-editor.js') ?>"></script>
+    <script>
+        window._iHymnsLinkTypes = <?= json_encode($linkTypesForSong, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+    </script>
 
     <!-- Editor JavaScript — all interactive logic (loading, saving, editing, previewing)
          is handled in this separate file to keep concerns separated -->

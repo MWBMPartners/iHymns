@@ -577,6 +577,16 @@ function selectSong(songId) {
         return;
     }
 
+    /* #833 — flush any pending External-Links DOM changes back into
+       the previously-open song before we navigate away. Without this
+       a user who edits links on song A and clicks song B in the
+       sidebar would lose the in-flight edits when the rows get
+       replaced. syncSongExternalLinksFromDom() reads the current
+       DOM state into the open song's `.links` and re-arms auto-save. */
+    if (typeof currentSongId !== 'undefined' && currentSongId && currentSongId !== songId) {
+        try { syncSongExternalLinksFromDom(); } catch (_e) { /* defensive — must not block navigation */ }
+    }
+
     /* Store the selection globally. */
     currentSongId = songId;
     updateHistoryButtonState();
@@ -647,6 +657,11 @@ function selectSong(songId) {
 
     /* Render the translations (cross-song link) panel (#352). */
     renderTranslations(song);
+
+    /* Render external website links (#833). Mounts the shared
+       /js/modules/external-links-editor.js card-list editor on the
+       Links tab and hydrates with song.links from the corpus cache. */
+    renderSongExternalLinks(song);
 
     /* Render cross-book counterparts (#807) and pull suggestions
        for the open song (#808). Both are async — the panels show
@@ -2379,6 +2394,115 @@ function initTranslationControls() {
 /* Latest fetch result kept in-memory so render-only re-runs don't refetch. */
 var songLinksCache = { songId: null, links: [] };
 
+/* ==========================================================================
+ *  SECTION — External website links per song (#833)
+ *
+ *  Backed by tblSongExternalLinks. Renders the shared editor module from
+ *  /js/modules/external-links-editor.js into the Links tab. We mount the
+ *  editor once (idempotent — repeat selectSong calls just re-hydrate the
+ *  rows), wire one delegated change listener that mirrors row state into
+ *  song.links so the save_song payload stays in sync with the form, and
+ *  flag the song as modified whenever a row is added / removed / edited.
+ * ========================================================================== */
+
+var _songExtLinksEditor = null;
+
+/**
+ * Capture the current external-links rows from the DOM. Used both for
+ * mirroring into the open song's `links` array on input/change events,
+ * and for the pre-switch capture in selectSong().
+ *
+ * @returns {Array<{typeId:number,url:string,note:string,verified:boolean}>}
+ */
+function captureSongExternalLinksFromDom() {
+    var rowsEl = document.getElementById('edit-song-ext-links-rows');
+    var out    = [];
+    if (!rowsEl) return out;
+    var rows = rowsEl.querySelectorAll('.ihymns-ext-link-row');
+    rows.forEach(function (card) {
+        var sel  = card.querySelector('select[name="ext_link_type_ids[]"]');
+        var url  = card.querySelector('input[name="ext_link_urls[]"]');
+        var note = card.querySelector('input[name="ext_link_notes[]"]');
+        var ver  = card.querySelector('input[name="ext_link_verified[]"]');
+        var typeId = Number(sel ? sel.value : 0);
+        var u      = String(url ? url.value : '').trim();
+        if (!typeId || !u) return;
+        out.push({
+            typeId:   typeId,
+            url:      u,
+            note:     String(note ? note.value : '').trim(),
+            verified: !!(ver && ver.checked),
+        });
+    });
+    return out;
+}
+
+/**
+ * Mirror the current DOM state into the open song's `.links` array and
+ * mark the song as modified so the auto-save flow ships the change.
+ */
+function syncSongExternalLinksFromDom() {
+    if (typeof currentSongId === 'undefined' || !currentSongId) return;
+    var song = (songData && songData.songs || []).find(function (s) { return s.id === currentSongId; });
+    if (!song) return;
+    song.links = captureSongExternalLinksFromDom();
+    if (typeof modifiedSongIds !== 'undefined' && modifiedSongIds && typeof modifiedSongIds.add === 'function') {
+        modifiedSongIds.add(currentSongId);
+    }
+    if (typeof scheduleAutoSave === 'function') scheduleAutoSave();
+    if (typeof updateStatusBar === 'function') updateStatusBar();
+}
+
+/**
+ * Render (mount + hydrate) the External Links section in the Links tab.
+ * The shared module owns the row template / Add / Remove / auto-detect;
+ * this function just feeds it the current song's saved links.
+ */
+function renderSongExternalLinks(song) {
+    var rowsEl = document.getElementById('edit-song-ext-links-rows');
+    var addBtn = document.getElementById('edit-song-ext-link-add-btn');
+    if (!rowsEl || !window.iHymnsExtLinksEditor) return;
+
+    if (!_songExtLinksEditor) {
+        _songExtLinksEditor = window.iHymnsExtLinksEditor.mount({
+            rowsEl:   rowsEl,
+            addBtnEl: addBtn,
+        });
+        /* Delegated change listener — every row built by the shared
+           module lives inside rowsEl, so one listener catches every
+           input / change. Each change mirrors back into the song
+           object and re-arms auto-save. */
+        rowsEl.addEventListener('input',  syncSongExternalLinksFromDom);
+        rowsEl.addEventListener('change', syncSongExternalLinksFromDom);
+        /* Add-row + Remove-row trigger DOM mutations rather than
+           input events on the existing inputs. Wrap the editor's
+           public addRow + a delegated click handler so the song
+           object stays in sync. */
+        if (addBtn) {
+            addBtn.addEventListener('click', function () {
+                /* Defer one tick so the new row's nodes exist when we capture. */
+                setTimeout(syncSongExternalLinksFromDom, 0);
+            });
+        }
+        rowsEl.addEventListener('click', function (ev) {
+            if (ev.target.closest('[data-action="remove-ext-link"]')) {
+                setTimeout(syncSongExternalLinksFromDom, 0);
+            }
+        });
+    }
+
+    var prefill = (Array.isArray(song.links) ? song.links : []).map(function (l) {
+        return {
+            typeId:   Number(l.typeId   || l.type_id   || 0),
+            url:      String(l.url      || ''),
+            note:     String(l.note     || ''),
+            verified: !!(l.verified),
+        };
+    });
+    _songExtLinksEditor.setRows(prefill);
+}
+
+
 /**
  * fetchSongLinks(songId, cb)
  * --------------------------
@@ -3976,6 +4100,30 @@ function serialiseSongForSave(song) {
     var creditKeys = ['writers', 'composers', 'arrangers', 'adaptors', 'translators', 'artists'];
     var out = {};
     Object.keys(song || {}).forEach(function (k) { out[k] = song[k]; });
+
+    /* #833 — for the currently-open song, prefer the live DOM state of
+       the External Links editor over the stale `song.links` value. The
+       'input' listener syncs them eagerly on every keystroke, but
+       capturing here too is cheap and protects against any race where
+       a save fires before the listener has flushed. Off-screen songs
+       send whatever was already in their `.links`. */
+    if (typeof currentSongId !== 'undefined' && song && song.id === currentSongId) {
+        try {
+            out.externalLinks = captureSongExternalLinksFromDom();
+        } catch (_e) {
+            out.externalLinks = Array.isArray(song.links) ? song.links : [];
+        }
+    } else {
+        out.externalLinks = Array.isArray(song.links) ? song.links.map(function (l) {
+            return {
+                typeId:   Number(l.typeId || l.type_id || 0),
+                url:      String(l.url    || ''),
+                note:     String(l.note   || ''),
+                verified: !!(l.verified),
+            };
+        }) : [];
+    }
+
     creditKeys.forEach(function (k) {
         if (!Array.isArray(out[k])) return;
         out[k] = out[k].map(function (entry) {

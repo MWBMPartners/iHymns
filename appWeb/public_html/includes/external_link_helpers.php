@@ -95,3 +95,231 @@ function attachExternalLinkPatterns(\mysqli $db, array $types): array
     unset($t);
     return $types;
 }
+
+/**
+ * Load the active `tblExternalLinkTypes` registry for a given surface
+ * (songbook / work / song / credit-person / …) and attach URL → provider
+ * patterns. Returns a list shaped for `window._iHymnsLinkTypes` consumption
+ * by the shared `external-links-editor.js` module.
+ *
+ * Returns `[]` when the schema isn't live (pre-migration deployment) so
+ * callers can render the rest of their page without external-links UI.
+ *
+ * @param \mysqli $db
+ * @param string  $appliesTo  Value to test against tblExternalLinkTypes.AppliesTo
+ *                            via FIND_IN_SET. Common values: 'songbook',
+ *                            'work', 'song', 'credit-person'.
+ * @return list<array{id:int,slug:string,name:string,category:string,iconClass:string,allowMultiple:int,patterns:array}>
+ */
+function loadExternalLinkTypesFor(\mysqli $db, string $appliesTo): array
+{
+    try {
+        $probe = $db->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblExternalLinkTypes' LIMIT 1"
+        );
+        $hasTable = $probe && $probe->fetch_row() !== null;
+        if ($probe) $probe->close();
+    } catch (\Throwable $_e) {
+        $hasTable = false;
+    }
+    if (!$hasTable) return [];
+
+    $types = [];
+    try {
+        $stmt = $db->prepare(
+            "SELECT Id, Slug, Name, Category, IconClass, AllowMultiple, DisplayOrder
+               FROM tblExternalLinkTypes
+              WHERE COALESCE(IsActive, 1) = 1
+                AND FIND_IN_SET(?, AppliesTo) > 0
+              ORDER BY Category ASC, DisplayOrder ASC, Name ASC"
+        );
+        $stmt->bind_param('s', $appliesTo);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        while ($row = $res->fetch_assoc()) {
+            $types[] = [
+                'id'            => (int)$row['Id'],
+                'slug'          => (string)$row['Slug'],
+                'name'          => (string)$row['Name'],
+                'category'      => (string)$row['Category'],
+                'iconClass'     => (string)($row['IconClass']  ?? ''),
+                'allowMultiple' => (int)($row['AllowMultiple'] ?? 0),
+            ];
+        }
+        $stmt->close();
+    } catch (\Throwable $e) {
+        error_log('[loadExternalLinkTypesFor] ' . $e->getMessage());
+        return [];
+    }
+
+    return attachExternalLinkPatterns($db, $types);
+}
+
+/**
+ * Save the per-row external-links sub-form posted from any admin edit
+ * surface using the canonical `ext_link_*[]` field naming. Runs inside
+ * the caller's transaction (caller is responsible for begin/commit so a
+ * downstream failure rolls back together with the parent UPDATE).
+ *
+ * Performs DELETE-then-INSERT against the surface's link table, mirroring
+ * the original songbook implementation (#833) which the songbook,
+ * work and song surfaces all converged on.
+ *
+ * @param \mysqli $db
+ * @param string  $table     Target link table — 'tblSongbookExternalLinks',
+ *                           'tblWorkExternalLinks', 'tblSongExternalLinks'.
+ * @param string  $fkColumn  FK column on $table that references the owning
+ *                           row — 'SongbookId', 'WorkId', 'SongId'.
+ * @param mixed   $fkValue   Owning row's PK value (int for the numeric
+ *                           surfaces, string for SongId).
+ * @param mixed   $rawTypeIds  $_POST['ext_link_type_ids']  (any shape — non-array → [])
+ * @param mixed   $rawUrls     $_POST['ext_link_urls']
+ * @param mixed   $rawNotes    $_POST['ext_link_notes']
+ * @param mixed   $rawVerified $_POST['ext_link_verified']
+ * @return int   Number of link rows inserted.
+ */
+function saveExternalLinksForRow(
+    \mysqli $db,
+    string  $table,
+    string  $fkColumn,
+    mixed   $fkValue,
+    mixed   $rawTypeIds,
+    mixed   $rawUrls,
+    mixed   $rawNotes,
+    mixed   $rawVerified
+): int {
+    $typeIds  = is_array($rawTypeIds)  ? $rawTypeIds  : [];
+    $urls     = is_array($rawUrls)     ? $rawUrls     : [];
+    $notes    = is_array($rawNotes)    ? $rawNotes    : [];
+    $verified = is_array($rawVerified) ? $rawVerified : [];
+
+    /* Whitelist the table + fk-column names — these come from the
+       caller, but we still guard against accidental mistypes leaking
+       into an unescaped SQL identifier position. */
+    $allowedTables = [
+        'tblSongbookExternalLinks' => 'SongbookId',
+        'tblWorkExternalLinks'     => 'WorkId',
+        'tblSongExternalLinks'     => 'SongId',
+    ];
+    if (!isset($allowedTables[$table]) || $allowedTables[$table] !== $fkColumn) {
+        throw new \InvalidArgumentException("Unknown external-links table/fk: $table/$fkColumn");
+    }
+
+    /* FK bind char — SongId is varchar in tblSongs, the rest are ints. */
+    $fkBindType = ($fkColumn === 'SongId') ? 's' : 'i';
+
+    $del = $db->prepare("DELETE FROM {$table} WHERE {$fkColumn} = ?");
+    if ($fkBindType === 's') {
+        $sv = (string)$fkValue;
+        $del->bind_param('s', $sv);
+    } else {
+        $iv = (int)$fkValue;
+        $del->bind_param('i', $iv);
+    }
+    $del->execute();
+    $del->close();
+
+    $inserted = 0;
+    $count    = max(count($typeIds), count($urls));
+    if ($count === 0) return 0;
+
+    $ins = $db->prepare(
+        "INSERT INTO {$table}
+            ({$fkColumn}, LinkTypeId, Url, Note, SortOrder, Verified)
+         VALUES (?, ?, ?, NULLIF(?, ''), ?, ?)"
+    );
+    for ($i = 0; $i < $count; $i++) {
+        $typeId = (int)($typeIds[$i] ?? 0);
+        $url    = trim((string)($urls[$i] ?? ''));
+        $note   = mb_substr(trim((string)($notes[$i] ?? '')), 0, 255);
+        $ver    = !empty($verified[$i]) ? 1 : 0;
+
+        if ($typeId <= 0 || $url === '') continue;
+        if (!preg_match('#^https?://#i', $url)) continue;
+        if (mb_strlen($url) > 2048) continue;
+
+        if ($fkBindType === 's') {
+            $sv = (string)$fkValue;
+            $ins->bind_param('sissii', $sv, $typeId, $url, $note, $i, $ver);
+        } else {
+            $iv = (int)$fkValue;
+            $ins->bind_param('iissii', $iv, $typeId, $url, $note, $i, $ver);
+        }
+        $ins->execute();
+        $inserted++;
+    }
+    $ins->close();
+    return $inserted;
+}
+
+/**
+ * Fetch the external links attached to one row across any of the
+ * tbl*ExternalLinks tables, shaped for the JS row-builder
+ * (`typeId / url / note / verified`). Used by the editor + admin
+ * modals to pre-fill the rows on load.
+ *
+ * @param \mysqli $db
+ * @param string  $table    'tblSongbookExternalLinks' | 'tblWorkExternalLinks' | 'tblSongExternalLinks'
+ * @param string  $fkColumn 'SongbookId' | 'WorkId' | 'SongId'
+ * @param mixed   $fkValue  Owning row's PK
+ * @return list<array{typeId:int,url:string,note:string,verified:int,sortOrder:int}>
+ */
+function loadExternalLinksForRow(
+    \mysqli $db,
+    string  $table,
+    string  $fkColumn,
+    mixed   $fkValue
+): array {
+    $allowedTables = [
+        'tblSongbookExternalLinks' => 'SongbookId',
+        'tblWorkExternalLinks'     => 'WorkId',
+        'tblSongExternalLinks'     => 'SongId',
+    ];
+    if (!isset($allowedTables[$table]) || $allowedTables[$table] !== $fkColumn) {
+        throw new \InvalidArgumentException("Unknown external-links table/fk: $table/$fkColumn");
+    }
+
+    try {
+        $probe = $db->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = '" . $table . "' LIMIT 1"
+        );
+        $exists = $probe && $probe->fetch_row() !== null;
+        if ($probe) $probe->close();
+    } catch (\Throwable $_e) {
+        $exists = false;
+    }
+    if (!$exists) return [];
+
+    $fkBindType = ($fkColumn === 'SongId') ? 's' : 'i';
+    $stmt = $db->prepare(
+        "SELECT LinkTypeId, Url, COALESCE(Note, '') AS Note, SortOrder, Verified
+           FROM {$table}
+          WHERE {$fkColumn} = ?
+       ORDER BY SortOrder ASC, LinkTypeId ASC"
+    );
+    if ($fkBindType === 's') {
+        $sv = (string)$fkValue;
+        $stmt->bind_param('s', $sv);
+    } else {
+        $iv = (int)$fkValue;
+        $stmt->bind_param('i', $iv);
+    }
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $out = [];
+    while ($row = $res->fetch_assoc()) {
+        $out[] = [
+            'typeId'    => (int)$row['LinkTypeId'],
+            'url'       => (string)$row['Url'],
+            'note'      => (string)$row['Note'],
+            'verified'  => (int)$row['Verified'],
+            'sortOrder' => (int)$row['SortOrder'],
+        ];
+    }
+    $stmt->close();
+    return $out;
+}
