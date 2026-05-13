@@ -242,6 +242,7 @@ $friendlyTitles = [
     'media-database-providers'         => 'Media Database Providers',
     'musicbrainz-style-links'          => 'MusicBrainz-Parity External Links',
     'credit-person-identifiers'        => 'Credit-Person Identifiers (IPI + ISNI)',
+    'worldcat-and-secondhandsongs'     => 'WorldCat + SecondHandSongs Links',
     'canonicalise-existing-isni'       => 'Canonicalise Existing ISNI Rows',
     'song-media'                       => 'Song Media Uploads (#853)',
     'song-component-language'          => 'Song Component Language Override (#858)',

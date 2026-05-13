@@ -966,6 +966,52 @@ return [
         'probe' => static fn(\mysqli $db) =>
             !_migProbe_tableExists($db, 'tblCreditPersonIdentifiers'),
     ],
+    'worldcat-and-secondhandsongs' => [
+        'script' => 'migrate-worldcat-and-secondhandsongs.php',
+        'card' => [
+            'title'  => 'WorldCat + SecondHandSongs Links',
+            'body'   => 'Widens the existing <code>oclc-worldcat</code> link type from'
+                      . ' <code>AppliesTo = \'songbook\'</code> to'
+                      . ' <code>song,songbook,person,work</code> so a curator can attach'
+                      . ' a WorldCat / WorldCat Identities URL to a credit-person (every'
+                      . ' published author has one) or a song / work. Adds the missing'
+                      . ' SecondHandSongs slug — the canonical database of song'
+                      . ' originals, cover versions and releases — with its'
+                      . ' <code>secondhandsongs.com</code> URL pattern.',
+            'button' => 'Run WorldCat + SecondHandSongs Migration',
+        ],
+        /* Pending when oclc-worldcat is still on its narrow AppliesTo OR when
+           the SecondHandSongs slug hasn't been seeded yet. Two checks because
+           a curator who runs the migration once shouldn't see it re-surface
+           if only one of the two changes is still pending. */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_tableExists($db, 'tblExternalLinkTypes')) {
+                return false;
+            }
+            /* SecondHandSongs slug check. */
+            $stmt = $db->prepare(
+                'SELECT 1 FROM tblExternalLinkTypes WHERE Slug = ? LIMIT 1'
+            );
+            $slug = 'secondhandsongs';
+            $stmt->bind_param('s', $slug);
+            $stmt->execute();
+            $hasShs = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            if (!$hasShs) return true;
+            /* WorldCat widening check — pending while AppliesTo is still
+               just 'songbook' or hasn't been widened to include 'person'. */
+            $stmt = $db->prepare(
+                "SELECT 1 FROM tblExternalLinkTypes
+                  WHERE Slug = 'oclc-worldcat'
+                    AND NOT FIND_IN_SET('person', AppliesTo)
+                  LIMIT 1"
+            );
+            $stmt->execute();
+            $isNarrow = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            return $isNarrow;
+        },
+    ],
     'canonicalise-existing-isni' => [
         'script' => 'migrate-canonicalise-existing-isni.php',
         'card' => [

@@ -126,6 +126,7 @@
         { slug: 'bandsintown',           hosts: ['bandsintown.com'] },
         { slug: 'genius',                hosts: ['genius.com'] },
         { slug: 'muzikum',               hosts: ['muzikum.eu'] },
+        { slug: 'secondhandsongs',       hosts: ['secondhandsongs.com'] },
     ];
 
     function lowerHost(h) { return (h || '').toLowerCase(); }

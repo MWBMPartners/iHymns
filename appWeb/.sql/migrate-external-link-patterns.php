@@ -234,6 +234,7 @@ $seedRows = [
     ['bandsintown',           'bandsintown.com',   null,        1, 75,  'Suffix match covers www.bandsintown.com'],
     ['genius',                'genius.com',        null,        1, 36,  'Suffix match covers www.genius.com — lyrics + annotations'],
     ['muzikum',               'muzikum.eu',        null,        1, 37,  'Lyrics + translations site'],
+    ['secondhandsongs',       'secondhandsongs.com', null,      1, 38,  'Database of cover versions, originals, releases'],
 ];
 
 /* Resolve slugs to LinkTypeIds in one query. */
