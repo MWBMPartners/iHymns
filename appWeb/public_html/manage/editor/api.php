@@ -1707,22 +1707,88 @@ switch ($action) {
                 error_log('[editor save_song] SongCount recompute failed: ' . $_e->getMessage());
             }
 
+            /* #833 — persist song-level external links when the client
+               opted into the new editor section by sending the
+               `externalLinks` key. The legacy / pre-#833 clients
+               (bulk-import path, older editor snapshots) omit the key
+               entirely and the existing rows stay untouched. The shared
+               saver expects four parallel arrays in the canonical
+               ext_link_*[] shape, so we unpack the JSON list of
+               {typeId, url, note, verified} into that shape inline.
+               Runs before the song.edit / song.create logActivity row
+               below so the inserted-link count can be folded into the
+               audit payload (mirroring the songbook / work surfaces'
+               external_link_count audit field). */
+            $externalLinkCount = null;
+            if (array_key_exists('externalLinks', $song)) {
+                try {
+                    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+                        . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
+                    $extProbe = $db->query(
+                        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                          WHERE TABLE_SCHEMA = DATABASE()
+                            AND TABLE_NAME   = 'tblSongExternalLinks' LIMIT 1"
+                    );
+                    $hasExtTable = $extProbe && $extProbe->fetch_row() !== null;
+                    if ($extProbe) $extProbe->close();
+
+                    if ($hasExtTable) {
+                        $linkRows  = is_array($song['externalLinks']) ? $song['externalLinks'] : [];
+                        $typeIds   = [];
+                        $urls      = [];
+                        $notes     = [];
+                        $verified  = [];
+                        foreach ($linkRows as $row) {
+                            if (!is_array($row)) continue;
+                            $typeIds[]  = (int)($row['typeId'] ?? 0);
+                            $urls[]     = (string)($row['url'] ?? '');
+                            $notes[]    = (string)($row['note'] ?? '');
+                            $verified[] = !empty($row['verified']) ? '1' : '';
+                        }
+                        $externalLinkCount = saveExternalLinksForRow(
+                            $db,
+                            'tblSongExternalLinks',
+                            'SongId',
+                            $songId,
+                            $typeIds,
+                            $urls,
+                            $notes,
+                            $verified
+                        );
+                    }
+                } catch (\Throwable $_e) {
+                    /* Match the Works-auto-link pattern — link
+                       reconciliation must not block the core save.
+                       The user's metadata edit is already committed
+                       below; a link write failure surfaces in
+                       error_log + audit but doesn't 500 the request. */
+                    error_log('[editor save_song] external-links reconcile failed: ' . $_e->getMessage());
+                }
+            }
+
             /* Activity log (#535) — high-level "song.create" / "song.edit"
                row with a cross-link to the revisions row above so a
                timeline reader can drill into the full before/after diff
-               without bloating Details here. */
+               without bloating Details here. external_link_count is
+               null when the client didn't opt into the externalLinks
+               key (e.g. bulk-import path); otherwise it carries the
+               number of rows inserted by the reconcile above. */
             if (function_exists('logActivity')) {
+                $logDetails = [
+                    'title'         => $title,
+                    'songbook'      => $songbookAbbr,
+                    'number'        => $number,
+                    'verified'      => (bool)$verified,
+                    'revision_id'   => $revisionId,
+                ];
+                if ($externalLinkCount !== null) {
+                    $logDetails['external_link_count'] = $externalLinkCount;
+                }
                 logActivity(
                     $action === 'create' ? 'song.create' : 'song.edit',
                     'song',
                     $songId,
-                    [
-                        'title'         => $title,
-                        'songbook'      => $songbookAbbr,
-                        'number'        => $number,
-                        'verified'      => (bool)$verified,
-                        'revision_id'   => $revisionId,
-                    ]
+                    $logDetails
                 );
             }
 
@@ -1839,60 +1905,6 @@ switch ($action) {
                        core song save. The user's edit is already
                        captured in tblSongs + tblSongRevisions. */
                     error_log('[editor save_song] Works auto-link failed: ' . $_e->getMessage());
-                }
-            }
-
-            /* #833 — persist song-level external links when the client
-               opted into the new editor section by sending the
-               `externalLinks` key. The legacy / pre-#833 clients
-               (bulk-import path, older editor snapshots) omit the key
-               entirely and the existing rows stay untouched. The shared
-               saver expects four parallel arrays in the canonical
-               ext_link_*[] shape, so we unpack the JSON list of
-               {typeId, url, note, verified} into that shape inline. */
-            if (array_key_exists('externalLinks', $song)) {
-                try {
-                    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
-                        . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
-                    $extProbe = $db->query(
-                        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-                          WHERE TABLE_SCHEMA = DATABASE()
-                            AND TABLE_NAME   = 'tblSongExternalLinks' LIMIT 1"
-                    );
-                    $hasExtTable = $extProbe && $extProbe->fetch_row() !== null;
-                    if ($extProbe) $extProbe->close();
-
-                    if ($hasExtTable) {
-                        $linkRows  = is_array($song['externalLinks']) ? $song['externalLinks'] : [];
-                        $typeIds   = [];
-                        $urls      = [];
-                        $notes     = [];
-                        $verified  = [];
-                        foreach ($linkRows as $row) {
-                            if (!is_array($row)) continue;
-                            $typeIds[]  = (int)($row['typeId'] ?? 0);
-                            $urls[]     = (string)($row['url'] ?? '');
-                            $notes[]    = (string)($row['note'] ?? '');
-                            $verified[] = !empty($row['verified']) ? '1' : '';
-                        }
-                        saveExternalLinksForRow(
-                            $db,
-                            'tblSongExternalLinks',
-                            'SongId',
-                            $songId,
-                            $typeIds,
-                            $urls,
-                            $notes,
-                            $verified
-                        );
-                    }
-                } catch (\Throwable $_e) {
-                    /* Match the Works-auto-link pattern — link
-                       reconciliation must not block the core save.
-                       The user's metadata edit is already committed
-                       below; a link write failure surfaces in
-                       error_log + audit but doesn't 500 the request. */
-                    error_log('[editor save_song] external-links reconcile failed: ' . $_e->getMessage());
                 }
             }
 
