@@ -77,6 +77,20 @@ if (!empty($GLOBALS['_adminLayoutOpen'])):
 <?php endif; ?>
 
 <?php
+    /* Cross-page admin utilities — load AFTER Bootstrap so they can
+       use bootstrap.Toast. Loaded on every /manage/* page so any
+       surface that wants to fire a toast or wire duplicate-link
+       detection just calls into window.iHymnsToast /
+       window.iHymnsExtLinkDupeDetect without re-declaring the helper. */
+    $_toastModulePath = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'toast.js';
+    $_toastVersion = is_file($_toastModulePath) ? (string)filemtime($_toastModulePath) : '1';
+    $_dupeModulePath = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'external-link-dupe-detect.js';
+    $_dupeVersion = is_file($_dupeModulePath) ? (string)filemtime($_dupeModulePath) : '1';
+?>
+<script src="/js/modules/toast.js?v=<?= htmlspecialchars($_toastVersion, ENT_QUOTES) ?>"></script>
+<script src="/js/modules/external-link-dupe-detect.js?v=<?= htmlspecialchars($_dupeVersion, ENT_QUOTES) ?>"></script>
+
+<?php
     /* Persistent bulk-import progress widget (#676). Boots on every
        /manage/* page so a curator who started an import on
        /manage/editor and navigated to /manage/songbooks (or any

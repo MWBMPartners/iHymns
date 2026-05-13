@@ -2374,6 +2374,13 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                    with no translation map since the option values
                    are numeric registry ids. */
                 wireCpLinkRowAutoDetect(row);
+                /* Duplicate-URL detection — same shared module the
+                   songbooks / works / song-editor surfaces use. Fires
+                   a toast + auto-removes this row when its URL collides
+                   with another row's URL on the same person. */
+                if (window.iHymnsExtLinkDupeDetect && typeof window.iHymnsExtLinkDupeDetect.attach === 'function') {
+                    window.iHymnsExtLinkDupeDetect.attach(row, { container: linksBox });
+                }
                 return row;
             }
             function addIpiRow(prefill) {

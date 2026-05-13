@@ -166,6 +166,15 @@
             window.iHymnsLinkDetect.attachAutoDetect(card);
         }
 
+        /* Duplicate-URL detection — if the curator pastes a URL that
+           matches another row in the same container, the dupe-detect
+           module fires a toast and auto-removes this just-added row.
+           Loaded globally via admin-footer.php so a no-op fallback
+           when the module isn't on the page keeps the editor working. */
+        if (window.iHymnsExtLinkDupeDetect && typeof window.iHymnsExtLinkDupeDetect.attach === 'function') {
+            window.iHymnsExtLinkDupeDetect.attach(card);
+        }
+
         return card;
     }
 
