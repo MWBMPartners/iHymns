@@ -673,6 +673,35 @@ try {
                             </div>
                         </div>
 
+                        <!-- Composition / first-performance origin (Places
+                             adoption). Visible input is the human-readable
+                             display string; the sibling hidden input
+                             carries the tblPlaces.Id of the picked
+                             candidate, which the place-search module
+                             keeps in sync. Free-typing leaves the hidden
+                             id empty so the catalogue still persists the
+                             curator-typed string. -->
+                        <div class="row g-2 mb-3">
+                            <div class="col-md-12">
+                                <label for="edit-origin-city" class="form-label">
+                                    <i class="bi bi-geo-alt me-1"></i>Composition origin
+                                </label>
+                                <input
+                                    type="text"
+                                    class="form-control"
+                                    id="edit-origin-city"
+                                    placeholder="Start typing — e.g. Cardiff, Wales"
+                                    autocomplete="off"
+                                >
+                                <input type="hidden" id="edit-origin-city-id">
+                                <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                                    Where the composition originated or was first performed.
+                                    Picks from the live geocoder so two curators picking
+                                    &ldquo;Cardiff&rdquo; resolve to one canonical place.
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- Language — IETF BCP 47 picker (shared with /manage/songbooks
                              via the partial introduced by #685). The hidden output gets a
                              stable id="edit-language" so editor.js can read the composed
@@ -1545,6 +1574,11 @@ try {
     <?php $_editorPublicRoot = dirname(__DIR__, 2); ?>
     <script src="/js/modules/external-link-detect.js?v=<?= filemtime($_editorPublicRoot . '/js/modules/external-link-detect.js') ?>"></script>
     <script src="/js/modules/external-links-editor.js?v=<?= filemtime($_editorPublicRoot . '/js/modules/external-links-editor.js') ?>"></script>
+    <!-- Places adoption — live location autocomplete on the
+         Composition origin input. Must load before editor.js so the
+         iHymnsPlaceSearch global exists when editor.js's
+         attachPlaceSearch() helper runs. -->
+    <script src="/js/modules/place-search.js?v=<?= filemtime($_editorPublicRoot . '/js/modules/place-search.js') ?>"></script>
     <script>
         window._iHymnsLinkTypes = <?= json_encode($linkTypesForSong, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
     </script>
@@ -1552,6 +1586,28 @@ try {
     <!-- Editor JavaScript — all interactive logic (loading, saving, editing, previewing)
          is handled in this separate file to keep concerns separated -->
     <script src="editor.js"></script>
+    <!-- Wire the Composition origin field to the place-search module
+         after editor.js boots. The hidden id input fires a synthetic
+         `change` event when set, which the bindMetadataListeners
+         loop already listens for — so we just need to call attach()
+         once. -->
+    <script>
+        (function () {
+            function wirePlaceSearch() {
+                if (!window.iHymnsPlaceSearch) return;
+                const visible = document.getElementById('edit-origin-city');
+                const hidden  = document.getElementById('edit-origin-city-id');
+                if (visible && hidden) {
+                    window.iHymnsPlaceSearch.attach(visible, { hiddenIdInput: hidden });
+                }
+            }
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', wirePlaceSearch);
+            } else {
+                wirePlaceSearch();
+            }
+        })();
+    </script>
 
     <!-- #858 — pre-load tblLanguages once per page so the per-component
          language override picker (rendered by editor.js renderComponents)

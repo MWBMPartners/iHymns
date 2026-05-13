@@ -55,6 +55,11 @@ if (!$currentUser || !hasRole($currentUser['role'], 'editor')) {
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
+/* Places adoption helper — exposes placeColumnExists() so the
+   save_song path persists OriginCityId alongside the legacy
+   OriginCity display string only when the places-adoption
+   migration has landed. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
 /* logActivity / logActivityError — needed by every action that
    wants to write a tblActivityLog row (save_song, bulk_import_*,
    load failure path). Was previously imported transitively in
@@ -1307,6 +1312,15 @@ switch ($action) {
         }
         $language     = $valid ?? 'en';
         $copyright    = (string)($song['copyright']   ?? '');
+        /* Places adoption — composition / first-performance origin.
+           VARCHAR mirror persists either way; the FK is set only
+           when the curator picked a candidate from the live
+           autocomplete (the editor.js wiring keeps both halves in
+           sync). Schema-tolerant: the per-place UPDATE below
+           skips itself on pre-adoption-migration installs. */
+        $originCityRaw = trim((string)($song['originCity'] ?? ''));
+        $originCity    = $originCityRaw === '' ? null : $originCityRaw;
+        $originCityId  = (int)($song['originCityId'] ?? 0) ?: null;
         /* TuneName + Iswc are nullable (#497). Empty/whitespace-only
            input normalises to NULL so the indexed TuneName column
            groups "unknown" rows together. */
@@ -1431,6 +1445,21 @@ switch ($action) {
             }
             $upsert->execute();
             $upsert->close();
+
+            /* Places adoption — write the composition-origin
+               columns in a separate small UPDATE so the carefully-
+               tuned 16/17-param UPSERT above stays untouched.
+               Skipped silently on pre-adoption installs. */
+            if (placeColumnExists($db, 'tblSongs', 'OriginCityId')) {
+                $placeStmt = $db->prepare(
+                    'UPDATE tblSongs
+                        SET OriginCity = ?, OriginCityId = ?
+                      WHERE SongId = ?'
+                );
+                $placeStmt->bind_param('sis', $originCity, $originCityId, $songId);
+                $placeStmt->execute();
+                $placeStmt->close();
+            }
 
             /* Child rows: DELETE then INSERT — simpler than diffing and
                the row counts per song are small (≈1–20 each). New credit

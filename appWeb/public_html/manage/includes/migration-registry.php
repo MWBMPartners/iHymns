@@ -1261,4 +1261,44 @@ return [
             return !($row && (string)$row[0] === '1');
         })($db),
     ],
+    'places' => [
+        'script' => 'migrate-places.php',
+        'card' => [
+            'title'  => 'Places Registry',
+            'body'   => 'Creates <code>tblPlaces</code> as the canonical registry of geographic'
+                      . ' locations (suburb / city / state / country) and adds'
+                      . ' <code>BirthPlaceId</code> + <code>DeathPlaceId</code> FK columns to'
+                      . ' <code>tblCreditPeople</code>. Powers the live location autocomplete'
+                      . ' (Photon + Nominatim, both OpenStreetMap) in the Credit People edit'
+                      . ' drawer\'s Birth / Death place fields so two curators picking'
+                      . ' &ldquo;Sydney&rdquo; resolve to the same row instead of two'
+                      . ' near-identical strings. Legacy <code>BirthPlace</code> /'
+                      . ' <code>DeathPlace</code> VARCHAR columns stay alongside as'
+                      . ' denormalised display strings so reports + read paths don\'t need a'
+                      . ' JOIN on every read. Idempotent — safe to re-run.',
+            'button' => 'Run Places Registry Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblPlaces'),
+    ],
+    'places-adoption' => [
+        'script' => 'migrate-places-adoption.php',
+        'card' => [
+            'title'  => 'Places Adoption Sweep',
+            'body'   => 'Extends the Places registry FK pattern to four more entities so the'
+                      . ' normalised place catalogue spreads beyond Credit People. Adds a'
+                      . ' VARCHAR display-string mirror + nullable FK pair on each of'
+                      . ' <code>tblSongbooks</code> (<code>PublicationCity</code> /'
+                      . ' <code>PublicationCityId</code>),'
+                      . ' <code>tblOrganisations</code> (<code>PhysicalCity</code> /'
+                      . ' <code>PhysicalCityId</code>),'
+                      . ' <code>tblSongs</code> (<code>OriginCity</code> /'
+                      . ' <code>OriginCityId</code>) and'
+                      . ' <code>tblWorks</code> (<code>OriginCity</code> /'
+                      . ' <code>OriginCityId</code>). Unlocks the live location autocomplete'
+                      . ' on the Songbook publisher / Organisation profile / Song editor /'
+                      . ' Work editor forms. Idempotent — safe to re-run.',
+            'button' => 'Run Places Adoption Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongbooks', 'PublicationCityId'),
+    ],
 ];

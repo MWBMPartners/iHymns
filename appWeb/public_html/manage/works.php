@@ -23,6 +23,11 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
+/* Places adoption helper — exposes placeColumnExists() so the
+   create / update paths can persist OriginCityId alongside the
+   legacy OriginCity display string only when the places-adoption
+   migration has landed. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -194,6 +199,9 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $iswcIn = trim((string)($_POST['iswc']   ?? ''));
                 $notes  = trim((string)($_POST['notes']  ?? ''));
                 $parent = (int)($_POST['parent_id'] ?? 0);
+                /* Places adoption — composition origin. */
+                $originCity   = trim((string)($_POST['origin_city']    ?? '')) ?: null;
+                $originCityId = (int)($_POST['origin_city_id'] ?? 0) ?: null;
                 if ($title === '') { $error = 'Title is required.'; break; }
                 $slug = $slugIn !== '' ? $slugIn : $slugFor($title);
                 if ($slug === '') { $error = 'Title has no usable slug characters — provide one explicitly.'; break; }
@@ -231,10 +239,23 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $newId = (int)$db->insert_id;
                 $stmt->close();
 
+                /* Place columns — schema-tolerant separate UPDATE. */
+                if (placeColumnExists($db, 'tblWorks', 'OriginCityId')) {
+                    $stmt = $db->prepare(
+                        'UPDATE tblWorks
+                            SET OriginCity = ?, OriginCityId = ?
+                          WHERE Id = ?'
+                    );
+                    $stmt->bind_param('sii', $originCity, $originCityId, $newId);
+                    $stmt->execute();
+                    $stmt->close();
+                }
+
                 if (function_exists('logActivity')) {
                     logActivity('work.create', 'work', (string)$newId, [
                         'title' => $title, 'slug' => $slug,
                         'iswc'  => $iswc, 'parent_id' => $parent > 0 ? $parent : null,
+                        'origin_city' => $originCity,
                     ]);
                 }
                 $success = "Work '{$title}' created.";
@@ -248,6 +269,8 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $iswcIn = trim((string)($_POST['iswc']   ?? ''));
                 $notes  = trim((string)($_POST['notes']  ?? ''));
                 $parent = (int)($_POST['parent_id'] ?? 0);
+                $originCity   = trim((string)($_POST['origin_city']    ?? '')) ?: null;
+                $originCityId = (int)($_POST['origin_city_id'] ?? 0) ?: null;
                 if ($id <= 0)     { $error = 'Work id is required.'; break; }
                 if ($title === '') { $error = 'Title is required.'; break; }
                 $slug = $slugIn !== '' ? $slugIn : $slugFor($title);
@@ -307,6 +330,19 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     $stmt->bind_param('issssi', $parentBind, $iswc, $title, $slug, $notes, $id);
                     $stmt->execute();
                     $stmt->close();
+
+                    /* Place columns — separate UPDATE so the main bind
+                       stays untouched. Skipped on pre-adoption installs. */
+                    if (placeColumnExists($db, 'tblWorks', 'OriginCityId')) {
+                        $stmt = $db->prepare(
+                            'UPDATE tblWorks
+                                SET OriginCity = ?, OriginCityId = ?
+                              WHERE Id = ?'
+                        );
+                        $stmt->bind_param('sii', $originCity, $originCityId, $id);
+                        $stmt->execute();
+                        $stmt->close();
+                    }
 
                     /* Membership: delete-then-insert so SortOrder /
                        IsCanonical / Note all reset cleanly. Cheap on
@@ -415,8 +451,16 @@ $workLinksMap   = [];
 
 if ($hasSchema) {
     try {
+        /* Schema-tolerant SELECT — pull OriginCity / OriginCityId
+           only when the places-adoption migration has landed.
+           Pre-migration installs surface NULLs and the modal's
+           pre-fill defaults render the field empty. */
+        $hasWorkPlace = placeColumnExists($db, 'tblWorks', 'OriginCityId');
+        $placeSelect  = $hasWorkPlace
+            ? ', w.OriginCity, w.OriginCityId'
+            : ', NULL AS OriginCity, NULL AS OriginCityId';
         $res = $db->query(
-            'SELECT w.Id, w.ParentWorkId, w.Title, w.Slug, w.Iswc, w.Notes,
+            'SELECT w.Id, w.ParentWorkId, w.Title, w.Slug, w.Iswc, w.Notes' . $placeSelect . ',
                     (SELECT COUNT(*) FROM tblWorkSongs ws WHERE ws.WorkId = w.Id) AS MemberCount,
                     (SELECT COUNT(*) FROM tblWorks c   WHERE c.ParentWorkId = w.Id) AS ChildCount
                FROM tblWorks w
@@ -566,6 +610,8 @@ if ($hasSchema) {
                                 'slug'       => (string)$r['Slug'],
                                 'iswc'       => (string)($r['Iswc'] ?? ''),
                                 'notes'      => (string)($r['Notes'] ?? ''),
+                                'origin_city'    => (string)($r['OriginCity'] ?? ''),
+                                'origin_city_id' => isset($r['OriginCityId']) ? (int)$r['OriginCityId'] : null,
                                 'members'    => $workMembersMap[$wid] ?? [],
                                 'links'      => $workLinksMap[$wid]   ?? [],
                             ];
@@ -677,6 +723,16 @@ if ($hasSchema) {
                            placeholder="Brief context for curators">
                 </div>
             </div>
+            <div class="row g-2 mt-2">
+                <div class="col-sm-6">
+                    <label class="form-label small">Composition origin <small class="text-muted">(optional)</small></label>
+                    <input type="text" id="create-work-origin-city" name="origin_city"
+                           class="form-control form-control-sm js-place-search"
+                           maxlength="255"
+                           placeholder="Start typing — e.g. Cardiff, Wales">
+                    <input type="hidden" id="create-work-origin-city-id" name="origin_city_id" value="">
+                </div>
+            </div>
             <button type="submit" class="btn btn-amber btn-sm mt-3">
                 <i class="bi bi-plus me-1"></i>Create work
             </button>
@@ -734,6 +790,15 @@ if ($hasSchema) {
                                     <label class="form-label">Notes</label>
                                     <input type="text" name="notes" id="edit-work-notes"
                                            class="form-control" maxlength="500">
+                                </div>
+                            </div>
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-6">
+                                    <label class="form-label">Composition origin</label>
+                                    <input type="text" name="origin_city" id="edit-work-origin-city"
+                                           class="form-control js-place-search" maxlength="255"
+                                           placeholder="Start typing — e.g. Cardiff, Wales">
+                                    <input type="hidden" name="origin_city_id" id="edit-work-origin-city-id" value="">
                                 </div>
                             </div>
 
@@ -985,6 +1050,8 @@ if ($hasSchema) {
             document.getElementById('edit-work-slug').value         = row.slug  || '';
             document.getElementById('edit-work-iswc').value         = row.iswc  || '';
             document.getElementById('edit-work-notes').value        = row.notes || '';
+            document.getElementById('edit-work-origin-city').value  = row.origin_city || '';
+            document.getElementById('edit-work-origin-city-id').value = row.origin_city_id ? String(row.origin_city_id) : '';
             const psel = document.getElementById('edit-work-parent');
             psel.value = row.parent_id ? String(row.parent_id) : '';
             /* Hide the current work itself from the parent options to make
@@ -1015,6 +1082,25 @@ if ($hasSchema) {
             if (inst) inst.show();
         };
     });
+    </script>
+
+    <!-- Live location autocomplete on the composition-origin inputs
+         in both create and edit forms. -->
+    <script src="/js/modules/place-search.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/place-search.js') ?>"></script>
+    <script>
+        (function () {
+            if (!window.iHymnsPlaceSearch) return;
+            [
+                ['create-work-origin-city', 'create-work-origin-city-id'],
+                ['edit-work-origin-city',   'edit-work-origin-city-id'],
+            ].forEach(([inputId, hiddenId]) => {
+                const visible = document.getElementById(inputId);
+                const hidden  = document.getElementById(hiddenId);
+                if (visible && hidden) {
+                    window.iHymnsPlaceSearch.attach(visible, { hiddenIdInput: hidden });
+                }
+            });
+        })();
     </script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
