@@ -9449,7 +9449,7 @@ if ($action !== null) {
             $deathPlace  = trim((string)($body['death_place']  ?? '')) ?: null;
             $deathDate   = trim((string)($body['death_date']   ?? '')) ?: null;
             $notes       = $notesRaw !== '' ? $notesRaw : null;
-            $links       = normaliseCreditPersonLinks($body['links']   ?? null);
+            $rawLinks    = $body['links']   ?? null;
             $ipi         = normaliseCreditPersonIpi($body['ipi']       ?? null);
             $aliases     = normaliseCreditPersonAliases($body['aliases'] ?? null);
             $isSpecialCase = !empty($body['is_special_case']) ? 1 : 0;
@@ -9469,6 +9469,9 @@ if ($action !== null) {
 
             try {
                 $db = getDbMysqli();
+                /* #833 — link normaliser resolves slug ↔ registry id via
+                   tblExternalLinkTypes, so it needs the live mysqli. */
+                $links = normaliseCreditPersonLinks($db, $rawLinks);
 
                 $stmt = $db->prepare('SELECT Id FROM tblCreditPeople WHERE Name = ?');
                 $stmt->bind_param('s', $name);
@@ -9538,13 +9541,13 @@ if ($action !== null) {
 
                     if ($links) {
                         $linkStmt = $db->prepare(
-                            'INSERT INTO tblCreditPersonLinks
-                                (CreditPersonId, LinkType, Url, Label, SortOrder)
+                            'INSERT INTO tblCreditPersonExternalLinks
+                                (CreditPersonId, LinkTypeId, Url, Note, SortOrder)
                              VALUES (?, ?, ?, ?, ?)'
                         );
                         foreach ($links as $l) {
-                            $linkStmt->bind_param('isssi',
-                                $newId, $l['type'], $l['url'], $l['label'], $l['sort_order']);
+                            $linkStmt->bind_param('iissi',
+                                $newId, $l['type_id'], $l['url'], $l['label'], $l['sort_order']);
                             $linkStmt->execute();
                         }
                         $linkStmt->close();
@@ -9630,7 +9633,7 @@ if ($action !== null) {
             $deathPlace  = trim((string)($body['death_place']  ?? '')) ?: null;
             $deathDate   = trim((string)($body['death_date']   ?? '')) ?: null;
             $notes       = $notesRaw !== '' ? $notesRaw : null;
-            $links       = normaliseCreditPersonLinks($body['links']   ?? null);
+            $rawLinks    = $body['links']   ?? null;
             $ipi         = normaliseCreditPersonIpi($body['ipi']       ?? null);
             $aliases     = normaliseCreditPersonAliases($body['aliases'] ?? null);
             $isSpecialCase = !empty($body['is_special_case']) ? 1 : 0;
@@ -9648,6 +9651,9 @@ if ($action !== null) {
 
             try {
                 $db = getDbMysqli();
+                /* #833 — link normaliser resolves slug ↔ registry id via
+                   tblExternalLinkTypes, so it needs the live mysqli. */
+                $links = normaliseCreditPersonLinks($db, $rawLinks);
                 $stmt = $db->prepare(
                     'SELECT Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate
                        FROM tblCreditPeople WHERE Id = ?'
@@ -9697,19 +9703,19 @@ if ($action !== null) {
                        diffing and the per-person row counts are small
                        (typically < 10 each). The child Ids change as a
                        side effect, but no other table references them. */
-                    $del = $db->prepare('DELETE FROM tblCreditPersonLinks WHERE CreditPersonId = ?');
+                    $del = $db->prepare('DELETE FROM tblCreditPersonExternalLinks WHERE CreditPersonId = ?');
                     $del->bind_param('i', $id);
                     $del->execute();
                     $del->close();
                     if ($links) {
                         $linkStmt = $db->prepare(
-                            'INSERT INTO tblCreditPersonLinks
-                                (CreditPersonId, LinkType, Url, Label, SortOrder)
+                            'INSERT INTO tblCreditPersonExternalLinks
+                                (CreditPersonId, LinkTypeId, Url, Note, SortOrder)
                              VALUES (?, ?, ?, ?, ?)'
                         );
                         foreach ($links as $l) {
-                            $linkStmt->bind_param('isssi',
-                                $id, $l['type'], $l['url'], $l['label'], $l['sort_order']);
+                            $linkStmt->bind_param('iissi',
+                                $id, $l['type_id'], $l['url'], $l['label'], $l['sort_order']);
                             $linkStmt->execute();
                         }
                         $linkStmt->close();
@@ -9959,7 +9965,7 @@ if ($action !== null) {
                        Anything not in keep_link_ids / keep_ipi_ids gets
                        dropped via the cascade when the source row is
                        deleted below. */
-                    $stmt = $db->prepare('SELECT Id FROM tblCreditPersonLinks WHERE CreditPersonId = ?');
+                    $stmt = $db->prepare('SELECT Id FROM tblCreditPersonExternalLinks WHERE CreditPersonId = ?');
                     $stmt->bind_param('i', $sourceId);
                     $stmt->execute();
                     $sourceLinkIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
@@ -9975,7 +9981,7 @@ if ($action !== null) {
                         $toMove = array_intersect($keepLinks, array_map('intval', $sourceLinkIds));
                         if ($toMove) {
                             $upd = $db->prepare(
-                                'UPDATE tblCreditPersonLinks SET CreditPersonId = ? WHERE Id = ? AND CreditPersonId = ?'
+                                'UPDATE tblCreditPersonExternalLinks SET CreditPersonId = ? WHERE Id = ? AND CreditPersonId = ?'
                             );
                             foreach ($toMove as $lid) {
                                 $upd->bind_param('iii', $targetId, $lid, $sourceId);

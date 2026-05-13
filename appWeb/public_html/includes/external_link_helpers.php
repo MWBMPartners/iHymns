@@ -199,9 +199,10 @@ function saveExternalLinksForRow(
        caller, but we still guard against accidental mistypes leaking
        into an unescaped SQL identifier position. */
     $allowedTables = [
-        'tblSongbookExternalLinks' => 'SongbookId',
-        'tblWorkExternalLinks'     => 'WorkId',
-        'tblSongExternalLinks'     => 'SongId',
+        'tblSongbookExternalLinks'     => 'SongbookId',
+        'tblWorkExternalLinks'         => 'WorkId',
+        'tblSongExternalLinks'         => 'SongId',
+        'tblCreditPersonExternalLinks' => 'CreditPersonId',
     ];
     if (!isset($allowedTables[$table]) || $allowedTables[$table] !== $fkColumn) {
         throw new \InvalidArgumentException("Unknown external-links table/fk: $table/$fkColumn");
@@ -273,9 +274,10 @@ function loadExternalLinksForRow(
     mixed   $fkValue
 ): array {
     $allowedTables = [
-        'tblSongbookExternalLinks' => 'SongbookId',
-        'tblWorkExternalLinks'     => 'WorkId',
-        'tblSongExternalLinks'     => 'SongId',
+        'tblSongbookExternalLinks'     => 'SongbookId',
+        'tblWorkExternalLinks'         => 'WorkId',
+        'tblSongExternalLinks'         => 'SongId',
+        'tblCreditPersonExternalLinks' => 'CreditPersonId',
     ];
     if (!isset($allowedTables[$table]) || $allowedTables[$table] !== $fkColumn) {
         throw new \InvalidArgumentException("Unknown external-links table/fk: $table/$fkColumn");
