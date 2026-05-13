@@ -35,9 +35,6 @@ if (PHP_SAPI === 'cli') {
     if (!function_exists('getDbMysqli')) {
         require_once dirname(__DIR__) . '/public_html/includes/db_mysql.php';
     }
-    if (!function_exists('canonicaliseIsni')) {
-        require_once dirname(__DIR__) . '/public_html/includes/credit_people_helpers.php';
-    }
     $isCli = true;
 } else {
     if (!defined('IHYMNS_SETUP_DASHBOARD')) {
@@ -57,10 +54,27 @@ if (PHP_SAPI === 'cli') {
     if (!function_exists('getDbMysqli')) {
         require_once dirname(__DIR__) . '/public_html/includes/db_mysql.php';
     }
-    if (!function_exists('canonicaliseIsni')) {
-        require_once dirname(__DIR__) . '/public_html/includes/credit_people_helpers.php';
-    }
     $isCli = false;
+}
+
+/**
+ * Self-contained mirror of canonicaliseIsni() from credit_people_helpers.php
+ * (#991). Migrations stay self-contained — like _migCpName_* in
+ * migrate-credit-people-name-parts.php — so a one-shot data fix never
+ * depends on which unrelated includes happen to be deployed alongside.
+ * Kept under a migration-scoped name to avoid any chance of clashing
+ * with the global helper if both end up loaded in the same request.
+ */
+function _migIsniCanon_canonicalise(string $raw): string
+{
+    $clean = preg_replace('/[^0-9X]/', '', strtoupper($raw)) ?? '';
+    if (preg_match('/^\d{15}[0-9X]$/', $clean) === 1) {
+        return substr($clean, 0, 4) . ' '
+             . substr($clean, 4, 4) . ' '
+             . substr($clean, 8, 4) . ' '
+             . substr($clean, 12, 4);
+    }
+    return $clean;
 }
 
 function _migIsniCanon_out(string $line): void
@@ -117,7 +131,7 @@ $delStmt = $mysqli->prepare('DELETE FROM tblCreditPersonIdentifiers WHERE Id = ?
 foreach ($rows as $r) {
     $id          = (int)$r['Id'];
     $currentVal  = (string)$r['IdentifierValue'];
-    $canonical   = canonicaliseIsni($currentVal);
+    $canonical   = _migIsniCanon_canonicalise($currentVal);
     if ($canonical === $currentVal) {
         $skipped++;
         continue;
