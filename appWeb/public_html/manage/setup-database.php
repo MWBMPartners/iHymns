@@ -238,6 +238,7 @@ $friendlyTitles = [
     'backfill-credit-person-links'     => 'Backfill Credit-Person Links → External Links (#833)',
     'works'                            => 'Works — composition grouping (#840)',
     'external-link-patterns'           => 'External-Link URL Patterns (#845)',
+    'extra-streaming-platforms'        => 'Extra Streaming Platforms',
     'song-media'                       => 'Song Media Uploads (#853)',
     'song-component-language'          => 'Song Component Language Override (#858)',
     'song-arrangement'                 => 'Song Arrangement Persistence (#892)',

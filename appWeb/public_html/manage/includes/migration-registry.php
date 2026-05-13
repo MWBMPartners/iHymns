@@ -844,6 +844,42 @@ return [
         'probe' => static fn(\mysqli $db) =>
             !_migProbe_tableExists($db, 'tblExternalLinkPatterns'),
     ],
+    'extra-streaming-platforms' => [
+        'script' => 'migrate-extra-streaming-platforms.php',
+        'card' => [
+            'title'  => 'Extra Streaming Platforms',
+            'body'   => 'Adds Tidal, Deezer, Amazon Music, Pandora, iHeartRadio,'
+                      . ' Qobuz, Napster, Anghami, JioSaavn, Yandex Music, Mixcloud'
+                      . ' and Audiomack to <code>tblExternalLinkTypes</code> (#833) and'
+                      . ' seeds their host patterns into <code>tblExternalLinkPatterns</code>'
+                      . ' (#845) so a pasted URL from any of those services auto-detects'
+                      . ' to the correct provider in the songs / songbooks / works /'
+                      . ' credit-people external-links editors. Idempotent — link types'
+                      . ' upsert by Slug, patterns guard on (LinkTypeId, Host, PathPrefix)'
+                      . ' before inserting.',
+            'button' => 'Run Extra Streaming Platforms Migration',
+        ],
+        /* Pending when the prerequisite registry tables already exist AND the
+           sentinel 'tidal' slug hasn't been seeded yet. Anchored to a single
+           sentinel so the probe converges to "applied" once the migration
+           runs; using all 12 slugs in an OR-chain would let one curator-deleted
+           row keep the card stuck pending forever. */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_tableExists($db, 'tblExternalLinkTypes')
+                || !_migProbe_tableExists($db, 'tblExternalLinkPatterns')) {
+                return false;
+            }
+            $stmt = $db->prepare(
+                'SELECT 1 FROM tblExternalLinkTypes WHERE Slug = ? LIMIT 1'
+            );
+            $sentinel = 'tidal';
+            $stmt->bind_param('s', $sentinel);
+            $stmt->execute();
+            $present = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            return !$present;
+        },
+    ],
     'song-media' => [
         'script' => 'migrate-song-media.php',
         'card' => [
