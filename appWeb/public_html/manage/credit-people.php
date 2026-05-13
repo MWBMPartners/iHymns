@@ -2028,37 +2028,56 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
         $linkCatOrder = ['official','information','read','sheet-music','listen','watch','purchase','authority','social','other'];
     ?>
     <template id="cp-link-row-template">
-        <div class="d-flex gap-1 align-items-start cp-link-row" data-row-kind="link">
-            <select class="form-select form-select-sm" style="min-width: 160px; max-width: 200px;" name="links[{i}][type_id]">
-                <option value="">— pick a link type —</option>
-                <?php foreach ($linkCatOrder as $catKey): ?>
-                    <?php if (empty($linkOptionsByCat[$catKey])) continue; ?>
-                    <optgroup label="<?= htmlspecialchars($linkCatLabels[$catKey] ?? $catKey) ?>">
-                        <?php foreach ($linkOptionsByCat[$catKey] as $lt): ?>
-                            <option value="<?= (int)$lt['id'] ?>"><?= htmlspecialchars((string)$lt['name']) ?></option>
-                        <?php endforeach; ?>
-                    </optgroup>
-                <?php endforeach; ?>
-                <?php
-                    /* Catch-all for any category the labels map doesn't cover —
-                       guarantees a new registry category shows up rather than
-                       silently disappearing. */
-                    $leftoverCats = array_diff(array_keys($linkOptionsByCat), $linkCatOrder);
-                    foreach ($leftoverCats as $cat):
-                ?>
-                    <optgroup label="<?= htmlspecialchars($cat) ?>">
-                        <?php foreach ($linkOptionsByCat[$cat] as $lt): ?>
-                            <option value="<?= (int)$lt['id'] ?>"><?= htmlspecialchars((string)$lt['name']) ?></option>
-                        <?php endforeach; ?>
-                    </optgroup>
-                <?php endforeach; ?>
-            </select>
-            <input type="url" class="form-control form-control-sm" name="links[{i}][url]" placeholder="https://…" required>
-            <input type="text" class="form-control form-control-sm" style="max-width: 140px;" name="links[{i}][label]" placeholder="Label (optional)">
-            <input type="hidden" name="links[{i}][sort_order]" value="{i}">
-            <button type="button" class="btn btn-sm btn-outline-danger cp-row-remove" title="Remove this link" aria-label="Remove this link">
-                <i class="bi bi-x" aria-hidden="true"></i>
-            </button>
+        <div class="card bg-dark border-secondary cp-link-row" data-row-kind="link">
+            <div class="card-body py-2">
+                <div class="d-flex align-items-start gap-2">
+                    <div class="flex-grow-1">
+                        <div class="row g-2 mb-1">
+                            <div class="col-12 col-md-5">
+                                <select class="form-select form-select-sm" name="links[{i}][type_id]">
+                                    <option value="">— pick a link type —</option>
+                                    <?php foreach ($linkCatOrder as $catKey): ?>
+                                        <?php if (empty($linkOptionsByCat[$catKey])) continue; ?>
+                                        <optgroup label="<?= htmlspecialchars($linkCatLabels[$catKey] ?? $catKey) ?>">
+                                            <?php foreach ($linkOptionsByCat[$catKey] as $lt): ?>
+                                                <option value="<?= (int)$lt['id'] ?>"><?= htmlspecialchars((string)$lt['name']) ?></option>
+                                            <?php endforeach; ?>
+                                        </optgroup>
+                                    <?php endforeach; ?>
+                                    <?php
+                                        /* Catch-all for any category the labels map doesn't cover —
+                                           guarantees a new registry category shows up rather than
+                                           silently disappearing. */
+                                        $leftoverCats = array_diff(array_keys($linkOptionsByCat), $linkCatOrder);
+                                        foreach ($leftoverCats as $cat):
+                                    ?>
+                                        <optgroup label="<?= htmlspecialchars($cat) ?>">
+                                            <?php foreach ($linkOptionsByCat[$cat] as $lt): ?>
+                                                <option value="<?= (int)$lt['id'] ?>"><?= htmlspecialchars((string)$lt['name']) ?></option>
+                                            <?php endforeach; ?>
+                                        </optgroup>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                            <div class="col-12 col-md-7">
+                                <input type="url" class="form-control form-control-sm"
+                                       name="links[{i}][url]" placeholder="https://…" required>
+                            </div>
+                        </div>
+                        <div class="row g-2">
+                            <div class="col-12">
+                                <input type="text" class="form-control form-control-sm"
+                                       name="links[{i}][label]" placeholder="Label (optional)">
+                            </div>
+                        </div>
+                        <input type="hidden" name="links[{i}][sort_order]" value="{i}">
+                    </div>
+                    <button type="button" class="btn btn-sm btn-outline-danger cp-row-remove"
+                            title="Remove this link" aria-label="Remove this link">
+                        <i class="bi bi-x" aria-hidden="true"></i>
+                    </button>
+                </div>
+            </div>
         </div>
     </template>
     <!-- Registry payload for the shared iHymnsLinkDetect module so the
@@ -2068,35 +2087,70 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
         window._iHymnsLinkTypes = <?= json_encode($linkTypesForPerson, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
     </script>
     <template id="cp-ipi-row-template">
-        <div class="d-flex gap-1 align-items-start cp-ipi-row" data-row-kind="ipi">
-            <input type="text" class="form-control form-control-sm" style="max-width: 140px;" name="ipi[{i}][number]" placeholder="IPI number" required>
-            <input type="text" class="form-control form-control-sm" style="max-width: 180px;" name="ipi[{i}][name_used]" placeholder="Name used (optional)">
-            <input type="text" class="form-control form-control-sm" name="ipi[{i}][notes]" placeholder="Notes (optional)">
-            <button type="button" class="btn btn-sm btn-outline-danger cp-row-remove" title="Remove this IPI" aria-label="Remove this IPI">
-                <i class="bi bi-x" aria-hidden="true"></i>
-            </button>
+        <div class="card bg-dark border-secondary cp-ipi-row" data-row-kind="ipi">
+            <div class="card-body py-2">
+                <div class="d-flex align-items-start gap-2">
+                    <div class="flex-grow-1">
+                        <div class="row g-2 mb-1">
+                            <div class="col-12 col-md-4">
+                                <input type="text" class="form-control form-control-sm"
+                                       name="ipi[{i}][number]" placeholder="IPI number" required>
+                            </div>
+                            <div class="col-12 col-md-8">
+                                <input type="text" class="form-control form-control-sm"
+                                       name="ipi[{i}][name_used]" placeholder="Name used (optional)">
+                            </div>
+                        </div>
+                        <div class="row g-2">
+                            <div class="col-12">
+                                <input type="text" class="form-control form-control-sm"
+                                       name="ipi[{i}][notes]" placeholder="Notes (optional)">
+                            </div>
+                        </div>
+                    </div>
+                    <button type="button" class="btn btn-sm btn-outline-danger cp-row-remove"
+                            title="Remove this IPI" aria-label="Remove this IPI">
+                        <i class="bi bi-x" aria-hidden="true"></i>
+                    </button>
+                </div>
+            </div>
         </div>
     </template>
     <template id="cp-alias-row-template">
-        <div class="d-flex gap-1 align-items-start cp-alias-row" data-row-kind="alias">
-            <input type="text" class="form-control form-control-sm" name="aliases[{i}][name]"
-                   placeholder="Alternative name" maxlength="255" required>
-            <select class="form-select form-select-sm" style="min-width: 130px; max-width: 170px;"
-                    name="aliases[{i}][type]">
-                <?php foreach ($ALIAS_TYPES as $key => $label): ?>
-                    <option value="<?= htmlspecialchars($key) ?>"<?= $key === 'other' ? ' selected' : '' ?>>
-                        <?= htmlspecialchars($label) ?>
-                    </option>
-                <?php endforeach; ?>
-            </select>
-            <input type="text" class="form-control form-control-sm" style="max-width: 90px;"
-                   name="aliases[{i}][locale]" placeholder="Locale" maxlength="35"
-                   title="Optional IETF BCP 47 tag for transliterations (ja, ru-Latn, zh-Hans, …)">
-            <input type="hidden" name="aliases[{i}][sort_order]" value="{i}">
-            <button type="button" class="btn btn-sm btn-outline-danger cp-row-remove"
-                    title="Remove this alias" aria-label="Remove this alias">
-                <i class="bi bi-x" aria-hidden="true"></i>
-            </button>
+        <div class="card bg-dark border-secondary cp-alias-row" data-row-kind="alias">
+            <div class="card-body py-2">
+                <div class="d-flex align-items-start gap-2">
+                    <div class="flex-grow-1">
+                        <div class="row g-2">
+                            <div class="col-12 col-md-5">
+                                <input type="text" class="form-control form-control-sm"
+                                       name="aliases[{i}][name]" placeholder="Alternative name"
+                                       maxlength="255" required>
+                            </div>
+                            <div class="col-12 col-md-4">
+                                <select class="form-select form-select-sm" name="aliases[{i}][type]">
+                                    <?php foreach ($ALIAS_TYPES as $key => $label): ?>
+                                        <option value="<?= htmlspecialchars($key) ?>"<?= $key === 'other' ? ' selected' : '' ?>>
+                                            <?= htmlspecialchars($label) ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                            <div class="col-12 col-md-3">
+                                <input type="text" class="form-control form-control-sm"
+                                       name="aliases[{i}][locale]" placeholder="Locale"
+                                       maxlength="35"
+                                       title="Optional IETF BCP 47 tag for transliterations (ja, ru-Latn, zh-Hans, …)">
+                            </div>
+                        </div>
+                        <input type="hidden" name="aliases[{i}][sort_order]" value="{i}">
+                    </div>
+                    <button type="button" class="btn btn-sm btn-outline-danger cp-row-remove"
+                            title="Remove this alias" aria-label="Remove this alias">
+                        <i class="bi bi-x" aria-hidden="true"></i>
+                    </button>
+                </div>
+            </div>
         </div>
     </template>
 
@@ -2522,7 +2576,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             drawerEl.addEventListener('click', (ev) => {
                 const remove = ev.target.closest('.cp-row-remove');
                 if (!remove) return;
-                const row = remove.closest('.cp-link-row, .cp-ipi-row');
+                const row = remove.closest('.cp-link-row, .cp-ipi-row, .cp-alias-row');
                 if (row) row.remove();
             });
         })();
