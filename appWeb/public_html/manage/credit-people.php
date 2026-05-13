@@ -95,12 +95,16 @@ $logCreditPerson = static function (string $action, string $entityId, array $det
  * thin wrappers so the existing call sites below ($normaliseLinks,
  * $normaliseIpi, _cpFlagsColumnsExist) keep working unchanged.
  * ---------------------------------------------------------------------- */
-$LINK_TYPE_CATALOGUE = CREDIT_PERSON_LINK_TYPE_CATALOGUE;
-$LINK_TYPE_KEYS      = CREDIT_PERSON_LINK_TYPE_KEYS;
 $ALIAS_TYPES         = CREDIT_PERSON_ALIAS_TYPES;
-$normaliseLinks      = static fn(mixed $raw): array => normaliseCreditPersonLinks($raw);
+$normaliseLinks      = static fn(\mysqli $db, mixed $raw): array => normaliseCreditPersonLinks($db, $raw);
 $normaliseIpi        = static fn(mixed $raw): array => normaliseCreditPersonIpi($raw);
 $normaliseAliases    = static fn(mixed $raw): array => normaliseCreditPersonAliases($raw);
+
+/* External-link type registry — pulled inside each action handler
+   below from $linkTypesForPerson, populated near the page-render
+   section once $db is in scope. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes'
+    . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
 
 /* Wrapper kept under the original snake_case private-prefix name so
    existing call sites in this file keep working without further
@@ -220,7 +224,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $deathPlace  = trim((string)($_POST['death_place']  ?? '')) ?: null;
                 $deathDate   = trim((string)($_POST['death_date']   ?? '')) ?: null;
                 $notes       = $notesRaw !== '' ? $notesRaw : null;
-                $links       = $normaliseLinks($_POST['links']     ?? null);
+                $links       = $normaliseLinks($db, $_POST['links']     ?? null);
                 $ipi         = $normaliseIpi($_POST['ipi']         ?? null);
                 $aliases     = $normaliseAliases($_POST['aliases'] ?? null);
                 /* #584 / #585 — classification flags. The two are
@@ -356,13 +360,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     if ($links) {
                         $linkStmt = $db->prepare(
-                            'INSERT INTO tblCreditPersonLinks
-                                (CreditPersonId, LinkType, Url, Label, SortOrder)
+                            'INSERT INTO tblCreditPersonExternalLinks
+                                (CreditPersonId, LinkTypeId, Url, Note, SortOrder)
                              VALUES (?, ?, ?, ?, ?)'
                         );
                         foreach ($links as $l) {
-                            $linkStmt->bind_param('isssi',
-                                $newId, $l['type'], $l['url'], $l['label'], $l['sort_order']);
+                            $linkStmt->bind_param('iissi',
+                                $newId, $l['type_id'], $l['url'], $l['label'], $l['sort_order']);
                             $linkStmt->execute();
                         }
                         $linkStmt->close();
@@ -426,7 +430,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $deathPlace  = trim((string)($_POST['death_place']  ?? '')) ?: null;
                 $deathDate   = trim((string)($_POST['death_date']   ?? '')) ?: null;
                 $notes       = $notesRaw !== '' ? $notesRaw : null;
-                $links       = $normaliseLinks($_POST['links']     ?? null);
+                $links       = $normaliseLinks($db, $_POST['links']     ?? null);
                 $ipi         = $normaliseIpi($_POST['ipi']         ?? null);
                 $aliases     = $normaliseAliases($_POST['aliases'] ?? null);
                 $isSpecialCase = !empty($_POST['is_special_case']) ? 1 : 0;
@@ -525,19 +529,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                        diffing and the per-person row counts are small
                        (typically < 10 each). The child Ids change as a
                        side effect, but no other table references them. */
-                    $del = $db->prepare('DELETE FROM tblCreditPersonLinks WHERE CreditPersonId = ?');
+                    $del = $db->prepare('DELETE FROM tblCreditPersonExternalLinks WHERE CreditPersonId = ?');
                     $del->bind_param('i', $id);
                     $del->execute();
                     $del->close();
                     if ($links) {
                         $linkStmt = $db->prepare(
-                            'INSERT INTO tblCreditPersonLinks
-                                (CreditPersonId, LinkType, Url, Label, SortOrder)
+                            'INSERT INTO tblCreditPersonExternalLinks
+                                (CreditPersonId, LinkTypeId, Url, Note, SortOrder)
                              VALUES (?, ?, ?, ?, ?)'
                         );
                         foreach ($links as $l) {
-                            $linkStmt->bind_param('isssi',
-                                $id, $l['type'], $l['url'], $l['label'], $l['sort_order']);
+                            $linkStmt->bind_param('iissi',
+                                $id, $l['type_id'], $l['url'], $l['label'], $l['sort_order']);
                             $linkStmt->execute();
                         }
                         $linkStmt->close();
@@ -798,7 +802,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     /* Count links currently on the source so we can report
                        kept-vs-dropped accurately. */
-                    $stmt = $db->prepare('SELECT Id FROM tblCreditPersonLinks WHERE CreditPersonId = ?');
+                    $stmt = $db->prepare('SELECT Id FROM tblCreditPersonExternalLinks WHERE CreditPersonId = ?');
                     $stmt->bind_param('i', $sourceId);
                     $stmt->execute();
                     $sourceLinkIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
@@ -817,7 +821,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $toMove = array_intersect($keepLinks, array_map('intval', $sourceLinkIds));
                         if ($toMove) {
                             $upd = $db->prepare(
-                                'UPDATE tblCreditPersonLinks SET CreditPersonId = ? WHERE Id = ? AND CreditPersonId = ?'
+                                'UPDATE tblCreditPersonExternalLinks SET CreditPersonId = ? WHERE Id = ? AND CreditPersonId = ?'
                             );
                             foreach ($toMove as $lid) {
                                 $upd->bind_param('iii', $targetId, $lid, $sourceId);
@@ -1047,7 +1051,7 @@ try {
                p.DeathPlace,
                p.DeathDate,
                p.UpdatedAt,
-               (SELECT COUNT(*) FROM tblCreditPersonLinks l WHERE l.CreditPersonId = p.Id) AS LinkCount,
+               (SELECT COUNT(*) FROM tblCreditPersonExternalLinks l WHERE l.CreditPersonId = p.Id) AS LinkCount,
                (SELECT COUNT(*) FROM tblCreditPersonIPI   i WHERE i.CreditPersonId = p.Id) AS IPICount
                {$flagCols}
                {$namePartCols}
@@ -1067,21 +1071,27 @@ try {
     $ipiByPerson     = [];
     $aliasesByPerson = [];
     $stmt = $db->prepare(
-        'SELECT Id, CreditPersonId, LinkType, Url, Label, SortOrder
-           FROM tblCreditPersonLinks
+        'SELECT Id, CreditPersonId, LinkTypeId, Url, Note, SortOrder, Verified
+           FROM tblCreditPersonExternalLinks
           ORDER BY CreditPersonId ASC, SortOrder ASC, Id ASC'
     );
     $stmt->execute();
     foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $l) {
         $linksByPerson[(int)$l['CreditPersonId']][] = [
             'id'         => (int)$l['Id'],
-            'type'       => (string)$l['LinkType'],
+            'type_id'    => (int)$l['LinkTypeId'],
             'url'        => (string)$l['Url'],
-            'label'      => $l['Label'],
+            'label'      => $l['Note'],
             'sort_order' => (int)$l['SortOrder'],
+            'verified'   => (int)$l['Verified'],
         ];
     }
     $stmt->close();
+
+    /* #833 — load the registry for the edit drawer's link-type dropdown,
+       once per page. Powers window._iHymnsLinkTypes for the shared
+       editor module, and the inline <option> seed below. */
+    $linkTypesForPerson = loadExternalLinkTypesFor($db, 'person');
 
     $stmt = $db->prepare(
         'SELECT Id, CreditPersonId, IPINumber, NameUsed, Notes
@@ -1989,15 +1999,56 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
     <!-- Templates for the repeating sub-form rows. {i} placeholder gets
          replaced by the JS with the row's array index so PHP receives
          them as $_POST['links'][i][...] and $_POST['ipi'][i][...]. -->
+    <?php
+        /* Build the link-type dropdown from the tblExternalLinkTypes
+           registry instead of the deprecated PHP catalogue (#586 →
+           unified into tblExternalLinkTypes). Grouped by Category for
+           the <optgroup>; the values are the numeric registry Ids so
+           the auto-detect module's default slugToOptionValue() lookup
+           (which cross-references window._iHymnsLinkTypes by id) does
+           the right thing without the per-page translation kludge. */
+        $linkOptionsByCat = [];
+        foreach ($linkTypesForPerson as $lt) {
+            $cat = (string)($lt['category'] ?? 'other');
+            if (!isset($linkOptionsByCat[$cat])) $linkOptionsByCat[$cat] = [];
+            $linkOptionsByCat[$cat][] = $lt;
+        }
+        $linkCatLabels = [
+            'official'    => 'Official',
+            'information' => 'Information',
+            'read'        => 'Read',
+            'sheet-music' => 'Sheet music',
+            'listen'      => 'Listen',
+            'watch'       => 'Watch',
+            'purchase'    => 'Purchase',
+            'authority'   => 'Authority',
+            'social'      => 'Social',
+            'other'       => 'Other',
+        ];
+        $linkCatOrder = ['official','information','read','sheet-music','listen','watch','purchase','authority','social','other'];
+    ?>
     <template id="cp-link-row-template">
         <div class="d-flex gap-1 align-items-start cp-link-row" data-row-kind="link">
-            <select class="form-select form-select-sm" style="min-width: 160px; max-width: 200px;" name="links[{i}][type]">
-                <?php foreach ($LINK_TYPE_CATALOGUE as $groupLabel => $items): ?>
-                    <optgroup label="<?= htmlspecialchars($groupLabel) ?>">
-                        <?php foreach ($items as $key => $label): ?>
-                            <option value="<?= htmlspecialchars($key) ?>"<?= $key === 'official' ? ' selected' : '' ?>>
-                                <?= htmlspecialchars($label) ?>
-                            </option>
+            <select class="form-select form-select-sm" style="min-width: 160px; max-width: 200px;" name="links[{i}][type_id]">
+                <option value="">— pick a link type —</option>
+                <?php foreach ($linkCatOrder as $catKey): ?>
+                    <?php if (empty($linkOptionsByCat[$catKey])) continue; ?>
+                    <optgroup label="<?= htmlspecialchars($linkCatLabels[$catKey] ?? $catKey) ?>">
+                        <?php foreach ($linkOptionsByCat[$catKey] as $lt): ?>
+                            <option value="<?= (int)$lt['id'] ?>"><?= htmlspecialchars((string)$lt['name']) ?></option>
+                        <?php endforeach; ?>
+                    </optgroup>
+                <?php endforeach; ?>
+                <?php
+                    /* Catch-all for any category the labels map doesn't cover —
+                       guarantees a new registry category shows up rather than
+                       silently disappearing. */
+                    $leftoverCats = array_diff(array_keys($linkOptionsByCat), $linkCatOrder);
+                    foreach ($leftoverCats as $cat):
+                ?>
+                    <optgroup label="<?= htmlspecialchars($cat) ?>">
+                        <?php foreach ($linkOptionsByCat[$cat] as $lt): ?>
+                            <option value="<?= (int)$lt['id'] ?>"><?= htmlspecialchars((string)$lt['name']) ?></option>
                         <?php endforeach; ?>
                     </optgroup>
                 <?php endforeach; ?>
@@ -2010,6 +2061,12 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             </button>
         </div>
     </template>
+    <!-- Registry payload for the shared iHymnsLinkDetect module so the
+         default slugToOptionValue lookup can resolve detected slugs
+         to the numeric option values in the template above. -->
+    <script>
+        window._iHymnsLinkTypes = <?= json_encode($linkTypesForPerson, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+    </script>
     <template id="cp-ipi-row-template">
         <div class="d-flex gap-1 align-items-start cp-ipi-row" data-row-kind="ipi">
             <input type="text" class="form-control form-control-sm" style="max-width: 140px;" name="ipi[{i}][number]" placeholder="IPI number" required>
@@ -2140,54 +2197,17 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             let ipiIndex   = 0;
             let aliasIndex = 0;
 
-            /* Translation map from the shared iHymnsLinkDetect slug
-               vocabulary (driven by tblExternalLinkTypes + the bundled
-               RULES array) to the credit-people-specific link-type keys
-               in CREDIT_PERSON_LINK_TYPE_CATALOGUE.
-
-               TODO (followup): unify credit-people storage onto
-               tblExternalLinkTypes so this map can disappear and the
-               same shared editor module can drive this surface too. */
-            const CP_DETECT_SLUG_TO_KEY = {
-                'wikipedia':            'wikipedia',
-                'wikidata':             'wikidata',
-                'musicbrainz-artist':   'musicbrainz',
-                'musicbrainz-work':     'musicbrainz',
-                'musicbrainz-recording':'musicbrainz',
-                'discogs':              'discogs',
-                'imslp':                'imslp',
-                'hymnary-org':          'hymnary',
-                'spotify':              'spotify',
-                'apple-music':          'apple_music',
-                'youtube-music':        'youtube_music',
-                'bandcamp':             'bandcamp',
-                'soundcloud':           'soundcloud',
-                'youtube':              'youtube',
-                'facebook':             'facebook',
-                'instagram':            'instagram',
-                'twitter-x':            'twitter',
-                'mastodon':             'mastodon',
-            };
-
-            /* Wire the credit-people link row to the shared
-               iHymnsLinkDetect module. The credit-people <select>
-               values ARE the credit-people key (e.g. 'apple_music'),
-               not a numeric tblExternalLinkTypes.Id, so the standard
-               slugToOptionValue helper doesn't fit — we pass a
-               slugLookup that walks our translation map and returns the
-               matching option value when present. */
+            /* Wire each credit-people link row to the shared
+               iHymnsLinkDetect module. The dropdown's option values
+               are now numeric tblExternalLinkTypes.Id (post-#833
+               unification), so the module's default slugToOptionValue
+               lookup (cross-referencing window._iHymnsLinkTypes by
+               id) Just Works — no per-page translation map needed
+               any more. */
             function wireCpLinkRowAutoDetect(row) {
                 if (!window.iHymnsLinkDetect || typeof window.iHymnsLinkDetect.attachAutoDetect !== 'function') return;
                 window.iHymnsLinkDetect.attachAutoDetect(row, {
-                    selectSelector: 'select[name$="[type]"]',
-                    slugLookup: function (slug, selectEl) {
-                        const key = CP_DETECT_SLUG_TO_KEY[slug];
-                        if (!key || !selectEl) return '';
-                        for (let i = 0; i < selectEl.options.length; i++) {
-                            if (selectEl.options[i].value === key) return key;
-                        }
-                        return '';
-                    },
+                    selectSelector: 'select[name$="[type_id]"]',
                 });
             }
 
@@ -2201,7 +2221,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 const row = linksBox.lastElementChild;
                 if (prefill) {
                     const sel = row.querySelector('select');
-                    if (sel) sel.value = prefill.type || 'other';
+                    if (sel && prefill.type_id) sel.value = String(prefill.type_id);
                     const url = row.querySelector('input[type="url"]');
                     if (url) url.value = prefill.url || '';
                     const lbl = row.querySelector('input[name$="[label]"]');
@@ -2210,8 +2230,9 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                     if (ord && prefill.sort_order !== undefined) ord.value = prefill.sort_order;
                 }
                 /* Auto-detect provider from the pasted URL — same
-                   global module the other admin surfaces use, with a
-                   per-page slug translation. */
+                   shared module every other admin surface uses, now
+                   with no translation map since the option values
+                   are numeric registry ids. */
                 wireCpLinkRowAutoDetect(row);
                 return row;
             }

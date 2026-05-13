@@ -8,12 +8,16 @@ declare(strict_types=1);
  * Single source of truth for the bits both /manage/credit-people.php
  * and the admin_credit_person_* API endpoints share:
  *
- *   - CREDIT_PERSON_LINK_TYPE_CATALOGUE — grouped catalogue of
- *     link-type keys for the per-person external-link sub-form (#586).
- *   - CREDIT_PERSON_LINK_TYPE_KEYS — flat lookup used by the validator.
+ *   - CREDIT_PERSON_LEGACY_SLUG_MAP — back-compat slug → registry-slug
+ *     coercion table for /api.php callers that still send the legacy
+ *     #586 vocabulary. The /manage/credit-people form moved to numeric
+ *     LinkTypeId values directly and no longer reads this map.
+ *   - resolveCreditPersonLinkTypeId() — single source of truth for
+ *     "given a numeric type_id OR a slug string, find the matching
+ *     tblExternalLinkTypes.Id row" used by every write path.
  *   - normaliseCreditPersonLinks() / normaliseCreditPersonIpi() —
- *     drop empty rows, coerce unknown link types to 'other', normalise
- *     the row shape into INSERT-ready arrays.
+ *     drop empty rows, resolve link-type slugs / numeric ids to
+ *     registry FKs, normalise the row shape into INSERT-ready arrays.
  *   - creditPeopleFlagsColumnsExist() — cached check for the
  *     IsSpecialCase / IsGroup columns from #584/#585. Lets the add /
  *     update paths gracefully no-op the flag writes on a partly-
@@ -29,71 +33,137 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 }
 
 /**
- * Curated link-type registry (#586).
+ * Legacy slug → tblExternalLinkTypes.Slug map for credit-people.
  *
- * Adding a new provider: append it under its category. The picker
- * UI (built from this catalogue via <optgroup>) and the
- * normaliser's allowlist both update automatically. Legacy
- * LinkType values stored in the DB before #586 (e.g. 'official',
- * 'wikipedia') stay valid because they still appear under General.
+ * Preserved purely for backwards compatibility with /api.php
+ * admin_credit_person_add / _update callers that historically sent
+ * `links[].type` as a free-text slug string (the #586 catalogue
+ * vocabulary: 'apple_music', 'youtube_music', 'twitter', etc.).
+ * Mirrors the mapping table from migrate-backfill-credit-person-links.php
+ * so any external consumer can keep sending the old vocabulary
+ * while the storage layer moves to numeric LinkTypeId FKs.
+ *
+ * Anything not in the map resolves to 'other' — same fall-through
+ * the backfill migration applies.
  */
-if (!defined('IHYMNS_CREDIT_LINK_CATALOGUE_DEFINED')) {
-    define('IHYMNS_CREDIT_LINK_CATALOGUE_DEFINED', true);
-    define('CREDIT_PERSON_LINK_TYPE_CATALOGUE', [
-        'General' => [
-            'official'      => 'Official website',
-            'wikipedia'     => 'Wikipedia',
-            'wikidata'      => 'Wikidata',
-            'musicbrainz'   => 'MusicBrainz',
-            'discogs'       => 'Discogs',
-            'imslp'         => 'IMSLP',
-            'hymnary'       => 'Hymnary',
-        ],
-        'Music streaming / stores' => [
-            'spotify'       => 'Spotify',
-            'apple_music'   => 'Apple Music',
-            'youtube_music' => 'YouTube Music',
-            'amazon_music'  => 'Amazon Music',
-            'tidal'         => 'Tidal',
-            'qobuz'         => 'Qobuz',
-            'pandora'       => 'Pandora',
-            'bandcamp'      => 'Bandcamp',
-            'soundcloud'    => 'SoundCloud',
-        ],
-        'Social media' => [
-            'facebook'      => 'Facebook',
-            'instagram'     => 'Instagram',
-            'twitter'       => 'Twitter / X',
-            'tiktok'        => 'TikTok',
-            'youtube'       => 'YouTube',
-            'snapchat'      => 'Snapchat',
-            'threads'       => 'Threads',
-            'mastodon'      => 'Mastodon',
-        ],
-        'Other' => [
-            'other'         => 'Other (free text)',
-        ],
+if (!defined('IHYMNS_CREDIT_LINK_LEGACY_SLUG_MAP_DEFINED')) {
+    define('IHYMNS_CREDIT_LINK_LEGACY_SLUG_MAP_DEFINED', true);
+    define('CREDIT_PERSON_LEGACY_SLUG_MAP', [
+        /* Direct passes (the registry slug IS the form slug) */
+        'wikipedia'             => 'wikipedia',
+        'wikidata'              => 'wikidata',
+        'discogs'               => 'discogs',
+        'imslp'                 => 'imslp',
+        'viaf'                  => 'viaf',
+        'linkedin'              => 'linkedin',
+        'instagram'             => 'instagram',
+        'facebook'              => 'facebook',
+        'mastodon'              => 'mastodon',
+        'youtube'               => 'youtube',
+        'spotify'               => 'spotify',
+        'bandcamp'              => 'bandcamp',
+        'soundcloud'            => 'soundcloud',
+        /* Aliases the #586 catalogue used (and other common variants) */
+        'wiki'                  => 'wikipedia',
+        'petrucci'              => 'imslp',
+        'hymnary'               => 'hymnary-org',
+        'hymnary.org'           => 'hymnary-org',
+        'hymnary-org'           => 'hymnary-org',
+        'website'               => 'official-website',
+        'official'              => 'official-website',
+        'official-website'      => 'official-website',
+        'home'                  => 'official-website',
+        'homepage'              => 'official-website',
+        'musicbrainz'           => 'musicbrainz-artist',
+        'mb'                    => 'musicbrainz-artist',
+        'musicbrainz-artist'    => 'musicbrainz-artist',
+        'loc'                   => 'loc-name-authority',
+        'library-of-congress'   => 'loc-name-authority',
+        'loc-name-authority'    => 'loc-name-authority',
+        'findagrave'            => 'find-a-grave',
+        'find-a-grave'          => 'find-a-grave',
+        'goodreads'             => 'goodreads-author',
+        'goodreads-author'      => 'goodreads-author',
+        'twitter'               => 'twitter-x',
+        'x'                     => 'twitter-x',
+        'twitter-x'             => 'twitter-x',
+        'apple_music'           => 'apple-music',
+        'apple-music'           => 'apple-music',
+        'itunes'                => 'apple-music',
+        'youtube_music'         => 'youtube-music',
+        'youtube-music'         => 'youtube-music',
+        'archive.org'           => 'internet-archive',
+        'archive'               => 'internet-archive',
+        'internet-archive'      => 'internet-archive',
+        'cyber-hymnal'          => 'cyber-hymnal',
+        'cyberhymnal'           => 'cyber-hymnal',
     ]);
-    /* Flat lookup used by the normaliser's allowlist + by the JS-side
-       serialiser when it needs to validate keys client-side. */
-    define('CREDIT_PERSON_LINK_TYPE_KEYS',
-        array_keys(array_merge(...array_values(CREDIT_PERSON_LINK_TYPE_CATALOGUE))));
+}
+
+/**
+ * Resolve the `tblExternalLinkTypes.Id` for a credit-person link row.
+ *
+ * Accepts either a numeric `type_id` (preferred — the /manage/credit-people
+ * form uses the shared editor module so values are already registry
+ * IDs) or a legacy slug string (`type`) which gets coerced via
+ * CREDIT_PERSON_LEGACY_SLUG_MAP and looked up in the registry.
+ * Returns null when neither path resolves — the caller drops the
+ * row from the normaliser output, matching the pre-#833 behaviour
+ * where unknown types collapsed to 'other'.
+ */
+function resolveCreditPersonLinkTypeId(\mysqli $db, mixed $rawTypeId, mixed $rawSlug): ?int
+{
+    static $registryIds = null;
+    static $slugToId    = null;
+    if ($registryIds === null) {
+        $registryIds = [];
+        $slugToId    = [];
+        try {
+            $res = $db->query(
+                'SELECT Id, Slug FROM tblExternalLinkTypes WHERE COALESCE(IsActive, 1) = 1'
+            );
+            if ($res) {
+                while ($r = $res->fetch_assoc()) {
+                    $registryIds[(int)$r['Id']]     = true;
+                    $slugToId[(string)$r['Slug']]   = (int)$r['Id'];
+                }
+                $res->close();
+            }
+        } catch (\Throwable $_e) { /* leave maps empty — caller falls through */ }
+    }
+
+    /* New shape — caller already has a numeric id. Trust it provided
+       it exists in the active registry. */
+    $typeId = (int)($rawTypeId ?? 0);
+    if ($typeId > 0 && isset($registryIds[$typeId])) return $typeId;
+
+    /* Legacy shape — coerce the slug via the alias map, then look up. */
+    $slugIn = trim((string)($rawSlug ?? ''));
+    if ($slugIn === '') return null;
+    $resolved = CREDIT_PERSON_LEGACY_SLUG_MAP[mb_strtolower($slugIn)] ?? 'other';
+    return $slugToId[$resolved] ?? null;
 }
 
 /**
  * Normalise the per-person external-link sub-form. Drops empty rows
- * (no URL), coerces unknown types to 'other', and returns
- * INSERT-ready row arrays.
+ * (no URL), resolves either numeric `type_id` (new editor) or legacy
+ * `type` slug strings to a `tblExternalLinkTypes.Id`, and returns
+ * INSERT-ready row arrays shaped for `tblCreditPersonExternalLinks`.
  *
  * Accepts either the form-array shape from /manage/credit-people
- * (`links[i][type|url|label]`) or the JSON shape from /api.php
- * (`links[]: {type, url, label}`). The shape is identical once
- * decoded, so one normaliser covers both surfaces.
+ * (`links[i][type_id|type|url|label]`) or the JSON shape from
+ * /api.php (`links[]: {type_id|type, url, label}`).
  *
- * @param mixed $raw Form / JSON-decoded array; non-array → []
- * @return list<array{type:string,url:string,label:?string,sort_order:int}>
+ * Rows whose type can't be resolved to a registry id are dropped
+ * silently — same outcome the pre-#833 normaliser produced for
+ * unknown slug strings (it folded them into 'other'; here we
+ * require the 'other' row itself to exist in the registry).
+ *
+ * @param \mysqli $db   Needed to resolve slug → registry id.
+ * @param mixed   $raw  Form / JSON-decoded array; non-array → []
+ * @return list<array{type_id:int,url:string,label:?string,sort_order:int}>
  */
-function normaliseCreditPersonLinks(mixed $raw): array
+function normaliseCreditPersonLinks(\mysqli $db, mixed $raw): array
 {
     if (!is_array($raw)) return [];
     $out = [];
@@ -101,15 +171,10 @@ function normaliseCreditPersonLinks(mixed $raw): array
         if (!is_array($row)) continue;
         $url = trim((string)($row['url'] ?? ''));
         if ($url === '') continue;
-        $type = trim((string)($row['type'] ?? 'other'));
-        /* Unknown types collapse to 'other' rather than 500ing —
-           keeps a forward-compatible UI where a future picker
-           category gets dropped to a sane bucket on older servers. */
-        if (!in_array($type, CREDIT_PERSON_LINK_TYPE_KEYS, true)) {
-            $type = 'other';
-        }
+        $typeId = resolveCreditPersonLinkTypeId($db, $row['type_id'] ?? null, $row['type'] ?? null);
+        if ($typeId === null) continue;
         $out[] = [
-            'type'       => $type,
+            'type_id'    => $typeId,
             'url'        => $url,
             'label'      => trim((string)($row['label'] ?? '')) ?: null,
             'sort_order' => (int)($row['sort_order'] ?? $i),
