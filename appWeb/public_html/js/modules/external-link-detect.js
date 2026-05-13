@@ -66,6 +66,32 @@
         { slug: 'bandcamp',              hosts: ['bandcamp.com'] },
         { slug: 'soundcloud',            hosts: ['soundcloud.com'] },
         { slug: 'librivox',              hosts: ['librivox.org'] },
+
+        /* Extra streaming platforms. Amazon Music + Yandex Music enumerate
+           the per-country music.<host>.<tld> exact subdomains; the rest
+           are bare domains with suffix matching so listen.tidal.com,
+           www.deezer.com, play.anghami.com, etc. all match a single rule. */
+        { slug: 'tidal',                 hosts: ['tidal.com'] },
+        { slug: 'deezer',                hosts: ['deezer.com'] },
+        { slug: 'amazon-music',          hosts: [
+            'music.amazon.com', 'music.amazon.co.uk', 'music.amazon.de',
+            'music.amazon.co.jp', 'music.amazon.fr', 'music.amazon.it',
+            'music.amazon.es', 'music.amazon.com.au', 'music.amazon.ca',
+            'music.amazon.com.br', 'music.amazon.com.mx', 'music.amazon.in',
+        ], hostMatch: 'eq' },
+        { slug: 'pandora',               hosts: ['pandora.com'] },
+        { slug: 'iheartradio',           hosts: ['iheart.com', 'iheartradio.com', 'iheartradio.ca'] },
+        { slug: 'qobuz',                 hosts: ['qobuz.com'] },
+        { slug: 'napster',               hosts: ['napster.com'] },
+        { slug: 'anghami',               hosts: ['anghami.com'] },
+        { slug: 'jiosaavn',              hosts: ['jiosaavn.com', 'saavn.com'] },
+        { slug: 'yandex-music',          hosts: [
+            'music.yandex.ru', 'music.yandex.com', 'music.yandex.by',
+            'music.yandex.kz', 'music.yandex.uz',
+        ], hostMatch: 'eq' },
+        { slug: 'mixcloud',              hosts: ['mixcloud.com'] },
+        { slug: 'audiomack',             hosts: ['audiomack.com'] },
+
         { slug: 'discogs',               hosts: ['discogs.com'] },
         { slug: 'goodreads-author',     hosts: ['goodreads.com'], pathPrefix: '/author/' },
         { slug: 'linkedin',              hosts: ['linkedin.com'] },
