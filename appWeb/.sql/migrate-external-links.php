@@ -219,6 +219,21 @@ $seedTypes = [
     ['instagram',            'Instagram',            'social',      'person',               0, 'bi-instagram',       102],
     ['facebook',             'Facebook',             'social',      'person',               0, 'bi-facebook',        103],
     ['mastodon',             'Mastodon',             'social',      'person',               0, 'bi-mastodon',        104],
+    ['myspace',              'Myspace',              'social',      'person',               0, 'bi-people',          105],
+
+    /* MusicBrainz-style additions (#1003) — providers that surface on the
+       reference MusicBrainz artist page but weren't in the iHymns seed
+       yet. AllMusic + Discogs sit together under 'information'; Last.fm
+       lives with the other 'listen' services; Bandsintown is touring /
+       performance info ('information'); Genius + Muzikum are lyrics-with-
+       extras pages (kept under 'information' instead of forcing a new
+       category — the curator can still pick 'Lyrics page' for plain text
+       lyrics sites that aren't on this list). */
+    ['allmusic',             'AllMusic',             'information', 'song,person',          1, 'bi-music-note',      87],
+    ['lastfm',               'Last.fm',              'listen',      'song,person',          1, 'bi-soundwave',       88],
+    ['bandsintown',          'Bandsintown',          'information', 'person',               0, 'bi-ticket-perforated', 26],
+    ['genius',               'Genius',               'information', 'song,person',          1, 'bi-file-text',       27],
+    ['muzikum',              'Muzikum.eu',           'information', 'song,person',          1, 'bi-file-text',       28],
     ['other',                'Other',                'other',       'song,songbook,person', 1, 'bi-link-45deg',      999],
 ];
 

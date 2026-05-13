@@ -9451,6 +9451,7 @@ if ($action !== null) {
             $notes       = $notesRaw !== '' ? $notesRaw : null;
             $rawLinks    = $body['links']   ?? null;
             $ipi         = normaliseCreditPersonIpi($body['ipi']       ?? null);
+            $isni        = normaliseCreditPersonIsni($body['isni']      ?? null);
             $aliases     = normaliseCreditPersonAliases($body['aliases'] ?? null);
             $isSpecialCase = !empty($body['is_special_case']) ? 1 : 0;
             $isGroup       = !empty($body['is_group'])        ? 1 : 0;
@@ -9552,18 +9553,25 @@ if ($action !== null) {
                         }
                         $linkStmt->close();
                     }
-                    if ($ipi) {
-                        $ipiStmt = $db->prepare(
-                            'INSERT INTO tblCreditPersonIPI
-                                (CreditPersonId, IPINumber, NameUsed, Notes)
-                             VALUES (?, ?, ?, ?)'
+                    if ($ipi || $isni) {
+                        $idStmt = $db->prepare(
+                            'INSERT INTO tblCreditPersonIdentifiers
+                                (CreditPersonId, IdentifierType, IdentifierValue, NameUsed, Notes)
+                             VALUES (?, ?, ?, ?, ?)'
                         );
+                        $type = 'ipi';
                         foreach ($ipi as $r) {
-                            $ipiStmt->bind_param('isss',
-                                $newId, $r['number'], $r['name_used'], $r['notes']);
-                            $ipiStmt->execute();
+                            $idStmt->bind_param('issss',
+                                $newId, $type, $r['number'], $r['name_used'], $r['notes']);
+                            $idStmt->execute();
                         }
-                        $ipiStmt->close();
+                        $type = 'isni';
+                        foreach ($isni as $r) {
+                            $idStmt->bind_param('issss',
+                                $newId, $type, $r['number'], $r['name_used'], $r['notes']);
+                            $idStmt->execute();
+                        }
+                        $idStmt->close();
                     }
                     /* AKA / alias names — schema-tolerant: replaceCreditPersonAliases
                        no-ops cleanly on installs where the aliases table isn't present. */
@@ -9587,6 +9595,7 @@ if ($action !== null) {
                     ], static fn($v) => $v !== null),
                     'link_count'  => count($links),
                     'ipi_count'   => count($ipi),
+                    'isni_count'  => count($isni),
                     'alias_count' => count($aliases),
                 ]);
 
@@ -9635,6 +9644,7 @@ if ($action !== null) {
             $notes       = $notesRaw !== '' ? $notesRaw : null;
             $rawLinks    = $body['links']   ?? null;
             $ipi         = normaliseCreditPersonIpi($body['ipi']       ?? null);
+            $isni        = normaliseCreditPersonIsni($body['isni']      ?? null);
             $aliases     = normaliseCreditPersonAliases($body['aliases'] ?? null);
             $isSpecialCase = !empty($body['is_special_case']) ? 1 : 0;
             $isGroup       = !empty($body['is_group'])        ? 1 : 0;
@@ -9721,22 +9731,29 @@ if ($action !== null) {
                         $linkStmt->close();
                     }
 
-                    $del = $db->prepare('DELETE FROM tblCreditPersonIPI WHERE CreditPersonId = ?');
+                    $del = $db->prepare('DELETE FROM tblCreditPersonIdentifiers WHERE CreditPersonId = ?');
                     $del->bind_param('i', $id);
                     $del->execute();
                     $del->close();
-                    if ($ipi) {
-                        $ipiStmt = $db->prepare(
-                            'INSERT INTO tblCreditPersonIPI
-                                (CreditPersonId, IPINumber, NameUsed, Notes)
-                             VALUES (?, ?, ?, ?)'
+                    if ($ipi || $isni) {
+                        $idStmt = $db->prepare(
+                            'INSERT INTO tblCreditPersonIdentifiers
+                                (CreditPersonId, IdentifierType, IdentifierValue, NameUsed, Notes)
+                             VALUES (?, ?, ?, ?, ?)'
                         );
+                        $type = 'ipi';
                         foreach ($ipi as $r) {
-                            $ipiStmt->bind_param('isss',
-                                $id, $r['number'], $r['name_used'], $r['notes']);
-                            $ipiStmt->execute();
+                            $idStmt->bind_param('issss',
+                                $id, $type, $r['number'], $r['name_used'], $r['notes']);
+                            $idStmt->execute();
                         }
-                        $ipiStmt->close();
+                        $type = 'isni';
+                        foreach ($isni as $r) {
+                            $idStmt->bind_param('issss',
+                                $id, $type, $r['number'], $r['name_used'], $r['notes']);
+                            $idStmt->execute();
+                        }
+                        $idStmt->close();
                     }
                     /* Replace the alias set unconditionally — the curator's
                        submitted list is the new truth, an empty list deletes
@@ -9770,7 +9787,8 @@ if ($action !== null) {
                     'after'       => array_intersect_key($afterRow,  array_flip($changed)),
                     'link_count'  => count($links),
                     'alias_count' => count($aliases),
-                    'ipi_count'  => count($ipi),
+                    'ipi_count'   => count($ipi),
+                    'isni_count'  => count($isni),
                 ]);
 
                 sendJson([
@@ -9971,7 +9989,7 @@ if ($action !== null) {
                     $sourceLinkIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
                     $stmt->close();
 
-                    $stmt = $db->prepare('SELECT Id FROM tblCreditPersonIPI WHERE CreditPersonId = ?');
+                    $stmt = $db->prepare('SELECT Id FROM tblCreditPersonIdentifiers WHERE CreditPersonId = ?');
                     $stmt->bind_param('i', $sourceId);
                     $stmt->execute();
                     $sourceIpiIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
@@ -9997,7 +10015,7 @@ if ($action !== null) {
                         $toMove = array_intersect($keepIpi, array_map('intval', $sourceIpiIds));
                         if ($toMove) {
                             $upd = $db->prepare(
-                                'UPDATE tblCreditPersonIPI SET CreditPersonId = ? WHERE Id = ? AND CreditPersonId = ?'
+                                'UPDATE tblCreditPersonIdentifiers SET CreditPersonId = ? WHERE Id = ? AND CreditPersonId = ?'
                             );
                             foreach ($toMove as $iid) {
                                 $upd->bind_param('iii', $targetId, $iid, $sourceId);

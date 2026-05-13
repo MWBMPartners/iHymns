@@ -362,6 +362,34 @@ CREATE TABLE IF NOT EXISTS tblCreditPersonIPI (
 
 
 -- ----------------------------------------------------------------------------
+-- tblCreditPersonIdentifiers
+-- Unified MusicBrainz-style identifier table: holds IPI Name Numbers AND
+-- ISNI (International Standard Name Identifier) rows side by side, with
+-- IdentifierType discriminating. Replaces the per-kind tblCreditPersonIPI
+-- table going forward; the legacy table stays as a one-release rollback
+-- snapshot and is dropped in a follow-up migration.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblCreditPersonIdentifiers (
+    Id              INT UNSIGNED       AUTO_INCREMENT PRIMARY KEY,
+    CreditPersonId  INT UNSIGNED       NOT NULL,
+    IdentifierType  ENUM('ipi','isni') NOT NULL,
+    IdentifierValue VARCHAR(64)        NOT NULL,
+    NameUsed        VARCHAR(255)       NULL,
+    Notes           VARCHAR(255)       NULL,
+    CreatedAt       DATETIME           NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       DATETIME           NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                       ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uk_PersonIdValue (CreditPersonId, IdentifierType, IdentifierValue),
+    INDEX idx_TypeValue (IdentifierType, IdentifierValue),
+
+    CONSTRAINT fk_CreditPersonId_Person
+        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
 -- tblSongComponents
 -- Each component stores its lyrics lines as a JSON array.
 -- `SortOrder` preserves the display sequence from the original data.
