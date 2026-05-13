@@ -94,6 +94,24 @@
 
         { slug: 'discogs',               hosts: ['discogs.com'] },
         { slug: 'goodreads-author',     hosts: ['goodreads.com'], pathPrefix: '/author/' },
+
+        /* Media databases — film / TV / streaming / anime / games.
+           Forward-looking groundwork for iLyrics DB + MeedyaDB which
+           will share the iHymns external-link registry. */
+        { slug: 'imdb',                  hosts: ['imdb.com'] },
+        { slug: 'tmdb',                  hosts: ['themoviedb.org'] },
+        { slug: 'thetvdb',               hosts: ['thetvdb.com'] },
+        { slug: 'letterboxd',            hosts: ['letterboxd.com'] },
+        { slug: 'rotten-tomatoes',       hosts: ['rottentomatoes.com'] },
+        { slug: 'metacritic',            hosts: ['metacritic.com'] },
+        { slug: 'allmovie',              hosts: ['allmovie.com'] },
+        { slug: 'tvmaze',                hosts: ['tvmaze.com'] },
+        { slug: 'trakt',                 hosts: ['trakt.tv'] },
+        { slug: 'justwatch',             hosts: ['justwatch.com'] },
+        { slug: 'myanimelist',           hosts: ['myanimelist.net'] },
+        { slug: 'anidb',                 hosts: ['anidb.net'] },
+        { slug: 'igdb',                  hosts: ['igdb.com'] },
+
         { slug: 'linkedin',              hosts: ['linkedin.com'] },
         { slug: 'twitter-x',             hosts: ['twitter.com', 'x.com'] },
         { slug: 'instagram',             hosts: ['instagram.com'] },

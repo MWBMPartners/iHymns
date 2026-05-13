@@ -239,6 +239,7 @@ $friendlyTitles = [
     'works'                            => 'Works — composition grouping (#840)',
     'external-link-patterns'           => 'External-Link URL Patterns (#845)',
     'extra-streaming-platforms'        => 'Extra Streaming Platforms',
+    'media-database-providers'         => 'Media Database Providers',
     'song-media'                       => 'Song Media Uploads (#853)',
     'song-component-language'          => 'Song Component Language Override (#858)',
     'song-arrangement'                 => 'Song Arrangement Persistence (#892)',

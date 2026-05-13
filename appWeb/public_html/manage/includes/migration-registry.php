@@ -880,6 +880,43 @@ return [
             return !$present;
         },
     ],
+    'media-database-providers' => [
+        'script' => 'migrate-media-database-providers.php',
+        'card' => [
+            'title'  => 'Media Database Providers',
+            'body'   => 'Adds IMDb, The Movie DB (TMDB), TheTVDB, Letterboxd,'
+                      . ' Rotten Tomatoes, Metacritic, AllMovie, TVmaze, Trakt,'
+                      . ' JustWatch, MyAnimeList, AniDB and IGDB to'
+                      . ' <code>tblExternalLinkTypes</code> (#833) with patterns'
+                      . ' in <code>tblExternalLinkPatterns</code> (#845). Forward-'
+                      . 'looking groundwork for iLyrics DB + MeedyaDB which will'
+                      . ' share the iHymns external-link registry —'
+                      . ' <code>AppliesTo</code> is deliberately wide'
+                      . ' (<code>song,songbook,person,work</code>) so these surface'
+                      . ' on every entity editor. Idempotent — link types upsert'
+                      . ' by Slug, patterns guard on (LinkTypeId, Host, PathPrefix)'
+                      . ' before inserting.',
+            'button' => 'Run Media Database Providers Migration',
+        ],
+        /* Pending when prerequisite registry tables exist AND the sentinel
+           'imdb' slug hasn't been seeded yet. Same single-sentinel pattern
+           as extra-streaming-platforms above. */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_tableExists($db, 'tblExternalLinkTypes')
+                || !_migProbe_tableExists($db, 'tblExternalLinkPatterns')) {
+                return false;
+            }
+            $stmt = $db->prepare(
+                'SELECT 1 FROM tblExternalLinkTypes WHERE Slug = ? LIMIT 1'
+            );
+            $sentinel = 'imdb';
+            $stmt->bind_param('s', $sentinel);
+            $stmt->execute();
+            $present = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            return !$present;
+        },
+    ],
     'song-media' => [
         'script' => 'migrate-song-media.php',
         'card' => [

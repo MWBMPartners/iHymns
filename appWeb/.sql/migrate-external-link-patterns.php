@@ -196,6 +196,26 @@ $seedRows = [
 
     ['discogs',               'discogs.com',       null,        1, 160],
     ['goodreads-author',      'goodreads.com',     '/author/',  1, 170],
+
+    /* Media databases (film / TV / streaming / anime / games). Forward-
+       looking groundwork for iLyrics DB + MeedyaDB which will share the
+       iHymns external-link registry. Single bare-domain rule per
+       provider with MatchSubdomains = 1 so m.imdb.com, www.themoviedb.org,
+       etc. all match a single seed row. */
+    ['imdb',                  'imdb.com',          null,        1, 400, 'Suffix match covers m.imdb.com / www.imdb.com'],
+    ['tmdb',                  'themoviedb.org',    null,        1, 410, 'Suffix match covers www.themoviedb.org'],
+    ['thetvdb',               'thetvdb.com',       null,        1, 420, 'Suffix match covers www.thetvdb.com'],
+    ['letterboxd',            'letterboxd.com',    null,        1, 430],
+    ['rotten-tomatoes',       'rottentomatoes.com',null,        1, 440],
+    ['metacritic',            'metacritic.com',    null,        1, 450],
+    ['allmovie',              'allmovie.com',      null,        1, 460],
+    ['tvmaze',                'tvmaze.com',        null,        1, 470],
+    ['trakt',                 'trakt.tv',          null,        1, 480, 'Primary domain'],
+    ['justwatch',             'justwatch.com',     null,        1, 490, 'Suffix match covers per-country www.justwatch.com regional subdomains'],
+    ['myanimelist',           'myanimelist.net',   null,        1, 500],
+    ['anidb',                 'anidb.net',         null,        1, 510],
+    ['igdb',                  'igdb.com',          null,        1, 520, 'Internet Game Database'],
+
     ['linkedin',              'linkedin.com',      null,        1, 180],
     ['twitter-x',             'twitter.com',       null,        1, 190],
     ['twitter-x',             'x.com',             null,        1, 191],
