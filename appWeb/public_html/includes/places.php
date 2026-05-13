@@ -40,6 +40,39 @@ function placesTableExists(mysqli $db): bool
 }
 
 /**
+ * Generic cached probe for a place-FK column. Each editor that
+ * adopts the Places module routes its schema-tolerance check
+ * through here so a partly-migrated install (adoption sweep not
+ * yet run) doesn't 500 on the save path. Result is cached
+ * per-(table.column) for the request.
+ */
+function placeColumnExists(mysqli $db, string $table, string $column): bool
+{
+    static $cache = [];
+    $key = $table . '.' . $column;
+    if (array_key_exists($key, $cache)) return $cache[$key];
+    if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]+$/', $table)
+        || !preg_match('/^[A-Za-z_][A-Za-z0-9_]+$/', $column)) {
+        /* Allow-list shape so the identifiers can't be tampered with;
+           callers always pass hardcoded constants but the guard is
+           cheap and makes the intent explicit. */
+        return $cache[$key] = false;
+    }
+    $stmt = $db->prepare(
+        "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = ?
+            AND COLUMN_NAME  = ?
+          LIMIT 1"
+    );
+    $stmt->bind_param('ss', $table, $column);
+    $stmt->execute();
+    $exists = $stmt->get_result()->fetch_row() !== null;
+    $stmt->close();
+    return $cache[$key] = $exists;
+}
+
+/**
  * Cached probe for the place-id FK columns on tblCreditPeople.
  * Used by credit-people.php's add / update path to choose between
  * the legacy INSERT shape and the place-id-aware one without

@@ -1112,4 +1112,25 @@ return [
         ],
         'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblPlaces'),
     ],
+    'places-adoption' => [
+        'script' => 'migrate-places-adoption.php',
+        'card' => [
+            'title'  => 'Places Adoption Sweep',
+            'body'   => 'Extends the Places registry FK pattern to four more entities so the'
+                      . ' normalised place catalogue spreads beyond Credit People. Adds a'
+                      . ' VARCHAR display-string mirror + nullable FK pair on each of'
+                      . ' <code>tblSongbooks</code> (<code>PublicationCity</code> /'
+                      . ' <code>PublicationCityId</code>),'
+                      . ' <code>tblOrganisations</code> (<code>PhysicalCity</code> /'
+                      . ' <code>PhysicalCityId</code>),'
+                      . ' <code>tblSongs</code> (<code>OriginCity</code> /'
+                      . ' <code>OriginCityId</code>) and'
+                      . ' <code>tblWorks</code> (<code>OriginCity</code> /'
+                      . ' <code>OriginCityId</code>). Unlocks the live location autocomplete'
+                      . ' on the Songbook publisher / Organisation profile / Song editor /'
+                      . ' Work editor forms. Idempotent — safe to re-run.',
+            'button' => 'Run Places Adoption Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongbooks', 'PublicationCityId'),
+    ],
 ];

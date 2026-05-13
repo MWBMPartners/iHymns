@@ -91,7 +91,14 @@
 
         function setHiddenId(value) {
             if (settings.hiddenIdInput) {
-                settings.hiddenIdInput.value = value || '';
+                const next = value || '';
+                if (settings.hiddenIdInput.value === next) return;
+                settings.hiddenIdInput.value = next;
+                /* Fire a synthetic change event so any per-field
+                   listener pattern (the Song editor's metadata
+                   listeners drive song.originCityId off this) sees
+                   the new value without needing a MutationObserver. */
+                settings.hiddenIdInput.dispatchEvent(new Event('change', { bubbles: true }));
             }
         }
 

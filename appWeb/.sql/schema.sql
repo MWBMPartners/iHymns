@@ -26,6 +26,52 @@
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
+-- tblPlaces
+-- Canonical registry of geographic places (suburb / city / state / country)
+-- backed by a live geocoder lookup (Photon primary, Nominatim fallback —
+-- both OpenStreetMap-derived). Other tables FK in here for consistent
+-- place names across the catalogue. The geocoder identity (Provider +
+-- OsmType + OsmId) is the natural key — a curator picking "Sydney" twice
+-- in two different editors resolves to the same row. DisplayName is the
+-- full hierarchical label as returned by the geocoder; Name is the short
+-- label (city / village name). Latitude / Longitude are stored so future
+-- map widgets don't need a re-fetch. Created via migrate-places.php.
+--
+-- Defined here at the top of the file (before every table that FKs
+-- into it) so a fresh install can build all the inbound constraints
+-- in declaration order without flipping foreign_key_checks.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblPlaces (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    Provider        VARCHAR(20)     NOT NULL DEFAULT 'osm' COMMENT 'Geocoder family the OsmType/OsmId pair is namespaced under',
+    OsmType         CHAR(1)         NULL COMMENT 'N=node, W=way, R=relation; NULL for manually-entered places',
+    OsmId           BIGINT          NULL COMMENT 'OSM object id within OsmType; NULL for manually-entered places',
+    DisplayName     VARCHAR(500)    NOT NULL COMMENT 'Full hierarchical label as returned by the geocoder',
+    Name            VARCHAR(255)    NULL COMMENT 'Short label (city / village / suburb)',
+    Suburb          VARCHAR(255)    NULL,
+    City            VARCHAR(255)    NULL COMMENT 'City / town / village level (collapsed from OSM city/town/village/hamlet keys)',
+    County          VARCHAR(255)    NULL,
+    Region          VARCHAR(255)    NULL COMMENT 'State / province / region',
+    Country         VARCHAR(255)    NULL,
+    CountryCode     CHAR(2)         NULL COMMENT 'ISO-3166-1 alpha-2, lowercase',
+    Latitude        DECIMAL(10,7)   NULL,
+    Longitude       DECIMAL(10,7)   NULL,
+    PlaceType       VARCHAR(50)     NULL COMMENT 'Geocoder-reported type: city, town, village, state, country, …',
+    CreatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                    ON UPDATE CURRENT_TIMESTAMP,
+
+    /* Natural key — a Provider+OsmType+OsmId triple identifies a unique
+       geocoder object. NULL OsmId rows (manual entries) are exempt from
+       the uniqueness constraint because MySQL treats NULLs as distinct,
+       which is the behaviour we want. */
+    UNIQUE KEY uk_OsmRef (Provider, OsmType, OsmId),
+    INDEX idx_DisplayName (DisplayName),
+    INDEX idx_CountryCode (CountryCode)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
 -- tblSongbooks
 -- Stores the songbook/collection definitions (CP, JP, MP, SDAH, CH, Misc).
 -- ----------------------------------------------------------------------------
@@ -39,6 +85,10 @@ CREATE TABLE IF NOT EXISTS tblSongbooks (
     IsOfficial      TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = published hymnal; 0 = curated grouping / pseudo-songbook (#502)',
     Publisher       VARCHAR(255)    NULL DEFAULT NULL COMMENT 'Publisher or originator (e.g. Praise Trust, Hope Publishing) (#502)',
     PublicationYear VARCHAR(50)     NULL DEFAULT NULL COMMENT 'Year / edition range (free-form: 1986, 1986-2003, 2nd edition 2011) (#502)',
+    /* Publication city — VARCHAR mirror for JOIN-free reads + FK
+       into tblPlaces for normalised country/region grouping. */
+    PublicationCity   VARCHAR(255)  NULL DEFAULT NULL,
+    PublicationCityId INT UNSIGNED  NULL DEFAULT NULL,
     Copyright       VARCHAR(500)    NULL DEFAULT NULL COMMENT 'Copyright notice for the collection as a whole (#502)',
     Affiliation     VARCHAR(120)    NULL DEFAULT NULL COMMENT 'Denominational / religious affiliation; backed by tblSongbookAffiliations registry (#670)',
     Language        VARCHAR(35)     NULL DEFAULT NULL COMMENT 'Optional IETF BCP 47 tag (language[-script][-region], e.g. en, pt-BR, zh-Hans-CN); NULL = not specified. Soft validation via the composite picker dropdowns; widened from VARCHAR(10) to fit script+region subtags (#681)',
@@ -72,8 +122,12 @@ CREATE TABLE IF NOT EXISTS tblSongbooks (
 
     INDEX idx_DisplayOrder (DisplayOrder),
     INDEX idx_ParentSongbook (ParentSongbookId),
+    INDEX idx_PublicationCityId (PublicationCityId),
     CONSTRAINT fk_Songbook_Parent
-        FOREIGN KEY (ParentSongbookId) REFERENCES tblSongbooks(Id) ON DELETE SET NULL
+        FOREIGN KEY (ParentSongbookId) REFERENCES tblSongbooks(Id) ON DELETE SET NULL,
+    CONSTRAINT fk_Songbooks_PublicationCity
+        FOREIGN KEY (PublicationCityId) REFERENCES tblPlaces(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -111,6 +165,11 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     SongbookName        VARCHAR(255)    NOT NULL COMMENT 'Denormalised songbook name for convenience',
     Language            VARCHAR(35)     NOT NULL DEFAULT 'en' COMMENT 'IETF BCP 47 tag (language[-script][-region]); widened from VARCHAR(10) to fit script + region subtags (#681)',
     Copyright           VARCHAR(500)    NOT NULL DEFAULT '',
+    /* Composition / first-performance origin (places sweep #2). The
+       VARCHAR mirror keeps reads JOIN-free; the FK lets the future
+       country/region report group across the catalogue. */
+    OriginCity          VARCHAR(255)    NULL DEFAULT NULL,
+    OriginCityId        INT UNSIGNED    NULL DEFAULT NULL,
     TuneName            VARCHAR(120)    NULL DEFAULT NULL COMMENT 'Traditional tune name, e.g. HYFRYDOL, OLD HUNDREDTH (#497)',
     Ccli                VARCHAR(50)     NOT NULL DEFAULT '' COMMENT 'CCLI Song Number',
     Iswc                VARCHAR(15)     NULL DEFAULT NULL COMMENT 'International Standard Musical Work Code, e.g. T-034.524.680-C (#497)',
@@ -127,13 +186,17 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     INDEX idx_Songbook          (SongbookAbbr),
     INDEX idx_SongbookNumber    (SongbookAbbr, Number),
     INDEX idx_TuneName          (TuneName),
+    INDEX idx_OriginCityId      (OriginCityId),
     FULLTEXT idx_TitleFt        (Title),
     FULLTEXT idx_LyricsFt       (LyricsText),
     FULLTEXT idx_TitleLyricsFt  (Title, LyricsText),
 
     CONSTRAINT fk_Songs_Songbook
         FOREIGN KEY (SongbookAbbr) REFERENCES tblSongbooks(Abbreviation)
-        ON DELETE RESTRICT ON UPDATE CASCADE
+        ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT fk_Songs_OriginCity
+        FOREIGN KEY (OriginCityId) REFERENCES tblPlaces(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -251,48 +314,6 @@ CREATE TABLE IF NOT EXISTS tblSongArtists (
     CONSTRAINT fk_Artists_Song
         FOREIGN KEY (SongId) REFERENCES tblSongs(SongId)
         ON DELETE CASCADE ON UPDATE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-
--- ----------------------------------------------------------------------------
--- tblPlaces
--- Canonical registry of geographic places (suburb / city / state / country)
--- backed by a live geocoder lookup (Photon primary, Nominatim fallback —
--- both OpenStreetMap-derived). Other tables FK in here for consistent
--- place names across the catalogue. The geocoder identity (Provider +
--- OsmType + OsmId) is the natural key — a curator picking "Sydney" twice
--- in two different editors resolves to the same row. DisplayName is the
--- full hierarchical label as returned by the geocoder; Name is the short
--- label (city / village name). Latitude / Longitude are stored so future
--- map widgets don't need a re-fetch. Created via migrate-places.php.
--- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblPlaces (
-    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
-    Provider        VARCHAR(20)     NOT NULL DEFAULT 'osm' COMMENT 'Geocoder family the OsmType/OsmId pair is namespaced under',
-    OsmType         CHAR(1)         NULL COMMENT 'N=node, W=way, R=relation; NULL for manually-entered places',
-    OsmId           BIGINT          NULL COMMENT 'OSM object id within OsmType; NULL for manually-entered places',
-    DisplayName     VARCHAR(500)    NOT NULL COMMENT 'Full hierarchical label as returned by the geocoder',
-    Name            VARCHAR(255)    NULL COMMENT 'Short label (city / village / suburb)',
-    Suburb          VARCHAR(255)    NULL,
-    City            VARCHAR(255)    NULL COMMENT 'City / town / village level (collapsed from OSM city/town/village/hamlet keys)',
-    County          VARCHAR(255)    NULL,
-    Region          VARCHAR(255)    NULL COMMENT 'State / province / region',
-    Country         VARCHAR(255)    NULL,
-    CountryCode     CHAR(2)         NULL COMMENT 'ISO-3166-1 alpha-2, lowercase',
-    Latitude        DECIMAL(10,7)   NULL,
-    Longitude       DECIMAL(10,7)   NULL,
-    PlaceType       VARCHAR(50)     NULL COMMENT 'Geocoder-reported type: city, town, village, state, country, …',
-    CreatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UpdatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
-                                    ON UPDATE CURRENT_TIMESTAMP,
-
-    /* Natural key — a Provider+OsmType+OsmId triple identifies a unique
-       geocoder object. NULL OsmId rows (manual entries) are exempt from
-       the uniqueness constraint because MySQL treats NULLs as distinct,
-       which is the behaviour we want. */
-    UNIQUE KEY uk_OsmRef (Provider, OsmType, OsmId),
-    INDEX idx_DisplayName (DisplayName),
-    INDEX idx_CountryCode (CountryCode)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -706,6 +727,10 @@ CREATE TABLE IF NOT EXISTS tblOrganisations (
     Slug            VARCHAR(100)    NOT NULL UNIQUE COMMENT 'URL-safe identifier',
     ParentOrgId     INT UNSIGNED    NULL DEFAULT NULL COMMENT 'Self-ref FK for nested orgs',
     Description     TEXT            NOT NULL DEFAULT (''),
+    /* Physical address — VARCHAR mirror for JOIN-free reads + FK
+       into tblPlaces for country grouping / regional filters. */
+    PhysicalCity     VARCHAR(255)   NULL DEFAULT NULL,
+    PhysicalCityId   INT UNSIGNED   NULL DEFAULT NULL,
     LicenceType     VARCHAR(30)     NOT NULL DEFAULT 'none' COMMENT 'none, ihymns_basic, ihymns_pro, ccli',
     LicenceNumber   VARCHAR(100)    NOT NULL DEFAULT '' COMMENT 'CCLI licence number or iHymns key',
     LicenceExpiresAt TIMESTAMP      NULL DEFAULT NULL,
@@ -716,9 +741,13 @@ CREATE TABLE IF NOT EXISTS tblOrganisations (
     INDEX idx_Parent    (ParentOrgId),
     INDEX idx_Slug      (Slug),
     INDEX idx_Licence   (LicenceType),
+    INDEX idx_PhysicalCityId (PhysicalCityId),
 
     CONSTRAINT fk_Org_Parent
         FOREIGN KEY (ParentOrgId) REFERENCES tblOrganisations(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_Organisations_PhysicalCity
+        FOREIGN KEY (PhysicalCityId) REFERENCES tblPlaces(Id)
         ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -2050,6 +2079,9 @@ CREATE TABLE IF NOT EXISTS tblWorks (
     Title         VARCHAR(255) NOT NULL,
     Slug          VARCHAR(80)  NOT NULL,
     Notes         TEXT         NULL,
+    /* Composition origin — VARCHAR mirror + FK into tblPlaces. */
+    OriginCity    VARCHAR(255) NULL,
+    OriginCityId  INT UNSIGNED NULL,
     CreatedAt     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
@@ -2057,9 +2089,13 @@ CREATE TABLE IF NOT EXISTS tblWorks (
     UNIQUE KEY uq_iswc   (Iswc),
     INDEX      idx_title (Title),
     INDEX      idx_parent (ParentWorkId),
+    INDEX      idx_OriginCityId (OriginCityId),
 
     CONSTRAINT fk_work_parent
-        FOREIGN KEY (ParentWorkId) REFERENCES tblWorks(Id) ON DELETE SET NULL
+        FOREIGN KEY (ParentWorkId) REFERENCES tblWorks(Id) ON DELETE SET NULL,
+    CONSTRAINT fk_Works_OriginCity
+        FOREIGN KEY (OriginCityId) REFERENCES tblPlaces(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 

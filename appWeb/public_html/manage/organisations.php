@@ -15,6 +15,11 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    ORG_MEMBER_ROLES const + slugifyOrganisationName(). Same helpers
    used by the admin_organisation_* and org_admin_* API endpoints. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'organisation_validation.php';
+/* Places adoption helper — exposes placeColumnExists() so the
+   create / update paths can persist PhysicalCityId alongside the
+   legacy PhysicalCity display string only when the
+   places-adoption migration has landed. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -68,6 +73,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $licenceType = (string)($_POST['licence_type']      ?? 'none');
                 $licenceNum  = trim((string)($_POST['licence_number'] ?? ''));
                 $active      = !empty($_POST['is_active']) ? 1 : 0;
+                /* Places adoption — physical address. */
+                $physicalCity   = trim((string)($_POST['physical_city']    ?? '')) ?: null;
+                $physicalCityId = (int)($_POST['physical_city_id'] ?? 0) ?: null;
 
                 if ($name === '') { $error = 'Name is required.'; break; }
                 $slug = $slugInput !== '' ? $slugify($slugInput) : $slugify($name);
@@ -97,6 +105,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute();
                 $newOrgId = (int)$db->insert_id;
                 $stmt->close();
+                /* Place columns — schema-tolerant separate UPDATE. */
+                if (placeColumnExists($db, 'tblOrganisations', 'PhysicalCityId')) {
+                    $stmt = $db->prepare(
+                        'UPDATE tblOrganisations
+                            SET PhysicalCity = ?, PhysicalCityId = ?
+                          WHERE Id = ?'
+                    );
+                    $stmt->bind_param('sii', $physicalCity, $physicalCityId, $newOrgId);
+                    $stmt->execute();
+                    $stmt->close();
+                }
                 logActivity('org.create', 'organisation', (string)$newOrgId, [
                     'name'           => $name,
                     'slug'           => $slug,
@@ -117,6 +136,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $licenceType = (string)($_POST['licence_type']      ?? 'none');
                 $licenceNum  = trim((string)($_POST['licence_number'] ?? ''));
                 $active      = !empty($_POST['is_active']) ? 1 : 0;
+                $physicalCity   = trim((string)($_POST['physical_city']    ?? '')) ?: null;
+                $physicalCityId = (int)($_POST['physical_city_id'] ?? 0) ?: null;
                 if ($id <= 0) { $error = 'Organisation id missing.'; break; }
                 if ($name === '') { $error = 'Name is required.'; break; }
                 if ($slug === '') { $error = 'Slug is required.'; break; }
@@ -156,6 +177,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 );
                 $stmt->execute();
                 $stmt->close();
+
+                /* Place columns — schema-tolerant separate UPDATE. */
+                if (placeColumnExists($db, 'tblOrganisations', 'PhysicalCityId')) {
+                    $stmt = $db->prepare(
+                        'UPDATE tblOrganisations
+                            SET PhysicalCity = ?, PhysicalCityId = ?
+                          WHERE Id = ?'
+                    );
+                    $stmt->bind_param('sii', $physicalCity, $physicalCityId, $id);
+                    $stmt->execute();
+                    $stmt->close();
+                }
 
                 /* Multi-licence sync (#640). The submitted set replaces the
                    join-table state. The primary licence_type is also folded
@@ -535,6 +568,14 @@ $csrf = csrfToken();
                     <label class="form-label small">Description</label>
                     <input type="text" name="description" class="form-control form-control-sm">
                 </div>
+                <div class="mb-2">
+                    <label class="form-label small">Physical city <small class="text-muted">(optional)</small></label>
+                    <input type="text" id="create-physical-city" name="physical_city"
+                           class="form-control form-control-sm js-place-search"
+                           maxlength="255"
+                           placeholder="Start typing — e.g. Brisbane, Queensland">
+                    <input type="hidden" id="create-physical-city-id" name="physical_city_id" value="">
+                </div>
                 <div class="row g-2 mb-2">
                     <div class="col-sm-4">
                         <label class="form-label small">Licence type</label>
@@ -604,6 +645,16 @@ $csrf = csrfToken();
                     <label class="form-label small">Description</label>
                     <input type="text" name="description" class="form-control form-control-sm"
                            value="<?= htmlspecialchars($editOrg['Description']) ?>">
+                </div>
+                <div class="mb-2">
+                    <label class="form-label small">Physical city <small class="text-muted">(optional)</small></label>
+                    <input type="text" id="edit-physical-city" name="physical_city"
+                           class="form-control form-control-sm js-place-search"
+                           maxlength="255"
+                           placeholder="Start typing — e.g. Brisbane, Queensland"
+                           value="<?= htmlspecialchars((string)($editOrg['PhysicalCity'] ?? '')) ?>">
+                    <input type="hidden" id="edit-physical-city-id" name="physical_city_id"
+                           value="<?= isset($editOrg['PhysicalCityId']) && $editOrg['PhysicalCityId'] !== null ? (int)$editOrg['PhysicalCityId'] : '' ?>">
                 </div>
                 <div class="row g-2 mb-2">
                     <div class="col-sm-4">
@@ -765,6 +816,26 @@ $csrf = csrfToken();
     <script type="module">
         import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
         bootSortableTables();
+    </script>
+
+    <!-- Live location autocomplete on the Physical city inputs
+         (both create form + edit form). Powered by /manage/places-api.php
+         (Photon + Nominatim) with tblPlaces upsert on pick. -->
+    <script src="/js/modules/place-search.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/place-search.js') ?>"></script>
+    <script>
+        (function () {
+            if (!window.iHymnsPlaceSearch) return;
+            [
+                ['create-physical-city', 'create-physical-city-id'],
+                ['edit-physical-city',   'edit-physical-city-id'],
+            ].forEach(([inputId, hiddenId]) => {
+                const visible = document.getElementById(inputId);
+                const hidden  = document.getElementById(hiddenId);
+                if (visible && hidden) {
+                    window.iHymnsPlaceSearch.attach(visible, { hiddenIdInput: hidden });
+                }
+            });
+        })();
     </script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>

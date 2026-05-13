@@ -24,6 +24,11 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_validation.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'language_names.php';
+/* Places registry helper — exposes placeColumnExists() so the
+   create / update paths can persist PublicationCityId alongside
+   the legacy PublicationCity display string only when the
+   places-adoption migration has landed. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -879,6 +884,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pubYear    = trim((string)($_POST['publication_year'] ?? '')) ?: null;
                 $copyright  = trim((string)($_POST['copyright']        ?? '')) ?: null;
                 $affiliation= trim((string)($_POST['affiliation']      ?? '')) ?: null;
+                /* Places adoption sweep — display string + FK. The
+                   FK is populated by the place-search JS module when
+                   the curator picks a candidate; free-typing leaves
+                   the hidden id empty so we persist the string only. */
+                $publicationCity   = trim((string)($_POST['publication_city']    ?? '')) ?: null;
+                $publicationCityId = (int)($_POST['publication_city_id'] ?? 0) ?: null;
                 /* #673 / #681 — optional language. Empty selection saves
                    as NULL. Now widened to 35 chars to fit a full IETF
                    BCP 47 tag (lang[-Script][-Region]) and validated
@@ -976,6 +987,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute();
                 $newId = (int)$db->insert_id;
                 $stmt->close();
+                /* Place columns — schema-tolerant separate UPDATE
+                   so the carefully-tuned 23-bind INSERT above stays
+                   untouched. Skipped on pre-adoption-migration
+                   installs (probe returns false). */
+                if (placeColumnExists($db, 'tblSongbooks', 'PublicationCityId')) {
+                    $stmt = $db->prepare(
+                        'UPDATE tblSongbooks
+                            SET PublicationCity = ?, PublicationCityId = ?
+                          WHERE Id = ?'
+                    );
+                    $stmt->bind_param('sii', $publicationCity, $publicationCityId, $newId);
+                    $stmt->execute();
+                    $stmt->close();
+                }
                 logActivity('songbook.create', 'songbook', (string)$newId, [
                     'abbreviation'    => $abbr,
                     'name'            => $name,
@@ -1033,6 +1058,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pubYear     = trim((string)($_POST['publication_year'] ?? '')) ?: null;
                 $copyright   = trim((string)($_POST['copyright']        ?? '')) ?: null;
                 $affiliation = trim((string)($_POST['affiliation']      ?? '')) ?: null;
+                /* Places adoption sweep — display string + FK. */
+                $publicationCity   = trim((string)($_POST['publication_city']    ?? '')) ?: null;
+                $publicationCityId = (int)($_POST['publication_city_id'] ?? 0) ?: null;
                 /* #673 / #681 — optional language; full IETF BCP 47 tag. */
                 $language    = trim((string)($_POST['language']         ?? '')) ?: null;
                 if ($language !== null) {
@@ -1232,6 +1260,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                            type 'i' / 's' sends SQL NULL on PHP 8+, which is
                            exactly what we want for the optional FK / enum. */
                         $stmt->bind_param('isi', $parentId, $parentRel, $id);
+                        $stmt->execute();
+                        $stmt->close();
+                    }
+
+                    /* Places adoption — write the publication city
+                       FK + display string in a separate small UPDATE
+                       so the main 23-param bind stays untouched.
+                       Skipped on pre-adoption-migration installs. */
+                    if (placeColumnExists($db, 'tblSongbooks', 'PublicationCityId')) {
+                        $stmt = $db->prepare(
+                            'UPDATE tblSongbooks
+                                SET PublicationCity = ?, PublicationCityId = ?
+                              WHERE Id = ?'
+                        );
+                        $stmt->bind_param('sii', $publicationCity, $publicationCityId, $id);
                         $stmt->execute();
                         $stmt->close();
                     }
@@ -2248,6 +2291,13 @@ try {
     } catch (\Throwable $_e) { /* probe failure → fall through */ }
     $langSelect = $hasLangCol ? ', b.Language' : '';
 
+    /* Places adoption — surface the FK + display string to the row
+       payload so the edit modal can pre-fill both halves. */
+    $hasPlaceCols = placeColumnExists($db, 'tblSongbooks', 'PublicationCityId');
+    $placeSelect  = $hasPlaceCols
+        ? ', b.PublicationCity, b.PublicationCityId'
+        : ', NULL AS PublicationCity, NULL AS PublicationCityId';
+
     /* Same probe pattern for the #782 phase A parent columns. When
        the schema is live, also LEFT JOIN to the parent row so the
        list-page Parent column can render abbreviation + name in one
@@ -2277,7 +2327,7 @@ try {
     $stmt = $db->prepare(
         'SELECT b.Id, b.Abbreviation, b.Name, b.SongCount, b.DisplayOrder, b.Colour,
                 b.IsOfficial, b.Publisher, b.PublicationYear,
-                b.Copyright, b.Affiliation' . $langSelect . $bibSelect . $parentSelect . ',
+                b.Copyright, b.Affiliation' . $langSelect . $placeSelect . $bibSelect . $parentSelect . ',
                 COUNT(s.Id) AS ActualSongCount
            FROM tblSongbooks b
            LEFT JOIN tblSongs s ON s.SongbookAbbr = b.Abbreviation' . $parentJoin . '
@@ -2503,6 +2553,8 @@ $csrf = csrfToken();
                                         'is_official'         => (int)$r['IsOfficial'] === 1,
                                         'publisher'           => $r['Publisher']       ?? '',
                                         'publication_year'    => $r['PublicationYear'] ?? '',
+                                        'publication_city'    => $r['PublicationCity']   ?? '',
+                                        'publication_city_id' => $r['PublicationCityId'] ?? null,
                                         'copyright'           => $r['Copyright']       ?? '',
                                         'affiliation'         => $r['Affiliation']     ?? '',
                                         /* #673 — Language defaults to '' so the dropdown
@@ -2863,6 +2915,15 @@ $csrf = csrfToken();
             </div>
             <div class="row g-2 mt-2">
                 <div class="col-sm-8">
+                    <label class="form-label small">Publication city</label>
+                    <input type="text" id="create-publication-city" name="publication_city"
+                           class="form-control form-control-sm js-place-search"
+                           maxlength="255" placeholder="Start typing — e.g. London, England">
+                    <input type="hidden" id="create-publication-city-id" name="publication_city_id" value="">
+                </div>
+            </div>
+            <div class="row g-2 mt-2">
+                <div class="col-sm-8">
                     <label class="form-label small">Copyright</label>
                     <input type="text" name="copyright" class="form-control form-control-sm"
                            maxlength="500" placeholder="e.g. © 2012 Praise Trust, All Rights Reserved">
@@ -3061,6 +3122,12 @@ $csrf = csrfToken();
                             <label class="form-label">Publication year / edition</label>
                             <input type="text" class="form-control" name="publication_year" id="edit-publication-year"
                                    maxlength="50" placeholder="e.g. 1986, 1986–2003, 2nd edition 2011">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Publication city</label>
+                            <input type="text" class="form-control js-place-search" name="publication_city" id="edit-publication-city"
+                                   maxlength="255" placeholder="Start typing — e.g. London, England">
+                            <input type="hidden" name="publication_city_id" id="edit-publication-city-id" value="">
                         </div>
                         <div class="mb-3">
                             <label class="form-label">Copyright</label>
@@ -3578,6 +3645,8 @@ $csrf = csrfToken();
             document.getElementById('edit-is-official').checked     = !!row.is_official;
             document.getElementById('edit-publisher').value         = row.publisher        || '';
             document.getElementById('edit-publication-year').value  = row.publication_year || '';
+            document.getElementById('edit-publication-city').value  = row.publication_city || '';
+            document.getElementById('edit-publication-city-id').value = row.publication_city_id ? String(row.publication_city_id) : '';
             document.getElementById('edit-copyright').value         = row.copyright        || '';
             document.getElementById('edit-affiliation').value       = row.affiliation      || '';
 
@@ -4614,6 +4683,27 @@ $csrf = csrfToken();
             }
         });
     });
+    </script>
+
+    <!-- Live location autocomplete on the Publication city field (both
+         create form + edit modal). Wires through /manage/places-api.php
+         to Photon + Nominatim and upserts into tblPlaces. -->
+    <script src="/js/modules/place-search.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/place-search.js') ?>"></script>
+    <script>
+        (function () {
+            if (!window.iHymnsPlaceSearch) return;
+            const pairs = [
+                ['create-publication-city', 'create-publication-city-id'],
+                ['edit-publication-city',   'edit-publication-city-id'],
+            ];
+            pairs.forEach(([inputId, hiddenId]) => {
+                const visible = document.getElementById(inputId);
+                const hidden  = document.getElementById(hiddenId);
+                if (visible && hidden) {
+                    window.iHymnsPlaceSearch.attach(visible, { hiddenIdInput: hidden });
+                }
+            });
+        })();
     </script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>

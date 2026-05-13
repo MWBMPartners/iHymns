@@ -624,6 +624,11 @@ function selectSong(songId) {
     setVal('edit-ccli', song.ccli || '');
     setVal('edit-iswc', song.iswc || '');            /* #497 */
     setVal('edit-tune-name', song.tuneName || '');   /* #497 */
+    /* Places adoption — pre-fill both the visible display string +
+       the hidden tblPlaces.Id sidecar so the place-search module's
+       attach() finds the input "already picked". */
+    setVal('edit-origin-city', song.originCity || '');
+    setVal('edit-origin-city-id', song.originCityId ? String(song.originCityId) : '');
     /* Hand the saved IETF BCP 47 tag to the shared picker (#687). The
        picker is booted by the module script in index.php and stashed
        on window.editSongIetfPicker; setTag() decomposes the tag,
@@ -711,6 +716,12 @@ function bindMetadataListeners() {
         { elId: 'edit-ccli',      key: 'ccli' },
         { elId: 'edit-iswc',      key: 'iswc' },        /* #497 */
         { elId: 'edit-tune-name', key: 'tuneName' },    /* #497 */
+        { elId: 'edit-origin-city', key: 'originCity' },     /* places adoption */
+        /* Hidden sidecar — driven by the place-search module's
+           synthetic change event, not by user typing. Same listener
+           pattern still applies. */
+        { elId: 'edit-origin-city-id', key: 'originCityId',
+          coerce: function (v) { return v ? Number(v) : null; } },
         { elId: 'edit-copyright', key: 'copyright' }
     ];
 
@@ -729,8 +740,14 @@ function bindMetadataListeners() {
                 var song = findSongById(currentSongId);
                 if (!song) return;
 
-                /* Write the new value back to the song object. */
-                song[field.key] = el.value;
+                /* Write the new value back to the song object —
+                   running it through field.coerce when one is set
+                   (e.g. originCityId converts the hidden input's
+                   string into Number / null so the JSON body the
+                   save_song endpoint receives is correctly typed). */
+                song[field.key] = (typeof field.coerce === 'function')
+                    ? field.coerce(el.value)
+                    : el.value;
 
                 /* Sync songbookName when songbook changes (#245). */
                 if (field.key === 'songbook') {
@@ -4388,6 +4405,8 @@ function clearEditForm() {
     setVal('edit-ccli', '');
     setVal('edit-iswc', '');           /* #497 */
     setVal('edit-tune-name', '');      /* #497 */
+    setVal('edit-origin-city', '');
+    setVal('edit-origin-city-id', '');
     /* Reset the IETF picker to a blank state (#687). The shared module
        resolves "" → empty inputs and a "—" preview. */
     if (window.editSongIetfPicker && typeof window.editSongIetfPicker.setTag === 'function') {
@@ -4541,6 +4560,8 @@ function addNewSong() {
         ccli: '',
         iswc: '',           /* #497 */
         tuneName: '',       /* #497 */
+        originCity: '',
+        originCityId: null,
         copyright: '',
         verified: false,
         lyricsPublicDomain: false,

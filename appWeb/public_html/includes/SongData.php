@@ -124,6 +124,12 @@ class SongData
     /** #892 — schema-probe result for tblSongs.ArrangementJson. */
     private bool $_arrangementColumn = false;
     private bool $_arrangementColumnChecked = false;
+    /* Places adoption — single-flight probe for tblSongs.OriginCityId.
+       Mirrors the ArrangementJson pattern so a pre-adoption install
+       keeps the legacy SELECT shape (no extra columns) without a
+       repeat INFORMATION_SCHEMA round-trip per request. */
+    private bool $_originPlaceColumn = false;
+    private bool $_originPlaceColumnChecked = false;
 
     /** Check if running in JSON fallback mode (no MySQL) */
     public function isJsonFallback(): bool { return $this->jsonMode; }
@@ -2374,7 +2380,10 @@ class SongData
            column exists. Pre-migration deploys keep the legacy
            15-column shape so single-song reads don't 1054 on a
            half-migrated install. */
-        $arrSelect = $this->_hasArrangementColumn() ? ', ArrangementJson AS arrangementJson' : '';
+        $arrSelect    = $this->_hasArrangementColumn() ? ', ArrangementJson AS arrangementJson' : '';
+        $placeSelect  = $this->_hasOriginPlaceColumn()
+            ? ', OriginCity AS originCity, OriginCityId AS originCityId'
+            : '';
         $stmt = $this->db->prepare(
             "SELECT SongId AS id, Number AS number, Title AS title, SongbookAbbr AS songbook,
                     SongbookName AS songbookName, Language AS language, Copyright AS copyright,
@@ -2383,6 +2392,7 @@ class SongData
                     MusicPublicDomain AS musicPublicDomain,
                     HasAudio AS hasAudio, HasSheetMusic AS hasSheetMusic
                     {$arrSelect}
+                    {$placeSelect}
              FROM tblSongs
              WHERE SongId = ?
              LIMIT 1"
@@ -2405,6 +2415,13 @@ class SongData
         $row['hasSheetMusic'] = (bool)$row['hasSheetMusic'];
         $row['tuneName'] = $row['tuneName'] ?? '';
         $row['iswc']     = $row['iswc']     ?? '';
+        /* Places adoption — pass-through the FK Id (or null) to the
+           editor so the place-search module can populate its hidden
+           sidecar input. The display string lives in originCity. */
+        if (array_key_exists('originCity', $row)) {
+            $row['originCity']   = $row['originCity'] ?? '';
+            $row['originCityId'] = isset($row['originCityId']) ? (int)$row['originCityId'] : null;
+        }
         /* #892 — decode the stored JSON int-array; the public render in
            pages/song.php reads `$song['arrangement']` directly. The
            helper drops malformed payloads (defensive) and returns NULL
@@ -2603,6 +2620,34 @@ class SongData
             $this->_arrangementColumn = false;
         }
         return $this->_arrangementColumn;
+    }
+
+    /**
+     * Places adoption — single-flight probe for tblSongs.OriginCityId.
+     * Mirrors _hasArrangementColumn() so the SELECT path can gate the
+     * OriginCity / OriginCityId columns without a per-request
+     * INFORMATION_SCHEMA round-trip.
+     */
+    private function _hasOriginPlaceColumn(): bool
+    {
+        if ($this->_originPlaceColumnChecked) {
+            return $this->_originPlaceColumn;
+        }
+        $this->_originPlaceColumnChecked = true;
+        try {
+            $stmt = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongs'
+                    AND COLUMN_NAME  = 'OriginCityId' LIMIT 1"
+            );
+            $stmt->execute();
+            $this->_originPlaceColumn = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+        } catch (\Throwable $_e) {
+            $this->_originPlaceColumn = false;
+        }
+        return $this->_originPlaceColumn;
     }
 
     /**
