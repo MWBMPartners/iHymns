@@ -1684,6 +1684,11 @@ class SongData
                a second per-song round-trip. Same bulk-loader pattern
                as writers / composers / etc. */
             $tagsMap = $this->_getTagsMap($songIds);
+            /* #833 — song-level external links bulked in so the Song
+               Editor (which reads from the corpus cache built off
+               exportAsJson → getSongs) surfaces existing links on load.
+               Pre-migration safe via the schema probe in the helper. */
+            $songLinksMap = $this->_externalLinksMap('song', $songIds);
             foreach ($songs as &$song) {
                 $sid = $song['id'];
                 $song['writers']     = $writersMap[$sid]     ?? [];
@@ -1694,6 +1699,7 @@ class SongData
                 $song['artists']     = $artistsMap[$sid]     ?? [];   /* #587 */
                 $song['components']  = $componentsMap[$sid]  ?? [];
                 $song['tags']        = $tagsMap[$sid]        ?? [];
+                $song['links']       = $songLinksMap[$sid]   ?? [];
             }
             unset($song);
         }

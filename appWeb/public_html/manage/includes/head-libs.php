@@ -69,5 +69,8 @@ $_publicRoot = dirname(__DIR__, 2);
    constructs rows on initial page load. */
 $_extLinkDetectPath = $_publicRoot . '/js/modules/external-link-detect.js';
 $_extLinkDetectVer  = is_file($_extLinkDetectPath) ? (string)filemtime($_extLinkDetectPath) : '1';
+$_extLinkEditorPath = $_publicRoot . '/js/modules/external-links-editor.js';
+$_extLinkEditorVer  = is_file($_extLinkEditorPath) ? (string)filemtime($_extLinkEditorPath) : '1';
 ?>
     <script src="/js/modules/external-link-detect.js?v=<?= htmlspecialchars($_extLinkDetectVer, ENT_QUOTES) ?>"></script>
+    <script src="/js/modules/external-links-editor.js?v=<?= htmlspecialchars($_extLinkEditorVer, ENT_QUOTES) ?>"></script>

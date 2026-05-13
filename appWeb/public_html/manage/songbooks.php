@@ -1407,67 +1407,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
                     }
 
-                    /* #833 — reconcile external links. The edit modal posts
-                       four parallel arrays:
-                         ext_link_type_ids[]   tblExternalLinkTypes.Id
-                         ext_link_urls[]       URL
-                         ext_link_notes[]      optional Note
-                         ext_link_verified[]   '1'/''  per-row checkbox
-                       Position N in each array is the same link row;
-                       array index drives SortOrder. Empty / blank URLs
-                       are dropped before insert. DELETE-then-INSERT in
-                       the existing transaction.
+                    /* #833 — reconcile external links via the shared
+                       saver helper. DELETE-then-INSERT runs inside this
+                       transaction so any downstream failure rolls back
+                       cleanly with the parent UPDATE.
                        Schema-gated by $hasExtLinksSchema. */
                     $postedLinkCount = 0;
                     if ($hasExtLinksSchema) {
-                        $rawTypes    = $_POST['ext_link_type_ids']  ?? [];
-                        $rawUrls     = $_POST['ext_link_urls']      ?? [];
-                        $rawNotes    = $_POST['ext_link_notes']     ?? [];
-                        $rawVerified = $_POST['ext_link_verified']  ?? [];
-                        if (!is_array($rawTypes))    $rawTypes    = [];
-                        if (!is_array($rawUrls))     $rawUrls     = [];
-                        if (!is_array($rawNotes))    $rawNotes    = [];
-                        if (!is_array($rawVerified)) $rawVerified = [];
-
-                        $linkRows = [];
-                        foreach ($rawTypes as $idx => $rawTypeId) {
-                            $typeId = (int)$rawTypeId;
-                            $url    = trim((string)($rawUrls[$idx] ?? ''));
-                            if ($typeId <= 0 || $url === '')                  continue;
-                            if (!preg_match('#^https?://#i', $url))           continue;  /* must be http(s) */
-                            if (mb_strlen($url) > 2048)                       continue;
-                            $note = trim((string)($rawNotes[$idx] ?? ''));
-                            $verified = !empty($rawVerified[$idx]) ? 1 : 0;
-                            $linkRows[] = [
-                                'type_id'  => $typeId,
-                                'url'      => $url,
-                                'note'     => ($note !== '' ? mb_substr($note, 0, 255) : null),
-                                'verified' => $verified,
-                                'order'    => count($linkRows),
-                            ];
-                        }
-
-                        $stmt = $db->prepare('DELETE FROM tblSongbookExternalLinks WHERE SongbookId = ?');
-                        $stmt->bind_param('i', $id);
-                        $stmt->execute();
-                        $stmt->close();
-
-                        if ($linkRows) {
-                            $stmt = $db->prepare(
-                                'INSERT INTO tblSongbookExternalLinks
-                                     (SongbookId, LinkTypeId, Url, Note, SortOrder, Verified)
-                                  VALUES (?, ?, ?, ?, ?, ?)'
-                            );
-                            foreach ($linkRows as $r) {
-                                $stmt->bind_param(
-                                    'iissii',
-                                    $id, $r['type_id'], $r['url'], $r['note'], $r['order'], $r['verified']
-                                );
-                                $stmt->execute();
-                                $postedLinkCount++;
-                            }
-                            $stmt->close();
-                        }
+                        $postedLinkCount = saveExternalLinksForRow(
+                            $db,
+                            'tblSongbookExternalLinks',
+                            'SongbookId',
+                            $id,
+                            $_POST['ext_link_type_ids'] ?? [],
+                            $_POST['ext_link_urls']     ?? [],
+                            $_POST['ext_link_notes']    ?? [],
+                            $_POST['ext_link_verified'] ?? []
+                        );
                     }
 
                     $db->commit();
@@ -2184,30 +2140,10 @@ $linkTypesForSongbook = [];
 $sbLinksMap           = [];
 if ($hasExtLinksSchema) {
     try {
-        $res = $db->query(
-            "SELECT Id, Slug, Name, Category, IconClass, AllowMultiple, DisplayOrder
-               FROM tblExternalLinkTypes
-              WHERE COALESCE(IsActive, 1) = 1
-                AND FIND_IN_SET('songbook', AppliesTo) > 0
-              ORDER BY Category, DisplayOrder ASC, Name ASC"
-        );
-        if ($res) {
-            while ($row = $res->fetch_assoc()) {
-                $linkTypesForSongbook[] = [
-                    'id'             => (int)$row['Id'],
-                    'slug'           => (string)$row['Slug'],
-                    'name'           => (string)$row['Name'],
-                    'category'       => (string)$row['Category'],
-                    'icon_class'     => (string)($row['IconClass'] ?? ''),
-                    'allow_multiple' => (int)$row['AllowMultiple'],
-                ];
-            }
-            $res->close();
-        }
-        /* #845 — attach DB-driven URL → provider patterns so the JS
-           auto-detect module can read them via window._iHymnsLinkTypes
-           without a second AJAX round-trip. */
-        $linkTypesForSongbook = attachExternalLinkPatterns($db, $linkTypesForSongbook);
+        /* #841/#845 — shared loader returns the registry with URL →
+           provider patterns already attached, ready to ship as
+           window._iHymnsLinkTypes for the shared editor module. */
+        $linkTypesForSongbook = loadExternalLinkTypesFor($db, 'songbook');
 
         $res = $db->query(
             'SELECT el.SongbookId, el.LinkTypeId, el.Url, el.Note, el.SortOrder, el.Verified,
@@ -3393,29 +3329,18 @@ $csrf = csrfToken();
 
                         <?php if ($hasExtLinksSchema): ?>
                         <!-- #833 — External-links system.
-                             MusicBrainz-style typed links with multiple
-                             entries supported. Each row pairs a link
-                             type (FK → tblExternalLinkTypes) with a URL,
-                             an optional Note, and a Verified flag. -->
+                             Renders the shared partial; the row builder
+                             behaviour comes from /js/modules/external-links-editor.js. -->
                         <div class="mb-3" id="edit-ext-links-block">
-                            <label class="form-label">External links <span class="text-muted small">(optional)</span></label>
-                            <div class="form-text small mb-2">
-                                Hymnary.org · Internet Archive scans · Wikipedia ·
-                                Wikidata · YouTube performances · Spotify recordings ·
-                                etc. Multiple links of the same type are allowed
-                                where the type permits. Verified means a curator
-                                has eyeballed the URL and confirmed it's correct.
-                            </div>
-                            <div id="edit-ext-links-rows" class="vstack gap-2 mb-2"></div>
-                            <button type="button"
-                                    class="btn btn-sm btn-outline-info"
-                                    id="edit-ext-link-add-btn">
-                                <i class="bi bi-plus-lg me-1" aria-hidden="true"></i>Add link
-                            </button>
-                            <!-- Curated link-type registry (#833 seed list). Read at
-                                 page load + serialized inline as a JSON map so the
-                                 row-builder can populate the dropdown without an
-                                 extra AJAX round-trip. -->
+                            <?php
+                                $containerId = 'edit-ext-links-rows';
+                                $addBtnId    = 'edit-ext-link-add-btn';
+                                $heading     = 'External links';
+                                $helpText    = 'Hymnary.org · Internet Archive scans · Wikipedia · Wikidata · YouTube performances · Spotify recordings · etc. Provider auto-detects from the pasted URL. Multiple links of the same type are allowed where the type permits. Verified means a curator has eyeballed the URL and confirmed it\'s correct.';
+                                require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'external-links-section.php';
+                            ?>
+                            <!-- Curated link-type registry (#833 seed list). Pre-loaded so
+                                 the shared row-builder doesn't need an AJAX round-trip. -->
                             <script>
                                 window._iHymnsLinkTypes = <?= json_encode($linkTypesForSongbook, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
                             </script>
@@ -3818,22 +3743,20 @@ $csrf = csrfToken();
             })();
 
             /* #833 — populate the external-links list from
-               row.external_links. Schema-gated container; clear +
-               repopulate on every modal-open. */
-            (function () {
-                const container = document.getElementById('edit-ext-links-rows');
-                if (!container || typeof window._iHymnsBuildExtLinkRow !== 'function') return;
-                container.innerHTML = '';
-                const links = Array.isArray(row.external_links) ? row.external_links : [];
-                links.forEach(l => {
-                    container.appendChild(window._iHymnsBuildExtLinkRow({
-                        typeId:   l.type_id || 0,
-                        url:      l.url || '',
-                        note:     l.note || '',
-                        verified: !!l.verified,
-                    }));
-                });
-            })();
+               row.external_links via the shared editor module.
+               Schema-gated container; clear + repopulate every open. */
+            if (window._iHymnsSongbookExtLinksEditor) {
+                window._iHymnsSongbookExtLinksEditor.setRows(
+                    (Array.isArray(row.external_links) ? row.external_links : []).map(function (l) {
+                        return {
+                            typeId:   l.type_id || 0,
+                            url:      l.url || '',
+                            note:     l.note || '',
+                            verified: !!l.verified,
+                        };
+                    })
+                );
+            }
 
             /* Stash the current row's abbreviation on the modal for the
                "Pick distinctive colour" button below — the button reads
@@ -4606,122 +4529,22 @@ $csrf = csrfToken();
     })();
     </script>
 
-    <!-- External-links card-list editor (#833). Each row carries:
-         - hidden ext_link_type_ids[]   (FK to tblExternalLinkTypes.Id)
-         - text   ext_link_urls[]
-         - text   ext_link_notes[]
-         - checkbox ext_link_verified[]
-         The link-type dropdown is grouped by Category and uses the
-         seeded list pre-loaded into window._iHymnsLinkTypes. -->
+    <!-- External-links card-list editor (#833) — now driven entirely by
+         /js/modules/external-links-editor.js. The shared module builds
+         the dropdown, wires Add/Remove, and attaches auto-detect to
+         every row. The previous ~120 lines of inline row-builder code
+         are now in the shared module. -->
     <script>
     (function () {
         const addBtn = document.getElementById('edit-ext-link-add-btn');
         const rowsEl = document.getElementById('edit-ext-links-rows');
         if (!addBtn || !rowsEl) return;  /* schema not live → block absent */
-
-        const types = Array.isArray(window._iHymnsLinkTypes) ? window._iHymnsLinkTypes : [];
-
-        /* Group types by Category for the <optgroup> structure. */
-        const byCat = {};
-        types.forEach(t => {
-            const cat = t.category || 'other';
-            if (!byCat[cat]) byCat[cat] = [];
-            byCat[cat].push(t);
+        if (!window.iHymnsExtLinksEditor) return;
+        window._iHymnsSongbookExtLinksEditor = window.iHymnsExtLinksEditor.mount({
+            rowsEl: rowsEl,
+            addBtnEl: addBtn,
+            notePlaceholder: "Optional note (e.g. '1900 first edition')",
         });
-        const catLabels = {
-            'official':    'Official',
-            'information': 'Information',
-            'read':        'Read',
-            'sheet-music': 'Sheet music',
-            'listen':      'Listen',
-            'watch':       'Watch',
-            'purchase':    'Purchase',
-            'authority':   'Authority',
-            'social':      'Social',
-            'other':       'Other',
-        };
-        const catOrder = ['official','information','read','sheet-music','listen','watch','purchase','authority','social','other'];
-
-        function buildSelect(selectedId) {
-            let html = '<select class="form-select form-select-sm" name="ext_link_type_ids[]" required>';
-            html += '<option value="">— pick a link type —</option>';
-            catOrder.forEach(cat => {
-                if (!byCat[cat] || byCat[cat].length === 0) return;
-                html += '<optgroup label="' + escapeHtml(catLabels[cat] || cat) + '">';
-                byCat[cat].forEach(t => {
-                    const sel = (Number(selectedId) === Number(t.id)) ? ' selected' : '';
-                    html += '<option value="' + Number(t.id) + '"' + sel + '>' + escapeHtml(t.name) + '</option>';
-                });
-                html += '</optgroup>';
-            });
-            html += '</select>';
-            return html;
-        }
-
-        window._iHymnsBuildExtLinkRow = function (data) {
-            const card = document.createElement('div');
-            card.className = 'card bg-dark border-secondary';
-            const url  = String(data.url || '');
-            const note = String(data.note || '');
-            const ver  = data.verified ? 'checked' : '';
-            card.innerHTML =
-                '<div class="card-body py-2">' +
-                  '<div class="d-flex align-items-start gap-2">' +
-                    '<i class="bi bi-grip-vertical text-muted mt-2" aria-hidden="true"></i>' +
-                    '<div class="flex-grow-1">' +
-                      '<div class="row g-2 mb-1">' +
-                        '<div class="col-md-5">' + buildSelect(data.typeId || 0) + '</div>' +
-                        '<div class="col-md-7">' +
-                          '<input type="url" class="form-control form-control-sm" ' +
-                                  'name="ext_link_urls[]" required maxlength="2048" ' +
-                                  'placeholder="https://…" value="' + escapeHtml(url) + '">' +
-                        '</div>' +
-                      '</div>' +
-                      '<div class="row g-2">' +
-                        '<div class="col-md-9">' +
-                          '<input type="text" class="form-control form-control-sm" ' +
-                                  'name="ext_link_notes[]" maxlength="255" ' +
-                                  'placeholder="Optional note (e.g. \'1900 first edition\')" ' +
-                                  'value="' + escapeHtml(note) + '">' +
-                        '</div>' +
-                        '<div class="col-md-3 d-flex align-items-center">' +
-                          '<div class="form-check small">' +
-                            '<input class="form-check-input" type="checkbox" ' +
-                                    'name="ext_link_verified[]" value="1" ' + ver + '>' +
-                            '<label class="form-check-label">Verified</label>' +
-                          '</div>' +
-                        '</div>' +
-                      '</div>' +
-                    '</div>' +
-                    '<button type="button" class="btn btn-sm btn-outline-danger" ' +
-                            'data-action="remove-ext-link" title="Remove this link">' +
-                      '<i class="bi bi-x-lg"></i>' +
-                    '</button>' +
-                  '</div>' +
-                '</div>';
-            card.querySelector('[data-action=remove-ext-link]')
-                .addEventListener('click', () => card.remove());
-            /* #841 — global URL → provider auto-detect. The module is
-               loaded by manage/includes/head-libs.php on every admin
-               page, so the wiring is the same one-liner here as in
-               every other edit modal. */
-            if (window.iHymnsLinkDetect && typeof window.iHymnsLinkDetect.attachAutoDetect === 'function') {
-                window.iHymnsLinkDetect.attachAutoDetect(card);
-            }
-            return card;
-        };
-
-        addBtn.addEventListener('click', () => {
-            rowsEl.appendChild(window._iHymnsBuildExtLinkRow({
-                typeId: 0, url: '', note: '', verified: false,
-            }));
-        });
-
-        function escapeHtml(s) {
-            return String(s)
-                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-        }
     })();
     </script>
 

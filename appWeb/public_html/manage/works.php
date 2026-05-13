@@ -96,27 +96,9 @@ try {
     $hasExtLinksSchema = $r && $r->fetch_row() !== null;
     if ($r) $r->close();
     if ($hasExtLinksSchema) {
-        $res = $db->query(
-            "SELECT Id, Slug, Name, Category, IconClass
-               FROM tblExternalLinkTypes
-              WHERE COALESCE(IsActive, 1) = 1
-                AND FIND_IN_SET('work', AppliesTo) > 0
-              ORDER BY Category ASC, DisplayOrder ASC, Name ASC"
-        );
-        if ($res) {
-            while ($row = $res->fetch_assoc()) {
-                $linkTypesForWork[] = [
-                    'id'        => (int)$row['Id'],
-                    'slug'      => (string)$row['Slug'],
-                    'name'      => (string)$row['Name'],
-                    'category'  => (string)$row['Category'],
-                    'iconClass' => (string)($row['IconClass'] ?? ''),
-                ];
-            }
-            $res->close();
-        }
-        /* #845 — attach DB-driven URL → provider patterns. */
-        $linkTypesForWork = attachExternalLinkPatterns($db, $linkTypesForWork);
+        /* #841/#845 — shared loader returns the registry with URL →
+           provider patterns already attached. */
+        $linkTypesForWork = loadExternalLinkTypesFor($db, 'work');
     }
 } catch (\Throwable $_e) { /* probe failure → external-links UI silently absent */ }
 
@@ -314,16 +296,6 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     $postedSongs
                 ))));
 
-                /* External-links reconciliation arrays (#833 pattern) */
-                $linkTypeIds  = $_POST['ext_link_type_ids'] ?? [];
-                $linkUrls     = $_POST['ext_link_urls']     ?? [];
-                $linkNotes    = $_POST['ext_link_notes']    ?? [];
-                $linkVerified = $_POST['ext_link_verified'] ?? [];
-                if (!is_array($linkTypeIds))  $linkTypeIds  = [];
-                if (!is_array($linkUrls))     $linkUrls     = [];
-                if (!is_array($linkNotes))    $linkNotes    = [];
-                if (!is_array($linkVerified)) $linkVerified = [];
-
                 $db->begin_transaction();
                 try {
                     $stmt = $db->prepare(
@@ -360,34 +332,19 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                         $stmt->close();
                     }
 
-                    /* External links — DELETE-then-INSERT, mirroring #833. */
+                    /* External links — delegated to the shared saver. */
+                    $insertedLinks = 0;
                     if ($hasExtLinksSchema) {
-                        $stmt = $db->prepare('DELETE FROM tblWorkExternalLinks WHERE WorkId = ?');
-                        $stmt->bind_param('i', $id);
-                        $stmt->execute();
-                        $stmt->close();
-
-                        $insertedLinks = 0;
-                        $count = max(count($linkTypeIds), count($linkUrls));
-                        for ($i = 0; $i < $count; $i++) {
-                            $typeId = (int)($linkTypeIds[$i] ?? 0);
-                            $url    = trim((string)($linkUrls[$i] ?? ''));
-                            $lnote  = mb_substr(trim((string)($linkNotes[$i] ?? '')), 0, 255);
-                            $ver    = !empty($linkVerified[$i]) ? 1 : 0;
-                            if ($typeId <= 0 || $url === '') continue;
-                            if (!preg_match('#^https?://#i', $url)) continue;
-                            if (mb_strlen($url) > 2048) continue;
-
-                            $stmt = $db->prepare(
-                                'INSERT INTO tblWorkExternalLinks
-                                     (WorkId, LinkTypeId, Url, Note, SortOrder, Verified)
-                                 VALUES (?, ?, ?, NULLIF(?, ""), ?, ?)'
-                            );
-                            $stmt->bind_param('iissii', $id, $typeId, $url, $lnote, $i, $ver);
-                            $stmt->execute();
-                            $stmt->close();
-                            $insertedLinks++;
-                        }
+                        $insertedLinks = saveExternalLinksForRow(
+                            $db,
+                            'tblWorkExternalLinks',
+                            'WorkId',
+                            $id,
+                            $_POST['ext_link_type_ids'] ?? [],
+                            $_POST['ext_link_urls']     ?? [],
+                            $_POST['ext_link_notes']    ?? [],
+                            $_POST['ext_link_verified'] ?? []
+                        );
                     }
 
                     $db->commit();
@@ -818,18 +775,14 @@ if ($hasSchema) {
 
                             <?php if ($hasExtLinksSchema): ?>
                             <hr>
-
-                            <div class="d-flex justify-content-between align-items-baseline mb-2">
-                                <h6 class="mb-0"><i class="bi bi-link-45deg me-2"></i>External links</h6>
-                                <button type="button" class="btn btn-outline-info btn-sm" id="edit-work-ext-link-add-btn">
-                                    <i class="bi bi-plus-lg me-1"></i>Add link
-                                </button>
-                            </div>
-                            <p class="form-text small mt-0 mb-2">
-                                Provider auto-detects from the URL — paste e.g. a YouTube link
-                                and the dropdown selects YouTube automatically.
-                            </p>
-                            <div id="edit-work-ext-links-rows" class="vstack gap-2"></div>
+                            <?php
+                                $containerId    = 'edit-work-ext-links-rows';
+                                $addBtnId       = 'edit-work-ext-link-add-btn';
+                                $heading        = 'External links';
+                                $helpText       = 'Provider auto-detects from the URL — paste e.g. a YouTube link and the dropdown selects YouTube automatically.';
+                                $useCardHeading = true;
+                                require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'external-links-section.php';
+                            ?>
                             <?php endif; ?>
                         </div>
                         <div class="modal-footer" style="border-color: var(--ih-border);">
@@ -949,89 +902,16 @@ if ($hasSchema) {
             });
         }
 
-        /* === External-links card builder, mirrors the songbooks page (#833) === */
-        function buildLinkSelect(selectedId) {
-            const types = Array.isArray(window._iHymnsLinkTypes) ? window._iHymnsLinkTypes : [];
-            const byCat = {};
-            types.forEach(t => {
-                const cat = t.category || 'other';
-                if (!byCat[cat]) byCat[cat] = [];
-                byCat[cat].push(t);
+        /* External-links editor — driven by the shared module
+           (#833 / #841). The row builder lives in
+           /js/modules/external-links-editor.js so songbooks, works
+           and the song editor never diverge again. */
+        let workLinksEditor = null;
+        if (linkRowsEl && window.iHymnsExtLinksEditor) {
+            workLinksEditor = window.iHymnsExtLinksEditor.mount({
+                rowsEl:   linkRowsEl,
+                addBtnEl: addLinkBtn,
             });
-            const catLabels = {
-                'official':'Official','information':'Information','read':'Read',
-                'sheet-music':'Sheet music','listen':'Listen','watch':'Watch',
-                'purchase':'Purchase','authority':'Authority','social':'Social','other':'Other',
-            };
-            const catOrder = ['official','information','read','sheet-music','listen','watch','purchase','authority','social','other'];
-            let html = '<select class="form-select form-select-sm" name="ext_link_type_ids[]" required>';
-            html += '<option value="">— pick a link type —</option>';
-            catOrder.forEach(cat => {
-                if (!byCat[cat] || !byCat[cat].length) return;
-                html += '<optgroup label="' + escapeHtml(catLabels[cat] || cat) + '">';
-                byCat[cat].forEach(t => {
-                    const sel = (Number(selectedId) === Number(t.id)) ? ' selected' : '';
-                    html += '<option value="' + Number(t.id) + '"' + sel + '>' + escapeHtml(t.name) + '</option>';
-                });
-                html += '</optgroup>';
-            });
-            html += '</select>';
-            return html;
-        }
-        function buildLinkRow(data) {
-            const card = document.createElement('div');
-            card.className = 'card bg-dark border-secondary';
-            const url  = String(data.url || '');
-            const note = String(data.note || '');
-            const ver  = data.verified ? 'checked' : '';
-            card.innerHTML =
-                '<div class="card-body py-2">' +
-                  '<div class="d-flex align-items-start gap-2">' +
-                    '<i class="bi bi-grip-vertical text-muted mt-2" aria-hidden="true"></i>' +
-                    '<div class="flex-grow-1">' +
-                      '<div class="row g-2 mb-1">' +
-                        '<div class="col-md-5">' + buildLinkSelect(data.typeId || 0) + '</div>' +
-                        '<div class="col-md-7">' +
-                          '<input type="url" class="form-control form-control-sm" ' +
-                                  'name="ext_link_urls[]" required maxlength="2048" ' +
-                                  'placeholder="https://…" value="' + escapeHtml(url) + '">' +
-                        '</div>' +
-                      '</div>' +
-                      '<div class="row g-2">' +
-                        '<div class="col-md-9">' +
-                          '<input type="text" class="form-control form-control-sm" ' +
-                                  'name="ext_link_notes[]" maxlength="255" ' +
-                                  'placeholder="Optional note" ' +
-                                  'value="' + escapeHtml(note) + '">' +
-                        '</div>' +
-                        '<div class="col-md-3 d-flex align-items-center">' +
-                          '<div class="form-check small">' +
-                            '<input class="form-check-input" type="checkbox" ' +
-                                    'name="ext_link_verified[]" value="1" ' + ver + '>' +
-                            '<label class="form-check-label">Verified</label>' +
-                          '</div>' +
-                        '</div>' +
-                      '</div>' +
-                    '</div>' +
-                    '<button type="button" class="btn btn-sm btn-outline-danger" ' +
-                            'data-action="remove-ext-link" title="Remove this link">' +
-                      '<i class="bi bi-x-lg"></i>' +
-                    '</button>' +
-                  '</div>' +
-                '</div>';
-            card.querySelector('[data-action=remove-ext-link]')
-                .addEventListener('click', () => card.remove());
-            /* Auto-detect provider from the pasted URL — global module
-               (#841) wires the row's URL input + select together. */
-            if (window.iHymnsLinkDetect && typeof window.iHymnsLinkDetect.attachAutoDetect === 'function') {
-                window.iHymnsLinkDetect.attachAutoDetect(card);
-            }
-            return card;
-        }
-        if (addLinkBtn) {
-            addLinkBtn.onclick = () => {
-                linkRowsEl.appendChild(buildLinkRow({ typeId: 0, url: '', note: '', verified: false }));
-            };
         }
 
         /* === Song typeahead === */
@@ -1116,13 +996,10 @@ if ($hasSchema) {
             tbody.innerHTML = (row.members || []).map(m => memberRowHtml(m)).join('');
             rebindRemoveButtons();
 
-            if (linkRowsEl) {
-                linkRowsEl.innerHTML = '';
-                (row.links || []).forEach(l => {
-                    linkRowsEl.appendChild(buildLinkRow({
-                        typeId: l.typeId, url: l.url, note: l.note, verified: l.verified,
-                    }));
-                });
+            if (workLinksEditor) {
+                workLinksEditor.setRows((row.links || []).map(l => ({
+                    typeId: l.typeId, url: l.url, note: l.note, verified: l.verified,
+                })));
             }
 
             if (sugBox) { sugBox.style.display = 'none'; sugBox.innerHTML = ''; }

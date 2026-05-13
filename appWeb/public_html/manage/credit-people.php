@@ -2140,6 +2140,57 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             let ipiIndex   = 0;
             let aliasIndex = 0;
 
+            /* Translation map from the shared iHymnsLinkDetect slug
+               vocabulary (driven by tblExternalLinkTypes + the bundled
+               RULES array) to the credit-people-specific link-type keys
+               in CREDIT_PERSON_LINK_TYPE_CATALOGUE.
+
+               TODO (followup): unify credit-people storage onto
+               tblExternalLinkTypes so this map can disappear and the
+               same shared editor module can drive this surface too. */
+            const CP_DETECT_SLUG_TO_KEY = {
+                'wikipedia':            'wikipedia',
+                'wikidata':             'wikidata',
+                'musicbrainz-artist':   'musicbrainz',
+                'musicbrainz-work':     'musicbrainz',
+                'musicbrainz-recording':'musicbrainz',
+                'discogs':              'discogs',
+                'imslp':                'imslp',
+                'hymnary-org':          'hymnary',
+                'spotify':              'spotify',
+                'apple-music':          'apple_music',
+                'youtube-music':        'youtube_music',
+                'bandcamp':             'bandcamp',
+                'soundcloud':           'soundcloud',
+                'youtube':              'youtube',
+                'facebook':             'facebook',
+                'instagram':            'instagram',
+                'twitter-x':            'twitter',
+                'mastodon':             'mastodon',
+            };
+
+            /* Wire the credit-people link row to the shared
+               iHymnsLinkDetect module. The credit-people <select>
+               values ARE the credit-people key (e.g. 'apple_music'),
+               not a numeric tblExternalLinkTypes.Id, so the standard
+               slugToOptionValue helper doesn't fit — we pass a
+               slugLookup that walks our translation map and returns the
+               matching option value when present. */
+            function wireCpLinkRowAutoDetect(row) {
+                if (!window.iHymnsLinkDetect || typeof window.iHymnsLinkDetect.attachAutoDetect !== 'function') return;
+                window.iHymnsLinkDetect.attachAutoDetect(row, {
+                    selectSelector: 'select[name$="[type]"]',
+                    slugLookup: function (slug, selectEl) {
+                        const key = CP_DETECT_SLUG_TO_KEY[slug];
+                        if (!key || !selectEl) return '';
+                        for (let i = 0; i < selectEl.options.length; i++) {
+                            if (selectEl.options[i].value === key) return key;
+                        }
+                        return '';
+                    },
+                });
+            }
+
             /* Append a new sub-form row, optionally pre-filled. The
                template's {i} placeholders get replaced with the
                current per-kind index so PHP receives the rows as a
@@ -2158,6 +2209,10 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                     const ord = row.querySelector('input[name$="[sort_order]"]');
                     if (ord && prefill.sort_order !== undefined) ord.value = prefill.sort_order;
                 }
+                /* Auto-detect provider from the pasted URL — same
+                   global module the other admin surfaces use, with a
+                   per-page slug translation. */
+                wireCpLinkRowAutoDetect(row);
                 return row;
             }
             function addIpiRow(prefill) {
