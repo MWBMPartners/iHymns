@@ -18,33 +18,39 @@ declare(strict_types=1);
  *
  * A subsequent bulk-import of the new HA songbook would then collide on
  * the PK when it tried to INSERT SongId='HA-0001'. The application-side
- * rename code has been patched alongside this migration to also
- * re-prefix the SongId, but rows that were renamed BEFORE the patch
- * shipped still carry the stale prefix and need a one-shot data fix.
+ * rename code has been patched alongside this migration, but rows that
+ * were renamed BEFORE the patch shipped still carry the stale prefix
+ * and need a one-shot data fix.
  *
  * Algorithm:
- *   1. Find every (SongbookAbbr, oldPrefix) pair where:
- *        - SongbookAbbr <> SUBSTRING_INDEX(SongId, '-', 1)
- *        - i.e. the SongId's prefix (everything before the first `-`)
- *          doesn't match the row's declared SongbookAbbr.
- *   2. For each affected row, rewrite SongId = SongbookAbbr || '-' || <numeric tail>.
- *   3. tblSongs has FKs to itself from many child tables. Most carry
- *      ON UPDATE CASCADE so their SongId column refreshes automatically
- *      — but four don't: tblSongExternalLinks, tblSongAlternativeTitles,
- *      tblSongMedia, tblWorkSongs. We UPDATE those manually first,
- *      then update tblSongs.SongId.
+ *   STEP 1 — Add `ON UPDATE CASCADE` to the four child FKs that lack it
+ *            (`fk_link_song`, `fk_alt_song`, `fk_media_song`,
+ *            `fk_work_song_song`). Without this, updating tblSongs.SongId
+ *            either fails with a FK constraint violation (children point
+ *            at a parent SongId that no longer exists post-update) or,
+ *            if we try child-first, fails because the new parent SongId
+ *            doesn't yet exist when the child is repointed. The only
+ *            atomic, FK-safe shape is "parent UPDATE with cascading
+ *            children". Idempotent via INFORMATION_SCHEMA probe.
+ *
+ *   STEP 2 — Find every row whose SongId's prefix (everything before the
+ *            first `-`) doesn't match its declared SongbookAbbr.
+ *
+ *   STEP 3 — Per-row, compute the target SongId = SongbookAbbr ‖ '-' ‖
+ *            <numeric tail>. If the target is FREE (no existing row), UPDATE
+ *            tblSongs.SongId — the FK cascade propagates the new value to
+ *            every child table (18 of them). If the target is taken, the
+ *            row is reported for manual merge and skipped.
  *
  * Conservative:
- *   - Only rewrites rows whose new SongId is FREE (no existing row with
- *     the target ID). If the target SongId is already taken, the row is
- *     left alone and reported in the output — a curator needs to merge
- *     manually.
- *   - Wrapped in a transaction; aborts cleanly on any error.
+ *   - Only rewrites rows whose new SongId is FREE.
+ *   - Whole rewrite wrapped in a transaction; cleanly rolls back on error.
  *
  * Idempotent — re-running on an already-fixed catalogue is a no-op.
  *
- * @migration-updates tblSongs.SongId  (and child tables that lack
- *                                       ON UPDATE CASCADE)
+ * @migration-updates tblSongs.SongId  (via FK cascade)
+ * @migration-alters  fk_link_song, fk_alt_song, fk_media_song, fk_work_song_song
+ *                     to add ON UPDATE CASCADE
  *
  * USAGE:
  *   Web:  /manage/setup-database → "Re-prefix SongIds"
@@ -74,6 +80,27 @@ function _migSongIdPrefix_out(string $line): void
     }
 }
 
+/**
+ * Check the UPDATE_RULE on a single FK constraint. Returns one of
+ * 'CASCADE', 'RESTRICT', 'SET NULL', 'NO ACTION', or '' when the
+ * constraint isn't found.
+ */
+function _migSongIdPrefix_fkUpdateRule(\mysqli $db, string $table, string $constraint): string
+{
+    $stmt = $db->prepare(
+        'SELECT UPDATE_RULE
+           FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS
+          WHERE CONSTRAINT_SCHEMA = DATABASE()
+            AND TABLE_NAME        = ?
+            AND CONSTRAINT_NAME   = ? LIMIT 1'
+    );
+    $stmt->bind_param('ss', $table, $constraint);
+    $stmt->execute();
+    $r = $stmt->get_result()->fetch_row();
+    $stmt->close();
+    return $r ? (string)$r[0] : '';
+}
+
 _migSongIdPrefix_out('SongId prefix fixup starting…');
 
 $db = getDbMysqli();
@@ -82,7 +109,58 @@ if (!$db) {
     if ($isCli) exit(1); else return;
 }
 
-/* Step 1 — find every row whose prefix is stale. */
+/* ----------------------------------------------------------------
+ * STEP 1 — Add ON UPDATE CASCADE to the four child FKs that lack it.
+ *
+ * Each entry: [child_table, fk_name, child_column].
+ * The 14 other FKs to tblSongs.SongId already declare ON UPDATE
+ * CASCADE in schema.sql, so they don't need a re-alter.
+ * ---------------------------------------------------------------- */
+$cascadeTargets = [
+    ['tblSongExternalLinks',     'fk_link_song',       'SongId'],
+    ['tblSongAlternativeTitles', 'fk_alt_song',        'SongId'],
+    ['tblSongMedia',             'fk_media_song',      'SongId'],
+    ['tblWorkSongs',             'fk_work_song_song',  'SongId'],
+];
+
+$altered = 0;
+$skipped = 0;
+foreach ($cascadeTargets as [$tbl, $fk, $col]) {
+    $rule = _migSongIdPrefix_fkUpdateRule($db, $tbl, $fk);
+    if ($rule === '') {
+        _migSongIdPrefix_out("[skip] {$tbl}.{$fk} — constraint not found (schema not migrated to expected shape?).");
+        $skipped++;
+        continue;
+    }
+    if ($rule === 'CASCADE') {
+        $skipped++;
+        continue; /* already cascading — nothing to do */
+    }
+
+    /* MySQL has no in-place "ALTER FK". The only path is DROP +
+       ADD inside the same ALTER TABLE statement so the FK is never
+       missing during the operation. ON DELETE CASCADE is preserved
+       (every one of these started with DELETE CASCADE already). */
+    $sql = "ALTER TABLE {$tbl}
+                DROP FOREIGN KEY {$fk},
+                ADD CONSTRAINT {$fk}
+                    FOREIGN KEY ({$col}) REFERENCES tblSongs(SongId)
+                    ON DELETE CASCADE ON UPDATE CASCADE";
+    if ($db->query($sql)) {
+        _migSongIdPrefix_out("[alt ] {$tbl}.{$fk} now ON UPDATE CASCADE.");
+        $altered++;
+    } else {
+        _migSongIdPrefix_out("ERROR: ALTER {$tbl}.{$fk} failed: " . $db->error);
+        if ($isCli) exit(1); else return;
+    }
+}
+if ($altered === 0) {
+    _migSongIdPrefix_out('[ok  ] all four child FKs already ON UPDATE CASCADE.');
+}
+
+/* ----------------------------------------------------------------
+ * STEP 2 — Identify stale-prefix rows.
+ * ---------------------------------------------------------------- */
 $rows = [];
 $res  = $db->query(
     "SELECT SongId, SongbookAbbr
@@ -107,26 +185,21 @@ if (empty($rows)) {
 
 _migSongIdPrefix_out('[scan] ' . count($rows) . ' row' . (count($rows) === 1 ? '' : 's') . ' have a stale SongId prefix.');
 
-/* Compute the proposed new SongId for each row and verify it's free
-   (no PK collision). Rows whose target ID is already taken can't be
-   fixed by a blind UPDATE — surface them for manual merge. */
-$proposed   = []; /* SongId → newSongId */
-$conflicts  = [];
-$takenStmt  = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+/* Compute the proposed new SongId for each row and verify it's free. */
+$proposed  = [];
+$conflicts = [];
+$takenStmt = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
 foreach ($rows as $r) {
     $oldId    = (string)$r['SongId'];
     $bookAbbr = (string)$r['SongbookAbbr'];
     $dashPos  = strpos($oldId, '-');
-    /* Defensive: rows with no `-` in their SongId aren't safe to
-       reprefix automatically — they don't fit the abbr-number format.
-       Skip and let a curator resolve. */
     if ($dashPos === false) {
         $conflicts[] = ['old' => $oldId, 'new' => null, 'reason' => 'no `-` in SongId — non-standard format'];
         continue;
     }
     $tail   = substr($oldId, $dashPos + 1);
     $newId  = $bookAbbr . '-' . $tail;
-    if ($newId === $oldId) continue; /* shouldn't happen given the WHERE clause but safe */
+    if ($newId === $oldId) continue;
 
     $takenStmt->bind_param('s', $newId);
     $takenStmt->execute();
@@ -158,44 +231,25 @@ if (empty($proposed)) {
 
 _migSongIdPrefix_out('[fix ] re-prefixing ' . count($proposed) . ' row' . (count($proposed) === 1 ? '' : 's') . '…');
 
-/* Step 2 — do the updates inside a transaction. For each oldId →
-   newId pair: update the four non-cascading children first, then
-   tblSongs itself (the remaining ~14 children cascade via FK). */
+/* ----------------------------------------------------------------
+ * STEP 3 — UPDATE tblSongs.SongId. With all 4 FKs now ON UPDATE
+ *          CASCADE, every child table (18 of them) refreshes
+ *          atomically — no separate child-update step needed.
+ * ---------------------------------------------------------------- */
 $db->begin_transaction();
 try {
-    $nonCascadingChildren = [
-        'tblSongExternalLinks',
-        'tblSongAlternativeTitles',
-        'tblSongMedia',
-        'tblWorkSongs',
-    ];
-    /* tblSongLinkSuggestions has two SongId columns (SongIdA + SongIdB)
-       and DOES carry ON UPDATE CASCADE, so it's handled automatically
-       by the tblSongs.SongId update below. tblTranslationMaps has the
-       same shape — also auto-cascades. */
-
-    $childStmts = [];
-    foreach ($nonCascadingChildren as $tbl) {
-        $childStmts[$tbl] = $db->prepare("UPDATE {$tbl} SET SongId = ? WHERE SongId = ?");
-    }
     $parentStmt = $db->prepare('UPDATE tblSongs SET SongId = ? WHERE SongId = ?');
-
     $applied = 0;
     foreach ($proposed as $oldId => $newId) {
-        foreach ($childStmts as $tbl => $cs) {
-            $cs->bind_param('ss', $newId, $oldId);
-            $cs->execute();
-        }
         $parentStmt->bind_param('ss', $newId, $oldId);
         $parentStmt->execute();
         if ($parentStmt->affected_rows > 0) {
             $applied++;
         }
     }
-    foreach ($childStmts as $cs) { $cs->close(); }
     $parentStmt->close();
-
     $db->commit();
+
     _migSongIdPrefix_out("[done] re-prefixed {$applied} SongId" . ($applied === 1 ? '' : 's') . '.');
     if (!empty($conflicts)) {
         _migSongIdPrefix_out('[note] ' . count($conflicts) . ' unresolved conflict' . (count($conflicts) === 1 ? '' : 's')

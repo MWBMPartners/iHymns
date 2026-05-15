@@ -2832,9 +2832,18 @@ switch ($action) {
             try {
                 $summary = _bulkImport_processZip($tmpPath);
                 if ((int)($summary['songs_created'] ?? 0) > 0) {
+                    /* Auto-maintenance: cache regen + stale-prefix
+                       probe-and-fixup. The probe is cheap on a clean
+                       catalogue; if it finds rows that need re-prefixing
+                       (e.g. import after a pre-#997 rename), it fixes
+                       them inline up to the cap, otherwise defers to
+                       the explicit migration. */
                     require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
-                        . DIRECTORY_SEPARATOR . 'songs_cache.php';
-                    songsCacheRegenerateBestEffort('bulk_import_zip.sync');
+                        . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                    $_maint = songbookMaintenanceRun($db, 'bulk_import_zip.sync');
+                    if ($_maint['rewritten'] > 0 || $_maint['deferred']) {
+                        $summary['maintenance'] = $_maint;
+                    }
                 }
                 echo json_encode($summary, JSON_UNESCAPED_UNICODE);
             } catch (\Throwable $e) {
@@ -2868,8 +2877,11 @@ switch ($action) {
                 $summary = _bulkImport_processZip($tmpPath);
                 if ((int)($summary['songs_created'] ?? 0) > 0) {
                     require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
-                        . DIRECTORY_SEPARATOR . 'songs_cache.php';
-                    songsCacheRegenerateBestEffort('bulk_import_zip.sync_fallback');
+                        . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                    $_maint = songbookMaintenanceRun($db, 'bulk_import_zip.sync_fallback');
+                    if ($_maint['rewritten'] > 0 || $_maint['deferred']) {
+                        $summary['maintenance'] = $_maint;
+                    }
                 }
                 echo json_encode($summary, JSON_UNESCAPED_UNICODE);
             } catch (\Throwable $e) {
@@ -2970,8 +2982,11 @@ switch ($action) {
                all-existing or all-failed — nothing to refresh. */
             if ((int)($summary['songs_created'] ?? 0) > 0) {
                 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
-                    . DIRECTORY_SEPARATOR . 'songs_cache.php';
-                songsCacheRegenerateBestEffort('bulk_import_zip.async');
+                    . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                $_maint = songbookMaintenanceRun($db, 'bulk_import_zip.async');
+                if ($_maint['rewritten'] > 0 || $_maint['deferred']) {
+                    $summary['maintenance'] = $_maint;
+                }
             }
 
             /* Notify the curator so they find the result on their
@@ -3117,10 +3132,14 @@ switch ($action) {
                 http_response_code(400);
             } elseif (($summary['songs_created'] ?? 0) > 0) {
                 /* Songs were actually written — refresh the on-disk
-                   songs cache (#932). Best-effort; logged on failure. */
+                   songs cache (#932) plus run the stale-prefix
+                   probe as a belt-and-braces sweep. Best-effort. */
                 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
-                    . DIRECTORY_SEPARATOR . 'songs_cache.php';
-                songsCacheRegenerateBestEffort('bulk_import_videopsalm');
+                    . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                $_maint = songbookMaintenanceRun($db, 'bulk_import_videopsalm');
+                if ($_maint['rewritten'] > 0 || $_maint['deferred']) {
+                    $summary['maintenance'] = $_maint;
+                }
             }
             echo json_encode($summary, JSON_UNESCAPED_UNICODE);
         } catch (\Throwable $e) {

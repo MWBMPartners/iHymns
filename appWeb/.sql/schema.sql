@@ -1860,7 +1860,7 @@ CREATE TABLE IF NOT EXISTS tblSongExternalLinks (
     INDEX idx_type (LinkTypeId),
 
     CONSTRAINT fk_link_song
-        FOREIGN KEY (SongId)     REFERENCES tblSongs(SongId)         ON DELETE CASCADE,
+        FOREIGN KEY (SongId)     REFERENCES tblSongs(SongId)         ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT fk_link_type_song
         FOREIGN KEY (LinkTypeId) REFERENCES tblExternalLinkTypes(Id) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -1942,7 +1942,7 @@ CREATE TABLE IF NOT EXISTS tblSongAlternativeTitles (
     UNIQUE KEY uq_song_title (SongId, Title),
 
     CONSTRAINT fk_alt_song
-        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId) ON DELETE CASCADE
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -2091,7 +2091,7 @@ CREATE TABLE IF NOT EXISTS tblSongMedia (
     INDEX idx_sha256    (Sha256),
 
     CONSTRAINT fk_media_song
-        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId) ON DELETE CASCADE
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -2145,7 +2145,7 @@ CREATE TABLE IF NOT EXISTS tblWorkSongs (
     CONSTRAINT fk_work_song_work
         FOREIGN KEY (WorkId) REFERENCES tblWorks(Id)        ON DELETE CASCADE,
     CONSTRAINT fk_work_song_song
-        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId)    ON DELETE CASCADE
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId)    ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
