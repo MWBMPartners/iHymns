@@ -1241,6 +1241,61 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $stmt->bind_param('ss', $newAbbr, $oldAbbr);
                             $stmt->execute();
                             $stmt->close();
+
+                            /* Also re-prefix the SongId itself so a future
+                               import of the original abbreviation (e.g.
+                               renaming HA → HAOLD to free `HA` for a fresh
+                               scrape) doesn't collide on the PK with the
+                               old HA-XXXX rows that survived the rename
+                               with their SongId prefix intact. The four
+                               child tables tblSongExternalLinks,
+                               tblSongAlternativeTitles, tblSongMedia, and
+                               tblWorkSongs have FKs to tblSongs.SongId
+                               WITHOUT `ON UPDATE CASCADE`, so they need
+                               explicit pre-updates; the other ~14 child
+                               tables cascade automatically. The match
+                               pattern is "<oldAbbr>-%" — anchored prefix
+                               + hyphen — so a SongId like HABA-0001 isn't
+                               accidentally rewritten when renaming HA. */
+                            $oldPrefix    = $oldAbbr . '-';
+                            $newPrefix    = $newAbbr . '-';
+                            $oldPrefixLen = strlen($oldPrefix);
+                            $likeOld      = $oldPrefix . '%';
+
+                            /* Step 1 — update child tables that lack
+                               ON UPDATE CASCADE. Order doesn't matter; each
+                               is independent. */
+                            foreach ([
+                                'tblSongExternalLinks',
+                                'tblSongAlternativeTitles',
+                                'tblSongMedia',
+                                'tblWorkSongs',
+                            ] as $childTbl) {
+                                $stmt = $db->prepare(
+                                    "UPDATE {$childTbl}
+                                        SET SongId = CONCAT(?, SUBSTRING(SongId, ? + 1))
+                                      WHERE SongId LIKE ?"
+                                );
+                                $stmt->bind_param('sis', $newPrefix, $oldPrefixLen, $likeOld);
+                                $stmt->execute();
+                                $stmt->close();
+                            }
+
+                            /* Step 2 — update tblSongs.SongId itself. The
+                               other ~14 child tables (Components, Writers,
+                               Composers, Arrangers, Adaptors, Translators,
+                               Artists, TagMap, History, Favorites, Keys,
+                               SongLinks, SongLinkSuggestions, Catalogues)
+                               cascade automatically via ON UPDATE CASCADE. */
+                            $stmt = $db->prepare(
+                                "UPDATE tblSongs
+                                    SET SongId = CONCAT(?, SUBSTRING(SongId, ? + 1))
+                                  WHERE SongbookAbbr = ?
+                                    AND SongId LIKE ?"
+                            );
+                            $stmt->bind_param('siss', $newPrefix, $oldPrefixLen, $newAbbr, $likeOld);
+                            $stmt->execute();
+                            $stmt->close();
                         }
                     }
 
