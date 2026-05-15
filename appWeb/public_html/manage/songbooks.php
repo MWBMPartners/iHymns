@@ -1039,8 +1039,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                    stays current. Best-effort — a regen failure must
                    not undo the create that just committed. */
                 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR
-                    . 'includes' . DIRECTORY_SEPARATOR . 'songs_cache.php';
-                songsCacheRegenerateBestEffort('songbooks.create');
+                    . 'includes' . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                songbookMaintenanceRun($db, 'songbooks.create');
                 $success = "Songbook '{$abbr}' created.";
                 break;
             }
@@ -1247,46 +1247,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                renaming HA → HAOLD to free `HA` for a fresh
                                scrape) doesn't collide on the PK with the
                                old HA-XXXX rows that survived the rename
-                               with their SongId prefix intact. The four
-                               child tables tblSongExternalLinks,
-                               tblSongAlternativeTitles, tblSongMedia, and
-                               tblWorkSongs have FKs to tblSongs.SongId
-                               WITHOUT `ON UPDATE CASCADE`, so they need
-                               explicit pre-updates; the other ~14 child
-                               tables cascade automatically. The match
-                               pattern is "<oldAbbr>-%" — anchored prefix
-                               + hyphen — so a SongId like HABA-0001 isn't
+                               with their SongId prefix intact. All 18 child
+                               tables that FK to tblSongs.SongId carry
+                               ON UPDATE CASCADE (the four that didn't —
+                               tblSongExternalLinks, tblSongAlternativeTitles,
+                               tblSongMedia, tblWorkSongs — were retro-fitted
+                               via migrate-songid-prefix-fixup.php), so a
+                               single UPDATE on tblSongs propagates atomically
+                               to every child row.
+
+                               The match pattern is the anchored prefix
+                               "<oldAbbr>-%" so a SongId like HABA-0001 isn't
                                accidentally rewritten when renaming HA. */
                             $oldPrefix    = $oldAbbr . '-';
                             $newPrefix    = $newAbbr . '-';
                             $oldPrefixLen = strlen($oldPrefix);
                             $likeOld      = $oldPrefix . '%';
-
-                            /* Step 1 — update child tables that lack
-                               ON UPDATE CASCADE. Order doesn't matter; each
-                               is independent. */
-                            foreach ([
-                                'tblSongExternalLinks',
-                                'tblSongAlternativeTitles',
-                                'tblSongMedia',
-                                'tblWorkSongs',
-                            ] as $childTbl) {
-                                $stmt = $db->prepare(
-                                    "UPDATE {$childTbl}
-                                        SET SongId = CONCAT(?, SUBSTRING(SongId, ? + 1))
-                                      WHERE SongId LIKE ?"
-                                );
-                                $stmt->bind_param('sis', $newPrefix, $oldPrefixLen, $likeOld);
-                                $stmt->execute();
-                                $stmt->close();
-                            }
-
-                            /* Step 2 — update tblSongs.SongId itself. The
-                               other ~14 child tables (Components, Writers,
-                               Composers, Arrangers, Adaptors, Translators,
-                               Artists, TagMap, History, Favorites, Keys,
-                               SongLinks, SongLinkSuggestions, Catalogues)
-                               cascade automatically via ON UPDATE CASCADE. */
                             $stmt = $db->prepare(
                                 "UPDATE tblSongs
                                     SET SongId = CONCAT(?, SUBSTRING(SongId, ? + 1))
@@ -1601,8 +1577,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                        every other client-side consumer) sees the
                        fresh flag value on next load. Best-effort. */
                     require_once dirname(__DIR__) . DIRECTORY_SEPARATOR
-                        . 'includes' . DIRECTORY_SEPARATOR . 'songs_cache.php';
-                    songsCacheRegenerateBestEffort('songbooks.update');
+                        . 'includes' . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                    songbookMaintenanceRun($db, 'songbooks.update');
                     $success = $abbrChanged
                         ? "Songbook '{$oldAbbr}' → '{$newAbbr}'" . ($alsoRename ? ' (song references updated).' : ' (song references kept — resolve manually).')
                         : "Songbook '{$oldAbbr}' updated.";
@@ -1638,6 +1614,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'count' => count($orders),
                         'order' => array_map(fn($v) => (int)$v, (array)$orders),
                     ]);
+
+                    /* Reorder changes DisplayOrder on every row in the
+                       tile grid, so the cached songs.json must be
+                       regenerated for the public site to pick up the new
+                       sort. (Auto-maintenance hook — same as create /
+                       update / delete.) */
+                    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR
+                        . 'includes' . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                    songbookMaintenanceRun($db, 'songbooks.reorder');
 
                     $success = 'Display order saved.';
                 } catch (\Throwable $e) {
@@ -1685,8 +1670,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                    songbook stops appearing in the Song Editor's
                    dropdown on next load. */
                 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR
-                    . 'includes' . DIRECTORY_SEPARATOR . 'songs_cache.php';
-                songsCacheRegenerateBestEffort('songbooks.delete');
+                    . 'includes' . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                songbookMaintenanceRun($db, 'songbooks.delete');
 
                 $success = "Songbook '{$abbr}' deleted.";
                 break;
@@ -1764,8 +1749,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                        cache so the public site stops serving the
                        phantom rows. */
                     require_once dirname(__DIR__) . DIRECTORY_SEPARATOR
-                        . 'includes' . DIRECTORY_SEPARATOR . 'songs_cache.php';
-                    songsCacheRegenerateBestEffort('songbooks.delete_cascade');
+                        . 'includes' . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                    songbookMaintenanceRun($db, 'songbooks.delete_cascade');
 
                     $success = "Songbook '{$abbr}' deleted along with {$songCount} song"
                              . ($songCount === 1 ? '' : 's')
@@ -1837,6 +1822,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'songbook', '',
                         ['count' => $changed, 'mode' => $mode]
                     );
+                    /* Colour reassignment changes tblSongbooks.Colour
+                       on possibly-many rows; the home tiles + public
+                       reads consume Colour from the cache, so regen. */
+                    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR
+                        . 'includes' . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                    songbookMaintenanceRun($db, 'songbooks.auto_colour');
+
                     $success = $mode === 'reassign'
                         ? "Reassigned colours on {$changed} songbook"
                           . ($changed === 1 ? '' : 's') . '.'
@@ -2057,6 +2049,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 'relink_existing'=> $relinkExisting,
                             ]);
                         }
+                        /* Parent-link manifest can change ParentSongbookId
+                           on many rows; songs.json carries parent metadata
+                           consumed by the home / songbooks pages. */
+                        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR
+                            . 'includes' . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                        songbookMaintenanceRun($db, 'songbooks.manifest_apply');
+
                         $success = "Applied {$applied} parent link(s) from the manifest"
                                  . ($skipped > 0 ? "; {$skipped} link(s) skipped (see table for why)." : '.');
                     } catch (\Throwable $e) {
