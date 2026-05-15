@@ -451,6 +451,44 @@ return [
             }
         },
     ],
+    'songid-prefix-fixup' => [
+        'script' => 'migrate-songid-prefix-fixup.php',
+        'card' => [
+            'title'  => 'Re-prefix SongIds whose SongbookAbbr no longer matches',
+            'body'   => 'Before the songbook rename flow was patched to also re-prefix SongIds, renaming'
+                      . ' an abbreviation (e.g. <code>HA → HAOLD</code> to free <code>HA</code> for a fresh'
+                      . ' scrape) updated <code>tblSongs.SongbookAbbr</code> but left the SongIds carrying'
+                      . ' the OLD prefix (<code>HA-0001</code> staying as <code>HA-0001</code> even though'
+                      . ' the row now belongs to songbook <code>HAOLD</code>). A subsequent bulk-import of'
+                      . ' the original abbreviation then collides on the SongId primary key. This migration'
+                      . ' detects every row whose SongId prefix doesn\'t match its <code>SongbookAbbr</code>'
+                      . ' and rewrites the prefix (re-prefixing the four child tables that lack'
+                      . ' <code>ON UPDATE CASCADE</code> first, then <code>tblSongs.SongId</code>;'
+                      . ' the other ~14 child FKs cascade automatically). Rows whose target SongId is'
+                      . ' already taken are reported for manual merge rather than silently skipped.'
+                      . ' Re-runnable.',
+            'button' => 'Run SongId Prefix Fixup',
+        ],
+        'probe' => static function (\mysqli $db): bool {
+            try {
+                /* Pending whenever any row\'s SongId prefix disagrees with
+                   its declared SongbookAbbr. Self-clears once the migration
+                   has run. */
+                $res = $db->query(
+                    "SELECT 1 FROM tblSongs
+                      WHERE SongbookAbbr IS NOT NULL
+                        AND SongbookAbbr <> ''
+                        AND SongbookAbbr <> SUBSTRING_INDEX(SongId, '-', 1)
+                      LIMIT 1"
+                );
+                $needs = $res && $res->fetch_row() !== null;
+                if ($res) $res->close();
+                return $needs;
+            } catch (\Throwable $_e) {
+                return false;
+            }
+        },
+    ],
     'user-preferred-languages' => [
         'script' => 'migrate-user-preferred-languages.php',
         'card' => [

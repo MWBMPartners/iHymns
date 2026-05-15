@@ -222,6 +222,7 @@ $friendlyTitles = [
     'bulk-import-jobs'                 => 'Bulk Import Jobs Tracking (#676)',
     'backfill-legacy-songbook-languages' => 'Backfill Legacy Songbook Languages (#735)',
     'backfill-song-language-from-songbook' => 'Backfill Song Language from Songbook (audit follow-up)',
+    'songid-prefix-fixup'                => 'Re-prefix SongIds after Songbook Rename',
     'user-preferred-languages'         => 'User Preferred Languages Column (#736)',
     'iana-language-subtag-registry'    => 'IETF BCP 47 Reference Data (#738)',
     'cldr-native-names'                => 'CLDR Native Names Overlay',
