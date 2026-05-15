@@ -137,22 +137,32 @@ foreach ($cascadeTargets as [$tbl, $fk, $col]) {
         continue; /* already cascading — nothing to do */
     }
 
-    /* MySQL has no in-place "ALTER FK". The only path is DROP +
-       ADD inside the same ALTER TABLE statement so the FK is never
-       missing during the operation. ON DELETE CASCADE is preserved
-       (every one of these started with DELETE CASCADE already). */
-    $sql = "ALTER TABLE {$tbl}
-                DROP FOREIGN KEY {$fk},
-                ADD CONSTRAINT {$fk}
-                    FOREIGN KEY ({$col}) REFERENCES tblSongs(SongId)
-                    ON DELETE CASCADE ON UPDATE CASCADE";
-    if ($db->query($sql)) {
-        _migSongIdPrefix_out("[alt ] {$tbl}.{$fk} now ON UPDATE CASCADE.");
-        $altered++;
-    } else {
-        _migSongIdPrefix_out("ERROR: ALTER {$tbl}.{$fk} failed: " . $db->error);
+    /* MySQL has no in-place "ALTER FK". The path is DROP then ADD
+       — and these MUST be two SEPARATE ALTER TABLE statements,
+       not a single multi-action ALTER. MySQL/MariaDB validates the
+       new constraint name against the schema state at the START of
+       the statement, BEFORE the in-statement DROP registers, so a
+       combined `DROP FOREIGN KEY x, ADD CONSTRAINT x …` trips
+       "Duplicate foreign key constraint name 'x'". Two statements
+       avoid that — the brief window between them, where the FK is
+       absent, is safe for a maintenance migration (no concurrent
+       writes are expected). ON DELETE CASCADE is preserved (every
+       one of these started with DELETE CASCADE already). */
+    $sqlDrop = "ALTER TABLE {$tbl} DROP FOREIGN KEY {$fk}";
+    if (!$db->query($sqlDrop)) {
+        _migSongIdPrefix_out("ERROR: DROP {$tbl}.{$fk} failed: " . $db->error);
         if ($isCli) exit(1); else return;
     }
+    $sqlAdd = "ALTER TABLE {$tbl}
+                  ADD CONSTRAINT {$fk}
+                      FOREIGN KEY ({$col}) REFERENCES tblSongs(SongId)
+                      ON DELETE CASCADE ON UPDATE CASCADE";
+    if (!$db->query($sqlAdd)) {
+        _migSongIdPrefix_out("ERROR: ADD {$tbl}.{$fk} failed (FK left dropped — re-run the migration to retry): " . $db->error);
+        if ($isCli) exit(1); else return;
+    }
+    _migSongIdPrefix_out("[alt ] {$tbl}.{$fk} now ON UPDATE CASCADE.");
+    $altered++;
 }
 if ($altered === 0) {
     _migSongIdPrefix_out('[ok  ] all four child FKs already ON UPDATE CASCADE.');
