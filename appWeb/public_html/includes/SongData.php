@@ -1549,6 +1549,102 @@ class SongData
      * ===================================================================== */
 
     /**
+     * Lightweight, paginated song index — DB-direct, NO relation loads.
+     *
+     * Returns ONLY the columns a browse / list / editor-sidebar needs
+     * (id, number, title, songbook, songbookName, language, has-media
+     * flags). Built for WS-A (#1012): list surfaces no longer materialise
+     * the whole corpus, so read memory stays flat regardless of catalogue
+     * size. Full song detail is fetched per-record via getSongById().
+     *
+     * songbookName comes from a JOIN to tblSongbooks (the LIVE name), not
+     * the denormalised tblSongs.SongbookName — forward-compatible with the
+     * de-normalisation in WS-E (#1013).
+     *
+     * The language filter is pushed into SQL (applyLanguageFilterSql) so
+     * pagination stays correct (post-fetch filtering would drop rows from
+     * the page). A missing DB is an error, never a stale-file fallback —
+     * per the live/online-first governing rule.
+     *
+     * @param string|null  $bookId      Optional songbook abbreviation filter.
+     * @param int          $limit       Page size (clamped 1..500).
+     * @param int          $offset      Row offset (>= 0).
+     * @param list<string> $langSubtags Preferred-language subtags ([] = no filter).
+     * @return array{songs: list<array>, total: int, offset: int, limit: int}
+     */
+    public function getSongsIndex(?string $bookId = null, int $limit = 50, int $offset = 0, array $langSubtags = []): array
+    {
+        if ($this->jsonMode || !($this->db instanceof \mysqli)) {
+            throw new \RuntimeException('getSongsIndex requires a live database connection.');
+        }
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'language_filter.php';
+
+        $limit  = max(1, min(500, $limit));
+        $offset = max(0, $offset);
+
+        $where  = [];
+        $params = [];
+        $types  = '';
+        if ($bookId !== null && $bookId !== '') {
+            $bookId   = strtoupper(trim($bookId));
+            $where[]  = 's.SongbookAbbr = ?';
+            $params[] = $bookId;
+            $types   .= 's';
+        }
+        if (APP_CONFIG['features']['public_domain_only'] ?? false) {
+            $where[] = 's.LyricsPublicDomain = 1';
+        }
+
+        [$langWhere, $langTypes, $langParams] = applyLanguageFilterSql('s.Language', $langSubtags);
+
+        $whereClause  = !empty($where) ? 'WHERE ' . implode(' AND ', $where) : 'WHERE 1=1';
+        $whereClause .= $langWhere; /* ' AND (...)' or ' AND 1=1' */
+
+        $allTypes  = $types . $langTypes;
+        $allParams = array_merge($params, $langParams);
+
+        /* total (for pagination) */
+        $cStmt = $this->db->prepare("SELECT COUNT(*) FROM tblSongs s {$whereClause}");
+        if ($allTypes !== '') {
+            $cStmt->bind_param($allTypes, ...$allParams);
+        }
+        $cStmt->execute();
+        $total = (int)($cStmt->get_result()->fetch_row()[0] ?? 0);
+        $cStmt->close();
+
+        /* page rows — lightweight projection only, canonical ordering
+           (mirrors getSongs: songbook → numbered-first → number → title). */
+        $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
+                       s.SongbookAbbr AS songbook, b.Name AS songbookName,
+                       s.Language AS language,
+                       s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
+                FROM tblSongs s
+                LEFT JOIN tblSongbooks b ON b.Abbreviation = s.SongbookAbbr
+                {$whereClause}
+                ORDER BY s.SongbookAbbr ASC,
+                         CASE WHEN b.IsOfficial = 1 AND s.Number IS NOT NULL THEN 0 ELSE 1 END ASC,
+                         s.Number ASC,
+                         LOWER(s.Title) ASC
+                LIMIT ? OFFSET ?";
+        $rowTypes  = $allTypes . 'ii';
+        $rowParams = array_merge($allParams, [$limit, $offset]);
+        $stmt = $this->db->prepare($sql);
+        $stmt->bind_param($rowTypes, ...$rowParams);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $songs = [];
+        while ($row = $res->fetch_assoc()) {
+            $row['number']        = normaliseSongNumber($row['number']);
+            $row['hasAudio']      = (bool)$row['hasAudio'];
+            $row['hasSheetMusic'] = (bool)$row['hasSheetMusic'];
+            $songs[] = $row;
+        }
+        $stmt->close();
+
+        return ['songs' => $songs, 'total' => $total, 'offset' => $offset, 'limit' => $limit];
+    }
+
+    /**
      * Get all songs, optionally filtered by songbook.
      *
      * When the hidden 'public_domain_only' feature flag is enabled,

@@ -580,6 +580,9 @@ if ($action !== null) {
          * Get full song data by ID
          * Parameters: id (required)
          * ----------------------------------------------------------------- */
+        /* song_detail is the canonical per-record fetch name (WS-A #1012);
+           song_data is kept as an alias so existing clients keep working. */
+        case 'song_detail':
         case 'song_data':
             $songId = isset($_GET['id']) ? trim($_GET['id']) : '';
             if ($songId === '') {
@@ -700,6 +703,29 @@ if ($action !== null) {
                 'songs' => array_map('songToSummary', $songs),
                 'total' => count($songs),
             ]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Lightweight, paginated song index (WS-A #1012)
+         * Parameters: songbook (optional), limit (1..500, default 50),
+         *             offset (default 0). The language filter is applied
+         *             in SQL so pagination is correct. Returns lightweight
+         *             rows only (id/number/title/songbook/songbookName +
+         *             media flags); fetch a full song via
+         *             action=song_detail&id=… This replaces the
+         *             whole-corpus load for browse/editor-list surfaces.
+         * ----------------------------------------------------------------- */
+        case 'songs_list':
+            $bookId = isset($_GET['songbook']) ? trim($_GET['songbook']) : null;
+            if ($bookId === '') {
+                $bookId = null;
+            }
+            $listLimit  = isset($_GET['limit'])  ? (int)$_GET['limit']  : 50;
+            $listOffset = isset($_GET['offset']) ? (int)$_GET['offset'] : 0;
+            $listLangs  = resolvePreferredLanguagesForRequest(getAuthenticatedUser());
+            $listPage   = $songData->getSongsIndex($bookId, $listLimit, $listOffset, $listLangs);
+            $listPage['hasMore'] = ($listPage['offset'] + count($listPage['songs'])) < $listPage['total'];
+            sendJson($listPage);
             break;
 
         /* -----------------------------------------------------------------
