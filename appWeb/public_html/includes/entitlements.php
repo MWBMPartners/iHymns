@@ -69,6 +69,18 @@ const ENTITLEMENTS = [
        the feed. */
     'manage_notifications' => ['global_admin'],
 
+    /* SQL Diagnostics page (/manage/diagnostics). Curator-curated
+       SELECT-only query surface for forensics and "what does the DB
+       actually look like right now" questions that the admin grid
+       pages don't surface. Server-enforced read-only (regex rejects
+       any non-SELECT/SHOW/EXPLAIN/DESCRIBE statement; table whitelist
+       blocks mysql.* and performance_schema.*), row-capped at 1000,
+       every query writes to tblActivityLog. Global Admin only —
+       even with the regex guard, the surface still leaks schema and
+       row content that's appropriate only for the operator who owns
+       the deployment. */
+    'view_diagnostics'     => ['global_admin'],
+
     /* Content moderation */
     'review_song_requests' => ['editor', 'admin', 'global_admin'],
 
