@@ -110,8 +110,15 @@ DB is reachable.
   graceful offline messaging + SW cache-version hygiene (`DATA_VERSION`).
 - **WS-J — Decommission file caches (LAST):** delete `songs_cache.php` / `songs.json` /
   `data/songs.json` / `ihymns.db` / JSON + setlist_json fallbacks; clean `deploy.yml`. Gated on
-  WS-A…D landing and on the native-app decision (D1).
-- **WS-K — (if D1 = yes) Native apps → live API** (separate, large; their own plan).
+  WS-A…D + WS-I landing. (Native-app gating no longer applies — none released.)
+- **WS-K — System maintenance mode (NEW, end of sequence):** a system-wide toggle (settable by Global
+  Admin **and** regular Admin) in `/manage`, stored in `tblAppSettings` (+ optional custom message;
+  seeded via a migration per principle 7). When ON: the public web + API serve a descriptive
+  **maintenance landing page** (HTTP 503 + `Retry-After`), **except** authenticated admins, `/manage`,
+  login, and the toggle endpoint (so an admin can always turn it off). The **PWA keeps working as if
+  offline**: the service worker treats the maintenance response like "server unavailable" → serves
+  **cached** data even when the device is online, falling back to the maintenance message when nothing
+  is cached. Builds on WS-I's SW cache + messaging.
 
 ---
 
@@ -124,12 +131,20 @@ DB is reachable.
 - Offline cache is offline-only fallback; online always live; graceful offline messaging.
 - Setlists DB-first + auto-sync, user-linked (localStorage = cache).
 
-**Open (need your call):**
-- **D1 — Native iOS/Android:** migrate to the live API now (big change to their offline UX), or keep
-  bundle-based for now and tackle later? (Doesn't block the web rewrite.)
-- **D2 — Typo-tolerance mechanism for search:** MySQL ngram/trigram FULLTEXT vs phonetic (SOUNDEX) vs a
-  hybrid (FULLTEXT primary + fuzzy fallback on low results). All server-side; pick on implementation.
-- **D3 — JSON Export/Import in the Editor:** keep as an admin backup/import tool, or remove entirely?
+- System **maintenance mode** (WS-K): toggle by Global **and** regular Admin; web → maintenance landing
+  page; PWA → keep working as-if-offline from cache, else show the maintenance message.
+
+**Resolved this session:**
+- **Native iOS/Android:** none released → **not a concern**; the bundle-based native track is dropped
+  from scope. The API may change freely (no compatibility shim needed).
+- **Server DB unavailable → graceful error, NO fallback** (never stale data). The only fallback anywhere
+  is the client PWA offline cache (device offline / maintenance mode).
+
+**Still open:**
+- **D2 — Typo-tolerance mechanism for search:** ngram/trigram FULLTEXT vs phonetic (SOUNDEX) vs hybrid
+  (FULLTEXT primary + fuzzy fallback on low results). Pick during WS-B.
+- **D3 — JSON Export/Import in the Editor:** leaning **keep as an admin backup/import tool only** (not a
+  primary workflow); confirm during WS-D.
 
 ---
 
@@ -140,9 +155,11 @@ DB is reachable.
 3. **WS-B + WS-C + WS-D** (live search + SoTD + Editor) — move the corpus-fed surfaces to live MySQL.
 4. **WS-I** (PWA offline rework) — slim index + network-first + offline messaging.
 5. **WS-F + WS-G** (setlists + user stores DB-first) — parallel, independent.
-6. **WS-J** (delete the file caches + deploy cleanup) — **last**, after the above are verified on all envs.
-7. **WS-K** (native apps) — only if D1 = migrate; separate track.
+6. **WS-J** (delete the file caches + deploy cleanup) — **last** of the cache rip-out, after the above
+   are verified on all envs.
+7. **WS-K** (system maintenance mode) — final feature; builds on WS-I's SW behaviour.
 
-Each lands as its own PR to `alpha`, verified, then promoted alpha→beta→main (promotion-deploy bridge
-now in place). GitHub issues (epic + per-workstream, `infrastructure`/`database`/etc.) to be created
-**once this plan is agreed**.
+**Status:** implementation in progress on branch `claude/db-direct-data-layer` (commits local). Tracking:
+epic #1010 + workstream issues #1011–#1020 (+ WS-K issue). Cadence: implement → commit → update the
+workstream issue. **No PRs (even to `alpha`) until explicitly approved.** When approved, each lands as
+its own PR to `alpha`, verified, then promoted alpha→beta→main (promotion-deploy bridge in place).
