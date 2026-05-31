@@ -1,0 +1,76 @@
+# =============================================================================
+# iHymns — Promotion Deploy Bridge
+#
+# Copyright © 2026 MWBM Partners Ltd. All rights reserved.
+# This software is proprietary.
+#
+# PURPOSE:
+# Fire the SFTP deploy when a promotion PR is *merged* into `beta` or `main`.
+#
+# WHY THIS EXISTS (#1007):
+# deploy.yml triggers on `push` to main/beta/alpha. But the push produced by
+# merging a promotion PR is suppressed by GitHub's GITHUB_TOKEN
+# anti-recursion rule — the same trap documented in auto-merge-alpha.yml — so
+# the promotion lands the code but the environment never deploys. PR #913
+# (promote alpha → beta) hit exactly this: 0 workflow runs on beta after the
+# merge, beta env left on the old build.
+#
+# auto-merge-alpha.yml already bridges this for `alpha` (its wait-and-dispatch
+# step), but it explicitly covers ONLY alpha PRs — "PRs targeting main, beta,
+# etc. are unaffected." This workflow is that missing bridge for beta/main.
+#
+# HOW:
+# On a *merged* PR into beta/main, dispatch deploy.yml for the base branch via
+# `gh workflow run`. workflow_dispatch is one of the events a workflow IS
+# allowed to trigger under GITHUB_TOKEN, so the dispatched deploy run executes
+# normally (and still honours deploy.yml's own `vars.SFTP_ENABLED` kill
+# switch + change detection).
+#
+# ACTIVATION NOTE:
+# For `pull_request` events GitHub reads the workflow file from the PR's BASE
+# branch. So this file must exist on `beta` and on `main` to fire for PRs
+# merged into them. Per repo convention this lands on `alpha` first and
+# reaches beta/main on the next promotion; to activate immediately, also
+# place it on beta and main.
+# =============================================================================
+
+name: Promotion Deploy Bridge
+
+on:
+  pull_request:
+    # `closed` fires after the merge button is clicked; the `merged` flag
+    # (checked in the job `if`) distinguishes a real merge from a
+    # closed-without-merge. `branches` here filters on the PR's BASE branch.
+    types: [closed]
+    branches:
+      - beta
+      - main
+
+# Least privilege: only the actions:write scope needed to dispatch deploy.yml.
+permissions:
+  actions: write
+  contents: read
+
+# One dispatch in flight per target branch; don't cancel a running dispatch.
+concurrency:
+  group: promotion-deploy-bridge-${{ github.event.pull_request.base.ref }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch-deploy:
+    name: Dispatch deploy for merged promotion
+    runs-on: ubuntu-latest
+    # Only when the PR actually merged — a closed-without-merge is a no-op.
+    if: github.event.pull_request.merged == true
+    steps:
+      - name: Dispatch deploy.yml for the base branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          echo "PR #${PR_NUMBER} merged into ${BASE_REF} — dispatching deploy.yml on ${BASE_REF}."
+          gh workflow run deploy.yml --repo "$REPO" --ref "$BASE_REF"
+          echo "::notice::Dispatched deploy.yml on ${BASE_REF} (promotion deploy bridge, #1007)."
