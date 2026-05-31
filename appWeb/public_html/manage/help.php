@@ -163,6 +163,12 @@ $sections = [
         'group' => 'Operations',
     ],
     [
+        'id'    => 'diagnostics',
+        'icon'  => 'bi-terminal',
+        'title' => 'SQL Diagnostics',
+        'group' => 'Operations',
+    ],
+    [
         'id'    => 'setup-database',
         'icon'  => 'bi-database-gear',
         'title' => 'Database Setup',
@@ -1026,6 +1032,25 @@ foreach ($sections as $s) {
                     </dl>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Schema Audit is read-only. It tells you what's wrong; it never runs ALTER statements itself.
+                    </div>
+                </section>
+
+                <section id="diagnostics" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-terminal me-2"></i>SQL Diagnostics</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <p>
+                        A read-only SQL console for the "what's actually in the database right now?" questions the per-entity grids don't answer. Type a query, hit <strong>Run query</strong>, read the rows. A few preset starters (table sizes, record counts, recent activity) sit above the box.
+                    </p>
+                    <h3 class="h6">What's allowed</h3>
+                    <dl class="actions">
+                        <dt>SELECT / SHOW / EXPLAIN / DESCRIBE</dt><dd>Anything else is rejected before it reaches the database.</dd>
+                        <dt>One statement</dt><dd>No semicolon-chaining; a single trailing <code>;</code> is fine.</dd>
+                        <dt>Up to 1,000 rows</dt><dd>Results are capped; add a <code>LIMIT</code> and a tight <code>WHERE</code> for a focused slice.</dd>
+                    </dl>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> this runs against the <strong>production</strong> connection. Writes (<code>INSERT</code>/<code>UPDATE</code>/<code>DELETE</code>/<code>ALTER</code>…), <code>SELECT … INTO OUTFILE</code>, and the <code>mysql</code>/<code>performance_schema</code>/<code>sys</code> schemas are all blocked, and every run is logged to the <a href="#activity-log">Activity Log</a> — but a heavy join can still load the server.
                     </div>
                 </section>
 
