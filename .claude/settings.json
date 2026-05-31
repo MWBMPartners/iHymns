@@ -5,7 +5,19 @@
       "Bash(grep -rln \"bind_param\\\\|->query\\(\\\\|manage/\\\\|admin-links\\\\|SELECT.*\\\\$\" tests/php)",
       "Bash(php tests/php/test-schema-coverage.php)",
       "Bash(php tests/php/test-migration-registry.php)",
-      "Bash(awk '{print $1}')"
+      "Bash(awk '{print $1}')",
+      "Bash(php -r \"echo 'Test: '; var_dump\\(dirname\\('/path/to/appWeb/public_html/includes', 2\\)\\);\")",
+      "Bash(awk '{print $5, $9}')",
+      "Bash(find /Users/lance.manasse/Projects -type f -name \"*.php\" | grep -E \"\\(api|SongData|songs_cache\\)\" | head -20)",
+      "Read(//Users/lance.manasse/Projects/**)",
+      "Bash(sed -n '10855,10885p' api.php)",
+      "Bash(rg -n \"function makeLanguageFilterPredicate|function resolvePreferredLanguagesForRequest\" api.php includes/*.php)",
+      "Bash(rg -n \"function sendJson\" api.php includes/*.php)",
+      "Bash(php -r ' *)",
+      "Bash(sed -n '158,170p' appWeb/.sql/schema.sql)",
+      "Bash(awk '/CREATE TABLE.*tblSongbooks[^A-Za-z]/{f=1} f{print NR\": \"$0} f&&/;/{exit}' appWeb/.sql/schema.sql)",
+      "Bash(sed -n '60,83p' appWeb/public_html/includes/pages/tune.php)",
+      "Bash(sed -n '40,60p' appWeb/public_html/includes/pages/iswc.php)"
     ]
   }
 }
