@@ -54,7 +54,10 @@ export class Notifications {
         const wrap = document.getElementById('header-notifications-dropdown');
         if (!wrap) return;
         if (this.app.userAuth?.isLoggedIn?.()) {
-            wrap.classList.remove('d-none');
+            /* Don't reveal the wrapper here — _renderBadge() owns that
+               decision and only shows the bell when there's at least one
+               unread notification (#812). Calling refresh() will
+               populate _items and trigger the visibility toggle. */
             this.refresh();
             this._startPolling();
         } else {
@@ -96,13 +99,23 @@ export class Notifications {
 
     _renderBadge() {
         const badge = document.getElementById('header-notifications-badge');
+        const wrap  = document.getElementById('header-notifications-dropdown');
         if (!badge) return;
         const unread = this._items.filter(n => !n.is_read).length;
         if (unread > 0) {
             badge.textContent = unread > 99 ? '99+' : String(unread);
             badge.classList.remove('d-none');
+            /* Reveal the bell only when there's at least one unread row
+               (#812). Avoids the bell crowding the header on every signed-in
+               page when nothing is pending — important on mobile portrait
+               where every header slot counts. */
+            wrap?.classList.remove('d-none');
         } else {
             badge.classList.add('d-none');
+            /* Mark-all-read or empty-feed → hide the wrapper too so the
+               header reclaims the slot. The next poll re-reveals it the
+               moment a fresh row arrives. */
+            wrap?.classList.add('d-none');
         }
     }
 

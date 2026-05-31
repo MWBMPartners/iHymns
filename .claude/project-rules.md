@@ -106,7 +106,102 @@ See `.claude/CLAUDE.md` for the full policy. Summary: don't duplicate — extrac
 - **Don't commit stacked PRs that re-implement work already in a parallel branch.** Rebase and reuse.
 - **Don't write literal `<?=` / `<?php` / `<?` inside HTML comments or backticks in `.php` files.** PHP doesn't respect HTML-comment boundaries — it parses every `<?` open-tag it finds, regardless of surrounding `<!-- ... -->`. On PHP 8.1+, `func(...)` is first-class callable syntax, so a comment that says `<?= json_encode(...) ?>` evaluates `json_encode(...)` (returns a Closure), then `<?=` tries to echo it → runtime fatal `Object of class Closure could not be converted to string` → output halts mid-stream → browser receives a truncated HTML response → the SPA shell renders but `app.js` is never reached and the loading spinner hangs forever. This took down alpha in PR #536 (commit `96cd14a`). If you need to reference PHP code in a comment, omit the open tag (`echo json_encode() call` not `<?= json_encode() ?>`). CI now greps for this pattern in `.github/workflows/test.yml`.
 
-## 10. Activity logging — what NEVER goes in `tblActivityLog.Details` (#535)
+## 10. Conventions established in the 2026-04 batch
+
+These are project conventions worth knowing when touching adjacent code, established across #670 / #672 / #673 / #676 / #681 / #687 / #695 / #699:
+
+- **Songbook auto-colour (#677).** The `Colour` field on `tblSongbooks` is nullable. Leaving it empty in the editor lets the system pick a palette tone from the active theme — the result is consistent across the catalogue and changes with the user's chosen theme. Hard-coded hex still wins. The picker logic lives in `manage/includes/songbook-palette.php::pickAutoSongbookColour()`. Don't auto-fill `Colour` server-side on import — keep it nullable so the auto-pick path runs on every render.
+
+- **IETF BCP 47 composite language picker (#681 / #687).** Both `/manage/songbooks` (songbook-level) and `/manage/editor` (per-song) consume one shared partial + module: `manage/includes/partials/ietf-language-picker.php` + `js/modules/ietf-language-picker.js`. Three sub-fields (Language / Script / Region) compose into a single saved tag. Vocabulary is sourced live from `tblScripts` (ISO 15924) + `tblRegions` (ISO 3166-1 alpha-2 + M.49 numeric area codes), seeded by migration card 3o. Public clients (Apple / Android / FireOS) hit the equivalent listings at `/api?action=scripts` and `/api?action=regions`. Server-side validation on every save path (`validateBcp47()` in `includes/bcp47.php`).
+
+- **INSERT-only bulk-import contract (#664 / #676).** `/manage/editor/api?action=bulk_import_zip` never overwrites existing songbook or song rows. Pre-flight existence check; mismatches reported in the three-counter response shape `{songs_created, songs_skipped_existing, songs_failed}`. Decompression-bomb caps live in `_BULK_IMPORT_MAX_ENTRY_UNCOMPRESSED` (5 MiB) + `_BULK_IMPORT_MAX_TOTAL_UNCOMPRESSED` (500 MiB) plus the `_BULK_IMPORT_MAX_ENTRIES = 100,000` entry-count cap. Async path uses `tblBulkImportJobs` + the `bulk_import_status` polling endpoint + the persistent progress widget.
+
+- **Cross-source integrity check workflow (#699 Phase C).** When two sources cover the same songbook (e.g. ChristInSong.app + sdahymnal.org for SDAH/CH/HASD/HA), use `SDAHymnals_SDAHymnal.org.py --prefer-source {sidebar|sdah|cis}` to compare. `cis` mode is read-only audit and writes the report to `_integrity-check.md` in the songbook folder. Audit reports — committable summaries — live under `.importers/audits/`. Per-songbook detail files (`.SourceSongData/<book>/_integrity-check.md`) are gitignored.
+
+- **PR target = `alpha`, default branch = `main` → GitHub auto-close does NOT fire.** PRs that close issues with `closes #N` syntax merge into `alpha`, but GitHub only auto-closes issues when the PR merges into the repo's default branch (`main`). Open issues that should be closed pile up. Sweep periodically: `git log alpha` for `closes #N` references, cross-reference against `gh issue list --state open`, close in batch with a comment crediting the merge commit. (Done as part of the #682 hygiene tail; ~50 issues swept on 2026-04-30.)
+
+- **Activity Log error capture (#695).** Admin save handlers that catch `\Throwable` and surface a generic banner ALSO call `logActivityError()` so the failure lands in `tblActivityLog` with `Result='error'`. The viewer at `/manage/activity-log` filters by Result. `error_log()` calls remain as belt-and-braces. Use a stable `admin.<surface>.<action>` verb (`admin.songbooks.save`, `admin.requests.update`, `admin.ccli_report.load`, etc.) so the Action filter narrows usefully. Sensitive fields (passwords / tokens) MUST stay out of the Details JSON — see §11 below. **When the page is admin-gated, surface the actual exception detail (class + message + file:line) inline instead of "see server logs"** — saves the curator from needing SSH access just to read why a save failed. Pages that already do this: songbooks, requests, organisations, groups, missing-numbers, credit-people, revisions, ccli-report, restrictions, tiers. Pages that don't yet: tracked under the rolling sweep at #713.
+
+- **New migration → register in THREE places (#708).** The `$scriptMap` in `manage/setup-database.php` maps action keys to file names; `$migrationOrder` is what the "Apply all pending migrations" button walks; per-card UI definitions render the targeted single-step buttons. A new `migrate-*.php` script must be added to all three or it silently drops out of the bulk run (which is exactly what bit #708 — the bulk action shipped in #577 but the order list froze, so 10 subsequent migrations weren't being picked up). Each script must remain idempotent (every migration starts with an INFORMATION_SCHEMA / SHOW TABLES probe so re-runs are no-ops).
+
+- **Public form no-JS fallback (#711).** The `/request` page (and any public form that POSTs to an API endpoint) has BOTH:
+  - an `action="…" method="POST"` attribute on the `<form>` so a default-submit reaches the API even when the inline `<script type="module">` fails to load;
+  - a server-rendered success/error banner driven off `?submitted=1&id=N` / `?error=…` query strings so the user gets feedback on the no-JS path;
+  - the API endpoint detects `Content-Type=application/x-www-form-urlencoded` and 302-redirects in that case (vs. returning JSON for the JS path).
+
+  And note: SQL string literals always use single quotes (`'pending'`, not `"pending"`). MySQL's default mode treats both as strings, but `sql_mode='ANSI_QUOTES'` parses double-quoted as a column reference — and the song-request endpoint had exactly that bug for a while (#711).
+
+- **Shared colour-picker partial (#715).** Hex-colour text inputs on `/manage/*` go through `manage/includes/partials/colour-picker.php` + the `js/modules/colour-picker.js` boot. The partial emits a native `<input type="color">` swatch alongside the hex text input, two-way bound. Empty text → swatch shows a neutral seed but the saved value stays empty so the auto-pick path (#677) runs at render. New consumers should pull this partial rather than rolling their own.
+
+- **Misc-pinned-bottom + non-official alphabetical (#717 / #718).** Two related sort rules:
+  - `/manage/songbooks` quick-sort presets pin the Misc songbook (`Abbreviation = 'Misc'`) to the bottom regardless of name/abbr direction. Implementation: short-circuit in the `sortByKey` JS helper before the regular compare.
+  - Songs within a songbook sort by Number when the songbook is `IsOfficial = 1` AND has at least one numbered hymn; else sort alphabetically by Title. Hybrid books (mostly numbered with an un-numbered supplement) put numbered first, alphabetical tail second. Implemented via a CASE branch in `SongData::getSongs()`'s ORDER BY.
+
+- **Database Setup bulk-run (#708 / #720).** The "Apply all pending migrations" button walks `$migrationOrder` (separate list from `$scriptMap`). When adding a new `migrate-*.php` register it in BOTH places, in deployment order, AND add the per-card UI block. The bulk-run handler:
+  - Captures the first-failing-step's metadata so the page renders a prominent banner ABOVE the (potentially long, scrollable) output panel — operators can spot the failure without scrolling.
+  - Has a `register_shutdown_function` that catches PHP fatals (E_ERROR / E_PARSE / etc.) which bypass try/catch, so even a fatal mid-bulk gets surfaced before the page renders.
+
+- **Activity Log local-time + UA wrapping (#721 / #723).** The `/manage/activity-log` listing renders the When column in the user's local timezone via inline `Intl.DateTimeFormat`, falling back to UTC if Intl is unavailable. UA strings render in full (no server-side substr cap) with `.activity-ua { word-break: break-word; overflow-wrap: anywhere }` so long UAs wrap rather than truncate.
+
+## 12. Conventions established in the 2026-05 batch (#840–#852)
+
+These are the patterns and gotchas added during the catalogue-refresh batch. Read them before touching adjacent code.
+
+- **Works composition grouping (#840).** `tblWorks` carries an optional self-FK (`ParentWorkId`) so a "Messiah" can have nested "Part 1 / Part 2" works without a separate join table; `tblWorkSongs` joins to `tblSongs`; `tblWorkExternalLinks` is per-work. The `AppliesTo` SET on `tblExternalLinkTypes` was widened from `'song,songbook,creditperson'` to also include `'work'` — when adding a new entity-type that wants its own external links, widen this SET, add the per-entity table, AND make sure `external-link-detect.js` doesn't need any change (the module is entity-agnostic by design).
+
+- **DB-driven URL → provider detection (#841 / #845).** The decision tree for "URL X belongs to provider Y" used to live in a hand-rolled regex ladder embedded in three different editor pages. It's now: (a) `tblExternalLinkPatterns` keyed to `tblExternalLinkTypes`, (b) curator-editable at `/manage/external-link-types`, (c) consumed by `js/modules/external-link-detect.js` which prefers `window._iHymnsLinkTypes[].patterns` from the server, falling back to its bundled `RULES` when those haven't been seeded yet. Migration card 7a populates the patterns table from the bundled `RULES` so existing deployments get the same matches without code change. **Don't add a new provider regex inline — add a row to `tblExternalLinkPatterns` (or seed it via migration) and the module picks it up.**
+
+- **Responsive admin lists + sortable headers (#842 / #844).** Opt-in is two attributes: `<table class="admin-table-responsive">` and `data-col-priority` on each `<th>`/`<td>`. Sortable headers are a `<th data-sort-key="…">` + the shared `js/modules/admin-table-sort.js`. Pages that opt in: Credit People, Songbooks, Songbook Series, Works, plus six others tracked in #844. New admin lists should opt into both — the styles + module are zero-cost when the table has < 10 rows.
+
+- **Bulk-promote curator workflow (#846).** Promoting in-use Credit People into the register uses Levenshtein distance + token-set Jaccard similarity (cap 0.85) so "J. Smith" and "John Smith" cluster automatically; the curator confirms each cluster, the submit is a single transaction tagged with a shared `bulk_run_id` so the whole run can be reverted from the activity log if a duplicate slips through.
+
+- **CI/auto-merge resilience (#848 / #850 / #852).** Three lessons from the catalogue-refresh batch:
+  1. **Migration cards must render even on a no-action visit (#848).** The bug shipped in #847: `/manage/setup-database.php` had a `goto` that skipped the per-card render block when no `?action=…` was supplied, so a fresh visit showed only the bulk-run output panel. Fix: render the card grid unconditionally; the action handler runs above it and writes to a `$bulkOutput` buffer that the cards read.
+  2. **The CI guard that scans for unbalanced `<?php` tags must not trip on its own block-comment (#849).** When adding a guard like `grep -n '<?php' …`, escape the marker in the comment that explains what it does (we use `&lt;?php` in the surrounding markdown / a non-marker substitution in the heredoc) — otherwise the guard's own source matches its own pattern.
+  3. **Auto-Merge Alpha PRs workflow tolerates `gh pr merge --auto` non-zero exits (#850), and `Lint & Validate` runs on every PR with no path filter (#852).** The deadlock symptom: a workflow-only / docs-only PR has no required-check matches under the path filter, so `gh pr merge --auto` queues a merge that never fires; once we noticed, the fix was to drop the `paths:` filter on the `pull_request` trigger so every PR gets the lint job, and to make the auto-merge step swallow the "PR is fast-mergeable, no auto-merge needed" non-zero exit. Lesson: **path-filtered required checks + auto-merge is a footgun**; if a check is required for protection, it must run on every PR or the gate becomes vacuous on the filtered paths.
+
+- **`tblExternalLinkPatterns` migration deploy gate.** When patterns are pulled from the DB but the migration hasn't run yet, `js/modules/external-link-detect.js` falls back to its bundled `RULES` so editors keep working. Don't remove the fallback — it's the only thing keeping the editor functional during the rolling deploy of #845 across alpha → main.
+
+- **PR target = `alpha`, batch as one PR.** Re-emphasised by the #847 → #848 → #849 cascade: when a single feature ships in a chain of micro-PRs, each one triggers a deploy and verify cycle, and a mis-diagnosis cascades. The 2026-05 batch followed §10's one-PR rule for the main feature work (#840–#846 all in one PR per the global rule) and only span out separate PRs for the genuinely independent CI/auto-merge fixes that emerged afterwards.
+
+## 13. Bulk-import + long-running operation surfaces
+
+Established 2026-05-08/09 across #906 / #907 / #908. Every long-running operation that writes to multiple rows (bulk import, mass re-tag, batch language assignment) should follow these patterns.
+
+### 13.1 Surface skipped / failed counts per-entity, not just aggregate
+
+A "1,137 skipped" toast told a curator nothing — they had to query `tblSongs` directly to figure out the 1,137 was an exact match for HA + HASD content already in the DB. Always carry a per-entity breakdown alongside the aggregate, so the toast / status response can show "HA: 0 created, 527 skipped, 0 failed" rows. Captured in `tblBulkImportJobs.PerSongbookJson` (#906) and the `per_songbook` field of the status response. Apply the same shape to any future bulk operation: per-entity counters keyed by the entity's natural unit (songbook, songbook + language, user-batch, etc.).
+
+### 13.2 Don't lie about side effects — toast must reflect reality
+
+Long-running operations often have a UI affordance ("Imported X" / "Synced X" / "Sent X email") that fires on a 200 response. **The 200 must reflect the actual side effect, not the local code path's intent.** Anti-pattern: an endpoint that generates a token, persists it, and returns 200 + "code sent" while the actual `sendEmail()` is an `error_log()` TODO. The toast lies; the user thinks the operation succeeded; downstream paths break silently. Same applies to bulk-import: if 4,458 entries were attempted and only 3,321 created, the toast must say so — not just "imported successfully". See `api.php:1631 / 1751 / 7464` for the canonical anti-pattern (#898) and #909/#911 for how bulk-import's summary now carries `created/skipped/failed` separately.
+
+### 13.3 Activity-log every per-entity failure, with a sane cap + overflow row
+
+When a bulk operation produces N failures, **don't** lump them into a single `tblActivityLog` row that summarises "X failed". Write one structured `Details` row per failure (with a per-request cap to stay under `IHYMNS_LOG_PER_REQUEST_CAP`), plus an `entries_truncated` overflow row when the cap is hit. The full failure list still lives in the operation's job-table column; the per-failure rows make the activity-log viewer's filter/search useful. Reference: `_perBookBump()` in `_bulkImport_processZip()` after #908. Use `EntityId='<jobId>:<entry>'` so the viewer can filter to "all failures from job N" via `EntityId LIKE '<jobId>:%'`.
+
+### 13.4 Long-running UI must show *something* within 200ms
+
+A blank screen or "0%" indicator for any duration > 200ms is unacceptable. Three layers required:
+
+- **Upload phase**: use `XMLHttpRequest` (not `fetch`, which has no upload-progress event in any production browser as of 2026) and wire `xhr.upload.onprogress` to a byte-level UI before any server response is even parsed.
+- **First server-state response**: fire the polling fetch IMMEDIATELY (not on the polling timer) so worker state appears within ~100ms of upload return.
+- **Worker silence on preflight**: persist a `PhaseLabel` (or equivalent enum) per major worker transition so the UI can render "Walking ZIP archive…" / "Parsing songs…" / "Finalising…" above the percentage even while `ProcessedEntries` is still 0. See `tblBulkImportJobs.PhaseLabel` (#907) and `_bulkImport_processZip()`'s phase transitions.
+
+### 13.5 Long-running UI doesn't overlap general toasts
+
+Bootstrap's toast container lives bottom-right by default. Long-running indicators (bulk import, mass operations) should claim a different corner — typically **top-right** — so general-purpose toasts at bottom-right stay readable when an import is in flight. No z-index gymnastics, no shared real estate.
+
+### 13.6 Long-running UI must auto-dismiss + always be dismissable
+
+Two failure modes the curator hits:
+
+- **Stuck completion toast**: import finishes; toast sits forever; curator has to refresh the page to clear it. Fix: auto-dismiss after a reasonable window (we use 15s on success / 45s on failure to give time to read), with `mouseenter` pausing the timer and `mouseleave` rescheduling from the full duration.
+- **Mid-run with no escape**: import is running; curator wants to hide the indicator (it's blocking other UI); no × button is shown until completion. Fix: × button **always visible**. Mid-run dismiss closes the visible widget but leaves the operation running on the server — the curator can verify completion via `/manage/activity-log` later.
+
+Reference implementation: `bulk-import-progress.js` after #911.
+
+## 11. Activity logging — what NEVER goes in `tblActivityLog.Details` (#535)
 
 Every meaningful action writes a row to `tblActivityLog` via
 `includes/activity_log.php::logActivity()`. The `Details` JSON column
@@ -130,3 +225,46 @@ is free-form, which makes it tempting to dump request bodies wholesale.
 When in doubt, log the field NAME but not the field VALUE. A row that
 says `{ "fields": ["PasswordHash"] }` is fine; one that includes the
 hash itself is a bug.
+
+## 14. Conventions established post-#852 (HTTP / parser / browser-state)
+
+Durable patterns extracted from the diagnostic / scraper / auth-audit work after the catalogue-refresh batch. Read these before similar work — each rule has been paid for in real debugging time.
+
+### 14.1 Triage durable HTTP blocks via browser → curl → script (NOT VPN/UA swaps)
+
+When a scraper, fetcher, or any HTTP-driven script reports a block / rate-limit / wall that **survives across multiple sessions, networks, VPN endpoints, and User-Agents**, do NOT keep iterating on the network/UA dimension. Run a three-tier triage:
+
+1. Does the URL load in a normal browser on the same network? If no, it's truly a server-side block; VPN/UA swap may help.
+2. Does `curl` with realistic headers fetch the same content? If no, the block is at the HTTP-client level (TLS fingerprint, header order, ALPN); upgrade the client.
+3. Does the script's parser produce the right shape from that same byte stream? If no, **the bug is in our code**, not theirs.
+
+Only after steps 1–3 rule everything out, suspect a server-side bug.
+
+**Apply this whenever a "rate limit" survives more than ~3 attempted variations on the network/UA axis.** Real precedent: HA hymn 331 wall, 2026-05-07. Multiple sessions worth of VPN swaps + residential UA pools were spent on what turned out to be a parser bug (Section 14.2). `curl` with a Safari UA on the same machine returned full hymn HTML in 1.6s every time.
+
+### 14.2 Custom HTML parsers must keep void elements depth-neutral
+
+When writing or maintaining a depth-tracking HTML parser (subclass of `html.parser.HTMLParser` in Python or equivalent in any language), HTML void elements (`<br>`, `<hr>`, `<img>`, `<input>`, `<meta>`, `<link>`, `<area>`, `<base>`, `<col>`, `<embed>`, `<param>`, `<source>`, `<track>`, `<wbr>`) must NOT contribute to the depth counter on either `handle_starttag` or `handle_endtag`.
+
+Reason: `<br>` (no closing tag) fires only `handle_starttag`, while `<br />` (XHTML self-closing) fires both via `handle_startendtag`'s default. Treating either consistently — both increment + decrement, OR both skipped — keeps depth balanced.
+
+The bug shape is: title parses but no sections / children, page looks empty, structural rate-limit fallback misfires. That's the signature.
+
+Reference implementation: `.importers/scrapers/SDAHymnals_SDAHymnal.org.py` after PR #894. Don't repeat the depth-mistake pattern in any new parser.
+
+### 14.3 Per-origin browser state vs cross-origin cookies — known confusion
+
+iHymns runs at `dev.ihymns.app` (alpha), `beta.ihymns.app` (beta), and `www.ihymns.app` (main) sharing one MySQL DB. The shape of cross-subdomain state-sharing is asymmetric and easy to misdiagnose:
+
+- **Server-side auth via the `ihymns_auth` cookie** is `Domain=.ihymns.app`-scoped (set by `setAuthTokenCookie()` / `_authCookieOpts()` in `api.php`), so a server-side render or API call on any subdomain reads it. Cross-subdomain auth IS designed to work.
+- **Client-side bearer token in localStorage** is per-origin by W3C spec — each subdomain has its own. The frontend reads `localStorage.getItem('ihymns_auth_token')` and attaches it as `Authorization: Bearer …`. If main's localStorage is empty, the JS sets no Authorization header, but the browser still sends the `ihymns_auth` cookie automatically (default `credentials: 'same-origin'`), so the server still authenticates via the cookie fallback in `getAuthBearerToken()`.
+- **Cross-subdomain settings sync** (theme, font size, default songbook, etc.) goes via the `ihymns_sync` cookie at `.ihymns.app` scope — see `js/modules/subdomain-sync.js`. This is the ONLY lightweight-settings sharing mechanism; large data (setlists, favourites) is excluded by design.
+- **Service-worker caches** are per-origin too. A stale `?action=user_setlists` GET response on main can persist after the alpha-side sync wrote the new row to the shared DB. **Per-origin SW cache is the most common cause of "alpha data not appearing on main" symptoms** when the underlying DB row is verified-present.
+- **localStorage data** (setlists, favourites, history) is per-origin; sharing across subdomains requires explicit DB sync via the auth flow, not magic.
+
+**Diagnostic sequence when "subdomain X has the data but Y doesn't":**
+
+1. Confirm the data actually exists in the shared DB via `/manage/setup-database`'s tables panel or a direct SQL query.
+2. On Y, DevTools → Application → check `ihymns_auth` cookie (Domain should be `.ihymns.app`, not the subdomain).
+3. On Y, run `fetch('/api?action=user_setlists').then(r=>r.json())` in the console — if it returns the data fresh, the SW cache is the culprit; unregister via DevTools → Application → Service Workers → Unregister, reload.
+4. Only after steps 1–3 rule everything out, suspect a server-side bug.

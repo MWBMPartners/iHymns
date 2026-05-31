@@ -121,6 +121,50 @@ function checkContentAccess(string $entityType, string $entityId, ?int $userId, 
                     }
                 }
                 continue 2;
+
+            /* ----------------------------------------------------------------
+             * PUBLIC-DOMAIN GATING — design intent (#939)
+             *
+             * Future RestrictionType values for PD-only tiers MUST treat the
+             * lyrics flag and the music flag as INDEPENDENT. The two columns
+             * on tblSongs (LyricsPublicDomain, MusicPublicDomain) describe
+             * separate concerns:
+             *
+             *   - LyricsPublicDomain — words are PD (e.g. an old hymn-text
+             *     whose author died > 70 years ago).
+             *   - MusicPublicDomain  — tune is PD (e.g. a mediaeval melody,
+             *     or one whose composer died > 70 years ago).
+             *
+             * A song can have one without the other (modern lyrics set to a
+             * traditional tune, or vice versa). When a tier exposes only PD
+             * lyrics, the gate uses LyricsPublicDomain = 1 ALONE. When a tier
+             * exposes only PD sheet music / MIDI / MusicXML, the gate uses
+             * MusicPublicDomain = 1 ALONE.
+             *
+             * Do NOT AND the two flags together — that would gate out
+             * legitimate PD-lyrics songs whose tune is still in copyright,
+             * and vice versa.
+             *
+             * Suggested future shape:
+             *
+             *     case 'require_lyrics_pd':
+             *         // Allow only when the target song has LyricsPublicDomain = 1.
+             *         // Caller is expected to already know the song's PD flags
+             *         // (e.g. via SongData::_fetchSongRow); pass them in via
+             *         // a fourth checkContentAccess() argument or do a probe
+             *         // here with a single-row SELECT keyed on EntityId.
+             *         $matches = ($entityType === 'song'
+             *                     && (bool)getSongPdFlag($entityId, 'lyrics'));
+             *         break;
+             *
+             *     case 'require_music_pd':
+             *         $matches = ($entityType === 'song'
+             *                     && (bool)getSongPdFlag($entityId, 'music'));
+             *         break;
+             *
+             * Until those cases are wired, no PD-gating tier is active and
+             * songs render unrestricted regardless of their PD flags.
+             * ---------------------------------------------------------------- */
         }
 
         if ($matches) {

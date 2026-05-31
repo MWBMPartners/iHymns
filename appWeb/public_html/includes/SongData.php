@@ -82,6 +82,30 @@ function toTitleCase(string $str): string
     return implode(' ', $words);
 }
 
+/**
+ * Normalise a tblSongs.Number value coming back from the database to the
+ * canonical "unnumbered" representation (#797).
+ *
+ * The column is nullable and NULL is the canonical sentinel for "this
+ * song has no songbook position" (#392). However:
+ *   - mysqli + assoc fetch hands NULL back as PHP null, which a naive
+ *     `(int)$row['number']` round-trips to 0 — masking the NULL and
+ *     causing the rest of the app to render "0" everywhere;
+ *   - some legacy rows / payloads carry an empty string or '0'.
+ *
+ * Treat null, '', '0' and any non-positive integer as null. Any positive
+ * integer is preserved as int.
+ *
+ * @param mixed $value
+ * @return int|null
+ */
+function normaliseSongNumber($value): ?int
+{
+    if ($value === null || $value === '') return null;
+    $n = (int)$value;
+    return $n > 0 ? $n : null;
+}
+
 class SongData
 {
     /** MySQLi connection (null when using JSON fallback) */
@@ -92,6 +116,20 @@ class SongData
 
     /** Whether we're using JSON fallback mode */
     private bool $jsonMode = false;
+
+    /** #858 — schema-probe result for tblSongComponents.Language. */
+    private bool $_componentLangColumn = false;
+    private bool $_componentLangColumnChecked = false;
+
+    /** #892 — schema-probe result for tblSongs.ArrangementJson. */
+    private bool $_arrangementColumn = false;
+    private bool $_arrangementColumnChecked = false;
+    /* Places adoption — single-flight probe for tblSongs.OriginCityId.
+       Mirrors the ArrangementJson pattern so a pre-adoption install
+       keeps the legacy SELECT shape (no extra columns) without a
+       repeat INFORMATION_SCHEMA round-trip per request. */
+    private bool $_originPlaceColumn = false;
+    private bool $_originPlaceColumnChecked = false;
 
     /** Check if running in JSON fallback mode (no MySQL) */
     public function isJsonFallback(): bool { return $this->jsonMode; }
@@ -217,7 +255,18 @@ class SongData
         $totalSongs = (int)$result->fetch_assoc()['total'];
         $stmt->close();
 
-        $stmt = $this->db->prepare("SELECT COUNT(*) AS total FROM tblSongbooks");
+        /* #963 — only count songbooks that have at least one song.
+           Empty placeholder rows in tblSongbooks would otherwise
+           inflate the home-page "N Songbooks" badge and the PWA
+           cache's meta.totalSongbooks. */
+        $stmt = $this->db->prepare(
+            "SELECT COUNT(*) AS total
+               FROM tblSongbooks b
+              WHERE EXISTS (
+                  SELECT 1 FROM tblSongs s
+                   WHERE s.SongbookAbbr = b.Abbreviation
+              )"
+        );
         $stmt->execute();
         $result = $stmt->get_result();
         $totalSongbooks = (int)$result->fetch_assoc()['total'];
@@ -248,16 +297,23 @@ class SongData
             return $books;
         }
 
+        $bibSelect    = $this->_songbookBibSelect();
+        $langSelect   = $this->_songbookLanguageSelect();
+        $parentSelect = $this->_songbookParentSelect();
+        $parentJoin   = $this->_songbookParentJoin();
         $stmt = $this->db->prepare(
-            "SELECT Abbreviation AS id, Name AS name, SongCount AS songCount,
-                    Colour AS colour,
-                    IsOfficial      AS isOfficial,
-                    Publisher       AS publisher,
-                    PublicationYear AS publicationYear,
-                    Copyright       AS copyright,
-                    Affiliation     AS affiliation
-             FROM tblSongbooks
-             ORDER BY Name ASC"
+            "SELECT b.Abbreviation AS id, b.Name AS name, b.SongCount AS songCount,
+                    b.Colour AS colour,
+                    b.IsOfficial      AS isOfficial,
+                    b.Publisher       AS publisher,
+                    b.PublicationYear AS publicationYear,
+                    b.Copyright       AS copyright,
+                    b.Affiliation     AS affiliation
+                    {$langSelect}
+                    {$bibSelect}
+                    {$parentSelect}
+             FROM tblSongbooks b{$parentJoin}
+             ORDER BY b.Name ASC"
         );
         $stmt->execute();
         $result = $stmt->get_result();
@@ -267,10 +323,818 @@ class SongData
             /* Cast to a strict bool so JSON consumers don't have to
                deal with 0/1 vs true/false ambiguity (#502). */
             $row['isOfficial'] = (bool)$row['isOfficial'];
-            $books[] = $row;
+            $books[] = $this->_normaliseSongbookParent($row);
         }
         $stmt->close();
+
+        /* Attach series memberships, compilers, alt names, external
+           links and contained-language sets in batch queries (#782
+           phase D, #831, #832, #833, #857) so the home / browse
+           grids and songbook pages render without N+1 queries. */
+        if ($books) {
+            $seriesMap        = $this->_songbookSeriesMap(null);
+            $compilersMap     = $this->_songbookCompilersMap(null);
+            $altNamesMap      = $this->_songbookAltNamesMap(null);
+            $linksMap         = $this->_externalLinksMap('songbook', null);
+            $songLanguagesMap = $this->_songbookSongLanguagesMap();
+            foreach ($books as &$_b) {
+                $_b['series']           = $seriesMap[(string)$_b['id']]    ?? [];
+                $_b['compilers']        = $compilersMap[(string)$_b['id']] ?? [];
+                $_b['alternativeNames'] = $altNamesMap[(string)$_b['id']]  ?? [];
+                $_b['links']            = $linksMap[(string)$_b['id']]     ?? [];
+
+                /* #857 — union of: (a) the songbook's own primary
+                   subtag, and (b) every distinct primary subtag
+                   carried by songs within it. Drives the "Show
+                   languages" filter visibility and the badge
+                   tooltip. Returns an empty array on pre-#673
+                   deploys; the existing single-language behaviour
+                   then takes over via the legacy `language` field. */
+                $contained = $songLanguagesMap[(string)$_b['id']] ?? [];
+                $own       = '';
+                if (!empty($_b['language']) && preg_match('/^([a-z]{2,3})/i', (string)$_b['language'], $m)) {
+                    $own = strtolower($m[1]);
+                }
+                $merged = $own !== '' ? array_merge([$own], $contained) : $contained;
+                $merged = array_values(array_unique($merged));
+                sort($merged);
+                $_b['languages'] = $merged;
+            }
+            unset($_b);
+        }
         return $books;
+    }
+
+    /**
+     * Normalise the parent-songbook fields on a fetched row into a
+     * single nested `parent` key (or null) — keeps consumers from
+     * having to know about the underlying column names. Called once
+     * per row in getSongbook / getSongbooks. Safe to call when the
+     * schema isn't live: the parent fields are simply absent.
+     *
+     * @param array<string,mixed> $row Fetched row (mutated)
+     * @return array<string,mixed>     The same row with `parent` added
+     */
+    private function _normaliseSongbookParent(array $row): array
+    {
+        $pid = $row['parentSongbookId'] ?? null;
+        if ($pid !== null && (int)$pid > 0) {
+            $row['parent'] = [
+                'id'           => (int)$pid,
+                'abbreviation' => (string)($row['parentAbbreviation'] ?? ''),
+                'name'         => (string)($row['parentName']         ?? ''),
+                'relationship' => (string)($row['parentRelationship'] ?? ''),
+            ];
+        } else {
+            $row['parent'] = null;
+        }
+        /* Strip the flat columns now that we've nested them — keeps
+           the public shape clean. */
+        unset(
+            $row['parentSongbookId'],
+            $row['parentRelationship'],
+            $row['parentAbbreviation'],
+            $row['parentName']
+        );
+        return $row;
+    }
+
+    /**
+     * Build the trailing fragment of the SELECT for songbook bibliographic
+     * + authority-control identifier columns (#672). On a deployment that
+     * hasn't run migrate-songbook-bibliographic.php yet the columns
+     * aren't there and a SELECT that names them would 500 the songbooks
+     * API. Probe INFORMATION_SCHEMA once per object instance, then return
+     * either the full ", b.WebsiteUrl, b.OcnNumber, …" tail or an empty
+     * string. Cached on the instance because getSongbooks() and
+     * getSongbook() are commonly called in pairs on the same request.
+     */
+    private function _songbookBibSelect(): string
+    {
+        if (isset($this->_bibSelectCache)) {
+            return $this->_bibSelectCache;
+        }
+        $hasBibCols = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongbooks'
+                    AND COLUMN_NAME  = 'WikidataId'
+                  LIMIT 1"
+            );
+            $probe->execute();
+            $hasBibCols = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* probe failure → fall through to empty tail */ }
+        /* Every column is `b.`-qualified so the SELECT compiles when the
+           parent-songbook self-join (LEFT JOIN tblSongbooks p ON …, see
+           _songbookParentJoin) is also active. Without the alias prefix
+           every name in this fragment is ambiguous because both `b` and
+           `p` are aliases for tblSongbooks — produced "Column 'X' in
+           field list is ambiguous" 500s on every getSongbooks() call once
+           both #672 (bib) and #782 (parent) had been applied. */
+        $this->_bibSelectCache = $hasBibCols
+            ? ', b.WebsiteUrl AS websiteUrl, b.InternetArchiveUrl AS internetArchiveUrl,
+               b.WikipediaUrl AS wikipediaUrl, b.WikidataId AS wikidataId,
+               b.OclcNumber AS oclcNumber, b.OcnNumber AS ocnNumber,
+               b.LcpNumber AS lcpNumber, b.Isbn AS isbn,
+               b.ArkId AS arkId, b.IsniId AS isniId,
+               b.ViafId AS viafId, b.Lccn AS lccn, b.LcClass AS lcClass'
+            : '';
+        return $this->_bibSelectCache;
+    }
+    private ?string $_bibSelectCache = null;
+
+    /**
+     * Same shape as _songbookBibSelect() but for the optional Language
+     * column added in #673. Probe-once cache so getSongbooks() and
+     * getSongbook() called in the same request only pay one
+     * INFORMATION_SCHEMA round-trip between them.
+     */
+    private function _songbookLanguageSelect(): string
+    {
+        if (isset($this->_langSelectCache)) {
+            return $this->_langSelectCache;
+        }
+        $hasLangCol = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongbooks'
+                    AND COLUMN_NAME  = 'Language'
+                  LIMIT 1"
+            );
+            $probe->execute();
+            $hasLangCol = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* probe failure → no Language tail */ }
+        /* `b.`-qualified — same reason as _songbookBibSelect() above; the
+           parent-songbook self-join makes any unqualified column
+           ambiguous. */
+        $this->_langSelectCache = $hasLangCol ? ', b.Language AS language' : '';
+        return $this->_langSelectCache;
+    }
+    private ?string $_langSelectCache = null;
+
+    /**
+     * Same shape as _songbookBibSelect() / _songbookLanguageSelect()
+     * but for the optional parent-songbook FK columns added in #782
+     * phase A. When the schema is live, returns a SELECT tail with
+     * `b.ParentSongbookId AS parentSongbookId,
+     *  b.ParentRelationship AS parentRelationship,
+     *  p.Abbreviation AS parentAbbreviation,
+     *  p.Name AS parentName`
+     * — assumes the caller's main table is aliased `b` and joins
+     * `LEFT JOIN tblSongbooks p ON p.Id = b.ParentSongbookId`. The
+     * join fragment is exposed as a separate accessor so callers can
+     * inject it into the FROM clause.
+     *
+     * Probe-once cache (one INFORMATION_SCHEMA round-trip per request)
+     * keeps getSongbook + getSongbooks cheap when both are called.
+     */
+    private function _songbookParentSelect(): string
+    {
+        if ($this->_parentSelectCache !== null) {
+            return $this->_parentSelectCache;
+        }
+        $hasParentCol = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongbooks'
+                    AND COLUMN_NAME  = 'ParentSongbookId'
+                  LIMIT 1"
+            );
+            $probe->execute();
+            $hasParentCol = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* probe failure → no parent tail */ }
+        $this->_parentSelectCache = $hasParentCol
+            ? ', b.ParentSongbookId   AS parentSongbookId,
+                 b.ParentRelationship AS parentRelationship,
+                 p.Abbreviation       AS parentAbbreviation,
+                 p.Name               AS parentName'
+            : '';
+        return $this->_parentSelectCache;
+    }
+    private ?string $_parentSelectCache = null;
+
+    /** LEFT JOIN fragment paired with _songbookParentSelect(). Empty
+        when the schema isn't live so the FROM clause stays valid. */
+    private function _songbookParentJoin(): string
+    {
+        return $this->_songbookParentSelect() === ''
+            ? ''
+            : ' LEFT JOIN tblSongbooks p ON p.Id = b.ParentSongbookId';
+    }
+
+    /**
+     * Pull `[abbr => [{id, name, slug}, ...]]` from the
+     * tblSongbookSeries / tblSongbookSeriesMembership tables for a
+     * subset (or all) of songbooks. Series counts in real catalogues
+     * stay small — issuing one query per page-load (vs N queries per
+     * songbook) keeps both /songbook/<abbr> and the home grid cheap.
+     *
+     * Schema-probed; pre-migration deployments get an empty map so
+     * the caller's tile / page renders cleanly without the row.
+     *
+     * @param string[]|null $abbrs Limit to these abbreviations; null = all
+     * @return array<string, array<int, array{id:int,name:string,slug:string}>>
+     */
+    private function _songbookSeriesMap(?array $abbrs = null): array
+    {
+        $hasSeriesSchema = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongbookSeries'
+                  LIMIT 1"
+            );
+            $probe->execute();
+            $hasSeriesSchema = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* fall through */ }
+        if (!$hasSeriesSchema) return [];
+
+        try {
+            if ($abbrs === null) {
+                $sql = 'SELECT b.Abbreviation AS abbr,
+                               s.Id           AS sid,
+                               s.Name         AS sname,
+                               s.Slug         AS sslug,
+                               m.SortOrder    AS sortOrder
+                          FROM tblSongbookSeriesMembership m
+                          JOIN tblSongbookSeries s ON s.Id = m.SeriesId
+                          JOIN tblSongbooks      b ON b.Id = m.SongbookId
+                         ORDER BY b.Abbreviation, m.SortOrder ASC, s.Name ASC';
+                $stmt = $this->db->prepare($sql);
+            } else {
+                $abbrs = array_values(array_filter(array_unique(array_map(
+                    static fn($a) => strtoupper(trim((string)$a)),
+                    $abbrs
+                ))));
+                if (!$abbrs) return [];
+                $ph  = implode(',', array_fill(0, count($abbrs), '?'));
+                $sql = "SELECT b.Abbreviation AS abbr,
+                               s.Id           AS sid,
+                               s.Name         AS sname,
+                               s.Slug         AS sslug,
+                               m.SortOrder    AS sortOrder
+                          FROM tblSongbookSeriesMembership m
+                          JOIN tblSongbookSeries s ON s.Id = m.SeriesId
+                          JOIN tblSongbooks      b ON b.Id = m.SongbookId
+                         WHERE b.Abbreviation IN ($ph)
+                         ORDER BY b.Abbreviation, m.SortOrder ASC, s.Name ASC";
+                $stmt  = $this->db->prepare($sql);
+                $types = str_repeat('s', count($abbrs));
+                $stmt->bind_param($types, ...$abbrs);
+            }
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $out = [];
+            while ($row = $res->fetch_assoc()) {
+                $abbr = (string)$row['abbr'];
+                if (!isset($out[$abbr])) $out[$abbr] = [];
+                $out[$abbr][] = [
+                    'id'   => (int)$row['sid'],
+                    'name' => (string)$row['sname'],
+                    'slug' => (string)$row['sslug'],
+                ];
+            }
+            $stmt->close();
+            return $out;
+        } catch (\Throwable $e) {
+            error_log('[SongData::_songbookSeriesMap] ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Pull `[abbr => ['en','af',…]]` — for each songbook, the set of
+     * distinct primary language subtags that appear on its songs (#857).
+     *
+     * Used to fix songbook-tile visibility under the "Show languages"
+     * filter: a songbook tagged English (e.g. Advent Hymns) which
+     * happens to contain Afrikaans-tagged songs should still surface
+     * when the user filters for Afrikaans. The home page combines
+     * this with `tblSongbooks.Language` to produce the union list,
+     * stored on the tile as `data-songbook-languages`.
+     *
+     * Schema-probed: pre-#673 (no Language column on tblSongs)
+     * returns an empty map and the legacy single-language filter
+     * behaviour stays in effect.
+     *
+     * @return array<string, string[]>
+     */
+    private function _songbookSongLanguagesMap(): array
+    {
+        $hasSchema = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongs'
+                    AND COLUMN_NAME  = 'Language' LIMIT 1"
+            );
+            $probe->execute();
+            $hasSchema = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* fall through */ }
+        if (!$hasSchema) return [];
+
+        try {
+            /* GROUP_CONCAT keeps everything in one round-trip; the
+               primary-subtag extraction lives in SQL because the
+               sub-string is cheap there and avoids a per-row
+               PHP regex on a result set that can be tens of
+               thousands of rows. */
+            $sql = "SELECT SongbookAbbr,
+                           GROUP_CONCAT(
+                               DISTINCT LOWER(SUBSTRING_INDEX(Language, '-', 1))
+                               ORDER BY Language SEPARATOR ','
+                           ) AS langs
+                      FROM tblSongs
+                     WHERE Language IS NOT NULL AND Language <> ''
+                     GROUP BY SongbookAbbr";
+            $res = $this->db->query($sql);
+            $out = [];
+            if ($res) {
+                while ($row = $res->fetch_assoc()) {
+                    $abbr  = (string)$row['SongbookAbbr'];
+                    $langs = array_values(array_filter(
+                        explode(',', (string)($row['langs'] ?? '')),
+                        static fn($s) => $s !== '' && preg_match('/^[a-z]{2,3}$/', $s)
+                    ));
+                    $out[$abbr] = $langs;
+                }
+                $res->close();
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            error_log('[SongData::_songbookSongLanguagesMap] ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Pull `[abbr => [{id, name, slug, note}, ...]]` from
+     * tblSongbookCompilers joined to tblCreditPeople. Same shape +
+     * caching strategy as _songbookSeriesMap(): single query covers
+     * the home grid + every songbook page on a single request.
+     *
+     * Schema-probed (#831). Pre-migration deployments get an empty
+     * map so /songbook/<abbr> renders cleanly without the
+     * "Compiled by …" line.
+     *
+     * @param string[]|null $abbrs Limit to these abbreviations; null = all
+     * @return array<string, array<int, array{id:int,name:string,slug:string,note:string}>>
+     */
+    private function _songbookCompilersMap(?array $abbrs = null): array
+    {
+        $hasCompilersSchema = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongbookCompilers'
+                  LIMIT 1"
+            );
+            $probe->execute();
+            $hasCompilersSchema = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* fall through */ }
+        if (!$hasCompilersSchema) return [];
+
+        try {
+            if ($abbrs === null) {
+                $sql = 'SELECT b.Abbreviation AS abbr,
+                               p.Id           AS pid,
+                               p.Name         AS pname,
+                               p.Slug         AS pslug,
+                               c.Note         AS note,
+                               c.SortOrder    AS sortOrder
+                          FROM tblSongbookCompilers c
+                          JOIN tblCreditPeople p ON p.Id = c.CreditPersonId
+                          JOIN tblSongbooks    b ON b.Id = c.SongbookId
+                         ORDER BY b.Abbreviation, c.SortOrder ASC, p.Name ASC';
+                $stmt = $this->db->prepare($sql);
+            } else {
+                $abbrs = array_values(array_filter(array_unique(array_map(
+                    static fn($a) => strtoupper(trim((string)$a)),
+                    $abbrs
+                ))));
+                if (!$abbrs) return [];
+                $ph  = implode(',', array_fill(0, count($abbrs), '?'));
+                $sql = "SELECT b.Abbreviation AS abbr,
+                               p.Id           AS pid,
+                               p.Name         AS pname,
+                               p.Slug         AS pslug,
+                               c.Note         AS note,
+                               c.SortOrder    AS sortOrder
+                          FROM tblSongbookCompilers c
+                          JOIN tblCreditPeople p ON p.Id = c.CreditPersonId
+                          JOIN tblSongbooks    b ON b.Id = c.SongbookId
+                         WHERE b.Abbreviation IN ($ph)
+                         ORDER BY b.Abbreviation, c.SortOrder ASC, p.Name ASC";
+                $stmt  = $this->db->prepare($sql);
+                $types = str_repeat('s', count($abbrs));
+                $stmt->bind_param($types, ...$abbrs);
+            }
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $out = [];
+            while ($row = $res->fetch_assoc()) {
+                $abbr = (string)$row['abbr'];
+                if (!isset($out[$abbr])) $out[$abbr] = [];
+                $out[$abbr][] = [
+                    'id'   => (int)$row['pid'],
+                    'name' => (string)$row['pname'],
+                    'slug' => (string)($row['pslug'] ?? ''),
+                    'note' => (string)($row['note'] ?? ''),
+                ];
+            }
+            $stmt->close();
+            return $out;
+        } catch (\Throwable $e) {
+            error_log('[SongData::_songbookCompilersMap] ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Pull `[abbr => [{title, note}, ...]]` from
+     * tblSongbookAlternativeTitles. Schema-probed (#832).
+     * Pre-migration deployments get an empty map so the public
+     * "Also known as …" line and JSON-LD alternateName both
+     * gracefully no-op.
+     *
+     * @param string[]|null $abbrs Limit to these abbreviations; null = all
+     * @return array<string, array<int, array{title:string,note:string}>>
+     */
+    private function _songbookAltNamesMap(?array $abbrs = null): array
+    {
+        $hasSchema = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongbookAlternativeTitles'
+                  LIMIT 1"
+            );
+            $probe->execute();
+            $hasSchema = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* fall through */ }
+        if (!$hasSchema) return [];
+
+        try {
+            if ($abbrs === null) {
+                $sql = 'SELECT b.Abbreviation AS abbr,
+                               a.Title         AS title,
+                               a.Note          AS note,
+                               a.SortOrder     AS sortOrder
+                          FROM tblSongbookAlternativeTitles a
+                          JOIN tblSongbooks b ON b.Id = a.SongbookId
+                         ORDER BY b.Abbreviation, a.SortOrder ASC, a.Title ASC';
+                $stmt = $this->db->prepare($sql);
+            } else {
+                $abbrs = array_values(array_filter(array_unique(array_map(
+                    static fn($a) => strtoupper(trim((string)$a)),
+                    $abbrs
+                ))));
+                if (!$abbrs) return [];
+                $ph  = implode(',', array_fill(0, count($abbrs), '?'));
+                $sql = "SELECT b.Abbreviation AS abbr,
+                               a.Title         AS title,
+                               a.Note          AS note,
+                               a.SortOrder     AS sortOrder
+                          FROM tblSongbookAlternativeTitles a
+                          JOIN tblSongbooks b ON b.Id = a.SongbookId
+                         WHERE b.Abbreviation IN ($ph)
+                         ORDER BY b.Abbreviation, a.SortOrder ASC, a.Title ASC";
+                $stmt  = $this->db->prepare($sql);
+                $types = str_repeat('s', count($abbrs));
+                $stmt->bind_param($types, ...$abbrs);
+            }
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $out = [];
+            while ($row = $res->fetch_assoc()) {
+                $abbr = (string)$row['abbr'];
+                if (!isset($out[$abbr])) $out[$abbr] = [];
+                $out[$abbr][] = [
+                    'title' => (string)$row['title'],
+                    'note'  => (string)($row['note'] ?? ''),
+                ];
+            }
+            $stmt->close();
+            return $out;
+        } catch (\Throwable $e) {
+            error_log('[SongData::_songbookAltNamesMap] ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Pull `[songId => [{title, note, language}, ...]]` from
+     * tblSongAlternativeTitles. Schema-probed (#832).
+     *
+     * @param string[]|null $songIds Limit to these SongIds; null = all
+     * @return array<string, array<int, array{title:string,note:string,language:string}>>
+     */
+    private function _songAltTitlesMap(?array $songIds = null): array
+    {
+        $hasSchema = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongAlternativeTitles'
+                  LIMIT 1"
+            );
+            $probe->execute();
+            $hasSchema = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* fall through */ }
+        if (!$hasSchema) return [];
+
+        try {
+            if ($songIds === null) {
+                $sql = 'SELECT SongId, Title, Note, Language, SortOrder
+                          FROM tblSongAlternativeTitles
+                         ORDER BY SongId, SortOrder ASC, Title ASC';
+                $stmt = $this->db->prepare($sql);
+            } else {
+                $songIds = array_values(array_filter(array_unique(array_map(
+                    static fn($s) => trim((string)$s),
+                    $songIds
+                ))));
+                if (!$songIds) return [];
+                $ph  = implode(',', array_fill(0, count($songIds), '?'));
+                $sql = "SELECT SongId, Title, Note, Language, SortOrder
+                          FROM tblSongAlternativeTitles
+                         WHERE SongId IN ($ph)
+                         ORDER BY SongId, SortOrder ASC, Title ASC";
+                $stmt  = $this->db->prepare($sql);
+                $types = str_repeat('s', count($songIds));
+                $stmt->bind_param($types, ...$songIds);
+            }
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $out = [];
+            while ($row = $res->fetch_assoc()) {
+                $sid = (string)$row['SongId'];
+                if (!isset($out[$sid])) $out[$sid] = [];
+                $out[$sid][] = [
+                    'title'    => (string)$row['Title'],
+                    'note'     => (string)($row['Note'] ?? ''),
+                    'language' => (string)($row['Language'] ?? ''),
+                ];
+            }
+            $stmt->close();
+            return $out;
+        } catch (\Throwable $e) {
+            error_log('[SongData::_songAltTitlesMap] ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Pull `[songId => [{id, kind, fileName, mimeType, sizeBytes,
+     *                    annotation, sortOrder, streamUrl}, …]]` from
+     * tblSongMedia (#853). Schema-probed; pre-migration deployments
+     * get an empty map so the public song page just doesn't render
+     * the media block.
+     *
+     * Bytes are NEVER returned by this method — only metadata. The
+     * public surface uses streamUrl (= /song-media/<id>) which is
+     * served by the gated route (phase E) so checkContentAccess()
+     * applies regardless of whether the underlying storage is the
+     * filesystem or the database.
+     *
+     * @param string[]|null $songIds Limit to these SongIds; null = all
+     * @return array<string, array<int, array{id:int,kind:string,fileName:string,mimeType:string,sizeBytes:int,annotation:string,sortOrder:int,streamUrl:string}>>
+     */
+    private function _songMediaMap(?array $songIds = null): array
+    {
+        $hasSchema = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongMedia'
+                  LIMIT 1"
+            );
+            $probe->execute();
+            $hasSchema = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* fall through */ }
+        if (!$hasSchema) return [];
+
+        try {
+            $select = 'SELECT Id, SongId, Kind, FileName, MimeType, SizeBytes,
+                              Annotation, SortOrder
+                         FROM tblSongMedia';
+            if ($songIds === null) {
+                $sql  = $select . ' ORDER BY SongId, Kind ASC, SortOrder ASC, Id ASC';
+                $stmt = $this->db->prepare($sql);
+            } else {
+                $songIds = array_values(array_filter(array_unique(array_map(
+                    static fn($s) => trim((string)$s),
+                    $songIds
+                ))));
+                if (!$songIds) return [];
+                $ph   = implode(',', array_fill(0, count($songIds), '?'));
+                $sql  = $select . " WHERE SongId IN ($ph)"
+                      . ' ORDER BY SongId, Kind ASC, SortOrder ASC, Id ASC';
+                $stmt = $this->db->prepare($sql);
+                $types = str_repeat('s', count($songIds));
+                $stmt->bind_param($types, ...$songIds);
+            }
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $out = [];
+            while ($row = $res->fetch_assoc()) {
+                $sid = (string)$row['SongId'];
+                if (!isset($out[$sid])) $out[$sid] = [];
+                $out[$sid][] = [
+                    'id'         => (int)$row['Id'],
+                    'kind'       => (string)$row['Kind'],
+                    'fileName'   => (string)$row['FileName'],
+                    'mimeType'   => (string)$row['MimeType'],
+                    'sizeBytes'  => (int)$row['SizeBytes'],
+                    'annotation' => (string)($row['Annotation'] ?? ''),
+                    'sortOrder'  => (int)$row['SortOrder'],
+                    'streamUrl'  => '/song-media/' . (int)$row['Id'],
+                ];
+            }
+            $stmt->close();
+            return $out;
+        } catch (\Throwable $e) {
+            error_log('[SongData::_songMediaMap] ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Pull `[entityKey => [{slug, name, category, url, note, verified, iconClass}, ...]]`
+     * from one of the three tblXxxExternalLinks join tables (#833).
+     * Generic over the three entity types — `$entityType` selects the
+     * table + key-column combination:
+     *
+     *   'songbook' → tblSongbookExternalLinks      keyed by Abbreviation
+     *   'song'     → tblSongExternalLinks          keyed by SongId
+     *   'person'   → tblCreditPersonExternalLinks  keyed by CreditPersonId (int)
+     *
+     * Schema-probed; pre-migration deployments get an empty map. The
+     * registry join (tblExternalLinkTypes) drops link-type rows that
+     * have been deactivated — IsActive = 0 acts as a soft delete.
+     *
+     * @param string         $entityType  'songbook' | 'song' | 'person'
+     * @param array|null     $keys        Limit to these keys; null = all
+     * @return array<string|int, array<int, array{slug:string,name:string,category:string,url:string,note:string,verified:bool,iconClass:string,sortOrder:int}>>
+     */
+    private function _externalLinksMap(string $entityType, ?array $keys = null): array
+    {
+        switch ($entityType) {
+            case 'songbook':
+                $table   = 'tblSongbookExternalLinks';
+                $entCol  = 'SongbookId';
+                $joinSql = ' JOIN tblSongbooks b ON b.Id = el.SongbookId ';
+                $keyExpr = 'b.Abbreviation';
+                $bindT   = 's';
+                break;
+            case 'song':
+                $table   = 'tblSongExternalLinks';
+                $entCol  = 'SongId';
+                $joinSql = '';
+                $keyExpr = 'el.SongId';
+                $bindT   = 's';
+                break;
+            case 'person':
+                $table   = 'tblCreditPersonExternalLinks';
+                $entCol  = 'CreditPersonId';
+                $joinSql = '';
+                $keyExpr = 'el.CreditPersonId';
+                $bindT   = 'i';
+                break;
+            default:
+                return [];
+        }
+
+        $hasSchema = false;
+        try {
+            $probe = $this->db->prepare(
+                'SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1'
+            );
+            $probe->bind_param('s', $table);
+            $probe->execute();
+            $hasSchema = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* fall through */ }
+        if (!$hasSchema) return [];
+
+        try {
+            $base = "SELECT {$keyExpr} AS k,
+                            t.Slug      AS slug,
+                            t.Name      AS name,
+                            t.Category  AS category,
+                            t.IconClass AS iconClass,
+                            el.Url      AS url,
+                            el.Note     AS note,
+                            el.Verified AS verified,
+                            el.SortOrder AS sortOrder
+                       FROM {$table} el
+                       JOIN tblExternalLinkTypes t ON t.Id = el.LinkTypeId
+                       {$joinSql}
+                      WHERE COALESCE(t.IsActive, 1) = 1";
+            $orderBy = " ORDER BY {$keyExpr}, t.Category, el.SortOrder ASC, t.DisplayOrder ASC, t.Name ASC";
+
+            if ($keys === null) {
+                $stmt = $this->db->prepare($base . $orderBy);
+            } else {
+                $clean = array_values(array_filter(array_unique(array_map(
+                    static fn($k) => is_int($k) ? $k : trim((string)$k),
+                    $keys
+                ))));
+                if ($entityType === 'songbook') {
+                    $clean = array_map(static fn($s) => strtoupper((string)$s), $clean);
+                }
+                if (!$clean) return [];
+                $ph    = implode(',', array_fill(0, count($clean), '?'));
+                $sql   = $base . " AND {$keyExpr} IN ($ph)" . $orderBy;
+                $stmt  = $this->db->prepare($sql);
+                $types = str_repeat($bindT, count($clean));
+                $stmt->bind_param($types, ...$clean);
+            }
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $out = [];
+            while ($row = $res->fetch_assoc()) {
+                $key = $entityType === 'person' ? (int)$row['k'] : (string)$row['k'];
+                if (!isset($out[$key])) $out[$key] = [];
+                $out[$key][] = [
+                    'slug'      => (string)$row['slug'],
+                    'name'      => (string)$row['name'],
+                    'category'  => (string)$row['category'],
+                    'iconClass' => (string)($row['iconClass'] ?? ''),
+                    'url'       => (string)$row['url'],
+                    'note'      => (string)($row['note'] ?? ''),
+                    'verified'  => (bool)$row['verified'],
+                    'sortOrder' => (int)$row['sortOrder'],
+                ];
+            }
+            $stmt->close();
+            return $out;
+        } catch (\Throwable $e) {
+            error_log("[SongData::_externalLinksMap({$entityType})] " . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Find a SongId by (songbook abbreviation, number) without
+     * re-fetching the full song row. Used by the song page to
+     * decide whether the parent songbook has a same-numbered
+     * counterpart worth deep-linking to (#782 phase D). Returns
+     * null when the songbook has no song at that number.
+     *
+     * Cheaper than getSongByNumber() — only a single SELECT against
+     * the indexed (SongbookAbbr, Number) pair.
+     */
+    public function findSongIdByNumber(string $abbr, int $number): ?string
+    {
+        if ($number <= 0) return null;
+        $abbr = strtoupper(trim($abbr));
+        if ($abbr === '') return null;
+        if ($this->jsonMode) {
+            foreach ($this->jsonData['songs'] ?? [] as $song) {
+                if (strtoupper((string)($song['songbook'] ?? '')) === $abbr
+                    && (int)($song['number'] ?? 0) === $number
+                ) {
+                    return (string)$song['id'];
+                }
+            }
+            return null;
+        }
+        try {
+            $stmt = $this->db->prepare(
+                'SELECT SongId FROM tblSongs WHERE SongbookAbbr = ? AND Number = ? LIMIT 1'
+            );
+            $stmt->bind_param('si', $abbr, $number);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            return $row ? (string)$row['SongId'] : null;
+        } catch (\Throwable $e) {
+            error_log('[SongData::findSongIdByNumber] ' . $e->getMessage());
+            return null;
+        }
     }
 
     /**
@@ -288,16 +1152,23 @@ class SongData
             }
             return null;
         }
+        $bibSelect    = $this->_songbookBibSelect();
+        $langSelect   = $this->_songbookLanguageSelect();
+        $parentSelect = $this->_songbookParentSelect();
+        $parentJoin   = $this->_songbookParentJoin();
         $stmt = $this->db->prepare(
-            "SELECT Abbreviation AS id, Name AS name, SongCount AS songCount,
-                    Colour AS colour,
-                    IsOfficial      AS isOfficial,
-                    Publisher       AS publisher,
-                    PublicationYear AS publicationYear,
-                    Copyright       AS copyright,
-                    Affiliation     AS affiliation
-             FROM tblSongbooks
-             WHERE Abbreviation = ?"
+            "SELECT b.Abbreviation AS id, b.Name AS name, b.SongCount AS songCount,
+                    b.Colour AS colour,
+                    b.IsOfficial      AS isOfficial,
+                    b.Publisher       AS publisher,
+                    b.PublicationYear AS publicationYear,
+                    b.Copyright       AS copyright,
+                    b.Affiliation     AS affiliation
+                    {$langSelect}
+                    {$bibSelect}
+                    {$parentSelect}
+             FROM tblSongbooks b{$parentJoin}
+             WHERE b.Abbreviation = ?"
         );
         $stmt->bind_param('s', $id);
         $stmt->execute();
@@ -310,7 +1181,367 @@ class SongData
         }
         $row['songCount']  = (int)$row['songCount'];
         $row['isOfficial'] = (bool)$row['isOfficial'];
+        $row = $this->_normaliseSongbookParent($row);
+        /* #782 phase D — also attach series memberships. Single-songbook
+           variant of the bulk fetch on getSongbooks(); pre-migration
+           safe via the schema probe inside _songbookSeriesMap.
+           #831 — compilers attached the same way.
+           #832 — alt names attached the same way.
+           #833 — external links attached the same way. */
+        $seriesMap               = $this->_songbookSeriesMap([$id]);
+        $compilersMap            = $this->_songbookCompilersMap([$id]);
+        $altNamesMap             = $this->_songbookAltNamesMap([$id]);
+        $linksMap                = $this->_externalLinksMap('songbook', [$id]);
+        $row['series']           = $seriesMap[(string)$row['id']]    ?? [];
+        $row['compilers']        = $compilersMap[(string)$row['id']] ?? [];
+        $row['alternativeNames'] = $altNamesMap[(string)$row['id']]  ?? [];
+        $row['links']            = $linksMap[(string)$row['id']]     ?? [];
         return $row;
+    }
+
+    /* =====================================================================
+     * PARENT/SERIES PROGRAMMATIC HELPERS (#782 phase E)
+     *
+     * Public surface so other parts of the codebase (custom report
+     * generators, future projection-software exporters, the analytics
+     * module, etc.) can ask the questions the public song page + tile
+     * already render answers to, without re-implementing the joins.
+     * ===================================================================== */
+
+    /**
+     * Return the full hierarchical family of a songbook — its single
+     * parent (or null), every direct child, and every sibling (other
+     * children of the same parent, excluding the row itself). Hops are
+     * bounded at 64 in each direction so a pathological cycle in the
+     * data — already prevented by phase B's _wouldCreateParentCycle
+     * guard — couldn't blow up the walk anyway.
+     *
+     * Empty `parent` + `children` + `siblings` arrays for songbooks that
+     * have no relations declared. Pre-migration deployments (no
+     * ParentSongbookId column) get the same empty shape.
+     *
+     * Result shape:
+     *   [
+     *     'self'     => ['id' => 'CIS', 'name' => 'Christ in Song'],
+     *     'parent'   => null | ['id' => 'CIS', 'name' => '…',
+     *                            'relationship' => 'translation'|'edition'|'abridgement'],
+     *     'children' => [
+     *        ['id' => 'HA', 'name' => 'Himnario Adventista',
+     *         'relationship' => 'translation', 'language' => 'es'],
+     *        …
+     *     ],
+     *     'siblings' => [ ...same shape as children... ],
+     *   ]
+     *
+     * @param string $abbr Songbook abbreviation
+     * @return array Family shape (always returns a populated array; missing rows ⇒ self => null)
+     */
+    public function getSongbookFamily(string $abbr): array
+    {
+        $abbr = strtoupper(trim($abbr));
+        $empty = [
+            'self'     => null,
+            'parent'   => null,
+            'children' => [],
+            'siblings' => [],
+        ];
+        if ($abbr === '') return $empty;
+
+        if ($this->jsonMode) {
+            /* JSON-mode catalogues don't ship parent/series metadata
+               (the JSON shape predates phase A) — return the trivial
+               family. */
+            $book = $this->getSongbook($abbr);
+            return $book ? array_merge($empty, ['self' => ['id' => $book['id'], 'name' => $book['name']]]) : $empty;
+        }
+
+        if ($this->_songbookParentSelect() === '') return $empty;
+
+        try {
+            /* 1) self + own parent (if any). */
+            $stmt = $this->db->prepare(
+                'SELECT b.Id, b.Abbreviation, b.Name,
+                        b.ParentSongbookId, b.ParentRelationship,
+                        p.Abbreviation AS parentAbbr, p.Name AS parentName
+                   FROM tblSongbooks b
+                   LEFT JOIN tblSongbooks p ON p.Id = b.ParentSongbookId
+                  WHERE b.Abbreviation = ?'
+            );
+            $stmt->bind_param('s', $abbr);
+            $stmt->execute();
+            $self = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if (!$self) return $empty;
+
+            $selfId = (int)$self['Id'];
+            $out = [
+                'self' => [
+                    'id'   => (string)$self['Abbreviation'],
+                    'name' => (string)$self['Name'],
+                ],
+                'parent'   => null,
+                'children' => [],
+                'siblings' => [],
+            ];
+            $parentId = isset($self['ParentSongbookId']) ? (int)$self['ParentSongbookId'] : 0;
+            if ($parentId > 0) {
+                $out['parent'] = [
+                    'id'           => (string)($self['parentAbbr'] ?? ''),
+                    'name'         => (string)($self['parentName'] ?? ''),
+                    'relationship' => (string)($self['ParentRelationship'] ?? ''),
+                ];
+            }
+
+            /* 2) Direct children (rows whose ParentSongbookId === selfId).
+                  Pulled with the optional Language column so callers
+                  rendering a list can show "Spanish" / "Tswana" inline. */
+            $langTail = $this->_songbookLanguageSelect() === '' ? '' : ', b.Language AS language';
+            $stmt = $this->db->prepare(
+                "SELECT b.Abbreviation AS id, b.Name AS name,
+                        b.ParentRelationship AS relationship
+                        {$langTail}
+                   FROM tblSongbooks b
+                  WHERE b.ParentSongbookId = ?
+                  ORDER BY b.Name ASC"
+            );
+            $stmt->bind_param('i', $selfId);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            while ($r = $res->fetch_assoc()) {
+                $out['children'][] = [
+                    'id'           => (string)$r['id'],
+                    'name'         => (string)$r['name'],
+                    'relationship' => (string)($r['relationship'] ?? ''),
+                    'language'     => (string)($r['language']     ?? ''),
+                ];
+            }
+            $stmt->close();
+
+            /* 3) Siblings (other children of the same parent, excluding
+                  self). Skipped when this row has no parent. */
+            if ($parentId > 0) {
+                $stmt = $this->db->prepare(
+                    "SELECT b.Abbreviation AS id, b.Name AS name,
+                            b.ParentRelationship AS relationship
+                            {$langTail}
+                       FROM tblSongbooks b
+                      WHERE b.ParentSongbookId = ?
+                        AND b.Id <> ?
+                      ORDER BY b.Name ASC"
+                );
+                $stmt->bind_param('ii', $parentId, $selfId);
+                $stmt->execute();
+                $res = $stmt->get_result();
+                while ($r = $res->fetch_assoc()) {
+                    $out['siblings'][] = [
+                        'id'           => (string)$r['id'],
+                        'name'         => (string)$r['name'],
+                        'relationship' => (string)($r['relationship'] ?? ''),
+                        'language'     => (string)($r['language']     ?? ''),
+                    ];
+                }
+                $stmt->close();
+            }
+
+            return $out;
+        } catch (\Throwable $e) {
+            error_log('[SongData::getSongbookFamily] ' . $e->getMessage());
+            return $empty;
+        }
+    }
+
+    /**
+     * Return every songbook in a series, ordered by membership SortOrder
+     * then Name. Looked up by either the series id (int) or its slug
+     * (string). Empty list when the series doesn't exist or the schema
+     * isn't live yet.
+     *
+     * Result shape per row:
+     *   ['id' => 'SoF1', 'name' => 'Songs of Fellowship vol 1',
+     *    'sortOrder' => 10, 'note' => 'first volume',
+     *    'language' => 'en']  // language only when the column is live
+     *
+     * @param int|string $seriesIdOrSlug
+     * @return array<int, array<string, int|string>>
+     */
+    public function getSongbooksInSeries($seriesIdOrSlug): array
+    {
+        if ($this->jsonMode) return []; /* JSON catalogues don't carry series */
+
+        /* Schema probe — same gate as _songbookSeriesMap(). */
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongbookSeries'
+                  LIMIT 1"
+            );
+            $probe->execute();
+            $present = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+            if (!$present) return [];
+        } catch (\Throwable $_e) {
+            return [];
+        }
+
+        $langTail = $this->_songbookLanguageSelect() === '' ? '' : ', b.Language AS language';
+        try {
+            if (is_int($seriesIdOrSlug)) {
+                $sql = "SELECT b.Abbreviation AS id, b.Name AS name,
+                               m.SortOrder    AS sortOrder,
+                               m.Note         AS note
+                               {$langTail}
+                          FROM tblSongbookSeriesMembership m
+                          JOIN tblSongbooks b ON b.Id = m.SongbookId
+                         WHERE m.SeriesId = ?
+                         ORDER BY m.SortOrder ASC, b.Name ASC";
+                $stmt = $this->db->prepare($sql);
+                $sid  = (int)$seriesIdOrSlug;
+                $stmt->bind_param('i', $sid);
+            } else {
+                $sql = "SELECT b.Abbreviation AS id, b.Name AS name,
+                               m.SortOrder    AS sortOrder,
+                               m.Note         AS note
+                               {$langTail}
+                          FROM tblSongbookSeriesMembership m
+                          JOIN tblSongbooks       b ON b.Id = m.SongbookId
+                          JOIN tblSongbookSeries  s ON s.Id = m.SeriesId
+                         WHERE s.Slug = ?
+                         ORDER BY m.SortOrder ASC, b.Name ASC";
+                $stmt = $this->db->prepare($sql);
+                $slug = (string)$seriesIdOrSlug;
+                $stmt->bind_param('s', $slug);
+            }
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $out = [];
+            while ($r = $res->fetch_assoc()) {
+                $row = [
+                    'id'        => (string)$r['id'],
+                    'name'      => (string)$r['name'],
+                    'sortOrder' => (int)$r['sortOrder'],
+                    'note'      => (string)($r['note'] ?? ''),
+                ];
+                if (array_key_exists('language', $r)) {
+                    $row['language'] = (string)($r['language'] ?? '');
+                }
+                $out[] = $row;
+            }
+            $stmt->close();
+            return $out;
+        } catch (\Throwable $e) {
+            error_log('[SongData::getSongbooksInSeries] ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Given a SongId (e.g. 'HA-0042'), return the same hymn-number's
+     * row in every related songbook — parent + every child of the
+     * parent (i.e. every sibling translation/edition/abridgement) —
+     * keyed by relationship for easy rendering.
+     *
+     * Result shape:
+     *   [
+     *     'parent'   => ['id' => 'CIS-0042', 'songbook' => 'CIS',
+     *                    'name' => 'Christ in Song', 'language' => 'en',
+     *                    'relationship' => 'translation'],
+     *     'siblings' => [
+     *        ['id' => 'KMK-0042', 'songbook' => 'KMK', 'name' => 'Keresete Mo Kopelong',
+     *         'language' => 'tn', 'relationship' => 'translation'],
+     *        …
+     *     ],
+     *   ]
+     *
+     * Empty when:
+     *   - the song's number is null (Misc / unnumbered),
+     *   - the songbook has no parent,
+     *   - no related songbook carries the same number.
+     *
+     * Cheap: one INFORMATION_SCHEMA probe (cached), one row fetch,
+     * one family walk, one IN(…) query for the same-number row in
+     * each related songbook. ~3 queries total.
+     */
+    public function getSongCounterparts(string $songId): array
+    {
+        $empty = ['parent' => null, 'siblings' => []];
+        $songId = trim($songId);
+        if ($songId === '') return $empty;
+        if ($this->jsonMode) return $empty;
+        if ($this->_songbookParentSelect() === '') return $empty;
+
+        try {
+            /* Step 1 — pull the source song's (SongbookAbbr, Number).
+               Cheap, no joins. */
+            $stmt = $this->db->prepare(
+                'SELECT SongbookAbbr, Number FROM tblSongs WHERE SongId = ? LIMIT 1'
+            );
+            $stmt->bind_param('s', $songId);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if (!$row) return $empty;
+
+            $abbr   = (string)$row['SongbookAbbr'];
+            $number = $row['Number'] !== null ? (int)$row['Number'] : 0;
+            if ($number <= 0) return $empty;
+
+            /* Step 2 — walk the family. Re-uses the helper above so the
+               relationship-aware language tail comes for free. */
+            $family = $this->getSongbookFamily($abbr);
+
+            /* Step 3 — assemble the candidate-row list of related songbook
+               abbreviations (parent + siblings). Children of the current
+               songbook aren't included — counterpart semantics here are
+               "this hymn elsewhere in the same family", and a child of
+               the current row would be a translation OF this row, which
+               is the inward-translations relationship already covered
+               by tblSongTranslations elsewhere on the song page (#281). */
+            $candidates = [];
+            $relationshipByAbbr = [];
+            if ($family['parent']) {
+                $candidates[] = $family['parent']['id'];
+                $relationshipByAbbr[$family['parent']['id']] = $family['parent']['relationship'];
+            }
+            foreach ($family['siblings'] as $s) {
+                $candidates[] = $s['id'];
+                $relationshipByAbbr[$s['id']] = $s['relationship'];
+            }
+            if (!$candidates) return $empty;
+
+            $ph   = implode(',', array_fill(0, count($candidates), '?'));
+            $sql  = "SELECT s.SongId, s.SongbookAbbr, b.Name AS bookName,
+                            b.Language AS bookLanguage
+                       FROM tblSongs s
+                       JOIN tblSongbooks b ON b.Abbreviation = s.SongbookAbbr
+                      WHERE s.Number = ? AND s.SongbookAbbr IN ($ph)";
+            $stmt = $this->db->prepare($sql);
+            $types = 'i' . str_repeat('s', count($candidates));
+            $args  = array_merge([$number], $candidates);
+            $stmt->bind_param($types, ...$args);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $out = $empty;
+            while ($r = $res->fetch_assoc()) {
+                $entry = [
+                    'id'           => (string)$r['SongId'],
+                    'songbook'     => (string)$r['SongbookAbbr'],
+                    'name'         => (string)$r['bookName'],
+                    'language'     => (string)($r['bookLanguage'] ?? ''),
+                    'relationship' => (string)($relationshipByAbbr[$r['SongbookAbbr']] ?? ''),
+                ];
+                if ($family['parent'] && $r['SongbookAbbr'] === $family['parent']['id']) {
+                    $out['parent'] = $entry;
+                } else {
+                    $out['siblings'][] = $entry;
+                }
+            }
+            $stmt->close();
+            return $out;
+        } catch (\Throwable $e) {
+            error_log('[SongData::getSongCounterparts] ' . $e->getMessage());
+            return $empty;
+        }
     }
 
     /* =====================================================================
@@ -354,15 +1585,52 @@ class SongData
 
         $whereClause = !empty($where) ? 'WHERE ' . implode(' AND ', $where) : '';
 
+        /* #718 — Non-official songbooks (and any songbook where every
+           song's Number is NULL) sort their songs alphabetically by
+           Title. Officially-published hymnals with numbered hymns
+           keep the by-Number sort.
+
+           SQL evaluates the branch per-row via a JOIN to
+           tblSongbooks.IsOfficial:
+             - IsOfficial = 1 AND Number IS NOT NULL → numbered (rank 0)
+             - otherwise                             → alphabetical (rank 1)
+
+           Within each songbook (clustered by SongbookAbbr), numbered
+           rows come first (Number ASC), then any un-numbered entries
+           in alphabetical order. Non-official songbooks therefore
+           render as a flat alphabetical list because every row gets
+           rank 1 + uses the title key.
+
+           LOWER(s.Title) suffices as the alphabetical key — the
+           leading-article strip from #717 / #674 is desktop-only
+           (JS) for the songbook list; doing it in SQL would require
+           REGEXP_REPLACE which is MySQL 8.0+ only and the project
+           supports 5.7+. Acceptable degradation: "The Solid Rock"
+           sorts under T in the un-numbered tail. Future enhancement:
+           add a generated column TitleSortKey on tblSongs that
+           strips the article at write-time. */
+        /* #892 — append ArrangementJson to the bulk-load SELECT only
+           when the column exists, so the Song Editor's `?action=load`
+           round-trip surfaces the persisted custom order. Pre-
+           migration deploys keep the legacy column list. */
+        $arrSelect = $this->_hasArrangementColumn() ? ', s.ArrangementJson AS arrangementJson' : '';
         $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title, s.SongbookAbbr AS songbook,
                        s.SongbookName AS songbookName, s.Language AS language, s.Copyright AS copyright,
                        s.TuneName AS tuneName, s.Ccli AS ccli, s.Iswc AS iswc,
                        s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
                        s.MusicPublicDomain AS musicPublicDomain,
                        s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
+                       {$arrSelect}
                 FROM tblSongs s
+                LEFT JOIN tblSongbooks b ON b.Abbreviation = s.SongbookAbbr
                 {$whereClause}
-                ORDER BY s.SongbookAbbr, s.Number";
+                ORDER BY s.SongbookAbbr ASC,
+                         CASE
+                            WHEN b.IsOfficial = 1 AND s.Number IS NOT NULL THEN 0
+                            ELSE 1
+                         END ASC,
+                         s.Number ASC,
+                         LOWER(s.Title) ASC";
 
         $stmt = $this->db->prepare($sql);
         if (!empty($params)) {
@@ -373,7 +1641,7 @@ class SongData
 
         $songs = [];
         while ($row = $result->fetch_assoc()) {
-            $row['number'] = (int)$row['number'];
+            $row['number'] = normaliseSongNumber($row['number']);
             $row['verified'] = (bool)$row['verified'];
             $row['lyricsPublicDomain'] = (bool)$row['lyricsPublicDomain'];
             $row['musicPublicDomain'] = (bool)$row['musicPublicDomain'];
@@ -384,6 +1652,13 @@ class SongData
                text inputs without null-checking every reader. */
             $row['tuneName'] = $row['tuneName'] ?? '';
             $row['iswc']     = $row['iswc']     ?? '';
+            /* #892 — decode the JSON int-array column when present.
+               Surfaces as `arrangement` to match the shape that the
+               Song Editor (`editor.js`) and pages/song.php both read. */
+            if (array_key_exists('arrangementJson', $row)) {
+                $row['arrangement'] = $this->_decodeArrangement($row['arrangementJson']);
+                unset($row['arrangementJson']);
+            }
             $songs[] = $row;
         }
         $stmt->close();
@@ -407,6 +1682,7 @@ class SongData
             $arrangersMap   = $this->_getArrangersMap($songIds);
             $adaptorsMap    = $this->_getAdaptorsMap($songIds);
             $translatorsMap = $this->_getTranslatorsMap($songIds);
+            $artistsMap     = $this->_getArtistsMap($songIds);     /* #587 */
             $componentsMap  = $this->_getComponentsMap($songIds);
             /* Tags included in the bulk load (#496 follow-up) so the
                Song Editor's full-catalogue load + any client that
@@ -414,6 +1690,11 @@ class SongData
                a second per-song round-trip. Same bulk-loader pattern
                as writers / composers / etc. */
             $tagsMap = $this->_getTagsMap($songIds);
+            /* #833 — song-level external links bulked in so the Song
+               Editor (which reads from the corpus cache built off
+               exportAsJson → getSongs) surfaces existing links on load.
+               Pre-migration safe via the schema probe in the helper. */
+            $songLinksMap = $this->_externalLinksMap('song', $songIds);
             foreach ($songs as &$song) {
                 $sid = $song['id'];
                 $song['writers']     = $writersMap[$sid]     ?? [];
@@ -421,8 +1702,10 @@ class SongData
                 $song['arrangers']   = $arrangersMap[$sid]   ?? [];
                 $song['adaptors']    = $adaptorsMap[$sid]    ?? [];
                 $song['translators'] = $translatorsMap[$sid] ?? [];
+                $song['artists']     = $artistsMap[$sid]     ?? [];   /* #587 */
                 $song['components']  = $componentsMap[$sid]  ?? [];
                 $song['tags']        = $tagsMap[$sid]        ?? [];
+                $song['links']       = $songLinksMap[$sid]   ?? [];
             }
             unset($song);
         }
@@ -634,7 +1917,7 @@ class SongData
 
         while ($row = $result->fetch_assoc()) {
             unset($row['relevance']);
-            $row['number'] = (int)$row['number'];
+            $row['number'] = normaliseSongNumber($row['number']);
             $row['verified'] = (bool)$row['verified'];
             $row['lyricsPublicDomain'] = (bool)$row['lyricsPublicDomain'];
             $row['musicPublicDomain'] = (bool)$row['musicPublicDomain'];
@@ -651,6 +1934,30 @@ class SongData
         /* If FULLTEXT returned no results, fall back to LIKE search on writers/composers */
         if (empty($results) && mb_strlen($query) >= 3) {
             $results = $this->_searchByWriterComposer($query, $songbookId, $limit);
+        }
+
+        /* Alternative-title matches (#832) — also surface songs whose
+           tblSongAlternativeTitles row matches the query. Merges
+           de-duplicated into the existing result list AT THE TOP so
+           a curator-flagged alt match outranks a body-text fuzzy hit
+           (a search for "Faith's Review and Expectation" should put
+           Amazing Grace first, not buried below lyrics matches). */
+        $altHits = $this->_searchByAlternativeTitle($query, $songbookId, $limit);
+        if (!empty($altHits)) {
+            $seenAlt = [];
+            foreach ($results as $r) { $seenAlt[$r['id']] = true; }
+            $merged = [];
+            foreach ($altHits as $hit) {
+                if (!isset($seenAlt[$hit['id']])) {
+                    $merged[] = $hit;
+                    $seenAlt[$hit['id']] = true;
+                }
+            }
+            foreach ($results as $r) {
+                $merged[] = $r;
+            }
+            $results = $merged;
+            if ($limit > 0) $results = array_slice($results, 0, $limit);
         }
 
         /* Scripture-reference tag matches (#397 follow-up) — if the query
@@ -684,6 +1991,97 @@ class SongData
      * via /manage/editor/ (tags UI) and the hit merges into search
      * results for scripture-style queries.
      */
+
+    /**
+     * Search songs by alternative title (#832). Returns the same row
+     * shape as searchSongs() so the caller can merge results
+     * transparently. The match ranks "alt title contains the query"
+     * at the same level as a canonical title hit — alt titles ARE
+     * canonical-equivalents in MusicBrainz parlance, just less
+     * prominent. Each returned row also carries `matchedVia` =
+     * { alternativeTitle: "<the alt that matched>" } so the result
+     * UI can render a "(known as: …)" hint.
+     *
+     * Schema-probed; pre-migration deployments return an empty list.
+     */
+    private function _searchByAlternativeTitle(string $query, ?string $songbookId, int $limit): array
+    {
+        if ($this->jsonMode || !$this->db) return [];
+        $query = trim($query);
+        if ($query === '') return [];
+
+        /* Probe — bail cheaply when the schema isn't live. */
+        try {
+            $probe = $this->db->query(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongAlternativeTitles' LIMIT 1"
+            );
+            $exists = $probe && $probe->fetch_row() !== null;
+            if ($probe) $probe->close();
+            if (!$exists) return [];
+        } catch (\Throwable $_e) {
+            return [];
+        }
+
+        try {
+            $like = '%' . $query . '%';
+            $sql  = 'SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
+                            s.SongbookAbbr AS songbook, s.SongbookName AS songbookName,
+                            s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
+                            s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
+                            s.MusicPublicDomain AS musicPublicDomain,
+                            s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic,
+                            a.Title AS matchedAltTitle
+                       FROM tblSongAlternativeTitles a
+                       JOIN tblSongs s ON s.SongId = a.SongId
+                      WHERE a.Title LIKE ?';
+            $params = [$like];
+            $types  = 's';
+            if ($songbookId !== null) {
+                $songbookId = strtoupper(trim($songbookId));
+                $sql .= ' AND s.SongbookAbbr = ?';
+                $params[] = $songbookId;
+                $types   .= 's';
+            }
+            $sql .= ' ORDER BY s.SongbookAbbr, s.Number';
+            if ($limit > 0) {
+                $sql .= ' LIMIT ?';
+                $params[] = $limit;
+                $types   .= 'i';
+            }
+
+            $stmt = $this->db->prepare($sql);
+            $stmt->bind_param($types, ...$params);
+            $stmt->execute();
+            $res = $stmt->get_result();
+
+            /* De-dup on SongId — a song with three alt-titles all matching
+               the query would otherwise appear three times in the merge. */
+            $hits = [];
+            while ($row = $res->fetch_assoc()) {
+                $sid = (string)$row['id'];
+                if (isset($hits[$sid])) continue;
+                $matchedAlt = (string)($row['matchedAltTitle'] ?? '');
+                unset($row['matchedAltTitle']);
+                $row['number'] = normaliseSongNumber($row['number']);
+                $row['verified'] = (bool)$row['verified'];
+                $row['lyricsPublicDomain'] = (bool)$row['lyricsPublicDomain'];
+                $row['musicPublicDomain'] = (bool)$row['musicPublicDomain'];
+                $row['hasAudio'] = (bool)$row['hasAudio'];
+                $row['hasSheetMusic'] = (bool)$row['hasSheetMusic'];
+                $row['matchedVia'] = ['alternativeTitle' => $matchedAlt];
+                $hits[$sid] = $row;
+            }
+            $stmt->close();
+            $hits = array_values($hits);
+            $this->_attachSearchResultCredits($hits);
+            return $hits;
+        } catch (\Throwable $e) {
+            error_log('[SongData::_searchByAlternativeTitle] ' . $e->getMessage());
+            return [];
+        }
+    }
+
     private function _searchByScriptureTag(string $scriptureRef, ?string $songbookId): array
     {
         if ($this->jsonMode || !$this->db) return [];
@@ -787,7 +2185,7 @@ class SongData
 
         $songs = [];
         while ($row = $result->fetch_assoc()) {
-            $row['number'] = (int)$row['number'];
+            $row['number'] = normaliseSongNumber($row['number']);
             $row['verified'] = (bool)$row['verified'];
             $row['lyricsPublicDomain'] = (bool)$row['lyricsPublicDomain'];
             $row['musicPublicDomain'] = (bool)$row['musicPublicDomain'];
@@ -867,9 +2265,21 @@ class SongData
             ];
         }
 
+        /* #963 — only count songbooks that have at least one song.
+           Mirrors getMeta()'s SQL-side filter so every surface reads
+           the same number whether it comes from the live DB
+           (this method) or the precomputed static cache (getMeta()
+           feeds exportAsJson()). */
+        $populatedSongbooks = 0;
+        foreach ($songbooks as $book) {
+            if ((int)($book['songCount'] ?? 0) > 0) {
+                $populatedSongbooks++;
+            }
+        }
+
         return [
             'totalSongs'     => $totalSongs,
-            'totalSongbooks' => count($songbooks),
+            'totalSongbooks' => $populatedSongbooks,
             'songbooks'      => $bookStats,
         ];
     }
@@ -966,6 +2376,14 @@ class SongData
      */
     private function _fetchSongRow(string $songId): ?array
     {
+        /* #892 — append ArrangementJson to the SELECT only when the
+           column exists. Pre-migration deploys keep the legacy
+           15-column shape so single-song reads don't 1054 on a
+           half-migrated install. */
+        $arrSelect    = $this->_hasArrangementColumn() ? ', ArrangementJson AS arrangementJson' : '';
+        $placeSelect  = $this->_hasOriginPlaceColumn()
+            ? ', OriginCity AS originCity, OriginCityId AS originCityId'
+            : '';
         $stmt = $this->db->prepare(
             "SELECT SongId AS id, Number AS number, Title AS title, SongbookAbbr AS songbook,
                     SongbookName AS songbookName, Language AS language, Copyright AS copyright,
@@ -973,6 +2391,8 @@ class SongData
                     Verified AS verified, LyricsPublicDomain AS lyricsPublicDomain,
                     MusicPublicDomain AS musicPublicDomain,
                     HasAudio AS hasAudio, HasSheetMusic AS hasSheetMusic
+                    {$arrSelect}
+                    {$placeSelect}
              FROM tblSongs
              WHERE SongId = ?
              LIMIT 1"
@@ -987,7 +2407,7 @@ class SongData
             return null;
         }
 
-        $row['number'] = (int)$row['number'];
+        $row['number'] = normaliseSongNumber($row['number']);
         $row['verified'] = (bool)$row['verified'];
         $row['lyricsPublicDomain'] = (bool)$row['lyricsPublicDomain'];
         $row['musicPublicDomain'] = (bool)$row['musicPublicDomain'];
@@ -995,11 +2415,28 @@ class SongData
         $row['hasSheetMusic'] = (bool)$row['hasSheetMusic'];
         $row['tuneName'] = $row['tuneName'] ?? '';
         $row['iswc']     = $row['iswc']     ?? '';
+        /* Places adoption — pass-through the FK Id (or null) to the
+           editor so the place-search module can populate its hidden
+           sidecar input. The display string lives in originCity. */
+        if (array_key_exists('originCity', $row)) {
+            $row['originCity']   = $row['originCity'] ?? '';
+            $row['originCityId'] = isset($row['originCityId']) ? (int)$row['originCityId'] : null;
+        }
+        /* #892 — decode the stored JSON int-array; the public render in
+           pages/song.php reads `$song['arrangement']` directly. The
+           helper drops malformed payloads (defensive) and returns NULL
+           when the column was unset, keeping the existing
+           "fallback to plain SortOrder" path live. */
+        if (array_key_exists('arrangementJson', $row)) {
+            $row['arrangement'] = $this->_decodeArrangement($row['arrangementJson']);
+            unset($row['arrangementJson']);
+        }
         $row['writers']      = $this->_getWriters($songId);
         $row['composers']    = $this->_getComposers($songId);
         $row['arrangers']    = $this->_getArrangers($songId);
         $row['adaptors']     = $this->_getAdaptors($songId);
         $row['translators']  = $this->_getTranslators($songId);
+        $row['artists']      = $this->_getArtists($songId);    /* #587 */
         $row['components']   = $this->_getComponents($songId);
         /* Tags attached here too so the single-song read path matches
            the bulk getSongs() shape (#496 follow-up). Uses the same
@@ -1009,6 +2446,40 @@ class SongData
         $translations = $this->_getTranslations($songId);
         if (!empty($translations)) {
             $row['translations'] = $translations;
+        }
+
+        /* #832 — alt titles for this song. Empty array on a pre-
+           migration deployment via the schema probe in the helper. */
+        $altMap = $this->_songAltTitlesMap([$songId]);
+        $row['alternativeTitles'] = $altMap[$songId] ?? [];
+
+        /* #833 — external links for this song. Empty array on a
+           pre-migration deployment via the schema probe. */
+        $linksMap = $this->_externalLinksMap('song', [$songId]);
+        $row['links'] = $linksMap[$songId] ?? [];
+
+        /* #840 — Works this song belongs to (with sibling members
+           and Work-level external links attached). Empty array on a
+           pre-migration deployment via the schema probe. */
+        $worksMap = $this->_worksMap([$songId]);
+        $row['works'] = $worksMap[$songId] ?? [];
+
+        /* #853 — accompanying media (audio + sheet PDF + MIDI +
+           MusicXML). Empty array on pre-migration. The legacy
+           HasAudio / HasSheetMusic flags from MissionPraise scrape
+           data continue to populate the indicator badges, but if
+           tblSongMedia carries any rows of that kind for this song,
+           we override the flag to true so the public surface
+           reflects curator uploads — keeps the indicator badges
+           on the songbook list page in sync without a separate
+           denormalised counter. */
+        $mediaMap = $this->_songMediaMap([$songId]);
+        $row['media'] = $mediaMap[$songId] ?? [];
+        if (!empty($row['media'])) {
+            foreach ($row['media'] as $m) {
+                if (($m['kind'] ?? '') === 'audio')        $row['hasAudio']       = true;
+                if (($m['kind'] ?? '') === 'sheet-music')  $row['hasSheetMusic']  = true;
+            }
         }
 
         return $row;
@@ -1094,15 +2565,128 @@ class SongData
     }
 
     /**
+     * Schema-probe for tblSongComponents.Language (#858). Cached for
+     * the lifetime of the SongData instance — every call to
+     * _getComponents / _getComponentsMap shares the same answer.
+     * Pre-migration deploys return false and the SELECT skips the
+     * column to stay 1.x-compatible.
+     */
+    private function _hasComponentLanguageColumn(): bool
+    {
+        if ($this->_componentLangColumnChecked) {
+            return $this->_componentLangColumn;
+        }
+        $this->_componentLangColumnChecked = true;
+        try {
+            $stmt = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongComponents'
+                    AND COLUMN_NAME  = 'Language' LIMIT 1"
+            );
+            $stmt->execute();
+            $this->_componentLangColumn = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+        } catch (\Throwable $_e) {
+            $this->_componentLangColumn = false;
+        }
+        return $this->_componentLangColumn;
+    }
+
+    /**
+     * #892 — schema-probe for tblSongs.ArrangementJson. Same caching
+     * pattern as the component-language probe so editor-load (which
+     * reads ~3,600 rows) doesn't fire INFORMATION_SCHEMA per row.
+     * Pre-migration deploys return false and the SELECT skips the
+     * column, keeping the legacy 15-column shape intact.
+     */
+    private function _hasArrangementColumn(): bool
+    {
+        if ($this->_arrangementColumnChecked) {
+            return $this->_arrangementColumn;
+        }
+        $this->_arrangementColumnChecked = true;
+        try {
+            $stmt = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongs'
+                    AND COLUMN_NAME  = 'ArrangementJson' LIMIT 1"
+            );
+            $stmt->execute();
+            $this->_arrangementColumn = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+        } catch (\Throwable $_e) {
+            $this->_arrangementColumn = false;
+        }
+        return $this->_arrangementColumn;
+    }
+
+    /**
+     * Places adoption — single-flight probe for tblSongs.OriginCityId.
+     * Mirrors _hasArrangementColumn() so the SELECT path can gate the
+     * OriginCity / OriginCityId columns without a per-request
+     * INFORMATION_SCHEMA round-trip.
+     */
+    private function _hasOriginPlaceColumn(): bool
+    {
+        if ($this->_originPlaceColumnChecked) {
+            return $this->_originPlaceColumn;
+        }
+        $this->_originPlaceColumnChecked = true;
+        try {
+            $stmt = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongs'
+                    AND COLUMN_NAME  = 'OriginCityId' LIMIT 1"
+            );
+            $stmt->execute();
+            $this->_originPlaceColumn = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+        } catch (\Throwable $_e) {
+            $this->_originPlaceColumn = false;
+        }
+        return $this->_originPlaceColumn;
+    }
+
+    /**
+     * #892 — Decode the JSON string read from tblSongs.ArrangementJson
+     * back into a plain int[]. Returns null when the column was NULL
+     * or when the stored payload is malformed (defensive — the JSON
+     * type validates well-formedness on write so this should be
+     * unreachable, but a hand-edited row shouldn't 500 the read).
+     */
+    private function _decodeArrangement($raw): ?array
+    {
+        if ($raw === null || $raw === '') return null;
+        if (is_array($raw)) {
+            $decoded = $raw;
+        } else {
+            $decoded = json_decode((string)$raw, true);
+            if (!is_array($decoded)) return null;
+        }
+        $out = [];
+        foreach ($decoded as $i) {
+            if (!is_int($i) && !(is_string($i) && ctype_digit($i))) return null;
+            $out[] = (int)$i;
+        }
+        return empty($out) ? null : $out;
+    }
+
+    /**
      * Get components (verses, choruses) for a song.
      *
      * @param string $songId Song ID
-     * @return array Array of component objects with type, number, and lines
+     * @return array Array of component objects with type, number, lines, language
      */
     private function _getComponents(string $songId): array
     {
+        $langSelect = $this->_hasComponentLanguageColumn()
+            ? ', Language AS language'
+            : ', NULL AS language';
         $stmt = $this->db->prepare(
-            "SELECT Type AS type, Number AS number, LinesJson AS lines_json
+            "SELECT Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}
              FROM tblSongComponents
              WHERE SongId = ?
              ORDER BY SortOrder"
@@ -1113,9 +2697,10 @@ class SongData
         $components = [];
         while ($row = $result->fetch_assoc()) {
             $components[] = [
-                'type'   => $row['type'],
-                'number' => (int)$row['number'],
-                'lines'  => json_decode($row['lines_json'], true) ?? [],
+                'type'     => $row['type'],
+                'number'   => (int)$row['number'],
+                'lines'    => json_decode($row['lines_json'], true) ?? [],
+                'language' => $row['language'] !== null ? (string)$row['language'] : null,
             ];
         }
         $stmt->close();
@@ -1192,8 +2777,11 @@ class SongData
         if (empty($songIds)) return [];
         $placeholders = implode(',', array_fill(0, count($songIds), '?'));
         $types = str_repeat('s', count($songIds));
+        $langSelect = $this->_hasComponentLanguageColumn()
+            ? ', Language AS language'
+            : ', NULL AS language';
         $stmt = $this->db->prepare(
-            "SELECT SongId, Type AS type, Number AS number, LinesJson AS lines_json
+            "SELECT SongId, Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}
              FROM tblSongComponents
              WHERE SongId IN ($placeholders)
              ORDER BY SongId, SortOrder"
@@ -1204,9 +2792,10 @@ class SongData
         $map = [];
         while ($row = $result->fetch_assoc()) {
             $map[$row['SongId']][] = [
-                'type'   => $row['type'],
-                'number' => (int)$row['number'],
-                'lines'  => json_decode($row['lines_json'], true) ?? [],
+                'type'     => $row['type'],
+                'number'   => (int)$row['number'],
+                'lines'    => json_decode($row['lines_json'], true) ?? [],
+                'language' => $row['language'] !== null ? (string)$row['language'] : null,
             ];
         }
         $stmt->close();
@@ -1273,6 +2862,78 @@ class SongData
         while ($row = $res->fetch_assoc()) { $out[] = $row['Name']; }
         $stmt->close();
         return $out;
+    }
+
+    /**
+     * @return string[]
+     * Artists (#587). Returns an empty array on installs where the
+     * tblSongArtists table hasn't been created yet, so the load path
+     * stays usable on a partly-migrated DB.
+     */
+    private function _getArtists(string $songId): array
+    {
+        if (!$this->_songArtistsTableExists()) return [];
+        $stmt = $this->db->prepare(
+            "SELECT Name FROM tblSongArtists WHERE SongId = ? ORDER BY SortOrder, Id"
+        );
+        $stmt->bind_param('s', $songId);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $out = [];
+        while ($row = $res->fetch_assoc()) { $out[] = $row['Name']; }
+        $stmt->close();
+        return $out;
+    }
+
+    /**
+     * Bulk-load artists keyed by SongId (#587). See `_getWritersMap()`.
+     *
+     * @param string[] $songIds
+     * @return array<string,string[]>
+     */
+    private function _getArtistsMap(array $songIds): array
+    {
+        if (empty($songIds))                     return [];
+        if (!$this->_songArtistsTableExists())   return [];
+        $placeholders = implode(',', array_fill(0, count($songIds), '?'));
+        $types = str_repeat('s', count($songIds));
+        $stmt = $this->db->prepare(
+            "SELECT SongId, Name FROM tblSongArtists
+             WHERE SongId IN ($placeholders)
+             ORDER BY SongId, SortOrder, Id"
+        );
+        $stmt->bind_param($types, ...$songIds);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $map = [];
+        while ($row = $result->fetch_assoc()) {
+            $map[$row['SongId']][] = $row['Name'];
+        }
+        $stmt->close();
+        return $map;
+    }
+
+    /**
+     * Cached check for the tblSongArtists table (#587). The table
+     * arrives via migrate-song-artists.php — until that's been
+     * applied, every credit-load helper that touches it must no-op.
+     * INFORMATION_SCHEMA is queried once per request.
+     */
+    private ?bool $_songArtistsTableExistsCached = null;
+    private function _songArtistsTableExists(): bool
+    {
+        if ($this->_songArtistsTableExistsCached !== null) {
+            return $this->_songArtistsTableExistsCached;
+        }
+        $stmt = $this->db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongArtists' LIMIT 1"
+        );
+        $stmt->execute();
+        $exists = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+        $this->_songArtistsTableExistsCached = $exists;
+        return $exists;
     }
 
     /**
@@ -1468,7 +3129,7 @@ class SongData
 
         $songs = [];
         while ($row = $result->fetch_assoc()) {
-            $row['number'] = (int)$row['number'];
+            $row['number'] = normaliseSongNumber($row['number']);
             $row['verified'] = (bool)$row['verified'];
             $row['lyricsPublicDomain'] = (bool)$row['lyricsPublicDomain'];
             $row['musicPublicDomain'] = (bool)$row['musicPublicDomain'];
@@ -1481,5 +3142,369 @@ class SongData
         $this->_attachSearchResultCredits($songs); /* #533 */
 
         return $songs;
+    }
+
+    /* =====================================================================
+     * WORKS — composition grouping (#840)
+     *
+     * Pull membership rows from tblWorkSongs and the Work header rows
+     * they reference. Probe-gated on tblWorks existing; pre-migration
+     * deployments get an empty map and every read path short-circuits
+     * cleanly.
+     * ===================================================================== */
+
+    /**
+     * Probe once — does tblWorks exist? Cached because the song page
+     * and the api both ask within the same request.
+     */
+    private function _hasWorksSchema(): bool
+    {
+        if (isset($this->_hasWorksSchemaCache)) {
+            return $this->_hasWorksSchemaCache;
+        }
+        try {
+            $stmt = $this->db->prepare(
+                'SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1'
+            );
+            $t = 'tblWorks';
+            $stmt->bind_param('s', $t);
+            $stmt->execute();
+            $exists = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            return $this->_hasWorksSchemaCache = $exists;
+        } catch (\Throwable $_e) {
+            return $this->_hasWorksSchemaCache = false;
+        }
+    }
+    /** @var bool|null cached probe result */
+    private ?bool $_hasWorksSchemaCache = null;
+
+    /**
+     * For each songId in $songIds, return a list of Works the song is
+     * a member of. Empty array on a pre-migration deployment.
+     *
+     * Each Work entry: { id, parentId, title, slug, iswc, isCanonical,
+     *                    members:[{songId, songbook, number, title, songbookName}],
+     *                    links:[…] }
+     *
+     * Members + links are attached for the Works that appear, so
+     * downstream code can render the "Other versions of this work"
+     * sub-list without another round-trip.
+     *
+     * @param array<int,string> $songIds
+     * @return array<string,array<int,array<string,mixed>>> keyed by songId
+     */
+    private function _worksMap(array $songIds): array
+    {
+        if (empty($songIds) || !$this->_hasWorksSchema()) return [];
+
+        $clean = array_values(array_filter(array_unique(array_map('strval', $songIds))));
+        if (empty($clean)) return [];
+
+        try {
+            /* Step 1 — membership rows + Work headers in one go. */
+            $ph    = implode(',', array_fill(0, count($clean), '?'));
+            $sql   = "SELECT ws.SongId    AS songId,
+                             ws.IsCanonical AS isCanonical,
+                             ws.SortOrder AS memberSort,
+                             ws.Note      AS memberNote,
+                             w.Id         AS workId,
+                             w.ParentWorkId AS parentId,
+                             w.Title      AS title,
+                             w.Slug       AS slug,
+                             w.Iswc       AS iswc
+                        FROM tblWorkSongs ws
+                        JOIN tblWorks w ON w.Id = ws.WorkId
+                       WHERE ws.SongId IN ($ph)
+                       ORDER BY w.Title ASC, ws.SortOrder ASC";
+            $stmt  = $this->db->prepare($sql);
+            $types = str_repeat('s', count($clean));
+            $stmt->bind_param($types, ...$clean);
+            $stmt->execute();
+            $res = $stmt->get_result();
+
+            $bySong = [];
+            $workIds = [];
+            while ($row = $res->fetch_assoc()) {
+                $sid  = (string)$row['songId'];
+                $wid  = (int)$row['workId'];
+                $workIds[$wid] = true;
+                $bySong[$sid][] = [
+                    'id'          => $wid,
+                    'parentId'    => $row['parentId'] !== null ? (int)$row['parentId'] : null,
+                    'title'       => (string)$row['title'],
+                    'slug'        => (string)$row['slug'],
+                    'iswc'        => (string)($row['iswc'] ?? ''),
+                    'isCanonical' => (bool)$row['isCanonical'],
+                    'memberNote'  => (string)($row['memberNote'] ?? ''),
+                    /* members + links attached in step 2/3 below */
+                    'members'     => [],
+                    'links'       => [],
+                ];
+            }
+            $stmt->close();
+
+            if (empty($bySong)) return [];
+
+            /* Step 2 — sibling members of each work surfaced. */
+            $widList = array_keys($workIds);
+            $ph2     = implode(',', array_fill(0, count($widList), '?'));
+            $sql2    = "SELECT ws.WorkId AS workId,
+                               ws.SongId AS songId,
+                               ws.IsCanonical AS isCanonical,
+                               s.Title AS title,
+                               s.Number AS number,
+                               s.SongbookAbbr AS songbook,
+                               s.SongbookName AS songbookName
+                          FROM tblWorkSongs ws
+                          JOIN tblSongs s ON s.SongId = ws.SongId
+                         WHERE ws.WorkId IN ($ph2)
+                         ORDER BY s.SongbookAbbr ASC, s.Number ASC, s.Title ASC";
+            $stmt2 = $this->db->prepare($sql2);
+            $types2 = str_repeat('i', count($widList));
+            $stmt2->bind_param($types2, ...$widList);
+            $stmt2->execute();
+            $r2 = $stmt2->get_result();
+            $membersByWork = [];
+            while ($mrow = $r2->fetch_assoc()) {
+                $wid = (int)$mrow['workId'];
+                $membersByWork[$wid][] = [
+                    'songId'       => (string)$mrow['songId'],
+                    'title'        => (string)$mrow['title'],
+                    'number'       => normaliseSongNumber($mrow['number']),
+                    'songbook'     => (string)$mrow['songbook'],
+                    'songbookName' => (string)($mrow['songbookName'] ?? ''),
+                    'isCanonical'  => (bool)$mrow['isCanonical'],
+                ];
+            }
+            $stmt2->close();
+
+            /* Step 3 — work-level external links (only when the table
+               exists; widely deferred-friendly since #833 might not yet
+               be applied even when Works is). */
+            $linksByWork = [];
+            try {
+                $probe = $this->db->prepare(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblWorkExternalLinks' LIMIT 1"
+                );
+                $probe->execute();
+                $hasWorkLinks = $probe->get_result()->fetch_row() !== null;
+                $probe->close();
+            } catch (\Throwable $_e) {
+                $hasWorkLinks = false;
+            }
+            if ($hasWorkLinks) {
+                $sql3 = "SELECT el.WorkId AS workId,
+                                t.Slug      AS slug,
+                                t.Name      AS name,
+                                t.Category  AS category,
+                                t.IconClass AS iconClass,
+                                el.Url      AS url,
+                                el.Note     AS note,
+                                el.Verified AS verified,
+                                el.SortOrder AS sortOrder
+                           FROM tblWorkExternalLinks el
+                           JOIN tblExternalLinkTypes t ON t.Id = el.LinkTypeId
+                          WHERE el.WorkId IN ($ph2)
+                            AND COALESCE(t.IsActive, 1) = 1
+                          ORDER BY el.WorkId, t.Category, el.SortOrder ASC,
+                                   t.DisplayOrder ASC, t.Name ASC";
+                $stmt3 = $this->db->prepare($sql3);
+                $stmt3->bind_param($types2, ...$widList);
+                $stmt3->execute();
+                $r3 = $stmt3->get_result();
+                while ($lrow = $r3->fetch_assoc()) {
+                    $wid = (int)$lrow['workId'];
+                    $linksByWork[$wid][] = [
+                        'slug'      => (string)$lrow['slug'],
+                        'name'      => (string)$lrow['name'],
+                        'category'  => (string)$lrow['category'],
+                        'iconClass' => (string)($lrow['iconClass'] ?? ''),
+                        'url'       => (string)$lrow['url'],
+                        'note'      => (string)($lrow['note'] ?? ''),
+                        'verified'  => (bool)$lrow['verified'],
+                        'sortOrder' => (int)$lrow['sortOrder'],
+                    ];
+                }
+                $stmt3->close();
+            }
+
+            /* Stitch it together. */
+            foreach ($bySong as $sid => &$worksList) {
+                foreach ($worksList as &$w) {
+                    $w['members'] = $membersByWork[$w['id']] ?? [];
+                    $w['links']   = $linksByWork[$w['id']]   ?? [];
+                }
+                unset($w);
+            }
+            unset($worksList);
+
+            return $bySong;
+        } catch (\Throwable $e) {
+            error_log('[SongData::_worksMap] ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Public read: full Work row by slug or numeric id, including
+     * members, parent / children references and external links.
+     * Returns null when the schema isn't there or the work doesn't
+     * exist. Used by the public /work/<slug> page and the api.
+     */
+    public function getWork(string|int $slugOrId): ?array
+    {
+        if (!$this->_hasWorksSchema()) return null;
+
+        $isInt = is_int($slugOrId) || ctype_digit((string)$slugOrId);
+        try {
+            if ($isInt) {
+                $stmt = $this->db->prepare(
+                    'SELECT Id, ParentWorkId, Title, Slug, Iswc, Notes, CreatedAt, UpdatedAt
+                       FROM tblWorks WHERE Id = ? LIMIT 1'
+                );
+                $id = (int)$slugOrId;
+                $stmt->bind_param('i', $id);
+            } else {
+                $stmt = $this->db->prepare(
+                    'SELECT Id, ParentWorkId, Title, Slug, Iswc, Notes, CreatedAt, UpdatedAt
+                       FROM tblWorks WHERE Slug = ? LIMIT 1'
+                );
+                $slug = (string)$slugOrId;
+                $stmt->bind_param('s', $slug);
+            }
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if (!$row) return null;
+
+            $work = [
+                'id'        => (int)$row['Id'],
+                'parentId'  => $row['ParentWorkId'] !== null ? (int)$row['ParentWorkId'] : null,
+                'title'     => (string)$row['Title'],
+                'slug'      => (string)$row['Slug'],
+                'iswc'      => (string)($row['Iswc'] ?? ''),
+                'notes'     => (string)($row['Notes'] ?? ''),
+                'createdAt' => (string)$row['CreatedAt'],
+                'updatedAt' => (string)$row['UpdatedAt'],
+                'parent'    => null,
+                'children'  => [],
+                'members'   => [],
+                'links'     => [],
+            ];
+
+            /* Parent header (one row) */
+            if ($work['parentId'] !== null) {
+                $stmt = $this->db->prepare(
+                    'SELECT Id, Title, Slug, Iswc FROM tblWorks WHERE Id = ? LIMIT 1'
+                );
+                $pid = (int)$work['parentId'];
+                $stmt->bind_param('i', $pid);
+                $stmt->execute();
+                $prow = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                if ($prow) {
+                    $work['parent'] = [
+                        'id'    => (int)$prow['Id'],
+                        'title' => (string)$prow['Title'],
+                        'slug'  => (string)$prow['Slug'],
+                        'iswc'  => (string)($prow['Iswc'] ?? ''),
+                    ];
+                }
+            }
+
+            /* Direct children */
+            $stmt = $this->db->prepare(
+                'SELECT Id, Title, Slug, Iswc FROM tblWorks
+                  WHERE ParentWorkId = ? ORDER BY Title ASC'
+            );
+            $wid = (int)$work['id'];
+            $stmt->bind_param('i', $wid);
+            $stmt->execute();
+            $cres = $stmt->get_result();
+            while ($crow = $cres->fetch_assoc()) {
+                $work['children'][] = [
+                    'id'    => (int)$crow['Id'],
+                    'title' => (string)$crow['Title'],
+                    'slug'  => (string)$crow['Slug'],
+                    'iswc'  => (string)($crow['Iswc'] ?? ''),
+                ];
+            }
+            $stmt->close();
+
+            /* Members */
+            $stmt = $this->db->prepare(
+                'SELECT ws.SongId, ws.IsCanonical, ws.SortOrder, ws.Note,
+                        s.Title, s.Number, s.SongbookAbbr, s.SongbookName
+                   FROM tblWorkSongs ws
+                   JOIN tblSongs s ON s.SongId = ws.SongId
+                  WHERE ws.WorkId = ?
+                  ORDER BY ws.IsCanonical DESC, s.SongbookAbbr ASC, s.Number ASC'
+            );
+            $stmt->bind_param('i', $wid);
+            $stmt->execute();
+            $mres = $stmt->get_result();
+            while ($mrow = $mres->fetch_assoc()) {
+                $work['members'][] = [
+                    'songId'       => (string)$mrow['SongId'],
+                    'title'        => (string)$mrow['Title'],
+                    'number'       => normaliseSongNumber($mrow['Number']),
+                    'songbook'     => (string)$mrow['SongbookAbbr'],
+                    'songbookName' => (string)($mrow['SongbookName'] ?? ''),
+                    'isCanonical'  => (bool)$mrow['IsCanonical'],
+                    'memberNote'   => (string)($mrow['Note'] ?? ''),
+                ];
+            }
+            $stmt->close();
+
+            /* External links — probe-gated on the work-links table */
+            try {
+                $probe = $this->db->prepare(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                      WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME = 'tblWorkExternalLinks' LIMIT 1"
+                );
+                $probe->execute();
+                $hasWorkLinks = $probe->get_result()->fetch_row() !== null;
+                $probe->close();
+            } catch (\Throwable $_e) {
+                $hasWorkLinks = false;
+            }
+            if ($hasWorkLinks) {
+                $stmt = $this->db->prepare(
+                    "SELECT t.Slug, t.Name, t.Category, t.IconClass,
+                            el.Url, el.Note, el.Verified, el.SortOrder
+                       FROM tblWorkExternalLinks el
+                       JOIN tblExternalLinkTypes t ON t.Id = el.LinkTypeId
+                      WHERE el.WorkId = ?
+                        AND COALESCE(t.IsActive, 1) = 1
+                      ORDER BY t.Category, el.SortOrder ASC,
+                               t.DisplayOrder ASC, t.Name ASC"
+                );
+                $stmt->bind_param('i', $wid);
+                $stmt->execute();
+                $lres = $stmt->get_result();
+                while ($lrow = $lres->fetch_assoc()) {
+                    $work['links'][] = [
+                        'slug'      => (string)$lrow['Slug'],
+                        'name'      => (string)$lrow['Name'],
+                        'category'  => (string)$lrow['Category'],
+                        'iconClass' => (string)($lrow['IconClass'] ?? ''),
+                        'url'       => (string)$lrow['Url'],
+                        'note'      => (string)($lrow['Note'] ?? ''),
+                        'verified'  => (bool)$lrow['Verified'],
+                        'sortOrder' => (int)$lrow['SortOrder'],
+                    ];
+                }
+                $stmt->close();
+            }
+
+            return $work;
+        } catch (\Throwable $e) {
+            error_log('[SongData::getWork] ' . $e->getMessage());
+            return null;
+        }
     }
 }

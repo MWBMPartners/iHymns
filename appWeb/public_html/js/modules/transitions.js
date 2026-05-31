@@ -32,10 +32,15 @@ export class Transitions {
     }
 
     /**
-     * Load the saved transition type from localStorage.
+     * Load the saved transition type from localStorage and stamp it
+     * onto <body> so CSS can branch on the active variant. The
+     * settings UI offers `none | fade | slide | crossfade`; per-type
+     * CSS lives in app.css under the
+     * `body[data-page-transition="…"]` selectors.
      */
     loadType() {
         this.type = localStorage.getItem(STORAGE_TRANSITION) || 'none';
+        document.body.dataset.pageTransition = this.type;
     }
 
     /**
@@ -49,6 +54,82 @@ export class Transitions {
         if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return false;
         if (this.type === 'none') return false;
         return true;
+    }
+
+    /**
+     * #864 — Run a DOM-update callback inside a synchronized
+     * old-out / new-in page transition.
+     *
+     * Modern path: uses the View Transitions API
+     * (`document.startViewTransition`, Chromium 111+, Safari 18+,
+     * Firefox 134+). The browser snapshots the current page,
+     * synchronously calls `updateDOM`, snapshots the new page, then
+     * animates BOTH at the same time per the CSS rules on
+     * `::view-transition-old(root)` / `::view-transition-new(root)`.
+     * No "blank gap" between old and new — the slide / fade / etc.
+     * happens as a single fluid motion instead of three staged
+     * phases (out → fetch → in).
+     *
+     * Legacy path (older browsers, or animations disabled): falls
+     * back to the old class-toggle dance via pageOut / pageIn so
+     * deployments on Safari 17 / Edge 110 keep working without
+     * console errors. The legacy path is intentionally lightly
+     * polished — it's a safety net, not the supported experience.
+     *
+     * @param {() => (void|Promise<void>)} updateDOM Callback that
+     *        mutates the DOM (typically `el.innerHTML = html` plus
+     *        any post-insert hooks).
+     * @param {HTMLElement} el Element being animated (used by the
+     *        fallback path to drive class toggles).
+     * @returns {Promise<void>} Resolves once the transition has
+     *        finished (or the DOM update has run, when animations
+     *        are off).
+     */
+    async runViewTransition(updateDOM, el) {
+        this.loadType();
+
+        /* Animations disabled — just run the DOM update synchronously
+           and bail. Caller doesn't need to special-case the no-anim
+           path; this method always works. */
+        if (!this.isAnimationEnabled()) {
+            await updateDOM();
+            if (el) {
+                el.classList.remove('page-leaving', 'page-entering');
+                el.classList.add('page-visible');
+            }
+            return;
+        }
+
+        /* Modern path: View Transitions API. The browser handles all
+           the snapshot + crossfade plumbing; we just hand it the
+           DOM update and let the CSS rules in app.css drive the
+           per-type animation. */
+        if (typeof document.startViewTransition === 'function') {
+            const transition = document.startViewTransition(async () => {
+                await updateDOM();
+            });
+            try {
+                await transition.finished;
+            } catch (_e) {
+                /* startViewTransition rejects on aborted transitions
+                   (e.g. another navigation overrides this one). The
+                   DOM update still applied; safe to swallow. */
+            }
+            /* Reset legacy classes so any stylesheet still keying off
+               them doesn't render in a stale state on the new page. */
+            if (el) {
+                el.classList.remove('page-leaving', 'page-entering');
+                el.classList.add('page-visible');
+            }
+            return;
+        }
+
+        /* Legacy fallback. Two-phase out → swap → in. Less polished
+           than the modern path (the "blank gap" #864 fixed for
+           supported browsers re-emerges here) but functional. */
+        if (el) await this.pageOut(el);
+        await updateDOM();
+        if (el) await this.pageIn(el);
     }
 
     /**

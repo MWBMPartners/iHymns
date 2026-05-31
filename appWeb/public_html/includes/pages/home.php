@@ -14,6 +14,11 @@
 
 declare(strict_types=1);
 
+/* Language-name resolver (#856) — used for the songbook tile badge
+   tooltip. Static-cached per request so this require + map build
+   only fires once per page load. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'language_names.php';
+
 /* Load song data for statistics */
 $stats = $songData->getStats();
 $songbooks = $songData->getSongbooks();
@@ -107,6 +112,146 @@ $songbooks = $songData->getSongbooks();
     <!-- Song of the Day (#108) — populated by JS -->
     <div id="song-of-the-day"></div>
 
+    <!-- Songbook Cards Grid (#151 — section ID for sitelink eligibility).
+         Moved up from below "Browse by Theme" in #678 so a returning
+         user sees the full songbook list straight after the Recent
+         badges + Song of the Day, without having to scroll past
+         Recently Viewed / Popular Songs / Themes first. -->
+    <section id="songbooks" aria-label="Songbooks">
+        <h2 class="h5 mb-3">
+            <i class="fa-solid fa-book-open me-2" aria-hidden="true"></i>
+            Songbooks
+        </h2>
+
+        <!-- Language filter (#679). The partial silently returns
+             early if the catalogue spans only one language, so a
+             single-English deployment doesn't see a useless filter.
+             Pure client-side hide/show via the booted JS module
+             below. -->
+        <?php require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'songbook-language-filter.php'; ?>
+
+        <!-- `row-cols-*` ladders the column count with the viewport so
+             cards stop stretching on xl/xxl monitors: 2 → 3 → 4 → 5 → 6
+             as the breakpoints unlock. Each child is just `.col`. -->
+        <div class="row row-cols-2 row-cols-md-3 row-cols-lg-4 row-cols-xl-5 row-cols-xxl-6 g-3 mb-4">
+            <?php foreach ($songbooks as $index => $book): ?>
+                <?php if (($book['songCount'] ?? 0) > 0): ?>
+                    <?php
+                        /* Pull the IETF BCP 47 tag (or empty) and extract
+                           the 2-3 letter language subtag for the badge
+                           (#680). Empty = no badge — communicates
+                           "multi-lingual / not specified" the same way
+                           the filter in #679 does.
+                           #857: the songbook's contained-languages
+                           union (book.Language ∪ DISTINCT songs.Language
+                           within this book) is attached as
+                           data-songbook-languages so a book tagged
+                           English but holding Afrikaans songs surfaces
+                           when the user filters for Afrikaans. */
+                        $bookLang = (string)($book['language'] ?? '');
+                        $langCode = '';
+                        if ($bookLang !== '' && preg_match('/^([a-z]{2,3})/i', $bookLang, $m)) {
+                            $langCode = mb_strtoupper($m[1]);
+                        }
+                        $bookLangs    = $book['languages'] ?? [];
+                        $bookLangsCsv = !empty($bookLangs) ? implode(',', $bookLangs) : '';
+                        /* Tooltip lists every contained language by its
+                           full English name. Falls back to just the
+                           primary tag when there's only one. */
+                        $bookLangNames = [];
+                        foreach ($bookLangs as $sub) {
+                            $bookLangNames[] = resolveLanguageName($sub);
+                        }
+                        $bookLangsTitle = !empty($bookLangNames)
+                            ? implode(', ', $bookLangNames)
+                            : resolveLanguageName($bookLang);
+                    ?>
+                    <div class="col" id="songbook-<?= htmlspecialchars($book['id']) ?>">
+                        <div class="card card-songbook h-100 position-relative"
+                             data-songbook-id="<?= htmlspecialchars($book['id']) ?>"
+                             data-songbook-songs="<?= (int)$book['songCount'] ?>"
+                             <?php if ($langCode !== ''): ?>data-songbook-language="<?= htmlspecialchars($bookLang) ?>"<?php endif; ?>
+                             <?php if ($bookLangsCsv !== ''): ?>data-songbook-languages="<?= htmlspecialchars($bookLangsCsv) ?>"<?php endif; ?>>
+                            <!-- Stretched link covers the whole card body,
+                                 keeping the download button clickable because
+                                 the button's stacking context is raised by
+                                 position: relative + z-index on the button. -->
+                            <a href="/songbook/<?= htmlspecialchars($book['id']) ?>"
+                               class="stretched-link text-decoration-none text-reset"
+                               data-navigate="songbook"
+                               aria-label="<?= htmlspecialchars($book['name']) ?> — <?= $book['songCount'] ?> songs<?= $langCode !== '' ? ' (' . htmlspecialchars($langCode) . ')' : '' ?>"></a>
+                            <?php if ($langCode !== ''): ?>
+                                <!-- Language indicator badge (#680) — small uppercase
+                                     ISO 639 code in the tile's top-right corner.
+                                     #856: tooltip resolves to the full language
+                                     name. #857: when the songbook contains songs
+                                     in multiple languages, the tooltip lists ALL
+                                     of them (e.g. "English, Afrikaans") so the
+                                     user knows why an EN-tagged book is appearing
+                                     under an Afrikaans filter. -->
+                                <span class="songbook-tile-language-badge"
+                                      title="<?= htmlspecialchars($bookLangsTitle) ?>"
+                                      aria-hidden="true"><?= htmlspecialchars($langCode) ?></span>
+                            <?php endif; ?>
+                            <div class="card-body text-center">
+                                <div class="songbook-icon songbook-icon-<?= htmlspecialchars($book['id']) ?> mb-2">
+                                    <i class="fa-solid fa-book" aria-hidden="true"></i>
+                                </div>
+                                <h3 class="card-title h6 mb-1">
+                                    <?= htmlspecialchars($book['name']) ?>
+                                </h3>
+                                <span class="badge bg-body-secondary rounded-pill">
+                                    <?= htmlspecialchars($book['id']) ?>
+                                </span>
+                                <p class="card-text text-muted small mt-2 mb-0">
+                                    <?= number_format($book['songCount']) ?> songs
+                                </p>
+                                <?php
+                                /* #782 phase D — "Part of: <Series>" line.
+                                   Renders only when the songbook belongs to one
+                                   or more series (Songs of Fellowship volumes,
+                                   themed compilations). Multiple series are
+                                   joined with " · " — clean separator that
+                                   doesn't fight with commas inside series
+                                   names. The series links route to the
+                                   /series/<slug> page (phase D adds the page
+                                   itself in a future PR; until then the
+                                   anchors 404 — captured in the PR's known-
+                                   limits list). */
+                                $bookSeries = (array)($book['series'] ?? []);
+                                if ($bookSeries):
+                                    $names = array_map(
+                                        static fn(array $s): string => htmlspecialchars((string)($s['name'] ?? '')),
+                                        $bookSeries
+                                    );
+                                ?>
+                                <p class="card-text text-muted small mt-1 mb-0 songbook-tile-series"
+                                   title="Part of <?= count($bookSeries) ?> series">
+                                    <i class="fa-solid fa-layer-group me-1" aria-hidden="true"></i>
+                                    <span class="visually-hidden">Part of </span><?= implode(' · ', $names) ?>
+                                </p>
+                                <?php endif; ?>
+                            </div>
+                            <!-- Offline-download button (#453). Hidden by
+                                 default; the offline-support check in
+                                 js/modules/offline.js reveals it on capable
+                                 browsers. Always rendered so server-HTML
+                                 stays stable; never rendered enabled if
+                                 the browser can't act on it. -->
+                            <button type="button"
+                                    class="btn btn-sm btn-outline-secondary songbook-download-btn"
+                                    data-songbook-download="<?= htmlspecialchars($book['id']) ?>"
+                                    aria-label="Download <?= htmlspecialchars($book['name']) ?> for offline use"
+                                    title="Download this songbook for offline use">
+                                <i class="fa-solid fa-cloud-arrow-down" aria-hidden="true"></i>
+                            </button>
+                        </div>
+                    </div>
+                <?php endif; ?>
+            <?php endforeach; ?>
+        </div>
+    </section>
+
     <!-- Recently Viewed Songs (#304) — shown for authenticated users -->
     <div class="mb-4" id="recent-songs-section" style="display:none">
         <h5><i class="fa-solid fa-clock-rotate-left me-2"></i>Recently Viewed</h5>
@@ -128,68 +273,6 @@ $songbooks = $songData->getSongbooks();
             <span class="text-muted small">Loading...</span>
         </div>
     </div>
-
-    <!-- Songbook Cards Grid (#151 — section ID for sitelink eligibility) -->
-    <section id="songbooks" aria-label="Songbooks">
-        <h2 class="h5 mb-3">
-            <i class="fa-solid fa-book-open me-2" aria-hidden="true"></i>
-            Songbooks
-        </h2>
-
-        <!-- `row-cols-*` ladders the column count with the viewport so
-             cards stop stretching on xl/xxl monitors: 2 → 3 → 4 → 5 → 6
-             as the breakpoints unlock. Each child is just `.col`. -->
-        <div class="row row-cols-2 row-cols-md-3 row-cols-lg-4 row-cols-xl-5 row-cols-xxl-6 g-3 mb-4">
-            <?php foreach ($songbooks as $index => $book): ?>
-                <?php if (($book['songCount'] ?? 0) > 0): ?>
-                    <div class="col" id="songbook-<?= htmlspecialchars($book['id']) ?>">
-                        <div class="card card-songbook h-100 position-relative"
-                             data-songbook-id="<?= htmlspecialchars($book['id']) ?>"
-                             data-songbook-songs="<?= (int)$book['songCount'] ?>">
-                            <!-- Stretched link covers the whole card body,
-                                 keeping the download button clickable because
-                                 the button's stacking context is raised by
-                                 position: relative + z-index on the button. -->
-                            <a href="/songbook/<?= htmlspecialchars($book['id']) ?>"
-                               class="stretched-link text-decoration-none text-reset"
-                               data-navigate="songbook"
-                               aria-label="<?= htmlspecialchars($book['name']) ?> — <?= $book['songCount'] ?> songs"></a>
-                            <div class="card-body text-center">
-                                <div class="songbook-icon songbook-icon-<?= htmlspecialchars($book['id']) ?> mb-2">
-                                    <i class="fa-solid fa-book" aria-hidden="true"></i>
-                                </div>
-                                <h3 class="card-title h6 mb-1">
-                                    <?= htmlspecialchars($book['name']) ?>
-                                </h3>
-                                <span class="badge bg-body-secondary rounded-pill">
-                                    <?= htmlspecialchars($book['id']) ?>
-                                </span>
-                                <p class="card-text text-muted small mt-2 mb-0">
-                                    <?= number_format($book['songCount']) ?> songs
-                                </p>
-                            </div>
-                            <!-- Offline-download button (#453). Hidden by
-                                 default; the offline-support check in
-                                 js/modules/offline.js reveals it on capable
-                                 browsers. Always rendered so server-HTML
-                                 stays stable; never rendered enabled if
-                                 the browser can't act on it. -->
-                            <!-- Rendered visible; a capability-free browser
-                                 picks up `body.offline-unsupported` and the
-                                 shared CSS rule hides all download UI. -->
-                            <button type="button"
-                                    class="btn btn-sm btn-outline-secondary songbook-download-btn"
-                                    data-songbook-download="<?= htmlspecialchars($book['id']) ?>"
-                                    aria-label="Download <?= htmlspecialchars($book['name']) ?> for offline use"
-                                    title="Download this songbook for offline use">
-                                <i class="fa-solid fa-cloud-arrow-down" aria-hidden="true"></i>
-                            </button>
-                        </div>
-                    </div>
-                <?php endif; ?>
-            <?php endforeach; ?>
-        </div>
-    </section>
 
     <!-- The dynamic sections above (Popular Songs, Recently Viewed,
          Browse by Theme) are populated client-side by

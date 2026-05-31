@@ -22,10 +22,24 @@
 
 name: Changelog
 
+# TRIGGERS: push to beta only.
+#
+# `main` was removed from the trigger in #904. The workflow used to
+# also run on push-to-main and try to git-push the regenerated
+# CHANGELOG.md files back to main, but the branch-protection rule
+# on main rejects direct pushes (Run #27 from the 2026-05-07 beta→
+# main promotion failed with `GH013: Repository rule violations
+# found for refs/heads/main` after 5 retry attempts).
+#
+# Running on main is also structurally redundant: the Changelog
+# workflow runs on every push to beta and writes the four
+# CHANGELOG.md files there. When beta is promoted to main via PR,
+# those CHANGELOG updates ride along automatically — main's
+# changelogs stay current without ever needing the workflow to
+# fire on main itself.
 on:
   push:
     branches:
-      - main
       - beta
     paths:
       - 'appWeb/**'

@@ -147,13 +147,24 @@ if (file_exists($sqliteFile)) {
             $stmtCheck->close();
             $stmtInsert->close();
 
-            /* Migrate user setlists */
-            if (in_array('user_setlists', $tables)) {
-                output("");
-                output("--- Step 2: Migrate User Setlists from SQLite ---");
-
+            /* Migrate user setlists. Diagnostic-rich output (#709) so a
+               curator who runs this and sees tblUserSetlists still
+               empty can tell *why* — the most common cause is
+               username mapping failures (legacy SQLite username != the
+               username on the new tblUsers row), which used to scroll
+               past silently. */
+            output("");
+            output("--- Step 2: Migrate User Setlists from SQLite ---");
+            if (!in_array('user_setlists', $tables)) {
+                output("  [SKIP] No user_setlists table in legacy SQLite — nothing to migrate.");
+                output("  Available SQLite tables: " . implode(', ', $tables));
+            } else {
                 $setlists = $sqlite->query('SELECT * FROM user_setlists')->fetchAll(PDO::FETCH_ASSOC);
                 output("Found " . count($setlists) . " user setlists in SQLite");
+                $skippedNoSetlistId = 0;
+                $skippedNoUserId    = 0;
+                $skippedNoLegacyUsername = 0;
+                $skippedNoMysqlUser = 0;
 
                 foreach ($setlists as $sl) {
                     $oldUserId = (int)($sl['user_id'] ?? 0);
@@ -161,13 +172,14 @@ if (file_exists($sqliteFile)) {
                     $name      = $sl['name'] ?? 'Untitled';
                     $songsJson = $sl['songs_json'] ?? '[]';
 
-                    if ($setlistId === '' || $oldUserId <= 0) continue;
+                    if ($setlistId === '') { $skippedNoSetlistId++; continue; }
+                    if ($oldUserId <= 0)   { $skippedNoUserId++;    continue; }
 
                     /* Find the old username to map to new MySQL user ID */
                     $oldUser = $sqlite->prepare('SELECT username FROM users WHERE id = ?');
                     $oldUser->execute([$oldUserId]);
                     $oldUsername = $oldUser->fetchColumn();
-                    if (!$oldUsername) continue;
+                    if (!$oldUsername) { $skippedNoLegacyUsername++; continue; }
 
                     /* Find new MySQL user ID */
                     $stmtFind = $mysql->prepare("SELECT Id FROM tblUsers WHERE Username = ?");
@@ -175,7 +187,11 @@ if (file_exists($sqliteFile)) {
                     $stmtFind->execute();
                     $newUserId = $stmtFind->get_result()->fetch_assoc()['Id'] ?? null;
                     $stmtFind->close();
-                    if (!$newUserId) continue;
+                    if (!$newUserId) {
+                        $skippedNoMysqlUser++;
+                        output("  [SKIP] setlist {$setlistId} — legacy username '{$oldUsername}' has no matching tblUsers row");
+                        continue;
+                    }
 
                     /* Prepared statement (#525). Was real_escape_string +
                        string interpolation, which is functional but the
@@ -194,6 +210,13 @@ if (file_exists($sqliteFile)) {
                     $migratedSetlists++;
                 }
                 output("  Migrated {$migratedSetlists} setlists");
+                if ($skippedNoSetlistId + $skippedNoUserId + $skippedNoLegacyUsername + $skippedNoMysqlUser > 0) {
+                    output("  Skipped breakdown:");
+                    if ($skippedNoSetlistId)        output("    - {$skippedNoSetlistId} with empty setlist_id");
+                    if ($skippedNoUserId)           output("    - {$skippedNoUserId} with no user_id");
+                    if ($skippedNoLegacyUsername)   output("    - {$skippedNoLegacyUsername} where the legacy SQLite users row was missing");
+                    if ($skippedNoMysqlUser)        output("    - {$skippedNoMysqlUser} where the legacy username didn't match any tblUsers.Username (the most common cause of an 'empty tblUserSetlists despite running the migration' report — see #709)");
+                }
             }
         } else {
             output("  No users table found in SQLite — skipping");

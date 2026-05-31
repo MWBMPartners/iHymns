@@ -221,6 +221,21 @@ $appUrl = $app["Application"]["Website"]["URL"];
                 <li><strong>Plausible Analytics</strong> (if enabled) — privacy-focused, cookieless analytics. <a href="https://plausible.io/data-policy" target="_blank" rel="noopener noreferrer">Data policy</a></li>
                 <li><strong>Matomo</strong> (if enabled) — self-hosted analytics</li>
                 <li><strong>Fathom Analytics</strong> (if enabled) — privacy-focused analytics. <a href="https://usefathom.com/legal/privacy" target="_blank" rel="noopener noreferrer">Privacy policy</a></li>
+                <li>
+                    <strong>Avatar resolvers</strong> (signed-in users only) —
+                    a SHA-256 hash of your email address may be sent to one of
+                    Gravatar (default), Libravatar, or DiceBear so that your
+                    circular avatar can be resolved. Gravatar / Libravatar
+                    return your registered avatar (or a generated identicon);
+                    DiceBear renders a deterministic geometric pattern from
+                    the hash without performing a registered-avatar lookup.
+                    The full email never leaves <?= htmlspecialchars($appName) ?>'s servers — only its hash. You can change your
+                    avatar source — or disable third-party requests entirely —
+                    in Settings &gt; Profile &gt; Avatar source.
+                    <a href="https://gravatar.com/support/data-and-privacy/" target="_blank" rel="noopener noreferrer">Gravatar privacy</a> ·
+                    <a href="https://www.libravatar.org/privacy/" target="_blank" rel="noopener noreferrer">Libravatar privacy</a> ·
+                    <a href="https://www.dicebear.com/legal/privacy-policy/" target="_blank" rel="noopener noreferrer">DiceBear privacy</a>
+                </li>
             </ul>
         </div>
     </div>

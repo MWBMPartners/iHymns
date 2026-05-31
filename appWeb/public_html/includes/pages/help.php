@@ -88,6 +88,37 @@ declare(strict_types=1);
             </div>
         </div>
 
+        <!-- External Links & Works (#833 / #840) -->
+        <div class="accordion-item">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#help-external-links-works"
+                        aria-expanded="false"
+                        aria-controls="help-external-links-works">
+                    <i class="fa-solid fa-link me-2" aria-hidden="true"></i>
+                    Find a hymn elsewhere &amp; Works
+                </button>
+            </h2>
+            <div id="help-external-links-works" class="accordion-collapse collapse" data-bs-parent="#help-accordion">
+                <div class="accordion-body">
+                    <h3 class="h6">Find this song / songbook / person elsewhere</h3>
+                    <p>Every song page, songbook page and credit-person page now has a <strong>Find this … elsewhere</strong> panel listing curated links out to the rest of the web — Wikipedia, Hymnary.org, Spotify, Apple Music, YouTube, Internet Archive, IMSLP, MusicBrainz, CCLI SongSelect, VIAF and more — grouped by category (Official, Information, Read, Sheet music, Listen, Watch, Purchase, Authority, Social, Other).</p>
+                    <p>A small <i class="fa-solid fa-circle-check text-success" aria-hidden="true"></i> tick beside a link means a curator has personally verified it. Each link opens in a new tab.</p>
+
+                    <h3 class="h6 mt-3">Works — same composition across multiple songbooks</h3>
+                    <p>A <strong>Work</strong> groups every version of the same composition that appears across the catalogue. So <em>Amazing Grace</em> — which exists in dozens of hymnals under slightly different titles, with different arrangements — has one Work record, and every individual song entry links back to it.</p>
+                    <ul>
+                        <li>Visit <code>/work/&lt;slug&gt;</code> to see every version of a Work, grouped by songbook</li>
+                        <li>On any song page, the "Part of work" panel lists sibling versions you can jump to</li>
+                        <li>Works can be <strong>nested</strong> — an original Work can have child Works for derivative arrangements / translations / choral versions, with unlimited depth</li>
+                        <li>The optional <strong>ISWC</strong> (International Standard Musical Work Code) cross-references the Work to external royalty / catalogue platforms</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
         <!-- Favourites -->
         <div class="accordion-item">
             <h2 class="accordion-header">
@@ -110,6 +141,111 @@ declare(strict_types=1);
                         <li>Favourites are saved locally on your device and persist between sessions</li>
                         <li>Tap the filled heart <i class="fa-solid fa-heart text-danger" aria-hidden="true"></i> to remove a song from favourites</li>
                     </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- Setlists -->
+        <div class="accordion-item">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#help-setlists"
+                        aria-expanded="false"
+                        aria-controls="help-setlists">
+                    <i class="fa-solid fa-list-check me-2" aria-hidden="true"></i>
+                    Setlists &amp; Sharing
+                </button>
+            </h2>
+            <div id="help-setlists" class="accordion-collapse collapse" data-bs-parent="#help-accordion">
+                <div class="accordion-body">
+                    <p>
+                        A <strong>Setlist</strong> is an ordered list of songs for a service or rehearsal. Build one,
+                        share it with the rest of the team, schedule it for a specific date, and walk through the songs
+                        in order during the meeting.
+                    </p>
+                    <h3 class="h6">Building a setlist</h3>
+                    <ul>
+                        <li>Open the <strong>Setlist</strong> tab from the bottom nav.</li>
+                        <li>Tap <strong>+</strong> on any song page to add it to your active setlist (or pick a specific one from the dropdown).</li>
+                        <li>Drag the row handles to reorder. Long-press to remove a song.</li>
+                    </ul>
+                    <h3 class="h6">Sharing</h3>
+                    <p>
+                        Tap the <i class="fa-solid fa-share-nodes" aria-hidden="true"></i> share icon on any of your setlists. iHymns generates
+                        a short share URL that anyone can open — no account required for the recipient. They land
+                        on a read-only copy with the same songs and order. You stay the owner; if you reorder
+                        or add songs, the next time they open the link they see the updated version.
+                    </p>
+                    <h3 class="h6">Schedule a setlist for a date</h3>
+                    <p>
+                        On a setlist's detail view, tap <strong>Schedule</strong> to attach a date and time. The
+                        setlist appears in the <strong>Upcoming</strong> list on your home page until that date
+                        passes. Useful for planning a few weeks of services in advance and finding your way
+                        back to the right one without scrolling.
+                    </p>
+                    <h3 class="h6">Collaborate on a setlist (signed-in users)</h3>
+                    <p>
+                        Sign in with an account, then on any setlist's detail page open the <strong>Collaborators</strong>
+                        panel. Add other signed-in users by username — each one can re-order, add, and remove
+                        songs alongside you. Removed collaborators see the setlist disappear from their
+                        Shared list on next open.
+                    </p>
+                    <p class="small text-muted mb-0">
+                        Setlists you create are saved to your account if you're signed in, or to your device
+                        otherwise. Signing in later associates any device-only setlists with your account.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Language filter -->
+        <div class="accordion-item">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#help-language-filter"
+                        aria-expanded="false"
+                        aria-controls="help-language-filter">
+                    <i class="fa-solid fa-language me-2" aria-hidden="true"></i>
+                    Language Filter
+                </button>
+            </h2>
+            <div id="help-language-filter" class="accordion-collapse collapse" data-bs-parent="#help-accordion">
+                <div class="accordion-body">
+                    <p>
+                        Pick one or more languages to <strong>show</strong> across the catalogue —
+                        the rest are hidden. Untagged songbooks and untagged songs are always
+                        shown, regardless of what you've selected.
+                    </p>
+                    <h3 class="h6">Where to set it</h3>
+                    <ul>
+                        <li><strong>Ad-hoc:</strong> the chip group at the top of the home page and <em>Songbooks</em> page.</li>
+                        <li><strong>Persistent:</strong> the <em>Language Preferences</em> section on the <a href="/settings" data-navigate="settings">Settings</a> page.</li>
+                    </ul>
+                    <h3 class="h6">What it filters</h3>
+                    <ul>
+                        <li><strong>Songbook tiles</strong> on the home grid + <em>Songbooks</em> page.</li>
+                        <li><strong>Search results</strong> — songs in unselected languages don't appear.</li>
+                        <li><strong>Song lists</strong> inside a songbook detail page.</li>
+                        <li><strong>Popular songs</strong> + <strong>recently viewed</strong> blocks on the home page.</li>
+                    </ul>
+                    <h3 class="h6">Sync across devices</h3>
+                    <p>
+                        If you're <a href="/login" data-navigate="login">signed in</a>, your
+                        choice saves to your account and follows you to every device — the
+                        web app, the iOS / iPadOS / tvOS / Android / Fire OS native apps.
+                        Anonymous users get per-device persistence via local storage.
+                    </p>
+                    <p class="small text-muted mb-0">
+                        Matching uses the primary language subtag — picking <code>en</code>
+                        matches <code>en</code>, <code>en-GB</code>, <code>en-US</code>, etc.
+                        The filter only appears when the catalogue spans at least two
+                        distinct languages — until then, it stays hidden because there's
+                        nothing to filter.
+                    </p>
                 </div>
             </div>
         </div>
@@ -306,7 +442,7 @@ declare(strict_types=1);
                 <div class="accordion-body">
                     <p>
                         Can't find a hymn? Submit it via
-                        <a href="/request-a-song" data-navigate="request-a-song">Request a Song</a>.
+                        <a href="/request" data-navigate="request">Request a Song</a>.
                         You'll get a tracking number; our curators triage submissions in
                         their admin queue.
                     </p>
@@ -337,12 +473,19 @@ declare(strict_types=1);
                         <li><strong>Song Requests</strong> — triage user-submitted requests.</li>
                         <li><strong>Entitlements</strong> — grant/revoke per-capability permissions by role.</li>
                         <li><strong>Database Setup</strong> — install schema, migrate, backup, restore.</li>
+                        <li><strong>Help &amp; Guides</strong> — a plain-English reference at <a href="/manage/help">/manage/help</a> covering every admin page, including the org-admin surface, the activity log error capture, the bulk migration runner, and the public REST API.</li>
                     </ul>
-                    <p class="small text-muted mb-0">
+                    <p class="small text-muted mb-2">
                         Permissions use <strong>entitlements</strong>. Each feature is gated by a
                         named capability (e.g. <code>edit_songs</code>, <code>view_analytics</code>)
                         assigned to roles. A global-admin can reassign capabilities at
                         <a href="/manage/entitlements">/manage/entitlements</a>.
+                    </p>
+                    <p class="small text-muted mb-0">
+                        Native clients (Apple, Android, FireOS) drive the same surfaces via the public
+                        REST API documented in <a href="/api-docs.yaml"><code>/api-docs.yaml</code></a> —
+                        every admin verb on the web admin has a public-API counterpart, with the same
+                        validation rules and audit-log trail.
                     </p>
                 </div>
             </div>
@@ -351,7 +494,11 @@ declare(strict_types=1);
     </div>
 
     <!-- ============================================================
-         SONG REQUEST FORM — Suggest a missing song
+         SUGGEST A MISSING SONG — CTA to the dedicated form page (#656)
+         The actual submission form lives at /request where it
+         has the page to itself, supports offline queueing, and returns
+         a tracking-id reference. We keep a card here so help-page
+         readers still see the feature exists.
          ============================================================ -->
     <div class="card mb-3 mt-4">
         <div class="card-body">
@@ -359,51 +506,16 @@ declare(strict_types=1);
                 <i class="fa-solid fa-paper-plane me-2" aria-hidden="true"></i>
                 Suggest a Missing Song
             </h5>
-            <p class="text-muted small">Can't find a song? Let us know and we'll try to add it.</p>
-            <form id="song-request-form">
-                <input type="text" class="form-control mb-2" name="title" placeholder="Song title" required>
-                <input type="text" class="form-control mb-2" name="songbook" placeholder="Songbook (if known)">
-                <input type="text" class="form-control mb-2" name="song_number" placeholder="Song number (if known)">
-                <textarea class="form-control mb-2" name="details" rows="2" placeholder="Any additional details (first line of lyrics, etc.)"></textarea>
-                <input type="email" class="form-control mb-2" name="contact_email" placeholder="Your email (optional, for follow-up)">
-                <button type="submit" class="btn btn-primary">
-                    <i class="fa-solid fa-paper-plane me-1" aria-hidden="true"></i>
-                    Submit Request
-                </button>
-            </form>
-            <div id="song-request-result" class="mt-2"></div>
+            <p class="text-muted small mb-3">
+                Can't find a song? Let us know and we'll try to add it.
+                You can also reach this from the &ldquo;Report a missing
+                song&rdquo; link at the bottom of any song page.
+            </p>
+            <a href="/request" data-navigate="request" class="btn btn-primary">
+                <i class="fa-solid fa-paper-plane me-1" aria-hidden="true"></i>
+                Open the request form
+            </a>
         </div>
     </div>
-
-    <script>
-        document.getElementById('song-request-form')?.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const form = e.target;
-            const btn = form.querySelector('button[type="submit"]');
-            btn.disabled = true;
-            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin me-1"></i>Submitting...';
-            try {
-                const data = Object.fromEntries(new FormData(form));
-                const res = await fetch('/api?action=song_request', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(data)
-                });
-                const result = await res.json();
-                const el = document.getElementById('song-request-result');
-                if (result.ok) {
-                    el.innerHTML = '<div class="alert alert-success"><i class="fa-solid fa-check-circle me-1"></i>Thank you! Your suggestion has been submitted.</div>';
-                    form.reset();
-                } else {
-                    el.innerHTML = '<div class="alert alert-danger"><i class="fa-solid fa-triangle-exclamation me-1"></i>' + (result.error || 'Failed to submit.') + '</div>';
-                }
-            } catch {
-                document.getElementById('song-request-result').innerHTML = '<div class="alert alert-danger"><i class="fa-solid fa-triangle-exclamation me-1"></i>Network error. Please try again.</div>';
-            } finally {
-                btn.disabled = false;
-                btn.innerHTML = '<i class="fa-solid fa-paper-plane me-1"></i>Submit Request';
-            }
-        });
-    </script>
 
 </section>

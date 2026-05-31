@@ -1,0 +1,205 @@
+# =============================================================================
+# iHymns — Monthly Issues Sweep
+#
+# Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+# This software is proprietary. Unauthorized copying, modification, or
+# distribution is strictly prohibited.
+#
+# PURPOSE:
+# Closes GitHub issues that are referenced as `closes #N` (or `fixes #N` /
+# `resolves #N`) in commits merged onto the `alpha` branch but never
+# auto-closed by GitHub itself.
+#
+# WHY THIS IS NEEDED:
+# GitHub's auto-close mechanism only fires when a PR merges into the
+# repository's *default* branch (`main`). Day-to-day work on this repo
+# targets `alpha`, so issues marked `closes #N` in alpha-merged PRs
+# accumulate in the open queue. The 2026-04-30 sweep discovered ~50 such
+# issues; this workflow runs the same sweep automatically each month so
+# they don't pile up between manual cycles.
+#
+# WHEN IT RUNS:
+# - On a cron schedule (28th of each month at 09:23 UTC — picked off the
+#   :00 / :30 minute marks per the platform's rate-limit guidance).
+# - On manual dispatch from the Actions tab.
+#
+# WHAT IT DOES:
+# 1. Walks the last 300 commits on `alpha` and extracts every issue number
+#    referenced by `closes #N` / `fixes #N` / `resolves #N`, plus range
+#    patterns (`#626–#636`).
+# 2. Cross-references against `gh issue list --state open` and identifies
+#    issues that are open but already resolved.
+# 3. Closes each one with a comment crediting the merge commit.
+# 4. Posts a summary to the workflow's own job summary so the Actions tab
+#    shows what was closed.
+#
+# WHAT IT DOES NOT DO:
+# - It does not close issues that lack a `closes #N` reference, even if
+#   their PR has merged. The reference is the contract.
+# - It does not reopen issues. If an issue was closed by mistake, reopen
+#   it manually — the next run will not touch it.
+# - It does not assume any issue is "stale". This is purely about cleaning
+#   up the GitHub auto-close gap, not about triaging stale work.
+# =============================================================================
+
+name: Maintenance — Issues Sweep
+
+on:
+  schedule:
+    # Run on the 28th of every month at 09:23 UTC (off the busy
+    # :00 / :30 marks; jitter applied by the GitHub Actions scheduler).
+    - cron: '23 9 28 * *'
+  workflow_dispatch:
+    # Manual trigger from the Actions tab — useful right after a
+    # large merge cycle when you don't want to wait for the monthly run.
+
+permissions:
+  # `gh issue close -c` writes a comment + flips the state — needs
+  # both issues:write (close) and discussions are unaffected.
+  issues: write
+  # No code is touched, so contents:read is enough to read the alpha
+  # commit log via `git log`.
+  contents: read
+
+# Don't let two manual dispatches stack up.
+concurrency:
+  group: maintenance-issues-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    name: Close issues resolved on alpha
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out alpha (last 300 commits)
+        uses: actions/checkout@v4
+        with:
+          ref: alpha
+          # 300 commits matches the local sweep depth used in the
+          # 2026-04-30 cycle — covers ~3 months of activity.
+          fetch-depth: 300
+
+      - name: Build issue → commit map
+        id: scan
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 <<'PY'
+          import subprocess, re, json, os
+
+          # Pull the last 300 commits on alpha and extract any issue numbers
+          # referenced in their subject lines.
+          log = subprocess.run(
+              ['git', 'log', '-300', '--pretty=format:%H|%s', 'origin/alpha'],
+              capture_output=True, text=True, check=True
+          ).stdout
+
+          issue_to_commit = {}
+          for line in log.splitlines():
+              if '|' not in line:
+                  continue
+              sha, msg = line.split('|', 1)
+              short = sha[:7]
+              for m in re.findall(r'(?:closes|fixes|resolves)\s+#(\d+)',
+                                  msg, re.IGNORECASE):
+                  issue_to_commit.setdefault(int(m), (short, msg))
+              # Range patterns: "#626-#636" / "#626–#636"
+              for m in re.findall(r'#(\d+)\s*[–\-]\s*#(\d+)', msg):
+                  for n in range(int(m[0]), int(m[1]) + 1):
+                      issue_to_commit.setdefault(n, (short, msg))
+
+          # Currently open issues
+          out = subprocess.run(
+              ['gh', 'issue', 'list', '--state', 'open',
+               '--limit', '300', '--json', 'number'],
+              capture_output=True, text=True, check=True
+          ).stdout
+          open_nums = {i['number'] for i in json.loads(out)}
+
+          # Cross-reference
+          candidates = sorted(set(issue_to_commit) & open_nums)
+          payload = [
+              {'number': n, 'sha': issue_to_commit[n][0],
+               'subject': issue_to_commit[n][1]}
+              for n in candidates
+          ]
+
+          # Persist for the next step
+          with open('/tmp/sweep-candidates.json', 'w') as f:
+              json.dump(payload, f)
+
+          # Surface the count to the workflow so the close-step can decide
+          # whether to run + the summary can show the headline number.
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"count={len(candidates)}\n")
+
+          print(f"Found {len(candidates)} open issues that should be closed.")
+          for c in payload:
+              print(f"  #{c['number']}  {c['sha']}  {c['subject'][:80]}")
+          PY
+
+      - name: Close resolved issues
+        if: steps.scan.outputs.count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITHUB_REPOSITORY (e.g. "MWBMPartners/iHymns") is set
+          # automatically by the Actions runner.
+        run: |
+          python3 <<'PY'
+          import json, subprocess, sys, os
+
+          repo = os.environ['GITHUB_REPOSITORY']
+          data = json.load(open('/tmp/sweep-candidates.json'))
+          closed, failed = 0, []
+          summary_lines = ['## Closed issues', '',
+                           '| # | Closing commit | Subject |',
+                           '|---|---|---|']
+
+          for entry in data:
+              num, sha, subject = entry['number'], entry['sha'], entry['subject']
+              # Trim subject so the comment stays short; preserve the original
+              # so the run summary still reads cleanly.
+              subj_clean = subject[:80].replace('"', "'")
+              comment = (
+                  f"Closing — resolved on `alpha` by "
+                  f"[`{sha}`](https://github.com/{repo}/commit/{sha}) "
+                  f"(\"{subj_clean}\"). GitHub's auto-close didn't fire because "
+                  f"the repo's default branch is `main` but the PR merged into "
+                  f"`alpha`. Reopen if you spot a regression. "
+                  f"(Auto-swept by `.github/workflows/maintenance-issues-sweep.yml`.)"
+              )
+
+              r = subprocess.run(
+                  ['gh', 'issue', 'close', str(num), '-c', comment],
+                  capture_output=True, text=True
+              )
+              if r.returncode == 0:
+                  print(f"  ✓ closed #{num}")
+                  summary_lines.append(
+                      f"| #{num} | `{sha}` | {subj_clean} |"
+                  )
+                  closed += 1
+              else:
+                  print(f"  ✗ #{num}: {r.stderr.strip()[:120]}")
+                  failed.append(num)
+
+          summary_lines.insert(
+              0,
+              f"# Maintenance: Issues Sweep — closed {closed} / failed {len(failed)}"
+          )
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
+              f.write('\n'.join(summary_lines) + '\n')
+
+          if failed:
+              print(f"\nFailed to close: {failed}", file=sys.stderr)
+              sys.exit(1)
+          PY
+
+      - name: Nothing to do
+        if: steps.scan.outputs.count == '0'
+        run: |
+          {
+            echo "## Maintenance: Issues Sweep — nothing to do"
+            echo ""
+            echo "No open issues match a \`closes #N\` reference in the last 300 commits on \`alpha\`."
+          } >> "$GITHUB_STEP_SUMMARY"

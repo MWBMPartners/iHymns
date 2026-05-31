@@ -13,6 +13,9 @@
 
 declare(strict_types=1);
 
+/* #856 — language-name resolver for the tile badge tooltip. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'language_names.php';
+
 $songbooks = $songData->getSongbooks();
 $stats = $songData->getStats();
 
@@ -34,16 +37,61 @@ $stats = $songData->getStats();
         </span>
     </div>
 
+    <!-- Language filter (#679) — same partial as the home-page
+         Songbooks section. Silently returns early when the catalogue
+         spans only one language. -->
+    <?php require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'songbook-language-filter.php'; ?>
+
     <!-- Songbook Grid -->
     <div class="row g-3">
         <?php foreach ($songbooks as $index => $book): ?>
             <?php if (($book['songCount'] ?? 0) > 0): ?>
-                <div class="col-12 col-sm-6 col-md-4 col-lg-3">
-                    <a href="/songbook/<?= htmlspecialchars($book['id']) ?>"
-                       class="card card-songbook h-100 text-decoration-none"
-                       data-navigate="songbook"
-                       data-songbook-id="<?= htmlspecialchars($book['id']) ?>"
-                       aria-label="Open <?= htmlspecialchars($book['name']) ?>">
+                <?php
+                    /* Language indicator badge data (#680) — same pattern
+                       as home.php: pull the IETF tag, extract the 2-3
+                       letter language subtag, uppercase. Empty = no
+                       badge (multi-lingual / not specified).
+                       #857 — also expose the contained-languages union
+                       so a book tagged English but holding Afrikaans
+                       songs surfaces under an Afrikaans filter. */
+                    $bookLang = (string)($book['language'] ?? '');
+                    $langCode = '';
+                    if ($bookLang !== '' && preg_match('/^([a-z]{2,3})/i', $bookLang, $m)) {
+                        $langCode = mb_strtoupper($m[1]);
+                    }
+                    $bookLangs    = $book['languages'] ?? [];
+                    $bookLangsCsv = !empty($bookLangs) ? implode(',', $bookLangs) : '';
+                    $bookLangNames = [];
+                    foreach ($bookLangs as $sub) {
+                        $bookLangNames[] = resolveLanguageName($sub);
+                    }
+                    $bookLangsTitle = !empty($bookLangNames)
+                        ? implode(', ', $bookLangNames)
+                        : resolveLanguageName($bookLang);
+                ?>
+                <div class="col-12 col-sm-6 col-md-4 col-lg-3" id="songbook-<?= htmlspecialchars($book['id']) ?>">
+                    <div class="card card-songbook h-100 position-relative"
+                         data-songbook-id="<?= htmlspecialchars($book['id']) ?>"
+                         data-songbook-songs="<?= (int)$book['songCount'] ?>"
+                         <?php if ($langCode !== ''): ?>data-songbook-language="<?= htmlspecialchars($bookLang) ?>"<?php endif; ?>
+                         <?php if ($bookLangsCsv !== ''): ?>data-songbook-languages="<?= htmlspecialchars($bookLangsCsv) ?>"<?php endif; ?>>
+                        <!-- Stretched link covers the whole card; the
+                             absolute-positioned download button below
+                             stays clickable because its z-index sits
+                             above the link. Mirrors the home-page
+                             tile pattern (#453 / #785). -->
+                        <a href="/songbook/<?= htmlspecialchars($book['id']) ?>"
+                           class="stretched-link text-decoration-none text-reset"
+                           data-navigate="songbook"
+                           aria-label="Open <?= htmlspecialchars($book['name']) ?> — <?= number_format($book['songCount']) ?> songs<?= $langCode !== '' ? ' (' . htmlspecialchars($langCode) . ')' : '' ?>"></a>
+                        <?php if ($langCode !== ''): ?>
+                            <!-- #856 / #857: tooltip resolves the IETF tag to
+                                 the full language name; when the book contains
+                                 songs in multiple languages, all are listed. -->
+                            <span class="songbook-tile-language-badge"
+                                  title="<?= htmlspecialchars($bookLangsTitle) ?>"
+                                  aria-hidden="true"><?= htmlspecialchars($langCode) ?></span>
+                        <?php endif; ?>
                         <div class="card-body">
                             <div class="d-flex align-items-start gap-3">
                                 <!-- Songbook icon -->
@@ -60,12 +108,57 @@ $stats = $songData->getStats();
                                     <p class="text-muted small mb-0 mt-1">
                                         <?= number_format($book['songCount']) ?> songs
                                     </p>
+                                    <?php
+                                    /* #782 phase D — "Part of: <Series>" line.
+                                       Same shape as the home-grid tile in
+                                       includes/pages/home.php. Renders only
+                                       when the songbook is in at least one
+                                       series; multiple series joined with " · ".
+                                       Kept on its own row to avoid stretching
+                                       the songCount line on tight viewports. */
+                                    $bookSeries = (array)($book['series'] ?? []);
+                                    if ($bookSeries):
+                                        $names = array_map(
+                                            static fn(array $s): string => htmlspecialchars((string)($s['name'] ?? '')),
+                                            $bookSeries
+                                        );
+                                    ?>
+                                    <p class="text-muted small mb-0 mt-1 songbook-tile-series"
+                                       title="Part of <?= count($bookSeries) ?> series">
+                                        <i class="fa-solid fa-layer-group me-1" aria-hidden="true"></i>
+                                        <span class="visually-hidden">Part of </span><?= implode(' · ', $names) ?>
+                                    </p>
+                                    <?php endif; ?>
                                 </div>
-                                <!-- Arrow indicator -->
-                                <i class="fa-solid fa-chevron-right text-muted mt-1" aria-hidden="true"></i>
+                                <!-- "More to see" chevron. Hidden on xs
+                                     (portrait phone) where the absolute
+                                     [badge + download-button] cluster in
+                                     the top-right already occupies the
+                                     right side and full-width tiles need
+                                     every horizontal pixel for the title.
+                                     From sm up the tile is narrower per
+                                     column but the page chrome is more
+                                     spacious, so the chevron returns as
+                                     a navigation hint. -->
+                                <i class="fa-solid fa-chevron-right text-muted mt-1 d-none d-sm-block card-songbook-arrow"
+                                   aria-hidden="true"></i>
                             </div>
                         </div>
-                    </a>
+                        <!-- Offline-download button (#453). Hidden on
+                             browsers that don't support offline caching
+                             via body.offline-unsupported in app.css.
+                             On xs, this is the sole right-side
+                             affordance (the chevron is hidden); from sm
+                             up it sits in the corner with the chevron
+                             tucked underneath in the flex row. -->
+                        <button type="button"
+                                class="btn btn-sm btn-outline-secondary songbook-download-btn"
+                                data-songbook-download="<?= htmlspecialchars($book['id']) ?>"
+                                aria-label="Download <?= htmlspecialchars($book['name']) ?> for offline use"
+                                title="Download this songbook for offline use">
+                            <i class="fa-solid fa-cloud-arrow-down" aria-hidden="true"></i>
+                        </button>
+                    </div>
                 </div>
             <?php endif; ?>
         <?php endforeach; ?>

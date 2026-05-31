@@ -76,3 +76,59 @@ if (!empty($GLOBALS['_adminLayoutOpen'])):
         crossorigin="anonymous"></script>
 <?php endif; ?>
 
+<?php
+    /* Cross-page admin utilities — load AFTER Bootstrap so they can
+       use bootstrap.Toast. Loaded on every /manage/* page so any
+       surface that wants to fire a toast or wire duplicate-link
+       detection just calls into window.iHymnsToast /
+       window.iHymnsExtLinkDupeDetect without re-declaring the helper. */
+    $_toastModulePath = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'toast.js';
+    $_toastVersion = is_file($_toastModulePath) ? (string)filemtime($_toastModulePath) : '1';
+    $_dupeModulePath = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'external-link-dupe-detect.js';
+    $_dupeVersion = is_file($_dupeModulePath) ? (string)filemtime($_dupeModulePath) : '1';
+?>
+<script src="/js/modules/toast.js?v=<?= htmlspecialchars($_toastVersion, ENT_QUOTES) ?>"></script>
+<script src="/js/modules/external-link-dupe-detect.js?v=<?= htmlspecialchars($_dupeVersion, ENT_QUOTES) ?>"></script>
+
+<?php
+    /* Persistent bulk-import progress widget (#676). Boots on every
+       /manage/* page so a curator who started an import on
+       /manage/editor and navigated to /manage/songbooks (or any
+       other admin page) still sees the live progress. The module
+       is idempotent: if no job is tracked in localStorage, it
+       does nothing. */
+    $_bulkImportModulePath = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'bulk-import-progress.js';
+    $_bulkImportVersion = is_file($_bulkImportModulePath) ? (string)filemtime($_bulkImportModulePath) : '1';
+?>
+<script type="module">
+    import { bootBulkImportProgressWidget }
+        from '/js/modules/bulk-import-progress.js?v=<?= htmlspecialchars($_bulkImportVersion, ENT_QUOTES) ?>';
+    bootBulkImportProgressWidget();
+</script>
+
+<?php
+    /* Reading-progress bar on every /manage/* page (#751). The public
+       site wires this through its router on every navigation;
+       /manage/* pages are full-page reloads, so we boot the module
+       once on DOMContentLoaded. The module is shared with the public
+       site (single source of truth) and the bar's mechanics are
+       identical: position:fixed at the top of the viewport, fills as
+       the user scrolls, hidden on short pages, defaults to
+       --bs-primary on admin pages where there's no songbook context. */
+    $_readingProgressPath = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'reading-progress.js';
+    $_readingProgressVersion = is_file($_readingProgressPath) ? (string)filemtime($_readingProgressPath) : '1';
+?>
+<script type="module">
+    import { ReadingProgress }
+        from '/js/modules/reading-progress.js?v=<?= htmlspecialchars($_readingProgressVersion, ENT_QUOTES) ?>';
+    /* Standalone instance — no parent app on /manage/* surfaces, so we
+       pass null. The module only reads `this.app` for hooks the admin
+       surface doesn't use. */
+    const rp = new ReadingProgress(null);
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => rp.initOnAnyPage());
+    } else {
+        rp.initOnAnyPage();
+    }
+</script>
+

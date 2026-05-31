@@ -105,13 +105,43 @@ if (($_GET['export'] ?? '') === 'csv') {
     header('Cache-Control: no-store');
 
     $out = fopen('php://output', 'w');
-    fputcsv($out, [
-        'Id', 'CreatedAt', 'Username', 'Action', 'EntityType', 'EntityId',
+    /* #805 — CreatedAtUtc is an explicit UTC ISO-8601 string built
+       from UNIX_TIMESTAMP() via gmdate() so downloaded CSVs are
+       timezone-unambiguous regardless of where the spreadsheet ends
+       up. The legacy `CreatedAt` column is preserved for back-compat
+       with any existing report tooling but should be considered
+       deprecated — `CreatedAtUtc` is the new canonical value. */
+    /* New columns from migrate-activity-log-proxy-vpn.php — schema-
+       probe before SELECTing them so a pre-migration deploy keeps
+       exporting cleanly with the legacy header set. */
+    $hasProxyCols = false;
+    try {
+        $probe = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblActivityLog'
+                AND COLUMN_NAME  = 'ProxyVpnIndicator' LIMIT 1"
+        );
+        $probe->execute();
+        $hasProxyCols = (bool)$probe->get_result()->fetch_row();
+        $probe->close();
+    } catch (\Throwable $_e) { /* fall through to legacy export */ }
+
+    $headerRow = [
+        'Id', 'CreatedAt', 'CreatedAtUtc', 'Username', 'Action', 'EntityType', 'EntityId',
         'Result', 'IpAddress', 'UserAgent', 'RequestId', 'Method', 'DurationMs', 'Details',
-    ]);
+    ];
+    if ($hasProxyCols) {
+        array_splice($headerRow, 9, 0, ['IpProxyChain', 'ProxyVpnIndicator', 'ProxyVpnDetail']);
+    }
+    fputcsv($out, $headerRow);
+    $proxyColsSql = $hasProxyCols
+        ? ', a.IpProxyChain, a.ProxyVpnIndicator, a.ProxyVpnDetail'
+        : '';
     $stmt = $db->prepare(
-        'SELECT a.Id, a.CreatedAt, u.Username, a.Action, a.EntityType, a.EntityId,
-                a.Result, a.IpAddress, a.UserAgent, a.RequestId, a.Method,
+        'SELECT a.Id, a.CreatedAt, UNIX_TIMESTAMP(a.CreatedAt) AS CreatedAtTs,
+                u.Username, a.Action, a.EntityType, a.EntityId,
+                a.Result, a.IpAddress' . $proxyColsSql . ', a.UserAgent, a.RequestId, a.Method,
                 a.DurationMs, a.Details
            FROM tblActivityLog a
            LEFT JOIN tblUsers u ON u.Id = a.UserId
@@ -123,12 +153,24 @@ if (($_GET['export'] ?? '') === 'csv') {
     $stmt->execute();
     $res = $stmt->get_result();
     while ($row = $res->fetch_assoc()) {
-        fputcsv($out, [
-            $row['Id'], $row['CreatedAt'], $row['Username'] ?? '', $row['Action'],
+        $ts        = (int)($row['CreatedAtTs'] ?? 0);
+        $createdUtc = $ts > 0 ? gmdate('Y-m-d\TH:i:s\Z', $ts) : '';
+        $csvRow = [
+            $row['Id'], $row['CreatedAt'], $createdUtc, $row['Username'] ?? '', $row['Action'],
             $row['EntityType'], $row['EntityId'], $row['Result'],
-            $row['IpAddress'], $row['UserAgent'] ?? '', $row['RequestId'] ?? '',
-            $row['Method'] ?? '', $row['DurationMs'] ?? '', $row['Details'] ?? '',
-        ]);
+            $row['IpAddress'],
+        ];
+        if ($hasProxyCols) {
+            $csvRow[] = $row['IpProxyChain']      ?? '';
+            $csvRow[] = $row['ProxyVpnIndicator'] ?? '';
+            $csvRow[] = $row['ProxyVpnDetail']    ?? '';
+        }
+        $csvRow[] = $row['UserAgent']  ?? '';
+        $csvRow[] = $row['RequestId']  ?? '';
+        $csvRow[] = $row['Method']     ?? '';
+        $csvRow[] = $row['DurationMs'] ?? '';
+        $csvRow[] = $row['Details']    ?? '';
+        fputcsv($out, $csvRow);
     }
     $stmt->close();
     fclose($out);
@@ -154,9 +196,36 @@ try {
     $total = (int)($row[0] ?? 0);
     $countStmt->close();
 
+    /* #805 — also pull UNIX_TIMESTAMP(a.CreatedAt) so the cell can
+       render an unambiguous UTC value AND carry the seconds-since-epoch
+       as a data attribute for the JS converter below. The raw
+       a.CreatedAt comes back in MySQL's session timezone (`SYSTEM` by
+       default = OS), so suffixing 'Z' on the string would lie when the
+       server isn't in UTC. UNIX_TIMESTAMP() is always UTC seconds and
+       side-steps that whole class of bug. */
+    /* Schema-probe for the proxy/VPN columns added by
+       migrate-activity-log-proxy-vpn.php. Pre-migration deploys
+       skip them entirely so the SELECT compiles. */
+    $hasProxyCols = false;
+    try {
+        $probe = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblActivityLog'
+                AND COLUMN_NAME  = 'ProxyVpnIndicator' LIMIT 1"
+        );
+        $probe->execute();
+        $hasProxyCols = (bool)$probe->get_result()->fetch_row();
+        $probe->close();
+    } catch (\Throwable $_e) { /* fall through */ }
+    $proxyColsSql = $hasProxyCols
+        ? ', a.IpProxyChain, a.ProxyVpnIndicator, a.ProxyVpnDetail'
+        : '';
+
     $stmt = $db->prepare(
-        'SELECT a.Id, a.CreatedAt, a.Action, a.EntityType, a.EntityId, a.Result,
-                a.Details, a.IpAddress, a.UserAgent, a.RequestId, a.Method,
+        'SELECT a.Id, a.CreatedAt, UNIX_TIMESTAMP(a.CreatedAt) AS CreatedAtTs,
+                a.Action, a.EntityType, a.EntityId, a.Result,
+                a.Details, a.IpAddress' . $proxyColsSql . ', a.UserAgent, a.RequestId, a.Method,
                 a.DurationMs, u.Username
            FROM tblActivityLog a
            LEFT JOIN tblUsers u ON u.Id = a.UserId
@@ -170,6 +239,13 @@ try {
     $stmt->close();
 } catch (\Throwable $e) {
     error_log('[manage/activity-log.php] ' . $e->getMessage());
+    /* If the Activity Log viewer itself can't load, recording an
+       Activity Log row about the failure is admittedly recursive —
+       but logActivityError() short-circuits if the table isn't
+       writable, so it's safe to call. (#713) */
+    if (function_exists('logActivityError')) {
+        logActivityError('admin.activity_log.list', 'activity_log', '', $e);
+    }
 }
 
 $totalPages = $total > 0 ? (int)ceil($total / $pageSize) : 1;
@@ -218,7 +294,7 @@ $buildQuery = function (array $overrides = []) {
 };
 ?>
 <!DOCTYPE html>
-<html lang="en" data-bs-theme="dark">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -260,15 +336,17 @@ $buildQuery = function (array $overrides = []) {
         <p class="text-secondary small mb-4">
             Audit trail (#535) of every meaningful action — auth events,
             admin CRUD, user activity, API requests, system events.
-            Retention is configurable via <code>tblAppSettings.activity_log_retention_days</code>
-            (default 90 days); older rows are pruned by the daily
-            cleanup job.
+            Rows are kept indefinitely by default — the daily cleanup
+            job only prunes if an admin sets
+            <code>tblAppSettings.activity_log_retention_days</code> to
+            a positive integer (1..3650 days). Audit, compliance, and
+            forensics tend to want long retention, so pruning is opt-in.
         </p>
 
         <form method="GET" class="row g-2 mb-3 small">
             <div class="col-md-3">
-                <label class="form-label mb-1">Action</label>
-                <select class="form-select form-select-sm" name="action">
+                <label class="form-label mb-1" for="filter-action">Action</label>
+                <select class="form-select form-select-sm" id="filter-action" name="action">
                     <option value="">— any —</option>
                     <?php foreach ($distinctActions as $a): ?>
                         <option value="<?= htmlspecialchars($a, ENT_QUOTES, 'UTF-8') ?>"
@@ -279,14 +357,14 @@ $buildQuery = function (array $overrides = []) {
                 </select>
             </div>
             <div class="col-md-2">
-                <label class="form-label mb-1">User</label>
-                <input class="form-control form-control-sm" type="text" name="user"
+                <label class="form-label mb-1" for="filter-user">User</label>
+                <input class="form-control form-control-sm" id="filter-user" type="text" name="user"
                        value="<?= htmlspecialchars($filterUser, ENT_QUOTES, 'UTF-8') ?>"
                        placeholder="username or email">
             </div>
             <div class="col-md-2">
-                <label class="form-label mb-1">Result</label>
-                <select class="form-select form-select-sm" name="result">
+                <label class="form-label mb-1" for="filter-result">Result</label>
+                <select class="form-select form-select-sm" id="filter-result" name="result">
                     <option value="">— any —</option>
                     <option value="success" <?= $filterResult === 'success' ? 'selected' : '' ?>>success</option>
                     <option value="failure" <?= $filterResult === 'failure' ? 'selected' : '' ?>>failure</option>
@@ -294,20 +372,20 @@ $buildQuery = function (array $overrides = []) {
                 </select>
             </div>
             <div class="col-md-2">
-                <label class="form-label mb-1">Entity</label>
-                <input class="form-control form-control-sm" type="text" name="entity_type"
+                <label class="form-label mb-1" for="filter-entity-type">Entity</label>
+                <input class="form-control form-control-sm" id="filter-entity-type" type="text" name="entity_type"
                        value="<?= htmlspecialchars($filterEntityType, ENT_QUOTES, 'UTF-8') ?>"
                        placeholder="song, user, songbook, …">
             </div>
             <div class="col-md-2">
-                <label class="form-label mb-1">Entity ID</label>
-                <input class="form-control form-control-sm" type="text" name="entity_id"
+                <label class="form-label mb-1" for="filter-entity-id">Entity ID</label>
+                <input class="form-control form-control-sm" id="filter-entity-id" type="text" name="entity_id"
                        value="<?= htmlspecialchars($filterEntityId, ENT_QUOTES, 'UTF-8') ?>"
                        placeholder="CP-0001, 42, …">
             </div>
             <div class="col-md-1">
-                <label class="form-label mb-1">Window</label>
-                <select class="form-select form-select-sm" name="days">
+                <label class="form-label mb-1" for="filter-days">Window</label>
+                <select class="form-select form-select-sm" id="filter-days" name="days">
                     <option value="1"   <?= $filterDays === 1   ? 'selected' : '' ?>>24 h</option>
                     <option value="7"   <?= $filterDays === 7   ? 'selected' : '' ?>>7 d</option>
                     <option value="30"  <?= $filterDays === 30  ? 'selected' : '' ?>>30 d</option>
@@ -316,14 +394,14 @@ $buildQuery = function (array $overrides = []) {
                 </select>
             </div>
             <div class="col-md-3">
-                <label class="form-label mb-1">Search</label>
-                <input class="form-control form-control-sm" type="text" name="q"
+                <label class="form-label mb-1" for="filter-search">Search</label>
+                <input class="form-control form-control-sm" id="filter-search" type="text" name="q"
                        value="<?= htmlspecialchars($filterSearch, ENT_QUOTES, 'UTF-8') ?>"
                        placeholder="action or entity id substring">
             </div>
             <div class="col-md-3">
-                <label class="form-label mb-1">Request ID</label>
-                <input class="form-control form-control-sm" type="text" name="request_id"
+                <label class="form-label mb-1" for="filter-request-id">Request ID</label>
+                <input class="form-control form-control-sm" id="filter-request-id" type="text" name="request_id"
                        value="<?= htmlspecialchars($filterRequestId, ENT_QUOTES, 'UTF-8') ?>"
                        placeholder="16-char hex">
             </div>
@@ -350,16 +428,21 @@ $buildQuery = function (array $overrides = []) {
             </div>
         <?php else: ?>
             <div class="table-responsive">
-                <table class="table table-sm table-dark table-hover align-middle">
+                <table class="table table-sm table-dark table-hover align-middle cp-sortable">
                     <thead>
                         <tr>
-                            <th style="width: 11rem;">When (UTC)</th>
-                            <th style="width: 10rem;">User</th>
-                            <th>Action</th>
-                            <th>Entity</th>
-                            <th style="width: 5rem;">Result</th>
-                            <th style="width: 9rem;">IP</th>
-                            <th style="width: 5rem;">Req</th>
+                            <?php /* Header label flips between (local) and (UTC) at runtime
+                                     once the inline script below has rewritten the cells.
+                                     If the script doesn't run (CSP block, ancient browser),
+                                     the cells stay UTC and the header keeps its initial
+                                     "(UTC)" suffix. (#723) */ ?>
+                            <th style="width: 11rem;" id="activity-when-header" data-sort-key="when"   data-sort-type="text">When (UTC)</th>
+                            <th style="width: 10rem;" data-sort-key="user"   data-sort-type="text">User</th>
+                            <th data-sort-key="action" data-sort-type="text">Action</th>
+                            <th data-sort-key="entity" data-sort-type="text">Entity</th>
+                            <th style="width: 5rem;"  data-sort-key="result" data-sort-type="text">Result</th>
+                            <th style="width: 9rem;"  data-sort-key="ip"     data-sort-type="text">IP</th>
+                            <th style="width: 5rem;"  data-sort-key="req"    data-sort-type="text">Req</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -370,10 +453,25 @@ $buildQuery = function (array $overrides = []) {
                             ? json_encode($detailsArr, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
                             : '';
                         $rowId = (int)$r['Id'];
+                        /* #805 — render the cell text as UTC built from
+                           UNIX_TIMESTAMP via gmdate() so the value is
+                           correct regardless of MySQL session TZ or
+                           PHP date.timezone. The data-ts attribute
+                           carries the Unix seconds for the JS converter
+                           to format in the visitor's local TZ. The
+                           " UTC" suffix is dropped by the JS once it
+                           replaces the cell, so visitors see "(local)"
+                           cells without the redundant suffix. */
+                        $createdTs    = (int)($r['CreatedAtTs'] ?? 0);
+                        $createdUtcStr = $createdTs > 0
+                            ? gmdate('Y-m-d H:i:s', $createdTs)
+                            : (string)$r['CreatedAt'];
                     ?>
                         <tr class="activity-row">
-                            <td class="text-muted small">
-                                <?= htmlspecialchars((string)$r['CreatedAt'], ENT_QUOTES, 'UTF-8') ?>
+                            <td class="text-muted small activity-when"
+                                data-ts="<?= (int)$createdTs ?>"
+                                title="<?= htmlspecialchars($createdUtcStr, ENT_QUOTES, 'UTF-8') ?> UTC">
+                                <?= htmlspecialchars($createdUtcStr, ENT_QUOTES, 'UTF-8') ?> <span class="text-muted">UTC</span>
                             </td>
                             <td>
                                 <?php if (!empty($r['Username'])): ?>
@@ -399,6 +497,29 @@ $buildQuery = function (array $overrides = []) {
                             </td>
                             <td class="text-muted small">
                                 <?= htmlspecialchars((string)$r['IpAddress'], ENT_QUOTES, 'UTF-8') ?>
+                                <?php
+                                /* Proxy/VPN indicator badge — shown inline under
+                                   the IP when classification is something other
+                                   than 'none'. Pre-migration deploys (column not
+                                   selected) skip the badge entirely. */
+                                $pind = (string)($r['ProxyVpnIndicator'] ?? '');
+                                if ($pind !== '' && $pind !== 'none'):
+                                    $pcls = match ($pind) {
+                                        'vpn', 'tor'    => 'bg-warning text-dark',
+                                        'datacentre',
+                                        'proxy'         => 'bg-secondary',
+                                        'cloudflare',
+                                        'xff'           => 'bg-info text-dark',
+                                        default          => 'bg-secondary',
+                                    };
+                                    $ptitle = trim((string)($r['IpProxyChain'] ?? ''));
+                                ?>
+                                    <br>
+                                    <span class="badge <?= $pcls ?>"
+                                          title="<?= htmlspecialchars($ptitle !== '' ? "Proxy chain: $ptitle" : '', ENT_QUOTES, 'UTF-8') ?>">
+                                        <?= htmlspecialchars($pind, ENT_QUOTES, 'UTF-8') ?>
+                                    </span>
+                                <?php endif; ?>
                             </td>
                             <td>
                                 <a class="request-id-pill"
@@ -419,8 +540,14 @@ $buildQuery = function (array $overrides = []) {
                                         · <?= (int)$r['DurationMs'] ?> ms
                                     <?php endif; ?>
                                     <?php if (!empty($r['UserAgent'])): ?>
-                                        · UA: <span title="<?= htmlspecialchars((string)$r['UserAgent'], ENT_QUOTES, 'UTF-8') ?>">
-                                            <?= htmlspecialchars(substr((string)$r['UserAgent'], 0, 80), ENT_QUOTES, 'UTF-8') ?>
+                                        <?php /* Render the full UA inline (no 80-char substr cap)
+                                                 — long UAs wrap to a second line via the
+                                                 .activity-ua wrapper class, which uses
+                                                 word-break:break-word + max-width:100% so
+                                                 long unbroken tokens still wrap rather than
+                                                 overflow the row. (#721) */ ?>
+                                        · UA: <span class="activity-ua" title="<?= htmlspecialchars((string)$r['UserAgent'], ENT_QUOTES, 'UTF-8') ?>">
+                                            <?= htmlspecialchars((string)$r['UserAgent'], ENT_QUOTES, 'UTF-8') ?>
                                         </span>
                                     <?php endif; ?>
                                 </div>
@@ -458,6 +585,68 @@ $buildQuery = function (array $overrides = []) {
             <?php endif; ?>
         <?php endif; ?>
     </div>
+
+    <!-- Visitor-local time conversion (#805, replaces #721 / #723).
+         Each .activity-when cell carries data-ts="<unix-seconds-utc>";
+         this script multiplies by 1000, builds a Date, formats via the
+         browser's Intl.DateTimeFormat in the visitor's resolved
+         timezone, and replaces the cell's text. The fallback (cell
+         text rendered server-side as `YYYY-MM-DD HH:MM:SS UTC` from
+         gmdate(UNIX_TIMESTAMP)) stays in place if Intl is unavailable
+         OR the visitor's TZ can't be resolved — so the column is
+         always either visitor-local or unambiguous UTC, never silently
+         server-local-pretending-to-be-anything-else. -->
+    <style>
+        .activity-ua {
+            display: inline-block;
+            max-width: 100%;
+            word-break: break-word;
+            overflow-wrap: anywhere;
+        }
+    </style>
+    <script>
+    (function () {
+        try {
+            if (typeof Intl === 'undefined' || !Intl.DateTimeFormat) return;
+            /* Resolve the visitor's TZ explicitly so we can fall back
+               to UTC display if it comes back empty (some locked-down
+               browser configs return ''). */
+            var resolved = Intl.DateTimeFormat().resolvedOptions();
+            var visitorTz = resolved && resolved.timeZone ? resolved.timeZone : '';
+            if (!visitorTz) return; /* fall back to server-rendered UTC */
+            var fmt = new Intl.DateTimeFormat(undefined, {
+                year:    'numeric', month:  '2-digit', day:    '2-digit',
+                hour:    '2-digit', minute: '2-digit', second: '2-digit',
+                hour12:  false,
+                timeZone: visitorTz,
+            });
+            var cells = document.querySelectorAll('.activity-when[data-ts]');
+            if (!cells.length) return;
+            cells.forEach(function (cell) {
+                var ts = parseInt(cell.getAttribute('data-ts') || '0', 10);
+                if (!ts) return;
+                var d = new Date(ts * 1000);
+                if (isNaN(d.getTime())) return;
+                /* Reformat to "YYYY-MM-DD HH:MM:SS" — matches the
+                   table's existing visual cadence; some locales would
+                   otherwise produce "30/04/2026, 14:53:42" which jars
+                   in a tabular layout. */
+                var parts = fmt.formatToParts(d).reduce(function (acc, p) {
+                    if (p.type !== 'literal') acc[p.type] = p.value; return acc;
+                }, {});
+                cell.textContent = parts.year + '-' + parts.month + '-' + parts.day
+                    + ' ' + parts.hour + ':' + parts.minute + ':' + parts.second;
+                /* Hover title carries the resolved timezone name so
+                   curators inspecting an entry can see the offset
+                   they're looking at — useful when comparing logs
+                   across teammates in different regions. */
+                cell.setAttribute('title', cell.textContent + ' (' + visitorTz + ')');
+            });
+            var header = document.getElementById('activity-when-header');
+            if (header) header.textContent = 'When (local — ' + visitorTz + ')';
+        } catch (_e) { /* fail-soft — server-rendered UTC stays */ }
+    })();
+    </script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>

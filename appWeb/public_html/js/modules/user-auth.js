@@ -24,6 +24,44 @@ export class UserAuth {
      */
     constructor(app) {
         this.app = app;
+        /* Public app capabilities (#766). Populated lazily by
+           _ensureAppStatus(); the auth modal reads this to decide
+           whether to promote the email-login path. Defaults to
+           emailLoginEnabled=true so a transient /api?action=app_status
+           failure doesn't lock email-only deployments out — the
+           server-side endpoint still 503s if the request actually
+           hits with no email service. */
+        this._appStatus = null;
+        this._appStatusPromise = null;
+    }
+
+    /**
+     * Lazily fetch and cache /api?action=app_status. Used by
+     * showAuthModal to decide whether to promote the email login
+     * path (#766). Returns the cached object on subsequent calls.
+     * Best-effort — failures resolve to a permissive default so
+     * a transient outage doesn't change the modal's shape.
+     *
+     * @returns {Promise<object>}
+     */
+    async _ensureAppStatus() {
+        if (this._appStatus) return this._appStatus;
+        if (this._appStatusPromise) return this._appStatusPromise;
+        this._appStatusPromise = (async () => {
+            try {
+                const r = await fetch('/api?action=app_status', {
+                    credentials: 'same-origin',
+                });
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                this._appStatus = await r.json();
+            } catch (_e) {
+                /* Permissive default — keep current behaviour. The
+                   server-side 503 is still the safety net. */
+                this._appStatus = { emailLoginEnabled: true };
+            }
+            return this._appStatus;
+        })();
+        return this._appStatusPromise;
     }
 
     /* =====================================================================
@@ -114,31 +152,108 @@ export class UserAuth {
      * ===================================================================== */
 
     /**
-     * Register a new account.
-     * @param {string} username
-     * @param {string} password
-     * @param {string} displayName
-     * @returns {Promise<{ success: boolean, error?: string }>}
+     * Run a JSON POST against the auth API and resolve the response into
+     * either { ok: true, data } or { ok: false, error } where `error` is
+     * the most diagnostic string we can produce.
+     *
+     * Three failure shapes that previously all collapsed to the same
+     * misleading "Network error. Please try again." (#803):
+     *   1. fetch() rejects                  → real connectivity / CORS
+     *   2. fetch() succeeds but res.json()  → server returned non-JSON
+     *      throws (HTML error page, empty body) — surface status + a
+     *      snippet of the body so support has something actionable
+     *   3. res.ok === false                 → server returned JSON 4xx;
+     *      use data.error (existing behaviour) and fall back to status
+     *      text if data.error is missing
+     *
+     * `defaultMsg` is the friendly verb fallback for case 3 — caller
+     * passes "Registration failed." / "Login failed." etc.
+     *
+     * @param {string} url
+     * @param {object} body
+     * @param {string} defaultMsg
+     * @returns {Promise<{ ok: true, data: any } | { ok: false, error: string }>}
      */
-    async register(username, password, displayName) {
+    async _postJson(url, body, defaultMsg) {
+        let res;
         try {
-            const res = await fetch(`${this.app.config.apiUrl}?action=auth_register`, {
+            res = await fetch(url, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'X-Requested-With': 'XMLHttpRequest',
                 },
-                body: JSON.stringify({ username, password, display_name: displayName }),
+                body: JSON.stringify(body),
             });
-
-            const data = await res.json();
-            if (!res.ok) return { success: false, error: data.error || 'Registration failed.' };
-
-            this.saveCredentials(data.token, data.user);
-            return { success: true };
-        } catch {
-            return { success: false, error: 'Network error. Please try again.' };
+        } catch (err) {
+            /* Case 1 — fetch itself rejected. This is the only true
+               "couldn't reach the server" path. */
+            return { ok: false, error: 'Network error. Please check your connection and try again.' };
         }
+
+        /* Try to parse the body as JSON. On parse failure (case 2) we
+           reach for the raw text so we can show the curator something
+           actionable — typically the start of a PHP error page or an
+           empty 502. */
+        let data = null;
+        let parseFailed = false;
+        try {
+            data = await res.json();
+        } catch {
+            parseFailed = true;
+        }
+
+        if (parseFailed) {
+            let snippet = '';
+            try { snippet = (await res.text()).slice(0, 200).trim(); } catch { /* ignore */ }
+            const detail = snippet ? ` Server said: "${snippet.replace(/\s+/g, ' ')}"` : '';
+            return {
+                ok:    false,
+                error: `Server returned an unreadable response (HTTP ${res.status} ${res.statusText}).${detail} `
+                     + 'This is a server bug — please report it.',
+            };
+        }
+
+        if (!res.ok) {
+            /* Case 3 — server replied with a JSON body but a non-2xx
+               status. data.error is the friendly message; data.request_id
+               (added by the global handler in api.php for 500s, #803)
+               is included verbatim so support can correlate the log. */
+            const friendly = (data && data.error) ? data.error : (defaultMsg + ` (HTTP ${res.status})`);
+            const rid      = data && data.request_id ? ` [ref ${data.request_id}]` : '';
+            return { ok: false, error: friendly + rid };
+        }
+
+        return { ok: true, data };
+    }
+
+    /**
+     * Register a new account.
+     * @param {string} username
+     * @param {string} password
+     * @param {string} displayName
+     * @param {string} [email] Optional email — when present and an email
+     *        provider is configured server-side, the new account
+     *        receives a verification email (#898).
+     * @returns {Promise<{ success: boolean, error?: string,
+     *                     verificationEmailSent?: boolean,
+     *                     verificationEmailProvider?: string }>}
+     */
+    async register(username, password, displayName, email = '') {
+        const payload = { username, password, display_name: displayName };
+        if (email) payload.email = email;
+        const r = await this._postJson(
+            `${this.app.config.apiUrl}?action=auth_register`,
+            payload,
+            'Registration failed.'
+        );
+        if (!r.ok) return { success: false, error: r.error };
+        this.saveCredentials(r.data.token, r.data.user);
+        return {
+            success: true,
+            verificationEmailSent:     !!r.data.verification_email_sent,
+            verificationEmailProvider: r.data.verification_email_provider || 'none',
+        };
     }
 
     /**
@@ -148,24 +263,14 @@ export class UserAuth {
      * @returns {Promise<{ success: boolean, error?: string }>}
      */
     async login(username, password) {
-        try {
-            const res = await fetch(`${this.app.config.apiUrl}?action=auth_login`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Requested-With': 'XMLHttpRequest',
-                },
-                body: JSON.stringify({ username, password }),
-            });
-
-            const data = await res.json();
-            if (!res.ok) return { success: false, error: data.error || 'Login failed.' };
-
-            this.saveCredentials(data.token, data.user);
-            return { success: true };
-        } catch {
-            return { success: false, error: 'Network error. Please try again.' };
-        }
+        const r = await this._postJson(
+            `${this.app.config.apiUrl}?action=auth_login`,
+            { username, password },
+            'Login failed.'
+        );
+        if (!r.ok) return { success: false, error: r.error };
+        this.saveCredentials(r.data.token, r.data.user);
+        return { success: true };
     }
 
     /**
@@ -491,6 +596,137 @@ export class UserAuth {
     }
 
     /* =====================================================================
+     * EMAIL-LINK URL PARAMS (#898 follow-up)
+     * The transactional emails carry click-throughs of the form
+     *   /login?token=<48hex>          (magic-link sign-in)
+     *   /login?reset_token=<48hex>    (forgot-password reset)
+     *   /login?verify_token=<48hex>   (post-signup verification)
+     * Without a client-side handler these links just land on the home
+     * page and the user has to copy/paste manually. This consumer
+     * detects each variant on boot, dispatches the matching API call,
+     * surfaces a result toast, and strips the param from the URL via
+     * history.replaceState so a refresh won't re-fire it.
+     * ===================================================================== */
+
+    /**
+     * Inspect the current URL, act on any auth-link query param, and
+     * scrub it from the address bar. Best-effort — silent on no match,
+     * never throws so a malformed URL can't take the page down.
+     */
+    async _consumeAuthUrlParams() {
+        let params;
+        try {
+            params = new URL(window.location.href).searchParams;
+        } catch (_e) {
+            return;
+        }
+        const magicToken  = (params.get('token')         || '').trim();
+        const resetToken  = (params.get('reset_token')   || '').trim();
+        const verifyToken = (params.get('verify_token')  || '').trim();
+        if (!magicToken && !resetToken && !verifyToken) return;
+
+        /* Drop the consumed param(s) from the address bar before any
+           network call so a back-button or refresh doesn't replay it
+           (single-use tokens would already be Used by then; keeping
+           the param visible would only cause a confusing
+           "invalid token" toast on the second hit). */
+        const stripped = new URL(window.location.href);
+        ['token', 'reset_token', 'verify_token'].forEach(p => stripped.searchParams.delete(p));
+        try {
+            window.history.replaceState({}, '', stripped.toString());
+        } catch (_e) { /* ignore — replaceState is fine on https origins */ }
+
+        if (verifyToken) {
+            await this._handleVerifyEmailToken(verifyToken);
+            return;
+        }
+        if (resetToken) {
+            this._handleResetTokenLink(resetToken);
+            return;
+        }
+        if (magicToken) {
+            await this._handleMagicLinkToken(magicToken);
+            return;
+        }
+    }
+
+    async _handleVerifyEmailToken(token) {
+        try {
+            const r = await fetch(
+                `${this.app.config.apiUrl}?action=auth_verify_email&token=${encodeURIComponent(token)}`,
+                { method: 'GET', headers: { 'X-Requested-With': 'XMLHttpRequest' } }
+            );
+            const data = await r.json().catch(() => ({}));
+            if (r.ok && data.ok) {
+                this.app.showToast?.('Email address verified. Thanks!', 'success', 4000);
+            } else {
+                this.app.showToast?.(
+                    data.error || 'Verification link is invalid or has expired.',
+                    'warning', 5000
+                );
+            }
+        } catch {
+            this.app.showToast?.('Could not verify email — network error.', 'warning', 4000);
+        }
+    }
+
+    async _handleMagicLinkToken(token) {
+        try {
+            const r = await fetch(`${this.app.config.apiUrl}?action=auth_email_login_verify`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                body: JSON.stringify({ token }),
+            });
+            const data = await r.json().catch(() => ({}));
+            if (r.ok && data.token && data.user) {
+                this.saveCredentials(data.token, data.user);
+                this._updateHeaderState();
+                this.app.setList?.renderSyncBar();
+                this.app.showToast?.('Signed in! Syncing setlists...', 'success', 3000);
+                this.triggerSetlistSync();
+            } else {
+                this.app.showToast?.(
+                    data.error || 'Sign-in link is invalid or has expired. Please request a new one.',
+                    'warning', 5000
+                );
+            }
+        } catch {
+            this.app.showToast?.('Could not complete sign-in — network error.', 'warning', 4000);
+        }
+    }
+
+    /**
+     * Reset-password links open the auth modal in forgot-password
+     * mode with the token pre-filled, so the user only has to type
+     * their new password. Mirrors the flow that runs after a
+     * successful "Send Reset Token" submission.
+     */
+    _handleResetTokenLink(token) {
+        this.showAuthModal('login');
+        /* showAuthModal builds the DOM synchronously; the form
+           elements are present immediately. Defer one tick so the
+           Bootstrap modal's show transition doesn't fight the
+           focus call. */
+        setTimeout(() => {
+            const modal = document.getElementById('user-auth-modal');
+            if (!modal) return;
+            modal.querySelector('#auth-form')?.style.setProperty('display', 'none');
+            modal.querySelector('#auth-toggle')?.style.setProperty('display', 'none');
+            modal.querySelector('#auth-forgot-link-wrapper')?.style.setProperty('display', 'none');
+            modal.querySelector('#auth-email-toggle-wrapper')?.style.setProperty('display', 'none');
+            modal.querySelector('#auth-forgot-section')?.classList.remove('d-none');
+            modal.querySelector('#auth-forgot-form')?.classList.add('d-none');
+            const resetForm = modal.querySelector('#auth-reset-form');
+            if (resetForm) {
+                resetForm.classList.remove('d-none');
+                const tokenInput = modal.querySelector('#auth-reset-token');
+                if (tokenInput) tokenInput.value = token;
+                modal.querySelector('#auth-reset-password')?.focus();
+            }
+        }, 50);
+    }
+
+    /* =====================================================================
      * HEADER USER MENU — Toggle logged-in / logged-out state
      * ===================================================================== */
 
@@ -501,6 +737,12 @@ export class UserAuth {
      */
     initUserMenu() {
         this._updateHeaderState();
+
+        /* #898 follow-up — auto-consume any /login?{token,reset_token,
+           verify_token}=... params landed via a transactional email.
+           Fire-and-forget so the rest of the menu wires up regardless
+           of whether the click-through has already been used. */
+        this._consumeAuthUrlParams().catch(() => { /* non-fatal */ });
 
         /* Refresh cached user info + bump the server-side sliding expiry
            once per boot (#390). Fire-and-forget: never blocks the UI, and
@@ -587,18 +829,101 @@ export class UserAuth {
         const canManage = loggedIn && manageEntitlements.some(
             ent => userHasEntitlement(ent, role)
         );
-        ['nav-manage-divider', 'nav-manage-li'].forEach(id => {
-            const el = document.getElementById(id);
-            if (el) el.classList.toggle('d-none', !canManage);
-        });
+        /* Manage now sits in the Operations group with Statistics
+           (no longer needs its own divider) per the dropdown reorder
+           in #582. Only the <li> itself toggles. */
+        const manageLi = document.getElementById('nav-manage-li');
+        if (manageLi) manageLi.classList.toggle('d-none', !canManage);
 
-        /* Update icon style */
-        const icon = document.getElementById('header-user-icon');
-        if (icon) {
-            icon.className = loggedIn
-                ? 'fa-solid fa-circle-user'
-                : 'fa-solid fa-user';
+        /* Update header user button: signed-in users get a Gravatar
+           (or configured-resolver) avatar; signed-out users keep the
+           generic Font Awesome icon (#581). The button slot is always
+           the same `#header-user-icon` element — we just swap the
+           tag (<i> ↔ <img>) so styling carried by `.btn-header-icon`
+           stays applied. Avatar URL computation is async (SHA-256 via
+           SubtleCrypto), so we fire-and-forget; if it resolves while
+           the user is still signed in, swap; otherwise no-op. */
+        const slot = document.getElementById('header-user-icon');
+        if (!slot) return;
+        if (loggedIn && user) {
+            /* #616 — honour the per-user avatar-service preference. NULL
+               or unrecognised string falls through to the default
+               (Gravatar) inside _avatarUrl. */
+            this._avatarUrl(user.email || user.username, 64, user.avatar_service).then(url => {
+                /* User may have signed out by the time the hash resolves. */
+                if (!this.isLoggedIn()) return;
+                const current = document.getElementById('header-user-icon');
+                if (!current) return;
+                if (current.tagName === 'IMG' && current.getAttribute('src') === url) return;
+                const img = document.createElement('img');
+                img.id = 'header-user-icon';
+                img.src = url;
+                img.alt = '';
+                /* 24px to match the optical weight of the FA / BI glyphs
+                   in the adjacent header buttons (#646). */
+                img.width = 24;
+                img.height = 24;
+                img.className = 'rounded-circle header-user-avatar';
+                img.loading = 'lazy';
+                img.referrerPolicy = 'no-referrer';
+                img.onerror = () => {
+                    img.onerror = null;
+                    img.src = '/assets/avatar-fallback.svg';
+                };
+                current.replaceWith(img);
+            });
+        } else if (slot.tagName !== 'I' || slot.classList.contains('header-user-avatar')) {
+            /* Restore the generic icon for signed-out users. */
+            const i = document.createElement('i');
+            i.id = 'header-user-icon';
+            i.className = 'fa-solid fa-user';
+            i.setAttribute('aria-hidden', 'true');
+            slot.replaceWith(i);
         }
+    }
+
+    /**
+     * Build an avatar URL. Mirrors PHP `userAvatarUrl()` so signed-in
+     * users see the same avatar in both surfaces. Uses SHA-256 via
+     * SubtleCrypto (Gravatar accepts both MD5 (legacy) and SHA-256
+     * (since 2022) — SHA-256 lets us avoid shipping a hand-rolled
+     * hash).
+     *
+     * @param {string} email
+     * @param {number} size
+     * @param {string|null} userOverride Per-user resolver preference
+     *        (#616). NULL = use Gravatar (the default for the JS path).
+     *        One of 'gravatar' | 'libravatar' | 'dicebear' | 'none'.
+     * @returns {Promise<string>}
+     */
+    async _avatarUrl(email, size = 64, userOverride = null) {
+        const e = (email || '').trim().toLowerCase();
+        if (!e || !crypto?.subtle) return '/assets/avatar-fallback.svg';
+        const service = (typeof userOverride === 'string' ? userOverride.trim().toLowerCase() : '') || 'gravatar';
+        if (service === 'none') return '/assets/avatar-fallback.svg';
+
+        const buf = new TextEncoder().encode(e);
+        const hash = await crypto.subtle.digest('SHA-256', buf);
+        const hex = Array.from(new Uint8Array(hash))
+            .map(b => b.toString(16).padStart(2, '0'))
+            .join('');
+
+        if (service === 'libravatar') {
+            return `https://seccdn.libravatar.org/avatar/${hex}?s=${size}&d=identicon&r=g`;
+        }
+        if (service === 'dicebear') {
+            return `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(hex)}&size=${size}`;
+        }
+        /* gravatar (default) — and any unknown string */
+        return `https://www.gravatar.com/avatar/${hex}?s=${size}&d=identicon&r=g`;
+    }
+
+    /* Backwards-compatible alias for the old name (#616). Kept so any
+       external caller still using `_gravatarUrl(email, size)` keeps
+       working — it just calls through to the new resolver with no
+       per-user override. */
+    _gravatarUrl(email, size = 64) {
+        return this._avatarUrl(email, size, null);
     }
 
     /**
@@ -712,6 +1037,18 @@ export class UserAuth {
                                 <label for="auth-username" class="form-label">Username</label>
                                 <input type="text" class="form-control" id="auth-username"
                                        placeholder="Username" autocomplete="username" required>
+                            </div>
+                            <!-- Email is captured on signup so the new account can
+                                 receive a verification email when an email provider
+                                 is configured (#898). Optional today — accounts
+                                 created without one stay EmailVerified=0 and can
+                                 add an address later via account settings. -->
+                            <div class="mb-3" id="auth-email-group" style="display:${mode === 'register' ? '' : 'none'}">
+                                <label for="auth-email-register" class="form-label">
+                                    Email <small class="text-secondary">(optional, for password resets)</small>
+                                </label>
+                                <input type="email" class="form-control" id="auth-email-register"
+                                       placeholder="you@example.com" autocomplete="email">
                             </div>
                             <div class="mb-3">
                                 <label for="auth-password" class="form-label">Password</label>
@@ -832,12 +1169,40 @@ export class UserAuth {
         /* Promote magic-link email as the primary sign-in path (#395).
            For the login flow we hide the password form and reveal the
            email section on open. Users can click "Sign in with a password
-           instead" to fall back to the username/password form. */
+           instead" to fall back to the username/password form.
+
+           BUT only when the deployment actually has an email service
+           configured (#766). On a fresh install with no SMTP set up,
+           emailLoginEnabled comes back false from /api?action=app_status
+           and we leave the password form visible. The "Sign in with
+           email instead" toggle is removed entirely so the user isn't
+           offered a path that can't work. We resolve the flag
+           asynchronously and apply the layout once it lands. The
+           modal opens in the password-form default until then; the
+           snap from "no email path" to "email path promoted" only
+           happens on the very first open and only if the flag flips
+           — subsequent opens hit the cached value with no flicker. */
         if (mode === 'login') {
-            modal.querySelector('#auth-form').style.display = 'none';
-            modal.querySelector('#auth-email-section')?.classList.remove('d-none');
-            modal.querySelector('#auth-toggle').style.display = 'none';
-            modal.querySelector('#auth-forgot-link-wrapper').style.display = 'none';
+            this._ensureAppStatus().then((status) => {
+                const emailEnabled = status?.emailLoginEnabled !== false;
+                if (emailEnabled) {
+                    modal.querySelector('#auth-form').style.display = 'none';
+                    modal.querySelector('#auth-email-section')?.classList.remove('d-none');
+                    modal.querySelector('#auth-toggle').style.display = 'none';
+                    modal.querySelector('#auth-forgot-link-wrapper').style.display = 'none';
+                } else {
+                    /* Email service unconfigured — strip every entry
+                       point that would lead the user there. */
+                    const emailSection = modal.querySelector('#auth-email-section');
+                    if (emailSection) emailSection.remove();
+                    const emailToggle = modal.querySelector('#auth-email-toggle-wrapper');
+                    if (emailToggle) emailToggle.remove();
+                    /* Keep the password form, the registration toggle
+                       and the forgot-password link visible — those all
+                       work without email (the forgot flow uses an
+                       admin-issued reset token, not email). */
+                }
+            });
         }
 
         /* Toggle between login and register */
@@ -847,6 +1212,8 @@ export class UserAuth {
             modal.querySelector('#auth-modal-title').textContent = isReg ? 'Create Account' : 'Sign In';
             modal.querySelector('#auth-submit-text').textContent = isReg ? 'Create Account' : 'Sign In';
             modal.querySelector('#auth-display-name-group').style.display = isReg ? '' : 'none';
+            const emailGroup = modal.querySelector('#auth-email-group');
+            if (emailGroup) emailGroup.style.display = isReg ? '' : 'none';
             modal.querySelector('#auth-forgot-link-wrapper').style.display = isReg ? 'none' : '';
             modal.querySelector('#auth-toggle').innerHTML = isReg
                 ? 'Already have an account? <strong>Sign in</strong>'
@@ -1083,6 +1450,7 @@ export class UserAuth {
             const username = modal.querySelector('#auth-username')?.value.trim();
             const password = modal.querySelector('#auth-password')?.value;
             const displayName = modal.querySelector('#auth-display-name')?.value.trim();
+            const email = modal.querySelector('#auth-email-register')?.value.trim() || '';
             const errorEl = modal.querySelector('#auth-error');
             const spinner = modal.querySelector('#auth-submit-spinner');
             const submitBtn = modal.querySelector('#auth-submit-btn');
@@ -1100,7 +1468,7 @@ export class UserAuth {
 
             let result;
             if (currentMode === 'register') {
-                result = await this.register(username, password, displayName || username);
+                result = await this.register(username, password, displayName || username, email);
             } else {
                 result = await this.login(username, password);
             }
@@ -1112,10 +1480,19 @@ export class UserAuth {
                 bsModal.hide();
                 this._updateHeaderState();
                 this.app.setList?.renderSyncBar();
-                this.app.showToast(
-                    currentMode === 'register' ? 'Account created! Syncing setlists...' : 'Signed in! Syncing setlists...',
-                    'success', 3000
-                );
+                /* Honest toast (#898). When the user supplied an email
+                   AND the verification email actually went out, tell
+                   them to check it. Otherwise stay quiet about email
+                   so we never claim delivery that didn't happen. */
+                let toastMsg;
+                if (currentMode === 'register' && result.verificationEmailSent) {
+                    toastMsg = 'Account created! Check your email to verify your address. Syncing setlists...';
+                } else if (currentMode === 'register') {
+                    toastMsg = 'Account created! Syncing setlists...';
+                } else {
+                    toastMsg = 'Signed in! Syncing setlists...';
+                }
+                this.app.showToast(toastMsg, 'success', 4000);
                 this.triggerSetlistSync();
             } else {
                 errorEl.textContent = result.error;

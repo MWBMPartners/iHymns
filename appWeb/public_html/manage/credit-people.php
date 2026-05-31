@@ -42,6 +42,17 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* Shared credit-people helpers (#719 PR 2d) — link-type catalogue +
+   normalisers + flag-columns-exist probe. Same helpers used by the
+   admin_credit_person_* API endpoints in /api.php so a tweak to the
+   link-type set or the row-shape rules lands on both surfaces. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'credit_people_helpers.php';
+/* Places registry helper — exposes placesUpsertFromPayload() +
+   creditPeoplePlaceIdColumnsExist(), used by the add / update_person
+   handlers to persist BirthPlaceId / DeathPlaceId alongside the
+   legacy BirthPlace / DeathPlace display strings. Schema-tolerant —
+   no-ops on installs that haven't run migrate-places.php yet. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -82,45 +93,33 @@ $logCreditPerson = static function (string $action, string $entityId, array $det
 };
 
 /* ----------------------------------------------------------------------
- * Helpers — link / IPI sub-form normalisation
+ * Helpers — link / IPI sub-form normalisation (#719 PR 2d)
  *
- * The Add and Update_person actions both accept arrays of links and
- * IPI numbers in the POST body, posted as `links[i][type|url|label]`
- * and `ipi[i][number|name_used|notes]`. Empty rows (no URL / no
- * IPI number) are silently dropped. Returns a clean array of
- * row-shaped arrays ready to INSERT.
+ * The link-type catalogue, the two normalisers, and the
+ * flag-columns-exist probe now live in
+ * /includes/credit_people_helpers.php. The closures kept here are
+ * thin wrappers so the existing call sites below ($normaliseLinks,
+ * $normaliseIpi, _cpFlagsColumnsExist) keep working unchanged.
  * ---------------------------------------------------------------------- */
-$normaliseLinks = static function (mixed $raw): array {
-    if (!is_array($raw)) return [];
-    $out = [];
-    foreach ($raw as $i => $row) {
-        if (!is_array($row)) continue;
-        $url = trim((string)($row['url'] ?? ''));
-        if ($url === '') continue;
-        $out[] = [
-            'type'       => trim((string)($row['type']  ?? 'other')),
-            'url'        => $url,
-            'label'      => trim((string)($row['label'] ?? '')) ?: null,
-            'sort_order' => (int)($row['sort_order'] ?? $i),
-        ];
-    }
-    return $out;
-};
-$normaliseIpi = static function (mixed $raw): array {
-    if (!is_array($raw)) return [];
-    $out = [];
-    foreach ($raw as $row) {
-        if (!is_array($row)) continue;
-        $num = trim((string)($row['number'] ?? ''));
-        if ($num === '') continue;
-        $out[] = [
-            'number'    => $num,
-            'name_used' => trim((string)($row['name_used'] ?? '')) ?: null,
-            'notes'     => trim((string)($row['notes']     ?? '')) ?: null,
-        ];
-    }
-    return $out;
-};
+$ALIAS_TYPES         = CREDIT_PERSON_ALIAS_TYPES;
+$normaliseLinks      = static fn(\mysqli $db, mixed $raw): array => normaliseCreditPersonLinks($db, $raw);
+$normaliseIpi        = static fn(mixed $raw): array => normaliseCreditPersonIpi($raw);
+$normaliseIsni       = static fn(mixed $raw): array => normaliseCreditPersonIsni($raw);
+$normaliseAliases    = static fn(mixed $raw): array => normaliseCreditPersonAliases($raw);
+
+/* External-link type registry — pulled inside each action handler
+   below from $linkTypesForPerson, populated near the page-render
+   section once $db is in scope. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes'
+    . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
+
+/* Wrapper kept under the original snake_case private-prefix name so
+   existing call sites in this file keep working without further
+   touch-up. */
+function _cpFlagsColumnsExist(\mysqli $db): bool
+{
+    return creditPeopleFlagsColumnsExist($db);
+}
 
 /* ----------------------------------------------------------------------
  * GET endpoint — view_songs JSON
@@ -193,6 +192,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['action'] ?? '') === 
         exit;
     } catch (\Throwable $e) {
         error_log('[manage/credit-people.php] view_songs failed: ' . $e->getMessage());
+        logActivityError('admin.credit_people.view_songs', 'credit_person', '', $e);
         http_response_code(500);
         echo json_encode(['error' => 'Could not load songs.']);
         exit;
@@ -230,9 +230,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $birthDate   = trim((string)($_POST['birth_date']   ?? '')) ?: null;
                 $deathPlace  = trim((string)($_POST['death_place']  ?? '')) ?: null;
                 $deathDate   = trim((string)($_POST['death_date']   ?? '')) ?: null;
+                /* Places registry FKs — the live-autocomplete module
+                   in js/modules/place-search.js fills these hidden
+                   inputs with the tblPlaces.Id of the picked
+                   candidate. Empty when the curator typed free text,
+                   in which case we persist the display string only.
+                   Schema-tolerant: the per-place UPDATE below skips
+                   itself when migrate-places.php hasn't run yet. */
+                $birthPlaceId = (int)($_POST['birth_place_id'] ?? 0) ?: null;
+                $deathPlaceId = (int)($_POST['death_place_id'] ?? 0) ?: null;
                 $notes       = $notesRaw !== '' ? $notesRaw : null;
-                $links       = $normaliseLinks($_POST['links'] ?? null);
-                $ipi         = $normaliseIpi($_POST['ipi']     ?? null);
+                $links       = $normaliseLinks($db, $_POST['links']     ?? null);
+                $ipi         = $normaliseIpi($_POST['ipi']         ?? null);
+                $isni        = $normaliseIsni($_POST['isni']        ?? null);
+                $aliases     = $normaliseAliases($_POST['aliases'] ?? null);
+                /* #584 / #585 — classification flags. The two are
+                   mutually exclusive in the UI; if both arrive we
+                   prefer special-case (it's the more constraining
+                   flag — it suppresses biographical fields). */
+                $isSpecialCase = !empty($_POST['is_special_case']) ? 1 : 0;
+                $isGroup       = !empty($_POST['is_group'])        ? 1 : 0;
+                if ($isSpecialCase && $isGroup) { $isGroup = 0; }
+
+                /* #934 — structured-name parts. Only meaningful for
+                   individuals; for Group / Special-case rows we leave
+                   them NULL and use Name as-is. For individuals, Name
+                   is recomputed from the three parts so the canonical
+                   spelling stays consistent regardless of what the
+                   client posted. */
+                $firstNamesRaw = trim((string)($_POST['first_names'] ?? ''));
+                $surnameRaw    = trim((string)($_POST['surname']     ?? ''));
+                $suffixRaw     = trim((string)($_POST['suffix']      ?? ''));
+                $isIndividual  = (!$isSpecialCase && !$isGroup);
+                if ($isIndividual && ($firstNamesRaw !== '' || $surnameRaw !== '')) {
+                    $name = composePersonName($firstNamesRaw, $surnameRaw, $suffixRaw);
+                }
+                $firstNames = $isIndividual && $firstNamesRaw !== '' ? $firstNamesRaw : null;
+                $surname    = $isIndividual && $surnameRaw    !== '' ? $surnameRaw    : null;
+                $suffix     = $isIndividual && $suffixRaw     !== '' ? $suffixRaw     : null;
 
                 if ($name === '')                       { $error = 'Name is required.'; break; }
                 if (mb_strlen($name) > 255)             { $error = 'Name must be 255 characters or fewer.'; break; }
@@ -251,44 +286,148 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $db->begin_transaction();
                 try {
-                    $stmt = $db->prepare(
-                        'INSERT INTO tblCreditPeople
-                            (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate)
-                         VALUES (?, ?, ?, ?, ?, ?)'
-                    );
-                    /* All six columns are strings (nullable). DATE columns
-                       accept the YYYY-MM-DD format we validated above; null
-                       passes through correctly with type 's'. */
-                    $stmt->bind_param('ssssss', $name, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate);
+                    /* Detect whether the flag columns from #584/#585 are
+                       present yet (#630). On a partly-migrated install
+                       — flags migration not applied — the INSERT must
+                       skip those columns rather than throw "Unknown
+                       column", which is what surfaced as the
+                       "Database error" banner before #635 unmasked it. */
+                    $hasFlagsCols = _cpFlagsColumnsExist($db);
+                    /* #934 — name-parts columns only present after the
+                       structured-name migration. Pre-migration installs
+                       fall through to the legacy INSERT shape; the three
+                       parts simply aren't persisted yet. */
+                    $hasNameParts = creditPeopleNamePartsColumnsExist($db);
+                    /* Slug — NOT NULL DEFAULT '' with UNIQUE uk_Slug
+                       per migrate-credit-people-slug.php. Every INSERT
+                       MUST carry a slug or it'll trip the orphan
+                       empty-Slug collision documented in
+                       migrate-credit-people-slug-rebackfill.php.
+                       Returns '' when the column doesn't exist yet so
+                       a pre-migration install can still INSERT — the
+                       helper omits the column conditionally below. */
+                    $slug         = generateUniqueCreditPersonSlug($db, $name);
+                    $hasSlugCol   = $slug !== '';
+                    if ($hasFlagsCols && $hasNameParts && $hasSlugCol) {
+                        $stmt = $db->prepare(
+                            'INSERT INTO tblCreditPeople
+                                (Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate,
+                                 IsSpecialCase, IsGroup, FirstNames, Surname, Suffix)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                        );
+                        $stmt->bind_param('sssssssiisss',
+                            $name, $slug, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
+                            $isSpecialCase, $isGroup,
+                            $firstNames, $surname, $suffix
+                        );
+                    } elseif ($hasFlagsCols && $hasNameParts) {
+                        $stmt = $db->prepare(
+                            'INSERT INTO tblCreditPeople
+                                (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate,
+                                 IsSpecialCase, IsGroup, FirstNames, Surname, Suffix)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                        );
+                        $stmt->bind_param('ssssssiisss',
+                            $name, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
+                            $isSpecialCase, $isGroup,
+                            $firstNames, $surname, $suffix
+                        );
+                    } elseif ($hasFlagsCols && $hasSlugCol) {
+                        $stmt = $db->prepare(
+                            'INSERT INTO tblCreditPeople
+                                (Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate, IsSpecialCase, IsGroup)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                        );
+                        $stmt->bind_param('sssssssii',
+                            $name, $slug, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
+                            $isSpecialCase, $isGroup
+                        );
+                    } elseif ($hasFlagsCols) {
+                        $stmt = $db->prepare(
+                            'INSERT INTO tblCreditPeople
+                                (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate, IsSpecialCase, IsGroup)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+                        );
+                        $stmt->bind_param('ssssssii',
+                            $name, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
+                            $isSpecialCase, $isGroup
+                        );
+                    } elseif ($hasSlugCol) {
+                        $stmt = $db->prepare(
+                            'INSERT INTO tblCreditPeople
+                                (Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate)
+                             VALUES (?, ?, ?, ?, ?, ?, ?)'
+                        );
+                        $stmt->bind_param('sssssss',
+                            $name, $slug, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate
+                        );
+                    } else {
+                        $stmt = $db->prepare(
+                            'INSERT INTO tblCreditPeople
+                                (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate)
+                             VALUES (?, ?, ?, ?, ?, ?)'
+                        );
+                        $stmt->bind_param('ssssss',
+                            $name, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate
+                        );
+                    }
                     $stmt->execute();
                     $newId = (int)$db->insert_id;
                     $stmt->close();
 
+                    /* Places FK assignment — separate UPDATE so the
+                       multi-branch INSERT shapes above don't have to
+                       care about the place-id columns. Skipped when
+                       migrate-places.php hasn't landed yet. */
+                    if (creditPeoplePlaceIdColumnsExist($db)) {
+                        $stmt = $db->prepare(
+                            'UPDATE tblCreditPeople
+                                SET BirthPlaceId = ?, DeathPlaceId = ?
+                              WHERE Id = ?'
+                        );
+                        $stmt->bind_param('iii', $birthPlaceId, $deathPlaceId, $newId);
+                        $stmt->execute();
+                        $stmt->close();
+                    }
+
                     if ($links) {
                         $linkStmt = $db->prepare(
-                            'INSERT INTO tblCreditPersonLinks
-                                (CreditPersonId, LinkType, Url, Label, SortOrder)
+                            'INSERT INTO tblCreditPersonExternalLinks
+                                (CreditPersonId, LinkTypeId, Url, Note, SortOrder)
                              VALUES (?, ?, ?, ?, ?)'
                         );
                         foreach ($links as $l) {
-                            $linkStmt->bind_param('isssi',
-                                $newId, $l['type'], $l['url'], $l['label'], $l['sort_order']);
+                            $linkStmt->bind_param('iissi',
+                                $newId, $l['type_id'], $l['url'], $l['label'], $l['sort_order']);
                             $linkStmt->execute();
                         }
                         $linkStmt->close();
                     }
-                    if ($ipi) {
-                        $ipiStmt = $db->prepare(
-                            'INSERT INTO tblCreditPersonIPI
-                                (CreditPersonId, IPINumber, NameUsed, Notes)
-                             VALUES (?, ?, ?, ?)'
+                    if ($ipi || $isni) {
+                        $idStmt = $db->prepare(
+                            'INSERT INTO tblCreditPersonIdentifiers
+                                (CreditPersonId, IdentifierType, IdentifierValue, NameUsed, Notes)
+                             VALUES (?, ?, ?, ?, ?)'
                         );
+                        $type = 'ipi';
                         foreach ($ipi as $r) {
-                            $ipiStmt->bind_param('isss',
-                                $newId, $r['number'], $r['name_used'], $r['notes']);
-                            $ipiStmt->execute();
+                            $idStmt->bind_param('issss',
+                                $newId, $type, $r['number'], $r['name_used'], $r['notes']);
+                            $idStmt->execute();
                         }
-                        $ipiStmt->close();
+                        $type = 'isni';
+                        foreach ($isni as $r) {
+                            $idStmt->bind_param('issss',
+                                $newId, $type, $r['number'], $r['name_used'], $r['notes']);
+                            $idStmt->execute();
+                        }
+                        $idStmt->close();
+                    }
+                    /* AKA / alias rows — schema-tolerant (helper no-ops
+                       cleanly on installs that haven't run the
+                       migrate-credit-people-aliases.php migration yet). */
+                    if ($aliases) {
+                        replaceCreditPersonAliases($db, $newId, $aliases);
                     }
                     $db->commit();
 
@@ -303,6 +442,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         ], static fn($v) => $v !== null),
                         'link_count'  => count($links),
                         'ipi_count'   => count($ipi),
+                        'isni_count'  => count($isni),
                     ]);
                     $success = "Person '{$name}' added to the registry.";
                 } catch (\Throwable $e) {
@@ -329,9 +469,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $birthDate   = trim((string)($_POST['birth_date']   ?? '')) ?: null;
                 $deathPlace  = trim((string)($_POST['death_place']  ?? '')) ?: null;
                 $deathDate   = trim((string)($_POST['death_date']   ?? '')) ?: null;
+                $birthPlaceId = (int)($_POST['birth_place_id'] ?? 0) ?: null;
+                $deathPlaceId = (int)($_POST['death_place_id'] ?? 0) ?: null;
                 $notes       = $notesRaw !== '' ? $notesRaw : null;
-                $links       = $normaliseLinks($_POST['links'] ?? null);
-                $ipi         = $normaliseIpi($_POST['ipi']     ?? null);
+                $links       = $normaliseLinks($db, $_POST['links']     ?? null);
+                $ipi         = $normaliseIpi($_POST['ipi']         ?? null);
+                $isni        = $normaliseIsni($_POST['isni']        ?? null);
+                $aliases     = $normaliseAliases($_POST['aliases'] ?? null);
+                $isSpecialCase = !empty($_POST['is_special_case']) ? 1 : 0;
+                $isGroup       = !empty($_POST['is_group'])        ? 1 : 0;
+                if ($isSpecialCase && $isGroup) { $isGroup = 0; }
+
+                /* #934 — structured-name parts. For individuals we
+                   recompose Name from the three fields and persist all
+                   four columns; the rename guard below still rejects a
+                   genuine Name change so curators can refine FirstNames
+                   / Surname / Suffix without triggering it as long as
+                   the composed Name matches the stored Name. For Group
+                   / Special-case rows the three columns get NULL'd. */
+                $firstNamesRaw = trim((string)($_POST['first_names'] ?? ''));
+                $surnameRaw    = trim((string)($_POST['surname']     ?? ''));
+                $suffixRaw     = trim((string)($_POST['suffix']      ?? ''));
+                $isIndividual  = (!$isSpecialCase && !$isGroup);
+                if ($isIndividual && ($firstNamesRaw !== '' || $surnameRaw !== '')) {
+                    $name = composePersonName($firstNamesRaw, $surnameRaw, $suffixRaw);
+                }
+                $firstNames = $isIndividual && $firstNamesRaw !== '' ? $firstNamesRaw : null;
+                $surname    = $isIndividual && $surnameRaw    !== '' ? $surnameRaw    : null;
+                $suffix     = $isIndividual && $suffixRaw     !== '' ? $suffixRaw     : null;
 
                 if ($id <= 0)                           { $error = 'Person id missing.'; break; }
                 if ($name === '')                       { $error = 'Name is required.'; break; }
@@ -359,56 +524,117 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 try {
                     /* Update the registry row. Name is not in the SET
                        clause — renames go through the rename action. */
-                    $stmt = $db->prepare(
-                        'UPDATE tblCreditPeople
-                            SET Notes = ?, BirthPlace = ?, BirthDate = ?,
-                                DeathPlace = ?, DeathDate = ?
-                          WHERE Id = ?'
-                    );
-                    $stmt->bind_param('sssssi',
-                        $notes, $birthPlace, $birthDate, $deathPlace, $deathDate, $id);
+                    /* Gate the flag-column writes on column existence
+                       (#630). Same partly-migrated tolerance as the
+                       add path. */
+                    /* #934 — name-parts columns gate. When present they
+                       update alongside the existing fields; pre-migration
+                       installs fall through to the legacy UPDATE shape. */
+                    $hasNamePartsCols = creditPeopleNamePartsColumnsExist($db);
+                    if (_cpFlagsColumnsExist($db) && $hasNamePartsCols) {
+                        $stmt = $db->prepare(
+                            'UPDATE tblCreditPeople
+                                SET Notes = ?, BirthPlace = ?, BirthDate = ?,
+                                    DeathPlace = ?, DeathDate = ?,
+                                    IsSpecialCase = ?, IsGroup = ?,
+                                    FirstNames = ?, Surname = ?, Suffix = ?
+                              WHERE Id = ?'
+                        );
+                        $stmt->bind_param('sssssiisssi',
+                            $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
+                            $isSpecialCase, $isGroup,
+                            $firstNames, $surname, $suffix, $id);
+                    } elseif (_cpFlagsColumnsExist($db)) {
+                        $stmt = $db->prepare(
+                            'UPDATE tblCreditPeople
+                                SET Notes = ?, BirthPlace = ?, BirthDate = ?,
+                                    DeathPlace = ?, DeathDate = ?,
+                                    IsSpecialCase = ?, IsGroup = ?
+                              WHERE Id = ?'
+                        );
+                        $stmt->bind_param('sssssiii',
+                            $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
+                            $isSpecialCase, $isGroup, $id);
+                    } else {
+                        $stmt = $db->prepare(
+                            'UPDATE tblCreditPeople
+                                SET Notes = ?, BirthPlace = ?, BirthDate = ?,
+                                    DeathPlace = ?, DeathDate = ?
+                              WHERE Id = ?'
+                        );
+                        $stmt->bind_param('sssssi',
+                            $notes, $birthPlace, $birthDate, $deathPlace, $deathDate, $id);
+                    }
                     $stmt->execute();
                     $stmt->close();
+
+                    /* Places FK assignment — written unconditionally
+                       so unsetting a previously-picked place clears
+                       the FK back to NULL. Schema-tolerant — skipped
+                       on installs that haven't run migrate-places.php
+                       yet. */
+                    if (creditPeoplePlaceIdColumnsExist($db)) {
+                        $stmt = $db->prepare(
+                            'UPDATE tblCreditPeople
+                                SET BirthPlaceId = ?, DeathPlaceId = ?
+                              WHERE Id = ?'
+                        );
+                        $stmt->bind_param('iii', $birthPlaceId, $deathPlaceId, $id);
+                        $stmt->execute();
+                        $stmt->close();
+                    }
 
                     /* Child rows: DELETE then INSERT — simpler than
                        diffing and the per-person row counts are small
                        (typically < 10 each). The child Ids change as a
                        side effect, but no other table references them. */
-                    $del = $db->prepare('DELETE FROM tblCreditPersonLinks WHERE CreditPersonId = ?');
+                    $del = $db->prepare('DELETE FROM tblCreditPersonExternalLinks WHERE CreditPersonId = ?');
                     $del->bind_param('i', $id);
                     $del->execute();
                     $del->close();
                     if ($links) {
                         $linkStmt = $db->prepare(
-                            'INSERT INTO tblCreditPersonLinks
-                                (CreditPersonId, LinkType, Url, Label, SortOrder)
+                            'INSERT INTO tblCreditPersonExternalLinks
+                                (CreditPersonId, LinkTypeId, Url, Note, SortOrder)
                              VALUES (?, ?, ?, ?, ?)'
                         );
                         foreach ($links as $l) {
-                            $linkStmt->bind_param('isssi',
-                                $id, $l['type'], $l['url'], $l['label'], $l['sort_order']);
+                            $linkStmt->bind_param('iissi',
+                                $id, $l['type_id'], $l['url'], $l['label'], $l['sort_order']);
                             $linkStmt->execute();
                         }
                         $linkStmt->close();
                     }
 
-                    $del = $db->prepare('DELETE FROM tblCreditPersonIPI WHERE CreditPersonId = ?');
+                    $del = $db->prepare('DELETE FROM tblCreditPersonIdentifiers WHERE CreditPersonId = ?');
                     $del->bind_param('i', $id);
                     $del->execute();
                     $del->close();
-                    if ($ipi) {
-                        $ipiStmt = $db->prepare(
-                            'INSERT INTO tblCreditPersonIPI
-                                (CreditPersonId, IPINumber, NameUsed, Notes)
-                             VALUES (?, ?, ?, ?)'
+                    if ($ipi || $isni) {
+                        $idStmt = $db->prepare(
+                            'INSERT INTO tblCreditPersonIdentifiers
+                                (CreditPersonId, IdentifierType, IdentifierValue, NameUsed, Notes)
+                             VALUES (?, ?, ?, ?, ?)'
                         );
+                        $type = 'ipi';
                         foreach ($ipi as $r) {
-                            $ipiStmt->bind_param('isss',
-                                $id, $r['number'], $r['name_used'], $r['notes']);
-                            $ipiStmt->execute();
+                            $idStmt->bind_param('issss',
+                                $id, $type, $r['number'], $r['name_used'], $r['notes']);
+                            $idStmt->execute();
                         }
-                        $ipiStmt->close();
+                        $type = 'isni';
+                        foreach ($isni as $r) {
+                            $idStmt->bind_param('issss',
+                                $id, $type, $r['number'], $r['name_used'], $r['notes']);
+                            $idStmt->execute();
+                        }
+                        $idStmt->close();
                     }
+                    /* Replace the alias set unconditionally — the curator's
+                       posted list is the new truth; an empty list deletes
+                       any pre-existing aliases. Schema-tolerant on installs
+                       that haven't run migrate-credit-people-aliases.php. */
+                    replaceCreditPersonAliases($db, $id, $aliases);
                     $db->commit();
 
                     /* Compute the changed-fields list for audit. The
@@ -435,6 +661,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'after'      => array_intersect_key($afterRow,  array_flip($changed)),
                         'link_count' => count($links),
                         'ipi_count'  => count($ipi),
+                        'isni_count' => count($isni),
                     ]);
                     $success = "Person '{$name}' updated.";
                 } catch (\Throwable $e) {
@@ -455,12 +682,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
              * actually meant Merge instead).
              * -------------------------------------------------------- */
             case 'rename': {
-                $id      = (int)($_POST['id'] ?? 0);
-                $newName = trim((string)($_POST['new_name'] ?? ''));
+                $id          = (int)($_POST['id'] ?? 0);
+                $sourceName  = trim((string)($_POST['source_name'] ?? ''));
+                $newName     = trim((string)($_POST['new_name'] ?? ''));
 
-                if ($id <= 0)                  { $error = 'Person id missing.'; break; }
+                if ($id <= 0 && $sourceName === '') { $error = 'Person id or source name missing.'; break; }
                 if ($newName === '')           { $error = 'New name is required.'; break; }
                 if (mb_strlen($newName) > 255) { $error = 'Name must be 255 characters or fewer.'; break; }
+
+                /* In-use-only rename support (#626). When the row isn't
+                   in the registry yet (Stuart Townend duplicate case),
+                   the JS posts source_name instead of (or alongside)
+                   id; we auto-register a row for it on the fly so the
+                   rest of the rename code path doesn't have to branch. */
+                if ($id <= 0 && $sourceName !== '') {
+                    $reg = $db->prepare('SELECT Id FROM tblCreditPeople WHERE Name = ?');
+                    $reg->bind_param('s', $sourceName);
+                    $reg->execute();
+                    $regRow = $reg->get_result()->fetch_row();
+                    $reg->close();
+                    if ($regRow) {
+                        $id = (int)$regRow[0];
+                    } else {
+                        /* Route through the shared helper so the new
+                           registry row carries a Slug — direct
+                           `INSERT (Name)` would default Slug='' and
+                           collide on uk_Slug whenever the orphan
+                           empty-Slug row exists. */
+                        $id = registerCreditPersonByName($db, $sourceName);
+                    }
+                }
 
                 /* Look up the current name + check that the target
                    spelling isn't already in use by a different row. */
@@ -551,8 +802,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             case 'merge': {
                 $sourceId   = (int)($_POST['source_id'] ?? 0);
                 $targetId   = (int)($_POST['target_id'] ?? 0);
+                $sourceName = trim((string)($_POST['source_name'] ?? ''));
+                $targetName = trim((string)($_POST['target_name'] ?? ''));
                 $keepLinks  = array_map('intval', (array)($_POST['keep_link_ids'] ?? []));
                 $keepIpi    = array_map('intval', (array)($_POST['keep_ipi_ids']  ?? []));
+
+                /* In-use-only merge support (#626) — the JS posts a
+                   *_name fallback when a row isn't yet in the registry
+                   (e.g. Stuart Townend duplicates). Auto-register
+                   either side as needed so the rest of the merge code
+                   path can assume both sides have a registry id. */
+                $resolvePersonId = static function (int $id, string $name) use ($db): int {
+                    if ($id > 0)       return $id;
+                    /* registerCreditPersonByName handles the
+                       lookup-or-insert with a slug — same shape this
+                       closure used to have, minus the empty-slug
+                       collision footgun. */
+                    return registerCreditPersonByName($db, $name);
+                };
+                $sourceId = $resolvePersonId($sourceId, $sourceName);
+                $targetId = $resolvePersonId($targetId, $targetName);
 
                 if ($sourceId <= 0 || $targetId <= 0) { $error = 'Both source and target are required.'; break; }
                 if ($sourceId === $targetId)          { $error = 'Source and target must be different people.'; break; }
@@ -600,13 +869,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     /* Count links currently on the source so we can report
                        kept-vs-dropped accurately. */
-                    $stmt = $db->prepare('SELECT Id FROM tblCreditPersonLinks WHERE CreditPersonId = ?');
+                    $stmt = $db->prepare('SELECT Id FROM tblCreditPersonExternalLinks WHERE CreditPersonId = ?');
                     $stmt->bind_param('i', $sourceId);
                     $stmt->execute();
                     $sourceLinkIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
                     $stmt->close();
 
-                    $stmt = $db->prepare('SELECT Id FROM tblCreditPersonIPI WHERE CreditPersonId = ?');
+                    $stmt = $db->prepare('SELECT Id FROM tblCreditPersonIdentifiers WHERE CreditPersonId = ?');
                     $stmt->bind_param('i', $sourceId);
                     $stmt->execute();
                     $sourceIpiIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
@@ -619,7 +888,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $toMove = array_intersect($keepLinks, array_map('intval', $sourceLinkIds));
                         if ($toMove) {
                             $upd = $db->prepare(
-                                'UPDATE tblCreditPersonLinks SET CreditPersonId = ? WHERE Id = ? AND CreditPersonId = ?'
+                                'UPDATE tblCreditPersonExternalLinks SET CreditPersonId = ? WHERE Id = ? AND CreditPersonId = ?'
                             );
                             foreach ($toMove as $lid) {
                                 $upd->bind_param('iii', $targetId, $lid, $sourceId);
@@ -635,7 +904,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $toMove = array_intersect($keepIpi, array_map('intval', $sourceIpiIds));
                         if ($toMove) {
                             $upd = $db->prepare(
-                                'UPDATE tblCreditPersonIPI SET CreditPersonId = ? WHERE Id = ? AND CreditPersonId = ?'
+                                'UPDATE tblCreditPersonIdentifiers SET CreditPersonId = ? WHERE Id = ? AND CreditPersonId = ?'
                             );
                             foreach ($toMove as $iid) {
                                 $upd->bind_param('iii', $targetId, $iid, $sourceId);
@@ -745,7 +1014,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     } catch (\Throwable $e) {
         error_log('[manage/credit-people.php] action=' . $action . ': ' . $e->getMessage());
-        $error = $error ?: 'Database error — check server logs for details.';
+        logActivityError('admin.credit_people.save', 'credit_person', '', $e, [
+            'action' => $action,
+        ]);
+        if ($error === '') {
+            /* This page is gated to global_admin — surfacing the
+               actual exception message + file:line is a UX win and
+               carries no security trade-off (global admins are
+               trusted with DB internals). Closes #635. */
+            $where = $e->getFile() ? (' ' . basename($e->getFile()) . ':' . $e->getLine()) : '';
+            $error = 'Database error: ' . $e->getMessage() . $where;
+        }
     }
 }
 
@@ -765,6 +1044,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
  * ---------------------------------------------------------------------- */
 
 $people = [];
+$countryOptions = [];
 
 try {
     $db = getDbMysqli();
@@ -801,6 +1081,60 @@ try {
        table grows large enough that the per-row sub-select cost shows
        up, swap to a GROUP BY join. Not now — current row counts make
        this trivially fast. */
+    /* Build the SELECT with the classification flags from #584 / #585.
+       The flags are loaded as 0/1 ints so the PHP-side merge below
+       can pass them straight to JSON without further casting; the
+       table renderer guards against missing columns when running on
+       a schema that hasn't yet had migrate-credit-people-flags
+       applied. */
+    $hasFlags = false;
+    $colCheck = $db->query(
+        "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'tblCreditPeople'
+            AND COLUMN_NAME  = 'IsSpecialCase'"
+    );
+    if ($colCheck && $colCheck->fetch_row() !== null) { $hasFlags = true; }
+    if ($colCheck) { $colCheck->close(); }
+
+    $flagCols = $hasFlags
+        ? ', p.IsSpecialCase, p.IsGroup'
+        : ', 0 AS IsSpecialCase, 0 AS IsGroup';
+
+    /* #934 — pull the structured-name columns when present so the Edit
+       drawer can pre-fill the three split fields. On a partly-migrated
+       install (column missing) we surface NULLs and the form falls back
+       to its single-Name behaviour. */
+    $hasNameParts = creditPeopleNamePartsColumnsExist($db);
+    $namePartCols = $hasNameParts
+        ? ', p.FirstNames, p.Surname, p.Suffix'
+        : ', NULL AS FirstNames, NULL AS Surname, NULL AS Suffix';
+
+    /* Places registry FKs — present after migrate-places.php has
+       landed. Surfaced to JS so the Edit drawer can pre-fill the
+       hidden place-id inputs alongside the visible display string
+       (the place-search module re-uses these to mark the input as
+       "already picked" without re-fetching). */
+    $hasPlaceIds = creditPeoplePlaceIdColumnsExist($db);
+    $placeIdCols = $hasPlaceIds
+        ? ', p.BirthPlaceId, p.DeathPlaceId'
+        : ', NULL AS BirthPlaceId, NULL AS DeathPlaceId';
+
+    /* Country / region surface (places sweep follow-up) — LEFT JOIN
+       to tblPlaces on the birth-place FK so the list page can filter
+       by country. The JOIN is only added when both the FK columns
+       on tblCreditPeople AND tblPlaces itself are present. A row
+       without a picked place (or on a pre-migration install) gets
+       NULL country and falls under the "All" filter only. */
+    $hasPlacesTable = placesTableExists($db);
+    if ($hasPlaceIds && $hasPlacesTable) {
+        $countryCols = ', bp.Country AS BirthCountry, bp.CountryCode AS BirthCountryCode';
+        $countryJoin = ' LEFT JOIN tblPlaces bp ON bp.Id = p.BirthPlaceId';
+    } else {
+        $countryCols = ', NULL AS BirthCountry, NULL AS BirthCountryCode';
+        $countryJoin = '';
+    }
+
     $registrySql = "
         SELECT p.Id,
                p.Name,
@@ -810,9 +1144,15 @@ try {
                p.DeathPlace,
                p.DeathDate,
                p.UpdatedAt,
-               (SELECT COUNT(*) FROM tblCreditPersonLinks l WHERE l.CreditPersonId = p.Id) AS LinkCount,
-               (SELECT COUNT(*) FROM tblCreditPersonIPI   i WHERE i.CreditPersonId = p.Id) AS IPICount
+               (SELECT COUNT(*) FROM tblCreditPersonExternalLinks l WHERE l.CreditPersonId = p.Id) AS LinkCount,
+               (SELECT COUNT(*) FROM tblCreditPersonIdentifiers i WHERE i.CreditPersonId = p.Id AND i.IdentifierType = 'ipi')  AS IPICount,
+               (SELECT COUNT(*) FROM tblCreditPersonIdentifiers i WHERE i.CreditPersonId = p.Id AND i.IdentifierType = 'isni') AS ISNICount
+               {$flagCols}
+               {$namePartCols}
+               {$placeIdCols}
+               {$countryCols}
           FROM tblCreditPeople p
+          {$countryJoin}
     ";
     $stmt = $db->prepare($registrySql);
     $stmt->execute();
@@ -824,40 +1164,61 @@ try {
        child tables are small (a handful of rows per person, low
        hundreds total), so loading them all is cheaper than fetching
        per-person on demand from JS. */
-    $linksByPerson = [];
-    $ipiByPerson   = [];
+    $linksByPerson   = [];
+    $ipiByPerson     = [];
+    $isniByPerson    = [];
+    $aliasesByPerson = [];
     $stmt = $db->prepare(
-        'SELECT Id, CreditPersonId, LinkType, Url, Label, SortOrder
-           FROM tblCreditPersonLinks
+        'SELECT Id, CreditPersonId, LinkTypeId, Url, Note, SortOrder, Verified
+           FROM tblCreditPersonExternalLinks
           ORDER BY CreditPersonId ASC, SortOrder ASC, Id ASC'
     );
     $stmt->execute();
     foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $l) {
         $linksByPerson[(int)$l['CreditPersonId']][] = [
             'id'         => (int)$l['Id'],
-            'type'       => (string)$l['LinkType'],
+            'type_id'    => (int)$l['LinkTypeId'],
             'url'        => (string)$l['Url'],
-            'label'      => $l['Label'],
+            'label'      => $l['Note'],
             'sort_order' => (int)$l['SortOrder'],
+            'verified'   => (int)$l['Verified'],
         ];
     }
     $stmt->close();
 
+    /* #833 — load the registry for the edit drawer's link-type dropdown,
+       once per page. Powers window._iHymnsLinkTypes for the shared
+       editor module, and the inline <option> seed below. */
+    $linkTypesForPerson = loadExternalLinkTypesFor($db, 'person');
+
     $stmt = $db->prepare(
-        'SELECT Id, CreditPersonId, IPINumber, NameUsed, Notes
-           FROM tblCreditPersonIPI
-          ORDER BY CreditPersonId ASC, Id ASC'
+        'SELECT Id, CreditPersonId, IdentifierType, IdentifierValue, NameUsed, Notes
+           FROM tblCreditPersonIdentifiers
+          ORDER BY CreditPersonId ASC, IdentifierType ASC, Id ASC'
     );
     $stmt->execute();
     foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $r) {
-        $ipiByPerson[(int)$r['CreditPersonId']][] = [
+        $row = [
             'id'        => (int)$r['Id'],
-            'number'    => (string)$r['IPINumber'],
+            'number'    => (string)$r['IdentifierValue'],
             'name_used' => $r['NameUsed'],
             'notes'     => $r['Notes'],
         ];
+        if ($r['IdentifierType'] === 'isni') {
+            $isniByPerson[(int)$r['CreditPersonId']][] = $row;
+        } else {
+            $ipiByPerson[(int)$r['CreditPersonId']][] = $row;
+        }
     }
     $stmt->close();
+
+    /* AKA / aliases — bulk load alongside links + IPI so the Edit
+       drawer's pre-fill can populate the chip-list without an extra
+       round-trip. Schema-tolerant: pre-migration installs return an
+       empty array (the helper checks INFORMATION_SCHEMA first). */
+    $personIds = [];
+    foreach ($registryRows as $r) { $personIds[] = (int)$r['Id']; }
+    $aliasesByPerson = loadCreditPersonAliasesBulk($db, $personIds);
 
     /* Merge — keyed by Name. A name may appear in usage only,
        registry only, or both. */
@@ -875,14 +1236,19 @@ try {
             'registry_id' => null,
             'notes'       => null,
             'birth_place' => null,
+            'birth_place_id' => null,
             'birth_date'  => null,
             'death_place' => null,
+            'death_place_id' => null,
             'death_date'  => null,
             'updated_at'  => null,
             'link_count'  => 0,
             'ipi_count'   => 0,
+            'is_special_case' => 0,   /* #584 */
+            'is_group'        => 0,   /* #585 */
             'links'       => [],
             'ipi'         => [],
+            'aliases'     => [],
         ];
     }
     foreach ($registryRows as $r) {
@@ -900,28 +1266,48 @@ try {
                 'registry_id' => null,
                 'notes'       => null,
                 'birth_place' => null,
+                'birth_place_id' => null,
                 'birth_date'  => null,
                 'death_place' => null,
+                'death_place_id' => null,
                 'death_date'  => null,
                 'updated_at'  => null,
                 'link_count'  => 0,
                 'ipi_count'   => 0,
+                'is_special_case' => 0,
+                'is_group'        => 0,
             ];
         }
         $byName[$name]['registry_id'] = (int)$r['Id'];
         $byName[$name]['notes']       = $r['Notes'];
-        $byName[$name]['birth_place'] = $r['BirthPlace'];
-        $byName[$name]['birth_date']  = $r['BirthDate'];
-        $byName[$name]['death_place'] = $r['DeathPlace'];
-        $byName[$name]['death_date']  = $r['DeathDate'];
+        $byName[$name]['birth_place']    = $r['BirthPlace'];
+        $byName[$name]['birth_place_id'] = isset($r['BirthPlaceId']) ? (int)$r['BirthPlaceId'] : null;
+        $byName[$name]['birth_date']     = $r['BirthDate'];
+        $byName[$name]['death_place']    = $r['DeathPlace'];
+        $byName[$name]['death_place_id'] = isset($r['DeathPlaceId']) ? (int)$r['DeathPlaceId'] : null;
+        $byName[$name]['death_date']     = $r['DeathDate'];
+        /* Birth-country surface for the list-page filter (places
+           follow-up). NULL on rows that have no picked place. */
+        $byName[$name]['birth_country']      = $r['BirthCountry']     ?? null;
+        $byName[$name]['birth_country_code'] = $r['BirthCountryCode'] ?? null;
         $byName[$name]['updated_at']  = $r['UpdatedAt'];
         $byName[$name]['link_count']  = (int)$r['LinkCount'];
         $byName[$name]['ipi_count']   = (int)$r['IPICount'];
+        $byName[$name]['is_special_case'] = (int)($r['IsSpecialCase'] ?? 0);
+        $byName[$name]['is_group']        = (int)($r['IsGroup']        ?? 0);
+        /* #934 — structured-name parts surface to JS so the Edit drawer
+           can pre-fill the three split fields. NULL on partly-migrated
+           installs; the drawer's default-to-Name fallback handles that. */
+        $byName[$name]['first_names'] = $r['FirstNames'] ?? null;
+        $byName[$name]['surname']     = $r['Surname']    ?? null;
+        $byName[$name]['suffix']      = $r['Suffix']     ?? null;
         /* Full child rows for the Edit drawer's pre-fill. Empty arrays
            default for registry rows with no children — the drawer's JS
            handles the empty case as "no rows yet". */
-        $byName[$name]['links'] = $linksByPerson[(int)$r['Id']] ?? [];
-        $byName[$name]['ipi']   = $ipiByPerson[(int)$r['Id']]   ?? [];
+        $byName[$name]['links']   = $linksByPerson[(int)$r['Id']]   ?? [];
+        $byName[$name]['ipi']     = $ipiByPerson[(int)$r['Id']]     ?? [];
+        $byName[$name]['isni']    = $isniByPerson[(int)$r['Id']]    ?? [];
+        $byName[$name]['aliases'] = $aliasesByPerson[(int)$r['Id']] ?? [];
     }
 
     /* Sort: highest-usage first, then alphabetical. Registry-only
@@ -936,9 +1322,24 @@ try {
     });
 
     $people = array_values($byName);
+
+    /* Build the country-filter option list — deduplicated set of
+       birth-country (code, label) pairs that actually appear on a
+       registered person, sorted by label. NULL codes drop out so
+       the select only offers what's filterable. */
+    $countryOptions = [];
+    foreach ($people as $_p) {
+        $cc = (string)($_p['birth_country_code'] ?? '');
+        $cn = (string)($_p['birth_country']      ?? '');
+        if ($cc === '' || isset($countryOptions[$cc])) continue;
+        $countryOptions[$cc] = $cn !== '' ? $cn : strtoupper($cc);
+    }
+    uasort($countryOptions, 'strcasecmp');
 } catch (\Throwable $e) {
     error_log('[manage/credit-people.php] load failed: ' . $e->getMessage());
-    $error = 'Could not load credit people — check server logs for details.';
+    logActivityError('admin.credit_people.list', 'credit_person', '', $e);
+    $where = $e->getFile() ? (' (' . basename($e->getFile()) . ':' . $e->getLine() . ')') : '';
+    $error = 'Could not load credit people: ' . $e->getMessage() . $where;
 }
 
 /* ----------------------------------------------------------------------
@@ -968,9 +1369,15 @@ $totalNames           = count($people);
 $totalInRegistry      = count(array_filter($people, static fn($p) => $p['registry_id'] !== null));
 $totalInUse           = count(array_filter($people, static fn($p) => $p['total'] > 0));
 $totalRegistryOnly    = $totalNames - $totalInUse;
+/* #846 — count of names that are in-use but not in the registry, so
+   the parent page can flash a "promote in bulk" CTA when there's any
+   meaningful work to do. */
+$totalInUseUnregistered = count(array_filter($people, static fn($p) =>
+    $p['total'] > 0 && $p['registry_id'] === null
+));
 ?>
 <!DOCTYPE html>
-<html lang="en" data-bs-theme="dark">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -1026,6 +1433,22 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
             <div class="alert alert-danger py-2"><?= htmlspecialchars($error) ?></div>
         <?php endif; ?>
 
+        <?php if ($totalInUseUnregistered > 0): ?>
+            <!-- #846 — bulk-promote CTA. Shows only when there's
+                 actual unregistered-but-cited work waiting. -->
+            <div class="alert alert-info d-flex flex-wrap align-items-center gap-2 py-2">
+                <i class="bi bi-people" aria-hidden="true"></i>
+                <span>
+                    <strong><?= number_format($totalInUseUnregistered) ?></strong>
+                    name<?= $totalInUseUnregistered === 1 ? '' : 's' ?> cited on at least one song
+                    <em>aren't</em> in the registry yet.
+                </span>
+                <a href="/manage/credit-people-bulk-promote" class="btn btn-sm btn-amber-solid ms-auto">
+                    <i class="bi bi-magic me-1"></i>Bulk promote with fuzzy-match
+                </a>
+            </div>
+        <?php endif; ?>
+
         <!-- Summary tiles -->
         <div class="row g-2 mb-3">
             <div class="col-6 col-md-3">
@@ -1068,7 +1491,7 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                         </button>
                     </div>
                 </div>
-                <div class="col-md-5">
+                <div class="col-md-4">
                     <div class="btn-group btn-group-sm flex-wrap" role="group" aria-label="Filter by role">
                         <button type="button" class="btn btn-outline-secondary filter-btn active" data-filter="all">All</button>
                         <button type="button" class="btn btn-outline-secondary filter-btn" data-filter="writer">Writers</button>
@@ -1079,7 +1502,18 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                         <button type="button" class="btn btn-outline-secondary filter-btn" data-filter="registry-only">Registry-only</button>
                     </div>
                 </div>
-                <div class="col-md-2 text-md-end">
+                <div class="col-md-2">
+                    <?php if (!empty($countryOptions)): ?>
+                        <label for="cp-country-filter" class="visually-hidden">Filter by birth country</label>
+                        <select id="cp-country-filter" class="form-select form-select-sm" aria-label="Filter by birth country">
+                            <option value="">Any country</option>
+                            <?php foreach ($countryOptions as $_cc => $_cname): ?>
+                                <option value="<?= htmlspecialchars((string)$_cc) ?>"><?= htmlspecialchars((string)$_cname) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    <?php endif; ?>
+                </div>
+                <div class="col-md-1 text-md-end">
                     <button type="button" class="btn btn-amber-solid btn-sm" id="cp-add-btn">
                         <i class="bi bi-plus-circle me-1"></i>Add person
                     </button>
@@ -1090,16 +1524,16 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
         <!-- People table -->
         <div class="card bg-dark border-secondary p-2 mb-3">
             <div class="table-responsive">
-                <table class="table table-sm table-hover align-middle mb-0">
+                <table class="table table-sm table-hover align-middle mb-0 cp-sortable admin-table-responsive">
                     <thead class="text-muted small">
                         <tr>
-                            <th scope="col">Name</th>
-                            <th scope="col" class="text-center">Roles</th>
-                            <th scope="col" class="text-end">Total uses</th>
-                            <th scope="col">Source</th>
-                            <th scope="col">Lifespan</th>
-                            <th scope="col" class="text-end">Meta</th>
-                            <th scope="col" class="text-end">Actions</th>
+                            <th scope="col" data-col-priority="primary"   data-sort-key="name"   data-sort-type="text">Name</th>
+                            <th scope="col" data-col-priority="primary"   class="text-center">Roles</th>
+                            <th scope="col" data-col-priority="primary"   class="text-end" data-sort-key="total" data-sort-type="number">Total uses</th>
+                            <th scope="col" data-col-priority="secondary" data-sort-key="source" data-sort-type="text">Source</th>
+                            <th scope="col" data-col-priority="secondary" data-sort-key="lifespan" data-sort-type="text">Lifespan</th>
+                            <th scope="col" data-col-priority="tertiary"  class="text-end">Meta</th>
+                            <th scope="col" data-col-priority="primary"   class="text-end">Actions</th>
                         </tr>
                     </thead>
                     <tbody id="cp-tbody">
@@ -1136,39 +1570,86 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                                 'name'        => $p['name'],
                                 'notes'       => $p['notes'],
                                 'birth_place' => $p['birth_place'],
+                                'birth_place_id' => $p['birth_place_id'] ?? null,
                                 'birth_date'  => $p['birth_date'],
                                 'death_place' => $p['death_place'],
+                                'death_place_id' => $p['death_place_id'] ?? null,
                                 'death_date'  => $p['death_date'],
+                                'is_special_case' => (int)($p['is_special_case'] ?? 0),
+                                'is_group'        => (int)($p['is_group']        ?? 0),
+                                /* Per-role counts so the Merge modal's
+                                   "Song-credit rows to re-point" preview
+                                   (#583) can render without a round-trip. */
+                                'writers'     => $writers,
+                                'composers'   => $composers,
+                                'arrangers'   => $arrangers,
+                                'adaptors'    => $adaptors,
+                                'translators' => $translators,
+                                'total'       => $p['total'],
                                 'links'       => $p['links'],
                                 'ipi'         => $p['ipi'],
+                                'isni'        => $p['isni'] ?? [],
+                                'aliases'     => $p['aliases'] ?? [],
                             ], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE);
+                            $isSpecial = !empty($p['is_special_case']);
+                            $isGroup   = !empty($p['is_group']);
+                            /* AKA names flattened into the row's data-aka
+                               attribute so the existing client-side filter
+                               matches a typed query against aliases too —
+                               critical for the "I remember Cecil under her
+                               maiden name" workflow. Empty when the row
+                               has no aliases (the JS treats undefined as
+                               "no aliases to consider"). */
+                            $akaList = array_map(static fn(array $a): string => (string)$a['Name'], $p['aliases'] ?? []);
+                            $akaAttr = implode(' · ', $akaList);
                         ?>
                             <tr data-roles="<?= htmlspecialchars($rolesCsv) ?>"
                                 data-registry-only="<?= $isRegistryOnly ? '1' : '0' ?>"
                                 data-haystack="<?= htmlspecialchars($haystack) ?>"
+                                data-aka="<?= htmlspecialchars($akaAttr) ?>"
+                                data-classification="<?= $isSpecial ? 'special' : ($isGroup ? 'group' : 'individual') ?>"
+                                data-country-code="<?= htmlspecialchars((string)($p['birth_country_code'] ?? '')) ?>"
+                                data-country="<?= htmlspecialchars((string)($p['birth_country'] ?? '')) ?>"
                                 data-person='<?= htmlspecialchars($personJson, ENT_QUOTES) ?>'>
-                                <td class="person-name">
+                                <td data-col-priority="primary" class="person-name <?= $isSpecial ? 'fst-italic' : '' ?>">
+                                    <?php if ($isGroup): ?>
+                                        <i class="bi bi-people-fill text-info me-1" title="Group / band / collective" aria-label="Group"></i>
+                                    <?php elseif ($isSpecial): ?>
+                                        <i class="bi bi-question-circle text-warning me-1" title="Special-case attribution" aria-label="Special case"></i>
+                                    <?php endif; ?>
                                     <?= htmlspecialchars($p['name']) ?>
+                                    <?php if ($isSpecial): ?>
+                                        <span class="badge bg-warning-subtle text-warning-emphasis ms-1" style="font-size: 0.6rem;">Special case</span>
+                                    <?php endif; ?>
+                                    <?php if ($isGroup): ?>
+                                        <span class="badge bg-info-subtle text-info-emphasis ms-1" style="font-size: 0.6rem;">Group</span>
+                                    <?php endif; ?>
+                                    <?php if (!empty($p['aliases'])): ?>
+                                        <div class="text-secondary small mt-1" title="Alternative names that also match in search">
+                                            <i class="bi bi-arrow-left-right me-1" aria-hidden="true"></i>
+                                            AKA: <?= htmlspecialchars(implode(', ', array_map(static fn($a) => (string)$a['Name'], $p['aliases']))) ?>
+                                        </div>
+                                    <?php endif; ?>
                                     <?php if ($p['notes']): ?>
                                         <span class="text-secondary small ms-2" title="<?= htmlspecialchars($p['notes']) ?>">
                                             <i class="bi bi-sticky"></i>
                                         </span>
                                     <?php endif; ?>
                                 </td>
-                                <td class="text-center">
+                                <td data-col-priority="primary" class="text-center">
                                     <span class="badge role-pill role-w"  <?= $writers     ? '' : 'data-zero' ?>>W&middot;<?= $writers ?></span>
                                     <span class="badge role-pill role-c"  <?= $composers   ? '' : 'data-zero' ?>>C&middot;<?= $composers ?></span>
                                     <span class="badge role-pill role-ar" <?= $arrangers   ? '' : 'data-zero' ?>>Ar&middot;<?= $arrangers ?></span>
                                     <span class="badge role-pill role-ad" <?= $adaptors    ? '' : 'data-zero' ?>>Ad&middot;<?= $adaptors ?></span>
                                     <span class="badge role-pill role-t"  <?= $translators ? '' : 'data-zero' ?>>T&middot;<?= $translators ?></span>
                                 </td>
-                                <td class="text-end"><strong><?= number_format($p['total']) ?></strong></td>
-                                <td><?= $sourceBadge($p) ?></td>
-                                <td class="meta-col">
+                                <td data-col-priority="primary"   class="text-end" data-sort-value="<?= (int)$p['total'] ?>"><strong><?= number_format($p['total']) ?></strong></td>
+                                <td data-col-priority="secondary" data-sort-value="<?= htmlspecialchars($p['registry_id'] !== null && $p['total'] > 0 ? 'Both' : ($p['registry_id'] !== null ? 'Registry' : 'In use')) ?>"><?= $sourceBadge($p) ?></td>
+                                <td data-col-priority="secondary" class="meta-col" data-sort-value="<?= htmlspecialchars((string)($p['birth_date'] ?? '')) ?>">
                                     <?php $life = $lifespan($p['birth_date'], $p['death_date']);
                                           echo $life !== '' ? $life : '<span class="text-secondary">—</span>'; ?>
                                 </td>
-                                <td class="text-end meta-col">
+                                <td data-col-priority="tertiary" class="text-end meta-col">
                                     <?php if ($p['link_count'] > 0): ?>
                                         <span class="badge bg-secondary-subtle text-secondary-emphasis badge-icon-count"
                                               title="<?= (int)$p['link_count'] ?> external link(s)">
@@ -1185,21 +1666,40 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                                         <span class="text-secondary">—</span>
                                     <?php endif; ?>
                                 </td>
-                                <td class="text-end action-col">
+                                <td data-col-priority="primary" class="text-end action-col">
                                     <div class="btn-group btn-group-sm" role="group" aria-label="Row actions">
-                                        <?php if ($p['registry_id'] !== null): ?>
+                                        <?php
+                                            /* Merge / Rename / Delete are available for any row that
+                                               either has a registry entry OR has at least one credited
+                                               use (#626). The Merge handler auto-registers source/target
+                                               on submit if needed, so the UI no longer hides the action
+                                               from in-use-only rows like the Stuart Townend duplicates. */
+                                            $hasUse      = (int)$p['total'] > 0;
+                                            $inRegistry  = $p['registry_id'] !== null;
+                                            $hasActions  = $inRegistry || $hasUse;
+                                        ?>
+                                        <?php if (!$inRegistry && $hasUse): ?>
+                                            <button type="button" class="btn btn-outline-info cp-edit-btn"
+                                                    title="Add to registry — opens the detail drawer pre-filled with this person"
+                                                    aria-label="Add <?= htmlspecialchars($p['name'], ENT_QUOTES) ?> to the registry">
+                                                <i class="bi bi-plus-circle" aria-hidden="true"></i>
+                                            </button>
+                                        <?php elseif ($inRegistry): ?>
                                             <button type="button" class="btn btn-outline-info cp-edit-btn"
                                                     title="Edit person details"
                                                     aria-label="Edit person <?= htmlspecialchars($p['name'], ENT_QUOTES) ?>">
                                                 <i class="bi bi-pencil" aria-hidden="true"></i>
                                             </button>
+                                        <?php endif; ?>
+
+                                        <?php if ($hasActions): ?>
                                             <button type="button" class="btn btn-outline-warning cp-rename-btn"
                                                     title="Rename — cascades to every song that cites this person"
                                                     aria-label="Rename person <?= htmlspecialchars($p['name'], ENT_QUOTES) ?>">
                                                 <i class="bi bi-pencil-square" aria-hidden="true"></i>
                                             </button>
                                             <button type="button" class="btn btn-outline-warning cp-merge-btn"
-                                                    title="Merge into another person — combines two registry rows"
+                                                    title="Merge into another person — combines two names into one"
                                                     aria-label="Merge person <?= htmlspecialchars($p['name'], ENT_QUOTES) ?>">
                                                 <i class="bi bi-union" aria-hidden="true"></i>
                                             </button>
@@ -1208,17 +1708,13 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                                                     aria-label="View songs that cite <?= htmlspecialchars($p['name'], ENT_QUOTES) ?>">
                                                 <i class="bi bi-music-note-list" aria-hidden="true"></i>
                                             </button>
-                                            <button type="button" class="btn btn-outline-danger cp-delete-btn"
-                                                    title="Remove from registry"
-                                                    aria-label="Remove <?= htmlspecialchars($p['name'], ENT_QUOTES) ?> from the registry">
-                                                <i class="bi bi-trash" aria-hidden="true"></i>
-                                            </button>
-                                        <?php else: ?>
-                                            <button type="button" class="btn btn-outline-info cp-edit-btn"
-                                                    title="Add to registry — fills in the name + opens the detail drawer for this person"
-                                                    aria-label="Add <?= htmlspecialchars($p['name'], ENT_QUOTES) ?> to the registry">
-                                                <i class="bi bi-plus-circle" aria-hidden="true"></i>
-                                            </button>
+                                            <?php if ($inRegistry): ?>
+                                                <button type="button" class="btn btn-outline-danger cp-delete-btn"
+                                                        title="Remove from registry"
+                                                        aria-label="Remove <?= htmlspecialchars($p['name'], ENT_QUOTES) ?> from the registry">
+                                                    <i class="bi bi-trash" aria-hidden="true"></i>
+                                                </button>
+                                            <?php endif; ?>
                                         <?php endif; ?>
                                     </div>
                                 </td>
@@ -1336,6 +1832,9 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                     <input type="hidden" name="action" value="rename">
                     <input type="hidden" name="id" id="cp-rename-id" value="">
+                    <!-- #626 — fallback for in-use-only rows; the server
+                         auto-registers by name when id is empty. -->
+                    <input type="hidden" name="source_name" id="cp-rename-source-name" value="">
                     <div class="modal-header border-secondary">
                         <h5 class="modal-title" id="cpRenameLabel">
                             <i class="bi bi-pencil-square me-2"></i>Rename person
@@ -1379,6 +1878,14 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                     <input type="hidden" name="action" value="merge">
                     <input type="hidden" name="source_id" id="cp-merge-source-id" value="">
+                    <!-- #626 — name fallbacks for in-use-only rows; the
+                         server auto-registers them on submit. The select
+                         element below carries an "id:N" / "name:X" key
+                         that the submit handler routes into either
+                         target_id or target_name before posting. -->
+                    <input type="hidden" name="source_name" id="cp-merge-source-name-hidden" value="">
+                    <input type="hidden" name="target_id"   id="cp-merge-target-id-hidden"   value="">
+                    <input type="hidden" name="target_name" id="cp-merge-target-name-hidden" value="">
                     <div class="modal-header border-secondary">
                         <h5 class="modal-title" id="cpMergeLabel">
                             <i class="bi bi-union me-2"></i>Merge person into another
@@ -1393,9 +1900,32 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                             </div>
                             <div class="col-6">
                                 <label class="form-label small" for="cp-merge-target">Target (survives) <span class="text-danger">*</span></label>
-                                <select class="form-select form-select-sm" id="cp-merge-target" name="target_id" required>
+                                <!-- name omitted — the picked option's
+                                     value is an "id:N" / "name:X" key
+                                     that submit JS routes to either
+                                     target_id or target_name (#626). -->
+                                <select class="form-select form-select-sm" id="cp-merge-target" required>
                                     <option value="">— pick the surviving person —</option>
                                 </select>
+                            </div>
+                        </div>
+
+                        <!-- Song-credit re-point preview (#583). The Source
+                             aggregate already carries per-role counts in its
+                             data-person attribute, so we render them inline
+                             when the modal opens — no extra round-trip. -->
+                        <div id="cp-merge-credit-preview" class="alert alert-info py-2 small mb-3 d-none">
+                            <div class="fw-semibold mb-1">
+                                <i class="bi bi-arrow-left-right me-1" aria-hidden="true"></i>
+                                Song-credit rows to re-point
+                            </div>
+                            <div class="d-flex flex-wrap gap-2 small">
+                                <span>Writer&nbsp;<strong id="cp-merge-count-writer">0</strong></span>
+                                <span>Composer&nbsp;<strong id="cp-merge-count-composer">0</strong></span>
+                                <span>Arranger&nbsp;<strong id="cp-merge-count-arranger">0</strong></span>
+                                <span>Adaptor&nbsp;<strong id="cp-merge-count-adaptor">0</strong></span>
+                                <span>Translator&nbsp;<strong id="cp-merge-count-translator">0</strong></span>
+                                <span class="ms-auto">Total&nbsp;<strong id="cp-merge-count-total">0</strong></span>
                             </div>
                         </div>
 
@@ -1410,13 +1940,25 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                                 Source has no links or IPI numbers — nothing to migrate.
                             </div>
                             <div id="cp-merge-children-links"  class="mb-2"></div>
-                            <div id="cp-merge-children-ipi"></div>
+                            <div id="cp-merge-children-ipi"   class="mb-2"></div>
+                            <div id="cp-merge-children-isni"></div>
                         </div>
 
-                        <div class="alert alert-warning py-2 small mb-0">
+                        <div class="alert alert-warning py-2 small mb-2">
                             Merging re-points every song-credit row from the source name to the target
                             name across the five song-credit tables, then removes the source registry
                             row. Tracked in the activity log with full per-table affected counts.
+                        </div>
+
+                        <!-- Explicit irreversibility ack (#583). The submit
+                             button stays disabled until both a target is
+                             picked AND this checkbox is ticked. -->
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="cp-merge-confirm" required>
+                            <label class="form-check-label small" for="cp-merge-confirm">
+                                I understand this is irreversible — the source registry row is
+                                deleted and every song-credit row is re-pointed to the target name.
+                            </label>
                         </div>
                     </div>
                     <div class="modal-footer border-secondary">
@@ -1450,7 +1992,33 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
             <input type="hidden" name="action" id="cp-drawer-action" value="add">
             <input type="hidden" name="id"     id="cp-drawer-id"     value="">
 
-            <!-- Identity -->
+            <!-- Identity — structured name fields (#934). Hidden when
+                 the row is flagged as a Group / Special case (those keep
+                 the single-Name flow because "Hillsong United" or
+                 "Anonymous" don't have first/last/suffix parts). For
+                 individuals these three fields drive the canonical Name;
+                 the Name input below is the read-only preview that the
+                 server actually persists. -->
+            <div data-flag-section="name-parts" class="row g-2">
+                <div class="col-7">
+                    <label class="form-label small mb-1" for="cp-drawer-first-names">First name(s)</label>
+                    <input type="text" class="form-control form-control-sm" id="cp-drawer-first-names" name="first_names" maxlength="255" placeholder="e.g. Cecil Frances Humphreys">
+                </div>
+                <div class="col-5">
+                    <label class="form-label small mb-1" for="cp-drawer-suffix">Suffix</label>
+                    <input type="text" class="form-control form-control-sm" id="cp-drawer-suffix" name="suffix" maxlength="32" placeholder="Jr, III, PhD…">
+                </div>
+                <div class="col-12">
+                    <label class="form-label small mb-1" for="cp-drawer-surname">Surname</label>
+                    <input type="text" class="form-control form-control-sm" id="cp-drawer-surname" name="surname" maxlength="255" placeholder="e.g. Alexander">
+                </div>
+            </div>
+
+            <!-- Identity — canonical Name. For individuals it's
+                 auto-composed from First + Surname + Suffix above and
+                 rendered read-only as a preview. For Group / Special
+                 case rows the three split fields are hidden and this is
+                 the primary input. -->
             <div>
                 <label class="form-label small mb-1" for="cp-drawer-name">Name <span class="text-danger">*</span></label>
                 <input type="text" class="form-control form-control-sm" id="cp-drawer-name" name="name" maxlength="255" required>
@@ -1459,26 +2027,58 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                 </div>
             </div>
 
-            <!-- Birth -->
-            <div class="row g-2">
+            <!-- Classification flags (#584 / #585). Mutually exclusive
+                 by design — both are unticked for an individual. The
+                 JS below toggles them so ticking one unticks the
+                 other, and adapts the date-field labels for groups
+                 (Birth/Death → Founded/Dissolved). -->
+            <div class="border rounded p-2" style="border-color: var(--bs-border-color) !important;">
+                <div class="form-check form-check-inline mb-0">
+                    <input class="form-check-input" type="checkbox" name="is_special_case" value="1" id="cp-drawer-is-special-case">
+                    <label class="form-check-label small" for="cp-drawer-is-special-case">
+                        <i class="bi bi-question-circle me-1" aria-hidden="true"></i>
+                        Special case (Anonymous, Traditional, etc.)
+                    </label>
+                </div>
+                <div class="form-check form-check-inline mb-0">
+                    <input class="form-check-input" type="checkbox" name="is_group" value="1" id="cp-drawer-is-group">
+                    <label class="form-check-label small" for="cp-drawer-is-group">
+                        <i class="bi bi-people-fill me-1" aria-hidden="true"></i>
+                        Group / band / collective
+                    </label>
+                </div>
+            </div>
+
+            <!-- Birth / Founded -->
+            <div class="row g-2" data-flag-section="birth">
                 <div class="col-7">
-                    <label class="form-label small mb-1" for="cp-drawer-birth-place">Birth place</label>
-                    <input type="text" class="form-control form-control-sm" id="cp-drawer-birth-place" name="birth_place" maxlength="255" placeholder="e.g. London, England">
+                    <label class="form-label small mb-1" for="cp-drawer-birth-place">
+                        <span data-flag-label="individual">Birth place</span><span data-flag-label="group" class="d-none">Founded location</span>
+                    </label>
+                    <input type="text" class="form-control form-control-sm" id="cp-drawer-birth-place" name="birth_place" maxlength="255" placeholder="Start typing — e.g. London…">
+                    <input type="hidden" id="cp-drawer-birth-place-id" name="birth_place_id" value="">
                 </div>
                 <div class="col-5">
-                    <label class="form-label small mb-1" for="cp-drawer-birth-date">Birth date</label>
+                    <label class="form-label small mb-1" for="cp-drawer-birth-date">
+                        <span data-flag-label="individual">Birth date</span><span data-flag-label="group" class="d-none">Founded date</span>
+                    </label>
                     <input type="date" class="form-control form-control-sm" id="cp-drawer-birth-date" name="birth_date">
                 </div>
             </div>
 
-            <!-- Death -->
-            <div class="row g-2">
+            <!-- Death / Disbandment -->
+            <div class="row g-2" data-flag-section="death">
                 <div class="col-7">
-                    <label class="form-label small mb-1" for="cp-drawer-death-place">Death place</label>
-                    <input type="text" class="form-control form-control-sm" id="cp-drawer-death-place" name="death_place" maxlength="255">
+                    <label class="form-label small mb-1" for="cp-drawer-death-place">
+                        <span data-flag-label="individual">Death place</span><span data-flag-label="group" class="d-none">Disbandment location</span>
+                    </label>
+                    <input type="text" class="form-control form-control-sm" id="cp-drawer-death-place" name="death_place" maxlength="255" placeholder="Start typing — e.g. Cardiff…">
+                    <input type="hidden" id="cp-drawer-death-place-id" name="death_place_id" value="">
                 </div>
                 <div class="col-5">
-                    <label class="form-label small mb-1" for="cp-drawer-death-date">Death date</label>
+                    <label class="form-label small mb-1" for="cp-drawer-death-date">
+                        <span data-flag-label="individual">Death date</span><span data-flag-label="group" class="d-none">Disbandment date</span>
+                    </label>
                     <input type="date" class="form-control form-control-sm" id="cp-drawer-death-date" name="death_date">
                 </div>
             </div>
@@ -1492,11 +2092,11 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                     </button>
                 </div>
                 <div id="cp-links-container" class="d-flex flex-column gap-2"></div>
-                <div class="form-text small">Wikipedia, official website, MusicBrainz, Discogs, IMSLP, Hymnary — anything an editor or curator might want to follow.</div>
+                <div class="form-text small">Pick a provider from the grouped list — General (Wikipedia, MusicBrainz, official site…), streaming services (Spotify, Apple Music…), social networks (Facebook, Instagram, YouTube…), or Other for anything else.</div>
             </div>
 
             <!-- IPI numbers — repeating sub-form -->
-            <div>
+            <div data-flag-section="ipi">
                 <div class="d-flex justify-content-between align-items-center mb-1">
                     <label class="form-label small mb-0">IPI Name Numbers</label>
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="cp-add-ipi-btn">
@@ -1505,6 +2105,45 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                 </div>
                 <div id="cp-ipi-container" class="d-flex flex-column gap-2"></div>
                 <div class="form-text small">A single individual can hold more than one IPI Name Number when they're registered under different performing names.</div>
+            </div>
+
+            <!-- ISNI numbers — repeating sub-form. ISNI (International
+                 Standard Name Identifier) is the ISO 27729 successor to
+                 disparate per-domain identifier schemes — one 16-digit
+                 code covering authors, composers, performers, researchers
+                 across libraries / publishers / collecting societies.
+                 Stored alongside IPI in tblCreditPersonIdentifiers with
+                 IdentifierType discriminator. Most people will have one
+                 ISNI, but the schema mirrors IPI's "multiple rows allowed"
+                 shape so we never have to migrate again. -->
+            <div data-flag-section="isni">
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <label class="form-label small mb-0">ISNI</label>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="cp-add-isni-btn">
+                        <i class="bi bi-plus me-1"></i>Add ISNI
+                    </button>
+                </div>
+                <div id="cp-isni-container" class="d-flex flex-column gap-2"></div>
+                <div class="form-text small">ISNI is a 16-character ISO 27729 identifier (look it up at <a href="https://isni.org" target="_blank" rel="noopener">isni.org</a>). Paste any separator style — "0000 0001 2103 2683", "0000-0001-2103-2683", or just "0000000121032683" — it's normalised to the canonical "NNNN NNNN NNNN NNNX" form on save.</div>
+            </div>
+
+            <!-- AKA / aliases — repeating sub-form. Mirrors the
+                 MusicBrainz alias model in a slimmed-down shape: each
+                 row carries a Name, a Type (legal / artist / pseudonym /
+                 nickname / maiden / search-hint / misspelling / other)
+                 and an optional Locale tag for transliterations
+                 (ja, ru-Latn, …). Surfaced as JSON-LD alternateName on
+                 /people/<slug> and searched alongside the canonical
+                 Name in editor typeahead + the admin filter. -->
+            <div>
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <label class="form-label small mb-0">AKA / Aliases</label>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="cp-add-alias-btn">
+                        <i class="bi bi-plus me-1"></i>Add alias
+                    </button>
+                </div>
+                <div id="cp-aliases-container" class="d-flex flex-column gap-2"></div>
+                <div class="form-text small">Alternative names that should match this person in search — legal name, stage name, common misspellings, transliterations. Each alias carries a type and optional locale tag.</div>
             </div>
 
             <!-- Notes -->
@@ -1526,37 +2165,227 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
     <!-- Templates for the repeating sub-form rows. {i} placeholder gets
          replaced by the JS with the row's array index so PHP receives
          them as $_POST['links'][i][...] and $_POST['ipi'][i][...]. -->
+    <?php
+        /* Build the link-type dropdown from the tblExternalLinkTypes
+           registry instead of the deprecated PHP catalogue (#586 →
+           unified into tblExternalLinkTypes). Grouped by Category for
+           the <optgroup>; the values are the numeric registry Ids so
+           the auto-detect module's default slugToOptionValue() lookup
+           (which cross-references window._iHymnsLinkTypes by id) does
+           the right thing without the per-page translation kludge. */
+        $linkOptionsByCat = [];
+        foreach ($linkTypesForPerson as $lt) {
+            $cat = (string)($lt['category'] ?? 'other');
+            if (!isset($linkOptionsByCat[$cat])) $linkOptionsByCat[$cat] = [];
+            $linkOptionsByCat[$cat][] = $lt;
+        }
+        $linkCatLabels = [
+            'official'    => 'Official',
+            'information' => 'Information',
+            'read'        => 'Read',
+            'sheet-music' => 'Sheet music',
+            'listen'      => 'Listen',
+            'watch'       => 'Watch',
+            'purchase'    => 'Purchase',
+            'authority'   => 'Authority',
+            'social'      => 'Social',
+            'other'       => 'Other',
+        ];
+        $linkCatOrder = ['official','information','read','sheet-music','listen','watch','purchase','authority','social','other'];
+    ?>
     <template id="cp-link-row-template">
-        <div class="d-flex gap-1 align-items-start cp-link-row" data-row-kind="link">
-            <select class="form-select form-select-sm" style="max-width: 130px;" name="links[{i}][type]">
-                <option value="wikipedia">Wikipedia</option>
-                <option value="official">Official site</option>
-                <option value="musicbrainz">MusicBrainz</option>
-                <option value="discogs">Discogs</option>
-                <option value="imslp">IMSLP</option>
-                <option value="hymnary">Hymnary</option>
-                <option value="other">Other</option>
-            </select>
-            <input type="url" class="form-control form-control-sm" name="links[{i}][url]" placeholder="https://…" required>
-            <input type="text" class="form-control form-control-sm" style="max-width: 140px;" name="links[{i}][label]" placeholder="Label (optional)">
-            <input type="hidden" name="links[{i}][sort_order]" value="{i}">
-            <button type="button" class="btn btn-sm btn-outline-danger cp-row-remove" title="Remove this link" aria-label="Remove this link">
-                <i class="bi bi-x" aria-hidden="true"></i>
-            </button>
+        <div class="card bg-dark border-secondary cp-link-row" data-row-kind="link">
+            <div class="card-body py-2">
+                <div class="d-flex align-items-start gap-2">
+                    <div class="flex-grow-1">
+                        <div class="row g-2 mb-1">
+                            <div class="col-12 col-md-5">
+                                <select class="form-select form-select-sm" name="links[{i}][type_id]">
+                                    <option value="">— pick a link type —</option>
+                                    <?php foreach ($linkCatOrder as $catKey): ?>
+                                        <?php if (empty($linkOptionsByCat[$catKey])) continue; ?>
+                                        <optgroup label="<?= htmlspecialchars($linkCatLabels[$catKey] ?? $catKey) ?>">
+                                            <?php foreach ($linkOptionsByCat[$catKey] as $lt): ?>
+                                                <option value="<?= (int)$lt['id'] ?>"><?= htmlspecialchars((string)$lt['name']) ?></option>
+                                            <?php endforeach; ?>
+                                        </optgroup>
+                                    <?php endforeach; ?>
+                                    <?php
+                                        /* Catch-all for any category the labels map doesn't cover —
+                                           guarantees a new registry category shows up rather than
+                                           silently disappearing. */
+                                        $leftoverCats = array_diff(array_keys($linkOptionsByCat), $linkCatOrder);
+                                        foreach ($leftoverCats as $cat):
+                                    ?>
+                                        <optgroup label="<?= htmlspecialchars($cat) ?>">
+                                            <?php foreach ($linkOptionsByCat[$cat] as $lt): ?>
+                                                <option value="<?= (int)$lt['id'] ?>"><?= htmlspecialchars((string)$lt['name']) ?></option>
+                                            <?php endforeach; ?>
+                                        </optgroup>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                            <div class="col-12 col-md-7">
+                                <input type="url" class="form-control form-control-sm"
+                                       name="links[{i}][url]" placeholder="https://…" required>
+                            </div>
+                        </div>
+                        <div class="row g-2">
+                            <div class="col-12">
+                                <input type="text" class="form-control form-control-sm"
+                                       name="links[{i}][label]" placeholder="Label (optional)">
+                            </div>
+                        </div>
+                        <input type="hidden" name="links[{i}][sort_order]" value="{i}">
+                    </div>
+                    <button type="button" class="btn btn-sm btn-outline-danger cp-row-remove"
+                            title="Remove this link" aria-label="Remove this link">
+                        <i class="bi bi-x" aria-hidden="true"></i>
+                    </button>
+                </div>
+            </div>
         </div>
     </template>
+    <!-- Registry payload for the shared iHymnsLinkDetect module so the
+         default slugToOptionValue lookup can resolve detected slugs
+         to the numeric option values in the template above. -->
+    <script>
+        window._iHymnsLinkTypes = <?= json_encode($linkTypesForPerson, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+    </script>
     <template id="cp-ipi-row-template">
-        <div class="d-flex gap-1 align-items-start cp-ipi-row" data-row-kind="ipi">
-            <input type="text" class="form-control form-control-sm" style="max-width: 140px;" name="ipi[{i}][number]" placeholder="IPI number" required>
-            <input type="text" class="form-control form-control-sm" style="max-width: 180px;" name="ipi[{i}][name_used]" placeholder="Name used (optional)">
-            <input type="text" class="form-control form-control-sm" name="ipi[{i}][notes]" placeholder="Notes (optional)">
-            <button type="button" class="btn btn-sm btn-outline-danger cp-row-remove" title="Remove this IPI" aria-label="Remove this IPI">
-                <i class="bi bi-x" aria-hidden="true"></i>
-            </button>
+        <div class="card bg-dark border-secondary cp-ipi-row" data-row-kind="ipi">
+            <div class="card-body py-2">
+                <div class="d-flex align-items-start gap-2">
+                    <div class="flex-grow-1">
+                        <div class="row g-2 mb-1">
+                            <div class="col-12 col-md-4">
+                                <input type="text" class="form-control form-control-sm"
+                                       name="ipi[{i}][number]" placeholder="IPI number" required>
+                            </div>
+                            <div class="col-12 col-md-8">
+                                <input type="text" class="form-control form-control-sm"
+                                       name="ipi[{i}][name_used]" placeholder="Name used (optional)">
+                            </div>
+                        </div>
+                        <div class="row g-2">
+                            <div class="col-12">
+                                <input type="text" class="form-control form-control-sm"
+                                       name="ipi[{i}][notes]" placeholder="Notes (optional)">
+                            </div>
+                        </div>
+                    </div>
+                    <button type="button" class="btn btn-sm btn-outline-danger cp-row-remove"
+                            title="Remove this IPI" aria-label="Remove this IPI">
+                        <i class="bi bi-x" aria-hidden="true"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </template>
+    <template id="cp-isni-row-template">
+        <div class="card bg-dark border-secondary cp-isni-row" data-row-kind="isni">
+            <div class="card-body py-2">
+                <div class="d-flex align-items-start gap-2">
+                    <div class="flex-grow-1">
+                        <div class="row g-2 mb-1">
+                            <div class="col-12 col-md-4">
+                                <input type="text" class="form-control form-control-sm cp-isni-number"
+                                       name="isni[{i}][number]" placeholder="0000 0000 0000 0000"
+                                       inputmode="numeric"
+                                       title="16 characters: 15 digits + checksum (digit or X). Spaces / hyphens accepted on input — stored canonically as four space-separated groups of four."
+                                       required>
+                            </div>
+                            <div class="col-12 col-md-8">
+                                <input type="text" class="form-control form-control-sm"
+                                       name="isni[{i}][name_used]" placeholder="Name used (optional)">
+                            </div>
+                        </div>
+                        <div class="row g-2">
+                            <div class="col-12">
+                                <input type="text" class="form-control form-control-sm"
+                                       name="isni[{i}][notes]" placeholder="Notes (optional)">
+                            </div>
+                        </div>
+                    </div>
+                    <button type="button" class="btn btn-sm btn-outline-danger cp-row-remove"
+                            title="Remove this ISNI" aria-label="Remove this ISNI">
+                        <i class="bi bi-x" aria-hidden="true"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </template>
+    <template id="cp-alias-row-template">
+        <div class="card bg-dark border-secondary cp-alias-row" data-row-kind="alias">
+            <div class="card-body py-2">
+                <div class="d-flex align-items-start gap-2">
+                    <div class="flex-grow-1">
+                        <div class="row g-2">
+                            <div class="col-12 col-md-5">
+                                <input type="text" class="form-control form-control-sm"
+                                       name="aliases[{i}][name]" placeholder="Alternative name"
+                                       maxlength="255" required>
+                            </div>
+                            <div class="col-12 col-md-4">
+                                <select class="form-select form-select-sm" name="aliases[{i}][type]">
+                                    <?php foreach ($ALIAS_TYPES as $key => $label): ?>
+                                        <option value="<?= htmlspecialchars($key) ?>"<?= $key === 'other' ? ' selected' : '' ?>>
+                                            <?= htmlspecialchars($label) ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                            <div class="col-12 col-md-3">
+                                <input type="text" class="form-control form-control-sm"
+                                       name="aliases[{i}][locale]" placeholder="Locale"
+                                       maxlength="35"
+                                       title="Optional IETF BCP 47 tag for transliterations (ja, ru-Latn, zh-Hans, …)">
+                            </div>
+                        </div>
+                        <input type="hidden" name="aliases[{i}][sort_order]" value="{i}">
+                    </div>
+                    <button type="button" class="btn btn-sm btn-outline-danger cp-row-remove"
+                            title="Remove this alias" aria-label="Remove this alias">
+                        <i class="bi bi-x" aria-hidden="true"></i>
+                    </button>
+                </div>
+            </div>
         </div>
     </template>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
+
+    <!-- Sortable table headers (#644). Cycles asc → desc → unsorted on
+         click of any <th data-sort-key>. Sort runs over visible rows
+         only so it composes cleanly with the search/filter below. -->
+    <script type="module">
+        import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+        bootSortableTables();
+    </script>
+
+    <!-- Live location autocomplete on the Birth / Death place inputs.
+         Backed by /manage/places-api.php (Photon + Nominatim) with a
+         tblPlaces upsert on pick so two curators picking "Sydney"
+         resolve to the same registry row. Schema-tolerant — the API
+         endpoint returns a 503 with a clear message when
+         migrate-places.php hasn't run yet, which the module treats
+         as "leave hidden id empty, persist display string only". -->
+    <script src="/js/modules/place-search.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/place-search.js') ?>"></script>
+    <script>
+        (function () {
+            if (!window.iHymnsPlaceSearch) return;
+            const birthIn = document.getElementById('cp-drawer-birth-place');
+            const deathIn = document.getElementById('cp-drawer-death-place');
+            const birthIdIn = document.getElementById('cp-drawer-birth-place-id');
+            const deathIdIn = document.getElementById('cp-drawer-death-place-id');
+            if (birthIn && birthIdIn) {
+                window.iHymnsPlaceSearch.attach(birthIn, { hiddenIdInput: birthIdIn });
+            }
+            if (deathIn && deathIdIn) {
+                window.iHymnsPlaceSearch.attach(deathIn, { hiddenIdInput: deathIdIn });
+            }
+        })();
+    </script>
 
     <script>
         /* Client-side search + filter. The list is small enough that
@@ -1569,9 +2398,11 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
             const tbody    = document.getElementById('cp-tbody');
             const empty    = document.getElementById('cp-empty-row');
             const buttons  = document.querySelectorAll('.filter-btn');
+            const countrySel = document.getElementById('cp-country-filter');
             if (!input || !tbody) return;
 
-            let activeFilter = 'all';
+            let activeFilter   = 'all';
+            let activeCountry  = '';
 
             function apply() {
                 const q = input.value.trim().toLowerCase();
@@ -1579,16 +2410,25 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                 const rows = tbody.querySelectorAll('tr:not(.empty-row)');
                 rows.forEach(row => {
                     const haystack    = row.dataset.haystack || '';
+                    /* Include AKA names in the search haystack so a
+                       query for the alias spelling matches the row of
+                       the canonical name (e.g. typing the maiden name
+                       finds the post-marriage row). Lower-cased on the
+                       client because PHP wrote it as the raw display
+                       form. */
+                    const akaHaystack = (row.dataset.aka || '').toLowerCase();
                     const roles       = (row.dataset.roles || '').split(',').filter(Boolean);
                     const isRegOnly   = row.dataset.registryOnly === '1';
+                    const country     = (row.dataset.countryCode || '').toLowerCase();
                     let matchRole = true;
                     if (activeFilter === 'registry-only') {
                         matchRole = isRegOnly;
                     } else if (activeFilter !== 'all') {
                         matchRole = roles.includes(activeFilter);
                     }
-                    const matchSearch = q === '' || haystack.includes(q);
-                    const show = matchRole && matchSearch;
+                    const matchSearch  = q === '' || haystack.includes(q) || akaHaystack.includes(q);
+                    const matchCountry = activeCountry === '' || country === activeCountry;
+                    const show = matchRole && matchSearch && matchCountry;
                     row.classList.toggle('no-match', !show);
                     if (show) visibleCount++;
                 });
@@ -1603,6 +2443,12 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                 activeFilter = b.dataset.filter || 'all';
                 apply();
             }));
+            if (countrySel) {
+                countrySel.addEventListener('change', () => {
+                    activeCountry = (countrySel.value || '').toLowerCase();
+                    apply();
+                });
+            }
         })();
 
         /* =========================================================================
@@ -1623,16 +2469,38 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
             const nameIn    = document.getElementById('cp-drawer-name');
             const linksBox  = document.getElementById('cp-links-container');
             const ipiBox    = document.getElementById('cp-ipi-container');
+            const isniBox   = document.getElementById('cp-isni-container');
+            const aliasBox  = document.getElementById('cp-aliases-container');
             const linkTpl   = document.getElementById('cp-link-row-template');
             const ipiTpl    = document.getElementById('cp-ipi-row-template');
+            const isniTpl   = document.getElementById('cp-isni-row-template');
+            const aliasTpl  = document.getElementById('cp-alias-row-template');
             const addBtn    = document.getElementById('cp-add-btn');
             const addLinkBtn= document.getElementById('cp-add-link-btn');
             const addIpiBtn = document.getElementById('cp-add-ipi-btn');
+            const addIsniBtn= document.getElementById('cp-add-isni-btn');
+            const addAliasBtn = document.getElementById('cp-add-alias-btn');
             if (!drawerEl || !form) return;
 
             const drawer = bootstrap.Offcanvas.getOrCreateInstance(drawerEl);
-            let linkIndex = 0;
-            let ipiIndex  = 0;
+            let linkIndex  = 0;
+            let ipiIndex   = 0;
+            let isniIndex  = 0;
+            let aliasIndex = 0;
+
+            /* Wire each credit-people link row to the shared
+               iHymnsLinkDetect module. The dropdown's option values
+               are now numeric tblExternalLinkTypes.Id (post-#833
+               unification), so the module's default slugToOptionValue
+               lookup (cross-referencing window._iHymnsLinkTypes by
+               id) Just Works — no per-page translation map needed
+               any more. */
+            function wireCpLinkRowAutoDetect(row) {
+                if (!window.iHymnsLinkDetect || typeof window.iHymnsLinkDetect.attachAutoDetect !== 'function') return;
+                window.iHymnsLinkDetect.attachAutoDetect(row, {
+                    selectSelector: 'select[name$="[type_id]"]',
+                });
+            }
 
             /* Append a new sub-form row, optionally pre-filled. The
                template's {i} placeholders get replaced with the
@@ -1644,13 +2512,25 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                 const row = linksBox.lastElementChild;
                 if (prefill) {
                     const sel = row.querySelector('select');
-                    if (sel) sel.value = prefill.type || 'other';
+                    if (sel && prefill.type_id) sel.value = String(prefill.type_id);
                     const url = row.querySelector('input[type="url"]');
                     if (url) url.value = prefill.url || '';
                     const lbl = row.querySelector('input[name$="[label]"]');
                     if (lbl) lbl.value = prefill.label || '';
                     const ord = row.querySelector('input[name$="[sort_order]"]');
                     if (ord && prefill.sort_order !== undefined) ord.value = prefill.sort_order;
+                }
+                /* Auto-detect provider from the pasted URL — same
+                   shared module every other admin surface uses, now
+                   with no translation map since the option values
+                   are numeric registry ids. */
+                wireCpLinkRowAutoDetect(row);
+                /* Duplicate-URL detection — same shared module the
+                   songbooks / works / song-editor surfaces use. Fires
+                   a toast + auto-removes this row when its URL collides
+                   with another row's URL on the same person. */
+                if (window.iHymnsExtLinkDupeDetect && typeof window.iHymnsExtLinkDupeDetect.attach === 'function') {
+                    window.iHymnsExtLinkDupeDetect.attach(row, { container: linksBox });
                 }
                 return row;
             }
@@ -1663,15 +2543,89 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                     row.querySelector('input[name$="[name_used]"]').value = prefill.name_used || '';
                     row.querySelector('input[name$="[notes]"]').value     = prefill.notes     || '';
                 }
+                /* Re-apply the flag rules (#628) — ensures rows added
+                   AFTER the modal is open inherit the correct disabled
+                   state when Special case is ticked. */
+                if (typeof applyFlagLabels === 'function') applyFlagLabels();
+                return row;
+            }
+            /* Mirror of PHP's canonicaliseIsni() — strips every non-[0-9X]
+               character (any separator the curator paints with), upper-
+               cases, and regroups a 16-char result into "NNNN NNNN NNNN NNNX".
+               Non-16-char inputs stay as the cleaned string so the server-
+               side normaliser produces a matching value. */
+            function canonicaliseIsniJS(raw) {
+                const clean = (raw || '').toUpperCase().replace(/[^0-9X]/g, '');
+                if (/^\d{15}[0-9X]$/.test(clean)) {
+                    return clean.slice(0, 4) + ' '
+                         + clean.slice(4, 8) + ' '
+                         + clean.slice(8, 12) + ' '
+                         + clean.slice(12, 16);
+                }
+                return clean;
+            }
+            function addIsniRow(prefill) {
+                const html = isniTpl.innerHTML.replaceAll('{i}', String(isniIndex++));
+                isniBox.insertAdjacentHTML('beforeend', html);
+                const row = isniBox.lastElementChild;
+                const numIn = row.querySelector('input.cp-isni-number');
+                if (prefill) {
+                    if (numIn) numIn.value = prefill.number || '';
+                    row.querySelector('input[name$="[name_used]"]').value = prefill.name_used || '';
+                    row.querySelector('input[name$="[notes]"]').value     = prefill.notes     || '';
+                }
+                /* Reformat on blur so the curator sees the canonical
+                   "NNNN NNNN NNNN NNNX" shape before submit — matches
+                   what the server-side normaliser will store. Live
+                   formatting (input event) would fight the cursor;
+                   blur is the standard pattern for credit-card-style
+                   masking. */
+                if (numIn) {
+                    numIn.addEventListener('blur', () => {
+                        const canonical = canonicaliseIsniJS(numIn.value);
+                        if (canonical && canonical !== numIn.value) {
+                            numIn.value = canonical;
+                        }
+                    });
+                }
+                if (typeof applyFlagLabels === 'function') applyFlagLabels();
+                return row;
+            }
+            function addAliasRow(prefill) {
+                if (!aliasTpl) return null;
+                const html = aliasTpl.innerHTML.replaceAll('{i}', String(aliasIndex++));
+                aliasBox.insertAdjacentHTML('beforeend', html);
+                const row = aliasBox.lastElementChild;
+                if (prefill) {
+                    row.querySelector('input[name$="[name]"]').value    = prefill.Name    || prefill.name    || '';
+                    const typeSel = row.querySelector('select[name$="[type]"]');
+                    if (typeSel) typeSel.value = prefill.Type || prefill.type || 'other';
+                    const localeIn = row.querySelector('input[name$="[locale]"]');
+                    if (localeIn) localeIn.value = prefill.Locale || prefill.locale || '';
+                    const ord = row.querySelector('input[name$="[sort_order]"]');
+                    if (ord && (prefill.SortOrder !== undefined || prefill.sort_order !== undefined)) {
+                        ord.value = prefill.SortOrder ?? prefill.sort_order;
+                    }
+                }
                 return row;
             }
 
             function resetDrawer() {
                 form.reset();
-                linksBox.innerHTML = '';
-                ipiBox.innerHTML   = '';
-                linkIndex = 0;
-                ipiIndex  = 0;
+                linksBox.innerHTML  = '';
+                ipiBox.innerHTML    = '';
+                if (isniBox)  isniBox.innerHTML  = '';
+                if (aliasBox) aliasBox.innerHTML = '';
+                linkIndex  = 0;
+                ipiIndex   = 0;
+                isniIndex  = 0;
+                aliasIndex = 0;
+                /* form.reset() doesn't reset hidden inputs whose
+                   default value is empty — explicitly clear the
+                   place-id sidecars so a previous open's pick
+                   doesn't leak into the next session. */
+                document.getElementById('cp-drawer-birth-place-id').value = '';
+                document.getElementById('cp-drawer-death-place-id').value = '';
             }
 
             /* Open empty drawer for Add. */
@@ -1682,6 +2636,10 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                 titleEl.textContent = 'Add person';
                 nameIn.readOnly = false;
                 nameHelp.textContent = 'The canonical spelling. To rename later, save first, then use the Rename action — renames cascade to every song that cites this person.';
+                /* form.reset() above already cleared the flag checkboxes;
+                   refresh the label-swap state so a previously-opened
+                   group edit doesn't leave the labels reading "Founded". */
+                applyFlagLabels();
                 drawer.show();
                 setTimeout(() => nameIn.focus(), 200);
             });
@@ -1722,24 +2680,211 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                     nameHelp.textContent = 'This name is already credited on songs — adding to the registry lets you attach biographical metadata. The Name field is the canonical spelling that the song-credit tables already use; editing it here would create a mismatch, so leave it as-is and use Rename later if you need to change it.';
                 }
                 document.getElementById('cp-drawer-birth-place').value = person.birth_place || '';
+                document.getElementById('cp-drawer-birth-place-id').value = person.birth_place_id ? String(person.birth_place_id) : '';
                 document.getElementById('cp-drawer-birth-date').value  = person.birth_date  || '';
                 document.getElementById('cp-drawer-death-place').value = person.death_place || '';
+                document.getElementById('cp-drawer-death-place-id').value = person.death_place_id ? String(person.death_place_id) : '';
                 document.getElementById('cp-drawer-death-date').value  = person.death_date  || '';
                 document.getElementById('cp-drawer-notes').value       = person.notes       || '';
-                (person.links || []).forEach(l => addLinkRow(l));
-                (person.ipi   || []).forEach(r => addIpiRow(r));
+                /* #584 / #585 — pre-tick the classification flags. */
+                document.getElementById('cp-drawer-is-special-case').checked = !!person.is_special_case;
+                document.getElementById('cp-drawer-is-group').checked        = !!person.is_group;
+                /* #934 — pre-fill the structured-name fields. If the row
+                   has them populated, use those directly. If they're
+                   NULL (legacy / partly-migrated install) AND this is
+                   an individual, decompose Name client-side as a
+                   starting point — curators can refine on save. */
+                const isIndividual = !person.is_group && !person.is_special_case;
+                if (person.first_names || person.surname || person.suffix) {
+                    firstNamesIn.value = person.first_names || '';
+                    surnameIn.value    = person.surname     || '';
+                    suffixIn.value     = person.suffix      || '';
+                } else if (isIndividual && person.name) {
+                    const decomposed = decomposeNameClient(person.name);
+                    firstNamesIn.value = decomposed.first;
+                    surnameIn.value    = decomposed.surname;
+                    suffixIn.value     = decomposed.suffix;
+                } else {
+                    firstNamesIn.value = '';
+                    surnameIn.value    = '';
+                    suffixIn.value     = '';
+                }
+                applyFlagLabels();
+                (person.links   || []).forEach(l => addLinkRow(l));
+                (person.ipi     || []).forEach(r => addIpiRow(r));
+                (person.isni    || []).forEach(r => addIsniRow(r));
+                (person.aliases || []).forEach(a => addAliasRow(a));
                 drawer.show();
             });
 
+            /* Mutually-exclusive checkboxes + label-swap for groups. */
+            const specialCaseCb = document.getElementById('cp-drawer-is-special-case');
+            const groupCb       = document.getElementById('cp-drawer-is-group');
+            const birthPlaceIn  = document.getElementById('cp-drawer-birth-place');
+            const birthDateIn   = document.getElementById('cp-drawer-birth-date');
+            const deathPlaceIn  = document.getElementById('cp-drawer-death-place');
+            const deathDateIn   = document.getElementById('cp-drawer-death-date');
+            const addIpiButton  = document.getElementById('cp-add-ipi-btn');
+            const ipiSection    = document.querySelector('[data-flag-section="ipi"]');
+            const addIsniButton = document.getElementById('cp-add-isni-btn');
+            const isniSection   = document.querySelector('[data-flag-section="isni"]');
+            /* #934 — structured-name field references + helpers. */
+            const firstNamesIn  = document.getElementById('cp-drawer-first-names');
+            const surnameIn     = document.getElementById('cp-drawer-surname');
+            const suffixIn      = document.getElementById('cp-drawer-suffix');
+            const namePartsBox  = document.querySelector('[data-flag-section="name-parts"]');
+
+            /* Compose the Name preview from the three split fields.
+               Mirrors composePersonName() server-side: trim + collapse
+               consecutive whitespace + drop empty parts. */
+            function composeNameClient(first, surname, suffix) {
+                const parts = [first, surname, suffix]
+                    .map(s => (s || '').trim())
+                    .filter(s => s !== '');
+                return parts.join(' ').replace(/\s+/g, ' ');
+            }
+            /* Mirrors decomposePersonName() — used to seed the three
+               fields on edit when they're NULL. Keep the regex in sync
+               with the PHP-side helper if either changes. */
+            function decomposeNameClient(name) {
+                const trimmed = (name || '').trim().replace(/\s+/g, ' ');
+                if (trimmed === '') return { first: '', surname: '', suffix: '' };
+                let work = trimmed;
+                if (work.includes(',')) {
+                    const idx = work.indexOf(',');
+                    const head = work.slice(0, idx).trim();
+                    const tail = work.slice(idx + 1).trim();
+                    if (head !== '' && tail !== '') work = tail + ' ' + head;
+                }
+                const tokens = work.split(/\s+/).filter(t => t !== '');
+                if (tokens.length === 0) return { first: '', surname: '', suffix: '' };
+                const SUFFIX_RE = /^(?:Jr|Sr|II|III|IV|V|VI|VII|VIII|PhD|Ph\.D\.|MD|M\.D\.|Esq|Esq\.|D\.D\.|D\.Min\.|MA|M\.A\.|BA|B\.A\.)$/i;
+                const suffixParts = [];
+                while (tokens.length > 1) {
+                    const tail = tokens[tokens.length - 1];
+                    const tailNorm = tail.replace(/[.,]+$/, '');
+                    if (SUFFIX_RE.test(tail) || SUFFIX_RE.test(tailNorm)) {
+                        suffixParts.unshift(tokens.pop());
+                        continue;
+                    }
+                    break;
+                }
+                const suffix = suffixParts.join(' ');
+                if (tokens.length === 1) return { first: '', surname: tokens[0], suffix };
+                const surname = tokens.pop();
+                return { first: tokens.join(' '), surname, suffix };
+            }
+            /* Live-update the Name field as the curator types into the
+               three split inputs. Only fires for individuals — group /
+               special-case flows leave Name as direct input. */
+            function syncNameFromParts() {
+                if (specialCaseCb?.checked || groupCb?.checked) return;
+                const composed = composeNameClient(
+                    firstNamesIn?.value, surnameIn?.value, suffixIn?.value
+                );
+                if (nameIn) nameIn.value = composed;
+            }
+            firstNamesIn?.addEventListener('input', syncNameFromParts);
+            surnameIn?.addEventListener('input',    syncNameFromParts);
+            suffixIn?.addEventListener('input',     syncNameFromParts);
+
+            function applyFlagLabels() {
+                const isGroup       = !!groupCb?.checked;
+                const isSpecialCase = !!specialCaseCb?.checked;
+
+                /* Label swap (#629) — birth/death → founded/disbandment
+                   when Group is ticked. */
+                document.querySelectorAll('[data-flag-label="individual"]').forEach(el => {
+                    el.classList.toggle('d-none', isGroup);
+                });
+                document.querySelectorAll('[data-flag-label="group"]').forEach(el => {
+                    el.classList.toggle('d-none', !isGroup);
+                });
+
+                /* Field disable rules (#628 / #629):
+                   - Special case → bio inputs (place + date) AND the
+                     entire IPI section disabled. Special-case rows
+                     (Anonymous / Traditional / Public Domain / Unknown)
+                     have no real bio.
+                   - Group → place inputs disabled (no single physical
+                     birth/death location for a band). Date inputs
+                     stay editable as Founded / Disbandment dates.
+                   - Default (individual) → everything editable. */
+                const placesDisabled = isSpecialCase || isGroup;
+                const datesDisabled  = isSpecialCase;
+                const ipiDisabled    = isSpecialCase;
+
+                if (birthPlaceIn) birthPlaceIn.disabled = placesDisabled;
+                if (deathPlaceIn) deathPlaceIn.disabled = placesDisabled;
+                if (birthDateIn)  birthDateIn.disabled  = datesDisabled;
+                if (deathDateIn)  deathDateIn.disabled  = datesDisabled;
+
+                /* Disable the Add IPI button + every existing IPI row's
+                   inputs. The container holds the rows added via the
+                   template so we walk the children. Same treatment for
+                   the parallel ISNI section. */
+                if (addIpiButton) addIpiButton.disabled = ipiDisabled;
+                if (ipiSection) {
+                    ipiSection.querySelectorAll('input').forEach(inp => {
+                        inp.disabled = ipiDisabled;
+                    });
+                    ipiSection.classList.toggle('opacity-50', ipiDisabled);
+                }
+                if (addIsniButton) addIsniButton.disabled = ipiDisabled;
+                if (isniSection) {
+                    isniSection.querySelectorAll('input').forEach(inp => {
+                        inp.disabled = ipiDisabled;
+                    });
+                    isniSection.classList.toggle('opacity-50', ipiDisabled);
+                }
+
+                /* #934 — hide the structured-name fields for Group /
+                   Special-case rows (they don't have first/last/suffix
+                   semantics) and switch the canonical Name field to
+                   direct input. For individuals show the three split
+                   fields and re-enable the live-compose into Name. */
+                const splitHidden = isGroup || isSpecialCase;
+                if (namePartsBox) namePartsBox.classList.toggle('d-none', splitHidden);
+                if (firstNamesIn) firstNamesIn.disabled = splitHidden;
+                if (surnameIn)    surnameIn.disabled    = splitHidden;
+                if (suffixIn)     suffixIn.disabled     = splitHidden;
+                if (nameIn) {
+                    /* Direct Name input is allowed for groups/special
+                       cases (or for individuals on the "add to registry"
+                       path). On Edit-individual, the Rename-action rule
+                       still applies — server rejects a Name change that
+                       contradicts the existing canonical spelling. */
+                    if (splitHidden) {
+                        nameIn.readOnly = (idIn?.value && actionIn?.value === 'update_person');
+                    } else {
+                        /* Individual row: Name preview reflects the
+                           three split fields, so it's never directly
+                           edited. */
+                        nameIn.readOnly = true;
+                        syncNameFromParts();
+                    }
+                }
+            }
+            specialCaseCb?.addEventListener('change', () => {
+                if (specialCaseCb.checked && groupCb) groupCb.checked = false;
+                applyFlagLabels();
+            });
+            groupCb?.addEventListener('change', () => {
+                if (groupCb.checked && specialCaseCb) specialCaseCb.checked = false;
+                applyFlagLabels();
+            });
+
             /* Add-row buttons inside the drawer. */
-            addLinkBtn?.addEventListener('click', () => addLinkRow());
-            addIpiBtn?.addEventListener('click',  () => addIpiRow());
+            addLinkBtn?.addEventListener('click',  () => addLinkRow());
+            addIpiBtn?.addEventListener('click',   () => addIpiRow());
+            addIsniBtn?.addEventListener('click',  () => addIsniRow());
+            addAliasBtn?.addEventListener('click', () => addAliasRow());
 
             /* Remove-row delegation. */
             drawerEl.addEventListener('click', (ev) => {
                 const remove = ev.target.closest('.cp-row-remove');
                 if (!remove) return;
-                const row = remove.closest('.cp-link-row, .cp-ipi-row');
+                const row = remove.closest('.cp-link-row, .cp-ipi-row, .cp-isni-row, .cp-alias-row');
                 if (row) row.remove();
             });
         })();
@@ -1765,7 +2910,9 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                 const raw = row.getAttribute('data-person');
                 if (!raw) return;
                 let person; try { person = JSON.parse(raw); } catch (_) { return; }
-                if (!person.registry_id) return;
+                /* In-use-only rows pass through too (#626) — the
+                   server's rename handler auto-registers the row by
+                   name on submit. */
 
                 /* Build a "this will affect …" line from the role
                    counts already on the row. */
@@ -1790,7 +2937,11 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                         + parts.join(', ') + '.';
                 }
 
-                idIn.value     = String(person.registry_id);
+                idIn.value     = person.registry_id ? String(person.registry_id) : '';
+                /* In-use-only rows post the name as a fallback so the
+                   server can auto-register before renaming (#626). */
+                const sourceNameIn = document.getElementById('cp-rename-source-name');
+                if (sourceNameIn) sourceNameIn.value = person.registry_id ? '' : (person.name || '');
                 currentIn.value= person.name || '';
                 newIn.value    = person.name || '';
                 modal.show();
@@ -1814,14 +2965,25 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
             const childrenEmpty = document.getElementById('cp-merge-children-empty');
             const linksBox   = document.getElementById('cp-merge-children-links');
             const ipiBox     = document.getElementById('cp-merge-children-ipi');
+            const isniBoxMerge = document.getElementById('cp-merge-children-isni');
             const submitBtn  = document.getElementById('cp-merge-submit');
 
-            /* Build the registry-row index once on page load. Used to
-               populate the target dropdown excluding the source. */
+            /* Build the all-people index once on page load (#626). Used
+               to populate the target dropdown excluding the source. The
+               index now includes in-use-only rows, not just registry
+               rows — the server auto-registers either side on submit
+               so the dropdown can offer any name. */
             const registry = [];
             document.querySelectorAll('#cp-tbody tr[data-person]').forEach(r => {
                 let p; try { p = JSON.parse(r.getAttribute('data-person')); } catch (_) { return; }
-                if (p.registry_id) registry.push({ id: p.registry_id, name: p.name });
+                if (p.registry_id) {
+                    registry.push({ id: p.registry_id, name: p.name, key: 'id:' + p.registry_id });
+                } else if (p.total > 0) {
+                    /* In-use-only — the merge handler will INSERT IGNORE
+                       on submit. Encode the name as the option value so
+                       the form posts target_name when picked. */
+                    registry.push({ id: 0, name: p.name, key: 'name:' + p.name });
+                }
             });
             registry.sort((a, b) => a.name.localeCompare(b.name));
 
@@ -1833,29 +2995,62 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                 const raw = row.getAttribute('data-person');
                 if (!raw) return;
                 let person; try { person = JSON.parse(raw); } catch (_) { return; }
-                if (!person.registry_id) return;
+                /* In-use-only sources flow through too (#626) — the
+                   server auto-registers by name if source_id is empty. */
 
-                sourceIdIn.value   = String(person.registry_id);
+                sourceIdIn.value   = person.registry_id ? String(person.registry_id) : '';
                 sourceNameIn.value = person.name || '';
+                /* Hidden field that tells the server to auto-register
+                   the source by name when source_id is missing. */
+                const sourceNameHidden = document.getElementById('cp-merge-source-name-hidden');
+                if (sourceNameHidden) sourceNameHidden.value = person.registry_id ? '' : (person.name || '');
 
-                /* Populate target dropdown — every registry row except
-                   the source. Sorted alphabetically. */
+                /* Reset the irreversibility ack on every open so a prior
+                   ticked state doesn't carry across to a fresh merge. */
+                const confirmCb = document.getElementById('cp-merge-confirm');
+                if (confirmCb) confirmCb.checked = false;
+
+                /* Per-role re-point preview (#583). The byName aggregate
+                   already carries every count we need; just display them. */
+                const previewWrap = document.getElementById('cp-merge-credit-preview');
+                if (previewWrap) {
+                    document.getElementById('cp-merge-count-writer').textContent     = person.writers     || 0;
+                    document.getElementById('cp-merge-count-composer').textContent   = person.composers   || 0;
+                    document.getElementById('cp-merge-count-arranger').textContent   = person.arrangers   || 0;
+                    document.getElementById('cp-merge-count-adaptor').textContent    = person.adaptors    || 0;
+                    document.getElementById('cp-merge-count-translator').textContent = person.translators || 0;
+                    document.getElementById('cp-merge-count-total').textContent      = person.total       || 0;
+                    previewWrap.classList.remove('d-none');
+                }
+
+                /* Populate target dropdown — every name except the
+                   source itself. The option `value` is the same `key`
+                   that distinguishes id-vs-name (e.g. "id:42" or
+                   "name:Stuart Townend") so the submit handler can
+                   route the right field to the server. Sorted
+                   alphabetically. */
                 targetSel.innerHTML = '<option value="">— pick the surviving person —</option>';
                 registry.forEach(p => {
-                    if (p.id === person.registry_id) return;
+                    if (p.id && p.id === person.registry_id) return;
+                    if (!p.id && p.name === person.name)     return;
                     const opt = document.createElement('option');
-                    opt.value = String(p.id);
-                    opt.textContent = p.name;
+                    opt.value = p.key;
+                    opt.textContent = p.name + (p.id ? '' : ' (not yet in registry)');
                     targetSel.appendChild(opt);
                 });
 
-                /* Source children — render each link + IPI as a
-                   checkbox row (default checked = keep on target). */
+                /* Source children — render each link + IPI + ISNI as a
+                   checkbox row (default checked = keep on target). IPI
+                   and ISNI both POST under keep_ipi_ids[] since they're
+                   now the same `tblCreditPersonIdentifiers` table; the
+                   wire-protocol field name is kept for back-compat. */
                 linksBox.innerHTML = '';
                 ipiBox.innerHTML   = '';
+                if (isniBoxMerge) isniBoxMerge.innerHTML = '';
                 const links = person.links || [];
                 const ipi   = person.ipi   || [];
-                if (links.length === 0 && ipi.length === 0) {
+                const isni  = person.isni  || [];
+                if (links.length === 0 && ipi.length === 0 && isni.length === 0) {
                     childrenEmpty.classList.remove('d-none');
                 } else {
                     childrenEmpty.classList.add('d-none');
@@ -1898,15 +3093,57 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
                             ipiBox.appendChild(wrap);
                         });
                     }
+                    if (isni.length && isniBoxMerge) {
+                        const head = document.createElement('div');
+                        head.className = 'small text-secondary mb-1 mt-2';
+                        head.textContent = 'ISNI (' + isni.length + ')';
+                        isniBoxMerge.appendChild(head);
+                        isni.forEach(r => {
+                            const wrap = document.createElement('div');
+                            wrap.className = 'form-check small';
+                            wrap.innerHTML = '<input class="form-check-input" type="checkbox" name="keep_ipi_ids[]" value="' + r.id + '" id="cp-merge-isni-' + r.id + '" checked>'
+                                           + '<label class="form-check-label" for="cp-merge-isni-' + r.id + '">'
+                                           + '<code class="me-1">' + r.number + '</code>'
+                                           + (r.name_used ? '(as ' + r.name_used + ') ' : '')
+                                           + (r.notes ? '— ' + r.notes : '')
+                                           + '</label>';
+                            isniBoxMerge.appendChild(wrap);
+                        });
+                    }
                 }
                 childrenWrap.classList.remove('d-none');
                 submitBtn.disabled = true; /* enabled once a target is picked */
                 modal.show();
             });
 
-            /* Submit button only enables once a target is picked. */
+            /* Submit button enables only when BOTH a target is picked
+               AND the irreversibility ack is ticked (#583). */
+            const confirmCb = document.getElementById('cp-merge-confirm');
+            function refreshSubmitState() {
+                const targetPicked = targetSel?.value !== '';
+                const acknowledged = !!confirmCb?.checked;
+                submitBtn.disabled = !(targetPicked && acknowledged);
+            }
             targetSel?.addEventListener('change', () => {
-                submitBtn.disabled = targetSel.value === '';
+                refreshSubmitState();
+            });
+            confirmCb?.addEventListener('change', refreshSubmitState);
+
+            /* On submit, translate the picked option's key into the
+               correct hidden field (#626). The select carries
+               "id:N" for registry rows and "name:X" for in-use-only
+               rows; the server handler accepts either. */
+            modalEl.querySelector('form')?.addEventListener('submit', () => {
+                const picked = targetSel?.value || '';
+                const idHidden   = document.getElementById('cp-merge-target-id-hidden');
+                const nameHidden = document.getElementById('cp-merge-target-name-hidden');
+                if (idHidden)   idHidden.value   = '';
+                if (nameHidden) nameHidden.value = '';
+                if (picked.startsWith('id:')) {
+                    if (idHidden) idHidden.value = picked.slice(3);
+                } else if (picked.startsWith('name:')) {
+                    if (nameHidden) nameHidden.value = picked.slice(5);
+                }
             });
         })();
 

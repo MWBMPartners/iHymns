@@ -36,7 +36,7 @@
 :root {
     /* --- Layout dimensions --- */
     --header-height: 56px;
-    --search-bar-height: 56px;
+    /* --search-bar-height removed (#812) — header search bar gone. */
     --footer-nav-height: 60px;
     --footer-info-height: 28px;
     --footer-total-height: calc(var(--footer-nav-height) + var(--footer-info-height));
@@ -321,7 +321,20 @@
     align-items: center;
 }
 
-#theme-dropdown-btn + .dropdown-menu .dropdown-item i {
+/* Site-wide dropdown-item icon alignment (#647). Font Awesome and
+   Bootstrap Icons glyphs have variable natural widths — fa-gears is
+   wider than fa-house, bi-stars is wider than bi-people, so without
+   a fixed slot the text labels after each icon misalign by a few
+   pixels (visible as e.g. "Manage" sitting further right than its
+   siblings in the iHymns brand dropdown).
+
+   Pin the leading <i> in any .dropdown-item to FA's `fa-fw` 1.25em
+   width with centred glyph alignment. Existing me-2 / me-1 spacing
+   rules continue to drive the icon→text gap; this rule only fixes
+   the icon's horizontal slot. Applies on both surfaces (main app
+   + admin) since admin.css layers on top of app.css. */
+.dropdown-item > i:first-child {
+    display: inline-block;
     width: 1.25em;
     text-align: center;
 }
@@ -350,7 +363,15 @@
 
 html {
     scroll-behavior: smooth;
+    /* Stop iOS / Android Chrome from auto-bumping body text size on
+       rotation. Three forms because the property is in transition:
+       Safari/iOS only know the -webkit- form, Firefox only knows the
+       -moz- form, Chromium 54+ supports the unprefixed standard. The
+       Edge Tools linter flags the unprefixed line as "not supported in
+       Firefox/Safari" — true, but the prefixed lines above cover those;
+       the standard form is for forward-compat. */
     -webkit-text-size-adjust: 100%;
+    -moz-text-size-adjust: 100%;
     text-size-adjust: 100%;
 }
 
@@ -377,6 +398,61 @@ body {
 }
 
 /* ==========================================================================
+   2.5  GLOBAL LINK DEFAULTS (#951)
+
+   Kills Bootstrap / browser-default `<a>` styling (bright blue + solid
+   underline) that visually shouts against iHymns' otherwise-muted
+   palette. Replaces it with the same look the writer-credit links have
+   used since #145 — inherits the surrounding text colour, no solid
+   underline, subtle dotted bottom-border that becomes solid + accent
+   on hover.
+
+   Bootstrap component classes (`.btn`, `.nav-link`, `.dropdown-item`,
+   `.breadcrumb-item a`, `.alert-link`, `.page-link`, `.list-group-item-
+   action`, `.navbar-brand`, etc.) carry their own explicit `color` /
+   `text-decoration` declarations and win on specificity (one-class
+   selector beats one-element selector), so chrome links keep their
+   existing styling. Only naked `<a>` tags inherit this default.
+
+   Loaded on every page (public + admin) — `app.css` is included from
+   both the public head and `manage/includes/head-libs.php`, so this
+   rule is genuinely global.
+
+   For semantic clarity, prose links inside the song page still tag
+   themselves with `.song-meta-link` — the visual outcome is identical
+   to this default, but the class makes the intent explicit and lets
+   future tweaks target it without disturbing the global default.
+   ========================================================================== */
+
+a {
+    color: inherit;
+    text-decoration: none;
+    border-bottom: 1px dotted var(--bs-secondary-color, #6c757d);
+    transition: color var(--transition-fast, 150ms ease),
+                border-color var(--transition-fast, 150ms ease);
+}
+
+a:hover {
+    color: var(--accent-solid, var(--bs-primary));
+    border-bottom-style: solid;
+    border-bottom-color: var(--accent-solid, var(--bs-primary));
+    text-decoration: none;
+}
+
+/* Visited inherits — no purple "you've been here" tint. */
+a:visited {
+    color: inherit;
+}
+
+/* Anchors that wrap an image / icon-only / no-text-content shouldn't
+   carry a dotted underline. Add `.link-bare` to opt-out, e.g.
+   `<a class="link-bare" href="..."><i class="bi-x"></i></a>`. */
+a.link-bare,
+a.link-bare:hover {
+    border-bottom: none;
+}
+
+/* ==========================================================================
    3. LAYOUT — Header, Footer, Main Content
    ========================================================================== */
 
@@ -390,8 +466,8 @@ body {
     right: 0;
     z-index: 1030;
     background: var(--header-bg);
-    backdrop-filter: blur(16px) saturate(180%);
     -webkit-backdrop-filter: blur(16px) saturate(180%);
+    backdrop-filter: blur(16px) saturate(180%);
     box-shadow: var(--header-shadow);
     border-bottom: 1px solid var(--card-border);
 }
@@ -432,6 +508,46 @@ body {
     transition: background-color var(--transition-fast), transform var(--transition-fast);
 }
 
+/* Header user-avatar image (#646). Sized to match the optical weight
+   of the FA / BI glyphs in the adjacent header buttons (~16-18px line
+   icons) — a 24px filled circle reads as the same visual size; 32px
+   read distinctly bigger. The 40×40 .btn-header-icon hit area is
+   unchanged so the right-edge cluster still doesn't reflow. */
+.btn-header-icon img,
+.header-user-avatar {
+    width: 24px;
+    height: 24px;
+    object-fit: cover;
+    border-radius: 50%;
+}
+
+/* Channel badge ("Alpha" / "Beta") — uniform pill at every viewport (#812).
+   The full environment name MUST stay readable on every screen because
+   functionality and capabilities differ between channels. The previous
+   rule shrank the badge to a single letter (font-size:0 + ::first-letter)
+   on < 576px which looked clipped and obscured the cue. Fixed pill,
+   compact padding, uppercase text — readable everywhere. */
+.app-header .navbar-brand .badge.env-badge,
+.navbar-admin .navbar-brand .badge.env-badge {
+    font-size: 0.65rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.22em 0.55em;
+    line-height: 1.05;
+    border-radius: 999px;
+    transition: padding 0.15s ease;
+}
+@media (max-width: 359.98px) {
+    /* Ultra-narrow viewports (< 360px) — tighten padding a touch but
+       keep the full word visible. No more single-letter trick. */
+    .app-header .navbar-brand .badge.env-badge,
+    .navbar-admin .navbar-brand .badge.env-badge {
+        padding: 0.2em 0.45em;
+        font-size: 0.6rem;
+    }
+}
+
 .btn-header-icon:hover {
     background-color: rgba(99, 102, 241, 0.1);
     color: var(--accent-solid);
@@ -441,21 +557,9 @@ body {
     transform: scale(0.92);
 }
 
-/* Collapsible search bar */
-.header-search-bar {
-    max-height: 0;
-    overflow: hidden;
-    transition: max-height var(--transition-slow), opacity var(--transition-normal);
-    opacity: 0;
-    background: var(--header-bg);
-    border-top: 1px solid var(--card-border);
-}
-
-.header-search-bar.open {
-    max-height: var(--search-bar-height);
-    opacity: 1;
-    overflow: visible;
-}
+/* Collapsible header search bar removed (#812) — the bottom-drawer
+   Search entry navigates straight to /search; no need for a sliding
+   header bar duplicating the affordance. */
 
 /* ---------------------------------------------------------------------------
    Main Content Area
@@ -472,14 +576,9 @@ body.banner-visible .main-content {
     padding-top: calc(var(--header-height) + var(--install-banner-height) + env(safe-area-inset-top, 0px) + 8px);
 }
 
-/* Adjust when search bar is open */
-body.search-open .main-content {
-    padding-top: calc(var(--header-height) + var(--search-bar-height) + 8px);
-}
-
-body.banner-visible.search-open .main-content {
-    padding-top: calc(var(--header-height) + var(--install-banner-height) + var(--search-bar-height) + env(safe-area-inset-top, 0px) + 8px);
-}
+/* `.search-open` body class no longer applied (#812) — header search
+   bar + toggle were removed alongside the duplicate bottom-drawer
+   Search entry. The padding-shift rules went with them. */
 
 /* ---------------------------------------------------------------------------
    PWA Standalone Mode — Safe Area Insets
@@ -502,19 +601,17 @@ body.banner-visible.search-open .main-content {
         padding-bottom: calc(var(--footer-total-height) + env(safe-area-inset-bottom, 0px) + 8px);
     }
 
-    body.search-open .main-content {
-        padding-top: calc(var(--header-height) + var(--search-bar-height) + env(safe-area-inset-top, 0px) + 8px);
-    }
+    /* `.search-open` body class no longer applied (#812). */
 
     /* Footer — extend background into the bottom safe area (home indicator) */
     .app-footer {
         padding-bottom: env(safe-area-inset-bottom, 0px);
     }
 
-    /* Reading progress bar — account for taller header in standalone mode (#350) */
-    .reading-progress-bar {
-        top: calc(var(--header-height, 56px) + env(safe-area-inset-top, 0px));
-    }
+    /* Reading progress bar — the base rule already uses
+       env(safe-area-inset-top) so the bar sits flush below the
+       Dynamic Island / camera area in standalone PWA mode. No
+       override needed here. (#350) */
 
     .compare-header {
         padding-top: max(0.75rem, env(safe-area-inset-top, 0px));
@@ -569,6 +666,234 @@ body.banner-visible.search-open .main-content {
 #page-content.page-visible {
     opacity: 1;
     transform: translateY(0);
+}
+
+/* ------------------------------------------------------------------
+ * Per-type page transitions (#752)
+ *
+ * The base rules above describe the legacy "fade-with-translateY"
+ * effect — that's the default for both `fade` and `crossfade`. The
+ * `slide` variant overrides the transform to be horizontal and
+ * direction-aware: forward navigation slides the leaving page out
+ * to the left and the new page in from the right, mirroring iOS /
+ * Android navigation cues. Back navigation reverses both axes.
+ *
+ * Settings → Page transitions exposes the four options:
+ *   none      — no transition (handled in JS, .page-visible applied
+ *               immediately).
+ *   fade      — opacity fade with subtle vertical translate (legacy).
+ *   slide     — horizontal slide that follows nav direction.
+ *   crossfade — pure opacity, no translate (cleaner on data-heavy
+ *               pages where translateY can flicker).
+ * ------------------------------------------------------------------ */
+
+/* slide — forward (push from right). */
+body[data-page-transition="slide"][data-nav-direction="forward"] #page-content.page-leaving {
+    transform: translateX(-24px);
+}
+body[data-page-transition="slide"][data-nav-direction="forward"] #page-content.page-entering {
+    transform: translateX(24px);
+}
+
+/* slide — back (push from left). */
+body[data-page-transition="slide"][data-nav-direction="back"] #page-content.page-leaving {
+    transform: translateX(24px);
+}
+body[data-page-transition="slide"][data-nav-direction="back"] #page-content.page-entering {
+    transform: translateX(-24px);
+}
+
+/* slide — visible state always rests at zero offset. */
+body[data-page-transition="slide"] #page-content.page-visible {
+    transform: translateX(0);
+}
+
+/* crossfade — opacity-only, no translate. Less motion for
+   information-dense pages. */
+body[data-page-transition="crossfade"] #page-content.page-leaving,
+body[data-page-transition="crossfade"] #page-content.page-entering {
+    transform: none;
+}
+body[data-page-transition="crossfade"] #page-content.page-visible {
+    transform: none;
+}
+
+/* ------------------------------------------------------------------
+ * View Transitions API page transitions (#864 / #865)
+ *
+ * The browser handles snapshot + crossfade plumbing — these CSS
+ * rules just describe per-type keyframes. The DOM update happens
+ * synchronously inside transitions.runViewTransition(); the browser
+ * captures an "old" snapshot before the call and a "new" snapshot
+ * after, then animates BOTH at the same time using whichever rules
+ * match the active body[data-page-transition] selector.
+ *
+ * Because old + new are visible simultaneously during the
+ * transition, the animations all start at the same instant — no
+ * "blank gap" between the legacy pageOut and pageIn phases.
+ *
+ * Default browser cross-fade is overridden so "none" really means
+ * none (instant); per-type rules below restore animations.
+ * ------------------------------------------------------------------ */
+
+/* Disable the browser's default cross-fade so per-type rules can
+   take over without compounding two animations. */
+::view-transition-old(root),
+::view-transition-new(root) {
+    animation: none;
+    mix-blend-mode: normal;
+}
+
+/* Position the snapshots so they overlap during the animation
+   rather than stacking — the default `::view-transition-image-pair`
+   is set to overlap, this just makes our intent explicit. */
+::view-transition-image-pair(root) {
+    isolation: auto;
+}
+
+/* fade — opacity-only crossfade with the same gentle vertical
+   offset as the legacy default (matches user expectations on
+   upgrade). Both snapshots animate simultaneously. */
+body[data-page-transition="fade"] ::view-transition-old(root) {
+    animation: ihymns-vt-fade-out 250ms ease forwards;
+}
+body[data-page-transition="fade"] ::view-transition-new(root) {
+    animation: ihymns-vt-fade-in 250ms ease forwards;
+}
+
+/* slide — horizontal directional slide. Forward = old slides left,
+   new comes from right; back is mirrored. The browser snapshots
+   the old page-content as it was, so the translate looks like a
+   single piece of paper sliding past the viewport. */
+body[data-page-transition="slide"][data-nav-direction="forward"] ::view-transition-old(root) {
+    animation: ihymns-vt-slide-out-left 280ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+body[data-page-transition="slide"][data-nav-direction="forward"] ::view-transition-new(root) {
+    animation: ihymns-vt-slide-in-right 280ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+body[data-page-transition="slide"][data-nav-direction="back"] ::view-transition-old(root) {
+    animation: ihymns-vt-slide-out-right 280ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+body[data-page-transition="slide"][data-nav-direction="back"] ::view-transition-new(root) {
+    animation: ihymns-vt-slide-in-left 280ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+
+/* crossfade — pure opacity, no translate. Cleanest option for
+   information-dense pages. */
+body[data-page-transition="crossfade"] ::view-transition-old(root) {
+    animation: ihymns-vt-cross-out 250ms ease forwards;
+}
+body[data-page-transition="crossfade"] ::view-transition-new(root) {
+    animation: ihymns-vt-cross-in 250ms ease forwards;
+}
+
+/* scale (#865) — gentle zoom; old fades out at 0.96×, new fades
+   in from 1.04×. Subtle "depth" without being flashy. */
+body[data-page-transition="scale"] ::view-transition-old(root) {
+    animation: ihymns-vt-scale-out 280ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+body[data-page-transition="scale"] ::view-transition-new(root) {
+    animation: ihymns-vt-scale-in 280ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+
+/* lift (#865) — old slides DOWN + fades, new lifts up from below
+   + fades. Tactile, kinetic — like an Instagram story dismissal. */
+body[data-page-transition="lift"] ::view-transition-old(root) {
+    animation: ihymns-vt-lift-out 320ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+body[data-page-transition="lift"] ::view-transition-new(root) {
+    animation: ihymns-vt-lift-in 320ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+
+/* depth (#865) — cinematic. Old recedes (scales to 0.92, dims),
+   new emerges (scales 1.05 → 1.00, brightens). Like an iOS app
+   launch. */
+body[data-page-transition="depth"] ::view-transition-old(root) {
+    animation: ihymns-vt-depth-out 320ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+body[data-page-transition="depth"] ::view-transition-new(root) {
+    animation: ihymns-vt-depth-in 320ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+
+/* blur (#865) — cinematic dissolve. Old blurs to 8px while
+   fading; new starts blurred and sharpens in. Great for
+   slow-network cases where the user otherwise notices the swap. */
+body[data-page-transition="blur"] ::view-transition-old(root) {
+    animation: ihymns-vt-blur-out 320ms ease forwards;
+}
+body[data-page-transition="blur"] ::view-transition-new(root) {
+    animation: ihymns-vt-blur-in 320ms ease forwards;
+}
+
+@keyframes ihymns-vt-fade-out {
+    from { opacity: 1; transform: translateY(0); }
+    to   { opacity: 0; transform: translateY(-8px); }
+}
+@keyframes ihymns-vt-fade-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes ihymns-vt-slide-out-left {
+    from { opacity: 1; transform: translateX(0); }
+    to   { opacity: 0; transform: translateX(-32px); }
+}
+@keyframes ihymns-vt-slide-in-right {
+    from { opacity: 0; transform: translateX(32px); }
+    to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes ihymns-vt-slide-out-right {
+    from { opacity: 1; transform: translateX(0); }
+    to   { opacity: 0; transform: translateX(32px); }
+}
+@keyframes ihymns-vt-slide-in-left {
+    from { opacity: 0; transform: translateX(-32px); }
+    to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes ihymns-vt-cross-out {
+    from { opacity: 1; }
+    to   { opacity: 0; }
+}
+@keyframes ihymns-vt-cross-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+@keyframes ihymns-vt-scale-out {
+    from { opacity: 1; transform: scale(1.00); }
+    to   { opacity: 0; transform: scale(0.96); }
+}
+@keyframes ihymns-vt-scale-in {
+    from { opacity: 0; transform: scale(1.04); }
+    to   { opacity: 1; transform: scale(1.00); }
+}
+
+@keyframes ihymns-vt-lift-out {
+    from { opacity: 1; transform: translateY(0); }
+    to   { opacity: 0; transform: translateY(24px); }
+}
+@keyframes ihymns-vt-lift-in {
+    from { opacity: 0; transform: translateY(40px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes ihymns-vt-depth-out {
+    from { opacity: 1; transform: scale(1.00); filter: brightness(1.00); }
+    to   { opacity: 0; transform: scale(0.92); filter: brightness(0.85); }
+}
+@keyframes ihymns-vt-depth-in {
+    from { opacity: 0; transform: scale(1.05); filter: brightness(1.10); }
+    to   { opacity: 1; transform: scale(1.00); filter: brightness(1.00); }
+}
+
+@keyframes ihymns-vt-blur-out {
+    from { opacity: 1; filter: blur(0); }
+    to   { opacity: 0; filter: blur(8px); }
+}
+@keyframes ihymns-vt-blur-in {
+    from { opacity: 0; filter: blur(8px); }
+    to   { opacity: 1; filter: blur(0); }
 }
 
 /* Staggered list items (#149) */
@@ -632,8 +957,8 @@ body.banner-visible.search-open .main-content {
     right: 0;
     z-index: 1030;
     background: var(--footer-bg);
-    backdrop-filter: blur(16px) saturate(180%);
     -webkit-backdrop-filter: blur(16px) saturate(180%);
+    backdrop-filter: blur(16px) saturate(180%);
     box-shadow: var(--footer-shadow);
     border-top: 1px solid var(--card-border);
 }
@@ -1178,9 +1503,23 @@ body.banner-visible.search-open .main-content {
     -webkit-touch-callout: none;
 }
 
-/* Song copyright */
+/* Song copyright (legacy class — retained because print.css still
+   references it for hymnal-style print output of older templates). */
 .song-copyright {
     font-size: 0.85rem;
+}
+
+/* Right-aligned credits + copyright footer at end of lyrics (#601).
+   Mirrors the hymnal / projection convention: small italic-ish text,
+   right-aligned, immediately after the last verse so users projecting
+   or printing have the attribution visible without scrolling back to
+   the header. */
+.song-credits-footer {
+    font-size: 0.85rem;
+    line-height: 1.4;
+}
+.song-credits-footer > div + div {
+    margin-top: 0.1rem;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1332,6 +1671,17 @@ body.banner-visible.search-open .main-content {
     box-shadow: 0 0 0 2px var(--accent-solid);
 }
 
+/* Pin the leading <i> in each help accordion-button to a fixed 1.25em
+   slot so the section labels start at the same x-position regardless
+   of which FA glyph leads the row (fa-rocket vs fa-heart vs fa-keyboard
+   etc. all have slightly different natural widths). Same convention as
+   the .dropdown-item rule above (#647); see #654. */
+.accordion-help .accordion-button > i:first-child {
+    display: inline-block;
+    width: 1.25em;
+    text-align: center;
+}
+
 /* ---------------------------------------------------------------------------
    About list (settings page)
    --------------------------------------------------------------------------- */
@@ -1388,8 +1738,8 @@ body.banner-visible.search-open .main-content {
 /* Reduced transparency mode */
 body.reduce-transparency .app-header,
 body.reduce-transparency .app-footer {
-    backdrop-filter: none;
     -webkit-backdrop-filter: none;
+    backdrop-filter: none;
     background: var(--surface-card);
 }
 
@@ -1515,6 +1865,24 @@ body.reduce-motion .song-list-item {
     animation: none !important;
     opacity: 1 !important;
     transform: none !important;
+}
+
+/* #864 / #865 — collapse all View Transitions API animations to a
+   1ms cross-fade when reduce-motion is in effect. The browser still
+   runs a transition (so the DOM swap is atomic) but it's
+   imperceptible. Same treatment under the @media query above and
+   under the manual `body.reduce-motion` toggle. */
+@media (prefers-reduced-motion: reduce) {
+    ::view-transition-old(root),
+    ::view-transition-new(root) {
+        animation-duration: 1ms !important;
+        animation-timing-function: linear !important;
+    }
+}
+body.reduce-motion ::view-transition-old(root),
+body.reduce-motion ::view-transition-new(root) {
+    animation-duration: 1ms !important;
+    animation-timing-function: linear !important;
 }
 
 /* ==========================================================================
@@ -2041,32 +2409,96 @@ body.reduce-motion .shortcuts-overlay {
 }
 
 /* ==========================================================================
+   ENTITLEMENT LOCK CHIPS (#758)
+   Small SVG-rendered padlock indicator next to admin-surface labels and
+   card titles. Colour communicates the role tier required to actually
+   click through:
+     red   = Global Admin only
+     yellow = Admin or Global Admin
+   Items visible to user/editor render no chip — the absence is itself
+   the cue. The HTML lives in entitlementLockChipHtml() in
+   includes/entitlements.php; markup is <i class="bi bi-lock-fill
+   lock-chip lock-chip-{tier}" title="…">.
+   ========================================================================== */
+
+.lock-chip {
+    font-size: 0.78em;
+    opacity: 0.9;
+    vertical-align: 0.05em;
+    margin-left: 0.4rem;
+    /* Don't let a tooltip-cursor crowd the link target on mobile. */
+    pointer-events: auto;
+}
+
+.lock-chip-global-admin { color: #ef4444; }
+.lock-chip-admin        { color: #f59e0b; }
+
+/* Corner placement for the dashboard tile / setup-database card variant
+   (#785). The inline-after-label form (above) is still used by the
+   admin sidebar + offcanvas; the corner form sits absolute in the
+   top-right of a position:relative parent. Slightly larger so it
+   reads at a glance without crowding the card heading. */
+.lock-chip-corner {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+    margin-left: 0;
+    font-size: 1rem;
+    line-height: 1;
+    z-index: 2;
+}
+
+/* In high-contrast mode the chip needs a slightly bolder outline so
+   the colour difference reads at a glance. */
+[data-ihymns-theme="high-contrast"] .lock-chip-global-admin {
+    color: #ff5252;
+    text-shadow: 0 0 1px #000;
+}
+[data-ihymns-theme="high-contrast"] .lock-chip-admin {
+    color: #ffb020;
+    text-shadow: 0 0 1px #000;
+}
+
+/* ==========================================================================
    READING PROGRESS INDICATOR (#109)
    ========================================================================== */
 
 .reading-progress-bar {
-    position: sticky;
-    top: var(--header-height, 56px);
+    /* position: fixed (not sticky) — sticky breaks under any
+       transformed ancestor, and #page-content has a transform on it
+       for the page-transition animation (#149). The JS module
+       inserts the bar directly under <body> for the same reason —
+       body has no transform, so the fixed positioning is reliable.
+       env(safe-area-inset-top) keeps the bar flush below a notch /
+       Dynamic Island / camera punch-hole when installed as a PWA;
+       outside standalone mode it defaults to 0. (#350) */
+    position: fixed;
+    top: env(safe-area-inset-top, 0px);
     left: 0;
     width: 0;
     height: 3px;
     background: var(--bs-primary, #6366f1);
-    z-index: 1020;
+    /* z-index above .app-header (1030) so the bar paints on top of the
+       header's blurred composite layer regardless of DOM order. Stays
+       below the modal / overlay band (1100). #899 */
+    z-index: 1031;
     transition: width 80ms linear;
     border-radius: 0 2px 2px 0;
+    pointer-events: none;
 }
 
-/* Songbook-specific accent colours */
-.reading-progress-bar[data-songbook="CP"] { background: var(--songbook-CP, #6366f1); }
-.reading-progress-bar[data-songbook="JP"] { background: var(--songbook-JP, #ec4899); }
-.reading-progress-bar[data-songbook="MP"] { background: var(--songbook-MP, #f59e0b); }
-.reading-progress-bar[data-songbook="SDAH"] { background: var(--songbook-SDAH, #ef4444); }
-.reading-progress-bar[data-songbook="CH"] { background: var(--songbook-CH, #8b5cf6); }
-
-/* In presentation mode, stick to top of screen (no header) */
-body.presentation-active .reading-progress-bar {
-    top: 0;
-}
+/* Built-in-songbook accent colours. The runtime colour from
+   tblSongbooks.Colour wins via inline style set in
+   js/modules/reading-progress.js — these data-attribute selectors
+   are the legacy fallback for the original 5 abbreviations + Misc.
+   Custom songbooks created via /manage/songbooks rely on the inline
+   style and don't need a CSS rule here. */
+.reading-progress-bar[data-songbook="CP"]   { background: var(--songbook-CP-solid,   #6366f1); }
+.reading-progress-bar[data-songbook="JP"]   { background: var(--songbook-JP-solid,   #ec4899); }
+.reading-progress-bar[data-songbook="MP"]   { background: var(--songbook-MP-solid,   #14b8a6); }
+.reading-progress-bar[data-songbook="SDAH"] { background: var(--songbook-SDAH-solid, #f59e0b); }
+.reading-progress-bar[data-songbook="CH"]   { background: var(--songbook-CH-solid,   #ef4444); }
+.reading-progress-bar[data-songbook="Misc"] { background: var(--songbook-Misc-solid, #8b5cf6); }
 
 /* Respect reduce-motion */
 body.reduce-motion .reading-progress-bar {
@@ -2417,24 +2849,35 @@ body.reduce-motion .related-songs-chevron {
 }
 
 /* =========================================================================
- * WRITER/COMPOSER LINKS (#145)
+ * SONG META LINKS — was .writer-link (#145 / #951)
+ *
+ * Inline credit-row links — author / composer / adapter / translator /
+ * tune / CCLI / ISWC and any other inline metadata that should be a
+ * navigable link without screaming "I'M A LINK" in browser-default
+ * blue. Inherits the surrounding text colour, no underline, subtle
+ * dotted bottom-border that becomes solid + accent on hover.
+ *
+ * Renamed from .writer-link in #951 because the same style now applies
+ * to non-writer credits (tune, CCLI, ISWC). The bare global `a` rule
+ * above handles the "kill browser blue" concern; this class adds the
+ * explicit visual link-affordance for prose-flow links.
  * ========================================================================= */
 
-.writer-link {
+.song-meta-link {
     color: inherit;
     text-decoration: none;
     border-bottom: 1px dotted var(--bs-secondary-color, #6c757d);
     transition: color var(--transition-fast), border-color var(--transition-fast);
 }
 
-.writer-link:hover {
+.song-meta-link:hover {
     color: var(--accent-solid, var(--bs-primary));
     border-bottom-style: solid;
     border-bottom-color: var(--accent-solid, var(--bs-primary));
     text-decoration: none;
 }
 
-.writer-link:focus-visible {
+.song-meta-link:focus-visible {
     outline: 2px solid var(--accent-solid, var(--bs-primary));
     outline-offset: 2px;
     border-radius: 2px;
@@ -2492,8 +2935,8 @@ body.reduce-motion .related-songs-chevron {
     padding: 12px 16px;
     background: var(--glass-bg);
     border-top: 1px solid var(--glass-border);
-    backdrop-filter: blur(16px) saturate(180%);
     -webkit-backdrop-filter: blur(16px) saturate(180%);
+    backdrop-filter: blur(16px) saturate(180%);
     box-shadow: 0 -2px 16px rgba(0, 0, 0, 0.12);
     transform: translateY(100%);
     opacity: 0;
@@ -2530,8 +2973,8 @@ body.reduce-motion .related-songs-chevron {
 [data-ihymns-theme="high-contrast"] .analytics-consent-banner {
     background: #ffffff;
     border-top: 3px solid #000000;
-    backdrop-filter: none;
     -webkit-backdrop-filter: none;
+    backdrop-filter: none;
 }
 
 [data-ihymns-theme="high-contrast"] .analytics-consent-banner .btn-outline-light {
@@ -2722,6 +3165,9 @@ body.reduce-motion .related-songs-chevron {
     border-radius: var(--radius-sm);
     cursor: pointer;
     transition: color var(--transition-fast), background-color var(--transition-fast);
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
     user-select: none;
 }
 .song-lyrics[data-practice-level="2"] .lyric-line::before {
@@ -2736,6 +3182,9 @@ body.reduce-motion .related-songs-chevron {
 .song-lyrics[data-practice-level="2"] .lyric-line:hover {
     color: var(--text-primary);
     background-color: transparent;
+    -webkit-user-select: text;
+    -moz-user-select: text;
+    -ms-user-select: text;
     user-select: text;
 }
 .song-lyrics[data-practice-level="2"] .lyric-line.revealed::before,
@@ -2794,6 +3243,76 @@ body.reduce-motion .related-songs-chevron {
     border-color: var(--accent-solid);
 }
 
+/* Language indicator badge on a songbook tile (#680). Small uppercase
+   2-3 letter ISO code in the top-right corner of each tile. Sits on
+   the LEFT of the offline-download cloud button so the two don't
+   collide on the home page's compact tiles (the cloud button uses
+   `right: 0.35rem`; this badge uses `right: 2.5rem` so they pack
+   side-by-side). On the standalone /songbooks page (no download
+   button rendered) the badge stays in the top-right too — visually
+   consistent across surfaces. */
+.songbook-tile-language-badge {
+    /* Match the download-cloud button's chrome (#785). The download
+       button uses Bootstrap's btn-sm + btn-outline-secondary — same
+       padding, border-radius, border colour and weight. The two
+       controls now read as a matched pair in the tile's top-right
+       cluster instead of one being a tiny pill and the other a full
+       button. */
+    position: absolute;
+    top: 0.45rem;
+    right: 2.5rem;
+    z-index: 2;
+    /* Bootstrap btn-sm dimensions: padding 0.25rem 0.5rem; line-height 1.5;
+       font-size 0.875rem. We keep the font slightly tighter (0.7rem) so a
+       2-letter ISO code stays compact, but the box is identical to the
+       sibling btn-outline-secondary download icon so they line up. */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 2rem;
+    height: 1.75rem;
+    padding: 0 0.5rem;
+    border-radius: 0.25rem;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    line-height: 1;
+    /* Match btn-outline-secondary: transparent background, the same
+       border colour family, secondary text. Hover doesn't change
+       (this badge isn't clickable; it's purely informational). */
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--card-border);
+}
+/* /songbooks tiles now carry the same offline-download button as the
+   home-grid tiles (#878 follow-up), so the badge no longer hugs the
+   corner — it falls back to the shared `right: 2.5rem` and packs to
+   the LEFT of the download button, exactly like home. The previous
+   override pinning it to right: 0.45rem was for the chevron-only
+   tile layout that pre-dated the download button on this surface. */
+
+/* #878 follow-up — Reserve a right-side gutter on /songbooks tiles so
+   the title text never wraps under the absolute [badge + download-
+   button] cluster in the top-right.
+     - Download button: right:0.35rem, ~1.6rem wide
+       ⇒ button range  0.35rem → 1.95rem from card right
+     - Language badge: right:2.5rem, up to ~3rem wide
+       (3-letter ISO codes — GUZ / LUO / NSO / TOI / TUM)
+       ⇒ badge range   2.5rem  → 5.5rem from card right
+     - Cluster's leftmost extent therefore ~5.5rem; bumping the
+       card-body right padding to 5.75rem keeps the chevron — the
+       last flex child on sm+ — sitting just left of the cluster
+       with a small breathing gap, AND keeps title text clear of
+       the cluster at every breakpoint.
+   Applied unconditionally because the download button is always
+   rendered; on browsers without offline support it's display:none
+   via body.offline-unsupported, which is rare enough that the
+   slightly-overpadded gutter doesn't matter. */
+.page-songbooks .card-songbook .card-body {
+    padding-right: 5.75rem;
+}
+
 /* Feature-detect class driven by js/modules/offline-ui.js. When
    .offline-unsupported is on the body, every download control hides
    (rather than showing a permanently-disabled UI that can't recover). */
@@ -2802,4 +3321,62 @@ body.offline-unsupported [data-song-download],
 body.offline-unsupported .btn-save-offline,
 body.offline-unsupported .offline-only {
     display: none !important;
+}
+
+/* ---------------------------------------------------------------------------
+   Pull-to-refresh indicator (#822)
+
+   Native-app-style pull-down circle that appears when the user drags from
+   the top of the page. The module sets translateY inline based on pull
+   distance; this CSS provides the resting position (off-screen above the
+   viewport) and the visual chrome of the circle + arrow + spinner.
+   --------------------------------------------------------------------------- */
+.pull-to-refresh-indicator {
+    position: fixed;
+    top: calc(env(safe-area-inset-top, 0px) - 56px);  /* off-screen by default */
+    left: 50%;
+    transform: translateX(-50%);  /* centred horizontally; JS adds translateY */
+    z-index: 1100;                /* above header (1030) + footer */
+    pointer-events: none;
+    transition: transform 0.18s ease-out;
+    will-change: transform;
+}
+@media (prefers-reduced-motion: reduce) {
+    .pull-to-refresh-indicator {
+        transition: none;
+    }
+}
+.pull-to-refresh-indicator .ptr-circle {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: var(--surface-card, #1e293b);
+    border: 1px solid var(--card-border, rgba(255,255,255,0.1));
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary, #94a3b8);
+    transition: color 0.15s ease, transform 0.18s ease-out;
+}
+/* Past threshold — flip arrow + tint accent so the user sees the
+   "release to refresh" state distinctly. */
+.pull-to-refresh-indicator.is-armed .ptr-circle {
+    color: var(--accent-solid, #6366f1);
+    transform: rotate(180deg);
+}
+.pull-to-refresh-indicator.is-spinning .ptr-circle {
+    color: var(--accent-solid, #6366f1);
+    transform: none;  /* override is-armed rotate while spinning */
+}
+.pull-to-refresh-indicator .ptr-arrow {
+    font-size: 0.95rem;
+    transition: transform 0.18s ease-out;
+}
+.pull-to-refresh-indicator .ptr-spinner {
+    /* Bootstrap spinner-border-sm provides the spin animation; we
+       just need to size + colour it to match the arrow it replaces. */
+    width: 1rem;
+    height: 1rem;
+    border-width: 0.15em;
 }

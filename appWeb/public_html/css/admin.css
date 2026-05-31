@@ -18,6 +18,58 @@
  */
 
 /* ==========================================================================
+   ADMIN PAGE TRANSITIONS (#866)
+   ----------------------------------------------------------------------------
+   Cross-document View Transitions on every full-page nav inside /manage/*.
+   On Chromium 126+ / Safari 18.2+ / Firefox 134+ the browser captures a
+   snapshot of the outgoing admin page, issues the GET, snapshots the new
+   page, then animates a smooth cross-fade between the two — no white-flash,
+   no JS plumbing required.
+
+   On older browsers `@view-transition` is ignored silently and the body
+   keyframe below provides a quick CSS-only fade-in on every page load
+   (200ms, opacity 0 → 1) so curators on Safari 17 / Edge 110 still see a
+   smoother experience than the legacy white-flash.
+
+   The bulk migration runner (#862) is unaffected: that page flushes its
+   chrome before the streaming bulk run starts, so the cross-doc snapshot
+   captures the chrome fully — output streams INTO the new page after the
+   transition has already completed.
+   ========================================================================== */
+
+@view-transition {
+    navigation: auto;
+}
+
+/* Per-pseudo styling — keep it gentle. Admin work is task-focused, so a
+   smooth opacity cross-fade reads as professional rather than flashy. */
+::view-transition-old(root),
+::view-transition-new(root) {
+    animation-duration: 220ms;
+    animation-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* CSS-only fallback for browsers without View Transitions API support.
+   Plays once per full-page load. The animation is short enough that
+   Chromium-with-VT-API doesn't notice it visually (the @view-transition
+   block runs first and replaces this), but on Safari 17 / Edge 110 it's
+   the only animation and gives a 200ms fade-in instead of a white flash. */
+@keyframes ihymns-admin-fadein {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+/* prefers-reduced-motion / manual reduce-motion class collapses both
+   the View Transitions and the body fade-in to instant. */
+@media (prefers-reduced-motion: reduce) {
+    ::view-transition-old(root),
+    ::view-transition-new(root) {
+        animation-duration: 1ms !important;
+        animation-timing-function: linear !important;
+    }
+}
+
+/* ==========================================================================
    ADMIN BASE — body & typography
    ========================================================================== */
 
@@ -26,6 +78,20 @@ body {
     color: var(--text-primary);
     font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont,
                  'Helvetica Neue', Arial, sans-serif;
+    /* #866 — fallback fade-in on browsers without the View Transitions
+       API. On supported browsers the @view-transition block above takes
+       precedence and this animation is invisible. reduce-motion overrides
+       below collapse it to nothing. */
+    animation: ihymns-admin-fadein 200ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    body {
+        animation: none;
+    }
+}
+body.reduce-motion {
+    animation: none !important;
 }
 
 a:not(.btn):not(.nav-link):not(.dropdown-item) {
@@ -33,6 +99,24 @@ a:not(.btn):not(.nav-link):not(.dropdown-item) {
 }
 a:not(.btn):not(.nav-link):not(.dropdown-item):hover {
     color: var(--accent-end);
+}
+
+/* Anchors dressed up as buttons should render identically to their
+   <button> equivalents. The global `a { border-bottom: 1px dotted }`
+   rule in app.css §2.5 (#951) gives every <a> a muted underline; on
+   <a class="btn-…"> the underline collides visually with the button
+   border so the bulk-promote anchor on /manage/credit-people looked
+   subtly different from the <button>-tag "Add person" right next to
+   it. Pin every .btn anchor to a solid border-bottom matching the
+   rest of the button's border so the cascade lands on identical
+   pixels regardless of element type. */
+a.btn,
+a.btn:hover,
+a.btn:focus,
+a.btn:active {
+    border-bottom-style: solid;
+    border-bottom-color: inherit;
+    text-decoration: none;
 }
 
 /* Shared admin page container. Replaces the inline per-page
@@ -81,12 +165,40 @@ a:not(.btn):not(.nav-link):not(.dropdown-item):hover {
     right: 0;
     z-index: 1030;
     min-height: var(--admin-navbar-height);
+    /* Honour the iOS top safe area so the navbar can't sit under the
+       Dynamic Island / notch on installed PWA. Mirrors the public
+       site's .app-header rule in app.css. */
+    padding-top: calc(0.5rem + env(safe-area-inset-top, 0px));
+    padding-left: calc(1rem + env(safe-area-inset-left, 0px));
+    padding-right: calc(1rem + env(safe-area-inset-right, 0px));
     /* Keep the solid --surface-card background from the shared rule
        above. The main app's .app-header uses a translucent glass token
        because the content scrolling under it provides visual context,
        but the admin navbar sits above tightly-packed dashboard cards
        at the same slate-900 tone and disappears when translucent. */
     box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+}
+
+/* Narrow-viewport polish — stop the right-side button cluster
+   (theme + avatar + hamburger) from being clipped on phones in
+   portrait. The hamburger is the rightmost element and was reported
+   sliding past the viewport edge on the dashboard view. Tighten
+   the inline gaps + horizontal padding so every header item stays
+   reachable. */
+@media (max-width: 575.98px) {
+    .navbar-admin {
+        padding-left: calc(0.5rem + env(safe-area-inset-left, 0px));
+        padding-right: calc(0.5rem + env(safe-area-inset-right, 0px));
+    }
+    .navbar-admin .container-fluid {
+        padding-left: 0.25rem;
+        padding-right: 0.25rem;
+    }
+    .navbar-admin .d-flex.gap-2 {
+        gap: 0.25rem !important;
+    }
+    /* Brand chip (".badge.env-badge") already uses a stable pill at
+       this width via app.css #812; nothing further needed here. */
 }
 
 /* Admin footer — fixed to the bottom of the viewport. Uses the card
@@ -102,8 +214,20 @@ a:not(.btn):not(.nav-link):not(.dropdown-item):hover {
     left: 0;
     right: 0;
     z-index: 1030;
+    /* Honour the iOS home-indicator safe area so the footer doesn't
+       sit under it on installed PWA. env() is universally supported;
+       desktop browsers fall back to the literal `0px`. Horizontal
+       padding clamps to a 12 px floor (#875) — on iPhones in
+       portrait, env(safe-area-inset-left/right) is 0, which left
+       the inline copyright + version + build-stamp text flush against
+       the curved screen corners and clipped the leading/trailing
+       characters under the curve. max() keeps the existing landscape /
+       notch behaviour (where the inset legitimately exceeds 12 px)
+       while guaranteeing breathing room everywhere else. */
     padding-top: 0.4rem;
-    padding-bottom: 0.4rem;
+    padding-bottom: calc(0.4rem + env(safe-area-inset-bottom, 0px));
+    padding-left:  max(env(safe-area-inset-left,  0px), 12px);
+    padding-right: max(env(safe-area-inset-right, 0px), 12px);
     background-color: var(--surface-card);
     border-top: 1px solid var(--card-border);
     box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.35);
@@ -115,10 +239,13 @@ a:not(.btn):not(.nav-link):not(.dropdown-item):hover {
    Scoped with :has() so the Song Editor (which uses .navbar-editor and
    its own full-height flex layout) is unaffected. Uses the shared
    --footer-info-height token (28 px normal / 40 px small viewports per
-   the media queries in app.css). */
+   the media queries in app.css). The safe-area-inset additions match
+   the public-site .main-content rule in app.css so the admin chrome
+   feels identical on iOS PWA — same gap above the notch + clearance
+   above the home indicator. */
 body:has(.navbar-admin) {
-    padding-top: calc(var(--admin-navbar-height) + 0.5rem);
-    padding-bottom: calc(var(--footer-info-height) + 1rem);
+    padding-top: calc(var(--admin-navbar-height) + 0.5rem + env(safe-area-inset-top, 0px));
+    padding-bottom: calc(var(--footer-info-height) + 1rem + env(safe-area-inset-bottom, 0px));
 }
 
 /* ==========================================================================
@@ -137,10 +264,13 @@ body:has(.navbar-admin) {
        pane can stretch to a visible edge on short pages instead of
        leaving body-background whitespace below them (#499). Tall
        pages scroll naturally because .admin-main's content grows
-       the layout. */
+       the layout. Subtract the iOS safe-area insets too so the
+       layout doesn't push past the home indicator on installed PWA. */
     min-height: calc(100vh
                      - var(--admin-navbar-height)
                      - var(--footer-info-height)
+                     - env(safe-area-inset-top, 0px)
+                     - env(safe-area-inset-bottom, 0px)
                      - 1rem);
 }
 
@@ -153,9 +283,11 @@ body:has(.navbar-admin) {
     /* Sticky under the fixed top bar, bounded by the fixed footer, so
        the sidebar stays visible while the main column scrolls. The
        `top` offset matches the body's padding-top that clears
-       .navbar-admin (see body:has(.navbar-admin) above). */
+       .navbar-admin (see body:has(.navbar-admin) above) — including
+       the iOS safe-area-inset-top so the sidebar sits exactly below
+       the navbar on installed PWA. */
     position: sticky;
-    top: calc(var(--admin-navbar-height) + 0.5rem);
+    top: calc(var(--admin-navbar-height) + 0.5rem + env(safe-area-inset-top, 0px));
     /* Before #499 the sidebar aligned flex-start with a max-height,
        which left visible body background below it on tall viewports.
        Drop align-self so the flex parent stretches us to the layout
@@ -165,6 +297,8 @@ body:has(.navbar-admin) {
     max-height: calc(100vh
                      - var(--admin-navbar-height)
                      - var(--footer-info-height)
+                     - env(safe-area-inset-top, 0px)
+                     - env(safe-area-inset-bottom, 0px)
                      - 1rem);
     overflow-y: auto;
 }
@@ -172,6 +306,33 @@ body:has(.navbar-admin) {
 .admin-sidebar-group-label {
     letter-spacing: 0.04em;
     font-weight: 600;
+}
+
+/* Collapsible accordion group toggle (#819). Renders as an inline
+   button styled to match the old `admin-sidebar-group-label` so the
+   visual rhythm is preserved while adding click-to-toggle. The
+   chevron flips when the section opens. */
+.admin-sidebar-group-toggle,
+.admin-offcanvas-group-toggle {
+    letter-spacing: 0.04em;
+    text-decoration: none;
+    color: var(--text-secondary);
+}
+.admin-sidebar-group-toggle:hover,
+.admin-sidebar-group-toggle:focus,
+.admin-offcanvas-group-toggle:hover,
+.admin-offcanvas-group-toggle:focus {
+    color: var(--text-primary);
+    background-color: rgba(255, 255, 255, 0.03);
+    text-decoration: none;
+}
+.admin-sidebar-group-toggle .bi-chevron-down,
+.admin-offcanvas-group-toggle .bi-chevron-down {
+    transition: transform var(--transition-fast);
+}
+.admin-sidebar-group-toggle.collapsed .bi-chevron-down,
+.admin-offcanvas-group-toggle.collapsed .bi-chevron-down {
+    transform: rotate(-90deg);
 }
 
 .admin-sidebar-link {
@@ -208,6 +369,13 @@ body:has(.navbar-admin) {
     color: transparent;
     font-weight: 700;
     font-size: 1.15rem;
+    /* Brand button (#632) — the dropdown-toggle is rendered as a
+       <button>, which carries the browser-default button border /
+       background unless explicitly cleared. The main-app brand on
+       index.php sits inside .btn-* which already does this; the admin
+       version doesn't, so the rectangle was bleeding through. */
+    border: none;
+    background-color: transparent;
 }
 .navbar-admin .navbar-brand:hover,
 .navbar-editor .navbar-brand:hover {
@@ -220,24 +388,39 @@ body:has(.navbar-admin) {
     color: var(--accent-solid);
 }
 
-/* Account dropdown trigger — avatar on xs, avatar + first name + role
-   badge on sm+. Shares `.btn-header-icon` for the hover/press feel,
-   but must relax that class's fixed 40×40 so the inline name + badge
-   don't overflow the box and paint over the hamburger to its right.
-   A 40px min keeps the xs icon-only state visually consistent with
-   the other header icon buttons. */
+/* Account dropdown trigger (#633) — single 40×40 circular avatar
+   matching the other header icon buttons. The pre-#615 incarnation
+   carried inline name + role-badge content alongside the icon, so
+   the rule had to flex to `width: auto` with min-40px to fit the
+   text. Since the redesign moved name + role inside the dropdown
+   body, the trigger only ever holds the 32px avatar — pin width
+   and height to the same 40×40 footprint as the theme button + the
+   hamburger so the row reads as one cohesive control set. */
 .admin-account-btn {
-    width: auto;
-    height: auto;
+    width: 40px;
+    height: 40px;
     min-width: 40px;
     min-height: 40px;
-    padding: 0.25rem 0.6rem;
-    font-size: 0.85rem;
+    padding: 0;
     color: var(--text-secondary);
 }
 .admin-account-btn:hover,
 .admin-account-btn:focus {
     color: var(--text-primary);
+}
+/* Avatar image inside the trigger (#646). Sized to match the optical
+   weight of the neighbouring Font-Awesome / Bootstrap-Icons glyphs,
+   which render at roughly 1rem ≈ 16px in a header-icon button. A
+   filled 24px circle next to a ~16-18px line glyph reads as the
+   same visual size; 32px (the previous setting) read distinctly
+   bigger. The 40px hit area on the parent button is unchanged. */
+.admin-account-btn img {
+    width: 24px;
+    height: 24px;
+    object-fit: cover;
+    border-radius: 50%;
+    display: block;
+    margin: 0 auto;
 }
 
 /* Offcanvas surface nav — slide-out list launched by the hamburger.
@@ -560,6 +743,13 @@ body:has(.navbar-admin) {
     color: var(--text-muted);
     font-size: 1.2rem;
     padding: 0.25rem;
+    /* Vendor-prefixed user-select for Safari (3+) and Safari on iOS — the
+       drag handle is text-content-adjacent and would otherwise let a
+       drag-init highlight a few characters before the drag starts. Same
+       4-line convention as .admin-sort-th below and .song-lyrics in app.css. */
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
     user-select: none;
     transition: color var(--transition-fast);
 }
@@ -740,6 +930,34 @@ body:has(.navbar-admin) {
 .btn-action { min-width: 180px; }
 
 /* ==========================================================================
+   .btn-info — readable text on cyan in both light & dark mode.
+   Bootstrap's default uses dark text on `#0dcaf0`, which is fine in
+   light mode but blends into the surface in dark mode. Forcing white
+   text + a slightly more saturated background gives WCAG-AA contrast
+   across both themes. Applied to every `.btn-info` admin button (Run
+   User Migration, Run SongId Prefix Fixup, the catalogue inline-save
+   buttons, etc.) without each site needing to switch variants.
+   ========================================================================== */
+.btn-info,
+.btn-info:focus-visible,
+.btn-info.disabled,
+.btn-info:disabled {
+    --bs-btn-color:              #fff;
+    --bs-btn-bg:                 #0aa6c4;
+    --bs-btn-border-color:       #0aa6c4;
+    --bs-btn-hover-color:        #fff;
+    --bs-btn-hover-bg:           #098fa8;
+    --bs-btn-hover-border-color: #098fa8;
+    --bs-btn-focus-shadow-rgb:   10, 166, 196;
+    --bs-btn-active-color:       #fff;
+    --bs-btn-active-bg:          #098297;
+    --bs-btn-active-border-color:#087888;
+    --bs-btn-disabled-color:     #fff;
+    --bs-btn-disabled-bg:        #0aa6c4;
+    --bs-btn-disabled-border-color:#0aa6c4;
+}
+
+/* ==========================================================================
    TABLE OVERRIDES — user manager, dashboard recent users
    ========================================================================== */
 
@@ -836,4 +1054,117 @@ body:has(.navbar-admin) {
     .navbar-editor > .d-flex {
         gap: 0.35rem !important;
     }
+}
+
+/* ----------------------------------------------------------------------------
+   ADMIN MODAL — opaque background (#631)
+
+   Bootstrap's `bg-dark` on `.modal-content` resolves through
+   `--bs-bg-opacity`, which under some cascade orderings ends up
+   tinting partly-transparent. Page text under the modal then bleeds
+   through, making the modal hard to read (Edit Tier in Access Tiers
+   was the canonical repro).
+
+   Pin every admin modal's `.modal-content` to the same solid
+   --surface-card the cards underneath use, with the page's
+   --card-border. Scoped via `body:has(.navbar-admin)` so the
+   main-app modals on `/` keep their own theme.
+---------------------------------------------------------------------------- */
+body:has(.navbar-admin) .modal-content {
+    background-color: var(--surface-card) !important;
+    border: 1px solid var(--card-border);
+}
+body:has(.navbar-admin) .modal-content.bg-dark {
+    --bs-bg-opacity: 1;
+}
+
+/* ----------------------------------------------------------------------------
+   ADMIN SORTABLE TABLE HEADERS (#644)
+
+   Every <th> with data-sort-key gets `.admin-sort-th` from the boot
+   helper. Hover state hints the click target; the arrow span shows
+   the current direction (▲ asc, ▼ desc, blank = unsorted).
+---------------------------------------------------------------------------- */
+.admin-sort-th {
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+    transition: background-color 120ms ease, color 120ms ease;
+}
+.admin-sort-th:hover {
+    color: var(--text-primary);
+    background-color: rgba(99, 102, 241, 0.06);
+}
+.admin-sort-th:focus-visible {
+    outline: 2px solid var(--accent-solid);
+    outline-offset: -2px;
+}
+.admin-sort-th .sort-arrow {
+    color: var(--accent-solid);
+    font-size: 0.75rem;
+    line-height: 1;
+}
+
+/* ----------------------------------------------------------------------------
+   RESPONSIVE LIST-VIEW CONVENTION (#842)
+
+   Every admin list table tagged `.admin-table-responsive` opts into a
+   priority-based column visibility scheme so phones don't have to
+   horizontal-scroll a wide table off-screen.
+
+   Mark each <th> + <td> with one of:
+     data-col-priority="primary"    — never hidden
+     data-col-priority="secondary"  — hidden ≤ 768px
+     data-col-priority="tertiary"   — hidden ≤ 992px
+
+   Pages that opt in: credit-people, works, …
+   When adding a new admin list: add the class to the <table> and the
+   data-col-priority attr to every <th> AND its corresponding <td>.
+
+   See DEV_NOTES.md for the full convention.
+---------------------------------------------------------------------------- */
+@media (max-width: 768px) {
+    .admin-table-responsive [data-col-priority="secondary"],
+    .admin-table-responsive [data-col-priority="tertiary"] {
+        display: none !important;
+    }
+}
+@media (min-width: 768.01px) and (max-width: 992px) {
+    .admin-table-responsive [data-col-priority="tertiary"] {
+        display: none !important;
+    }
+}
+
+/* ----------------------------------------------------------------------------
+   FIXED-WIDTH COLUMN ALIGNMENT
+
+   `<table class="table admin-table-fixed">` switches to a fixed-layout
+   table where every column width is honoured exactly as declared via
+   an inline `style="width: 200px"` on each <th>. Use this when a page
+   renders MULTIPLE sibling tables that share the same column structure
+   (Schema Audit's per-table reports, for example) and the default
+   content-driven sizing causes neighbouring tables to misalign with
+   each other.
+
+       <th style="width: 200px;">Column</th>
+       <th style="width: 120px;">Status</th>
+       <th>Notes</th>              <!-- no width = takes the remainder -->
+
+   Combined with `table-layout: fixed` this makes column widths
+   deterministic and identical across every table on the page; long
+   content overflows or wraps according to the cell's own styling
+   rather than stretching the column.
+---------------------------------------------------------------------------- */
+.admin-table-fixed {
+    table-layout: fixed;
+    width: 100%;
+}
+
+/* Long content (column names rendered in <code>) shouldn't blow out
+   the fixed column — wrap at word boundaries, fall back to character
+   wrapping for unbreakable strings. */
+.admin-table-fixed td code {
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }

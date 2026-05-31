@@ -344,6 +344,31 @@ define('APP_CONFIG', [
     ],
 
     /* -----------------------------------------------------------------
+     * IP reputation lookup — proxy/VPN/datacentre/TOR classification
+     *
+     * Off by default — the activity-log resolver falls back to header-
+     * only heuristics (Cloudflare CF-Connecting-IP, X-Forwarded-For
+     * trust gate, etc.) until an external service is wired in.
+     *
+     * Supported providers (drop-in once their integration ships):
+     *   - 'ipqs'    — IPQualityScore (https://www.ipqualityscore.com)
+     *   - 'maxmind' — MaxMind GeoIP2 Anonymous IP
+     *   - 'ipinfo'  — ipinfo.io
+     *
+     * Cache TTL controls how long a row in tblIpReputation is treated
+     * as fresh; after expiry the resolver re-queries the provider.
+     * 24h default keeps the lookup cost low while still catching
+     * reasonably-quick IP reassignments on consumer ISPs.
+     * ----------------------------------------------------------------- */
+    'ip_reputation' => [
+        'enabled'        => false,        /* Set to true once provider + key are configured */
+        'provider'       => null,         /* 'ipqs' | 'maxmind' | 'ipinfo' | null */
+        'api_key'        => null,         /* Provider API key (do NOT commit a real key — read from env in deployment) */
+        'cache_ttl_secs' => 86400,        /* Cache rows in tblIpReputation for 24h before re-querying */
+        'min_score'      => 75,           /* Provider score threshold (0-100) above which we flag as proxy/vpn */
+    ],
+
+    /* -----------------------------------------------------------------
      * Internationalisation (i18n) — Language support
      *
      * Currently English only, but structured for future expansion.

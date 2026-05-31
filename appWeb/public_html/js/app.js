@@ -44,6 +44,7 @@ import { OfflineIndicator } from './modules/offline-indicator.js';
 import { StorageBridge } from './modules/storage-bridge.js';
 import { SubdomainSync } from './modules/subdomain-sync.js';
 import { Gestures } from './modules/gestures.js';
+import { PullToRefresh } from './modules/pull-to-refresh.js';
 import { Analytics } from './modules/analytics.js';
 import { Notifications } from './modules/notifications.js';
 import { escapeHtml } from './utils/html.js';
@@ -317,6 +318,35 @@ class iHymnsApp {
             /* Touch gesture navigation (#143) */
             this.gestures = new Gestures(this);
             this.gestures.init();
+
+            /* Pull-down-to-refresh gesture (#822) — restores the
+               native PWA pull-to-refresh that's lost when the app
+               runs in standalone mode (where the browser chrome
+               that owns the gesture is hidden). The default
+               handler refreshes the current route via the router;
+               page-specific modules can attach their own listeners
+               to refresh feature data (notifications, favourites,
+               etc.) before / alongside the route refresh. */
+            this.pullToRefresh = new PullToRefresh(this);
+            this.pullToRefresh.init();
+            document.addEventListener('ihymns:refresh-requested', async () => {
+                try {
+                    /* Re-poll auxiliary data first so the bell / footer
+                       counts update even if the route refresh below
+                       fails (e.g. offline). Best-effort — caller
+                       handles its own errors. */
+                    this.notifications?.refresh?.();
+                    /* Reload the current page's HTML + after-load hooks. */
+                    if (this.router) await this.router.refresh();
+                } catch (err) {
+                    console.warn('[iHymns] pull-to-refresh handler failed:', err);
+                } finally {
+                    /* Always signal completion so the indicator clears
+                       even on error. The 5s safety timeout in the
+                       module is a last-resort fallback. */
+                    document.dispatchEvent(new Event('ihymns:refresh-complete'));
+                }
+            });
 
             /* Unified analytics tracking */
             this.analytics = new Analytics(this);

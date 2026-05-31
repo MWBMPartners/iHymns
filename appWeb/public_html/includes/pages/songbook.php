@@ -63,6 +63,52 @@ if ($book === null) {
                 <span class="badge bg-body-secondary ms-1"><?= htmlspecialchars($book['id']) ?></span>
             </h1>
             <p class="text-muted mb-0"><?= number_format($book['songCount']) ?> songs</p>
+            <?php
+                /* #831 — "Compiled by …" line. Each compiler links to
+                   their /people/<slug> page when one exists; falls back
+                   to a plain name span otherwise. Multiple compilers
+                   joined with " · " for visual lightness. Hidden when
+                   the songbook has no compilers attached (or on
+                   pre-migration deployments where SongData returns an
+                   empty list). */
+                $compilers = $book['compilers'] ?? [];
+                if (!empty($compilers)):
+            ?>
+                <p class="text-muted small mb-0 mt-1">
+                    <i class="fa-solid fa-pen-nib me-1" aria-hidden="true"></i>
+                    Compiled by
+                    <?php foreach ($compilers as $i => $c): ?>
+                        <?php if ($i > 0): ?> &middot; <?php endif; ?>
+                        <?php if (!empty($c['slug'])): ?>
+                            <a href="/people/<?= rawurlencode($c['slug']) ?>"
+                               data-navigate="person"
+                               class="text-reset text-decoration-underline"><?= htmlspecialchars($c['name']) ?></a>
+                        <?php else: ?>
+                            <span><?= htmlspecialchars($c['name']) ?></span>
+                        <?php endif; ?>
+                        <?php if (!empty($c['note'])): ?>
+                            <span class="text-muted">(<?= htmlspecialchars($c['note']) ?>)</span>
+                        <?php endif; ?>
+                    <?php endforeach; ?>
+                </p>
+            <?php endif; ?>
+            <?php
+                /* #832 — "Also known as …" line. Hidden when this
+                   songbook has no alt names (or pre-migration). */
+                $altNames = $book['alternativeNames'] ?? [];
+                if (!empty($altNames)):
+            ?>
+                <p class="text-muted small mb-0 mt-1">
+                    <span class="me-1">Also known as:</span>
+                    <?php foreach ($altNames as $i => $a): ?>
+                        <?php if ($i > 0): ?>, <?php endif; ?>
+                        <em><?= htmlspecialchars($a['title']) ?></em>
+                        <?php if (!empty($a['note'])): ?>
+                            <span class="text-muted">(<?= htmlspecialchars($a['note']) ?>)</span>
+                        <?php endif; ?>
+                    <?php endforeach; ?>
+                </p>
+            <?php endif; ?>
         </div>
         <div class="d-flex gap-2">
             <!-- Number pad search for this songbook -->
@@ -86,6 +132,69 @@ if ($book === null) {
         </div>
     </div>
 
+    <?php
+        /* #833 — "Find this songbook elsewhere" panel. Reads from the
+           unified tblSongbookExternalLinks table; legacy URL columns
+           (WebsiteUrl / InternetArchiveUrl / WikipediaUrl) are STILL
+           rendered below as a fallback when the new system has no rows
+           for this book — keeps pre-backfill deployments visually
+           coherent. The new system's links group by Category so curators
+           can see the listing organised by purpose. */
+        $links = $book['links'] ?? [];
+        $linksByCat = [];
+        foreach ($links as $l) {
+            $cat = (string)($l['category'] ?? 'other');
+            if (!isset($linksByCat[$cat])) $linksByCat[$cat] = [];
+            $linksByCat[$cat][] = $l;
+        }
+        $catLabels = [
+            'official'    => 'Official',
+            'information' => 'Information',
+            'read'        => 'Read',
+            'sheet-music' => 'Sheet music',
+            'listen'      => 'Listen',
+            'watch'       => 'Watch',
+            'purchase'    => 'Purchase',
+            'authority'   => 'Authority',
+            'social'      => 'Social',
+            'other'       => 'Other',
+        ];
+        if (!empty($links)):
+    ?>
+        <div class="card bg-dark border-secondary mb-3">
+            <div class="card-body">
+                <h2 class="h6 mb-3 text-muted">
+                    <i class="fa-solid fa-link me-1" aria-hidden="true"></i>
+                    Find this songbook elsewhere
+                </h2>
+                <?php foreach ($catLabels as $cat => $catLabel): ?>
+                    <?php if (empty($linksByCat[$cat])) continue; ?>
+                    <div class="mb-2">
+                        <div class="text-uppercase small text-muted mb-1"><?= htmlspecialchars($catLabel) ?></div>
+                        <div class="d-flex flex-wrap gap-2">
+                            <?php foreach ($linksByCat[$cat] as $l): ?>
+                                <a href="<?= htmlspecialchars($l['url']) ?>"
+                                   target="_blank" rel="noopener nofollow"
+                                   class="btn btn-sm btn-outline-secondary d-inline-flex align-items-center gap-2">
+                                    <?php if (!empty($l['iconClass'])): ?>
+                                        <i class="<?= htmlspecialchars($l['iconClass']) ?>" aria-hidden="true"></i>
+                                    <?php endif; ?>
+                                    <span><?= htmlspecialchars($l['name']) ?></span>
+                                    <?php if (!empty($l['note'])): ?>
+                                        <span class="text-muted small">— <?= htmlspecialchars($l['note']) ?></span>
+                                    <?php endif; ?>
+                                    <?php if (!empty($l['verified'])): ?>
+                                        <i class="fa-solid fa-circle-check text-success small" aria-label="Verified" title="Verified"></i>
+                                    <?php endif; ?>
+                                </a>
+                            <?php endforeach; ?>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        </div>
+    <?php endif; ?>
+
     <!-- Song list -->
     <div class="list-group song-list" role="list">
         <?php foreach ($songs as $song): ?>
@@ -94,11 +203,17 @@ if ($book === null) {
                data-navigate="song"
                data-song-id="<?= htmlspecialchars($song['id']) ?>"
                role="listitem"
-               aria-label="Song <?= (int)$song['number'] ?>: <?= htmlspecialchars(toTitleCase($song['title'])) ?>">
-                <!-- Song number badge -->
-                <span class="song-number-badge" data-songbook="<?= htmlspecialchars($bookId) ?>" aria-hidden="true">
-                    <?= (int)$song['number'] ?>
-                </span>
+               aria-label="<?= isset($song['number']) && $song['number'] !== null ? 'Song ' . (int)$song['number'] . ': ' : '' ?><?= htmlspecialchars(toTitleCase($song['title'])) ?>">
+                <!-- Song number badge — left empty when the song has no
+                     songbook position (Number IS NULL, e.g. Misc or
+                     unofficial-songbook songs). The CSS rule
+                     `.song-number-badge:empty::before` then renders a
+                     book glyph as the fallback (#392). -->
+                <span class="song-number-badge" data-songbook="<?= htmlspecialchars($bookId) ?>" aria-hidden="true"><?php
+                    if (isset($song['number']) && $song['number'] !== null && (int)$song['number'] > 0) {
+                        echo (int)$song['number'];
+                    }
+                ?></span>
                 <!-- Song info -->
                 <div class="song-info flex-grow-1">
                     <span class="song-title"><?= htmlspecialchars(toTitleCase($song['title'])) ?><?php if (!empty($song['verified'])): ?><span class="verified-badge" title="Verified lyrics" aria-label="Verified lyrics"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.15"/><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M7.5 12.5L10.5 15.5L16.5 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><?php endif; ?></span>

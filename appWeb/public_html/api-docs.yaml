@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: iHymns API
-  version: "0.25.0"
+  version: "0.57.0"
   description: |
     The iHymns API provides programmatic access to the iHymns hymn and song
     database. It powers the iHymns Progressive Web App (PWA), enabling song
@@ -167,6 +167,78 @@ tags:
     description: Administrative endpoints for user, group, and content management
   - name: Admin — Restrictions
     description: Content-restriction rule engine (tier / org / platform / licence)
+  - name: Admin — Songbooks
+    description: |
+      Songbook curation surface (#719 PR 2a). CRUD parity with
+      `/manage/songbooks` so native clients (iOS / iPadOS / tvOS / Android
+      / FireOS) can manage hymnals without a webview. Validation is
+      shared with the web admin via `includes/songbook_validation.php`,
+      so a tweak to the abbreviation / colour / IETF BCP 47 grammar
+      lands on both surfaces in one go.
+  - name: Admin — Users
+    description: |
+      User CRUD parity (#719 PR 2b). Mirrors `/manage/users` so native
+      clients can create / update / rename / role-change / activate /
+      reset-password / delete user accounts. Mutations route through
+      the helpers in `manage/includes/auth.php`, which write the
+      canonical activity-log rows under `user.create`,
+      `auth.role_change`, `auth.username_change`, `user.activate`,
+      `user.deactivate`. Hierarchy gates mirror the web admin: an
+      admin can never act on a peer or superior unless they're
+      `global_admin`, never promote above their own level, never
+      delete or deactivate their own account.
+  - name: Admin — Groups
+    description: |
+      User-group CRUD parity (#719 PR 2b). Mirrors `/manage/groups`.
+      Each user belongs to at most one group via `tblUsers.GroupId`;
+      the `admin_group_member_*` endpoints toggle that FK.
+  - name: Admin — Tiers
+    description: |
+      Access-tier CRUD parity (#719 PR 2b). Mirrors `/manage/tiers`.
+      Capability-column list (`TIER_CAPS`) lives in
+      `includes/access_tier_validation.php` so a new capability is a
+      one-line schema + const change — no surface-specific bind_param
+      edits needed.
+  - name: Admin — Organisations
+    description: |
+      System-admin organisation CRUD parity (#719 PR 2c). Mirrors
+      `/manage/organisations`. Existing `organisation_create` covers
+      creation from any authenticated user (creator becomes owner);
+      these endpoints add update / delete / member curation to
+      complete the surface.
+  - name: Org-admin
+    description: |
+      Org-admin endpoints (#719 PR 2c, #707, #726). Authenticated
+      users who hold an `admin` or `owner` row in
+      `tblOrganisationMembers` can manage their own org's members
+      and licences without needing system-admin role. Row-level gate
+      via `userCanActOnOrg()` in
+      `includes/organisation_validation.php` — every endpoint
+      refuses cross-org POSTs at the server side regardless of how
+      the caller mounted the request.
+  - name: Admin — Credit People
+    description: |
+      Credit-people CRUD parity (#719 PR 2d, #545). Catalogue-wide
+      management of the people credited on songs across
+      `tblSongWriters` / `tblSongComposers` / `tblSongArrangers` /
+      `tblSongAdaptors` / `tblSongTranslators`. Helpers (link-type
+      catalogue, IPI normaliser, flag-columns probe) live in
+      `includes/credit_people_helpers.php` and are shared with
+      `/manage/credit-people`.
+  - name: Admin — Analytics
+    description: |
+      Read-only analytics endpoints. Two of the three
+      `/manage/analytics` panels are already covered by
+      `popular_songs` (top_songs + top_books); this surface adds
+      the search-query reporting needed for parity.
+  - name: Admin — Diagnostics
+    description: |
+      Operational diagnostic read endpoints (#719 PR 2d). Mirror the
+      payloads `/manage/data-health`, `/manage/schema-audit`, and
+      `/manage/setup-database` render. Designed for tooling clients
+      (CI, monitoring, dashboards) — pure read paths with no
+      mutations. Schema-audit + migrations-status reuse the parser
+      / scanner / comparer in `includes/schema_audit.php`.
   - name: Admin — Revisions
     description: Review pending song revisions
   - name: Admin — Maintenance
@@ -636,6 +708,210 @@ paths:
                     name: French
                     nativeName: "Fran\u00E7ais"
                     textDirection: ltr
+
+  /api.php?action=scripts:
+    get:
+      operationId: listScripts
+      tags: [Languages]
+      summary: List available IETF BCP 47 scripts (#681 / #682)
+      description: |
+        Returns all active rows from `tblScripts` (ISO 15924). Used by
+        the IETF composite picker on the web admin and by native
+        clients that need to resolve a saved tag like `zh-Hans` into a
+        human-readable name.
+
+        Pre-migration deployments (where `tblScripts` doesn't exist
+        yet) get an empty list and a `note` field rather than a 500.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [scripts]
+      responses:
+        "200":
+          description: Script list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scripts:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Script"
+                  note:
+                    type: string
+                    description: Present only when the lookup table has not yet been created.
+              example:
+                scripts:
+                  - code: Latn
+                    name: Latin
+                    nativeName: Latin
+                  - code: Cyrl
+                    name: Cyrillic
+                    nativeName: "\u041A\u0438\u0440\u0438\u043B\u043B\u0438\u0446\u0430"
+                  - code: Hans
+                    name: Simplified Chinese
+                    nativeName: "\u7B80\u4F53\u5B57"
+
+  /api.php?action=regions:
+    get:
+      operationId: listRegions
+      tags: [Languages]
+      summary: List available IETF BCP 47 regions (#681 / #682)
+      description: |
+        Returns all active rows from `tblRegions` \u2014 ISO 3166-1 alpha-2
+        country codes plus M.49 numeric area codes for groupings like
+        `419` (Latin America & Caribbean). Same use case as
+        `action=scripts`: resolve a saved IETF tag's region subtag to
+        a human-readable name.
+
+        Pre-migration deployments get an empty list with a `note`.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [regions]
+      responses:
+        "200":
+          description: Region list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  regions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Region"
+                  note:
+                    type: string
+                    description: Present only when the lookup table has not yet been created.
+              example:
+                regions:
+                  - code: GB
+                    name: United Kingdom
+                  - code: US
+                    name: United States
+                  - code: BR
+                    name: Brazil
+                  - code: "419"
+                    name: Latin America and the Caribbean
+
+  /api.php?action=variants:
+    get:
+      operationId: listLanguageVariants
+      tags: [Languages]
+      summary: List IETF BCP 47 language variants (#738)
+      description: |
+        Returns all active rows from `tblLanguageVariants` — IANA
+        variant subtags (5-8 chars). Examples: `1996` for German
+        post-1996 orthography, `fonipa` for IPA phonetics,
+        `valencia` for the Valencian variant of Catalan.
+
+        Used as the optional fourth subtag in an IETF BCP 47
+        language tag. Most worship-app catalogues won't reference
+        variant subtags directly, but the endpoint is provided for
+        completeness so a curator hand-tagging an academic edition
+        of a hymnal has the full vocabulary available.
+
+        Pre-migration deployments (where `tblLanguageVariants`
+        doesn't exist) get an empty list with a `note`.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [variants]
+      responses:
+        "200":
+          description: Variant list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  variants:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        code: { type: string, example: "1996" }
+                        name: { type: string, example: "German orthography of 1996" }
+                  note:
+                    type: string
+                    description: Present only when the lookup table has not yet been created.
+
+  /api.php?action=admin_refresh_iana_cldr:
+    post:
+      operationId: adminRefreshIanaCldr
+      tags: [Admin — Diagnostics]
+      summary: Refresh IETF BCP 47 reference data from upstream IANA + CLDR (#738)
+      description: |
+        Fetches the latest IANA Language Subtag Registry from
+        `https://www.iana.org/assignments/language-subtag-registry`
+        plus the CLDR English locale-display-names JSON files from
+        the unicode-org/cldr-json GitHub mirror, overwrites the
+        bundled snapshots in `appWeb/.sql/data/`, and re-runs the
+        import migration. Returns the migration's per-table delta
+        counts in the response.
+
+        Global-admin only. Requires same-origin POST with
+        `X-Requested-With: XMLHttpRequest`. Server-side outbound
+        HTTPS connectivity to iana.org and raw.githubusercontent.com
+        is required. If any of the 5 source URLs fails, the bundled
+        snapshots are NOT touched and the call returns 502 with the
+        list of failed files.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_refresh_iana_cldr] }
+      responses:
+        "200":
+          description: Refresh succeeded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  fetched:
+                    type: array
+                    items: { type: string }
+                    description: Per-file size summaries (`filename (12345 bytes)`).
+                  migrationLog:
+                    type: string
+                    description: Captured stdout from the import migration — per-step `[seed]` / `[cldr]` / `[skip]` lines.
+        "403":
+          description: Global admin access required
+        "405":
+          description: POST method required
+        "500":
+          description: Snapshot directory not writable, or migration re-run failed after the fetch
+        "502":
+          description: |
+            One or more source fetches failed. Response includes
+            `fetched` (the ones that did succeed) and `failed` (the
+            ones that didn't).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:   { type: string }
+                  fetched: { type: array, items: { type: string } }
+                  failed:  { type: array, items: { type: string } }
+                  hint:    { type: string }
 
   /api.php?action=song_translations:
     get:
@@ -2053,6 +2329,623 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  # ===========================================================================
+  # ADMIN — USERS  (#719 PR 2b)
+  # CRUD parity with /manage/users for native clients. The mutation
+  # routes through helpers in manage/includes/auth.php; activity-log
+  # rows land under the canonical `user.*` / `auth.*` verbs.
+  # ===========================================================================
+
+  /api.php?action=admin_user_create:
+    post:
+      operationId: adminUserCreate
+      tags: [Admin — Users]
+      summary: Create a user
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_user_create] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminUserCreateInput"
+      responses:
+        "201":
+          description: User created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:       { type: boolean, example: true }
+                  id:       { type: integer }
+                  username: { type: string }
+                  role:     { type: string }
+        "400":
+          description: Validation error (username too short, password too short, invalid role)
+        "403":
+          description: |
+            Admin access required, or hierarchy gate (cannot promote
+            above your own level; only `global_admin` can assign
+            `global_admin`).
+        "409":
+          description: Username already taken
+
+  /api.php?action=admin_user_update:
+    post:
+      operationId: adminUserUpdate
+      tags: [Admin — Users]
+      summary: Update a user's profile (display name + email)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_user_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminUserProfileInput"
+      responses:
+        "200":
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:       { type: boolean, example: true }
+                  id:       { type: integer }
+                  username: { type: string }
+        "400":
+          description: Missing user_id or display_name
+        "403":
+          description: Admin access required, or hierarchy gate
+        "404":
+          description: User id not found
+
+  /api.php?action=admin_user_rename:
+    post:
+      operationId: adminUserRename
+      tags: [Admin — Users]
+      summary: Change a user's username
+      description: |
+        Username uniqueness check is case-insensitive
+        (utf8mb4_unicode_ci) but the curator's chosen casing is
+        preserved on disk. Cascades automatically — every FK to
+        `tblUsers.Id` is keyed by `Id`, not `Username`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_user_rename] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, new_username]
+              properties:
+                user_id:      { type: integer }
+                new_username:
+                  type: string
+                  minLength: 3
+                  maxLength: 100
+                  pattern: "^[A-Za-z0-9_.\\-]+$"
+      responses:
+        "200":
+          description: User renamed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:           { type: boolean, example: true }
+                  id:           { type: integer }
+                  old_username: { type: string }
+                  new_username: { type: string }
+        "400":
+          description: Bad shape (length / charset)
+        "403":
+          description: Admin access required, or hierarchy gate
+        "404":
+          description: User id not found
+        "409":
+          description: Username already taken
+
+  /api.php?action=admin_user_role_change:
+    post:
+      operationId: adminUserRoleChange
+      tags: [Admin — Users]
+      summary: Change a user's role
+      description: |
+        Hierarchy gates enforced by `updateUserRole()` in
+        `manage/includes/auth.php`. Cannot promote above your own
+        level, cannot demote a peer or superior unless you're
+        `global_admin`, only `global_admin` can assign `global_admin`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_user_role_change] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, new_role]
+              properties:
+                user_id: { type: integer }
+                new_role:
+                  type: string
+                  enum: [user, editor, admin, global_admin]
+      responses:
+        "200":
+          description: Role changed
+        "400":
+          description: Missing user_id or new_role
+        "403":
+          description: Hierarchy violation
+        "404":
+          description: User id not found
+
+  /api.php?action=admin_user_toggle_active:
+    post:
+      operationId: adminUserToggleActive
+      tags: [Admin — Users]
+      summary: Toggle a user's active state
+      description: |
+        Deactivation also drops every API token for the user
+        (defence-in-depth — they can't keep using a stolen token
+        after the suspension). Cannot deactivate yourself.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_user_toggle_active] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id: { type: integer }
+      responses:
+        "200":
+          description: Active state toggled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:        { type: boolean, example: true }
+                  id:        { type: integer }
+                  is_active: { type: boolean }
+        "403":
+          description: Cannot deactivate self, or hierarchy gate
+        "404":
+          description: User id not found
+
+  /api.php?action=admin_user_password_reset:
+    post:
+      operationId: adminUserPasswordReset
+      tags: [Admin — Users]
+      summary: Reset a user's password
+      description: |
+        Self-reset is permitted (mirrors `/manage/users`). Otherwise
+        the target must be below the acting user's role level.
+        bcrypt cost-12 hashing is performed inside
+        `changeUserPassword()`; the plaintext never touches the
+        activity log.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_user_password_reset] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, new_password]
+              properties:
+                user_id:      { type: integer }
+                new_password:
+                  type: string
+                  format: password
+                  minLength: 8
+      responses:
+        "200":
+          description: Password reset
+        "400":
+          description: Password too short, or missing user_id
+        "403":
+          description: Hierarchy gate
+        "404":
+          description: User id not found
+
+  /api.php?action=admin_user_delete:
+    post:
+      operationId: adminUserDelete
+      tags: [Admin — Users]
+      summary: Permanently delete a user
+      description: |
+        Hard delete via `deleteUser()` in
+        `manage/includes/auth.php`. Cannot delete yourself; cannot
+        delete a peer or superior unless `global_admin`. FK cascades
+        clean up tokens, setlists, etc.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_user_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id: { type: integer }
+      responses:
+        "200":
+          description: User deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:       { type: boolean, example: true }
+                  id:       { type: integer }
+                  username: { type: string }
+        "403":
+          description: Cannot delete self, or hierarchy gate
+        "404":
+          description: User id not found
+
+  # ===========================================================================
+  # ADMIN — GROUPS  (#719 PR 2b)
+  # ===========================================================================
+
+  /api.php?action=admin_group_create:
+    post:
+      operationId: adminGroupCreate
+      tags: [Admin — Groups]
+      summary: Create a user group
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_group_create] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminGroupWriteInput"
+      responses:
+        "201":
+          description: Group created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:   { type: boolean, example: true }
+                  id:   { type: integer }
+                  name: { type: string }
+        "400":
+          description: Missing name, or name too long
+        "403":
+          description: Admin access required
+        "409":
+          description: Group name already in use
+
+  /api.php?action=admin_group_update:
+    post:
+      operationId: adminGroupUpdate
+      tags: [Admin — Groups]
+      summary: Update a user group
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_group_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/AdminGroupWriteInput"
+                - type: object
+                  required: [id]
+                  properties:
+                    id: { type: integer }
+      responses:
+        "200":
+          description: Group updated
+        "400":
+          description: Missing id or name
+        "403":
+          description: Admin access required
+        "404":
+          description: Group id not found
+        "409":
+          description: Another group already uses that name
+
+  /api.php?action=admin_group_delete:
+    post:
+      operationId: adminGroupDelete
+      tags: [Admin — Groups]
+      summary: Delete an empty user group
+      description: Refuses with 422 if any user is still a member.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_group_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Group deleted
+        "400":
+          description: Missing id
+        "403":
+          description: Admin access required
+        "404":
+          description: Group id not found
+        "422":
+          description: |
+            Refused — group still has members. Response includes
+            `member_count`, `name`, and `hint` so the caller can
+            render an honest "move users first" prompt.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:        { type: string }
+                  member_count: { type: integer }
+                  name:         { type: string }
+                  hint:         { type: string }
+
+  /api.php?action=admin_group_member_add:
+    post:
+      operationId: adminGroupMemberAdd
+      tags: [Admin — Groups]
+      summary: Move a user into a group (sets tblUsers.GroupId)
+      description: |
+        A user belongs to at most one group at a time, so calling
+        this also moves them out of whatever group they were in.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_group_member_add] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [group_id, user_id]
+              properties:
+                group_id: { type: integer }
+                user_id:  { type: integer }
+      responses:
+        "200":
+          description: Membership set
+        "400":
+          description: Missing group_id or user_id
+        "403":
+          description: Admin access required
+        "404":
+          description: Group or user not found
+
+  /api.php?action=admin_group_member_remove:
+    post:
+      operationId: adminGroupMemberRemove
+      tags: [Admin — Groups]
+      summary: Remove a user from their group (clears tblUsers.GroupId)
+      description: |
+        Drops the FK to NULL — a user belongs to at most one group,
+        so the previous group_id isn't required from the caller.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_group_member_remove] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id: { type: integer }
+      responses:
+        "200":
+          description: Membership cleared (or already absent)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:             { type: boolean, example: true }
+                  user_id:        { type: integer }
+                  previous_group:
+                    type: integer
+                    nullable: true
+                    description: The group_id the user was in before this call (null if they weren't in any).
+        "400":
+          description: Missing user_id
+        "403":
+          description: Admin access required
+        "404":
+          description: User id not found
+
+  # ===========================================================================
+  # ADMIN — TIERS  (#719 PR 2b)
+  # ===========================================================================
+
+  /api.php?action=admin_tier_create:
+    post:
+      operationId: adminTierCreate
+      tags: [Admin — Tiers]
+      summary: Create an access tier
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_tier_create] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminTierCreateInput"
+      responses:
+        "201":
+          description: Tier created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:   { type: boolean, example: true }
+                  id:   { type: integer }
+                  name: { type: string }
+        "400":
+          description: Validation error (name shape, level bounds, missing display_name)
+        "403":
+          description: Admin access required
+        "409":
+          description: Tier name already in use
+
+  /api.php?action=admin_tier_update:
+    post:
+      operationId: adminTierUpdate
+      tags: [Admin — Tiers]
+      summary: Update an access tier
+      description: |
+        Machine `name` is intentionally immutable — too many
+        `tblUsers.AccessTier` rows reference it for a casual
+        rename. Use a manual SQL migration if a rename is genuinely
+        needed.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_tier_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminTierUpdateInput"
+      responses:
+        "200":
+          description: Tier updated
+        "400":
+          description: Validation error
+        "403":
+          description: Admin access required
+        "404":
+          description: Tier id not found
+
+  /api.php?action=admin_tier_delete:
+    post:
+      operationId: adminTierDelete
+      tags: [Admin — Tiers]
+      summary: Delete an unused access tier
+      description: Refuses with 422 if any user is still on the tier.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_tier_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Tier deleted
+        "400":
+          description: Missing id
+        "403":
+          description: Admin access required
+        "404":
+          description: Tier id not found
+        "422":
+          description: |
+            Refused — users are still on this tier. Response includes
+            `user_count`, `name`, and `hint`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:      { type: string }
+                  user_count: { type: integer }
+                  name:       { type: string }
+                  hint:       { type: string }
+
   /api.php?action=admin_activity_log:
     get:
       operationId: adminGetActivityLog
@@ -2651,6 +3544,110 @@ paths:
                     additionalProperties: { type: string }
 
   # ===========================================================================
+  # USER PREFERRED LANGUAGES  (#736)
+  #
+  # Per-account persistence of the language-filter selection so a
+  # signed-in user's choice syncs across devices. Anonymous users
+  # keep using localStorage on the SPA side (the SPA also passes the
+  # choice via `X-Preferred-Languages` on every fetch so the server
+  # filter applies to anonymous requests too).
+  # ===========================================================================
+
+  /api.php?action=user_preferred_languages:
+    get:
+      operationId: getUserPreferredLanguages
+      tags: [Preferences]
+      summary: Get the authenticated user's saved language-filter subtag list
+      description: |
+        Returns the user's saved primary language subtags, or `[]` if
+        no filter has been set. On a pre-#736 deployment (the
+        `tblUsers.PreferredLanguagesJson` column is absent), the
+        response includes `migration_needed: true` and an empty list
+        so the client can render the picker without a filter applied.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [user_preferred_languages] }
+      responses:
+        "200":
+          description: Saved subtag list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subtags:
+                    type: array
+                    items:
+                      type: string
+                      pattern: '^[a-z]{2,3}$'
+                    example: ["en", "es"]
+                  migration_needed:
+                    type: boolean
+                    description: Present and true on pre-#736 deployments only.
+        "401":
+          description: Not authenticated
+
+  /api.php?action=user_preferred_languages_save:
+    post:
+      operationId: saveUserPreferredLanguages
+      tags: [Preferences]
+      summary: Save the authenticated user's language-filter subtag list
+      description: |
+        Server-side normalisation: invalid subtags are dropped, the
+        list is lowercased, primary-subtag-only, deduplicated, and
+        sorted (`parsePreferredLanguageSubtags` in
+        `includes/language_filter.php`). An empty array clears the
+        filter — the column is set to `NULL` to distinguish "no
+        filter set" from "filter set to empty set" (which would
+        mean "show nothing").
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [user_preferred_languages_save] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subtags]
+              properties:
+                subtags:
+                  type: array
+                  items:
+                    type: string
+                    description: Any BCP 47 tag — only the primary subtag is kept after normalisation.
+                  example: ["en", "es-MX", "pt-BR"]
+      responses:
+        "200":
+          description: Saved (canonical normalised list returned)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean, example: true }
+                  subtags:
+                    type: array
+                    items: { type: string }
+                    example: ["en", "es", "pt"]
+        "400":
+          description: subtags must be an array
+        "401":
+          description: Not authenticated
+        "503":
+          description: |
+            Migration not yet applied on this deployment — response
+            includes `migration_needed: true`.
+
+  # ===========================================================================
   # SETLISTS — SCHEDULING (#398)
   # ===========================================================================
 
@@ -3198,6 +4195,484 @@ paths:
           description: Revision id not found
         "409":
           description: This revision has no prior state (it's the initial create)
+
+  /manage/editor/api.php?action=save:
+    post:
+      operationId: editorSaveAll
+      tags: [Editor API]
+      summary: Legacy full-corpus save — TRUNCATE + bulk INSERT
+      description: |
+        TRUNCATEs `tblSongs` / `tblSongbooks` and the five song-credit
+        tables, then re-inserts everything from the posted JSON. Used
+        by the bulk-import paths and the editor's "save all" button.
+        Per-song validation is soft on this path — a malformed IETF
+        BCP 47 tag (#681) falls back to `en` rather than aborting the
+        whole corpus save. Use `save_song` for the per-song
+        UPSERT-with-revision flow.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [meta, songbooks, songs]
+              properties:
+                meta:
+                  type: object
+                  description: Free-form metadata block (version, generated_at, …).
+                songbooks:
+                  type: array
+                  items:
+                    type: object
+                    required: [id, name]
+                    properties:
+                      id:        { type: string, description: Songbook abbreviation. }
+                      name:      { type: string }
+                      songCount: { type: integer }
+                songs:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/EditorSongInput"
+      responses:
+        "200":
+          description: Save succeeded; counts echoed back
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:   { type: boolean, example: true }
+                  songs:     { type: integer }
+                  songbooks: { type: integer }
+        "400":
+          description: Invalid JSON, missing top-level keys, or empty body
+        "405":
+          description: GET issued — POST required
+        "500":
+          description: Save failed (transaction rolled back). Details in server log.
+
+  /manage/editor/api.php?action=get_translations:
+    get:
+      operationId: editorGetTranslations
+      tags: [Editor API]
+      summary: Translation links for one song (#352)
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [get_translations] }
+        - name: id
+          in: query
+          required: true
+          description: Source SongId.
+          schema: { type: string, example: CP-0202 }
+      responses:
+        "200":
+          description: Translations of the source song, sorted by language
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  translations:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:          { type: integer }
+                        songId:      { type: string, description: TranslatedSongId. }
+                        language:    { type: string }
+                        translator:  { type: string, nullable: true }
+                        verified:    { type: boolean }
+                        title:       { type: string }
+                        number:      { type: integer }
+        "400":
+          description: Missing id
+
+  /manage/editor/api.php?action=add_translation:
+    post:
+      operationId: editorAddTranslation
+      tags: [Editor API]
+      summary: Add (or upsert) a translation link
+      description: |
+        INSERT … ON DUPLICATE KEY UPDATE on the unique
+        (`SourceSongId`, `TargetLanguage`) index — re-adding
+        for the same source/language updates the
+        `TranslatedSongId` + `Translator` in place.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sourceSongId, translatedSongId, language]
+              properties:
+                sourceSongId:     { type: string, example: CP-0202 }
+                translatedSongId: { type: string, example: ZH-0027 }
+                language:         { type: string, description: BCP 47 tag of the translated row. }
+                translator:       { type: string, nullable: true }
+      responses:
+        "200":
+          description: Saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+        "400":
+          description: Missing fields, or sourceSongId == translatedSongId
+        "405":
+          description: GET issued — POST required
+
+  /manage/editor/api.php?action=remove_translation:
+    post:
+      operationId: editorRemoveTranslation
+      tags: [Editor API]
+      summary: Remove one translation-link row by id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer, description: tblSongTranslations.Id }
+      responses:
+        "200":
+          description: Removed (or already absent)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  deleted: { type: integer, description: Affected rows (0 if id didn't exist). }
+        "400":
+          description: Missing or non-positive id
+
+  /manage/editor/api.php?action=song_tags:
+    get:
+      operationId: editorSongTags
+      tags: [Editor API]
+      summary: Tags currently on one song (#496)
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song_tags] }
+        - name: id
+          in: query
+          required: true
+          description: SongId.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Tag list, alphabetical by name
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tags:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:          { type: integer }
+                        name:        { type: string }
+                        slug:        { type: string }
+                        description: { type: string, nullable: true }
+        "400":
+          description: Missing id
+
+  /manage/editor/api.php?action=tag_search:
+    get:
+      operationId: editorTagSearch
+      tags: [Editor API]
+      summary: Tag-name autocomplete (#496)
+      description: |
+        Empty `q` returns the most-used tags (the empty-state list).
+        Otherwise `LIKE %q%` on `tblSongTags.Name`. `usage` is the
+        number of songs currently carrying the tag, so popular tags
+        sort first and curators don't accidentally coin a
+        near-duplicate.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [tag_search] }
+        - name: q
+          in: query
+          required: false
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 20, default: 10 }
+      responses:
+        "200":
+          description: Suggestion list, sorted by usage DESC then name ASC
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:    { type: integer }
+                        name:  { type: string }
+                        slug:  { type: string }
+                        usage: { type: integer, description: Number of songs currently carrying this tag. }
+
+  /manage/editor/api.php?action=credit_search:
+    get:
+      operationId: editorCreditSearch
+      tags: [Editor API]
+      summary: Live-search credit names across the 5 song-credit tables (#545)
+      description: |
+        UNION ALL across `tblSongWriters` / `tblSongComposers` /
+        `tblSongArrangers` / `tblSongAdaptors` / `tblSongTranslators`,
+        grouping by name so the same person from multiple roles
+        collapses to a single suggestion with combined usage and the
+        list of kinds they appear in. When `kind=any` (the default),
+        also surfaces names from the `tblCreditPeople` registry that
+        no song currently cites — those land with `usage=0` and a
+        `kinds=["registry"]` marker.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [credit_search] }
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+        - name: kind
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [any, writer, composer, arranger, adaptor, translator]
+            default: any
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+      responses:
+        "200":
+          description: Suggestions, sorted by usage DESC then name ASC
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:  { type: string }
+                        usage: { type: integer }
+                        kinds:
+                          type: array
+                          items:
+                            type: string
+                            enum: [writer, composer, arranger, adaptor, translator, registry]
+        "400":
+          description: Unknown kind
+
+  /manage/editor/api.php?action=user_search:
+    get:
+      operationId: editorUserSearch
+      tags: [Editor API]
+      summary: Live-search users by display name or username (#498)
+      description: |
+        `LIKE %q%` against `DisplayName` OR `Username`. Used by the
+        `/manage/restrictions` name-first picker to resolve a
+        human-friendly label to the canonical `tblUsers.Id` on save.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [user_search] }
+        - name: q
+          in: query
+          required: false
+          description: Empty string → empty suggestions list (no implicit "show all users" fallback).
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 20, default: 10 }
+      responses:
+        "200":
+          description: Suggestion list, alphabetic by display name
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:    { type: integer }
+                        label: { type: string, description: DisplayName, falling back to Username. }
+                        hint:  { type: string, description: "Format: `@<username> · <role>`" }
+
+  /manage/editor/api.php?action=org_search:
+    get:
+      operationId: editorOrgSearch
+      tags: [Editor API]
+      summary: Live-search organisations by name or slug (#498)
+      description: |
+        Active organisations only. Empty `q` returns the alphabetised
+        list of every active org (capped at `limit`). Otherwise
+        `LIKE %q%` against `Name` OR `Slug`.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_search] }
+        - name: q
+          in: query
+          required: false
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+      responses:
+        "200":
+          description: Suggestion list, alphabetic by name
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:    { type: integer }
+                        label: { type: string, description: Organisation name. }
+                        hint:  { type: string, description: "Format: `licence: <type> · slug: <slug>`" }
+
+  /manage/editor/api.php?action=bulk_import_zip:
+    post:
+      operationId: editorBulkImportZip
+      tags: [Editor API]
+      summary: Bulk-load songs and songbooks from a ZIP (#664, #676)
+      description: |
+        Multipart upload, single field `zip`. The archive is expected
+        to mirror the `.SourceSongData/` folder layout: one folder
+        per songbook named `<Hymnal Name> [<ABBREV>]/` holding one
+        `.txt` file per song named
+        `<#> (<ABBREV>) - <Title>.txt` in the established source
+        format (title line, blank, alternating section markers +
+        lyric blocks).
+
+        Async by default when `tblBulkImportJobs` exists (#676): the
+        endpoint returns a `job_id` immediately and the import runs
+        in a freed worker; poll `bulk_import_status` for progress.
+        Pre-migration deployments fall back to the synchronous path
+        and respond with the legacy summary shape.
+
+        **INSERT-ONLY:** the import never overwrites existing
+        `tblSongbooks` / `tblSongs`. Pre-flight existence checks +
+        three-counter response shape (`songs_created` /
+        `songs_skipped_existing` / `songs_failed`).
+
+        Auth: editor+ via the `/manage/` PHP session. Per-user
+        quota + 100 MB hard size cap.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [zip]
+              properties:
+                zip:
+                  type: string
+                  format: binary
+                  description: A `.zip` archive ≤ 100 MB.
+      responses:
+        "200":
+          description: |
+            Two possible shapes depending on async readiness.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    title: AsyncJobAccepted
+                    description: Returned when tblBulkImportJobs is migrated.
+                    properties:
+                      ok:        { type: boolean, example: true }
+                      async:     { type: boolean, example: true }
+                      job_id:    { type: integer, description: Pass to bulk_import_status to poll. }
+                      status:    { type: string, enum: [queued] }
+                      poll_url:
+                        type: string
+                        example: "/manage/editor/api?action=bulk_import_status&job_id=42"
+                  - $ref: "#/components/schemas/EditorBulkImportSummary"
+        "400":
+          description: No file received, or upload error from PHP (`phpError` echoes UPLOAD_ERR_*)
+        "405":
+          description: GET issued — POST multipart required
+        "413":
+          description: Uploaded zip exceeds the 100 MB import limit
+        "500":
+          description: Server is missing the PHP zip extension, or import threw
+
+  /manage/editor/api.php?action=bulk_import_status:
+    get:
+      operationId: editorBulkImportStatus
+      tags: [Editor API]
+      summary: Poll one async bulk-import job (#676)
+      description: |
+        Auth: editor+ AND the row's `UserId` must equal the caller's
+        — one curator can only poll their own jobs even though
+        `/manage/editor/api.php` is a shared endpoint.
+
+        Pre-migration deployments (no `tblBulkImportJobs`) return
+        404 with `migration_needed: true` so the frontend can fall
+        back to the synchronous flow without surprising the user.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [bulk_import_status] }
+        - name: job_id
+          in: query
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Job snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:  { type: boolean, example: true }
+                  job:
+                    $ref: "#/components/schemas/EditorBulkImportJob"
+        "400":
+          description: Missing job_id
+        "404":
+          description: |
+            Either job not found / not owned by the caller, or
+            `tblBulkImportJobs` doesn't exist (response includes
+            `migration_needed: true`).
 
   # ===========================================================================
   # SONG METADATA  (per-song detail surfaces)
@@ -3909,6 +5384,349 @@ paths:
         "200":
           description: Deleted
 
+  # ===========================================================================
+  # ADMIN — SONGBOOKS  (#719 PR 2a)
+  # CRUD parity with /manage/songbooks for native clients. Validation
+  # rules live in includes/songbook_validation.php and are shared with
+  # the web admin so abbreviation / colour / IETF BCP 47 grammar tweaks
+  # land on both surfaces in one go.
+  # ===========================================================================
+
+  /api.php?action=admin_songbook_create:
+    post:
+      operationId: adminSongbookCreate
+      tags: [Admin — Songbooks]
+      summary: Create a songbook
+      description: |
+        Mirrors the `create` POST on /manage/songbooks. Empty `colour`
+        triggers the auto-pick palette (#677); the resolved colour is
+        echoed back so the caller can render the badge immediately.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_songbook_create] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SongbookWriteInput"
+      responses:
+        "201":
+          description: Songbook created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:           { type: boolean, example: true }
+                  id:           { type: integer, description: New tblSongbooks.Id, example: 42 }
+                  abbreviation: { type: string,  example: CP }
+                  colour:       { type: string,  description: Resolved hex (auto-picked when blank), example: "#3B82F6" }
+        "400":
+          description: Validation error (abbreviation grammar, colour shape, BCP 47 tag, missing name)
+        "403":
+          description: Admin access required
+        "409":
+          description: Abbreviation already in use
+
+  /api.php?action=admin_songbook_update:
+    post:
+      operationId: adminSongbookUpdate
+      tags: [Admin — Songbooks]
+      summary: Update an existing songbook
+      description: |
+        Update name / colour / display_order / metadata, and optionally
+        rename the abbreviation. When `new_abbreviation` is set and
+        `rename_song_refs` is true, the call also updates every
+        `tblSongs.SongbookAbbr` that referenced the old key — atomic
+        within a single transaction.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_songbook_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/SongbookWriteInput"
+                - type: object
+                  required: [id]
+                  properties:
+                    id:
+                      type: integer
+                      description: tblSongbooks.Id of the row to update
+                    new_abbreviation:
+                      type: string
+                      description: New ASCII-alphanumeric abbreviation. Omit to keep the existing key.
+                    rename_song_refs:
+                      type: boolean
+                      default: false
+                      description: When renaming, also UPDATE tblSongs.SongbookAbbr to the new value.
+      responses:
+        "200":
+          description: Songbook updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:             { type: boolean, example: true }
+                  id:             { type: integer }
+                  abbreviation:   { type: string }
+                  fields_changed:
+                    type: array
+                    items: { type: string }
+                    description: Names of columns that actually changed value (Activity-Log diff key set).
+                  songs_renamed:  { type: boolean }
+        "400":
+          description: Validation error (missing id, missing name, bad colour, bad BCP 47 tag, bad new abbreviation)
+        "403":
+          description: Admin access required
+        "404":
+          description: Songbook id not found
+        "409":
+          description: Target new_abbreviation is already in use by another row
+
+  /api.php?action=admin_songbook_delete:
+    post:
+      operationId: adminSongbookDelete
+      tags: [Admin — Songbooks]
+      summary: Delete an empty songbook
+      description: |
+        Refuses if any song still references the abbreviation. Use
+        `admin_songbook_delete_cascade` for the destructive path.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_songbook_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer, description: tblSongbooks.Id }
+      responses:
+        "200":
+          description: Songbook deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:           { type: boolean, example: true }
+                  id:           { type: integer }
+                  abbreviation: { type: string }
+        "400":
+          description: Songbook id required
+        "403":
+          description: Admin access required
+        "404":
+          description: Songbook id not found
+        "422":
+          description: |
+            Refused — songs still reference the abbreviation. Response
+            includes `song_count` and `abbreviation` so the caller can
+            render an honest "reassign N songs first" prompt.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:        { type: string }
+                  song_count:   { type: integer }
+                  abbreviation: { type: string }
+                  hint:         { type: string }
+
+  /api.php?action=admin_songbook_delete_cascade:
+    post:
+      operationId: adminSongbookDeleteCascade
+      tags: [Admin — Songbooks]
+      summary: Cascade-delete a songbook + every song + every credit / tag / chord / translation
+      description: |
+        Destructive. Removes every song carrying this abbreviation
+        plus every credit / tag / chord / translation / artist row
+        that referenced those songs (via `ON DELETE CASCADE` FKs in
+        tblSongs's child tables). The songbook row itself is then
+        removed last. Server-side typed-confirmation gate mirrors the
+        web admin defence-in-depth check (#706).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_songbook_delete_cascade] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, confirm_abbreviation]
+              properties:
+                id:
+                  type: integer
+                  description: tblSongbooks.Id of the row to delete
+                confirm_abbreviation:
+                  type: string
+                  description: Must equal the songbook's `Abbreviation` exactly. Defence-in-depth gate.
+      responses:
+        "200":
+          description: Cascade delete completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:           { type: boolean, example: true }
+                  id:           { type: integer }
+                  abbreviation: { type: string }
+                  song_count:   { type: integer, description: Number of songs deleted as a side effect }
+        "400":
+          description: Missing id or confirm_abbreviation does not match
+        "403":
+          description: Admin / global_admin role required
+        "404":
+          description: Songbook id not found
+
+  /api.php?action=admin_songbooks_reorder:
+    post:
+      operationId: adminSongbooksReorder
+      tags: [Admin — Songbooks]
+      summary: Bulk-update DisplayOrder across the songbook list
+      description: |
+        Single transaction; one Activity-Log row for the whole bulk
+        operation rather than one per row.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_songbooks_reorder] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [display_order]
+              properties:
+                display_order:
+                  type: object
+                  description: |
+                    Map of `tblSongbooks.Id` (string) → integer order.
+                    Empty map is a 400.
+                  additionalProperties:
+                    type: integer
+                  example:
+                    "1": 0
+                    "2": 10
+                    "3": 20
+      responses:
+        "200":
+          description: Order saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:    { type: boolean, example: true }
+                  count: { type: integer, description: Number of rows updated }
+        "400":
+          description: Empty or malformed display_order map
+        "403":
+          description: Admin access required
+
+  /api.php?action=admin_songbooks_auto_colour_fill:
+    post:
+      operationId: adminSongbooksAutoColourFill
+      tags: [Admin — Songbooks]
+      summary: Auto-pick a palette colour for every songbook missing a #RRGGBB value
+      description: |
+        Walks `tblSongbooks`. Rows whose `Colour` is NULL, blank, or
+        not a `#RRGGBB` hex receive a freshly-picked palette colour
+        (see `manage/includes/songbook-palette.php`). Rows with a
+        valid hex are left alone. Idempotent.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_songbooks_auto_colour_fill] }
+      responses:
+        "200":
+          description: Auto-fill applied
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean, example: true }
+                  changed: { type: integer, description: Rows whose colour was assigned }
+                  mode:    { type: string,  enum: [fill] }
+        "403":
+          description: Admin / global_admin role required
+
+  /api.php?action=admin_songbooks_auto_colour_reassign:
+    post:
+      operationId: adminSongbooksAutoColourReassign
+      tags: [Admin — Songbooks]
+      summary: Reassign a fresh palette colour to every songbook (destructive)
+      description: |
+        Overwrites every `Colour`. Server-side typed-confirmation gate
+        mirrors the web admin's defence-in-depth check.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_songbooks_auto_colour_reassign] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm_phrase]
+              properties:
+                confirm_phrase:
+                  type: string
+                  enum: ["REASSIGN ALL"]
+                  description: Must equal the literal phrase `REASSIGN ALL`. Defence-in-depth gate.
+      responses:
+        "200":
+          description: Colours reassigned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean, example: true }
+                  changed: { type: integer, description: Rows whose colour was replaced }
+                  mode:    { type: string,  enum: [reassign] }
+        "400":
+          description: confirm_phrase does not match
+        "403":
+          description: Admin / global_admin role required
+
   /api.php?action=admin_pending_revisions:
     get:
       operationId: adminPendingRevisions
@@ -4028,6 +5846,820 @@ paths:
       responses:
         "200":
           description: Org list with member counts + licence tier
+
+  # ===========================================================================
+  # ADMIN — ORGANISATIONS  (#719 PR 2c)
+  # System-admin CRUD parity with /manage/organisations. The existing
+  # organisation_create endpoint covers the create case; these complete
+  # the update / delete / member curation surface.
+  # ===========================================================================
+
+  /api.php?action=admin_organisation_update:
+    post:
+      operationId: adminOrganisationUpdate
+      tags: [Admin — Organisations]
+      summary: Update an organisation (system-admin)
+      description: |
+        Mirrors the multi-licence sync from `/manage/organisations`:
+        the submitted `additional_licences` set REPLACES
+        `tblOrganisationLicences` for the org, with `licence_type`
+        folded in so the primary + per-row views stay coherent.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_organisation_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminOrganisationUpdateInput"
+      responses:
+        "200":
+          description: Organisation updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:             { type: boolean, example: true }
+                  id:             { type: integer }
+                  slug:           { type: string }
+                  fields_changed:
+                    type: array
+                    items: { type: string }
+        "400":
+          description: Validation error (missing id/name/slug, parent loop, unknown licence_type)
+        "403":
+          description: Admin access required
+        "404":
+          description: Organisation not found
+        "409":
+          description: Slug already in use
+
+  /api.php?action=admin_organisation_delete:
+    post:
+      operationId: adminOrganisationDelete
+      tags: [Admin — Organisations]
+      summary: Delete an organisation (system-admin)
+      description: Refuses with 422 if any member is still listed OR any sub-org references it as parent.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_organisation_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Organisation deleted
+        "400":
+          description: Missing id
+        "403":
+          description: Admin access required
+        "404":
+          description: Organisation not found
+        "422":
+          description: |
+            Refused — members or sub-orgs remain. Response includes
+            either `member_count` or `child_count`, plus `name` and
+            `hint`.
+
+  /api.php?action=admin_organisation_member_add:
+    post:
+      operationId: adminOrganisationMemberAdd
+      tags: [Admin — Organisations]
+      summary: Add (or upsert) a member by user_id (system-admin)
+      description: INSERT … ON DUPLICATE KEY UPDATE — re-adding is a role change.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_organisation_member_add] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminOrgMemberInput"
+      responses:
+        "200":
+          description: Member added or role updated
+        "400":
+          description: Missing org_id / user_id, or unknown role
+        "403":
+          description: Admin access required
+
+  /api.php?action=admin_organisation_member_role_change:
+    post:
+      operationId: adminOrganisationMemberRoleChange
+      tags: [Admin — Organisations]
+      summary: Change a member's role within an organisation (system-admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_organisation_member_role_change] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminOrgMemberInput"
+      responses:
+        "200":
+          description: Role changed
+        "400":
+          description: Missing fields or unknown role
+        "403":
+          description: Admin access required
+        "404":
+          description: Member not found in this organisation
+
+  /api.php?action=admin_organisation_member_remove:
+    post:
+      operationId: adminOrganisationMemberRemove
+      tags: [Admin — Organisations]
+      summary: Remove a member from an organisation (system-admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_organisation_member_remove] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [org_id, user_id]
+              properties:
+                org_id:  { type: integer }
+                user_id: { type: integer }
+      responses:
+        "200":
+          description: Member removed
+        "400":
+          description: Missing org_id / user_id
+        "403":
+          description: Admin access required
+
+  # ===========================================================================
+  # ORG-ADMIN  (#719 PR 2c, #707, #726)
+  # Org-admin endpoints — for users holding admin/owner role on
+  # tblOrganisationMembers for the target org. Row-level gate via
+  # userCanActOnOrg() in includes/organisation_validation.php.
+  # ===========================================================================
+
+  /api.php?action=org_admin_member_add:
+    post:
+      operationId: orgAdminMemberAdd
+      tags: [Org-admin]
+      summary: Add (or upsert) a member by username or email
+      description: |
+        Free-text identifier — the API resolves Username OR Email
+        to the matching `tblUsers.Id`. INSERT … ON DUPLICATE KEY
+        UPDATE so re-adding is a role change.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_admin_member_add] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [org_id, user_identifier]
+              properties:
+                org_id:          { type: integer }
+                user_identifier:
+                  type: string
+                  description: Username OR email — first match wins.
+                member_role:
+                  type: string
+                  enum: [member, admin, owner]
+                  default: member
+      responses:
+        "200":
+          description: Member added or role updated
+        "400":
+          description: Missing org_id / user_identifier, or unknown role
+        "401":
+          description: Not authenticated
+        "403":
+          description: Not authorised on this organisation (row-level gate)
+        "404":
+          description: User identifier not found
+
+  /api.php?action=org_admin_member_role_change:
+    post:
+      operationId: orgAdminMemberRoleChange
+      tags: [Org-admin]
+      summary: Change a member's role
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_admin_member_role_change] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminOrgMemberInput"
+      responses:
+        "200":
+          description: Role changed
+        "400":
+          description: Missing fields or unknown role
+        "401":
+          description: Not authenticated
+        "403":
+          description: Not authorised on this organisation
+        "404":
+          description: Member not found in this organisation
+
+  /api.php?action=org_admin_member_remove:
+    post:
+      operationId: orgAdminMemberRemove
+      tags: [Org-admin]
+      summary: Remove a member
+      description: |
+        Self-removal guard mirrors the web admin: an org admin
+        cannot remove themselves (have to ask a co-admin or system
+        admin) — prevents accidental lockout. System admins are
+        exempt.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_admin_member_remove] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [org_id, user_id]
+              properties:
+                org_id:  { type: integer }
+                user_id: { type: integer }
+      responses:
+        "200":
+          description: Member removed
+        "400":
+          description: Missing org_id / user_id
+        "401":
+          description: Not authenticated
+        "403":
+          description: |
+            Not authorised on this organisation, or attempted
+            self-removal as non-system admin.
+
+  /api.php?action=org_admin_licence_add:
+    post:
+      operationId: orgAdminLicenceAdd
+      tags: [Org-admin]
+      summary: Add (or upsert) a licence row
+      description: |
+        INSERT … ON DUPLICATE KEY UPDATE keyed on (OrganisationId,
+        LicenceType) — re-adding the same type for the same org
+        updates number / expiry / notes / is_active in place.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_admin_licence_add] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgAdminLicenceAddInput"
+      responses:
+        "200":
+          description: Licence saved (created or updated)
+        "400":
+          description: Missing org_id, or unknown licence_type
+        "401":
+          description: Not authenticated
+        "403":
+          description: Not authorised on this organisation
+
+  /api.php?action=org_admin_licence_change:
+    post:
+      operationId: orgAdminLicenceChange
+      tags: [Org-admin]
+      summary: Change an existing licence row
+      description: |
+        Belt-and-braces ownership check: confirms the licence_id
+        actually belongs to the org_id the caller is authorised
+        on. Stops a crafted POST that mixes a licence_id from one
+        org with an org_id the caller CAN admin.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_admin_licence_change] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgAdminLicenceChangeInput"
+      responses:
+        "200":
+          description: Licence updated
+        "400":
+          description: Missing licence_id
+        "401":
+          description: Not authenticated
+        "403":
+          description: Not authorised on this organisation
+        "404":
+          description: Licence row does not belong to that organisation
+
+  /api.php?action=org_admin_licence_remove:
+    post:
+      operationId: orgAdminLicenceRemove
+      tags: [Org-admin]
+      summary: Remove a licence row
+      description: Same belt-and-braces ownership check as `org_admin_licence_change`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_admin_licence_remove] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [org_id, licence_id]
+              properties:
+                org_id:     { type: integer }
+                licence_id: { type: integer }
+      responses:
+        "200":
+          description: Licence removed
+        "400":
+          description: Missing licence_id
+        "401":
+          description: Not authenticated
+        "403":
+          description: Not authorised on this organisation
+        "404":
+          description: Licence row does not belong to that organisation
+
+  # ===========================================================================
+  # ADMIN — CREDIT PEOPLE  (#719 PR 2d, #545)
+  # Catalogue-wide CRUD over the people credited on songs across the
+  # five song-credit tables + the tblCreditPeople registry.
+  # ===========================================================================
+
+  /api.php?action=admin_credit_person_add:
+    post:
+      operationId: adminCreditPersonAdd
+      tags: [Admin — Credit People]
+      summary: Add a registry entry (with optional links + IPI rows)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_credit_person_add] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminCreditPersonInput"
+      responses:
+        "201":
+          description: Person added
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:   { type: boolean, example: true }
+                  id:   { type: integer }
+                  name: { type: string }
+        "400":
+          description: Validation error (missing name, name too long, bad birth/death date)
+        "403":
+          description: Admin access required
+        "409":
+          description: A person with that name is already registered
+
+  /api.php?action=admin_credit_person_update:
+    post:
+      operationId: adminCreditPersonUpdate
+      tags: [Admin — Credit People]
+      summary: Update biographical metadata + replace child rows
+      description: |
+        The Name column is NOT changed by this endpoint — renames have
+        their own endpoint (`admin_credit_person_rename`) because their
+        blast radius is cross-table. If the body's `name` field differs
+        from the stored name we reject with **400**.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_credit_person_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/AdminCreditPersonInput"
+                - type: object
+                  required: [id]
+                  properties:
+                    id: { type: integer }
+      responses:
+        "200":
+          description: Person updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:             { type: boolean, example: true }
+                  id:             { type: integer }
+                  name:           { type: string }
+                  fields_changed:
+                    type: array
+                    items: { type: string }
+        "400":
+          description: Validation error or name field doesn't match (use rename instead)
+        "403":
+          description: Admin access required
+        "404":
+          description: Person not found
+
+  /api.php?action=admin_credit_person_rename:
+    post:
+      operationId: adminCreditPersonRename
+      tags: [Admin — Credit People]
+      summary: Rename a credit person — cascades across all 5 song-credit tables
+      description: |
+        Cascades the new name across `tblSongWriters` /
+        `tblSongComposers` / `tblSongArrangers` / `tblSongAdaptors` /
+        `tblSongTranslators` AND the registry row inside one
+        transaction. Refuses with **409** if the new name already
+        belongs to a different registry row (caller should use
+        `admin_credit_person_merge`).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_credit_person_rename] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, new_name]
+              properties:
+                id:       { type: integer }
+                new_name: { type: string, maxLength: 255 }
+      responses:
+        "200":
+          description: Renamed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:                   { type: boolean, example: true }
+                  id:                   { type: integer }
+                  old_name:             { type: string }
+                  new_name:             { type: string }
+                  song_credit_renames:  { type: integer, description: Total rows updated across the 5 song-credit tables }
+        "400":
+          description: Missing fields, name too long, or new_name same as old
+        "403":
+          description: Admin access required
+        "404":
+          description: Person not found
+        "409":
+          description: Another registry row already uses that name (use merge)
+
+  /api.php?action=admin_credit_person_merge:
+    post:
+      operationId: adminCreditPersonMerge
+      tags: [Admin — Credit People]
+      summary: Collapse two registry entries into one
+      description: |
+        Re-points every song-credit row from the source name to the
+        target name across all five song-credit tables, migrates the
+        chosen child rows from source → target, then deletes the
+        source registry row. The FK ON DELETE CASCADE on
+        `tblCreditPersonLinks` / `tblCreditPersonIPI` drops any
+        child rows the caller chose not to migrate.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_credit_person_merge] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source_id, target_id]
+              properties:
+                source_id:
+                  type: integer
+                  description: Registry row to absorb. Must be different from target_id.
+                target_id:
+                  type: integer
+                  description: Surviving registry row. The target's name + biographical fields are preserved.
+                keep_link_ids:
+                  type: array
+                  items: { type: integer }
+                  description: tblCreditPersonLinks.Id values from the source side to migrate. Anything not listed gets dropped via the cascade.
+                keep_ipi_ids:
+                  type: array
+                  items: { type: integer }
+                  description: tblCreditPersonIdentifiers.Id values (IPI and/or ISNI rows) from the source side to migrate. Kept for backwards-compat naming after the IPI/ISNI unification.
+      responses:
+        "200":
+          description: Merge completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:                  { type: boolean, example: true }
+                  source_id:           { type: integer }
+                  target_id:           { type: integer }
+                  source_name:         { type: string }
+                  target_name:         { type: string }
+                  song_credit_renames: { type: integer }
+                  links_kept:          { type: integer }
+                  links_dropped:       { type: integer }
+                  ipi_kept:            { type: integer }
+                  ipi_dropped:         { type: integer }
+        "400":
+          description: Missing source_id / target_id, or they're equal
+        "403":
+          description: Admin access required
+        "404":
+          description: Source or target person not found
+
+  /api.php?action=admin_credit_person_delete:
+    post:
+      operationId: adminCreditPersonDelete
+      tags: [Admin — Credit People]
+      summary: Remove a registry row (force flag for in-use names)
+      description: |
+        Refuses with **422** + `usage_count` if any song-credit table
+        still cites the name AND `force` is not set. With `force=true`
+        the registry row is removed even when song credits still
+        reference the name — the credits stay; only the registry
+        row goes.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_credit_person_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id:    { type: integer }
+                force:
+                  type: boolean
+                  default: false
+                  description: When true, deletes the registry row even if song credits still cite the name.
+      responses:
+        "200":
+          description: Person deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:           { type: boolean, example: true }
+                  id:           { type: integer }
+                  name:         { type: string }
+                  usage_count:  { type: integer }
+                  forced:       { type: boolean }
+        "400":
+          description: Missing id
+        "403":
+          description: Admin access required
+        "404":
+          description: Person not found
+        "422":
+          description: |
+            Refused — song credits still cite the name and `force` is
+            not set. Response includes `usage_count`, `name`, `hint`.
+
+  # ===========================================================================
+  # ADMIN — ANALYTICS  (#719 PR 2d)
+  # ===========================================================================
+
+  /api.php?action=admin_analytics_searches:
+    get:
+      operationId: adminAnalyticsSearches
+      tags: [Admin — Analytics]
+      summary: Top + zero-result search queries
+      description: |
+        Mirrors the search-query panel on `/manage/analytics`. Two
+        lists in one response: the most-frequent queries (`top`) and
+        the most-frequent zero-result queries (`zero`). Returns
+        **503** when `tblSearchQueries` doesn't exist yet (pre-#404
+        deployment).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_analytics_searches] }
+        - name: range
+          in: query
+          required: false
+          schema: { type: integer, enum: [7, 30, 90], default: 30 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 15 }
+      responses:
+        "200":
+          description: Search-query analytics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  range_days: { type: integer }
+                  since:      { type: string, format: date-time }
+                  top:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        query:     { type: string }
+                        hits:      { type: integer }
+                        top_count: { type: integer, description: Highest ResultCount seen for this query in the window }
+                  zero:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        query: { type: string }
+                        hits:  { type: integer }
+        "403":
+          description: Admin access required
+        "503":
+          description: tblSearchQueries not yet created — run /manage/setup-database
+
+  # ===========================================================================
+  # ADMIN — DIAGNOSTICS  (#719 PR 2d)
+  # Pure read endpoints designed for tooling clients (CI, monitoring,
+  # dashboards). Mirror the payloads /manage/data-health,
+  # /manage/schema-audit, and /manage/setup-database render.
+  # ===========================================================================
+
+  /api.php?action=admin_data_health:
+    get:
+      operationId: adminDataHealth
+      tags: [Admin — Diagnostics]
+      summary: Table-row counts + legacy-fallback state
+      description: |
+        Mirrors the `/manage/data-health` panel. Returns counts for
+        the canonical tables, the SongData JSON-fallback flag, the
+        share-directory file count vs DB row count, and whether the
+        legacy SQLite database is still on disk.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_data_health] }
+      responses:
+        "200":
+          description: Data-health snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminDataHealthResponse"
+        "403":
+          description: Admin access required
+        "503":
+          description: Database unreachable (response includes detail)
+
+  /api.php?action=admin_schema_audit:
+    get:
+      operationId: adminSchemaAudit
+      tags: [Admin — Diagnostics]
+      summary: schema.sql vs live DB drift report
+      description: |
+        Mirrors `/manage/schema-audit`. Compares schema.sql declarations
+        against `INFORMATION_SCHEMA.COLUMNS` and the migration
+        coverage discovered by walking every `migrate-*.php` under
+        `appWeb/.sql/`. Per-column status enum: `ok` | `missing` |
+        `uncovered` | `orphan`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_schema_audit] }
+      responses:
+        "200":
+          description: Audit result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminSchemaAuditResponse"
+        "403":
+          description: Admin access required
+
+  /api.php?action=admin_migrations_status:
+    get:
+      operationId: adminMigrationsStatus
+      tags: [Admin — Diagnostics]
+      summary: Per-migration applied/partial/pending status
+      description: |
+        Walks every `migrate-*.php` under `appWeb/.sql/`, derives the
+        set of (table, column) declarations each one is responsible
+        for (literal ALTER, CREATE TABLE blocks, `@migration-adds`
+        doctags), and reports an `applied|partial|pending` status
+        per file by checking each declared column against the live
+        `INFORMATION_SCHEMA`. No central registry — state is derived
+        from the schema.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_migrations_status] }
+      responses:
+        "200":
+          description: Status report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminMigrationsStatusResponse"
+        "403":
+          description: Admin access required
 
   /api.php?action=admin_songbook_health:
     get:
@@ -4782,11 +7414,34 @@ components:
             type: string
           description: Composer / tune names
           example: ["Virginia Harmony"]
+        artists:
+          type: array
+          items:
+            type: string
+          description: Recording / release artist names (#587). Most useful for contemporary worship songs; traditional hymns leave this blank.
+          example: ["Hillsong Worship"]
         components:
           type: array
           description: Ordered song components (verses, choruses, etc.)
           items:
             $ref: "#/components/schemas/SongComponent"
+        links:
+          type: array
+          description: |
+            External links attached to this song (#833). Categorised,
+            with optional curator notes and a verified flag. Empty
+            array on pre-migration deployments.
+          items:
+            $ref: "#/components/schemas/ExternalLink"
+        works:
+          type: array
+          description: |
+            Works (#840) this song belongs to. Each entry surfaces its
+            sibling members + Work-level external links, so a UI can
+            render "Other versions of this work" without an extra
+            round-trip. Empty on pre-migration deployments.
+          items:
+            $ref: "#/components/schemas/Work"
 
     SongComponent:
       type: object
@@ -4842,7 +7497,14 @@ components:
 
     Songbook:
       type: object
-      description: A songbook / hymnal
+      description: |
+        A songbook / hymnal. The bibliographic + authority-control
+        fields (`websiteUrl` … `lcClass`) and `language` were added
+        across #672 / #673 / #681. They appear on every read path
+        whose backing `tblSongbooks` deployment has run the matching
+        migrations (`migrate-songbook-bibliographic` and
+        `migrate-songbook-language`); pre-migration deployments
+        simply omit the fields rather than returning nulls.
       properties:
         id:
           type: string
@@ -4856,6 +7518,224 @@ components:
           type: integer
           description: Number of songs in the songbook
           example: 650
+        colour:
+          type: string
+          nullable: true
+          description: 6-digit hex tile colour (#677). NULL means "use the auto-picked theme tone".
+          example: "#264a26"
+        isOfficial:
+          type: boolean
+          description: Whether this songbook is recognised as an official publication of an Adventist organisation (#502 / #670).
+          example: true
+        publisher:
+          type: string
+          nullable: true
+          description: Issuing publisher (free-text)
+          example: Pacific Press Publishing Association
+        publicationYear:
+          type: integer
+          nullable: true
+          description: Year of publication (4-digit Gregorian)
+          example: 1985
+        copyright:
+          type: string
+          nullable: true
+          description: Copyright statement
+          example: "© 1985 Review and Herald"
+        affiliation:
+          type: string
+          nullable: true
+          description: |
+            Issuing organisation, drawn from the curated registry
+            `tblSongbookAffiliations` (#670). Free-text fallback if
+            the registry doesn't carry the publisher yet.
+          example: General Conference of Seventh-day Adventists
+        language:
+          type: string
+          nullable: true
+          description: |
+            IETF BCP 47 tag for the songbook's primary language (#673
+            / #681). Composite — language[-script][-region]. May be
+            null if unknown / mixed.
+          example: en-GB
+        websiteUrl:
+          type: string
+          nullable: true
+          description: Official website (#672)
+          example: https://www.adventistmusic.org
+        internetArchiveUrl:
+          type: string
+          nullable: true
+          description: Internet Archive landing page for a digitised copy (#672)
+        wikipediaUrl:
+          type: string
+          nullable: true
+          description: Wikipedia article URL (#672)
+        wikidataId:
+          type: string
+          nullable: true
+          description: Wikidata QID (#672)
+          example: Q123456
+        oclcNumber:
+          type: string
+          nullable: true
+          description: OCLC WorldCat record number (#672)
+        ocnNumber:
+          type: string
+          nullable: true
+          description: OCLC OCN identifier (#672)
+        lcpNumber:
+          type: string
+          nullable: true
+          description: Library of Congress Permalink number (#672)
+        isbn:
+          type: string
+          nullable: true
+          description: ISBN-10 or ISBN-13 (#672)
+        arkId:
+          type: string
+          nullable: true
+          description: Archival Resource Key (ARK) (#672)
+        isniId:
+          type: string
+          nullable: true
+          description: International Standard Name Identifier (#672)
+        viafId:
+          type: string
+          nullable: true
+          description: Virtual International Authority File ID (#672)
+        lccn:
+          type: string
+          nullable: true
+          description: Library of Congress Control Number (#672)
+        lcClass:
+          type: string
+          nullable: true
+          description: Library of Congress Classification (#672)
+          example: M2117
+
+    SongbookWriteInput:
+      type: object
+      description: |
+        Input shape for `admin_songbook_create` and the metadata half
+        of `admin_songbook_update` (#719 PR 2a). Snake_case JSON keys
+        map onto the same column set the web admin writes; validators
+        live in `includes/songbook_validation.php` and are shared with
+        `/manage/songbooks` so a tweak to the grammar lands on both
+        surfaces in one go.
+
+        - `abbreviation`: required on create, ignored on update (use
+          `new_abbreviation` for renames).
+        - `colour`: optional. Empty triggers the auto-pick palette
+          (#677); the resolved hex is echoed back on the response.
+        - `language`: optional IETF BCP 47 tag (#681). Format:
+          `lang[-Script][-Region]`, max 35 chars.
+        - All bibliographic identifier fields are nullable; an empty
+          string normalises to NULL on the server.
+      required: [abbreviation, name]
+      properties:
+        abbreviation:
+          type: string
+          maxLength: 10
+          pattern: "^[A-Za-z0-9]+$"
+          description: ASCII-alphanumeric natural key. Used by tblSongs.SongbookAbbr.
+          example: CP
+        name:
+          type: string
+          example: Christian Praise
+        display_order:
+          type: integer
+          default: 0
+          description: Sort key used by the songbook list UI.
+        colour:
+          type: string
+          pattern: "^#[0-9A-Fa-f]{6}$"
+          nullable: true
+          description: 7-char `#RRGGBB` hex. Empty/missing triggers the auto-pick palette (#677).
+          example: "#3B82F6"
+        is_official:
+          type: boolean
+          default: false
+          description: Recognised as an official Adventist publication (#502 / #670).
+        publisher:
+          type: string
+          nullable: true
+          example: Pacific Press Publishing Association
+        publication_year:
+          type: string
+          nullable: true
+          description: Year of publication. Stored as VARCHAR so non-numeric strings (e.g. "1985 / 2002 reprint") survive.
+          example: "1985"
+        copyright:
+          type: string
+          nullable: true
+          example: "© 1985 Review and Herald"
+        affiliation:
+          type: string
+          nullable: true
+          description: |
+            Issuing organisation. Free-text; the API also INSERT-IGNOREs
+            the value into `tblSongbookAffiliations` so the typeahead
+            surfaces it on the next save (#670).
+        language:
+          type: string
+          nullable: true
+          maxLength: 35
+          pattern: "^[a-z]{2,3}(-[A-Z][a-z]{3})?(-[A-Z]{2}|-[0-9]{3})?$"
+          description: IETF BCP 47 tag (#681). lang[-Script][-Region].
+          example: en-GB
+        website_url:
+          type: string
+          nullable: true
+          description: Official website (#672)
+        internet_archive_url:
+          type: string
+          nullable: true
+          description: Internet Archive landing page (#672)
+        wikipedia_url:
+          type: string
+          nullable: true
+          description: Wikipedia article URL (#672)
+        wikidata_id:
+          type: string
+          nullable: true
+          description: Wikidata QID (#672)
+        oclc_number:
+          type: string
+          nullable: true
+          description: OCLC WorldCat record number (#672)
+        ocn_number:
+          type: string
+          nullable: true
+          description: OCLC OCN identifier (#672)
+        lcp_number:
+          type: string
+          nullable: true
+          description: Library of Congress Permalink number (#672)
+        isbn:
+          type: string
+          nullable: true
+          description: ISBN-10 or ISBN-13 (#672)
+        ark_id:
+          type: string
+          nullable: true
+          description: Archival Resource Key (ARK) (#672)
+        isni_id:
+          type: string
+          nullable: true
+          description: International Standard Name Identifier (#672)
+        viaf_id:
+          type: string
+          nullable: true
+          description: Virtual International Authority File ID (#672)
+        lccn:
+          type: string
+          nullable: true
+          description: Library of Congress Control Number (#672)
+        lc_class:
+          type: string
+          nullable: true
+          description: Library of Congress Classification (#672)
 
     Stats:
       type: object
@@ -4896,6 +7776,44 @@ components:
           description: Text direction
           enum: [ltr, rtl]
           example: ltr
+
+    Script:
+      type: object
+      description: |
+        One row from `tblScripts` (ISO 15924). The `code` is the
+        canonical 4-letter Title Case identifier the IETF BCP 47
+        spec uses (#681).
+      properties:
+        code:
+          type: string
+          description: ISO 15924 script code (Title Case, 4 letters)
+          example: Latn
+        name:
+          type: string
+          description: Script name in English
+          example: Latin
+        nativeName:
+          type: string
+          description: Script name in its own writing system
+          example: Latin
+
+    Region:
+      type: object
+      description: |
+        One row from `tblRegions`. `code` is either the ISO 3166-1
+        alpha-2 country code (uppercase, 2 letters — e.g. `GB`) or a
+        UN M.49 numeric area code (3 digits — e.g. `419` = Latin
+        America & Caribbean). Either form is valid as the region
+        subtag of an IETF BCP 47 tag.
+      properties:
+        code:
+          type: string
+          description: ISO 3166-1 alpha-2 country code or 3-digit M.49 area code
+          example: GB
+        name:
+          type: string
+          description: Region name in English
+          example: United Kingdom
 
     SongTranslation:
       type: object
@@ -5271,6 +8189,570 @@ components:
           description: Username of the actor
 
     # -------------------------------------------------------------------------
+    # Admin write-input shapes (#719 PR 2b)
+    # -------------------------------------------------------------------------
+
+    AdminUserCreateInput:
+      type: object
+      description: |
+        Input for `admin_user_create`. The mutation routes through
+        `createUser()` in `manage/includes/auth.php`, which hashes
+        the password with bcrypt before insert and writes the
+        canonical `user.create` activity-log row.
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 100
+          description: Case preserved on disk; uniqueness check is case-insensitive (utf8mb4_unicode_ci).
+        password:
+          type: string
+          minLength: 8
+          format: password
+        display_name:
+          type: string
+          description: Defaults to `username` when blank.
+        role:
+          type: string
+          enum: [user, editor, admin, global_admin]
+          default: editor
+          description: |
+            Hierarchy gate: can never exceed the acting user's role
+            level; only `global_admin` can assign `global_admin`.
+        email:
+          type: string
+          format: email
+
+    AdminUserProfileInput:
+      type: object
+      description: Input for `admin_user_update` (display name + email only).
+      required: [user_id, display_name]
+      properties:
+        user_id:    { type: integer }
+        display_name: { type: string }
+        email:      { type: string, format: email }
+
+    AdminGroupWriteInput:
+      type: object
+      description: |
+        Input for `admin_group_create` and the metadata half of
+        `admin_group_update`. Add `id` (required) for the latter.
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 100
+        description:
+          type: string
+        access_alpha: { type: boolean, default: false }
+        access_beta:  { type: boolean, default: false }
+        access_rc:    { type: boolean, default: false }
+        access_rtw:   { type: boolean, default: false }
+
+    AdminTierCapabilities:
+      type: object
+      description: |
+        Capability flags keyed by exact `tblAccessTiers` column
+        name. Unknown keys are ignored; missing keys default to
+        false. The list mirrors `TIER_CAPS` in
+        `includes/access_tier_validation.php` so a new capability
+        is a one-line schema + const change.
+      properties:
+        CanViewLyrics:      { type: boolean, default: false }
+        CanViewCopyrighted: { type: boolean, default: false }
+        CanPlayAudio:       { type: boolean, default: false }
+        CanDownloadMidi:    { type: boolean, default: false }
+        CanDownloadPdf:     { type: boolean, default: false }
+        CanOfflineSave:     { type: boolean, default: false }
+        RequiresCcli:       { type: boolean, default: false }
+
+    AdminTierCreateInput:
+      type: object
+      description: Input for `admin_tier_create`.
+      required: [name, display_name, level]
+      properties:
+        name:
+          type: string
+          maxLength: 30
+          pattern: "^[A-Za-z0-9_-]+$"
+          description: Machine key. Letters / digits / hyphen / underscore. Case preserved.
+          example: mwbm-insiders
+        display_name:
+          type: string
+          example: MWBM Insiders
+        level:
+          type: integer
+          minimum: 0
+          maximum: 1000
+          description: Higher level = more permissions. Bounded so a typo can't elevate one tier above the rest.
+        description:
+          type: string
+        caps:
+          $ref: "#/components/schemas/AdminTierCapabilities"
+
+    AdminTierUpdateInput:
+      type: object
+      description: |
+        Input for `admin_tier_update`. The machine `name` is
+        intentionally immutable — too many `tblUsers.AccessTier`
+        rows reference it for a casual rename. Use a manual SQL
+        migration if a rename is genuinely needed.
+      required: [id, display_name, level]
+      properties:
+        id:
+          type: integer
+        display_name:
+          type: string
+        level:
+          type: integer
+          minimum: 0
+          maximum: 1000
+        description:
+          type: string
+        caps:
+          $ref: "#/components/schemas/AdminTierCapabilities"
+
+    # -------------------------------------------------------------------------
+    # Organisation write-input shapes (#719 PR 2c)
+    # -------------------------------------------------------------------------
+
+    AdminOrganisationUpdateInput:
+      type: object
+      description: |
+        Input for `admin_organisation_update`. Mirrors the system
+        admin's update form on `/manage/organisations`.
+        `additional_licences` REPLACES the current
+        `tblOrganisationLicences` set for the org; the primary
+        `licence_type` is folded in automatically so the two
+        surfaces stay coherent.
+      required: [id, name, licence_type]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+          maxLength: 255
+        slug:
+          type: string
+          description: |
+            Optional override. When omitted the API derives one
+            from `name` via the same lowercase + non-alphanum-→hyphen
+            transform `/manage/organisations` uses.
+        parent_org_id:
+          type: integer
+          nullable: true
+          description: Cannot equal `id` (an organisation cannot be its own parent).
+        description:
+          type: string
+        licence_type:
+          type: string
+          enum: [none, ihymns_basic, ihymns_pro, ccli]
+          default: none
+        licence_number:
+          type: string
+        is_active:
+          type: boolean
+          default: false
+        additional_licences:
+          type: array
+          items:
+            type: string
+            enum: [ihymns_basic, ihymns_pro, ccli]
+          description: |
+            Replaces the current `tblOrganisationLicences` set for
+            this org. The primary `licence_type` is folded in
+            automatically — no need to repeat it here.
+
+    AdminOrgMemberInput:
+      type: object
+      description: |
+        Shared input shape for `admin_organisation_member_add`,
+        `admin_organisation_member_role_change`, and
+        `org_admin_member_role_change`. The org-admin variant uses
+        the same body shape with the row-level
+        `userCanActOnOrg()` gate applied at the server.
+      required: [org_id, user_id]
+      properties:
+        org_id:
+          type: integer
+        user_id:
+          type: integer
+        member_role:
+          type: string
+          enum: [member, admin, owner]
+          default: member
+
+    OrgAdminLicenceAddInput:
+      type: object
+      description: |
+        Input for `org_admin_licence_add`. Per-row licence shape;
+        a separate row is created for each licence type the org
+        holds. Distinct from the system-admin update path which
+        uses the 4-key primary set with `none` sentinel — the
+        per-row surface accepts `mrl` and `custom` but not `none`.
+      required: [org_id, licence_type]
+      properties:
+        org_id:
+          type: integer
+        licence_type:
+          type: string
+          enum: [ccli, mrl, ihymns_basic, ihymns_pro, custom]
+        licence_number:
+          type: string
+        expires_at:
+          type: string
+          format: date
+          nullable: true
+        is_active:
+          type: boolean
+          default: false
+        notes:
+          type: string
+          nullable: true
+
+    OrgAdminLicenceChangeInput:
+      type: object
+      description: Input for `org_admin_licence_change`. licence_type is immutable on a row — to switch types, remove and re-add.
+      required: [org_id, licence_id]
+      properties:
+        org_id:
+          type: integer
+        licence_id:
+          type: integer
+        licence_number:
+          type: string
+        expires_at:
+          type: string
+          format: date
+          nullable: true
+        is_active:
+          type: boolean
+          default: false
+        notes:
+          type: string
+          nullable: true
+
+    # -------------------------------------------------------------------------
+    # Credit-people write-input + diagnostics shapes (#719 PR 2d)
+    # -------------------------------------------------------------------------
+
+    CreditPersonLink:
+      type: object
+      description: |
+        One row of the per-person external-link sub-form. Unknown
+        `type` keys are silently coerced to `other` server-side —
+        keeps the API forward-compatible with future picker
+        categories.
+      required: [url]
+      properties:
+        type:
+          type: string
+          description: Link type key from CREDIT_PERSON_LINK_TYPE_CATALOGUE (e.g. `wikipedia`, `spotify`, `youtube`). Unknown keys → `other`.
+          default: other
+        url:
+          type: string
+        label:
+          type: string
+          nullable: true
+        sort_order:
+          type: integer
+          default: 0
+
+    CreditPersonIpi:
+      type: object
+      description: One row of the per-person IPI Name Number sub-form.
+      required: [number]
+      properties:
+        number:
+          type: string
+          description: IPI Name Number (CISAC).
+        name_used:
+          type: string
+          nullable: true
+          description: Name variant the IPI is registered under, if it differs from the canonical name.
+        notes:
+          type: string
+          nullable: true
+
+    AdminCreditPersonInput:
+      type: object
+      description: |
+        Shared input for `admin_credit_person_add` and the metadata
+        half of `admin_credit_person_update`. Add `id` (required)
+        for the latter via `allOf` composition.
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 255
+        notes:
+          type: string
+          nullable: true
+        birth_place:
+          type: string
+          nullable: true
+        birth_date:
+          type: string
+          nullable: true
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+          description: YYYY-MM-DD if supplied.
+        death_place:
+          type: string
+          nullable: true
+        death_date:
+          type: string
+          nullable: true
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+        is_special_case:
+          type: boolean
+          default: false
+          description: Mutually exclusive with `is_group`. If both arrive, `is_special_case` wins.
+        is_group:
+          type: boolean
+          default: false
+        links:
+          type: array
+          items:
+            $ref: "#/components/schemas/CreditPersonLink"
+        ipi:
+          type: array
+          items:
+            $ref: "#/components/schemas/CreditPersonIpi"
+
+    AdminDataHealthResponse:
+      type: object
+      description: Snapshot returned by `admin_data_health`. Mirrors the panel `/manage/data-health` renders.
+      properties:
+        database_up:
+          type: boolean
+        table_counts:
+          type: object
+          description: |
+            Map of canonical table name → row count. `null` when the
+            table doesn't exist on this deployment (fresh install
+            before migrations).
+          additionalProperties:
+            type: integer
+            nullable: true
+        songs_json_fallback:
+          type: boolean
+          nullable: true
+          description: True when `SongData` is currently reading from songs.json instead of MySQL. `null` if the probe couldn't run.
+        songs_json_note:
+          type: string
+          nullable: true
+          description: Diagnostic note when the SongData probe threw (e.g. corrupt songs.json).
+        share_dir:
+          type: object
+          properties:
+            configured:        { type: boolean, description: True when APP_SETLIST_SHARE_DIR is defined. }
+            present:           { type: boolean, description: True when the directory actually exists on disk. }
+            file_count:        { type: integer, nullable: true }
+            unimported_count:  { type: integer, description: Files on disk that don't have a matching tblSharedSetlists row. }
+            unimported_ids:
+              type: array
+              items: { type: string }
+        legacy_sqlite:
+          type: object
+          properties:
+            present:    { type: boolean }
+            size_bytes: { type: integer }
+
+    AdminSchemaAuditRow:
+      type: object
+      properties:
+        col:
+          type: string
+          description: Column name.
+        status:
+          type: string
+          enum: [ok, missing, uncovered, orphan]
+          description: |
+            - `ok` — declared in schema.sql AND present in DB.
+            - `missing` — in schema.sql, not in DB, but a migration would add it.
+            - `uncovered` — in schema.sql, not in DB, no migration adds it (latent bomb).
+            - `orphan` — in DB, not in schema.sql.
+        migration:
+          type: string
+          nullable: true
+          description: Filename(s) of migrate-*.php that would add this column (set on `missing` rows only).
+
+    AdminSchemaAuditResponse:
+      type: object
+      description: Result of `admin_schema_audit`. Mirrors `/manage/schema-audit`.
+      properties:
+        summary:
+          type: object
+          properties:
+            ok:        { type: integer }
+            missing:   { type: integer }
+            uncovered: { type: integer }
+            orphan:    { type: integer }
+        by_table:
+          type: object
+          description: Map of table name → list of per-column audit rows.
+          additionalProperties:
+            type: array
+            items:
+              $ref: "#/components/schemas/AdminSchemaAuditRow"
+
+    AdminMigrationsStatusResponse:
+      type: object
+      description: Result of `admin_migrations_status`. Per-migration applied / partial / pending status derived from `INFORMATION_SCHEMA`.
+      properties:
+        summary:
+          type: object
+          properties:
+            pending: { type: integer }
+            partial: { type: integer }
+            applied: { type: integer }
+        migrations:
+          type: array
+          items:
+            type: object
+            properties:
+              file:
+                type: string
+                description: Migration script filename (basename only).
+              declared_columns:
+                type: integer
+                description: Total (table, column) pairs this migration is responsible for, derived from ALTER ADD COLUMN statements + CREATE TABLE blocks + `@migration-adds` doctags.
+              applied_columns:
+                type: integer
+                description: How many of those columns currently exist in INFORMATION_SCHEMA.COLUMNS.
+              status:
+                type: string
+                enum: [pending, partial, applied]
+
+    # -------------------------------------------------------------------------
+    # Editor-API shared shapes (#719 PR 3)
+    # -------------------------------------------------------------------------
+
+    EditorSongInput:
+      type: object
+      description: |
+        One song row in the editor's full-corpus payload (`save`).
+        Same shape `save_song` accepts for a single-song UPSERT —
+        `save` runs the array straight through. Empty / missing
+        `tuneName` and `iswc` (#497) normalise to NULL on the
+        server. `language` (#681) accepts the v1 IETF BCP 47 grammar
+        (`lang[-Script][-Region]`); malformed tags fall back to `en`
+        on the bulk path.
+      required: [id, title]
+      properties:
+        id:
+          type: string
+          description: SongId, e.g. CP-0202.
+        number:
+          type: integer
+          nullable: true
+          description: Null for `Misc` songs or when empty (#392).
+        title:        { type: string }
+        songbook:     { type: string, description: Songbook abbreviation. }
+        songbookName: { type: string }
+        language:     { type: string, example: en }
+        copyright:    { type: string }
+        tuneName:
+          type: string
+          nullable: true
+          description: Optional tune name (#497). Empty / whitespace-only normalises to NULL on the server.
+        ccli:         { type: string }
+        iswc:
+          type: string
+          nullable: true
+          description: International Standard Musical Work Code (#497).
+        verified:           { type: boolean }
+        lyricsPublicDomain: { type: boolean }
+        musicPublicDomain:  { type: boolean }
+        hasAudio:           { type: boolean }
+        hasSheetMusic:      { type: boolean }
+        writers:     { type: array, items: { type: string } }
+        composers:   { type: array, items: { type: string } }
+        arrangers:   { type: array, items: { type: string } }
+        adaptors:    { type: array, items: { type: string } }
+        translators: { type: array, items: { type: string } }
+        artists:
+          type: array
+          items: { type: string }
+          description: |
+            Performance-recording artists (#587). Silently skipped on
+            partly-migrated installs without `tblSongArtists`.
+        components:
+          type: array
+          items:
+            type: object
+            properties:
+              type:  { type: string, example: verse }
+              cNum:  { type: integer }
+              lines: { type: array, items: { type: string } }
+        translations:
+          type: array
+          description: Translation links for the legacy bulk save path. Each entry adds a tblSongTranslations row.
+          items:
+            type: object
+            properties:
+              songId:   { type: string, description: TranslatedSongId. }
+              language: { type: string }
+
+    EditorBulkImportSummary:
+      type: object
+      description: |
+        Synchronous-fallback response from `bulk_import_zip` on
+        deployments without `tblBulkImportJobs`. Mirrors the same
+        counter shape the async job exposes via `bulk_import_status`,
+        minus the per-row tracking fields.
+      properties:
+        songs_created:           { type: integer }
+        songs_skipped_existing:  { type: integer, description: Existing rows are NEVER overwritten. }
+        songs_failed:            { type: integer }
+        songbooks_created:       { type: array, items: { type: string } }
+        songbooks_existing:      { type: array, items: { type: string } }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              entry: { type: string }
+              error: { type: string }
+
+    EditorBulkImportJob:
+      type: object
+      description: |
+        One row of `tblBulkImportJobs` (#676) as returned by
+        `bulk_import_status`. Job rows are scoped per user — a
+        curator can only poll their own.
+      properties:
+        id:                      { type: integer }
+        status:
+          type: string
+          enum: [queued, running, completed, failed]
+        filename:                { type: string }
+        size_bytes:              { type: integer }
+        total_entries:           { type: integer }
+        processed_entries:       { type: integer }
+        percent:
+          type: number
+          format: float
+          description: Rounded to one decimal place. Zero before the worker starts.
+        songs_created:           { type: integer }
+        songs_skipped_existing:  { type: integer }
+        songs_failed:            { type: integer }
+        songbooks_created:       { type: array, items: { type: string } }
+        songbooks_existing:      { type: array, items: { type: string } }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              entry: { type: string }
+              error: { type: string }
+        started_at:    { type: string, nullable: true, format: date-time }
+        completed_at:  { type: string, nullable: true, format: date-time }
+        created_at:    { type: string, format: date-time }
+        updated_at:    { type: string, format: date-time }
+
+    # -------------------------------------------------------------------------
     # Generic response models
     # -------------------------------------------------------------------------
 
@@ -5372,4 +8854,169 @@ components:
           type: string
           format: date-time
           example: 2026-04-24T14:37:49Z
+
+    # -------------------------------------------------------------------------
+    # External Links (#833) and Works (#840)
+    # -------------------------------------------------------------------------
+
+    ExternalLink:
+      type: object
+      description: |
+        One curated external link attached to a song / songbook /
+        person / work via the per-entity tblXxxExternalLinks tables.
+        Joined to tblExternalLinkTypes for the rendering metadata
+        (slug, name, category, iconClass) — IsActive=0 link types
+        are silently filtered out.
+      properties:
+        slug:
+          type: string
+          description: Stable registry slug (e.g. `wikipedia`, `spotify`,
+            `imslp`, `musicbrainz-work`).
+          example: wikipedia
+        name:
+          type: string
+          description: Display name shown in the public-page button.
+          example: Wikipedia
+        category:
+          type: string
+          enum: [official, information, listen, watch, read, sheet-music, purchase, authority, social, other]
+          description: Drives which header the link appears under in
+            the "Find this … elsewhere" panel.
+          example: information
+        iconClass:
+          type: string
+          description: Bootstrap-icons class for the link's button.
+          example: bi-wikipedia
+        url:
+          type: string
+          format: uri
+          example: https://en.wikipedia.org/wiki/Amazing_Grace
+        note:
+          type: string
+          nullable: true
+          description: Optional curator-supplied context (e.g. "1779
+            first edition", "sung by King's College Cambridge").
+        verified:
+          type: boolean
+          description: True when a curator has personally checked the
+            URL still resolves to the right resource.
+        sortOrder:
+          type: integer
+          description: Within-category ordering hint.
+
+    WorkMember:
+      type: object
+      description: One song's membership in a Work (#840).
+      properties:
+        songId:
+          type: string
+          example: CP-0202
+        title:
+          type: string
+          example: Amazing Grace
+        number:
+          type: integer
+          nullable: true
+          example: 202
+        songbook:
+          type: string
+          example: CP
+        songbookName:
+          type: string
+          example: Christian Praise
+        isCanonical:
+          type: boolean
+          description: Curator-marked "preferred" version of the Work.
+            Typically zero or one row per Work has this set.
+        memberNote:
+          type: string
+          nullable: true
+          description: Optional context for this specific membership
+            (e.g. "1779 original", "Hindi translation").
+
+    Work:
+      type: object
+      description: |
+        A composition grouping (#840). Mirrors the MusicBrainz Work
+        entity: one Work groups multiple `tblSongs` rows representing
+        the same underlying composition across different songbooks /
+        arrangements / translations. Works can be nested without
+        limit via `parentId`.
+      properties:
+        id:
+          type: integer
+          example: 17
+        parentId:
+          type: integer
+          nullable: true
+          description: Self-FK enabling unlimited nesting (parent →
+            child → grandchild …). Server enforces no cycles at update
+            time.
+          example: 4
+        title:
+          type: string
+          example: Amazing Grace
+        slug:
+          type: string
+          description: URL-safe identifier used by `/work/<slug>`.
+          example: amazing-grace
+        iswc:
+          type: string
+          nullable: true
+          description: International Standard Musical Work Code,
+            shape `T-NNN.NNN.NNN-C` (15 chars). Optional — many
+            traditional / public-domain hymns have no formal ISWC.
+          example: T-345.246.800-1
+        notes:
+          type: string
+          nullable: true
+        parent:
+          type: object
+          nullable: true
+          description: Header summary of the parent Work (when set).
+          properties:
+            id:
+              type: integer
+            title:
+              type: string
+            slug:
+              type: string
+            iswc:
+              type: string
+              nullable: true
+        children:
+          type: array
+          description: Direct children only (one level). Render
+            recursively client-side if a deeper tree is needed.
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              title:
+                type: string
+              slug:
+                type: string
+              iswc:
+                type: string
+                nullable: true
+        members:
+          type: array
+          description: Every song that belongs to this Work, ordered
+            by IsCanonical DESC then SongbookAbbr / Number.
+          items:
+            $ref: "#/components/schemas/WorkMember"
+        links:
+          type: array
+          description: External links attached to this Work — same
+            categorisation + verification model as Song / Songbook /
+            Person links (#833).
+          items:
+            $ref: "#/components/schemas/ExternalLink"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
 

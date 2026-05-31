@@ -53,6 +53,33 @@ const ENTITLEMENTS = [
     'run_db_backup'        => ['admin', 'global_admin'],
     'run_db_restore'       => ['global_admin'],
     'drop_legacy_tables'   => ['global_admin'],
+    /* System configuration — email service, system-wide flags, etc.
+       (#768). Global Admin only because the settings affect every
+       user (e.g. SMTP credentials, captcha provider, registration
+       mode) and a misconfigured email backend can produce spam-
+       grade outbound traffic from the server's IP. */
+    'manage_configuration' => ['global_admin'],
+
+    /* In-app notifications admin — compose & broadcast. (#813)
+       Global Admin only: a broadcast targeting "all signed-in users"
+       can amount to mass messaging that's hard to revoke once
+       people have read it. Limit to operators who own platform
+       comms. The header bell + per-user list endpoints remain open
+       to every signed-in user; this is just for posting / managing
+       the feed. */
+    'manage_notifications' => ['global_admin'],
+
+    /* SQL Diagnostics page (/manage/diagnostics). Curator-curated
+       SELECT-only query surface for forensics and "what does the DB
+       actually look like right now" questions that the admin grid
+       pages don't surface. Server-enforced read-only (regex rejects
+       any non-SELECT/SHOW/EXPLAIN/DESCRIBE statement; table whitelist
+       blocks mysql.* and performance_schema.*), row-capped at 1000,
+       every query writes to tblActivityLog. Global Admin only —
+       even with the regex guard, the surface still leaks schema and
+       row content that's appropriate only for the operator who owns
+       the deployment. */
+    'view_diagnostics'     => ['global_admin'],
 
     /* Content moderation */
     'review_song_requests' => ['editor', 'admin', 'global_admin'],
@@ -62,6 +89,33 @@ const ENTITLEMENTS = [
     'manage_user_groups'   => ['admin', 'global_admin'],
     'manage_organisations' => ['admin', 'global_admin'],
     'manage_credit_people' => ['admin', 'global_admin'],
+    /* Works (#840) — composition-grouping CRUD. Same gate as the rest
+       of the catalogue surfaces; curators creating Works are doing
+       editorial work that ripples across multiple songbook surfaces. */
+    'manage_works'         => ['admin', 'global_admin'],
+    /* External-link types + URL patterns (#845) — controlled-vocabulary
+       registry that drives every "Find this … elsewhere" panel and
+       the URL auto-detect module. Curator-managed; same gate as the
+       rest of the catalogue surfaces. */
+    'manage_external_link_types' => ['admin', 'global_admin'],
+    /* Reference data — IETF BCP 47 language registry (tblLanguages).
+       Mostly seeded from the IANA registry (#738) but admins occasionally
+       need to add a private-use code, fix a NativeName, or deactivate a
+       deprecated subtag without dropping the row. */
+    'manage_languages'     => ['admin', 'global_admin'],
+    /* Tags / themes (tblSongTags). Curator-managed taxonomy that
+       powers the public Browse-by-Theme home section + /tag/<slug>
+       listing pages. Curators occasionally need to rename, merge
+       duplicates, or delete unused tags. (#770) */
+    'manage_tags'          => ['admin', 'global_admin'],
+
+    /* Org-admin role (#707) — system-level grant that says "this role
+       MAY hold an admin/owner role on at least one organisation".
+       The actual page-level gate calls userHasOwnOrganisation() (below)
+       which reads tblOrganisationMembers to check whether THIS specific
+       user holds the role on any org. system-admin / global_admin
+       implicitly qualify because they can manage any org. */
+    'manage_own_organisation' => ['user', 'editor', 'admin', 'global_admin'],
 
     /* Content gating for regular users — per-song / per-songbook / per-user
        restrictions (tblContentRestrictions) and access-tier definitions
@@ -104,6 +158,14 @@ const ENTITLEMENTS = [
 
     /* Meta */
     'manage_entitlements'  => ['global_admin'],
+
+    /* API Docs (Swagger UI) — curator-and-up may inspect the OpenAPI
+       3.0 spec rendered in-browser. Surfaces request/response shapes
+       + a "Try it out" runner for any endpoint the user's own token
+       is allowed to call. Editor / Curator role is enough because
+       the spec itself isn't sensitive — every endpoint is enforced
+       server-side regardless of whether a curator can read the docs. */
+    'view_api_docs'        => ['editor', 'admin', 'global_admin'],
 ];
 
 /**
@@ -111,6 +173,59 @@ const ENTITLEMENTS = [
  * overrides from tblAppSettings). Populated lazily by effectiveEntitlements().
  */
 $_ihymns_effective_entitlements = null;
+
+/**
+ * Return the most-restrictive role tier required by an entitlement,
+ * for use by the admin-surface padlock indicators (#758).
+ *
+ * Mapping:
+ *   - null / empty key → null   (no chip)
+ *   - user or editor in roles → null   (no chip — anyone can act)
+ *   - admin in roles → 'admin'   (yellow chip)
+ *   - only global_admin in roles → 'global_admin'   (red chip)
+ *
+ * Reads the effective map (defaults + admin overrides) so a curator
+ * who has tightened access via /manage/entitlements sees padlocks
+ * that match the live policy, not the hardcoded defaults.
+ *
+ * @param string|null $key Entitlement key (e.g. 'manage_songbooks')
+ * @return string|null     'admin' | 'global_admin' | null
+ */
+function entitlementHighestRole(?string $key): ?string
+{
+    if ($key === null || $key === '') return null;
+    $map = effectiveEntitlements();
+    $roles = $map[$key] ?? [];
+    if (empty($roles)) return null;
+    if (in_array('user', $roles, true) || in_array('editor', $roles, true)) {
+        return null;
+    }
+    if (in_array('admin', $roles, true)) {
+        return 'admin';
+    }
+    return 'global_admin';
+}
+
+/**
+ * Render the inline HTML for a padlock chip next to an entitlement-
+ * gated label / card title. Empty string when the entitlement is
+ * accessible to user/editor (no chip needed). Bootstrap Icons
+ * bi-lock-fill is SVG-rendered and accepts CSS colour overrides via
+ * the .lock-chip-{tier} class. (#758)
+ *
+ * @param string|null $key Entitlement key
+ * @return string          Inline HTML (already escaped) or ''
+ */
+function entitlementLockChipHtml(?string $key): string
+{
+    $tier = entitlementHighestRole($key);
+    if ($tier === null) return '';
+    $tierCls = $tier === 'global_admin' ? 'lock-chip-global-admin' : 'lock-chip-admin';
+    $label   = $tier === 'global_admin' ? 'Requires Global Admin' : 'Requires Admin';
+    return ' <i class="bi bi-lock-fill lock-chip ' . $tierCls . '"'
+         . ' aria-label="' . htmlspecialchars($label, ENT_QUOTES, 'UTF-8') . '"'
+         . ' title="' . htmlspecialchars($label, ENT_QUOTES, 'UTF-8') . '"></i>';
+}
 
 /**
  * Return the effective entitlement map, applying any admin overrides
@@ -301,4 +416,50 @@ function entitlementsFor(?string $role): array
         }
     }
     return $out;
+}
+
+/**
+ * Org-admin scope (#707) — list the organisation IDs this user holds
+ * an `admin` or `owner` role on (per tblOrganisationMembers).
+ *
+ * The two pieces:
+ *   - userIsOrgAdminOf($userId)      → list of OrgIds the user manages
+ *   - userHasOwnOrganisation($userId) → bool: are they admin/owner on ANY org?
+ *
+ * Page-level gate on /manage/my-organisations checks
+ * userHasOwnOrganisation(); row-level checks (when an action targets a
+ * specific org) call userIsOrgAdminOf() and require the target to be in
+ * the returned list. system-admin / global_admin shortcut to "all orgs"
+ * via the system role check before this helper runs.
+ *
+ * Best-effort against schema drift: if tblOrganisationMembers doesn't
+ * exist on a fresh deployment, both helpers return [] / false rather
+ * than 500'ing.
+ */
+function userIsOrgAdminOf(?int $userId): array
+{
+    if (!$userId || $userId <= 0) return [];
+    try {
+        $db = getDbMysqli();
+        $stmt = $db->prepare(
+            "SELECT OrgId FROM tblOrganisationMembers
+              WHERE UserId = ? AND Role IN ('admin', 'owner')"
+        );
+        $stmt->bind_param('i', $userId);
+        $stmt->execute();
+        $orgIds = [];
+        $res = $stmt->get_result();
+        while ($row = $res->fetch_row()) {
+            $orgIds[] = (int)$row[0];
+        }
+        $stmt->close();
+        return $orgIds;
+    } catch (\Throwable $_e) {
+        return [];
+    }
+}
+
+function userHasOwnOrganisation(?int $userId): bool
+{
+    return !empty(userIsOrgAdminOf($userId));
 }

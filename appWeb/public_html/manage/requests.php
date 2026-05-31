@@ -66,6 +66,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $flash = 'Request #' . $id . ' updated.';
         } catch (\Throwable $e) {
             error_log('[manage/requests.php] ' . $e->getMessage());
+            /* Mirror the failure into the in-app Activity Log so a
+               curator can self-diagnose without server-log access (#695). */
+            logActivityError('admin.requests.update', 'song_request', (string)$id, $e, [
+                'status' => $newStatus,
+            ]);
             $err = 'Database error — check server logs for details.';
         }
     }
@@ -100,6 +105,11 @@ try {
     $stmt->close();
 } catch (\Throwable $e) {
     error_log('[manage/requests.php] ' . $e->getMessage());
+    /* The Activity Log surfaces this so the curator sees the exact
+       cause inline, not just the generic banner (#695). */
+    logActivityError('admin.requests.list', 'song_request', '', $e, [
+        'filter' => $filter,
+    ]);
     $err = 'Could not load requests — check server logs for details.';
 }
 
@@ -116,7 +126,7 @@ try {
 
 ?>
 <!DOCTYPE html>
-<html lang="en" data-bs-theme="dark">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -156,15 +166,15 @@ try {
         <div class="card-admin p-4 text-center text-muted">No requests in this bucket.</div>
     <?php else: ?>
         <div class="card-admin p-0">
-            <table class="table table-sm table-hover mb-0">
+            <table class="table table-sm table-hover mb-0 cp-sortable">
                 <thead>
                     <tr class="text-muted small">
-                        <th>#</th>
-                        <th>Title</th>
-                        <th>Songbook</th>
-                        <th>Submitted</th>
-                        <th>By</th>
-                        <th>Status</th>
+                        <th data-sort-key="id"         data-sort-type="number">#</th>
+                        <th data-sort-key="title"      data-sort-type="text">Title</th>
+                        <th data-sort-key="songbook"   data-sort-type="text">Songbook</th>
+                        <th data-sort-key="submitted"  data-sort-type="text">Submitted</th>
+                        <th data-sort-key="by"         data-sort-type="text">By</th>
+                        <th data-sort-key="status"     data-sort-type="text">Status</th>
                         <th></th>
                     </tr>
                 </thead>

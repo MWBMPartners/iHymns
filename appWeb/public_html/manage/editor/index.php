@@ -24,9 +24,19 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
 requireEditor();
 
 $currentUser = getCurrentUser();
+
+/* External-link type registry for the Song-Editor Links tab (#833).
+   Empty array on pre-migration installs — the Links tab still
+   renders but the dropdown shows the empty-state hint. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+    . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
+$linkTypesForSong = [];
+try {
+    $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
+} catch (\Throwable $_e) { /* probe failure → empty registry */ }
 ?>
 <!DOCTYPE html>
-<html lang="en" data-bs-theme="dark">
+<html lang="en">
 <head>
     <!-- =================================================================
          HEAD — Meta, Bootstrap 5.3 CDN, Bootstrap Icons, Page Title
@@ -36,6 +46,14 @@ $currentUser = getCurrentUser();
 
     <!-- Page title shown in the browser tab -->
     <title>iHymns Song Editor</title>
+
+    <!-- #955 — synchronous theme resolver. Sets data-bs-theme,
+         data-ihymns-theme, data-ihymns-contrast, data-ihymns-cvd
+         from localStorage BEFORE any CSS loads so the editor paints
+         with the correct theme. The Song Editor has its own bespoke
+         <head> (doesn't go through head-libs.php), so we include the
+         partial directly. -->
+    <?php require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-theme-init.php'; ?>
 
     <!-- Bootstrap 5.3 CSS — loaded from CDN for convenience (no local dependency) -->
     <link
@@ -85,11 +103,24 @@ $currentUser = getCurrentUser();
         aria-label="Load songs.json file"
     >
 
-    <!-- Hidden file input for importing songs from an external file -->
+    <!-- Hidden file input for importing songs from an external file.
+         Accepts .json (curator-edited corpus or VideoPsalm songbook)
+         and .zip bulk archives. A bulk-import ZIP mirrors the
+         .SourceSongData/ folder layout (#664) and may contain
+         plain-text .txt files (one per song), OpenSong .xml files
+         (#882), or VideoPsalm .json songbooks (#883). All three
+         kinds may be mixed in the same archive — the server
+         dispatches per-entry by extension and content shape. The zip
+         path inserts directly into MySQL via the
+         /manage/editor/api.php?action=bulk_import_zip endpoint and
+         never overwrites existing songbook or song rows. A single
+         VideoPsalm .json file is routed to
+         action=bulk_import_videopsalm with the same insert-only
+         contract. -->
     <input
         type="file"
         id="fileInputImport"
-        accept=".json,.csv"
+        accept=".json,.zip,application/json,application/zip"
         style="display: none;"
         aria-label="Import songs from file"
     >
@@ -129,61 +160,60 @@ $currentUser = getCurrentUser();
         <!-- Action buttons group — aligned to the right -->
         <div class="d-flex align-items-center gap-2">
 
-            <!-- LOAD JSON — Triggers the hidden file input to select a songs.json file -->
-            <button
-                type="button"
-                class="btn btn-sm btn-amber"
-                id="btn-load-file"
-                title="Load a songs.json file from disk"
-            >
-                <i class="bi bi-folder2-open me-1"></i>Load JSON
-            </button>
-
-            <!-- LOAD FROM URL — Load songs.json from a remote URL (#235) -->
-            <button
-                type="button"
-                class="btn btn-sm btn-outline-amber"
-                id="btn-load-url"
-                title="Load songs.json from a URL"
-            >
-                <i class="bi bi-link-45deg me-1"></i>Load URL
-            </button>
+            <!-- LOAD JSON / LOAD URL buttons removed (#589). The editor
+                 auto-loads from the MySQL backend via `?action=load` on
+                 init, so a curator never needs to point it at a file or
+                 remote URL. The Import button below still exists for
+                 emergency restore from a JSON / CSV file. -->
 
             <!-- SAVE — Writes all songs to MySQL (primary path). If the DB
                  is unavailable, the editor falls back to a JSON download so
-                 you never lose changes. -->
+                 you never lose changes. Starts disabled (#590) — the JS
+                 enables it when a song is selected so curators can't
+                 click into a no-op. -->
             <button
                 type="button"
                 class="btn btn-sm btn-amber-solid"
                 id="btn-save"
-                title="Save all changes to the database"
+                title="Select a song to enable Save"
+                disabled
             >
                 <i class="bi bi-floppy me-1"></i>Save
             </button>
 
-            <!-- VALIDATE — Check all songs for data quality issues (#235) -->
+            <!-- VALIDATE — Check the entire loaded catalogue for data
+                 quality issues (#235). Catalogue-wide, not per-song —
+                 starts disabled until the editor has finished loading
+                 songs (#590), then enables. -->
             <button
                 type="button"
                 class="btn btn-sm btn-outline-success"
                 id="btn-validate"
-                title="Validate all song data for errors"
+                title="Validate every song in the loaded catalogue"
+                disabled
             >
                 <i class="bi bi-check-circle me-1"></i>Validate
             </button>
 
-            <!-- HISTORY — Show revision history for the currently-selected
-                 song, with a restore action per revision (#400). -->
+            <!-- REVISIONS — Show revision history for the currently-selected
+                 song, with a restore action per revision (#400). Renamed
+                 from "History" in #591 for consistency with the
+                 /manage/revisions admin menu entry; the underlying button
+                 ID is preserved (`btn-history`) so existing JS handlers
+                 keep working. -->
             <button
                 type="button"
                 class="btn btn-sm btn-outline-info"
                 id="btn-history"
-                title="Show revision history for the selected song"
+                title="Select a song to enable Revisions"
                 disabled
             >
-                <i class="bi bi-clock-history me-1"></i>History
+                <i class="bi bi-clock-history me-1"></i>Revisions
             </button>
 
-            <!-- EXPORT DROPDOWN — Provides JSON and CSV export options -->
+            <!-- EXPORT DROPDOWN — Provides JSON and CSV export options.
+                 Tooltip clarifies the scope (#591): exports the entire
+                 currently-loaded catalogue, not the selected song. -->
             <div class="dropdown">
                 <button
                     class="btn btn-sm btn-amber dropdown-toggle"
@@ -191,7 +221,7 @@ $currentUser = getCurrentUser();
                     id="dropdownExport"
                     data-bs-toggle="dropdown"
                     aria-expanded="false"
-                    title="Export songs in different formats"
+                    title="Export the entire loaded catalogue (JSON or CSV)"
                 >
                     <i class="bi bi-box-arrow-up me-1"></i>Export
                 </button>
@@ -216,7 +246,7 @@ $currentUser = getCurrentUser();
                 type="button"
                 class="btn btn-sm btn-amber"
                 id="btn-import"
-                title="Import songs from an external JSON or CSV file"
+                title="Import songs from a JSON corpus (in-memory merge), a VideoPsalm songbook .json (whole-hymnal upload), or a .zip bulk archive. ZIPs accept the .SourceSongData layout (one .txt per song), OpenSong .xml files in the same &lt;Hymnal&gt; [&lt;ABBR&gt;]/ folder shape, or VideoPsalm .json songbooks at any depth. Bulk imports insert directly into MySQL and never overwrite existing rows."
             >
                 <i class="bi bi-box-arrow-in-down me-1"></i>Import
             </button>
@@ -352,6 +382,11 @@ $currentUser = getCurrentUser();
                     <button type="button" class="btn btn-sm btn-amber" id="btn-add-song" title="Add new song">
                         <i class="bi bi-plus-lg me-1"></i>Add
                     </button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-export-song"
+                            title="Export the currently-open song as JSON. Filename follows the &lt;#&gt; (&lt;ABBR&gt;) - &lt;Title&gt;[ (&lt;Tune&gt;)] convention so files sort numerically in Finder / Explorer."
+                            disabled>
+                        <i class="bi bi-box-arrow-down me-1"></i>Export
+                    </button>
                     <button type="button" class="btn btn-sm btn-outline-danger" id="btn-delete-song" title="Delete selected song">
                         <i class="bi bi-trash me-1"></i>Delete
                     </button>
@@ -463,6 +498,24 @@ $currentUser = getCurrentUser();
                         </button>
                     </li>
 
+                    <!-- Links tab trigger (#833) — external website links
+                         (Hymnary.org, Wikipedia, YouTube performances, etc.)
+                         attached to this song via tblSongExternalLinks. -->
+                    <li class="nav-item" role="presentation">
+                        <button
+                            class="nav-link"
+                            id="tab-links"
+                            data-bs-toggle="tab"
+                            data-bs-target="#panel-links"
+                            type="button"
+                            role="tab"
+                            aria-controls="panel-links"
+                            aria-selected="false"
+                        >
+                            <i class="bi bi-link-45deg me-1"></i>Links
+                        </button>
+                    </li>
+
                     <!-- Tags tab trigger (#496) -->
                     <li class="nav-item" role="presentation">
                         <button
@@ -476,6 +529,22 @@ $currentUser = getCurrentUser();
                             aria-selected="false"
                         >
                             <i class="bi bi-tags me-1"></i>Tags
+                        </button>
+                    </li>
+
+                    <!-- Media tab trigger (#853) -->
+                    <li class="nav-item" role="presentation">
+                        <button
+                            class="nav-link"
+                            id="tab-media"
+                            data-bs-toggle="tab"
+                            data-bs-target="#panel-media"
+                            type="button"
+                            role="tab"
+                            aria-controls="panel-media"
+                            aria-selected="false"
+                        >
+                            <i class="bi bi-music-note-list me-1"></i>Media
                         </button>
                     </li>
 
@@ -533,7 +602,9 @@ $currentUser = getCurrentUser();
                              own full-width line. -->
                         <div class="row g-2 mb-3">
                             <div class="col-md-2">
-                                <label for="edit-number" class="form-label">Song Number</label>
+                                <label for="edit-number" class="form-label">
+                                    Song Number<span id="edit-number-required" class="text-danger ms-1" hidden aria-hidden="true">*</span>
+                                </label>
                                 <input
                                     type="number"
                                     class="form-control"
@@ -542,6 +613,13 @@ $currentUser = getCurrentUser();
                                     min="1"
                                     max="9999"
                                 >
+                                <!-- Toggled by editor.js when the selected songbook
+                                     is unofficial (Misc, custom collections); songs
+                                     in those songbooks don't have a per-songbook
+                                     number and the internal Song ID is the link. #392 -->
+                                <div id="edit-number-hint" class="form-text" hidden>
+                                    Optional — this songbook is unofficial.
+                                </div>
                             </div>
                             <div class="col-md-5">
                                 <label for="edit-songbook" class="form-label">Songbook</label>
@@ -595,124 +673,54 @@ $currentUser = getCurrentUser();
                             </div>
                         </div>
 
-                        <!-- Language — IETF BCP 47 composed from Language + Script + Region (#240) -->
-                        <div class="mb-3">
-                            <label class="form-label"><i class="bi bi-translate me-1"></i>Language (IETF BCP 47)</label>
-                            <div class="row g-2">
-                                <!-- Language (required) — shows full names (#489).
-                                     Datalist values are full names; editor.js resolves
-                                     them to ISO 639 codes when composing the IETF tag. -->
-                                <div class="col-4">
-                                    <label for="edit-lang-language" class="form-label" style="font-size:0.75rem;">Language</label>
-                                    <input type="text" class="form-control form-control-sm" id="edit-lang-language"
-                                        placeholder="e.g. English" list="lang-language-list" required>
-                                    <datalist id="lang-language-list">
-                                        <option value="English">en</option>
-                                        <option value="French">fr</option>
-                                        <option value="German">de</option>
-                                        <option value="Spanish">es</option>
-                                        <option value="Italian">it</option>
-                                        <option value="Portuguese">pt</option>
-                                        <option value="Latin">la</option>
-                                        <option value="Welsh">cy</option>
-                                        <option value="Scottish Gaelic">gd</option>
-                                        <option value="Irish">ga</option>
-                                        <option value="Dutch">nl</option>
-                                        <option value="Swedish">sv</option>
-                                        <option value="Norwegian">no</option>
-                                        <option value="Danish">da</option>
-                                        <option value="Finnish">fi</option>
-                                        <option value="Polish">pl</option>
-                                        <option value="Czech">cs</option>
-                                        <option value="Hungarian">hu</option>
-                                        <option value="Romanian">ro</option>
-                                        <option value="Korean">ko</option>
-                                        <option value="Japanese">ja</option>
-                                        <option value="Chinese">zh</option>
-                                        <option value="Arabic">ar</option>
-                                        <option value="Hebrew">he</option>
-                                        <option value="Hindi">hi</option>
-                                        <option value="Swahili">sw</option>
-                                        <option value="Zulu">zu</option>
-                                        <option value="Xhosa">xh</option>
-                                        <option value="Afrikaans">af</option>
-                                        <option value="Tagalog">tl</option>
-                                    </datalist>
+                        <!-- Composition / first-performance origin (Places
+                             adoption). Visible input is the human-readable
+                             display string; the sibling hidden input
+                             carries the tblPlaces.Id of the picked
+                             candidate, which the place-search module
+                             keeps in sync. Free-typing leaves the hidden
+                             id empty so the catalogue still persists the
+                             curator-typed string. -->
+                        <div class="row g-2 mb-3">
+                            <div class="col-md-12">
+                                <label for="edit-origin-city" class="form-label">
+                                    <i class="bi bi-geo-alt me-1"></i>Composition origin
+                                </label>
+                                <input
+                                    type="text"
+                                    class="form-control"
+                                    id="edit-origin-city"
+                                    placeholder="Start typing — e.g. Cardiff, Wales"
+                                    autocomplete="off"
+                                >
+                                <input type="hidden" id="edit-origin-city-id">
+                                <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                                    Where the composition originated or was first performed.
+                                    Picks from the live geocoder so two curators picking
+                                    &ldquo;Cardiff&rdquo; resolve to one canonical place.
                                 </div>
-                                <!-- Script (optional) — full names (#489) -->
-                                <div class="col-4">
-                                    <label for="edit-lang-script" class="form-label" style="font-size:0.75rem;">Script</label>
-                                    <input type="text" class="form-control form-control-sm" id="edit-lang-script"
-                                        placeholder="e.g. Latin" list="lang-script-list">
-                                    <datalist id="lang-script-list">
-                                        <option value="Latin">Latn</option>
-                                        <option value="Cyrillic">Cyrl</option>
-                                        <option value="Arabic">Arab</option>
-                                        <option value="Hebrew">Hebr</option>
-                                        <option value="Devanagari">Deva</option>
-                                        <option value="Simplified Chinese">Hans</option>
-                                        <option value="Traditional Chinese">Hant</option>
-                                        <option value="Hangul">Hang</option>
-                                        <option value="Katakana">Kana</option>
-                                        <option value="Greek">Grek</option>
-                                        <option value="Georgian">Geor</option>
-                                        <option value="Armenian">Armn</option>
-                                        <option value="Thai">Thai</option>
-                                        <option value="Ethiopic">Ethi</option>
-                                    </datalist>
-                                </div>
-                                <!-- Region (optional) — full names (#489) -->
-                                <div class="col-4">
-                                    <label for="edit-lang-region" class="form-label" style="font-size:0.75rem;">Region</label>
-                                    <input type="text" class="form-control form-control-sm" id="edit-lang-region"
-                                        placeholder="e.g. United Kingdom" list="lang-region-list">
-                                    <datalist id="lang-region-list">
-                                        <option value="United Kingdom">GB</option>
-                                        <option value="United States">US</option>
-                                        <option value="Australia">AU</option>
-                                        <option value="New Zealand">NZ</option>
-                                        <option value="Canada">CA</option>
-                                        <option value="Ireland">IE</option>
-                                        <option value="South Africa">ZA</option>
-                                        <option value="France">FR</option>
-                                        <option value="Germany">DE</option>
-                                        <option value="Austria">AT</option>
-                                        <option value="Switzerland">CH</option>
-                                        <option value="Spain">ES</option>
-                                        <option value="Mexico">MX</option>
-                                        <option value="Italy">IT</option>
-                                        <option value="Portugal">PT</option>
-                                        <option value="Brazil">BR</option>
-                                        <option value="Netherlands">NL</option>
-                                        <option value="Sweden">SE</option>
-                                        <option value="Norway">NO</option>
-                                        <option value="Denmark">DK</option>
-                                        <option value="Finland">FI</option>
-                                        <option value="Poland">PL</option>
-                                        <option value="Czechia">CZ</option>
-                                        <option value="Hungary">HU</option>
-                                        <option value="Romania">RO</option>
-                                        <option value="South Korea">KR</option>
-                                        <option value="Japan">JP</option>
-                                        <option value="China">CN</option>
-                                        <option value="Taiwan">TW</option>
-                                        <option value="India">IN</option>
-                                        <option value="Philippines">PH</option>
-                                        <option value="Kenya">KE</option>
-                                        <option value="Nigeria">NG</option>
-                                        <option value="Ghana">GH</option>
-                                    </datalist>
-                                </div>
-                            </div>
-                            <!-- Composed IETF tag preview -->
-                            <div class="mt-1 d-flex align-items-center gap-2">
-                                <span class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
-                                    IETF tag:
-                                </span>
-                                <code id="edit-lang-preview" style="font-size: 0.8rem;">en</code>
-                                <input type="hidden" id="edit-language">
                             </div>
                         </div>
+
+                        <!-- Language — IETF BCP 47 picker (shared with /manage/songbooks
+                             via the partial introduced by #685). The hidden output gets a
+                             stable id="edit-language" so editor.js can read the composed
+                             tag via getElementById without going through a form POST.
+                             Closes #687 — the editor's inline copy of the picker has been
+                             removed in favour of this single source of truth, so curators
+                             see the same vocabulary (live tblScripts + tblRegions, ~28 +
+                             ~255 entries) on both surfaces. -->
+                        <?php
+                            $idPrefix = 'edit-song';
+                            $name     = 'language';
+                            $tag      = '';
+                            $outputId = 'edit-language';
+                            require dirname(__DIR__) . DIRECTORY_SEPARATOR
+                                . 'includes' . DIRECTORY_SEPARATOR
+                                . 'partials' . DIRECTORY_SEPARATOR
+                                . 'ietf-language-picker.php';
+                            unset($idPrefix, $name, $tag, $outputId);
+                        ?>
 
                         <!-- Status & Copyright Flags (#222, #225) -->
                         <hr style="border-color: var(--ih-border);">
@@ -875,11 +883,12 @@ $currentUser = getCurrentUser();
                             </div>
                         </div>
 
-                        <!-- Legacy chips readout — preserved as a visual summary
-                             so the whole tab keeps the pill-row look from before
-                             #492. Updated by renderArrangement() whenever the
-                             strip changes. -->
-                        <div id="arrangement-chips" class="d-flex flex-wrap gap-1 mb-2 d-none"></div>
+                        <!-- Legacy summary-chip row removed (#597) — the
+                             #arrangement-strip row above already renders
+                             the playback order as draggable chips, and
+                             this row was a non-interactive duplicate of
+                             the same data which confused curators. -->
+
 
                         <!-- Validation feedback (used by the advanced text input
                              below and for preset application errors from #493). -->
@@ -1063,6 +1072,15 @@ $currentUser = getCurrentUser();
                             <div id="translators-container"></div>
                         </div>
 
+                        <!-- Artists Section (#587) — recording / release artist -->
+                        <div class="mb-4">
+                            <label class="form-label">
+                                <i class="bi bi-mic me-1"></i>Artists
+                                <small class="text-muted ms-1">(recording / release artist — useful for contemporary worship songs)</small>
+                            </label>
+                            <div id="artists-container"></div>
+                        </div>
+
                         <!-- Translations Section — linked translations in other languages (#352) -->
                         <div class="mb-4">
                             <label class="form-label">
@@ -1088,6 +1106,47 @@ $currentUser = getCurrentUser();
                             </div>
                         </div>
 
+                        <!-- Cross-book counterparts (#807) — same hymn in different songbooks.
+                             Distinct from Translations: counterparts are typically the same
+                             language, different songbook, unrelated number — e.g. Amazing Grace
+                             as MP-031 and CH-376 and SDAH-108. -->
+                        <div class="mb-4">
+                            <label class="form-label">
+                                <i class="bi bi-link-45deg me-1"></i>Cross-book counterparts
+                            </label>
+                            <div class="form-text mb-2" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                                Link this song to its appearances in other songbooks (same hymn,
+                                different number). Use Translations for other-language versions.
+                            </div>
+
+                            <!-- Dynamic list of counterpart rows, rendered by editor.js. -->
+                            <div id="song-links-container">
+                                <span class="text-muted small">Save the song first, then add counterparts.</span>
+                            </div>
+
+                            <!-- Add Counterpart form -->
+                            <div class="input-group input-group-sm mt-2">
+                                <input type="text" class="form-control" id="add-song-link-songid"
+                                       placeholder="Target Song ID (e.g. CH-0376)" list="song-link-song-list">
+                                <datalist id="song-link-song-list"></datalist>
+                                <button type="button" class="btn btn-outline-primary" id="add-song-link-btn">
+                                    <i class="bi bi-plus-lg me-1"></i>Link
+                                </button>
+                            </div>
+
+                            <!-- Suggested counterparts (#808) — top similar-titled candidates.
+                                 Hidden until at least one suggestion exists for the open song. -->
+                            <div id="song-link-suggestions" class="mt-3" style="display:none;">
+                                <div class="form-text mb-2" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                                    <i class="bi bi-lightbulb me-1"></i>
+                                    Suggested counterparts — similar titles in other songbooks:
+                                </div>
+                                <div id="song-link-suggestions-list">
+                                    <!-- Rendered by editor.js -->
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- Copyright Text — free-text copyright notice -->
                         <div class="mb-3">
                             <label for="edit-copyright" class="form-label">
@@ -1105,6 +1164,59 @@ $currentUser = getCurrentUser();
                         </div>
                     </div>
                     <!-- END Credits Tab Panel -->
+
+
+                    <!-- -------------------------------------------------
+                         LINKS TAB PANEL (#833)
+                         External website links per song (Hymnary.org,
+                         Wikipedia, YouTube, Spotify, etc.) — same
+                         tblExternalLinkTypes-backed registry and shared
+                         row-builder module that powers the songbook
+                         + work admin pages. Auto-detect maps the
+                         pasted URL to the matching provider so the
+                         curator's dropdown selection is one less
+                         click in the common case.
+                         ------------------------------------------------- -->
+                    <div
+                        class="tab-pane fade"
+                        id="panel-links"
+                        role="tabpanel"
+                        aria-labelledby="tab-links"
+                    >
+                        <div class="form-section">
+                            <h6 class="section-title">
+                                <i class="bi bi-link-45deg me-1"></i>External links
+                            </h6>
+                            <div class="text-muted small mb-3">
+                                Hymnary.org · Internet Archive scans · Wikipedia ·
+                                YouTube performances · Spotify recordings · etc.
+                                Paste a URL — the provider dropdown auto-detects.
+                                <em>Verified</em> means a curator has eyeballed
+                                the URL and confirmed it's correct.
+                            </div>
+
+                            <?php
+                                /* Re-use the shared partial from manage/includes/partials.
+                                   The Song Editor lives one folder deeper than the rest
+                                   of /manage so the path resolves through the partial's
+                                   directory rather than the editor's own. */
+                                $containerId    = 'edit-song-ext-links-rows';
+                                $addBtnId       = 'edit-song-ext-link-add-btn';
+                                $heading        = 'External links';
+                                $helpText       = '';
+                                $useCardHeading = false;
+                                require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes'
+                                    . DIRECTORY_SEPARATOR . 'partials'
+                                    . DIRECTORY_SEPARATOR . 'external-links-section.php';
+                            ?>
+
+                            <div class="form-text small mt-3" style="color: var(--ih-text-muted);">
+                                Save the song to persist link changes.
+                                Existing links are loaded automatically on song open.
+                            </div>
+                        </div>
+                    </div>
+                    <!-- END Links Tab Panel -->
 
 
                     <!-- -------------------------------------------------
@@ -1162,6 +1274,42 @@ $currentUser = getCurrentUser();
                         </div>
                     </div>
                     <!-- END Tags Tab Panel -->
+
+
+                    <!-- -------------------------------------------------
+                         MEDIA TAB PANEL (#853)
+
+                         Per-song accompanying-files manager. The contents
+                         are rendered by the song-media-editor.js ESM
+                         module which is booted at the bottom of this file
+                         (after editor.js so the song-loaded event is
+                         observable from boot onwards).
+                         ------------------------------------------------- -->
+                    <div
+                        class="tab-pane fade"
+                        id="panel-media"
+                        role="tabpanel"
+                        aria-labelledby="tab-media"
+                    >
+                        <div class="form-section">
+                            <h6 class="section-title">
+                                <i class="bi bi-music-note-list me-1"></i>Accompanying Media
+                            </h6>
+                            <div class="text-muted small mb-3">
+                                Upload audio recordings, sheet music, MIDI sequences and
+                                MusicXML notation alongside this song. Files inherit the
+                                song's content-access rules — gated songs gate their media
+                                automatically. Sheet music / MIDI / MusicXML are stored
+                                inside the database; audio is stored on disk under
+                                <code>appWeb/uploads/songs/</code> and served via the
+                                gated <code>/song-media/&lt;id&gt;</code> route.
+                            </div>
+                            <div id="song-media-editor-root">
+                                <!-- Populated by song-media-editor.js — see <script type="module"> at the bottom of this file. -->
+                            </div>
+                        </div>
+                    </div>
+                    <!-- END Media Tab Panel -->
 
 
                     <!-- -------------------------------------------------
@@ -1418,9 +1566,112 @@ $currentUser = getCurrentUser();
         </div>
     </div>
 
+    <!-- External-link provider auto-detect + shared card-list editor (#833 / #841).
+         Loaded before editor.js so the global module objects are
+         available when the editor mounts the Links tab. The Song
+         Editor has its own <head> (no head-libs.php), so we include
+         the scripts directly here. -->
+    <?php $_editorPublicRoot = dirname(__DIR__, 2); ?>
+    <script src="/js/modules/external-link-detect.js?v=<?= filemtime($_editorPublicRoot . '/js/modules/external-link-detect.js') ?>"></script>
+    <script src="/js/modules/external-links-editor.js?v=<?= filemtime($_editorPublicRoot . '/js/modules/external-links-editor.js') ?>"></script>
+    <!-- Places adoption — live location autocomplete on the
+         Composition origin input. Must load before editor.js so the
+         iHymnsPlaceSearch global exists when editor.js's
+         attachPlaceSearch() helper runs. -->
+    <script src="/js/modules/place-search.js?v=<?= filemtime($_editorPublicRoot . '/js/modules/place-search.js') ?>"></script>
+    <script>
+        window._iHymnsLinkTypes = <?= json_encode($linkTypesForSong, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+    </script>
+
     <!-- Editor JavaScript — all interactive logic (loading, saving, editing, previewing)
          is handled in this separate file to keep concerns separated -->
     <script src="editor.js"></script>
+    <!-- Wire the Composition origin field to the place-search module
+         after editor.js boots. The hidden id input fires a synthetic
+         `change` event when set, which the bindMetadataListeners
+         loop already listens for — so we just need to call attach()
+         once. -->
+    <script>
+        (function () {
+            function wirePlaceSearch() {
+                if (!window.iHymnsPlaceSearch) return;
+                const visible = document.getElementById('edit-origin-city');
+                const hidden  = document.getElementById('edit-origin-city-id');
+                if (visible && hidden) {
+                    window.iHymnsPlaceSearch.attach(visible, { hiddenIdInput: hidden });
+                }
+            }
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', wirePlaceSearch);
+            } else {
+                wirePlaceSearch();
+            }
+        })();
+    </script>
+
+    <!-- #858 — pre-load tblLanguages once per page so the per-component
+         language override picker (rendered by editor.js renderComponents)
+         can populate without each card re-fetching. Empty array fallback
+         on a 4xx/5xx so the dropdown still shows "Same as song" only. -->
+    <script>
+    (function () {
+        window.iHymnsLanguageOptions = window.iHymnsLanguageOptions || [];
+        fetch('/api?action=languages', { credentials: 'same-origin' })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (j) {
+                if (!j || !Array.isArray(j.languages)) return;
+                window.iHymnsLanguageOptions = j.languages
+                    .filter(function (l) { return l && l.code && l.name; })
+                    .map(function (l) { return { code: l.code, name: l.name }; });
+                /* Notify any rendered components that we're ready —
+                   editor.js doesn't currently subscribe, so the
+                   first selectSong() after this resolves picks up
+                   the populated list naturally. */
+                try {
+                    document.dispatchEvent(new CustomEvent('iHymns:languages-loaded'));
+                } catch (_e) {}
+            })
+            .catch(function () { /* registry unavailable — fallback to identity */ });
+    })();
+    </script>
+
+    <!-- IETF BCP 47 picker boot (#687). The shared module is the same one
+         that powers /manage/songbooks. We expose the booted instance on
+         window.editSongIetfPicker so editor.js (a classic script that
+         can't `import`) can call setTag()/getTag() on it. The module is
+         auto-deferred, so it executes after editor.js but before
+         DOMContentLoaded — which means by the time editor.js's init()
+         fires (on DOMContentLoaded) and starts loading songs into the
+         form, the picker is already booted. -->
+    <?php
+        $_ietfModulePath = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'ietf-language-picker.js';
+        $_ietfModuleVersion = is_file($_ietfModulePath) ? (string)filemtime($_ietfModulePath) : '1';
+    ?>
+    <script type="module">
+        import { bootIetfLanguagePicker }
+            from '/js/modules/ietf-language-picker.js?v=<?= htmlspecialchars($_ietfModuleVersion, ENT_QUOTES) ?>';
+        const root = document.querySelector('.ietf-picker[data-ietf-picker-id="edit-song"]');
+        if (root) {
+            window.editSongIetfPicker = bootIetfLanguagePicker(root);
+        }
+    </script>
+
+    <!-- Song Media editor boot (#853). Subscribes to the
+         iHymns:song-loaded CustomEvent dispatched by editor.js.
+         Cache-bust on filemtime() so a deploy invalidates the
+         browser cache without a manual version bump. -->
+    <?php
+        $_mediaModulePath    = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'song-media-editor.js';
+        $_mediaModuleVersion = is_file($_mediaModulePath) ? (string)filemtime($_mediaModulePath) : '1';
+    ?>
+    <script type="module">
+        import { bootSongMediaEditor }
+            from '/js/modules/song-media-editor.js?v=<?= htmlspecialchars($_mediaModuleVersion, ENT_QUOTES) ?>';
+        const mediaRoot = document.getElementById('song-media-editor-root');
+        if (mediaRoot) {
+            window.songMediaEditor = bootSongMediaEditor(mediaRoot);
+        }
+    </script>
 
     <!-- ============================================================
          Find Missing Numbers modal (#285)
@@ -1576,7 +1827,7 @@ $currentUser = getCurrentUser();
                                 <span class="badge bg-warning text-dark" style="min-width:7rem;">${label}</span>
                                 <span class="text-muted small flex-grow-1">${count} missing</span>
                                 <a class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener"
-                                   href="/request-a-song?songbook=${encodeURIComponent(bookId)}&number=${run[0]}">
+                                   href="/request?songbook=${encodeURIComponent(bookId)}&number=${run[0]}">
                                     <i class="bi bi-lightbulb me-1" aria-hidden="true"></i>Log request
                                 </a>
                             </div>`;

@@ -20,6 +20,11 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* Shared tier-validation include (#719 PR 2b) — exports the TIER_CAPS
+   const + validateTierName() / validateTierLevel(). Same helpers used
+   by the new admin_tier_* API endpoints in /api.php so a tweak to the
+   capability set or the name grammar lands on both surfaces. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'access_tier_validation.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -37,26 +42,10 @@ $error   = '';
 $success = '';
 $db      = getDbMysqli();
 
-/* Ordered list of capability columns — used for both the table header
-   and as the authoritative input/update list, so adding a new capability
-   on the schema is a one-line change here. */
-const TIER_CAPS = [
-    'CanViewLyrics'      => ['Lyrics',       'View song lyrics'],
-    'CanViewCopyrighted' => ['Copyrighted',  'View copyrighted songs'],
-    'CanPlayAudio'       => ['Audio',        'Play MIDI / audio in-app'],
-    'CanDownloadMidi'    => ['MIDI',         'Download MIDI files'],
-    'CanDownloadPdf'     => ['PDF',          'Download sheet-music PDFs'],
-    'CanOfflineSave'     => ['Offline',      'Save songs for offline use'],
-    'RequiresCcli'       => ['Needs CCLI',   'Tier requires a valid CCLI licence number'],
-];
-
-$validName = function (string $n): ?string {
-    $n = trim($n);
-    if ($n === '')                         return 'Name is required.';
-    if (strlen($n) > 30)                   return 'Name must be 30 characters or fewer.';
-    if (!preg_match('/^[a-z0-9_]+$/', $n)) return 'Name must be lowercase letters, digits, or underscore.';
-    return null;
-};
+/* TIER_CAPS const + validateTierName() / validateTierLevel() now
+   live in access_tier_validation.php (#719 PR 2b). Closure kept as a
+   thin wrapper so the existing call sites below continue to work. */
+$validName = fn(string $n): ?string => validateTierName($n);
 
 /* ----- POST actions ----- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -70,7 +59,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         switch ($action) {
             case 'create': {
-                $name        = strtolower(trim((string)($_POST['name']         ?? '')));
+                /* #639 — preserve the admin's casing on disk. The
+                   reserved 5 (public/free/ccli/premium/pro) stay
+                   lowercase by convention; custom tier names like
+                   'MWBMInsiders' or 'mwbm-insiders' keep their
+                   original form. */
+                $name        = trim((string)($_POST['name']                    ?? ''));
                 $displayName = trim((string)($_POST['display_name']            ?? ''));
                 $level       = (int)($_POST['level']                           ?? 0);
                 $description = trim((string)($_POST['description']             ?? ''));
@@ -177,7 +171,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     } catch (\Throwable $e) {
         error_log('[manage/tiers.php] ' . $e->getMessage());
-        $error = $error ?: 'Database error — check server logs for details.';
+        logActivityError('admin.tiers.save', 'access_tier',
+            (string)($_POST['id'] ?? ''), $e, [
+                'action' => $_POST['action'] ?? null,
+            ]);
+        $where = $e->getFile() ? (' (' . basename($e->getFile()) . ':' . $e->getLine() . ')') : '';
+        $error = $error ?: 'Database error: ' . $e->getMessage() . $where;
     }
 }
 
@@ -200,7 +199,9 @@ try {
     $stmt->close();
 } catch (\Throwable $e) {
     error_log('[manage/tiers.php] ' . $e->getMessage());
-    $error = $error ?: 'Could not load tiers.';
+    logActivityError('admin.tiers.list', 'access_tier', '', $e);
+    $where = $e->getFile() ? (' (' . basename($e->getFile()) . ':' . $e->getLine() . ')') : '';
+    $error = $error ?: 'Could not load tiers: ' . $e->getMessage() . $where;
 }
 
 $csrf = csrfToken();
@@ -211,7 +212,7 @@ $csrf = csrfToken();
 $tierTableCols = 3 + count(TIER_CAPS) + 2;
 ?>
 <!DOCTYPE html>
-<html lang="en" data-bs-theme="dark">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -244,16 +245,16 @@ $tierTableCols = 3 + count(TIER_CAPS) + 2;
         <div class="card-admin p-3 mb-4">
             <h2 class="h6 mb-3">All tiers</h2>
             <div class="table-responsive">
-                <table class="table table-sm align-middle mb-0">
+                <table class="table table-sm align-middle mb-0 cp-sortable" data-default-sort-key="level" data-default-sort-dir="asc">
                     <thead>
                         <tr class="text-muted small">
-                            <th>Name</th>
-                            <th>Display</th>
-                            <th class="text-center">Level</th>
+                            <th data-sort-key="name"    data-sort-type="text">Name</th>
+                            <th data-sort-key="display" data-sort-type="text">Display</th>
+                            <th class="text-center" data-sort-key="level" data-sort-type="number">Level</th>
                             <?php foreach (TIER_CAPS as $col => [$lbl, $hint]): ?>
                                 <th class="text-center" title="<?= htmlspecialchars($hint) ?>"><?= htmlspecialchars($lbl) ?></th>
                             <?php endforeach; ?>
-                            <th class="text-center">Users</th>
+                            <th class="text-center" data-sort-key="users" data-sort-type="number">Users</th>
                             <th class="text-end">Actions</th>
                         </tr>
                     </thead>
@@ -324,7 +325,8 @@ $tierTableCols = 3 + count(TIER_CAPS) + 2;
                 <div class="col-sm-3">
                     <label class="form-label small">Name (machine)</label>
                     <input type="text" name="name" class="form-control form-control-sm" maxlength="30" required
-                           placeholder="e.g. premium_plus" pattern="[a-z0-9_]+">
+                           placeholder="e.g. premium_plus, mwbm-insiders" pattern="[A-Za-z0-9_\-]+"
+                           title="Letters, digits, hyphen or underscore">
                 </div>
                 <div class="col-sm-3">
                     <label class="form-label small">Display name</label>
@@ -422,6 +424,12 @@ $tierTableCols = 3 + count(TIER_CAPS) + 2;
             });
             new bootstrap.Modal(document.getElementById('editTierModal')).show();
         }
+    </script>
+
+    <!-- Sortable table headers (#644). -->
+    <script type="module">
+        import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+        bootSortableTables();
     </script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>

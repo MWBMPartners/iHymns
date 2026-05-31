@@ -1,0 +1,196 @@
+# =============================================================================
+# iHymns — Monthly HA Cross-Source Integrity Audit
+#
+# Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+# This software is proprietary. Unauthorized copying, modification, or
+# distribution is strictly prohibited.
+#
+# PURPOSE:
+# Runs the multilingual scraper's cross-source integrity check (#699
+# Phase C) against the Spanish HA songbook (Himnario Adventista) and
+# files the findings as a committed audit report + a PR for review.
+#
+# WHY HA SPECIFICALLY (and not all 4 overlap songbooks):
+# The 2026-04-30 audit ran SDAH (695, 100% clean) → CH (702, 100%
+# clean) → HASD (275/610, ~11% data-quality issues) → HA. By the
+# time it reached HA the SDAHymnal-network rate limit had kicked in
+# and HA returned 0 hymns. The earlier 25-hymn HA sample showed
+# ~96% diff rate including HA #003 being completely different
+# hymns (`Unidos En Espíritu` in CIS vs `¡Santo! ¡Santo! ¡Santo!`
+# on himnario.net) — suggesting different *editions* of the Spanish
+# hymnal. A fresh, isolated session is needed to confirm.
+#
+# Running just HA (rather than all 4 overlap songbooks) keeps the
+# request volume low enough to avoid the rate-limit cutoff that bit
+# the all-4-in-sequence run.
+#
+# WHEN IT RUNS:
+# - On a cron schedule — once a month, on a different day from the
+#   issues sweep so the two don't collide. 14th of each month at
+#   09:23 UTC.
+# - On manual dispatch from the Actions tab.
+#
+# WHAT IT DOES:
+# 1. Runs `SDAHymnals_SDAHymnal.org.py --site ha --prefer-source cis`
+#    against the existing CIS extracts (committed under
+#    .SourceSongData/ — but those are gitignored, so the workflow
+#    re-fetches them from the ChristInSong scraper as a setup step).
+# 2. Aggregates the per-hymn findings into a categorised summary:
+#    structural-only, encoding-corruption, OCR-style, title-mismatch.
+# 3. Writes the summary to .importers/audits/<YYYY-MM-DD>-ha-audit.md.
+# 4. Opens a PR against `alpha` with the report.
+#
+# RATE-LIMIT HANDLING:
+# If the audit returns 0 hymns + 10 consecutive skips, the workflow
+# logs the failure to its own job summary and exits successfully
+# (no PR opened — the next monthly run will retry from a fresher
+# session). A repeated failure 3 months in a row should prompt
+# manual investigation.
+# =============================================================================
+
+name: Maintenance — HA Integrity Audit
+
+on:
+  schedule:
+    # Run on the 14th of every month at 09:23 UTC. Two-week offset
+    # from the issues sweep on the 28th so the same Actions slot
+    # isn't bottlenecked.
+    - cron: '23 9 14 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Don't let two manual dispatches stack — a single in-flight audit
+# is enough.
+concurrency:
+  group: maintenance-ha-integrity-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: HA cross-source integrity audit
+    runs-on: ubuntu-latest
+    # An HA full-corpus pass is ~614 hymns × ~1s per hymn = ~10 min,
+    # plus the upstream ChristInSong pre-fetch which is comparable.
+    # 30-minute ceiling keeps the runner from hanging if a remote site
+    # stops responding.
+    timeout-minutes: 30
+    steps:
+      - name: Check out alpha
+        uses: actions/checkout@v4
+        with:
+          ref: alpha
+          # Fetch the full history so the new branch we'll push has
+          # a clean rebase target.
+          fetch-depth: 0
+          # Token with write scope for pushing the audit branch back.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Pre-fetch the ChristInSong HA extract for comparison
+        # The audit compares fresh SDAHymnal scrapes against the
+        # existing CIS extracts. .SourceSongData/ is gitignored
+        # (it's working data, not source-of-truth), so we have to
+        # re-fetch via the ChristInSong scraper before the audit can
+        # do its diff. ChristInSong-side rate limits are separate
+        # from SDAHymnal-side, so this doesn't eat into the audit
+        # budget.
+        run: |
+          mkdir -p ".SourceSongData"
+          python3 .importers/scrapers/ChristInSong.app.py \
+              --site ha \
+              --output .SourceSongData \
+              --delay 1.0 \
+            || echo "::warning::ChristInSong pre-fetch errored — proceeding with whatever landed."
+
+      - name: Run the HA integrity audit
+        id: audit
+        run: |
+          # --prefer-source cis is read-only — no song files written.
+          # Output goes only to .SourceSongData/HA*/_integrity-check.md
+          # which is gitignored.
+          python3 .importers/scrapers/SDAHymnals_SDAHymnal.org.py \
+              --site ha \
+              --prefer-source cis \
+              --output .SourceSongData \
+              --delay 1.0 \
+              2>&1 | tee /tmp/audit.log
+
+          # Pull the saved+skipped counts from the summary line.
+          summary_line=$(grep -E "^HA: [0-9]+ hymns saved" /tmp/audit.log | tail -1)
+          echo "summary=$summary_line" >> "$GITHUB_OUTPUT"
+          # Extract the saved count for the rate-limit guard below.
+          saved=$(echo "$summary_line" | grep -oE '[0-9]+ hymns' | head -1 | grep -oE '[0-9]+' || echo "0")
+          echo "saved=$saved" >> "$GITHUB_OUTPUT"
+
+      - name: Detect rate-limit (saved == 0)
+        if: steps.audit.outputs.saved == '0'
+        run: |
+          {
+            echo "# Maintenance: HA Integrity Audit — rate-limited"
+            echo ""
+            echo "The scraper returned 0 hymns saved. Most likely cause: SDAHymnal-network daily rate limit kicked in before any hymn was retrieved."
+            echo ""
+            echo "**Action:** none — the next monthly run will retry from a fresh session. If this fails three months in a row, investigate manually (could be a UA block, an IP block on Actions runners, or an upstream layout change)."
+            echo ""
+            echo "Audit output line:"
+            echo ""
+            echo '```'
+            echo "${{ steps.audit.outputs.summary }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Exit successfully — the rate limit is expected behaviour, not a failure.
+          exit 0
+
+      - name: Aggregate findings + write report
+        id: report
+        if: steps.audit.outputs.saved != '0'
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          # Run the aggregator from a separate file so YAML's block-scalar
+          # rules (blank-line termination) don't fight the multi-line
+          # markdown-template strings in the script.
+          python3 .github/workflows/scripts/ha-audit-aggregate.py
+
+      - name: Open PR with the audit report
+        if: steps.report.outputs.report_path != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPORT_PATH: ${{ steps.report.outputs.report_path }}
+          AUDIT_DATE:  ${{ steps.report.outputs.date }}
+          AUDIT_TOTAL: ${{ steps.report.outputs.total }}
+          AUDIT_IDENT: ${{ steps.report.outputs.identical }}
+          AUDIT_DIFF:  ${{ steps.report.outputs.differs }}
+        run: |
+          # The aggregator writes /tmp/commit-msg.txt and /tmp/pr-body.md
+          # alongside the audit report itself, so we don't have to wrestle
+          # multi-line strings through YAML block scalars here.
+          BRANCH="claude/audit-ha-${AUDIT_DATE}"
+          git checkout -b "$BRANCH"
+          git add "$REPORT_PATH"
+          git commit -F /tmp/commit-msg.txt
+          git push -u origin "$BRANCH"
+          gh pr create --base alpha \
+              --title "Audit: HA cross-source integrity (${AUDIT_DATE})" \
+              --body-file /tmp/pr-body.md
+          {
+            echo "# Maintenance: HA Integrity Audit — PR opened"
+            echo ""
+            echo "Branch: \`$BRANCH\`"
+            echo "Report: \`$REPORT_PATH\`"
+            echo "- Total audited: ${AUDIT_TOTAL}"
+            echo "- Identical: ${AUDIT_IDENT}"
+            echo "- Differ: ${AUDIT_DIFF}"
+          } >> "$GITHUB_STEP_SUMMARY"

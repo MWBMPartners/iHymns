@@ -62,6 +62,7 @@ try {
     }
 } catch (\Throwable $e) {
     error_log('[missing-numbers] ' . $e->getMessage());
+    logActivityError('admin.missing_numbers.load', 'songbook', '', $e);
     $reports  = [];
     $loadError = 'Could not load the missing-numbers report — see server logs.';
 }
@@ -96,7 +97,7 @@ foreach ($reports as $r) {
 
 ?>
 <!DOCTYPE html>
-<html lang="en" data-bs-theme="dark">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -202,11 +203,11 @@ foreach ($reports as $r) {
                                     </div>
                                 <?php else: ?>
                                     <div class="table-responsive">
-                                        <table class="table table-sm align-middle mb-0">
+                                        <table class="table table-sm align-middle mb-0 cp-sortable admin-table-fixed">
                                             <thead>
                                                 <tr>
-                                                    <th scope="col">Range</th>
-                                                    <th scope="col" class="text-end">Missing</th>
+                                                    <th scope="col" style="width: 200px;" data-sort-key="range" data-sort-type="text">Range</th>
+                                                    <th scope="col" style="width: 100px;" class="text-end" data-sort-key="missing" data-sort-type="number">Missing</th>
                                                     <th scope="col">Action</th>
                                                 </tr>
                                             </thead>
@@ -226,7 +227,7 @@ foreach ($reports as $r) {
                                                         </td>
                                                         <td>
                                                             <a class="btn btn-sm btn-outline-primary"
-                                                               href="/request-a-song?songbook=<?= htmlspecialchars(urlencode($r['id'])) ?>&number=<?= (int)$first ?>"
+                                                               href="/request?songbook=<?= htmlspecialchars(urlencode($r['id'])) ?>&number=<?= (int)$first ?>"
                                                                target="_blank" rel="noopener">
                                                                 <i class="bi bi-lightbulb me-1" aria-hidden="true"></i>
                                                                 Log request

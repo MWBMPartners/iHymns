@@ -58,7 +58,21 @@ function getDbMysqli(): mysqli
     global $_mysqliConnection;
 
     if ($_mysqliConnection !== null) {
-        return $_mysqliConnection;
+        /* Verify the cached handle is still alive. The bulk migration
+           runner in /manage/setup-database.php iterates many migration
+           scripts in one PHP request, and it's easy for a script to
+           call $mysqli->close() on the singleton — every subsequent
+           caller would otherwise get back a closed handle and fail on
+           the first prepare(). Touching `thread_id` on a closed
+           connection throws under MYSQLI_REPORT_STRICT (set below);
+           catching that lets us null the cache and reconnect below
+           without a wasted MySQL ping round-trip. (#745) */
+        try {
+            $_ = $_mysqliConnection->thread_id;
+            return $_mysqliConnection;
+        } catch (\Throwable $_e) {
+            $_mysqliConnection = null;
+        }
     }
 
     /* Verify credentials are loaded */
@@ -79,4 +93,56 @@ function getDbMysqli(): mysqli
     $_mysqliConnection->set_charset($charset);
 
     return $_mysqliConnection;
+}
+
+/**
+ * Defensive `bind_param` wrapper. Asserts that the type-string length
+ * matches the number of bound variables BEFORE calling
+ * `$stmt->bind_param`, so a typo throws a clear error naming the
+ * calling site rather than mysqli's generic "Number of elements in
+ * type definition string doesn't match number of bind variables"
+ * which is easy to misattribute to a query-level problem.
+ *
+ * Motivated by #923 — a one-character typo in
+ * `activity_log.php`'s INSERT type string (`'isssssssssssssi'`,
+ * 15 chars vs 14 placeholders) caused every logActivity() call to
+ * silently fail for hours after #919's deploy. The function-level
+ * try/catch swallowed mysqli's exception to a single error_log line
+ * and `tblActivityLog` got nothing — the audit trail went dark.
+ *
+ * Helper signature:
+ *
+ *     bindParamSafe(string $context, \mysqli_stmt $stmt,
+ *                   string $types, mixed ...$args): bool
+ *
+ *     - $context: short descriptor of the calling site, used in
+ *                 the thrown error so the maintainer can find it
+ *                 without grepping. e.g. 'logActivity INSERT'.
+ *     - $stmt:    the prepared statement to bind against.
+ *     - $types:   the mysqli type-string ('issssi' etc.).
+ *     - $args:    the variables, varargs.
+ *
+ * Throws \RuntimeException with a clear message when length(types)
+ * !== count(args). Otherwise delegates to $stmt->bind_param() and
+ * returns its bool.
+ *
+ * Adoption: incremental — use in any new bind_param site, plus
+ * targeted retrofit of files where the regression originated
+ * (activity_log.php at minimum). The full repo-wide sweep is
+ * tracked in #926's "out of scope" section as a separate concern.
+ */
+function bindParamSafe(string $context, \mysqli_stmt $stmt, string $types, mixed ...$args): bool
+{
+    $expected = strlen($types);
+    $given    = count($args);
+    if ($expected !== $given) {
+        throw new \RuntimeException(sprintf(
+            'bind_param mismatch in %s: type string has %d chars (%s) but %d args were passed',
+            $context,
+            $expected,
+            $types,
+            $given
+        ));
+    }
+    return $stmt->bind_param($types, ...$args);
 }

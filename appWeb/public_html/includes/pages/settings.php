@@ -18,6 +18,19 @@
 
 declare(strict_types=1);
 
+/**
+ * Variables provided by the calling context (api.php / index.php
+ * before this template is included). Declared here so intelephense
+ * can resolve the references in the body of the file (#634); the
+ * runtime injection itself is unchanged.
+ *
+ * @var array $app  Parsed iHymns application metadata from
+ *                  /includes/infoAppVer.php — keys read below
+ *                  include Application.Name, Application.Version,
+ *                  Application.Vendor.Name, Application.License.User
+ *                  and Application.Version.Repo.Commit.
+ */
+
 ?>
 
 <!-- ================================================================
@@ -130,6 +143,65 @@ declare(strict_types=1);
                     <button type="submit" class="btn btn-primary btn-sm" id="profile-save-btn">
                         <i class="fa-solid fa-floppy-disk me-1" aria-hidden="true"></i>
                         Save profile
+                    </button>
+                </form>
+
+                <!-- Avatar service preference (#616). Per-user override
+                     of the project-level APP_CONFIG['avatar']['service']
+                     setting from #581. Stored on tblUsers.AvatarService;
+                     NULL = inherit project default. The radio set
+                     covers the privacy / look-and-feel trade-offs
+                     called out in #581's privacy section. -->
+                <form id="avatar-form" class="mb-3 pt-3 border-top" autocomplete="off">
+                    <h3 class="h6 mb-1">Avatar source</h3>
+                    <p class="text-muted small mb-2">
+                        How your circular avatar is generated when you're signed in.
+                        Some options send a hash of your email address to a third party;
+                        others stay entirely on this device.
+                    </p>
+                    <div id="avatar-msg" class="alert d-none py-2 small" role="alert"></div>
+
+                    <div class="form-check small">
+                        <input class="form-check-input" type="radio" name="avatar_service" value="" id="avatar-svc-default">
+                        <label class="form-check-label" for="avatar-svc-default">
+                            <strong>Use site default</strong>
+                            — whatever the operator has chosen (currently Gravatar unless changed).
+                        </label>
+                    </div>
+                    <div class="form-check small">
+                        <input class="form-check-input" type="radio" name="avatar_service" value="gravatar" id="avatar-svc-gravatar">
+                        <label class="form-check-label" for="avatar-svc-gravatar">
+                            <strong>Gravatar</strong>
+                            — your email hash is sent to gravatar.com, which returns your
+                            registered avatar (or a generated identicon).
+                        </label>
+                    </div>
+                    <div class="form-check small">
+                        <input class="form-check-input" type="radio" name="avatar_service" value="libravatar" id="avatar-svc-libravatar">
+                        <label class="form-check-label" for="avatar-svc-libravatar">
+                            <strong>Libravatar</strong>
+                            — federated, Gravatar-protocol-compatible alternative.
+                        </label>
+                    </div>
+                    <div class="form-check small">
+                        <input class="form-check-input" type="radio" name="avatar_service" value="dicebear" id="avatar-svc-dicebear">
+                        <label class="form-check-label" for="avatar-svc-dicebear">
+                            <strong>DiceBear identicon</strong>
+                            — a deterministic geometric pattern from the email hash.
+                            No registered-avatar lookup; no third party sees your email.
+                        </label>
+                    </div>
+                    <div class="form-check small mb-2">
+                        <input class="form-check-input" type="radio" name="avatar_service" value="none" id="avatar-svc-none">
+                        <label class="form-check-label" for="avatar-svc-none">
+                            <strong>None</strong>
+                            — the generic person icon that signed-out users see.
+                        </label>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary btn-sm" id="avatar-save-btn">
+                        <i class="fa-solid fa-floppy-disk me-1" aria-hidden="true"></i>
+                        Save avatar source
                     </button>
                 </form>
 
@@ -371,6 +443,41 @@ declare(strict_types=1);
     </div>
 
     <!-- ============================================================
+         LANGUAGE PREFERENCES SECTION (#736)
+         ============================================================ -->
+    <div class="card card-settings mb-3">
+        <div class="card-body">
+            <h2 class="h6 mb-3">
+                <i class="fa-solid fa-language me-2" aria-hidden="true"></i>
+                Language Preferences
+            </h2>
+
+            <p class="small text-muted mb-3">
+                Choose which languages you want to see across songbooks
+                and song listings. Songbooks and songs without a
+                language tag always remain visible.
+                <?php if (!empty($currentUser)): ?>
+                Your selection saves to your account and syncs across
+                devices.
+                <?php else: ?>
+                <a href="/login" data-navigate="login">Sign in</a> to
+                sync your selection across devices.
+                <?php endif; ?>
+            </p>
+
+            <div data-settings-language-filter
+                 aria-label="Show only these languages"
+                 class="mb-2">
+                <!-- Populated client-side by /js/modules/settings-language-filter.js -->
+                <p class="small text-muted">
+                    <i class="fa-solid fa-spinner fa-spin me-1" aria-hidden="true"></i>
+                    Loading available languages…
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================================================
          ACCESSIBILITY SECTION
          ============================================================ -->
     <div class="card card-settings mb-3">
@@ -402,13 +509,23 @@ declare(strict_types=1);
                     Page Transition
                 </label>
                 <select class="form-select" id="setting-transition" aria-label="Page transition style">
-                    <option value="none">None (instant)</option>
-                    <option value="fade">Fade</option>
-                    <option value="slide">Slide</option>
-                    <option value="crossfade">Crossfade</option>
+                    <option value="none">None — instant</option>
+                    <optgroup label="Classic">
+                        <option value="fade">Fade — opacity with subtle vertical drift</option>
+                        <option value="crossfade">Crossfade — pure opacity, no motion</option>
+                        <option value="slide">Slide — directional horizontal slide</option>
+                    </optgroup>
+                    <optgroup label="Modern (#865)">
+                        <option value="scale">Scale — gentle zoom with fade</option>
+                        <option value="lift">Lift — page rises from below</option>
+                        <option value="depth">Depth — cinematic recede &amp; emerge</option>
+                        <option value="blur">Blur — cinematic dissolve</option>
+                    </optgroup>
                 </select>
                 <small class="text-muted mt-1 d-block">
-                    Overridden by Reduce Motion when enabled.
+                    Overridden by Reduce Motion when enabled. Modern types use the
+                    View Transitions API for fluid, simultaneous old / new motion;
+                    they fall back to the Classic timing on older browsers.
                 </small>
             </div>
 

@@ -22,14 +22,33 @@
 
 name: Android Build & Distribution
 
+# TRIGGERS: workflow_dispatch + version tags only.
+#
+# The push trigger was removed in #904 to stop the workflow from
+# auto-firing on every change in `appAndroid/**`. The path filter
+# was tripping on the auto-generated `appAndroid/CHANGELOG.md`
+# updates that the Changelog workflow writes to beta on every
+# commit — those then rode along into main on the next beta→main
+# promotion and triggered this build, which fails because the
+# Android app code isn't yet ready (Gradle wrapper not wired up,
+# no signing keystore in secrets — workflow exited 127 on its
+# first build step on the 2026-05-07 promotion).
+#
+# When the Android app is ready to build:
+#   1. Confirm `./gradlew assembleDebug` runs locally without errors.
+#   2. Add the release keystore + Play Store credentials to repo
+#      secrets (RELEASE_KEYSTORE_B64 + RELEASE_KEY_ALIAS + RELEASE_KEY_PASSWORD
+#      + PLAY_SERVICE_ACCOUNT_JSON_B64).
+#   3. Re-add the push trigger below, restricting `paths:` to actual
+#      source / project files (NOT including `appAndroid/CHANGELOG.md`):
+#
+#        push:
+#          branches: [beta, main]
+#          paths-ignore:
+#            - 'appAndroid/CHANGELOG.md'
+#            - 'appAndroid/**/*.md'
+#          # Or use dorny/paths-filter at the job level for finer control.
 on:
-  push:
-    branches: [beta, main]
-    paths:
-      - 'appAndroid/**'
-      - '.github/workflows/build-android.yml'
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       build_type:
@@ -41,6 +60,9 @@ on:
           - debug
           - release
           - all
+  push:
+    tags:
+      - 'v*'
 
 permissions:
   contents: read

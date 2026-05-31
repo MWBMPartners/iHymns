@@ -106,7 +106,7 @@ try {
 $csrf = csrfToken();
 ?>
 <!DOCTYPE html>
-<html lang="en" data-bs-theme="dark">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -296,7 +296,7 @@ $csrf = csrfToken();
             <?php foreach ($dashboardLayout['order'] as $cardId): ?>
                 <?php
                 if (!isset($dashboardById[$cardId])) continue;
-                [$id, , $href, $icon, $title, $sub, $sameTab] = $dashboardById[$cardId];
+                [$id, $entitlement, $href, $icon, $title, $sub, $sameTab] = $dashboardById[$cardId];
                 $isHidden = isset($hiddenSet[$id]);
                 $target = $sameTab ? '' : 'target="_blank" rel="noopener"';
                 ?>
@@ -304,6 +304,22 @@ $csrf = csrfToken();
                      data-card-id="<?= htmlspecialchars($id) ?>"
                      data-hidden="<?= $isHidden ? '1' : '0' ?>">
                     <div class="card-admin position-relative">
+                        <?php
+                            /* Padlock chip moved to the top-right corner of the
+                               card (#785) — was inline next to the title and
+                               crowded the heading. The .lock-chip-corner class
+                               keeps the same red/yellow tier colours but
+                               position:absolutes the chip so it doesn't push
+                               anything around. */
+                            $tier = entitlementHighestRole($entitlement);
+                            if ($tier !== null):
+                                $tierCls   = $tier === 'global_admin' ? 'lock-chip-global-admin' : 'lock-chip-admin';
+                                $tierLabel = $tier === 'global_admin' ? 'Requires Global Admin' : 'Requires Admin';
+                        ?>
+                            <i class="bi bi-lock-fill lock-chip lock-chip-corner <?= $tierCls ?>"
+                               aria-label="<?= htmlspecialchars($tierLabel, ENT_QUOTES, 'UTF-8') ?>"
+                               title="<?= htmlspecialchars($tierLabel, ENT_QUOTES, 'UTF-8') ?>"></i>
+                        <?php endif; ?>
                         <a href="<?= htmlspecialchars($href) ?>" class="quick-link" <?= $target ?>>
                             <i class="bi <?= htmlspecialchars($icon) ?> d-block mb-2" aria-hidden="true"></i>
                             <strong><?= $title /* some titles contain &amp; entity */ ?></strong>
@@ -362,7 +378,16 @@ $csrf = csrfToken();
              lightweight "Your session" card instead. -->
         <?php if (($currentUser['role'] ?? '') === 'global_admin'): ?>
         <div class="card-admin p-3">
-            <h2 class="h6 mb-3"><i class="bi bi-info-circle me-2"></i>System Info</h2>
+            <h2 class="h6 mb-3 d-flex align-items-center gap-2">
+                <i class="bi bi-info-circle"></i>
+                System Info
+                <!-- Audience cue (#641) — global_admin gating is enforced
+                     by the surrounding `if`; the badge makes it
+                     self-documenting when curators see screenshots. -->
+                <span class="badge bg-danger text-light ms-auto" style="font-size: 0.6rem; font-weight: 600;">
+                    Global Admin only
+                </span>
+            </h2>
             <table class="table table-sm table-borderless mb-0 small">
                 <tr><td class="text-muted" style="width:40%">PHP Version</td><td><?= phpversion() ?></td></tr>
                 <tr><td class="text-muted">Database Driver</td><td>MySQL</td></tr>

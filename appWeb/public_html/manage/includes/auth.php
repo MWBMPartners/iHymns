@@ -68,6 +68,13 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
    as anything in the /manage/ stack runs. Best-effort, never throws. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
           . DIRECTORY_SEPARATOR . 'activity_log.php';
+/* Mirror every uncaught \Throwable + PHP fatal across the entire
+   /manage/* admin surface into tblActivityLog. Every admin page
+   requires this auth bootstrap first, so installing the global
+   handler here covers all of them — schema-audit, organisations,
+   credit-people, songbooks, setup-database, etc. — without each
+   page having to remember to register its own. */
+installGlobalActivityLogHandlers('manage');
 
 /* =========================================================================
  * SESSION CONFIGURATION
@@ -121,12 +128,109 @@ function initSession(): void
 /**
  * Check whether a user is currently logged in.
  *
+ * If the PHP session has no user but the cross-subdomain `ihymns_auth`
+ * cookie carries a valid API token (set by main-app sign-in via
+ * `auth_login` / `auth_email_login_verify` / `auth_register`), promote
+ * that token into the admin session so a user signed in on the main
+ * app doesn't get bounced to /manage/login when they click Manage.
+ * Without this, the two auth surfaces are independent — the main app
+ * uses the Bearer/cookie token, /manage/ uses PHP $_SESSION — and a
+ * curator/admin who's already signed in had to sign in twice. (#578)
+ *
  * @return bool True if authenticated
  */
 function isAuthenticated(): bool
 {
     initSession();
-    return isset($_SESSION['user_id']) && isset($_SESSION['username']);
+    if (isset($_SESSION['user_id']) && isset($_SESSION['username'])) {
+        return true;
+    }
+    return adoptApiTokenSession();
+}
+
+/**
+ * If the request carries a valid `ihymns_auth` cookie (the API token
+ * issued by the main-app sign-in flow), look it up in tblApiTokens and
+ * seed $_SESSION as if the user had signed in via /manage/login. The
+ * token must be unexpired and the user active. Sliding-expiry behaviour
+ * mirrors the main API (`getAuthenticatedUser` in api.php) so the same
+ * user being active on /manage/ keeps the token alive.
+ *
+ * Returns true on success (session now populated), false otherwise.
+ */
+function adoptApiTokenSession(): bool
+{
+    /* Cookie name + shape must match api.php. The cookie is httponly so
+       JS can't read it but the request carries it for us. */
+    if (empty($_COOKIE['ihymns_auth'])) {
+        return false;
+    }
+    $token = (string)$_COOKIE['ihymns_auth'];
+    if (!preg_match('/^[a-f0-9]{64}$/i', $token)) {
+        return false;
+    }
+
+    try {
+        $db          = getDbMysqli();
+        $hashedToken = hash('sha256', $token);
+        $now         = gmdate('c');
+        $stmt        = $db->prepare(
+            'SELECT u.Id        AS id,
+                    u.Username  AS username,
+                    t.ExpiresAt AS expires_at
+               FROM tblApiTokens t
+               JOIN tblUsers     u ON u.Id = t.UserId
+              WHERE t.Token     = ?
+                AND t.ExpiresAt > ?
+                AND u.IsActive  = 1'
+        );
+        $stmt->bind_param('ss', $hashedToken, $now);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+    } catch (\Throwable $e) {
+        error_log('[manage/auth] adoptApiTokenSession failed: ' . $e->getMessage());
+        return false;
+    }
+
+    if (!$row) {
+        return false;
+    }
+
+    /* Promote the token into $_SESSION exactly as /manage/login.php's
+       successful POST handler would. The rest of the admin surface
+       reads $_SESSION['user_id'] / ['username'] and never touches the
+       cookie directly, so this keeps the call sites unchanged. */
+    $_SESSION['user_id']       = (int)$row['id'];
+    $_SESSION['username']      = (string)$row['username'];
+    $_SESSION['last_activity'] = time();
+
+    /* Slide the token expiry (#390) so an active manage-side user
+       keeps their main-app sign-in alive too. The DB write is gated
+       to once-per-day-per-token by the main API helper; we duplicate
+       that gate here to keep the two paths consistent without having
+       to share code. */
+    try {
+        $cap = $row['expires_at'];
+        if (is_string($cap) && $cap !== '') {
+            $capTs    = strtotime($cap);
+            $nowTs    = time();
+            $newCapTs = $nowTs + 30 * 86400;
+            if ($capTs && ($newCapTs - $capTs) >= 86400) {
+                $stmt = $db->prepare(
+                    'UPDATE tblApiTokens SET ExpiresAt = ? WHERE Token = ? AND ExpiresAt < ?'
+                );
+                $newCap = gmdate('c', $newCapTs);
+                $stmt->bind_param('sss', $newCap, $hashedToken, $newCap);
+                $stmt->execute();
+                $stmt->close();
+            }
+        }
+    } catch (\Throwable $e) {
+        error_log('[manage/auth] sliding-expiry failed: ' . $e->getMessage());
+    }
+
+    return true;
 }
 
 /**
@@ -147,14 +251,33 @@ function getCurrentUser(): ?array
        consistently. Passing a null key to the typed hasRole()
        parameter previously fatal-errored the admin dashboard mid-
        render. */
+    /* AvatarService (#616) is included via COALESCE-on-COLUMN_EXISTS
+       so the admin nav still renders on a partly-migrated install
+       that hasn't yet applied migrate-user-avatar-service. NULL value
+       means "inherit project default" — admin-nav.php passes it
+       straight to userAvatarUrl()'s third arg, which treats NULL as
+       "use APP_CONFIG default". */
+    $hasAvatarService = false;
+    $colCheck = $db->query(
+        "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'tblUsers'
+            AND COLUMN_NAME  = 'AvatarService' LIMIT 1"
+    );
+    if ($colCheck && $colCheck->fetch_row() !== null) { $hasAvatarService = true; }
+    if ($colCheck) { $colCheck->close(); }
+
+    $avatarSvcCol = $hasAvatarService ? ', AvatarService AS avatar_service' : ', NULL AS avatar_service';
+
     $stmt = $db->prepare(
-        'SELECT Id AS id,
+        "SELECT Id AS id,
                 Username AS username,
                 DisplayName AS display_name,
                 Role AS role,
                 Email AS email
+                {$avatarSvcCol}
          FROM tblUsers
-         WHERE Id = ? AND IsActive = 1'
+         WHERE Id = ? AND IsActive = 1"
     );
     $userId = (int)$_SESSION['user_id'];
     $stmt->bind_param('i', $userId);
@@ -184,33 +307,69 @@ function requireAuth(): void
         exit;
     }
 
-    /* Idle timeout (#531) — auto-logout after IDLE_TIMEOUT_SECONDS of
-       inactivity. last_activity is bumped on every protected-page hit
-       below, so an active session glides forward indefinitely while
-       an abandoned one expires within half an hour. */
+    /* Idle timeout (#531) — after IDLE_TIMEOUT_SECONDS without a
+       protected-page hit, drop the PHP session and silently re-adopt
+       from the cross-subdomain `ihymns_auth` API-token cookie so an
+       active main-app sign-in carries the user straight back in
+       without a login prompt. The 30-day rolling token is the source
+       of truth for "is this user signed in"; the /manage/ PHP session
+       is just a per-tab cache that gets refreshed periodically.
+       Only when the API token is also gone (expired / revoked /
+       password-changed) do we fall through to /manage/login.
+
+       Note: we MUST NOT call logout() here — that deletes the
+       tblApiTokens row + clears the ihymns_auth cookie, which would
+       sign the user out of the main app too and defeat the silent
+       re-adoption below. We only wipe $_SESSION. */
     $now = time();
     $lastActive = (int)($_SESSION['last_activity'] ?? 0);
     if ($lastActive > 0 && ($now - $lastActive) > IDLE_TIMEOUT_SECONDS) {
         $kickedUserId = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : null;
-        /* Record the timeout BEFORE wiping the session so the row is
-           attributed to the user who got kicked, not to NULL. logout()
-           is told not to write its own auth.logout row to avoid
-           double-logging the same event. (#535) */
-        logActivity(
-            'auth.session_timeout',
-            'user',
-            (string)($kickedUserId ?? ''),
-            ['idle_seconds' => $now - $lastActive],
-            'success',
-            $kickedUserId
-        );
-        logout(false);
+        $idleSeconds  = $now - $lastActive;
+
+        /* Drop the stale session contents but keep the cookie/DB row
+           that adoptApiTokenSession() needs to read back below.
+           Rotating the session id defends against fixation across
+           the refresh boundary. */
         $_SESSION = [];
-        initSession();
-        $_SESSION['redirect_after_login'] = $_SERVER['REQUEST_URI'] ?? '/manage/';
-        $_SESSION['login_notice'] = 'Your session timed out. Please sign in again.';
-        header('Location: /manage/login');
-        exit;
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            session_regenerate_id(true);
+        }
+
+        if (adoptApiTokenSession()) {
+            /* Silent refresh — token cookie was still valid, user is
+               none the wiser. Recorded distinctly from a forced
+               re-login so admins auditing the activity log can tell
+               the two apart. (#535) */
+            $refreshedUserId = (int)($_SESSION['user_id'] ?? 0);
+            logActivity(
+                'auth.session_refresh',
+                'user',
+                (string)$refreshedUserId,
+                ['idle_seconds' => $idleSeconds],
+                'success',
+                $refreshedUserId ?: null
+            );
+            /* Fall through to the last_activity bump + getCurrentUser
+               check below so the rest of requireAuth() runs as if the
+               session had never lapsed. */
+        } else {
+            /* No valid API token to fall back on — true timeout. Log
+               BEFORE redirecting so the row is attributed to the user
+               who got kicked, not to NULL. */
+            logActivity(
+                'auth.session_timeout',
+                'user',
+                (string)($kickedUserId ?? ''),
+                ['idle_seconds' => $idleSeconds],
+                'success',
+                $kickedUserId
+            );
+            $_SESSION['redirect_after_login'] = $_SERVER['REQUEST_URI'] ?? '/manage/';
+            $_SESSION['login_notice'] = 'Your session timed out. Please sign in again.';
+            header('Location: /manage/login');
+            exit;
+        }
     }
     $_SESSION['last_activity'] = $now;
 
@@ -389,10 +548,15 @@ function attemptLogin(string $username, string $password): ?array
 /**
  * Log out the current user and destroy the session.
  *
+ * Also revokes the cross-subdomain `ihymns_auth` API token so the
+ * main app gets signed out at the same time (#764) — only call this
+ * for an explicit user-initiated logout. The idle-timeout path in
+ * requireAuth() deliberately does NOT call logout(): it wipes the
+ * /manage/ session but preserves the API token so silent re-adoption
+ * can carry the same user back in on the next request.
+ *
  * @param bool $logEvent Set false when the caller is already writing
- *                       a more-specific row (e.g. the idle-timeout
- *                       path in requireAuth() emits auth.session_timeout
- *                       beforehand and would otherwise double-log).
+ *                       a more-specific row, to avoid double-logging.
  */
 function logout(bool $logEvent = true): void
 {
@@ -404,6 +568,52 @@ function logout(bool $logEvent = true): void
     $userId = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : null;
     if ($logEvent && $userId !== null && $userId > 0) {
         logActivity('auth.logout', 'user', (string)$userId, [], 'success', $userId);
+    }
+
+    /* Also invalidate any `ihymns_auth` API-token cookie that the
+       main-site sign-in flow set (#764). Without this, the
+       isAuthenticated() fallback in this same file calls
+       adoptApiTokenSession(), which reads the still-valid cookie,
+       looks up tblApiTokens, and re-seeds $_SESSION — so /manage/login
+       would adopt the token immediately after logout() destroys the
+       session and bounce the user straight back to /manage/.
+
+       Three things have to happen:
+         1. DELETE the row in tblApiTokens (otherwise the cookie value
+            keeps working on a future request that re-presents it).
+         2. Clear the cookie so the browser doesn't keep sending it.
+         3. Be tolerant: a missing tblApiTokens table or DB outage
+            must not block the rest of the logout. */
+    $tokenCookie = (string)($_COOKIE['ihymns_auth'] ?? '');
+    if ($tokenCookie !== '' && preg_match('/^[a-f0-9]{64}$/i', $tokenCookie)) {
+        try {
+            if (function_exists('getDbMysqli')) {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE Token = ?');
+                if ($stmt) {
+                    $tokenHash = hash('sha256', $tokenCookie);
+                    $stmt->bind_param('s', $tokenHash);
+                    $stmt->execute();
+                    $stmt->close();
+                }
+            }
+        } catch (\Throwable $e) {
+            error_log('[manage logout] tblApiTokens delete failed: ' . $e->getMessage());
+        }
+    }
+    if (!empty($_COOKIE['ihymns_auth']) && !headers_sent()) {
+        $host  = preg_replace('/:\d+$/', '', (string)($_SERVER['HTTP_HOST'] ?? ''));
+        $https = !empty($_SERVER['HTTPS'])
+              || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+        setcookie('ihymns_auth', '', [
+            'expires'  => time() - 3600,
+            'path'     => '/',
+            'domain'   => $host,
+            'secure'   => $https,
+            'httponly' => true,
+            'samesite' => 'Lax',
+        ]);
+        unset($_COOKIE['ihymns_auth']);
     }
 
     $_SESSION = [];
@@ -1061,8 +1271,15 @@ function generateEmailLoginToken(string $email, string $clientIp = ''): ?array
     $stmt->close();
     $userId = $existingUser ? (int)$existingUser['Id'] : null;
 
-    /* Generate token (48-char hex) and code (6-digit numeric) */
+    /* Generate token (48-char hex raw, sha256-hashed on disk) and
+       code (6-digit numeric, plaintext on disk).
+       Code stays plaintext on purpose: ~20 bits of entropy is too low
+       for hashing to add real defence (a 1M-entry rainbow is trivial),
+       so we rely on the existing single-use + 10-minute expiry +
+       email-scoped lookup. The high-entropy Token is the magic-link
+       leg; that one we do hash. (#898 follow-up) */
     $token = bin2hex(random_bytes(24));
+    $tokenHash = hash('sha256', $token);
     $code  = str_pad((string)random_int(0, 999999), 6, '0', STR_PAD_LEFT);
     $expiresAt = gmdate('c', time() + 600); /* 10 minutes */
 
@@ -1076,13 +1293,16 @@ function generateEmailLoginToken(string $email, string $clientIp = ''): ?array
 
     /* Insert new token. UserId is nullable when the email doesn't
        match an existing user yet (first-login flow); mysqli passes
-       NULL correctly with type 'i' when the bound variable is null. */
+       NULL correctly with type 'i' when the bound variable is null.
+       The Token column stores the SHA-256 hex hash of the raw
+       token; the raw token is returned to the caller and only ever
+       leaves the server inside the outbound email body. */
     $stmt = $db->prepare(
         'INSERT INTO tblEmailLoginTokens (Email, UserId, Token, Code, ExpiresAt, IpAddress)
          VALUES (?, ?, ?, ?, ?, ?)'
     );
     $stmt->bind_param('sissss',
-        $email, $userId, $token, $code, $expiresAt, $clientIp);
+        $email, $userId, $tokenHash, $code, $expiresAt, $clientIp);
     $stmt->execute();
     $stmt->close();
 
@@ -1108,11 +1328,15 @@ function verifyEmailLoginToken(string $token): ?array
     }
 
     $db = getDbMysqli();
+    /* Hash the supplied raw token and look up by hash (#898 follow-up).
+       Raw tokens never enter the table; storing only the sha256 hex
+       means a DB dump can't be replayed against the verify endpoint. */
+    $tokenHash = hash('sha256', $token);
     $stmt = $db->prepare(
         'SELECT Id, Email, UserId FROM tblEmailLoginTokens
          WHERE Token = ? AND Used = 0 AND ExpiresAt > NOW()'
     );
-    $stmt->bind_param('s', $token);
+    $stmt->bind_param('s', $tokenHash);
     $stmt->execute();
     $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();
@@ -1276,4 +1500,114 @@ function completeEmailLogin(string $email, ?int $userId): array
             'role'         => $user['Role'],
         ],
     ];
+}
+
+/* =========================================================================
+ * EMAIL VERIFICATION (#898)
+ *
+ * Single-use tokens that flip tblUsers.EmailVerified 0 -> 1 when
+ * consumed. Backed by tblEmailVerificationTokens; raw token is only
+ * ever in the email body (delivery via EmailService); the table
+ * stores the SHA-256 hash so a DB dump never leaks live tokens.
+ * Default lifetime: 24 hours.
+ * ========================================================================= */
+
+/**
+ * Issue an email-verification token for a user. Caller is responsible
+ * for delivering the raw token via EmailService::sendTemplate(
+ * 'email-verification', ...). Any prior unused tokens for this user
+ * are invalidated to keep one outstanding token per user at a time.
+ *
+ * @return array{token:string, expiresAt:string}|null Null if the user
+ *         doesn't exist or has no email on file.
+ */
+function generateEmailVerificationToken(int $userId): ?array
+{
+    $db = getDbMysqli();
+
+    /* Look up the email + active status. */
+    $stmt = $db->prepare('SELECT Email, IsActive FROM tblUsers WHERE Id = ?');
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$row || (string)($row['Email'] ?? '') === '' || (int)$row['IsActive'] !== 1) {
+        return null;
+    }
+    $email = (string)$row['Email'];
+
+    /* 48-char hex (24 random bytes) raw token; SHA-256 hash on disk. */
+    $token = bin2hex(random_bytes(24));
+    $tokenHash = hash('sha256', $token);
+    $expiresAt = gmdate('c', time() + 86400); /* 24 hours */
+
+    /* Drop any prior outstanding tokens for this user. Single-token
+       invariant matches the password-reset table's
+       DELETE-then-INSERT pattern. */
+    $stmt = $db->prepare('DELETE FROM tblEmailVerificationTokens WHERE UserId = ?');
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $stmt->close();
+
+    $stmt = $db->prepare(
+        'INSERT INTO tblEmailVerificationTokens (TokenHash, UserId, Email, ExpiresAt) VALUES (?, ?, ?, ?)'
+    );
+    $stmt->bind_param('siss', $tokenHash, $userId, $email, $expiresAt);
+    $stmt->execute();
+    $stmt->close();
+
+    return ['token' => $token, 'expiresAt' => $expiresAt];
+}
+
+/**
+ * Consume an email-verification token. On success, flips
+ * tblUsers.EmailVerified to 1 and marks the row Used.
+ *
+ * @return array{userId:int, email:string}|null Null if the token is
+ *         invalid, expired, already used, or the address has changed
+ *         since issuance (anti-spoof: don't verify a stale address).
+ */
+function consumeEmailVerificationToken(string $token): ?array
+{
+    $token = trim($token);
+    if ($token === '' || strlen($token) > 64) {
+        return null;
+    }
+
+    $db = getDbMysqli();
+    $tokenHash = hash('sha256', $token);
+    $now = gmdate('c');
+    $stmt = $db->prepare(
+        'SELECT t.UserId, t.Email AS TokenEmail, u.Email AS CurrentEmail
+           FROM tblEmailVerificationTokens t
+           JOIN tblUsers u ON u.Id = t.UserId
+          WHERE t.TokenHash = ? AND t.ExpiresAt > ? AND t.Used = 0 AND u.IsActive = 1'
+    );
+    $stmt->bind_param('ss', $tokenHash, $now);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    if (!$row) {
+        return null;
+    }
+    /* Anti-spoof: the user's email must still match the address that
+       was on file when the token was issued. If the user changed it
+       in the meantime the old verification link must not be honoured. */
+    if (mb_strtolower((string)$row['TokenEmail']) !== mb_strtolower((string)$row['CurrentEmail'])) {
+        return null;
+    }
+
+    $userId = (int)$row['UserId'];
+    $stmt = $db->prepare('UPDATE tblUsers SET EmailVerified = 1 WHERE Id = ?');
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $stmt->close();
+
+    $stmt = $db->prepare('UPDATE tblEmailVerificationTokens SET Used = 1 WHERE TokenHash = ?');
+    $stmt->bind_param('s', $tokenHash);
+    $stmt->execute();
+    $stmt->close();
+
+    return ['userId' => $userId, 'email' => (string)$row['CurrentEmail']];
 }

@@ -50,12 +50,131 @@ enableDebugModeIfRequested();
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
+
+/* =========================================================================
+ * GLOBAL JSON ERROR HANDLER (#803)
+ *
+ * Without this, an uncaught \Throwable anywhere in the dispatch below
+ * produced PHP's default HTML error page — every JSON client hit it
+ * and `res.json()` blew up, surfacing the misleading "Network error.
+ * Please try again." instead of the real cause. Registered as early as
+ * possible so even a fatal in the rest of the bootstrap (require_once
+ * etc.) gets a JSON response on action requests.
+ *
+ * Two registrations:
+ *   - set_exception_handler   — catches uncaught \Throwable
+ *   - register_shutdown_function — catches fatal errors (parse errors,
+ *                                    out-of-memory, …) that don't
+ *                                    surface as throwables
+ *
+ * Page (?page=…) requests still get an HTML fragment — the SPA injects
+ * the response into a <div>, so a JSON body would be useless. Action
+ * requests get JSON. Everything is logged to error_log with a request
+ * id correlation token.
+ *
+ * Body shape on Alpha/Beta — message + class to speed up debugging:
+ *   { "error": "Database error: ...", "request_id": "abc1234567",
+ *     "exception_class": "mysqli_sql_exception" }
+ * Body shape on production — generic message + request id only:
+ *   { "error": "Internal server error.", "request_id": "abc1234567" }
+ * ========================================================================= */
+(function () {
+    /* Generate a short request id once. Re-used by both handlers + by
+       any inner handler that wants to thread the same correlation id
+       through to its log lines. Stashed on $GLOBALS so the rest of the
+       request can read it without reaching back through this closure. */
+    $rid = bin2hex(random_bytes(5));
+    $GLOBALS['_ihymnsApiRequestId'] = $rid;
+
+    $isAction = isset($_GET['action']) && trim((string)$_GET['action']) !== '';
+    $devStatus = $GLOBALS['app']['Application']['Version']['Development']['Status'] ?? null;
+    $verbose = ($devStatus === 'Alpha' || $devStatus === 'Beta');
+
+    $emit = function (string $msg, string $class, ?string $where = null) use ($isAction, $verbose, $rid) {
+        /* Always log the full detail to error_log so production admins
+           can correlate via the request id even when the response is
+           generic. */
+        error_log(sprintf(
+            '[api uncaught rid=%s] %s: %s%s',
+            $rid, $class, $msg, $where ? " @ {$where}" : ''
+        ));
+        if (headers_sent()) return; /* nothing we can do — response already started */
+        http_response_code(500);
+        if ($isAction) {
+            header('Content-Type: application/json; charset=UTF-8');
+            header('X-Content-Type-Options: nosniff');
+            header('Cache-Control: no-cache, must-revalidate');
+            $body = ['error' => 'Internal server error.', 'request_id' => $rid];
+            if ($verbose) {
+                $body['error']           = $msg;
+                $body['exception_class'] = $class;
+                if ($where !== null) $body['where'] = $where;
+            }
+            echo json_encode($body, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        } else {
+            /* Page requests stay HTML so the SPA can render the chunk
+               into the page <div>. Same alpha/beta gating on what we
+               disclose. */
+            header('Content-Type: text/html; charset=UTF-8');
+            echo '<div class="alert alert-danger" role="alert">';
+            echo '<strong>Internal server error.</strong> ';
+            echo 'Reference: <code>' . htmlspecialchars($rid, ENT_QUOTES) . '</code>';
+            if ($verbose) {
+                echo '<br><small>' . htmlspecialchars($class . ': ' . $msg, ENT_QUOTES) . '</small>';
+            }
+            echo '</div>';
+        }
+    };
+
+    set_exception_handler(function (\Throwable $e) use ($emit) {
+        $emit($e->getMessage(), get_class($e),
+              basename($e->getFile()) . ':' . $e->getLine());
+    });
+
+    register_shutdown_function(function () use ($emit) {
+        $err = error_get_last();
+        /* Only trip on fatal-class errors — non-fatal warnings/notices
+           shouldn't write a 500. PHP fatals are E_ERROR, E_PARSE,
+           E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR. */
+        $fatalMask = E_ERROR | E_PARSE | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR;
+        if (!$err || !($err['type'] & $fatalMask)) return;
+        $emit($err['message'], 'PHP fatal',
+              basename($err['file'] ?? '?') . ':' . ($err['line'] ?? 0));
+    });
+})();
+
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_access.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'card_layout.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+/* Mirror every uncaught \Throwable + PHP fatal into tblActivityLog
+   so curators reading /manage/activity-log see every server-side
+   incident, not just the ones that happen to be in a try/catch.
+   Chains to the JSON-emitting handler installed at the top of this
+   file — order is "log to activity, then hand to the JSON emitter". */
+installGlobalActivityLogHandlers('api');
+/* Shared songbook validators (#719 PR 2a). Same rules used by
+   /manage/songbooks.php so a tweak to abbrev / colour / IETF-tag
+   grammar lands on the web admin and the API surface in one go. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_validation.php';
+/* Shared organisation helpers (#719 PR 2c). ORG_MEMBER_ROLES +
+   slugifyOrganisationName() + userCanActOnOrg() row-level gate. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'organisation_validation.php';
+/* Shared credit-people helpers (#719 PR 2d). Link-type catalogue +
+   normalisers + flag-columns probe. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'credit_people_helpers.php';
+/* Shared schema-audit helpers (#719 PR 2d). Parser + migration
+   scanner + comparer used by admin_schema_audit and
+   admin_migrations_status read endpoints. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'schema_audit.php';
+/* Language filter helper (#736). Resolves the active preferred-
+   language subtag list for the current request (via ?lang= query
+   param, X-Preferred-Languages header, or tblUsers.PreferredLanguagesJson)
+   and provides applyLanguageFilterSql() / makeLanguageFilterPredicate()
+   helpers for endpoints to filter song / songbook results. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'language_filter.php';
 
 /* =========================================================================
  * CSRF DEFENCE POLICY (#293 / B15)
@@ -92,10 +211,53 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $xrw = $_SERVER['HTTP_X_REQUESTED_WITH'] ?? '';
     if ($xrw !== 'XMLHttpRequest') {
-        sendJson([
-            'error' => 'Cross-site POST blocked: missing or invalid X-Requested-With header.',
-        ], 403);
-        exit;
+        /* No-JS fallback path (#711). One public endpoint —
+           `?action=song_request_submit` — accepts a native HTML form
+           POST so the /request page still works when the page's
+           <script type="module"> never loads (CSP fail, SW cache miss,
+           syntax error). HTML <form> elements cannot set custom
+           headers, so they can never carry X-Requested-With; the
+           CSRF protection for this path is a same-origin check on
+           Origin / Referer instead. Browsers attach both headers
+           automatically and cannot be forged across origins, so a
+           cross-site CSRF attempt would carry a different host and
+           get rejected here.
+
+           This block intentionally allows ONLY song_request_submit —
+           every other POST endpoint stays on the strict
+           X-Requested-With requirement. If a new endpoint ever needs
+           a no-JS path, extend this allow-list explicitly. */
+        $action = (string)($_GET['action'] ?? '');
+        $noJsAllowedActions = ['song_request_submit'];
+        $passesSameOrigin = false;
+        if (in_array($action, $noJsAllowedActions, true)) {
+            $host    = (string)($_SERVER['HTTP_HOST'] ?? '');
+            $origin  = (string)($_SERVER['HTTP_ORIGIN']  ?? '');
+            $referer = (string)($_SERVER['HTTP_REFERER'] ?? '');
+            /* Extract host:port from Origin / Referer URLs and compare
+               to the request's Host header. parse_url() returns null
+               for the missing-field case, str-cast normalises that to
+               '' so an empty header doesn't accidentally match an
+               empty host. */
+            if ($origin !== '') {
+                $originHost = (string)parse_url($origin, PHP_URL_HOST);
+                $originPort = parse_url($origin, PHP_URL_PORT);
+                if ($originPort) $originHost .= ':' . $originPort;
+                $passesSameOrigin = ($originHost !== '' && strcasecmp($originHost, $host) === 0);
+            }
+            if (!$passesSameOrigin && $referer !== '') {
+                $refererHost = (string)parse_url($referer, PHP_URL_HOST);
+                $refererPort = parse_url($referer, PHP_URL_PORT);
+                if ($refererPort) $refererHost .= ':' . $refererPort;
+                $passesSameOrigin = ($refererHost !== '' && strcasecmp($refererHost, $host) === 0);
+            }
+        }
+        if (!$passesSameOrigin) {
+            sendJson([
+                'error' => 'Cross-site POST blocked: missing or invalid X-Requested-With header.',
+            ], 403);
+            exit;
+        }
     }
 }
 
@@ -143,7 +305,7 @@ if ($page !== null) {
        still skip this path because they include user-specific data. */
     $_cacheablePages = [
         'home', 'songbooks', 'songbook', 'song', 'search',
-        'writer', 'help', 'terms', 'privacy', 'request-a-song',
+        'writer', 'person', 'work', 'help', 'terms', 'privacy', 'request', 'request-a-song',
     ];
     $_shouldCachePage = in_array($page, $_cacheablePages, true);
     if ($_shouldCachePage) {
@@ -217,6 +379,50 @@ if ($page !== null) {
             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'writer.php';
             break;
 
+        case 'person':
+            /* Credit Person public page (#588). Slug column on
+               tblCreditPeople is the canonical lookup; the page
+               renderer falls back to a name-based search if the
+               migration hasn't been applied yet. */
+            $personSlug = isset($_GET['slug']) ? trim($_GET['slug']) : '';
+            if ($personSlug === '') {
+                http_response_code(400);
+                echo '<div class="alert alert-warning" role="alert">Person slug is required.</div>';
+                break;
+            }
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'person.php';
+            break;
+
+        case 'work':
+            /* Work public page (#840). Slug-keyed lookup via
+               SongData::getWork(); 404 when the schema isn't applied
+               or the slug is unknown. */
+            $workSlug = isset($_GET['slug']) ? trim($_GET['slug']) : '';
+            if ($workSlug === '') {
+                http_response_code(400);
+                echo '<div class="alert alert-warning" role="alert">Work slug is required.</div>';
+                break;
+            }
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'work.php';
+            break;
+
+        case 'tune':
+            /* #940 — /tune/<slug> public page listing every song that
+               uses the named tune. Empty slug → friendly empty-state
+               page rather than a hard error. */
+            $tuneSlug = isset($_GET['slug']) ? trim($_GET['slug']) : '';
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'tune.php';
+            break;
+
+        case 'iswc':
+            /* #940 — /iswc/<code> public page listing every song that
+               shares the ISWC code (T-NNN.NNN.NNN-N format). The page
+               normalises the code defensively (strips non-T/digit
+               characters, uppercases the leading T). */
+            $iswcCode = isset($_GET['code']) ? trim($_GET['code']) : '';
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'iswc.php';
+            break;
+
         case 'help':
             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'help.php';
             break;
@@ -229,7 +435,11 @@ if ($page !== null) {
             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'privacy.php';
             break;
 
+        case 'request':
         case 'request-a-song':
+            /* /request is canonical (#658). request-a-song retained as
+               an alias for older bookmarks / shared links / offline-queue
+               replays. Both render the same page partial. */
             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'request-a-song.php';
             break;
 
@@ -289,6 +499,15 @@ if ($action !== null) {
             }
 
             $results = $songData->searchSongs($query, $bookId, $limit);
+
+            /* Language filter (#736). Apply the active preferred-subtag
+               set in-memory so search results respect the user's
+               saved preference / current dropdown selection. Untagged
+               songs always pass. */
+            $_langPred = makeLanguageFilterPredicate(
+                resolvePreferredLanguagesForRequest(getAuthenticatedUser())
+            );
+            $results = array_values(array_filter($results, $_langPred));
 
             /* Fire-and-forget search-query logging (#404). Silently no-ops
                if the table is missing (fresh installs before the schema
@@ -377,14 +596,93 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
-         * Get all songbooks
+         * Cross-book counterparts for one song (#807)
+         * Returns every other tblSongs row that shares this song's
+         * tblSongLinks.GroupId — same hymn in a different songbook.
+         * Distinct from translations (different language) and from the
+         * songbook-level parent link (#782 phase D).
+         * Parameters: id (required) — canonical SongId, e.g. CP-0001
          * ----------------------------------------------------------------- */
-        case 'songbooks':
-            sendJson(['songbooks' => $songData->getSongbooks()]);
+        case 'song_links':
+            $songId = isset($_GET['id']) ? trim($_GET['id']) : '';
+            if ($songId === '') {
+                sendJson(['error' => 'Song ID is required.'], 400);
+                break;
+            }
+            try {
+                $db = getDbMysqli();
+
+                /* Probe for the table — deployments that haven't run the
+                   migration get a clean empty list rather than a 500. */
+                $probe = $db->query(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                      WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME   = 'tblSongLinks' LIMIT 1"
+                );
+                $hasTable = $probe && $probe->fetch_row() !== null;
+                if ($probe) $probe->close();
+                if (!$hasTable) {
+                    sendJson(['groupId' => 0, 'songs' => []]);
+                    break;
+                }
+
+                $stmt = $db->prepare(
+                    'SELECT GroupId FROM tblSongLinks WHERE SongId = ? LIMIT 1'
+                );
+                $stmt->bind_param('s', $songId);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                $groupId = $row ? (int)$row['GroupId'] : 0;
+
+                $songs = [];
+                if ($groupId > 0) {
+                    $stmt = $db->prepare(
+                        'SELECT s.SongId       AS id,
+                                s.Title        AS title,
+                                s.Number       AS number,
+                                s.SongbookAbbr AS songbook,
+                                sb.Name        AS songbookName,
+                                s.Language     AS language,
+                                l.Note         AS note,
+                                l.Verified     AS verified
+                           FROM tblSongLinks l
+                           JOIN tblSongs s      ON s.SongId = l.SongId
+                           JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+                          WHERE l.GroupId = ?
+                            AND l.SongId  <> ?
+                          ORDER BY s.SongbookAbbr ASC, s.Number ASC'
+                    );
+                    $stmt->bind_param('is', $groupId, $songId);
+                    $stmt->execute();
+                    $songs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                    $stmt->close();
+                    foreach ($songs as &$s) {
+                        $s['number']   = ($s['number'] === null) ? null : (int)$s['number'];
+                        $s['verified'] = (bool)$s['verified'];
+                    }
+                    unset($s);
+                }
+                sendJson(['groupId' => $groupId, 'songs' => $songs]);
+            } catch (\Throwable $e) {
+                error_log('[api] song_links failed: ' . $e->getMessage());
+                sendJson(['error' => 'Failed to load cross-book counterparts.'], 500);
+            }
             break;
 
         /* -----------------------------------------------------------------
-         * Get songs list (with optional songbook filter)
+         * Get all songbooks (filtered by user's preferred languages, #736)
+         * ----------------------------------------------------------------- */
+        case 'songbooks':
+            $_books = $songData->getSongbooks();
+            $_langPred = makeLanguageFilterPredicate(
+                resolvePreferredLanguagesForRequest(getAuthenticatedUser())
+            );
+            sendJson(['songbooks' => array_values(array_filter($_books, $_langPred))]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Get songs list (with optional songbook filter, language filter #736)
          * Parameters: songbook (optional)
          * ----------------------------------------------------------------- */
         case 'songs':
@@ -394,6 +692,10 @@ if ($action !== null) {
             }
 
             $songs = $songData->getSongs($bookId);
+            $_langPred = makeLanguageFilterPredicate(
+                resolvePreferredLanguagesForRequest(getAuthenticatedUser())
+            );
+            $songs = array_values(array_filter($songs, $_langPred));
             sendJson([
                 'songs' => array_map('songToSummary', $songs),
                 'total' => count($songs),
@@ -520,26 +822,19 @@ if ($action !== null) {
          * Includes ETag for efficient browser caching.
          * ----------------------------------------------------------------- */
         case 'songs_json':
-            $jsonData = json_encode(
-                $songData->exportAsJson(),
-                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
-            );
-
-            /* ETag for conditional requests */
-            $etag = '"' . md5($jsonData) . '"';
-
-            header('Content-Type: application/json; charset=UTF-8');
-            header('Cache-Control: public, max-age=3600, must-revalidate');
-            header('ETag: ' . $etag);
-
-            /* Return 304 Not Modified if client cache is still valid */
-            $ifNoneMatch = $_SERVER['HTTP_IF_NONE_MATCH'] ?? '';
-            if ($ifNoneMatch === $etag) {
-                http_response_code(304);
-                exit;
-            }
-
-            echo $jsonData;
+            /* #932 — serve the precomputed corpus cache (raw or
+               .br/.gz precompressed sibling) instead of rebuilding
+               from MySQL. Replaces the #929/#931 512 MB ini_set
+               band-aid: the read path now allocates <2 MB instead of
+               ~140 MB, and brotli-capable clients receive ~850 KB on
+               the wire instead of ~6 MB. The cache is regenerated by
+               editor save_song, bulk-import flows, and the admin
+               regenerate-cache button. The 512 MB bump now lives
+               inside songsCacheRegenerate() so it only applies when
+               actually rebuilding. */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes'
+                . DIRECTORY_SEPARATOR . 'songs_cache.php';
+            songsCacheServe();
             break;
 
         /* -----------------------------------------------------------------
@@ -765,23 +1060,19 @@ if ($action !== null) {
                 }
             }
 
-            /* Rate limit registrations: max 3 per IP per hour. The
-               first prepared statement below is intentionally left
-               un-fetched — it's a no-op leftover from #236's original
-               implementation that the simpler fallback (count from
-               tblLoginAttempts) replaced; preserved so this commit
-               stays a pure mechanical mysqli conversion with no
-               behavioural change. */
+            /* Rate limit registrations: count recent attempts (any
+               outcome) from this IP. tblLoginAttempts is the rate-limit
+               source of truth.
+               Removed: a leftover SELECT that joined `tblUsers` to
+               `tblLoginAttempts.UserId` — `tblLoginAttempts` has no
+               `UserId` column (the table tracks attempts by IP, not by
+               user; see the schema). The query was documented as
+               "intentionally left un-fetched" but PHP 8.1+ throws on
+               execute() when columns are missing, so every
+               registration POST 500'd with `Unknown column 'UserId' in
+               'field list'`. The fallback below was already doing the
+               rate-limit work correctly. */
             $clientIp = $_SERVER['REMOTE_ADDR'] ?? '';
-            $stmt = $db->prepare(
-                'SELECT COUNT(*) FROM tblUsers
-                 WHERE CreatedAt > DATE_SUB(NOW(), INTERVAL 1 HOUR)
-                 AND Id IN (SELECT DISTINCT UserId FROM tblLoginAttempts WHERE IpAddress = ? AND Success = 1)'
-            );
-            $stmt->bind_param('s', $clientIp);
-            $stmt->execute();
-            $stmt->close();
-            /* Simpler fallback: count recent registrations by checking tblLoginAttempts */
             $stmt = $db->prepare(
                 'SELECT COUNT(*) FROM tblLoginAttempts
                  WHERE IpAddress = ? AND AttemptedAt > DATE_SUB(NOW(), INTERVAL 1 HOUR)'
@@ -802,6 +1093,8 @@ if ($action !== null) {
             $username    = mb_strtolower(trim($body['username'] ?? ''));
             $password    = $body['password'] ?? '';
             $displayName = trim($body['display_name'] ?? '');
+            /* Optional email — when present we attempt verification (#898). */
+            $regEmail    = mb_strtolower(trim((string)($body['email'] ?? '')));
 
             /* Validate inputs */
             if (strlen($username) < 3 || !preg_match('/^[a-z0-9_.\-]+$/', $username)) {
@@ -814,6 +1107,10 @@ if ($action !== null) {
             }
             if (strlen($password) > 128) {
                 sendJson(['error' => 'Password must not exceed 128 characters.'], 400);
+                break;
+            }
+            if ($regEmail !== '' && !filter_var($regEmail, FILTER_VALIDATE_EMAIL)) {
+                sendJson(['error' => 'Email address is not valid.'], 400);
                 break;
             }
             if ($displayName === '') {
@@ -845,8 +1142,11 @@ if ($action !== null) {
 
             $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
             $displayTrimmed = mb_substr($displayName, 0, 100);
-            $stmt = $db->prepare('INSERT INTO tblUsers (Username, PasswordHash, DisplayName, Role) VALUES (?, ?, ?, ?)');
-            $stmt->bind_param('ssss', $username, $hash, $displayTrimmed, $role);
+            /* Email column is NOT NULL DEFAULT ''; insert an explicit
+               empty string when the optional email was omitted. (#898) */
+            $emailToStore = $regEmail;
+            $stmt = $db->prepare('INSERT INTO tblUsers (Username, Email, PasswordHash, DisplayName, Role) VALUES (?, ?, ?, ?, ?)');
+            $stmt->bind_param('sssss', $username, $emailToStore, $hash, $displayTrimmed, $role);
             $stmt->execute();
             $userId = (int)$db->insert_id;
             $stmt->close();
@@ -877,20 +1177,69 @@ if ($action !== null) {
                     'username'     => $username,
                     'display_name' => $displayName,
                     'role'         => $role,
+                    'has_email'    => $regEmail !== '',
                     'token_prefix' => substr(hash('sha256', $token), 0, 12),
                 ],
                 'success',
                 $userId
             );
 
+            /* Email verification (#898). Optional: caller may not have
+               provided an email. Best-effort: a verification failure
+               does not abort the registration — the account is
+               already created and the user has a working session. We
+               return verification status in the response so the
+               client can render "we sent a verification email" or
+               not, accurately. */
+            $verificationSent     = false;
+            $verificationProvider = 'none';
+            if ($regEmail !== '') {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'EmailService.php';
+                if (EmailService::isConfigured()) {
+                    $verifyData = generateEmailVerificationToken($userId);
+                    if ($verifyData !== null) {
+                        $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+                        $host   = $_SERVER['HTTP_HOST'] ?? 'ihymns.app';
+                        $verifyLink = $scheme . '://' . $host . '/login?verify_token=' . rawurlencode((string)$verifyData['token']);
+                        $sendResult = EmailService::sendTemplate('email-verification', $regEmail, [
+                            'link'         => $verifyLink,
+                            'expiresInMin' => 1440,
+                            'displayName'  => $displayName,
+                        ]);
+                        $verificationSent     = $sendResult->ok;
+                        $verificationProvider = $sendResult->provider;
+                        logActivity(
+                            'auth.email_verification_request',
+                            'user',
+                            (string)$userId,
+                            [
+                                'email_ok'       => $sendResult->ok,
+                                'email_provider' => $sendResult->provider,
+                                'token_prefix'   => substr(hash('sha256', (string)$verifyData['token']), 0, 12),
+                            ],
+                            $sendResult->ok ? 'success' : 'failure',
+                            $userId
+                        );
+                    }
+                }
+            }
+
             sendJson([
                 'token' => $token,
                 'user'  => [
-                    'id'           => $userId,
-                    'username'     => $username,
-                    'display_name' => $displayName,
-                    'role'         => $role,
+                    'id'              => $userId,
+                    'username'        => $username,
+                    'display_name'    => $displayName,
+                    'email'           => $regEmail,
+                    'email_verified'  => false,
+                    'role'            => $role,
+                    'avatar_service'  => null,   /* #616 — fresh registration inherits project default */
                 ],
+                /* Honest reporting (#898) — the client uses these to
+                   decide whether to show "check your email" UI. */
+                'verification_email_sent'     => $verificationSent,
+                'verification_email_provider' => $verificationProvider,
             ], 201);
             break;
 
@@ -944,7 +1293,19 @@ if ($action !== null) {
                 break;
             }
 
-            $stmt = $db->prepare('SELECT Id, Username, PasswordHash, DisplayName, Role, IsActive FROM tblUsers WHERE Username = ?');
+            /* AvatarService (#616) only included when the column exists
+               so a partly-migrated install can still log users in. */
+            $hasAvatarSvcCol = false;
+            $colCheck = $db->query(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblUsers'
+                    AND COLUMN_NAME  = 'AvatarService' LIMIT 1"
+            );
+            if ($colCheck && $colCheck->fetch_row() !== null) { $hasAvatarSvcCol = true; }
+            if ($colCheck) { $colCheck->close(); }
+            $avatarSvcSel = $hasAvatarSvcCol ? ', AvatarService' : ', NULL AS AvatarService';
+            $stmt = $db->prepare("SELECT Id, Username, PasswordHash, DisplayName, Role, IsActive {$avatarSvcSel} FROM tblUsers WHERE Username = ?");
             $stmt->bind_param('s', $username);
             $stmt->execute();
             $user = $stmt->get_result()->fetch_assoc();
@@ -1042,10 +1403,11 @@ if ($action !== null) {
             sendJson([
                 'token' => $token,
                 'user'  => [
-                    'id'           => (int)$user['Id'],
-                    'username'     => $user['Username'],
-                    'display_name' => $user['DisplayName'],
-                    'role'         => $user['Role'],
+                    'id'             => (int)$user['Id'],
+                    'username'       => $user['Username'],
+                    'display_name'   => $user['DisplayName'],
+                    'role'           => $user['Role'],
+                    'avatar_service' => $user['AvatarService'] ?? null,   /* #616 */
                 ],
             ]);
             break;
@@ -1107,10 +1469,11 @@ if ($action !== null) {
 
             sendJson([
                 'user' => [
-                    'id'           => $authUser['Id'],
-                    'username'     => $authUser['Username'],
-                    'display_name' => $authUser['DisplayName'],
-                    'role'         => $authUser['Role'],
+                    'id'             => $authUser['Id'],
+                    'username'       => $authUser['Username'],
+                    'display_name'   => $authUser['DisplayName'],
+                    'role'           => $authUser['Role'],
+                    'avatar_service' => $authUser['AvatarService'] ?? null,   /* #616 */
                 ],
             ]);
             break;
@@ -1379,11 +1742,41 @@ if ($action !== null) {
 
             $result = generatePasswordResetToken($input);
 
-            /* Always return success to prevent user enumeration.
-             * The reset token is logged server-side only.
-             * TODO: Deliver token via email in production. */
-            if ($result) {
-                error_log('[iHymns] Password reset token generated for user lookup: ' . $input);
+            /* Always return 200 to prevent username/email enumeration
+               (#898 preserves this contract). When we DO have a hit
+               we deliver the email via EmailService; failure is
+               logged to tblActivityLog but still returned as 200 so
+               an attacker can't tell whether the email exists from
+               the response shape alone. The user-visible failure
+               surface is the password-reset page itself: the link
+               either lands and works, or it doesn't because the email
+               never arrived (admins can verify via the activity log). */
+            if ($result && (string)($result['email'] ?? '') !== '') {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'EmailService.php';
+                $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+                $host   = $_SERVER['HTTP_HOST'] ?? 'ihymns.app';
+                $resetLink = $scheme . '://' . $host . '/login?reset_token=' . rawurlencode((string)$result['token']);
+                $sendResult = EmailService::sendTemplate('password-reset', (string)$result['email'], [
+                    'link'         => $resetLink,
+                    'expiresInMin' => 60,
+                    'username'     => (string)($result['username'] ?? ''),
+                ]);
+                logActivity(
+                    'auth.password_reset_request',
+                    'user',
+                    (string)($result['user_id'] ?? ''),
+                    [
+                        'lookup'         => $input,
+                        'email_ok'       => $sendResult->ok,
+                        'email_provider' => $sendResult->provider,
+                        /* token never logged; only its sha256 prefix as
+                           a debug handle for cross-correlating with
+                           the email.send row above. */
+                        'token_prefix'   => substr(hash('sha256', (string)$result['token']), 0, 12),
+                    ],
+                    $sendResult->ok ? 'success' : 'failure',
+                    isset($result['user_id']) ? (int)$result['user_id'] : null
+                );
             }
             sendJson([
                 'ok'      => true,
@@ -1423,6 +1816,60 @@ if ($action !== null) {
             } else {
                 sendJson(['error' => 'Invalid or expired reset token.'], 400);
             }
+            break;
+
+        /* -----------------------------------------------------------------
+         * Verify a user's email address via the verification token (#898)
+         *
+         * GET / POST: ?action=auth_verify_email&token=<48-char hex>
+         * On success flips tblUsers.EmailVerified 0 -> 1.
+         * Always returns a generic message — token invalidity is logged
+         * to tblActivityLog so we don't leak which case happened.
+         * ----------------------------------------------------------------- */
+        case 'auth_verify_email':
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+
+            $verifyToken = '';
+            if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+                $rawBody = file_get_contents('php://input');
+                $body    = json_decode($rawBody, true);
+                $verifyToken = trim((string)($body['token'] ?? ''));
+            } else {
+                $verifyToken = trim((string)($_GET['token'] ?? ''));
+            }
+
+            if ($verifyToken === '') {
+                sendJson(['error' => 'Verification token required.'], 400);
+                break;
+            }
+
+            $consumed = consumeEmailVerificationToken($verifyToken);
+            if ($consumed === null) {
+                logActivity(
+                    'auth.email_verification',
+                    'user',
+                    '',
+                    ['reason' => 'invalid_or_expired_token',
+                     'token_prefix' => substr(hash('sha256', $verifyToken), 0, 12)],
+                    'failure'
+                );
+                sendJson(['error' => 'Invalid or expired verification token.'], 400);
+                break;
+            }
+
+            logActivity(
+                'auth.email_verification',
+                'user',
+                (string)$consumed['userId'],
+                ['method' => 'token'],
+                'success',
+                (int)$consumed['userId']
+            );
+            sendJson([
+                'ok'      => true,
+                'message' => 'Email verified successfully.',
+                'user_id' => (int)$consumed['userId'],
+            ]);
             break;
 
         /* =================================================================
@@ -1501,30 +1948,50 @@ if ($action !== null) {
                 break;
             }
 
-            /* TODO: Send the email with the magic link and code.
-             * The magic link URL format: https://ihymns.app/login?token=<token>
-             * The code: <6-digit code>
-             * Until email delivery is implemented, log for development. */
-            error_log(sprintf(
-                '[iHymns] Email login requested for %s — Code: %s (expires in 10 min)',
-                $requestEmail, $result['code']
-            ));
+            /* Deliver the magic link + 6-digit code via EmailService (#898).
+               Pre-#898 this path wrote the code to error_log and lied
+               to the client with a 200. We now send for real and only
+               return 200 when delivery succeeded. The raw token / code
+               never enter PHP error_log. */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'EmailService.php';
+            $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+            $host   = $_SERVER['HTTP_HOST'] ?? 'ihymns.app';
+            $magicLink = $scheme . '://' . $host . '/login?token=' . rawurlencode((string)$result['token']);
+            $sendResult = EmailService::sendTemplate('magic-link-login', $requestEmail, [
+                'code'         => (string)$result['code'],
+                'link'         => $magicLink,
+                'expiresInMin' => 10,
+            ]);
 
             /* Audit (#535). Token + code are NOT logged per privacy
                policy; only their hash prefix as a debug handle and
                the email so admins can correlate "did the email
-               actually go out". */
+               actually go out". A dedicated email.send row is also
+               written by EmailService — this row continues to record
+               the auth-side context. */
             logActivity(
                 'auth.login_email_request',
                 'user',
                 (string)($result['userId'] ?? ''),
                 [
-                    'email'        => $requestEmail,
-                    'token_prefix' => isset($result['token']) ? substr(hash('sha256', (string)$result['token']), 0, 12) : null,
+                    'email'          => $requestEmail,
+                    'token_prefix'   => isset($result['token']) ? substr(hash('sha256', (string)$result['token']), 0, 12) : null,
+                    'email_ok'       => $sendResult->ok,
+                    'email_provider' => $sendResult->provider,
                 ],
-                'success',
+                $sendResult->ok ? 'success' : 'failure',
                 isset($result['userId']) ? (int)$result['userId'] : null
             );
+
+            if (!$sendResult->ok) {
+                /* Per #898 acceptance: must NOT return a fake 200 when
+                   delivery failed. The token row stays in
+                   tblEmailLoginTokens (will expire in 10 min) but the
+                   user gets an honest error so they don't sit waiting
+                   for a mail that's never arriving. */
+                sendJson(['error' => 'Email delivery failed. Please contact an administrator.'], 500);
+                break;
+            }
 
             sendJson([
                 'ok'      => true,
@@ -1918,20 +2385,195 @@ if ($action !== null) {
 
         /* -----------------------------------------------------------------
          * Get all available languages
+         *
+         * After #738 the catalogue contains every IANA language subtag
+         * (~8,000 rows). The picker still needs the most-common ones
+         * to surface first, so we sort by:
+         *   1. Scope: macrolanguages (zh, ar, fa, ms, …) before
+         *      individual / collection / private-use / special.
+         *   2. Name length: short names ("Spanish") before long ones
+         *      ("Spanish Sign Language") so the common form wins.
+         *   3. Name alphabetic for everything else.
+         *
+         * The Scope column was added by #738; older deployments may
+         * not have it yet, so we probe and fall back to plain
+         * alphabetic sort if absent.
          * ----------------------------------------------------------------- */
         case 'languages':
             $db = getDbMysqli();
-            $stmt = $db->prepare(
-                'SELECT Code AS code, Name AS name, NativeName AS nativeName,
-                        TextDirection AS textDirection
-                 FROM tblLanguages
-                 WHERE IsActive = 1
-                 ORDER BY Name ASC'
-            );
+            /* Probe Scope column once — pre-#738 deployments fall
+               back to a plain alphabetic ORDER BY. */
+            $hasScope = false;
+            try {
+                $probe = $db->prepare(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                      WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME = 'tblLanguages'
+                        AND COLUMN_NAME = 'Scope' LIMIT 1"
+                );
+                $probe->execute();
+                $hasScope = $probe->get_result()->fetch_row() !== null;
+                $probe->close();
+            } catch (\Throwable $_e) { /* probe failed → no Scope */ }
+
+            if ($hasScope) {
+                $sql = "SELECT Code AS code, Name AS name, NativeName AS nativeName,
+                               TextDirection AS textDirection, Scope AS scope
+                          FROM tblLanguages
+                         WHERE IsActive = 1
+                         ORDER BY (Scope = 'macrolanguage') DESC,
+                                  CHAR_LENGTH(Name) ASC,
+                                  Name ASC";
+            } else {
+                $sql = "SELECT Code AS code, Name AS name, NativeName AS nativeName,
+                               TextDirection AS textDirection
+                          FROM tblLanguages
+                         WHERE IsActive = 1
+                         ORDER BY Name ASC";
+            }
+            $stmt = $db->prepare($sql);
             $stmt->execute();
             $languages = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
             $stmt->close();
             sendJson(['languages' => $languages]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Get all available IETF BCP 47 scripts (#681 / #682, renamed
+         * source table in #738)
+         *
+         * Mirrors `action=languages`: returns the full active list of
+         * ISO 15924 script codes from tblLanguageScripts so native
+         * clients (Apple / Android / FireOS) can render the same
+         * composite IETF picker the web admin already uses. The
+         * admin-only `action=script_search` typeahead on
+         * /manage/songbooks? is the prefix-search variant; this
+         * endpoint is a one-shot dump suitable for caching client-side.
+         * Probes BOTH the new and legacy table names so a deployment
+         * that hasn't applied #738 yet still serves results.
+         * Pre-migration: empty list with a `note` rather than a 500.
+         * ----------------------------------------------------------------- */
+        case 'scripts':
+            $db = getDbMysqli();
+            $tableName = '';
+            try {
+                foreach (['tblLanguageScripts', 'tblScripts'] as $candidate) {
+                    $probe = $db->prepare(
+                        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1"
+                    );
+                    $probe->bind_param('s', $candidate);
+                    $probe->execute();
+                    $found = $probe->get_result()->fetch_row() !== null;
+                    $probe->close();
+                    if ($found) { $tableName = $candidate; break; }
+                }
+            } catch (\Throwable $_e) { /* probe failure → empty list */ }
+
+            if ($tableName === '') {
+                sendJson([
+                    'scripts' => [],
+                    'note'    => 'tblLanguageScripts not yet created — run /manage/setup-database',
+                ]);
+                break;
+            }
+
+            /* Identifier from the allowlisted probe — never user input. */
+            $stmt = $db->prepare(
+                "SELECT Code AS code, Name AS name, NativeName AS nativeName
+                 FROM {$tableName}
+                 WHERE IsActive = 1
+                 ORDER BY Name ASC"
+            );
+            $stmt->execute();
+            $scripts = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+            sendJson(['scripts' => $scripts]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Get all available IETF BCP 47 regions (#681 / #682)
+         *
+         * Same shape as `action=scripts` for tblRegions — ISO 3166-1
+         * alpha-2 codes plus M.49 numeric area codes (e.g. 419 = Latin
+         * America & Caribbean). The list is bigger (~255 entries) so
+         * native clients usually fetch it once at first launch and
+         * cache. Pre-migration: empty list with a `note`.
+         * ----------------------------------------------------------------- */
+        case 'regions':
+            $db = getDbMysqli();
+            $hasTable = false;
+            try {
+                $probe = $db->prepare(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblRegions' LIMIT 1"
+                );
+                $probe->execute();
+                $hasTable = $probe->get_result()->fetch_row() !== null;
+                $probe->close();
+            } catch (\Throwable $_e) { /* probe failure → empty list */ }
+
+            if (!$hasTable) {
+                sendJson([
+                    'regions' => [],
+                    'note'    => 'tblRegions not yet created — run /manage/setup-database',
+                ]);
+                break;
+            }
+
+            $stmt = $db->prepare(
+                'SELECT Code AS code, Name AS name
+                 FROM tblRegions
+                 WHERE IsActive = 1
+                 ORDER BY Name ASC'
+            );
+            $stmt->execute();
+            $regions = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+            sendJson(['regions' => $regions]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Get all available IETF BCP 47 language variants (#738)
+         *
+         * Same shape as `action=scripts` / `action=regions` for
+         * tblLanguageVariants — IANA variant subtags (5-8 chars,
+         * e.g. `1996` for German post-1996 orthography, `fonipa` for
+         * IPA phonetics, `valencia` for Valencian). Used as the
+         * optional fourth subtag in an IETF BCP 47 language tag.
+         * Pre-migration: empty list with a `note`.
+         * ----------------------------------------------------------------- */
+        case 'variants':
+            $db = getDbMysqli();
+            $hasTable = false;
+            try {
+                $probe = $db->prepare(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblLanguageVariants' LIMIT 1"
+                );
+                $probe->execute();
+                $hasTable = $probe->get_result()->fetch_row() !== null;
+                $probe->close();
+            } catch (\Throwable $_e) { /* probe failure → empty list */ }
+
+            if (!$hasTable) {
+                sendJson([
+                    'variants' => [],
+                    'note'     => 'tblLanguageVariants not yet created — run /manage/setup-database',
+                ]);
+                break;
+            }
+
+            $stmt = $db->prepare(
+                'SELECT Code AS code, Name AS name
+                 FROM tblLanguageVariants
+                 WHERE IsActive = 1
+                 ORDER BY Name ASC'
+            );
+            $stmt->execute();
+            $variants = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+            sendJson(['variants' => $variants]);
             break;
 
         /* -----------------------------------------------------------------
@@ -2029,6 +2671,137 @@ if ($action !== null) {
                 }
             }
             $stmt->close();
+
+            /* #940 — Works-graph translations. Two songs that sit anywhere
+               in the same Work's tree (ancestor, descendant, sibling at any
+               depth) and carry a different language are translations of
+               each other. The Works graph is rooted by ISWC where available
+               (#840), so this catches translations that haven't been
+               explicitly linked via tblSongTranslations. Schema-probed —
+               pre-#840 deployments silently skip. */
+            try {
+                $wprobe = $db->query(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                      WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME = 'tblWorkSongs' LIMIT 1"
+                );
+                $hasWorks = $wprobe && $wprobe->fetch_row() !== null;
+                if ($wprobe) $wprobe->close();
+            } catch (\Throwable $_e) { $hasWorks = false; }
+
+            if ($hasWorks) {
+                /* Find this song's Work memberships, then walk to the
+                   tree root (ParentWorkId IS NULL), then walk down to
+                   collect every member song. We do this in one CTE-free
+                   query with three steps to keep MySQL 5.7 compatibility. */
+                $stmt = $db->prepare('SELECT WorkId FROM tblWorkSongs WHERE SongId = ?');
+                $stmt->bind_param('s', $translationSongId);
+                $stmt->execute();
+                $directWorkIds = array_column(
+                    $stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'WorkId'
+                );
+                $stmt->close();
+
+                /* Walk to root for each direct Work, collecting the
+                   ancestor chain. Bounded depth (10) so a malformed
+                   self-cycle can't infinite-loop. */
+                $rootWorkIds = [];
+                foreach ($directWorkIds as $wid) {
+                    $cursor = (int)$wid;
+                    $depth = 0;
+                    while ($cursor > 0 && $depth < 10) {
+                        $stmt = $db->prepare('SELECT ParentWorkId FROM tblWorks WHERE Id = ?');
+                        $stmt->bind_param('i', $cursor);
+                        $stmt->execute();
+                        $row = $stmt->get_result()->fetch_assoc();
+                        $stmt->close();
+                        if (!$row) break;
+                        if ($row['ParentWorkId'] === null) {
+                            $rootWorkIds[$cursor] = true;
+                            break;
+                        }
+                        $cursor = (int)$row['ParentWorkId'];
+                        $depth++;
+                    }
+                }
+
+                /* Walk down from each root to collect every descendant.
+                   Iterative BFS so a deep tree doesn't blow the stack. */
+                $descendantWorkIds = [];
+                $frontier = array_keys($rootWorkIds);
+                while (!empty($frontier)) {
+                    foreach ($frontier as $f) {
+                        $descendantWorkIds[(int)$f] = true;
+                    }
+                    $placeholders = implode(',', array_fill(0, count($frontier), '?'));
+                    $types = str_repeat('i', count($frontier));
+                    $stmt = $db->prepare(
+                        "SELECT Id FROM tblWorks WHERE ParentWorkId IN ($placeholders)"
+                    );
+                    $stmt->bind_param($types, ...$frontier);
+                    $stmt->execute();
+                    $next = array_column(
+                        $stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id'
+                    );
+                    $stmt->close();
+                    /* Filter out already-visited so a cycle (which
+                       shouldn't happen but isn't schema-prevented)
+                       doesn't loop. */
+                    $frontier = array_values(array_filter(
+                        $next,
+                        fn($n) => !isset($descendantWorkIds[(int)$n])
+                    ));
+                }
+
+                /* Pull every member song of the tree, joining for
+                   display fields + language tag. */
+                if (!empty($descendantWorkIds)) {
+                    $allWorkIds = array_keys($descendantWorkIds);
+                    $placeholders = implode(',', array_fill(0, count($allWorkIds), '?'));
+                    $types = str_repeat('i', count($allWorkIds));
+                    $stmt = $db->prepare(
+                        "SELECT s.SongId      AS songId,
+                                s.Language    AS language,
+                                s.Title       AS title,
+                                s.Number      AS number,
+                                l.Name        AS languageName,
+                                l.NativeName  AS languageNativeName
+                           FROM tblWorkSongs ws
+                           JOIN tblSongs s ON s.SongId = ws.SongId
+                           LEFT JOIN tblLanguages l ON l.Code = s.Language
+                          WHERE ws.WorkId IN ($placeholders)"
+                    );
+                    $stmt->bind_param($types, ...$allWorkIds);
+                    $stmt->execute();
+                    $currentLang = '';
+                    /* Find the current song's own language to filter
+                       out same-language Works members (they're not
+                       translations — they're the same hymn in the
+                       same language, possibly different songbooks). */
+                    foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $row) {
+                        if ((string)$row['songId'] === $translationSongId) {
+                            $currentLang = (string)$row['language'];
+                            break;
+                        }
+                    }
+                    /* Re-fetch to walk all rows (the MYSQLI result is
+                       single-pass and was consumed by the lang lookup). */
+                    $stmt->execute();
+                    foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $row) {
+                        $sid = (string)$row['songId'];
+                        if (!empty($seen[$sid])) continue;
+                        if ($sid === $translationSongId) continue;
+                        if ((string)$row['language'] === $currentLang) continue;
+                        $row['translator'] = '';
+                        $row['verified']   = false;
+                        $row['number']     = (int)$row['number'];
+                        $row['source']     = 'works_graph';
+                        $seen[$sid] = true;
+                        $translations[] = $row;
+                    }
+                    $stmt->close();
+                }
+            }
 
             sendJson(['translations' => $translations, 'sourceId' => $translationSongId]);
             break;
@@ -2131,6 +2904,86 @@ if ($action !== null) {
             ]);
             break;
 
+        /* -----------------------------------------------------------------
+         * Distinct primary language subtags actually present in the
+         * catalogue (#776). Returns the union of:
+         *   - tblSongbooks.Language primary subtag
+         *   - tblSongs.Language primary subtag
+         * The two-source union mirrors the home-page filter partial
+         * (includes/partials/songbook-language-filter.php) so the
+         * settings widget and the home filter expose the same chip set.
+         *
+         * Lightweight by design — the settings filter previously hit
+         * /api?action=songbooks and got back the full row payload
+         * (KB to MB depending on catalogue size). This response is
+         * a few dozen bytes and is cacheable for 5 minutes since
+         * subtags rarely change.
+         *
+         * Response: { subtags: ['en', 'es', 'fr', ...] }
+         *           (lowercase, sorted, de-duplicated)
+         * ----------------------------------------------------------------- */
+        case 'catalogue_language_subtags':
+            $db = getDbMysqli();
+            $subtags = [];
+
+            /* Source 1 — tblSongbooks.Language. Primary subtag only. */
+            try {
+                $res = $db->query(
+                    "SELECT DISTINCT LOWER(SUBSTRING_INDEX(Language, '-', 1)) AS sub
+                       FROM tblSongbooks
+                      WHERE Language IS NOT NULL AND Language <> ''"
+                );
+                if ($res) {
+                    while ($r = $res->fetch_row()) {
+                        $sub = (string)$r[0];
+                        if (preg_match('/^[a-z]{2,3}$/', $sub)) {
+                            $subtags[$sub] = true;
+                        }
+                    }
+                    $res->close();
+                }
+            } catch (\Throwable $_e) { /* best-effort */ }
+
+            /* Source 2 — tblSongs.Language. Probe column existence so
+               a pre-#681 deployment doesn't 500. */
+            try {
+                $probe = $db->prepare(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                      WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME   = 'tblSongs'
+                        AND COLUMN_NAME  = 'Language' LIMIT 1"
+                );
+                $probe->execute();
+                $hasLangCol = $probe->get_result()->fetch_row() !== null;
+                $probe->close();
+                if ($hasLangCol) {
+                    $res = $db->query(
+                        "SELECT DISTINCT LOWER(SUBSTRING_INDEX(Language, '-', 1)) AS sub
+                           FROM tblSongs
+                          WHERE Language IS NOT NULL AND Language <> ''"
+                    );
+                    if ($res) {
+                        while ($r = $res->fetch_row()) {
+                            $sub = (string)$r[0];
+                            if (preg_match('/^[a-z]{2,3}$/', $sub)) {
+                                $subtags[$sub] = true;
+                            }
+                        }
+                        $res->close();
+                    }
+                }
+            } catch (\Throwable $_e) { /* best-effort */ }
+
+            $list = array_keys($subtags);
+            sort($list);
+
+            /* Cache for 5 min (subtag set rarely changes). The Vary
+               header is conservative — same result for every visitor
+               regardless of auth state. */
+            header('Cache-Control: public, max-age=300');
+            sendJson(['subtags' => $list]);
+            break;
+
         /* =================================================================
          * USER PROFILE UPDATE
          * ================================================================= */
@@ -2181,12 +3034,86 @@ if ($action !== null) {
             sendJson([
                 'ok'   => true,
                 'user' => [
-                    'id'           => $authUser['Id'],
-                    'username'     => $authUser['Username'],
-                    'display_name' => $newDisplayName,
-                    'email'        => $newEmail,
-                    'role'         => $authUser['Role'],
+                    'id'             => $authUser['Id'],
+                    'username'       => $authUser['Username'],
+                    'display_name'   => $newDisplayName,
+                    'email'          => $newEmail,
+                    'role'           => $authUser['Role'],
+                    'avatar_service' => $authUser['AvatarService'] ?? null,   /* #616 */
                 ],
+            ]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Update the authenticated user's avatar-service preference (#616).
+         *
+         * POST body (JSON): { "avatar_service": "gravatar"|"libravatar"
+         *                                     |"dicebear"|"none"|null }
+         * NULL clears the override (= inherit project default).
+         * Requires: Authorization: Bearer <token>
+         * ----------------------------------------------------------------- */
+        case 'auth_update_avatar_service':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+            $svc  = $body['avatar_service'] ?? null;
+
+            /* Allowed: NULL ('inherit project default') or one of the
+               recognised resolver names. Mirrors USER_AVATAR_SERVICES
+               in includes/avatar.php — kept hand-typed here so the API
+               doesn't require the helper to be loaded. */
+            $allowed = ['gravatar', 'libravatar', 'dicebear', 'none'];
+            if ($svc !== null) {
+                if (!is_string($svc)) {
+                    sendJson(['error' => 'avatar_service must be a string or null.'], 400);
+                    break;
+                }
+                $svc = strtolower(trim($svc));
+                if ($svc === '') {
+                    $svc = null;
+                } elseif (!in_array($svc, $allowed, true)) {
+                    sendJson(['error' => 'avatar_service must be one of: ' . implode(', ', $allowed) . ', or null.'], 400);
+                    break;
+                }
+            }
+
+            $db = getDbMysqli();
+            $colCheck = $db->query(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblUsers'
+                    AND COLUMN_NAME  = 'AvatarService' LIMIT 1"
+            );
+            $hasCol = ($colCheck && $colCheck->fetch_row() !== null);
+            if ($colCheck) { $colCheck->close(); }
+            if (!$hasCol) {
+                sendJson([
+                    'error' => 'Avatar-service preference not yet enabled — administrator must apply migrate-user-avatar-service first.',
+                ], 503);
+                break;
+            }
+
+            $stmt = $db->prepare(
+                'UPDATE tblUsers SET AvatarService = ?, UpdatedAt = NOW() WHERE Id = ?'
+            );
+            $authUserId = (int)$authUser['Id'];
+            $stmt->bind_param('si', $svc, $authUserId);
+            $stmt->execute();
+            $stmt->close();
+
+            sendJson([
+                'ok'             => true,
+                'avatar_service' => $svc,
             ]);
             break;
 
@@ -3404,17 +4331,25 @@ if ($action !== null) {
                    title + songbook metadata the home-page renderer needs.
                    Songs that have been deleted since they were viewed
                    drop out of the list naturally (#546). */
+                /* Language filter (#736). s.Language pulled into the
+                   SELECT so the in-memory predicate can read it
+                   without a second round-trip. The filter is
+                   applied AFTER the LIMIT here, so the visible
+                   set may be < limit when the catalogue spans
+                   languages the user has filtered out — that's an
+                   acceptable trade-off for a "popular" list. */
                 $stmt = $db->prepare(
                     'SELECT h.SongId        AS songId,
                             s.Title         AS title,
                             s.Number        AS number,
                             s.SongbookAbbr  AS songbook,
                             s.SongbookName  AS songbookName,
+                            s.Language      AS language,
                             COUNT(*)        AS views
                      FROM tblSongHistory h
                      JOIN tblSongs s ON s.SongId = h.SongId
                      WHERE h.ViewedAt > DATE_SUB(NOW(), INTERVAL ? DAY)
-                     GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, s.SongbookName
+                     GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, s.SongbookName, s.Language
                      ORDER BY views DESC
                      LIMIT ?'
                 );
@@ -3427,6 +4362,11 @@ if ($action !== null) {
                     $ps['views'] = (int)$ps['views'];
                 }
                 unset($ps);
+
+                $_langPred = makeLanguageFilterPredicate(
+                    resolvePreferredLanguagesForRequest(getAuthenticatedUser())
+                );
+                $songs = array_values(array_filter($songs, $_langPred));
 
                 sendJson(['songs' => $songs, 'period' => $period]);
             } catch (\Throwable $e) {
@@ -3470,11 +4410,12 @@ if ($action !== null) {
                             s.Number        AS number,
                             s.SongbookAbbr  AS songbook,
                             s.SongbookName  AS songbookName,
+                            s.Language      AS language,
                             MAX(h.ViewedAt) AS viewedAt
                      FROM tblSongHistory h
                      JOIN tblSongs s ON s.SongId = h.SongId
                      WHERE h.UserId = ?
-                     GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, s.SongbookName
+                     GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, s.SongbookName, s.Language
                      ORDER BY MAX(h.ViewedAt) DESC
                      LIMIT 50'
                 );
@@ -3483,6 +4424,12 @@ if ($action !== null) {
                 $stmt->execute();
                 $history = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
                 $stmt->close();
+                /* Language filter (#736) — apply in-memory after the
+                   LIMIT, same trade-off as popular_songs. */
+                $_langPred = makeLanguageFilterPredicate(
+                    resolvePreferredLanguagesForRequest($authUser)
+                );
+                $history = array_values(array_filter($history, $_langPred));
                 sendJson(['history' => $history]);
             } catch (\Throwable $e) {
                 error_log('[api/song_history] ' . $e->getMessage());
@@ -3506,7 +4453,18 @@ if ($action !== null) {
             $body = json_decode($rawBody, true);
             $viewSongId = trim($body['song_id'] ?? '');
 
-            if (!preg_match('/^[A-Za-z]+-\d+$/', $viewSongId)) {
+            /* Accept both the legacy <ABBREV>-<NUMBER> format
+               (e.g. HA-0520) AND the synthetic "song-<ts>-<rand>"
+               format used by songs created in non-official
+               songbooks where the per-songbook number is NULL
+               (#392 / PR #740). The old `^[A-Za-z]+-\d+$` regex
+               rejected the synthetic shape, which meant any view
+               of a newly-created Psalty/Misc song never landed
+               in tblSongHistory — and Recently Viewed on the home
+               page silently skipped them despite repeat visits.
+               Matches the same character class + length used
+               everywhere else SongId is validated. */
+            if (!preg_match('/^[A-Za-z0-9_-]{1,32}$/', $viewSongId)) {
                 sendJson(['error' => 'Invalid song ID.'], 400);
                 break;
             }
@@ -3740,6 +4698,148 @@ if ($action !== null) {
             $stmt->close();
 
             sendJson(['ok' => true]);
+            break;
+
+        /* =================================================================
+         * USER PREFERRED LANGUAGES (#736)
+         *
+         * Per-account persistence of the language-filter selection so a
+         * signed-in user's choice syncs across devices. Anonymous users
+         * keep using localStorage on the SPA side; the SPA can also pass
+         * the choice via the X-Preferred-Languages header on every fetch
+         * to get the same server-side filter as authenticated users
+         * (see resolvePreferredLanguagesForRequest() in language_filter.php).
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Get the authenticated user's saved preferred-language subtags
+         * Requires: Bearer token
+         *
+         * Response: { subtags: ["en","es"] }   (empty array = no filter)
+         * ----------------------------------------------------------------- */
+        case 'user_preferred_languages':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                /* Probe the column so a pre-#736 deployment returns
+                   an empty list rather than 500ing the request. */
+                $probe = $db->prepare(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                      WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME   = 'tblUsers'
+                        AND COLUMN_NAME  = 'PreferredLanguagesJson' LIMIT 1"
+                );
+                $probe->execute();
+                $hasCol = $probe->get_result()->fetch_row() !== null;
+                $probe->close();
+                if (!$hasCol) {
+                    sendJson([
+                        'subtags'          => [],
+                        'migration_needed' => true,
+                    ]);
+                    break;
+                }
+
+                $stmt = $db->prepare(
+                    'SELECT PreferredLanguagesJson FROM tblUsers WHERE Id = ?'
+                );
+                $authUserId = (int)$authUser['Id'];
+                $stmt->bind_param('i', $authUserId);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $raw = $row[0] ?? null;
+                $subtags = [];
+                if ($raw) {
+                    $decoded = json_decode($raw, true);
+                    if (is_array($decoded)) {
+                        $subtags = parsePreferredLanguageSubtags(
+                            implode(',', array_map('strval', $decoded))
+                        );
+                    }
+                }
+                sendJson(['subtags' => $subtags]);
+            } catch (\Throwable $e) {
+                error_log('[user_preferred_languages] ' . $e->getMessage());
+                sendJson(['error' => 'Could not load preferred languages.'], 500);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
+         * Save the authenticated user's preferred-language subtags
+         * POST body: { "subtags": ["en","es"] }   (empty array = no filter)
+         * Requires: Bearer token
+         *
+         * Server-side normalisation: invalid subtags are dropped, the
+         * list is lowercased, primary-subtag-only, and deduplicated
+         * (parsePreferredLanguageSubtags). Empty array clears the
+         * filter (returns the saved value as []).
+         * ----------------------------------------------------------------- */
+        case 'user_preferred_languages_save':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $rawList = $body['subtags'] ?? [];
+            if (!is_array($rawList)) {
+                sendJson(['error' => 'subtags must be an array.'], 400);
+                break;
+            }
+
+            /* Run through the canonical parser so the saved value is
+               always a clean primary-subtag list. Invalid entries
+               are dropped silently. */
+            $clean = parsePreferredLanguageSubtags(
+                implode(',', array_map('strval', $rawList))
+            );
+
+            try {
+                $db = getDbMysqli();
+                $probe = $db->prepare(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                      WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME   = 'tblUsers'
+                        AND COLUMN_NAME  = 'PreferredLanguagesJson' LIMIT 1"
+                );
+                $probe->execute();
+                $hasCol = $probe->get_result()->fetch_row() !== null;
+                $probe->close();
+                if (!$hasCol) {
+                    sendJson([
+                        'error'            => 'Migration not yet applied on this deployment.',
+                        'migration_needed' => true,
+                    ], 503);
+                    break;
+                }
+
+                /* Empty array → store NULL so the column reads as
+                   "no filter set" rather than "filter set to empty
+                   set" (which would mean "show nothing"). */
+                $store = empty($clean) ? null : json_encode(array_values($clean));
+                $stmt = $db->prepare(
+                    'UPDATE tblUsers SET PreferredLanguagesJson = ?, UpdatedAt = NOW() WHERE Id = ?'
+                );
+                $authUserId = (int)$authUser['Id'];
+                $stmt->bind_param('si', $store, $authUserId);
+                $stmt->execute();
+                $stmt->close();
+                sendJson(['ok' => true, 'subtags' => $clean]);
+            } catch (\Throwable $e) {
+                error_log('[user_preferred_languages_save] ' . $e->getMessage());
+                sendJson(['error' => 'Could not save preferred languages.'], 500);
+            }
             break;
 
         /* =================================================================
@@ -5284,7 +6384,18 @@ if ($action !== null) {
                 break;
             }
 
-            $body    = json_decode((string)file_get_contents('php://input'), true) ?? [];
+            /* Accept BOTH application/json AND application/x-www-form-urlencoded.
+               JS path uses JSON; the no-JS fallback (form action= attribute on
+               the /request page) submits form-encoded so it still works when
+               the page's <script type="module"> fails to load (#711). */
+            $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+            $isFormPost  = stripos($contentType, 'application/x-www-form-urlencoded') !== false
+                        || stripos($contentType, 'multipart/form-data')              !== false;
+            if ($isFormPost) {
+                $body = $_POST;
+            } else {
+                $body = json_decode((string)file_get_contents('php://input'), true) ?? [];
+            }
             $title   = trim((string)($body['title']    ?? ''));
             $book    = trim((string)($body['songbook'] ?? ''));
             $details = trim((string)($body['details']  ?? ''));
@@ -5292,22 +6403,41 @@ if ($action !== null) {
             $honey   = (string)($body['website']       ?? '');
             $ip      = $_SERVER['REMOTE_ADDR'] ?? '';
 
+            /* Helper that returns either JSON (JS path) or a 302 redirect to
+               /request?submitted=… (no-JS fallback). The redirect target shows
+               a server-rendered success banner so the user gets the same
+               feedback either way. (#711) */
+            $respondOk = function (int $trackingId) use ($isFormPost) {
+                if ($isFormPost) {
+                    header('Location: /request?submitted=1&id=' . $trackingId, true, 302);
+                    exit;
+                }
+                sendJson(['ok' => true, 'trackingId' => $trackingId]);
+            };
+            $respondErr = function (string $msg, int $code) use ($isFormPost) {
+                if ($isFormPost) {
+                    header('Location: /request?error=' . urlencode($msg), true, 302);
+                    exit;
+                }
+                sendJson(['error' => $msg], $code);
+            };
+
             /* Honeypot: real users leave this blank; bots fill every field. */
             if ($honey !== '') {
-                sendJson(['ok' => true, 'trackingId' => 0]); /* Silent success to not tip off the bot. */
+                $respondOk(0); /* Silent success to not tip off the bot. */
                 break;
             }
 
             if ($title === '') {
-                sendJson(['error' => 'A song title is required.'], 400);
+                $respondErr('A song title is required.', 400);
                 break;
             }
-            if (mb_strlen($title)   > 500)  { sendJson(['error' => 'Title too long.'],    400); break; }
-            if (mb_strlen($book)    > 100)  { sendJson(['error' => 'Songbook too long.'], 400); break; }
-            if (mb_strlen($details) > 2000) { sendJson(['error' => 'Details too long.'],  400); break; }
-            if (mb_strlen($email)   > 255)  { sendJson(['error' => 'Email too long.'],    400); break; }
+            if (mb_strlen($title)   > 500)  { $respondErr('Title too long.',    400); break; }
+            if (mb_strlen($book)    > 100)  { $respondErr('Songbook too long.', 400); break; }
+            if (mb_strlen($details) > 2000) { $respondErr('Details too long.',  400); break; }
+            if (mb_strlen($email)   > 255)  { $respondErr('Email too long.',    400); break; }
             if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
-                sendJson(['error' => 'Email address is not valid.'], 400);
+                $respondErr('Email address is not valid.', 400);
                 break;
             }
 
@@ -5323,7 +6453,7 @@ if ($action !== null) {
                 $row = $stmt->get_result()->fetch_row();
                 $stmt->close();
                 if ((int)($row[0] ?? 0) >= 5) {
-                    sendJson(['error' => 'You have submitted several requests recently. Please try again tomorrow.'], 429);
+                    $respondErr('You have submitted several requests recently. Please try again tomorrow.', 429);
                     break;
                 }
 
@@ -5331,10 +6461,15 @@ if ($action !== null) {
                 $authUser = getAuthenticatedUser();
                 $userId   = $authUser ? (int)$authUser['Id'] : null;
 
+                /* Status literal in single quotes — double quotes were
+                   used here originally and break under sql_mode='ANSI_QUOTES'
+                   where MySQL parses "pending" as a column reference rather
+                   than a string literal. Single quotes are the unambiguous
+                   form per SQL standard. (#711) */
                 $stmt = $db->prepare(
-                    'INSERT INTO tblSongRequests
+                    "INSERT INTO tblSongRequests
                         (Title, Songbook, Details, ContactEmail, UserId, IpAddress, Status)
-                     VALUES (?, ?, ?, ?, ?, ?, "pending")'
+                     VALUES (?, ?, ?, ?, ?, ?, 'pending')"
                 );
                 /* UserId(i nullable) — anonymous submissions OK. */
                 $stmt->bind_param('ssssis', $title, $book, $details, $email, $userId, $ip);
@@ -5353,11 +6488,11 @@ if ($action !== null) {
                     'authenticated'=> $userId !== null,
                 ]);
 
-                sendJson(['ok' => true, 'trackingId' => $trackingId]);
+                $respondOk($trackingId);
             } catch (\Throwable $e) {
                 error_log('[song_request_submit] ' . $e->getMessage());
                 logActivityError('song.request_submit', 'song_request', '', $e);
-                sendJson(['error' => 'Could not save your request. Please try again.'], 500);
+                $respondErr('Could not save your request. Please try again.', 500);
             }
             break;
 
@@ -5513,6 +6648,3978 @@ if ($action !== null) {
                 sendJson(['error' => 'Could not mark as read.'], 500);
             }
             break;
+
+        /* =================================================================
+         * SONGBOOKS — admin CRUD parity (#719 PR 2a)
+         *
+         * Mirrors the web-admin POST handlers in /manage/songbooks.php so
+         * native clients (Apple, Android, FireOS) can perform songbook
+         * curation without a webview. Field names are JSON-body snake_case
+         * to match the rest of /api.php; the underlying SQL writes the
+         * same column set as the web admin.
+         *
+         * Auth: admin / global_admin role only — same gate that grants the
+         * `manage_songbooks` entitlement (see includes/entitlements.php).
+         *
+         * Activity-log verb prefix is `api.admin.songbook.*` so a curator
+         * scanning /manage/activity-log can tell API-driven changes apart
+         * from web-UI changes (which still log under `songbook.*`).
+         *
+         * Validation lives in includes/songbook_validation.php — the same
+         * file the web admin uses. One source of truth for abbreviation,
+         * colour, and IETF BCP 47 language-tag rules.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: create a songbook
+         * POST body: {
+         *   abbreviation, name, display_order?, colour?,
+         *   is_official?, publisher?, publication_year?,
+         *   copyright?, affiliation?, language?,
+         *   website_url?, internet_archive_url?, wikipedia_url?,
+         *   wikidata_id?, oclc_number?, ocn_number?, lcp_number?,
+         *   isbn?, ark_id?, isni_id?, viaf_id?, lccn?, lc_class?
+         * }
+         * Empty colour triggers the auto-pick palette (#677). Conflict on
+         * duplicate abbreviation returns 409. Returns 201 + new id +
+         * resolved colour so the caller can render the badge immediately.
+         * ----------------------------------------------------------------- */
+        case 'admin_songbook_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+
+            $abbr     = trim((string)($body['abbreviation']  ?? ''));
+            $name     = trim((string)($body['name']          ?? ''));
+            $colour   = trim((string)($body['colour']        ?? ''));
+            $order    = (int)($body['display_order']         ?? 0);
+            $isOfficial = !empty($body['is_official']) ? 1 : 0;
+            $publisher  = trim((string)($body['publisher']        ?? '')) ?: null;
+            $pubYear    = trim((string)($body['publication_year'] ?? '')) ?: null;
+            $copyright  = trim((string)($body['copyright']        ?? '')) ?: null;
+            $affiliation= trim((string)($body['affiliation']      ?? '')) ?: null;
+
+            /* Optional language tag (#673 / #681). Cap to column width
+               (35 chars) before validating so a crafted-long tag can't
+               smuggle past the regex via mid-string truncation. */
+            $language   = trim((string)($body['language']         ?? '')) ?: null;
+            if ($language !== null) {
+                $language = mb_substr($language, 0, 35);
+                if ($e = validateSongbookBcp47($language)) {
+                    sendJson(['error' => $e], 400);
+                    break;
+                }
+            }
+
+            $websiteUrl   = trim((string)($body['website_url']         ?? '')) ?: null;
+            $iaUrl        = trim((string)($body['internet_archive_url']?? '')) ?: null;
+            $wikipediaUrl = trim((string)($body['wikipedia_url']       ?? '')) ?: null;
+            $wikidataId   = trim((string)($body['wikidata_id']         ?? '')) ?: null;
+            $oclcNumber   = trim((string)($body['oclc_number']         ?? '')) ?: null;
+            $ocnNumber    = trim((string)($body['ocn_number']          ?? '')) ?: null;
+            $lcpNumber    = trim((string)($body['lcp_number']          ?? '')) ?: null;
+            $isbn         = trim((string)($body['isbn']                ?? '')) ?: null;
+            $arkId        = trim((string)($body['ark_id']              ?? '')) ?: null;
+            $isniId       = trim((string)($body['isni_id']             ?? '')) ?: null;
+            $viafId       = trim((string)($body['viaf_id']             ?? '')) ?: null;
+            $lccn         = trim((string)($body['lccn']                ?? '')) ?: null;
+            $lcClass      = trim((string)($body['lc_class']            ?? '')) ?: null;
+
+            if ($e = validateSongbookAbbr($abbr)) {
+                sendJson(['error' => $e], 400);
+                break;
+            }
+            if ($name === '') {
+                sendJson(['error' => 'Name is required.'], 400);
+                break;
+            }
+            if ($e = validateSongbookColour($colour)) {
+                sendJson(['error' => $e], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+
+                /* Auto-colour fallback (#677) — palette helper lives in
+                   the manage tree because that's where the seed colours
+                   are documented. Lazy-loaded so the read paths above
+                   don't pay the include cost. */
+                if ($colour === '') {
+                    require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                               . 'includes'  . DIRECTORY_SEPARATOR . 'songbook-palette.php';
+                    $colour = pickAutoSongbookColour($db, $abbr);
+                }
+
+                $stmt = $db->prepare('SELECT Id FROM tblSongbooks WHERE Abbreviation = ?');
+                $stmt->bind_param('s', $abbr);
+                $stmt->execute();
+                $exists = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($exists) {
+                    sendJson(['error' => 'Abbreviation already exists.'], 409);
+                    break;
+                }
+
+                $stmt = $db->prepare(
+                    'INSERT INTO tblSongbooks
+                        (Abbreviation, Name, DisplayOrder, Colour,
+                         IsOfficial, Publisher, PublicationYear, Copyright, Affiliation,
+                         Language,
+                         WebsiteUrl, InternetArchiveUrl, WikipediaUrl, WikidataId,
+                         OclcNumber, OcnNumber, LcpNumber, Isbn, ArkId, IsniId,
+                         ViafId, Lccn, LcClass)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                             ?,
+                             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                );
+                /* 23-char type string mirrors the web admin save (#694
+                   regression check): ssis (Abbr,Name,Order,Colour) +
+                   isssss (IsOfficial,Publisher,Year,Copyright,Affiliation)
+                   + s (Language) + 13s (bibliographic identifiers). */
+                $orderInt = (int)($order ?: 0);
+                $stmt->bind_param(
+                    'ssisissssssssssssssssss',
+                    $abbr, $name, $orderInt, $colour,
+                    $isOfficial, $publisher, $pubYear, $copyright, $affiliation,
+                    $language,
+                    $websiteUrl, $iaUrl, $wikipediaUrl, $wikidataId,
+                    $oclcNumber, $ocnNumber, $lcpNumber, $isbn, $arkId, $isniId,
+                    $viafId, $lccn, $lcClass
+                );
+                $stmt->execute();
+                $newId = (int)$db->insert_id;
+                $stmt->close();
+
+                logActivity('api.admin.songbook.create', 'songbook', (string)$newId, [
+                    'abbreviation'    => $abbr,
+                    'name'            => $name,
+                    'display_order'   => $orderInt,
+                    'colour'          => $colour,
+                    'is_official'     => (bool)$isOfficial,
+                    'publisher'       => $publisher,
+                    'publication_year'=> $pubYear,
+                    'copyright'       => $copyright,
+                    'affiliation'     => $affiliation,
+                    'language'        => $language,
+                    'bibliographic'   => array_filter([
+                        'website_url'           => $websiteUrl,
+                        'internet_archive_url'  => $iaUrl,
+                        'wikipedia_url'         => $wikipediaUrl,
+                        'wikidata_id'           => $wikidataId,
+                        'oclc_number'           => $oclcNumber,
+                        'ocn_number'            => $ocnNumber,
+                        'lcp_number'            => $lcpNumber,
+                        'isbn'                  => $isbn,
+                        'ark_id'                => $arkId,
+                        'isni_id'               => $isniId,
+                        'viaf_id'               => $viafId,
+                        'lccn'                  => $lccn,
+                        'lc_class'              => $lcClass,
+                    ], fn($v) => $v !== null && $v !== ''),
+                ]);
+
+                /* Self-populate affiliation registry (#670). */
+                registerSongbookAffiliation($db, $affiliation);
+
+                sendJson([
+                    'ok'           => true,
+                    'id'           => $newId,
+                    'abbreviation' => $abbr,
+                    'colour'       => $colour,
+                ], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.songbook.create', 'songbook', '', $e, [
+                    'abbreviation' => $abbr,
+                ]);
+                error_log('[admin_songbook_create] ' . $e->getMessage());
+                sendJson(['error' => 'Could not create songbook.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: update a songbook
+         * POST body: {
+         *   id (required),
+         *   name, colour, display_order,
+         *   new_abbreviation? (rename — opt-in),
+         *   rename_song_refs? (cascade abbr to tblSongs.SongbookAbbr),
+         *   …same metadata fields as create
+         * }
+         * Returns 200 + ok + list of changed fields. The before/after rows
+         * are written to the activity log so the timeline reader sees
+         * exactly what the call mutated.
+         * ----------------------------------------------------------------- */
+        case 'admin_songbook_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+
+            $id          = (int)($body['id'] ?? 0);
+            if ($id <= 0) {
+                sendJson(['error' => 'Songbook id required.'], 400);
+                break;
+            }
+            $name        = trim((string)($body['name']         ?? ''));
+            $colour      = trim((string)($body['colour']       ?? ''));
+            $order       = (int)($body['display_order']        ?? 0);
+            $newAbbr     = trim((string)($body['new_abbreviation'] ?? ''));
+            $alsoRename  = !empty($body['rename_song_refs']);
+            $isOfficial  = !empty($body['is_official']) ? 1 : 0;
+            $publisher   = trim((string)($body['publisher']        ?? '')) ?: null;
+            $pubYear     = trim((string)($body['publication_year'] ?? '')) ?: null;
+            $copyright   = trim((string)($body['copyright']        ?? '')) ?: null;
+            $affiliation = trim((string)($body['affiliation']      ?? '')) ?: null;
+
+            $language    = trim((string)($body['language']         ?? '')) ?: null;
+            if ($language !== null) {
+                $language = mb_substr($language, 0, 35);
+                if ($e = validateSongbookBcp47($language)) {
+                    sendJson(['error' => $e], 400);
+                    break;
+                }
+            }
+
+            $websiteUrl   = trim((string)($body['website_url']         ?? '')) ?: null;
+            $iaUrl        = trim((string)($body['internet_archive_url']?? '')) ?: null;
+            $wikipediaUrl = trim((string)($body['wikipedia_url']       ?? '')) ?: null;
+            $wikidataId   = trim((string)($body['wikidata_id']         ?? '')) ?: null;
+            $oclcNumber   = trim((string)($body['oclc_number']         ?? '')) ?: null;
+            $ocnNumber    = trim((string)($body['ocn_number']          ?? '')) ?: null;
+            $lcpNumber    = trim((string)($body['lcp_number']          ?? '')) ?: null;
+            $isbn         = trim((string)($body['isbn']                ?? '')) ?: null;
+            $arkId        = trim((string)($body['ark_id']              ?? '')) ?: null;
+            $isniId       = trim((string)($body['isni_id']             ?? '')) ?: null;
+            $viafId       = trim((string)($body['viaf_id']             ?? '')) ?: null;
+            $lccn         = trim((string)($body['lccn']                ?? '')) ?: null;
+            $lcClass      = trim((string)($body['lc_class']            ?? '')) ?: null;
+
+            if ($name === '') {
+                sendJson(['error' => 'Name is required.'], 400);
+                break;
+            }
+            if ($e = validateSongbookColour($colour)) {
+                sendJson(['error' => $e], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+
+                /* Capture the full before-row for diff-aware audit logs (#535).
+                   Match the web admin's SELECT shape exactly so the diff key set
+                   stays consistent across both surfaces. */
+                $existing = $db->prepare(
+                    'SELECT Abbreviation, Name, DisplayOrder, Colour, IsOfficial,
+                            Publisher, PublicationYear, Copyright, Affiliation,
+                            Language,
+                            WebsiteUrl, InternetArchiveUrl, WikipediaUrl, WikidataId,
+                            OclcNumber, OcnNumber, LcpNumber, Isbn, ArkId, IsniId,
+                            ViafId, Lccn, LcClass
+                       FROM tblSongbooks WHERE Id = ?'
+                );
+                $existing->bind_param('i', $id);
+                $existing->execute();
+                $beforeRow = $existing->get_result()->fetch_assoc() ?: null;
+                $existing->close();
+                $oldAbbr = $beforeRow ? (string)$beforeRow['Abbreviation'] : '';
+                if ($oldAbbr === '') {
+                    sendJson(['error' => 'Songbook not found.'], 404);
+                    break;
+                }
+
+                $abbrChanged = $newAbbr !== '' && $newAbbr !== $oldAbbr;
+                if ($abbrChanged) {
+                    if ($e = validateSongbookAbbr($newAbbr)) {
+                        sendJson(['error' => $e], 400);
+                        break;
+                    }
+                    $dup = $db->prepare('SELECT Id FROM tblSongbooks WHERE Abbreviation = ? AND Id <> ?');
+                    $dup->bind_param('si', $newAbbr, $id);
+                    $dup->execute();
+                    $dupExists = $dup->get_result()->fetch_row() !== null;
+                    $dup->close();
+                    if ($dupExists) {
+                        sendJson(['error' => 'That abbreviation is already taken.'], 409);
+                        break;
+                    }
+                }
+
+                $db->begin_transaction();
+                try {
+                    $stmt = $db->prepare(
+                        'UPDATE tblSongbooks
+                            SET Name = ?, Colour = ?, DisplayOrder = ?,
+                                IsOfficial = ?, Publisher = ?,
+                                PublicationYear = ?, Copyright = ?, Affiliation = ?,
+                                Language = ?,
+                                WebsiteUrl = ?, InternetArchiveUrl = ?,
+                                WikipediaUrl = ?, WikidataId = ?,
+                                OclcNumber = ?, OcnNumber = ?, LcpNumber = ?,
+                                Isbn = ?, ArkId = ?, IsniId = ?,
+                                ViafId = ?, Lccn = ?, LcClass = ?
+                          WHERE Id = ?'
+                    );
+                    /* 23-char type string: ssi (Name,Colour,Order)
+                       + issss (IsOfficial,Publisher,Year,Copyright,Affiliation)
+                       + s (Language) + 13s (bibliographic) + i (Id). */
+                    $orderInt = (int)($order ?: 0);
+                    $stmt->bind_param(
+                        'ssiissssssssssssssssssi',
+                        $name, $colour, $orderInt,
+                        $isOfficial, $publisher, $pubYear, $copyright, $affiliation,
+                        $language,
+                        $websiteUrl, $iaUrl, $wikipediaUrl, $wikidataId,
+                        $oclcNumber, $ocnNumber, $lcpNumber, $isbn, $arkId, $isniId,
+                        $viafId, $lccn, $lcClass,
+                        $id
+                    );
+                    $stmt->execute();
+                    $stmt->close();
+
+                    if ($abbrChanged) {
+                        $stmt = $db->prepare('UPDATE tblSongbooks SET Abbreviation = ? WHERE Id = ?');
+                        $stmt->bind_param('si', $newAbbr, $id);
+                        $stmt->execute();
+                        $stmt->close();
+                        if ($alsoRename) {
+                            $stmt = $db->prepare('UPDATE tblSongs SET SongbookAbbr = ? WHERE SongbookAbbr = ?');
+                            $stmt->bind_param('ss', $newAbbr, $oldAbbr);
+                            $stmt->execute();
+                            $stmt->close();
+                        }
+                    }
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                /* Audit (#535) — narrow the row to the actually-changed
+                   fields so the timeline reader doesn't have to skim
+                   identical before/after pairs. */
+                $afterRow = [
+                    'Abbreviation'      => $abbrChanged ? $newAbbr : $oldAbbr,
+                    'Name'              => $name,
+                    'DisplayOrder'      => (int)($order ?: 0),
+                    'Colour'            => $colour,
+                    'IsOfficial'        => $isOfficial,
+                    'Publisher'         => $publisher,
+                    'PublicationYear'   => $pubYear,
+                    'Copyright'         => $copyright,
+                    'Affiliation'       => $affiliation,
+                    'Language'          => $language,
+                    'WebsiteUrl'        => $websiteUrl,
+                    'InternetArchiveUrl'=> $iaUrl,
+                    'WikipediaUrl'      => $wikipediaUrl,
+                    'WikidataId'        => $wikidataId,
+                    'OclcNumber'        => $oclcNumber,
+                    'OcnNumber'         => $ocnNumber,
+                    'LcpNumber'         => $lcpNumber,
+                    'Isbn'              => $isbn,
+                    'ArkId'             => $arkId,
+                    'IsniId'            => $isniId,
+                    'ViafId'            => $viafId,
+                    'Lccn'              => $lccn,
+                    'LcClass'           => $lcClass,
+                ];
+                $changed = [];
+                foreach ($afterRow as $k => $v) {
+                    if (!array_key_exists($k, $beforeRow ?? [])) continue;
+                    if ((string)$beforeRow[$k] !== (string)$v) $changed[] = $k;
+                }
+                logActivity('api.admin.songbook.edit', 'songbook', (string)$id, [
+                    'fields'             => $changed,
+                    'before'             => array_intersect_key($beforeRow, array_flip($changed)),
+                    'after'              => array_intersect_key($afterRow,  array_flip($changed)),
+                    'songs_renamed_too'  => $alsoRename && $abbrChanged,
+                ]);
+
+                if (in_array('Affiliation', $changed, true)) {
+                    registerSongbookAffiliation($db, $affiliation);
+                }
+
+                sendJson([
+                    'ok'             => true,
+                    'id'             => $id,
+                    'abbreviation'   => $abbrChanged ? $newAbbr : $oldAbbr,
+                    'fields_changed' => $changed,
+                    'songs_renamed'  => $alsoRename && $abbrChanged,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.songbook.edit', 'songbook', (string)$id, $e);
+                error_log('[admin_songbook_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update songbook.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete an empty songbook
+         * POST body: { id }
+         * Refuses if any song still references the abbreviation — the
+         * caller must reassign or use admin_songbook_delete_cascade.
+         * Returns 422 (cannot delete) when the dependency check fails so
+         * native UIs can distinguish "wrong id" (404) from "not safe yet".
+         * ----------------------------------------------------------------- */
+        case 'admin_songbook_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) {
+                sendJson(['error' => 'Songbook id required.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+
+                $stmt = $db->prepare('SELECT Abbreviation FROM tblSongbooks WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $abbr = (string)($row[0] ?? '');
+                if ($abbr === '') {
+                    sendJson(['error' => 'Songbook not found.'], 404);
+                    break;
+                }
+
+                $stmt = $db->prepare('SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?');
+                $stmt->bind_param('s', $abbr);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $songCount = (int)($row[0] ?? 0);
+                if ($songCount > 0) {
+                    sendJson([
+                        'error'        => "Cannot delete '{$abbr}': {$songCount} song(s) still reference it.",
+                        'song_count'   => $songCount,
+                        'abbreviation' => $abbr,
+                        'hint'         => 'Reassign the songs OR call admin_songbook_delete_cascade.',
+                    ], 422);
+                    break;
+                }
+
+                $stmt = $db->prepare('DELETE FROM tblSongbooks WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.admin.songbook.delete', 'songbook', (string)$id, [
+                    'abbreviation' => $abbr,
+                ]);
+
+                sendJson([
+                    'ok'           => true,
+                    'id'           => $id,
+                    'abbreviation' => $abbr,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.songbook.delete', 'songbook', (string)$id, $e);
+                error_log('[admin_songbook_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete songbook.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: cascade delete (songbook + every song + every credit /
+         * tag / chord / translation that referenced those songs)
+         * POST body: { id, confirm_abbreviation }
+         * Server-side typed-confirmation gate mirrors the web admin
+         * defence-in-depth check (#706). Admin / global_admin only.
+         * Returns 200 + song_count so the caller can render an honest
+         * "deleted N songs" toast.
+         * ----------------------------------------------------------------- */
+        case 'admin_songbook_delete_cascade': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) {
+                sendJson(['error' => 'Songbook id required.'], 400);
+                break;
+            }
+            $typed = trim((string)($body['confirm_abbreviation'] ?? ''));
+
+            try {
+                $db = getDbMysqli();
+
+                $stmt = $db->prepare('SELECT Abbreviation FROM tblSongbooks WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $abbr = (string)($row[0] ?? '');
+                if ($abbr === '') {
+                    sendJson(['error' => 'Songbook not found.'], 404);
+                    break;
+                }
+                if ($typed !== $abbr) {
+                    sendJson([
+                        'error' => "Cascade delete cancelled — confirm_abbreviation must equal the songbook abbreviation '{$abbr}' exactly.",
+                    ], 400);
+                    break;
+                }
+
+                $stmt = $db->prepare('SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?');
+                $stmt->bind_param('s', $abbr);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $songCount = (int)($row[0] ?? 0);
+
+                $db->begin_transaction();
+                try {
+                    /* DELETE the songs — cascades to every credit / tag /
+                       chord / translation / artist / request-resolved
+                       reference / etc. via the FK ON DELETE CASCADE rules.
+                       The FK on SongbookAbbr is ON DELETE RESTRICT so we
+                       MUST delete the songs first; then the songbook row
+                       goes cleanly. */
+                    $stmt = $db->prepare('DELETE FROM tblSongs WHERE SongbookAbbr = ?');
+                    $stmt->bind_param('s', $abbr);
+                    $stmt->execute();
+                    $stmt->close();
+
+                    $stmt = $db->prepare('DELETE FROM tblSongbooks WHERE Id = ?');
+                    $stmt->bind_param('i', $id);
+                    $stmt->execute();
+                    $stmt->close();
+
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                logActivity('api.admin.songbook.delete_cascade', 'songbook', (string)$id, [
+                    'abbreviation' => $abbr,
+                    'song_count'   => $songCount,
+                ]);
+
+                sendJson([
+                    'ok'           => true,
+                    'id'           => $id,
+                    'abbreviation' => $abbr,
+                    'song_count'   => $songCount,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.songbook.delete_cascade', 'songbook', (string)$id, $e);
+                error_log('[admin_songbook_delete_cascade] ' . $e->getMessage());
+                sendJson(['error' => 'Could not cascade-delete songbook.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: bulk reorder
+         * POST body: { display_order: { "<id>": <int>, ... } }
+         * Single transaction; one activity-log row for the bulk op.
+         * ----------------------------------------------------------------- */
+        case 'admin_songbooks_reorder': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orders = $body['display_order'] ?? null;
+            if (!is_array($orders) || empty($orders)) {
+                sendJson(['error' => 'display_order map (id => order) required.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $db->begin_transaction();
+                $count = 0;
+                try {
+                    $stmt = $db->prepare('UPDATE tblSongbooks SET DisplayOrder = ? WHERE Id = ?');
+                    foreach ($orders as $rowId => $value) {
+                        $valueInt = (int)$value;
+                        $idInt    = (int)$rowId;
+                        if ($idInt <= 0) continue;
+                        $stmt->bind_param('ii', $valueInt, $idInt);
+                        $stmt->execute();
+                        $count++;
+                    }
+                    $stmt->close();
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                logActivity('api.admin.songbook.reorder', 'songbook', '', [
+                    'count' => $count,
+                    'order' => array_map(fn($v) => (int)$v, (array)$orders),
+                ]);
+
+                sendJson(['ok' => true, 'count' => $count]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.songbook.reorder', 'songbook', '', $e);
+                error_log('[admin_songbooks_reorder] ' . $e->getMessage());
+                sendJson(['error' => 'Could not reorder songbooks.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: auto-colour fill (NULL/blank colours only)
+         * POST body: {}
+         * Walks tblSongbooks; rows without a valid #RRGGBB get a
+         * freshly-picked palette colour. Existing values left alone.
+         * Admin / global_admin only.
+         * ----------------------------------------------------------------- */
+        case 'admin_songbooks_auto_colour_fill': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                           . 'includes'  . DIRECTORY_SEPARATOR . 'songbook-palette.php';
+
+                $stmt = $db->prepare('SELECT Id, Abbreviation, Colour FROM tblSongbooks ORDER BY Id');
+                $stmt->execute();
+                $books = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+
+                $db->begin_transaction();
+                $changed = 0;
+                try {
+                    $up = $db->prepare('UPDATE tblSongbooks SET Colour = ? WHERE Id = ?');
+                    foreach ($books as $b) {
+                        $existing = trim((string)($b['Colour'] ?? ''));
+                        if (preg_match('/^#[0-9A-Fa-f]{6}$/', $existing)) continue;
+                        $newColour = pickAutoSongbookColour($db, (string)$b['Abbreviation']);
+                        $bookId    = (int)$b['Id'];
+                        $up->bind_param('si', $newColour, $bookId);
+                        $up->execute();
+                        $changed++;
+                    }
+                    $up->close();
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                logActivity('api.admin.songbook.auto_colour_fill', 'songbook', '', [
+                    'count' => $changed,
+                    'mode'  => 'fill',
+                ]);
+
+                sendJson(['ok' => true, 'changed' => $changed, 'mode' => 'fill']);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.songbook.auto_colour_fill', 'songbook', '', $e);
+                error_log('[admin_songbooks_auto_colour_fill] ' . $e->getMessage());
+                sendJson(['error' => 'Could not auto-fill colours.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: auto-colour reassign (every row gets a fresh colour)
+         * POST body: { confirm_phrase: "REASSIGN ALL" }
+         * Destructive — overwrites every Colour. Server-side phrase gate
+         * mirrors the web admin's defence-in-depth check. Admin /
+         * global_admin only.
+         * ----------------------------------------------------------------- */
+        case 'admin_songbooks_auto_colour_reassign': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body  = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $typed = trim((string)($body['confirm_phrase'] ?? ''));
+            if ($typed !== 'REASSIGN ALL') {
+                sendJson(['error' => 'Reassign-all needs confirm_phrase="REASSIGN ALL".'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                           . 'includes'  . DIRECTORY_SEPARATOR . 'songbook-palette.php';
+
+                $stmt = $db->prepare('SELECT Id, Abbreviation FROM tblSongbooks ORDER BY Id');
+                $stmt->execute();
+                $books = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+
+                $db->begin_transaction();
+                $changed = 0;
+                try {
+                    $up = $db->prepare('UPDATE tblSongbooks SET Colour = ? WHERE Id = ?');
+                    foreach ($books as $b) {
+                        $newColour = pickAutoSongbookColour($db, (string)$b['Abbreviation']);
+                        $bookId    = (int)$b['Id'];
+                        $up->bind_param('si', $newColour, $bookId);
+                        $up->execute();
+                        $changed++;
+                    }
+                    $up->close();
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                logActivity('api.admin.songbook.auto_colour_reassign', 'songbook', '', [
+                    'count' => $changed,
+                    'mode'  => 'reassign',
+                ]);
+
+                sendJson(['ok' => true, 'changed' => $changed, 'mode' => 'reassign']);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.songbook.auto_colour_reassign', 'songbook', '', $e);
+                error_log('[admin_songbooks_auto_colour_reassign] ' . $e->getMessage());
+                sendJson(['error' => 'Could not reassign colours.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * USERS — admin CRUD parity (#719 PR 2b)
+         *
+         * Mirrors the web-admin POST handlers in /manage/users.php so
+         * native clients can perform user curation without a webview.
+         * The actual mutation goes through the helpers in
+         * manage/includes/auth.php (createUser / updateUserRole / etc.)
+         * — those helpers already write the canonical activity-log
+         * row (`user.create`, `auth.role_change`, ...). The endpoints
+         * here only add a parallel `api.admin.user.*` row on the catch
+         * path so failures surface under the API surface prefix in
+         * /manage/activity-log.
+         *
+         * Hierarchy gates mirror users.php exactly: an admin can't
+         * promote above their own level, can't act on a peer or
+         * superior unless they are global_admin, and can't act on
+         * themselves for the destructive verbs.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: create a user
+         * POST body: { username, password, display_name?, role?, email? }
+         * Defaults: role=editor, display_name=username, email=''.
+         * Returns 201 + new user id.
+         * ----------------------------------------------------------------- */
+        case 'admin_user_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                       . 'includes'  . DIRECTORY_SEPARATOR . 'auth.php';
+
+            $body        = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $username    = trim((string)($body['username']     ?? ''));
+            $password    = (string)($body['password']          ?? '');
+            $displayName = trim((string)($body['display_name'] ?? '')) ?: $username;
+            $role        = trim((string)($body['role']         ?? 'editor'));
+            $email       = trim((string)($body['email']        ?? ''));
+
+            if (mb_strlen($username) < 3) {
+                sendJson(['error' => 'Username must be at least 3 characters.'], 400);
+                break;
+            }
+            if (strlen($password) < 8) {
+                sendJson(['error' => 'Password must be at least 8 characters.'], 400);
+                break;
+            }
+            if (!in_array($role, allRoles(), true)) {
+                sendJson(['error' => 'Invalid role.'], 400);
+                break;
+            }
+            /* Hierarchy gate (mirrors users.php). Only global_admin can
+               assign global_admin; nobody can promote above their own
+               level. */
+            $actingRole = (string)$authUser['Role'];
+            if ($role === 'global_admin' && $actingRole !== 'global_admin') {
+                sendJson(['error' => 'Only Global Admin can assign the Global Admin role.'], 403);
+                break;
+            }
+            if (roleLevel($role) > roleLevel($actingRole)) {
+                sendJson(['error' => 'Cannot assign a role higher than your own.'], 403);
+                break;
+            }
+
+            try {
+                $newUserId = createUser($username, $password, $displayName, $role, $email);
+                sendJson([
+                    'ok'       => true,
+                    'id'       => (int)$newUserId,
+                    'username' => $username,
+                    'role'     => $role,
+                ], 201);
+            } catch (\RuntimeException $e) {
+                /* createUser throws on duplicate username — surface as
+                   409 Conflict so native UIs can render a sensible
+                   "username already taken" prompt. */
+                $status = stripos($e->getMessage(), 'already exists') !== false ? 409 : 400;
+                sendJson(['error' => $e->getMessage()], $status);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.user.create', 'user', '', $e, ['username' => $username]);
+                error_log('[admin_user_create] ' . $e->getMessage());
+                sendJson(['error' => 'Could not create user.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: update a user's profile (display name + email)
+         * POST body: { user_id, display_name, email? }
+         * Hierarchy: an admin can edit themselves; otherwise the target
+         * must be strictly below the acting user's role level (or the
+         * acting user is global_admin).
+         * ----------------------------------------------------------------- */
+        case 'admin_user_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                       . 'includes'  . DIRECTORY_SEPARATOR . 'auth.php';
+
+            $body        = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $targetId    = (int)($body['user_id']      ?? 0);
+            $displayName = trim((string)($body['display_name'] ?? ''));
+            $email       = trim((string)($body['email']        ?? ''));
+
+            if ($targetId <= 0) {
+                sendJson(['error' => 'user_id required.'], 400);
+                break;
+            }
+            if ($displayName === '') {
+                sendJson(['error' => 'Display name cannot be empty.'], 400);
+                break;
+            }
+
+            $target = getUserById($targetId);
+            if (!$target) {
+                sendJson(['error' => 'User not found.'], 404);
+                break;
+            }
+            $actingId   = (int)$authUser['Id'];
+            $actingRole = (string)$authUser['Role'];
+            if (roleLevel((string)$target['role']) >= roleLevel($actingRole)
+                && $actingRole !== 'global_admin'
+                && $targetId !== $actingId) {
+                sendJson(['error' => 'Cannot edit a user at or above your role level.'], 403);
+                break;
+            }
+
+            try {
+                updateUserProfile($targetId, $displayName, $email);
+                sendJson(['ok' => true, 'id' => $targetId, 'username' => (string)$target['username']]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.user.update', 'user', (string)$targetId, $e);
+                error_log('[admin_user_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update profile.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: rename a user (username change)
+         * POST body: { user_id, new_username }
+         * renameUser() returns false + error string on shape / dup
+         * conflicts; the API turns those into 400/409.
+         * ----------------------------------------------------------------- */
+        case 'admin_user_rename': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                       . 'includes'  . DIRECTORY_SEPARATOR . 'auth.php';
+
+            $body        = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $targetId    = (int)($body['user_id']      ?? 0);
+            $newUsername = trim((string)($body['new_username'] ?? ''));
+
+            if ($targetId <= 0) {
+                sendJson(['error' => 'user_id required.'], 400);
+                break;
+            }
+
+            $target = getUserById($targetId);
+            if (!$target) {
+                sendJson(['error' => 'User not found.'], 404);
+                break;
+            }
+            $actingId   = (int)$authUser['Id'];
+            $actingRole = (string)$authUser['Role'];
+            if (roleLevel((string)$target['role']) >= roleLevel($actingRole)
+                && $actingRole !== 'global_admin'
+                && $targetId !== $actingId) {
+                sendJson(['error' => 'Cannot rename a user at or above your role level.'], 403);
+                break;
+            }
+
+            try {
+                $renameError = null;
+                $ok = renameUser($targetId, $newUsername, $renameError);
+                if (!$ok) {
+                    /* renameUser sets $renameError to the user-friendly
+                       reason. "already" → conflict, anything else → 400. */
+                    $msg    = $renameError ?? 'Could not rename user.';
+                    $status = stripos($msg, 'already') !== false ? 409 : 400;
+                    sendJson(['error' => $msg], $status);
+                    break;
+                }
+                sendJson([
+                    'ok'           => true,
+                    'id'           => $targetId,
+                    'old_username' => (string)$target['username'],
+                    'new_username' => mb_strtolower(trim($newUsername)),
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.user.rename', 'user', (string)$targetId, $e);
+                error_log('[admin_user_rename] ' . $e->getMessage());
+                sendJson(['error' => 'Could not rename user.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: change a user's role
+         * POST body: { user_id, new_role }
+         * updateUserRole() throws on hierarchy violations — turned
+         * into 403 (when the message is about the role gate) or 400.
+         * ----------------------------------------------------------------- */
+        case 'admin_user_role_change': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                       . 'includes'  . DIRECTORY_SEPARATOR . 'auth.php';
+
+            $body     = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $targetId = (int)($body['user_id']  ?? 0);
+            $newRole  = trim((string)($body['new_role'] ?? ''));
+
+            if ($targetId <= 0 || $newRole === '') {
+                sendJson(['error' => 'user_id and new_role required.'], 400);
+                break;
+            }
+
+            try {
+                /* The helper takes the same shape getCurrentUser()
+                   produces — lowercase keys. Build that from the
+                   bearer-token user. */
+                $actingShape = [
+                    'id'   => (int)$authUser['Id'],
+                    'role' => (string)$authUser['Role'],
+                ];
+                updateUserRole($targetId, $newRole, $actingShape);
+                sendJson(['ok' => true, 'id' => $targetId, 'new_role' => $newRole]);
+            } catch (\RuntimeException $e) {
+                $msg = $e->getMessage();
+                $isHierarchy = (stripos($msg, 'cannot')      !== false)
+                            || (stripos($msg, 'only global') !== false);
+                $status = $isHierarchy ? 403 : (stripos($msg, 'not found') !== false ? 404 : 400);
+                sendJson(['error' => $msg], $status);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.user.role_change', 'user', (string)$targetId, $e);
+                error_log('[admin_user_role_change] ' . $e->getMessage());
+                sendJson(['error' => 'Could not change role.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: toggle active state
+         * POST body: { user_id }
+         * Cannot deactivate self. Cannot act on a peer or superior
+         * unless global_admin.
+         * Returns 200 + ok + new is_active so the caller can render
+         * the toggled state without re-reading.
+         * ----------------------------------------------------------------- */
+        case 'admin_user_toggle_active': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                       . 'includes'  . DIRECTORY_SEPARATOR . 'auth.php';
+
+            $body     = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $targetId = (int)($body['user_id'] ?? 0);
+            if ($targetId <= 0) {
+                sendJson(['error' => 'user_id required.'], 400);
+                break;
+            }
+
+            $target = getUserById($targetId);
+            if (!$target) {
+                sendJson(['error' => 'User not found.'], 404);
+                break;
+            }
+            $actingId   = (int)$authUser['Id'];
+            $actingRole = (string)$authUser['Role'];
+            if ($targetId === $actingId) {
+                sendJson(['error' => 'Cannot deactivate your own account.'], 403);
+                break;
+            }
+            if (roleLevel((string)$target['role']) >= roleLevel($actingRole)
+                && $actingRole !== 'global_admin') {
+                sendJson(['error' => 'Cannot modify a user at or above your role level.'], 403);
+                break;
+            }
+
+            try {
+                $newState = !((bool)$target['is_active']);
+                setUserActive($targetId, $newState);
+                sendJson([
+                    'ok'        => true,
+                    'id'        => $targetId,
+                    'is_active' => $newState,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.user.toggle_active', 'user', (string)$targetId, $e);
+                error_log('[admin_user_toggle_active] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update active state.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: reset a user's password
+         * POST body: { user_id, new_password }
+         * Self-reset is permitted (mirrors users.php). Otherwise the
+         * target must be below the acting user's role level (or the
+         * acting user is global_admin).
+         * ----------------------------------------------------------------- */
+        case 'admin_user_password_reset': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                       . 'includes'  . DIRECTORY_SEPARATOR . 'auth.php';
+
+            $body        = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $targetId    = (int)($body['user_id']      ?? 0);
+            $newPassword = (string)($body['new_password'] ?? '');
+
+            if ($targetId <= 0) {
+                sendJson(['error' => 'user_id required.'], 400);
+                break;
+            }
+            if (strlen($newPassword) < 8) {
+                sendJson(['error' => 'Password must be at least 8 characters.'], 400);
+                break;
+            }
+
+            $target = getUserById($targetId);
+            if (!$target) {
+                sendJson(['error' => 'User not found.'], 404);
+                break;
+            }
+            $actingId   = (int)$authUser['Id'];
+            $actingRole = (string)$authUser['Role'];
+            if (roleLevel((string)$target['role']) >= roleLevel($actingRole)
+                && $actingRole !== 'global_admin'
+                && $targetId !== $actingId) {
+                sendJson(['error' => 'Cannot reset password for a user at or above your role level.'], 403);
+                break;
+            }
+
+            try {
+                changeUserPassword($targetId, $newPassword);
+
+                /* Notify the target user that their password was reset
+                   by an admin (#898 acceptance criteria). Self-resets
+                   skip the notification — the user just typed the new
+                   password, sending themselves a "your password was
+                   reset" email is noise. Cross-user resets always
+                   notify, regardless of provider availability: when
+                   no provider is configured we still log the attempt
+                   to tblActivityLog so admins can see the gap. */
+                $emailNotified = false;
+                $emailProvider = 'none';
+                if ($targetId !== $actingId && (string)($target['email'] ?? '') !== '') {
+                    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'EmailService.php';
+                    if (EmailService::isConfigured()) {
+                        $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+                        $host   = $_SERVER['HTTP_HOST'] ?? 'ihymns.app';
+                        $loginUrl = $scheme . '://' . $host . '/login';
+                        $sendResult = EmailService::sendTemplate('admin-password-reset', (string)$target['email'], [
+                            'username'    => (string)$target['username'],
+                            'displayName' => (string)($target['display_name'] ?? ''),
+                            'loginUrl'    => $loginUrl,
+                            'adminName'   => (string)($authUser['DisplayName'] ?? $authUser['Username'] ?? 'an iHymns administrator'),
+                        ]);
+                        $emailNotified = $sendResult->ok;
+                        $emailProvider = $sendResult->provider;
+                    }
+                }
+
+                sendJson([
+                    'ok'             => true,
+                    'id'             => $targetId,
+                    'username'       => (string)$target['username'],
+                    'email_notified' => $emailNotified,
+                    'email_provider' => $emailProvider,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.user.password_reset', 'user', (string)$targetId, $e);
+                /* error_log without secret leakage — the exception
+                   message can carry SQL fragments but never the
+                   plaintext password; getMessage() is safe here. */
+                error_log('[admin_user_password_reset] ' . $e->getMessage());
+                sendJson(['error' => 'Could not reset password.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete a user
+         * POST body: { user_id }
+         * Cannot delete self. Cannot delete a peer or superior unless
+         * global_admin. Hard delete via the helper — the helper handles
+         * audit + cascading FK semantics.
+         * ----------------------------------------------------------------- */
+        case 'admin_user_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                       . 'includes'  . DIRECTORY_SEPARATOR . 'auth.php';
+
+            $body     = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $targetId = (int)($body['user_id'] ?? 0);
+            if ($targetId <= 0) {
+                sendJson(['error' => 'user_id required.'], 400);
+                break;
+            }
+
+            $target = getUserById($targetId);
+            if (!$target) {
+                sendJson(['error' => 'User not found.'], 404);
+                break;
+            }
+            $actingId   = (int)$authUser['Id'];
+            $actingRole = (string)$authUser['Role'];
+            if ($targetId === $actingId) {
+                sendJson(['error' => 'Cannot delete your own account.'], 403);
+                break;
+            }
+            if (roleLevel((string)$target['role']) >= roleLevel($actingRole)
+                && $actingRole !== 'global_admin') {
+                sendJson(['error' => 'Cannot delete a user at or above your role level.'], 403);
+                break;
+            }
+
+            try {
+                deleteUser($targetId);
+                sendJson(['ok' => true, 'id' => $targetId, 'username' => (string)$target['username']]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.user.delete', 'user', (string)$targetId, $e);
+                error_log('[admin_user_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete user.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * USER GROUPS — admin CRUD parity (#719 PR 2b)
+         *
+         * Mirrors /manage/groups.php. Group rows live in tblUserGroups;
+         * membership lives in tblUsers.GroupId (one group per user).
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: create a user group
+         * POST body: {
+         *   name, description?,
+         *   access_alpha?, access_beta?, access_rc?, access_rtw?
+         * }
+         * Returns 201 + new group id.
+         * ----------------------------------------------------------------- */
+        case 'admin_group_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $name = trim((string)($body['name']        ?? ''));
+            $desc = trim((string)($body['description'] ?? ''));
+            $aA   = !empty($body['access_alpha']) ? 1 : 0;
+            $aB   = !empty($body['access_beta'])  ? 1 : 0;
+            $aR   = !empty($body['access_rc'])    ? 1 : 0;
+            $aW   = !empty($body['access_rtw'])   ? 1 : 0;
+
+            if ($name === '') {
+                sendJson(['error' => 'Name is required.'], 400);
+                break;
+            }
+            if (strlen($name) > 100) {
+                sendJson(['error' => 'Name must be 100 characters or fewer.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('SELECT Id FROM tblUserGroups WHERE Name = ?');
+                $stmt->bind_param('s', $name);
+                $stmt->execute();
+                $exists = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($exists) {
+                    sendJson(['error' => 'A group with that name already exists.'], 409);
+                    break;
+                }
+
+                $stmt = $db->prepare(
+                    'INSERT INTO tblUserGroups (Name, Description, AccessAlpha, AccessBeta, AccessRc, AccessRtw)
+                     VALUES (?, ?, ?, ?, ?, ?)'
+                );
+                $stmt->bind_param('ssiiii', $name, $desc, $aA, $aB, $aR, $aW);
+                $stmt->execute();
+                $newId = (int)$db->insert_id;
+                $stmt->close();
+
+                logActivity('api.admin.group.create', 'group', (string)$newId, [
+                    'name'          => $name,
+                    'description'   => $desc,
+                    'access_alpha'  => (bool)$aA,
+                    'access_beta'   => (bool)$aB,
+                    'access_rc'     => (bool)$aR,
+                    'access_rtw'    => (bool)$aW,
+                ]);
+
+                sendJson(['ok' => true, 'id' => $newId, 'name' => $name], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.group.create', 'group', '', $e, ['name' => $name]);
+                error_log('[admin_group_create] ' . $e->getMessage());
+                sendJson(['error' => 'Could not create group.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: update a user group
+         * POST body: {
+         *   id, name, description?,
+         *   access_alpha?, access_beta?, access_rc?, access_rtw?
+         * }
+         * ----------------------------------------------------------------- */
+        case 'admin_group_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id']   ?? 0);
+            $name = trim((string)($body['name']        ?? ''));
+            $desc = trim((string)($body['description'] ?? ''));
+            $aA   = !empty($body['access_alpha']) ? 1 : 0;
+            $aB   = !empty($body['access_beta'])  ? 1 : 0;
+            $aR   = !empty($body['access_rc'])    ? 1 : 0;
+            $aW   = !empty($body['access_rtw'])   ? 1 : 0;
+
+            if ($id <= 0) {
+                sendJson(['error' => 'Group id required.'], 400);
+                break;
+            }
+            if ($name === '') {
+                sendJson(['error' => 'Name is required.'], 400);
+                break;
+            }
+            if (strlen($name) > 100) {
+                sendJson(['error' => 'Name must be 100 characters or fewer.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                /* Confirm the row exists so we can return 404 cleanly
+                   instead of a successful no-op. */
+                $stmt = $db->prepare('SELECT Id FROM tblUserGroups WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $found = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if (!$found) {
+                    sendJson(['error' => 'Group not found.'], 404);
+                    break;
+                }
+
+                $stmt = $db->prepare('SELECT Id FROM tblUserGroups WHERE Name = ? AND Id <> ?');
+                $stmt->bind_param('si', $name, $id);
+                $stmt->execute();
+                $dup = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($dup) {
+                    sendJson(['error' => 'Another group already uses that name.'], 409);
+                    break;
+                }
+
+                $stmt = $db->prepare(
+                    'UPDATE tblUserGroups
+                        SET Name = ?, Description = ?,
+                            AccessAlpha = ?, AccessBeta = ?, AccessRc = ?, AccessRtw = ?
+                      WHERE Id = ?'
+                );
+                $stmt->bind_param('ssiiiii', $name, $desc, $aA, $aB, $aR, $aW, $id);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.admin.group.update', 'group', (string)$id, [
+                    'name'          => $name,
+                    'description'   => $desc,
+                    'access_alpha'  => (bool)$aA,
+                    'access_beta'   => (bool)$aB,
+                    'access_rc'     => (bool)$aR,
+                    'access_rtw'    => (bool)$aW,
+                ]);
+
+                sendJson(['ok' => true, 'id' => $id, 'name' => $name]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.group.update', 'group', (string)$id, $e);
+                error_log('[admin_group_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update group.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete a user group
+         * POST body: { id }
+         * Refuses with 422 if any user is still a member.
+         * ----------------------------------------------------------------- */
+        case 'admin_group_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) {
+                sendJson(['error' => 'Group id required.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('SELECT Name FROM tblUserGroups WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $name = (string)($row[0] ?? '');
+                if ($name === '') {
+                    sendJson(['error' => 'Group not found.'], 404);
+                    break;
+                }
+
+                $stmt = $db->prepare('SELECT COUNT(*) FROM tblUsers WHERE GroupId = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $members = (int)($row[0] ?? 0);
+                if ($members > 0) {
+                    sendJson([
+                        'error'        => "Cannot delete '{$name}': {$members} user(s) still belong to it.",
+                        'member_count' => $members,
+                        'name'         => $name,
+                        'hint'         => 'Move the members to another group (or remove them) first.',
+                    ], 422);
+                    break;
+                }
+
+                $stmt = $db->prepare('DELETE FROM tblUserGroups WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.admin.group.delete', 'group', (string)$id, ['name' => $name]);
+                sendJson(['ok' => true, 'id' => $id, 'name' => $name]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.group.delete', 'group', (string)$id, $e);
+                error_log('[admin_group_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete group.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: add a user to a group (sets tblUsers.GroupId)
+         * POST body: { group_id, user_id }
+         * No-op-friendly: re-adding a user already in the same group
+         * is a 200 (UPDATE just touches UpdatedAt).
+         * ----------------------------------------------------------------- */
+        case 'admin_group_member_add': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body    = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $groupId = (int)($body['group_id'] ?? 0);
+            $userId  = (int)($body['user_id']  ?? 0);
+            if ($groupId <= 0 || $userId <= 0) {
+                sendJson(['error' => 'group_id and user_id required.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+
+                /* Probe both rows so we can return the right 404. The
+                   web admin doesn't bother (typo → silent UPDATE 0
+                   rows), but a JSON API caller wants a definite
+                   answer. */
+                $stmt = $db->prepare('SELECT Id FROM tblUserGroups WHERE Id = ?');
+                $stmt->bind_param('i', $groupId);
+                $stmt->execute();
+                $hasGroup = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if (!$hasGroup) {
+                    sendJson(['error' => 'Group not found.'], 404);
+                    break;
+                }
+                $stmt = $db->prepare('SELECT Id FROM tblUsers WHERE Id = ?');
+                $stmt->bind_param('i', $userId);
+                $stmt->execute();
+                $hasUser = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if (!$hasUser) {
+                    sendJson(['error' => 'User not found.'], 404);
+                    break;
+                }
+
+                $stmt = $db->prepare('UPDATE tblUsers SET GroupId = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
+                $stmt->bind_param('ii', $groupId, $userId);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.admin.group.member_add', 'group', (string)$groupId, [
+                    'user_id' => $userId,
+                ]);
+
+                sendJson(['ok' => true, 'group_id' => $groupId, 'user_id' => $userId]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.group.member_add', 'group', (string)$groupId, $e, ['user_id' => $userId]);
+                error_log('[admin_group_member_add] ' . $e->getMessage());
+                sendJson(['error' => 'Could not add member to group.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: remove a user from their group (sets GroupId = NULL)
+         * POST body: { user_id }
+         * group_id is intentionally NOT required — a user belongs to at
+         * most one group via tblUsers.GroupId, so dropping the FK is
+         * sufficient regardless of which group they were in.
+         * ----------------------------------------------------------------- */
+        case 'admin_group_member_remove': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $userId = (int)($body['user_id'] ?? 0);
+            if ($userId <= 0) {
+                sendJson(['error' => 'user_id required.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('SELECT GroupId FROM tblUsers WHERE Id = ?');
+                $stmt->bind_param('i', $userId);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                if ($row === null) {
+                    sendJson(['error' => 'User not found.'], 404);
+                    break;
+                }
+                $oldGroupId = $row[0] !== null ? (int)$row[0] : null;
+
+                $stmt = $db->prepare('UPDATE tblUsers SET GroupId = NULL, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
+                $stmt->bind_param('i', $userId);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.admin.group.member_remove', 'group',
+                    $oldGroupId !== null ? (string)$oldGroupId : '', [
+                        'user_id'  => $userId,
+                    ]
+                );
+
+                sendJson([
+                    'ok'              => true,
+                    'user_id'         => $userId,
+                    'previous_group'  => $oldGroupId,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.group.member_remove', 'group', '', $e, ['user_id' => $userId]);
+                error_log('[admin_group_member_remove] ' . $e->getMessage());
+                sendJson(['error' => 'Could not remove member from group.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * ACCESS TIERS — admin CRUD parity (#719 PR 2b)
+         *
+         * Mirrors /manage/tiers.php. Capability-column list lives in
+         * includes/access_tier_validation.php (TIER_CAPS const) so a
+         * new capability is a one-line schema + const change — no
+         * surface-specific bind_param edits needed.
+         *
+         * Input shape: `caps` is a JSON object keyed by exact tblAccessTiers
+         * column name, value bool/int. Unknown keys are ignored; missing
+         * keys default to 0.
+         *
+         * Reserved tier names (public / free / ccli / premium / pro) cannot
+         * be deleted via the API — same hard refusal as /manage/tiers.php's
+         * implicit gate (the row lookup blocks delete on rows still
+         * referenced by users, but the API also rejects up-front).
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: create an access tier
+         * POST body: {
+         *   name, display_name, level, description?, caps?: { ... }
+         * }
+         * ----------------------------------------------------------------- */
+        case 'admin_tier_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'access_tier_validation.php';
+
+            $body        = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $name        = trim((string)($body['name']         ?? ''));
+            $displayName = trim((string)($body['display_name'] ?? ''));
+            $level       = (int)($body['level']                ?? 0);
+            $description = trim((string)($body['description']  ?? ''));
+            $capsInput   = is_array($body['caps'] ?? null) ? $body['caps'] : [];
+
+            if ($e = validateTierName($name))   { sendJson(['error' => $e], 400); break; }
+            if ($displayName === '')            { sendJson(['error' => 'display_name is required.'], 400); break; }
+            if ($e = validateTierLevel($level)) { sendJson(['error' => $e], 400); break; }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('SELECT Id FROM tblAccessTiers WHERE Name = ?');
+                $stmt->bind_param('s', $name);
+                $stmt->execute();
+                $exists = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($exists) {
+                    sendJson(['error' => 'A tier with that name already exists.'], 409);
+                    break;
+                }
+
+                $caps = [];
+                foreach (array_keys(TIER_CAPS) as $col) {
+                    /* Accept the camelCase or PascalCase form clients
+                       might use; the canonical key is the exact column
+                       name. Default to 0 when unspecified. */
+                    $caps[$col] = !empty($capsInput[$col]) ? 1 : 0;
+                }
+
+                $cols         = array_merge(['Name','DisplayName','Level','Description'], array_keys(TIER_CAPS));
+                $placeholders = implode(', ', array_fill(0, count($cols), '?'));
+                $sql          = 'INSERT INTO tblAccessTiers (' . implode(',', $cols) . ') VALUES (' . $placeholders . ')';
+                /* Type string: Name(s) DisplayName(s) Level(i) Description(s) +
+                   each TIER_CAPS column as int. Built dynamically so a new
+                   capability column auto-extends the bind without an edit. */
+                $types  = 'ssis' . str_repeat('i', count(TIER_CAPS));
+                $values = array_merge([$name, $displayName, $level, $description], array_values($caps));
+                $stmt   = $db->prepare($sql);
+                $stmt->bind_param($types, ...$values);
+                $stmt->execute();
+                $newId = (int)$db->insert_id;
+                $stmt->close();
+
+                logActivity('api.admin.tier.create', 'access_tier', (string)$newId, [
+                    'name'         => $name,
+                    'display_name' => $displayName,
+                    'level'        => $level,
+                    'description'  => $description,
+                    'caps'         => $caps,
+                ]);
+
+                sendJson(['ok' => true, 'id' => $newId, 'name' => $name], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.tier.create', 'access_tier', '', $e, ['name' => $name]);
+                error_log('[admin_tier_create] ' . $e->getMessage());
+                sendJson(['error' => 'Could not create tier.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: update an access tier
+         * POST body: {
+         *   id, display_name, level, description?, caps?: { ... }
+         * }
+         * `name` (the machine key) is intentionally immutable — too
+         * many tblUsers.AccessTier rows reference it for a casual
+         * rename. Use a manual SQL migration if a rename is genuinely
+         * needed.
+         * ----------------------------------------------------------------- */
+        case 'admin_tier_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'access_tier_validation.php';
+
+            $body        = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id          = (int)($body['id']                   ?? 0);
+            $displayName = trim((string)($body['display_name'] ?? ''));
+            $level       = (int)($body['level']                ?? 0);
+            $description = trim((string)($body['description']  ?? ''));
+            $capsInput   = is_array($body['caps'] ?? null) ? $body['caps'] : [];
+
+            if ($id <= 0)                       { sendJson(['error' => 'Tier id required.'], 400); break; }
+            if ($displayName === '')            { sendJson(['error' => 'display_name is required.'], 400); break; }
+            if ($e = validateTierLevel($level)) { sendJson(['error' => $e], 400); break; }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('SELECT Name FROM tblAccessTiers WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $name = (string)($row[0] ?? '');
+                if ($name === '') {
+                    sendJson(['error' => 'Tier not found.'], 404);
+                    break;
+                }
+
+                $caps = [];
+                foreach (array_keys(TIER_CAPS) as $col) {
+                    $caps[$col] = !empty($capsInput[$col]) ? 1 : 0;
+                }
+
+                $sets = ['DisplayName = ?', 'Level = ?', 'Description = ?'];
+                $args = [$displayName, $level, $description];
+                foreach ($caps as $col => $val) {
+                    $sets[] = "$col = ?";
+                    $args[] = $val;
+                }
+                $args[] = $id;
+                /* Type string: DisplayName(s), Level(i), Description(s),
+                   each TIER_CAPS column as int, then Id(i). */
+                $types = 'sis' . str_repeat('i', count(TIER_CAPS)) . 'i';
+                $stmt  = $db->prepare(
+                    'UPDATE tblAccessTiers SET ' . implode(', ', $sets) . ' WHERE Id = ?'
+                );
+                $stmt->bind_param($types, ...$args);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.admin.tier.update', 'access_tier', (string)$id, [
+                    'name'         => $name,
+                    'display_name' => $displayName,
+                    'level'        => $level,
+                    'description'  => $description,
+                    'caps'         => $caps,
+                ]);
+
+                sendJson(['ok' => true, 'id' => $id, 'name' => $name]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.tier.update', 'access_tier', (string)$id, $e);
+                error_log('[admin_tier_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update tier.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete an access tier
+         * POST body: { id }
+         * Refuses with 422 if any user is still on this tier.
+         * ----------------------------------------------------------------- */
+        case 'admin_tier_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) {
+                sendJson(['error' => 'Tier id required.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('SELECT Name FROM tblAccessTiers WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $name = (string)($row[0] ?? '');
+                if ($name === '') {
+                    sendJson(['error' => 'Tier not found.'], 404);
+                    break;
+                }
+
+                $stmt = $db->prepare('SELECT COUNT(*) FROM tblUsers WHERE AccessTier = ?');
+                $stmt->bind_param('s', $name);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $inUse = (int)($row[0] ?? 0);
+                if ($inUse > 0) {
+                    sendJson([
+                        'error'      => "Cannot delete '{$name}': {$inUse} user(s) are currently on this tier.",
+                        'user_count' => $inUse,
+                        'name'       => $name,
+                        'hint'       => 'Reassign affected users to another tier first.',
+                    ], 422);
+                    break;
+                }
+
+                $stmt = $db->prepare('DELETE FROM tblAccessTiers WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.admin.tier.delete', 'access_tier', (string)$id, ['name' => $name]);
+                sendJson(['ok' => true, 'id' => $id, 'name' => $name]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.tier.delete', 'access_tier', (string)$id, $e);
+                error_log('[admin_tier_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete tier.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * ORGANISATIONS — system-admin CRUD parity (#719 PR 2c)
+         *
+         * Mirrors /manage/organisations.php POST handlers. The existing
+         * `organisation_create` endpoint (any authenticated user, creator
+         * becomes owner) covers the create case from a different angle —
+         * the system-admin equivalent there is just "create then assign
+         * the owner externally" so it's not duplicated here.
+         *
+         * All endpoints below require admin / global_admin role.
+         * Activity-log verb prefix is `api.admin.organisation.*`.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: update an organisation (system-admin)
+         * POST body: {
+         *   id, name, slug?, parent_org_id?, description?,
+         *   licence_type, licence_number?, is_active?,
+         *   additional_licences?: [keys]
+         * }
+         * Mirrors the multi-licence sync from /manage/organisations.php:
+         * the submitted set replaces tblOrganisationLicences for the
+         * org, with the primary licence_type folded in to keep the two
+         * surfaces coherent.
+         * ----------------------------------------------------------------- */
+        case 'admin_organisation_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body        = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id          = (int)($body['id'] ?? 0);
+            $name        = trim((string)($body['name']           ?? ''));
+            $slugInput   = trim((string)($body['slug']           ?? ''));
+            $parent      = (int)($body['parent_org_id']          ?? 0);
+            $desc        = trim((string)($body['description']    ?? ''));
+            $licenceType = (string)($body['licence_type']        ?? 'none');
+            $licenceNum  = trim((string)($body['licence_number'] ?? ''));
+            $active      = !empty($body['is_active']) ? 1 : 0;
+
+            /* Same primary-licence allowlist organisations.php uses
+               (4 keys with `none` as the "no primary" sentinel). The
+               additional_licences set is validated against this same
+               keylist before INSERT. */
+            $licenceKeys = ['none', 'ihymns_basic', 'ihymns_pro', 'ccli'];
+
+            if ($id <= 0)                                  { sendJson(['error' => 'Organisation id required.'], 400); break; }
+            if ($name === '')                              { sendJson(['error' => 'Name is required.'], 400); break; }
+            $slug = $slugInput !== '' ? slugifyOrganisationName($slugInput) : slugifyOrganisationName($name);
+            if ($slug === '')                              { sendJson(['error' => 'Slug could not be derived — supply one explicitly.'], 400); break; }
+            if (!in_array($licenceType, $licenceKeys, true)) { sendJson(['error' => 'Unknown licence type.'], 400); break; }
+            if ($parent === $id)                           { sendJson(['error' => 'An organisation cannot be its own parent.'], 400); break; }
+
+            try {
+                $db = getDbMysqli();
+
+                $stmt = $db->prepare('SELECT Id FROM tblOrganisations WHERE Slug = ? AND Id <> ?');
+                $stmt->bind_param('si', $slug, $id);
+                $stmt->execute();
+                $dup = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($dup) {
+                    sendJson(['error' => 'That slug is already in use.'], 409);
+                    break;
+                }
+
+                $beforeStmt = $db->prepare(
+                    'SELECT Name, Slug, ParentOrgId, Description, LicenceType, LicenceNumber, IsActive
+                       FROM tblOrganisations WHERE Id = ?'
+                );
+                $beforeStmt->bind_param('i', $id);
+                $beforeStmt->execute();
+                $beforeOrg = $beforeStmt->get_result()->fetch_assoc() ?: null;
+                $beforeStmt->close();
+                if ($beforeOrg === null) {
+                    sendJson(['error' => 'Organisation not found.'], 404);
+                    break;
+                }
+
+                $parentOrNull = $parent ?: null;
+                $stmt = $db->prepare(
+                    'UPDATE tblOrganisations
+                        SET Name = ?, Slug = ?, ParentOrgId = ?, Description = ?,
+                            LicenceType = ?, LicenceNumber = ?, IsActive = ?
+                      WHERE Id = ?'
+                );
+                $stmt->bind_param(
+                    'ssisssii',
+                    $name, $slug, $parentOrNull, $desc, $licenceType, $licenceNum, $active, $id
+                );
+                $stmt->execute();
+                $stmt->close();
+
+                /* Multi-licence sync (#640) — the submitted additional
+                   set REPLACES tblOrganisationLicences for the org; the
+                   primary licence_type is also folded in so the two
+                   surfaces stay coherent. Wrapped in a try/catch so a
+                   pre-migration deployment (no tblOrganisationLicences)
+                   silently no-ops the join writes. */
+                try {
+                    $picked = (array)($body['additional_licences'] ?? []);
+                    $picked = array_values(array_unique(array_filter(
+                        array_map('strval', $picked),
+                        static fn($k) => $k !== '' && $k !== 'none'
+                    )));
+                    if ($licenceType !== '' && $licenceType !== 'none' && !in_array($licenceType, $picked, true)) {
+                        $picked[] = $licenceType;
+                    }
+                    $picked = array_values(array_intersect($picked, $licenceKeys));
+
+                    $del = $db->prepare('DELETE FROM tblOrganisationLicences WHERE OrganisationId = ?');
+                    $del->bind_param('i', $id);
+                    $del->execute();
+                    $del->close();
+
+                    if (!empty($picked)) {
+                        $ins = $db->prepare(
+                            'INSERT INTO tblOrganisationLicences
+                                (OrganisationId, LicenceType, LicenceNumber)
+                             VALUES (?, ?, ?)'
+                        );
+                        foreach ($picked as $key) {
+                            $num = ($key === $licenceType && $licenceNum !== '') ? $licenceNum : null;
+                            $ins->bind_param('iss', $id, $key, $num);
+                            $ins->execute();
+                        }
+                        $ins->close();
+                    }
+                } catch (\Throwable $_e) {
+                    /* tblOrganisationLicences not yet created — silent no-op. */
+                }
+
+                $afterOrg = [
+                    'Name' => $name, 'Slug' => $slug,
+                    'ParentOrgId' => $parent ?: null, 'Description' => $desc,
+                    'LicenceType' => $licenceType, 'LicenceNumber' => $licenceNum,
+                    'IsActive' => $active,
+                ];
+                $changed = [];
+                foreach ($afterOrg as $k => $v) {
+                    if ((string)($beforeOrg[$k] ?? '') !== (string)$v) $changed[] = $k;
+                }
+                logActivity('api.admin.organisation.edit', 'organisation', (string)$id, [
+                    'fields' => $changed,
+                    'before' => array_intersect_key($beforeOrg, array_flip($changed)),
+                    'after'  => array_intersect_key($afterOrg,  array_flip($changed)),
+                ]);
+
+                sendJson([
+                    'ok'             => true,
+                    'id'             => $id,
+                    'slug'           => $slug,
+                    'fields_changed' => $changed,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.organisation.edit', 'organisation', (string)$id, $e);
+                error_log('[admin_organisation_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update organisation.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete an organisation
+         * POST body: { id }
+         * Refuses with 422 if any member is still listed OR any sub-org
+         * still references this row as ParentOrgId.
+         * ----------------------------------------------------------------- */
+        case 'admin_organisation_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) {
+                sendJson(['error' => 'Organisation id required.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('SELECT Name FROM tblOrganisations WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $name = (string)($row[0] ?? '');
+                if ($name === '') {
+                    sendJson(['error' => 'Organisation not found.'], 404);
+                    break;
+                }
+
+                $stmt = $db->prepare('SELECT COUNT(*) FROM tblOrganisationMembers WHERE OrgId = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $members = (int)($row[0] ?? 0);
+                if ($members > 0) {
+                    sendJson([
+                        'error'        => "Cannot delete '{$name}': {$members} member(s) still listed.",
+                        'member_count' => $members,
+                        'name'         => $name,
+                        'hint'         => 'Remove every member first.',
+                    ], 422);
+                    break;
+                }
+
+                $stmt = $db->prepare('SELECT COUNT(*) FROM tblOrganisations WHERE ParentOrgId = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $children = (int)($row[0] ?? 0);
+                if ($children > 0) {
+                    sendJson([
+                        'error'         => "Cannot delete '{$name}': {$children} sub-organisation(s) still reference it as parent.",
+                        'child_count'   => $children,
+                        'name'          => $name,
+                        'hint'          => 'Reparent or delete the sub-organisations first.',
+                    ], 422);
+                    break;
+                }
+
+                $stmt = $db->prepare('DELETE FROM tblOrganisations WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.admin.organisation.delete', 'organisation', (string)$id, ['name' => $name]);
+                sendJson(['ok' => true, 'id' => $id, 'name' => $name]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.organisation.delete', 'organisation', (string)$id, $e);
+                error_log('[admin_organisation_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete organisation.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: add a member to an organisation
+         * POST body: { org_id, user_id, member_role? }
+         * INSERT … ON DUPLICATE KEY UPDATE so a re-add is a role change.
+         * ----------------------------------------------------------------- */
+        case 'admin_organisation_member_add': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId  = (int)($body['org_id']  ?? 0);
+            $userId = (int)($body['user_id'] ?? 0);
+            $role   = (string)($body['member_role'] ?? 'member');
+
+            if ($orgId <= 0 || $userId <= 0) {
+                sendJson(['error' => 'org_id and user_id required.'], 400);
+                break;
+            }
+            if (!in_array($role, ORG_MEMBER_ROLES, true)) {
+                sendJson(['error' => 'Unknown member role.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare(
+                    'INSERT INTO tblOrganisationMembers (UserId, OrgId, Role)
+                     VALUES (?, ?, ?)
+                     ON DUPLICATE KEY UPDATE Role = VALUES(Role)'
+                );
+                $stmt->bind_param('iis', $userId, $orgId, $role);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.admin.organisation.member_add', 'organisation', (string)$orgId, [
+                    'user_id' => $userId,
+                    'role'    => $role,
+                ]);
+
+                sendJson(['ok' => true, 'org_id' => $orgId, 'user_id' => $userId, 'role' => $role]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.organisation.member_add', 'organisation', (string)$orgId, $e, [
+                    'user_id' => $userId,
+                ]);
+                error_log('[admin_organisation_member_add] ' . $e->getMessage());
+                sendJson(['error' => 'Could not add member.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: change a member's role within an organisation
+         * POST body: { org_id, user_id, member_role }
+         * ----------------------------------------------------------------- */
+        case 'admin_organisation_member_role_change': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId  = (int)($body['org_id']  ?? 0);
+            $userId = (int)($body['user_id'] ?? 0);
+            $role   = (string)($body['member_role'] ?? 'member');
+
+            if ($orgId <= 0 || $userId <= 0) {
+                sendJson(['error' => 'org_id and user_id required.'], 400);
+                break;
+            }
+            if (!in_array($role, ORG_MEMBER_ROLES, true)) {
+                sendJson(['error' => 'Unknown member role.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare(
+                    'UPDATE tblOrganisationMembers SET Role = ? WHERE OrgId = ? AND UserId = ?'
+                );
+                $stmt->bind_param('sii', $role, $orgId, $userId);
+                $stmt->execute();
+                $changed = $stmt->affected_rows;
+                $stmt->close();
+
+                if ($changed === 0) {
+                    sendJson(['error' => 'Member not found in this organisation.'], 404);
+                    break;
+                }
+
+                logActivity('api.admin.organisation.member_role_change', 'organisation', (string)$orgId, [
+                    'user_id' => $userId,
+                    'role'    => $role,
+                ]);
+
+                sendJson(['ok' => true, 'org_id' => $orgId, 'user_id' => $userId, 'role' => $role]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.organisation.member_role_change', 'organisation', (string)$orgId, $e, [
+                    'user_id' => $userId,
+                ]);
+                error_log('[admin_organisation_member_role_change] ' . $e->getMessage());
+                sendJson(['error' => 'Could not change member role.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: remove a member from an organisation
+         * POST body: { org_id, user_id }
+         * ----------------------------------------------------------------- */
+        case 'admin_organisation_member_remove': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId  = (int)($body['org_id']  ?? 0);
+            $userId = (int)($body['user_id'] ?? 0);
+
+            if ($orgId <= 0 || $userId <= 0) {
+                sendJson(['error' => 'org_id and user_id required.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('DELETE FROM tblOrganisationMembers WHERE OrgId = ? AND UserId = ?');
+                $stmt->bind_param('ii', $orgId, $userId);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.admin.organisation.member_remove', 'organisation', (string)$orgId, [
+                    'user_id' => $userId,
+                ]);
+
+                sendJson(['ok' => true, 'org_id' => $orgId, 'user_id' => $userId]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.organisation.member_remove', 'organisation', (string)$orgId, $e, [
+                    'user_id' => $userId,
+                ]);
+                error_log('[admin_organisation_member_remove] ' . $e->getMessage());
+                sendJson(['error' => 'Could not remove member.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * MY ORGANISATIONS — org-admin CRUD parity (#719 PR 2c)
+         *
+         * Mirrors /manage/my-organisations.php POST handlers (PR #726).
+         * Auth model:
+         *   1. Bearer-token authenticated.
+         *   2. Row-level gate: caller must be system admin OR hold an
+         *      admin/owner row on tblOrganisationMembers for the target
+         *      org. The userCanActOnOrg() helper enforces this — fail
+         *      returns 403 with the exact same wording as the web admin.
+         *
+         * Activity-log verb prefix: `api.org_admin.*`. Mirrors the
+         * `org_admin.*` prefix the web admin writes so the timeline
+         * reads as a unified surface.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Org-admin: add a member by username or email
+         * POST body: { org_id, user_identifier, member_role? }
+         * Free-text identifier (username or email) — the API resolves it
+         * to a tblUsers.Id so curators can paste either form.
+         * ----------------------------------------------------------------- */
+        case 'org_admin_member_add': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $body       = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId      = (int)($body['org_id'] ?? 0);
+            $identifier = trim((string)($body['user_identifier'] ?? ''));
+            $role       = (string)($body['member_role'] ?? 'member');
+
+            if (!userCanActOnOrg($authUser, $orgId)) {
+                sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                break;
+            }
+            if ($identifier === '') {
+                sendJson(['error' => 'user_identifier (username or email) required.'], 400);
+                break;
+            }
+            if (!in_array($role, ORG_MEMBER_ROLES, true)) {
+                sendJson(['error' => 'Unknown member role.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare(
+                    'SELECT Id FROM tblUsers WHERE Username = ? OR Email = ? LIMIT 1'
+                );
+                $stmt->bind_param('ss', $identifier, $identifier);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                if (!$row) {
+                    sendJson(['error' => "User '{$identifier}' not found."], 404);
+                    break;
+                }
+                $targetUserId = (int)$row['Id'];
+
+                $stmt = $db->prepare(
+                    'INSERT INTO tblOrganisationMembers (UserId, OrgId, Role)
+                     VALUES (?, ?, ?)
+                     ON DUPLICATE KEY UPDATE Role = VALUES(Role)'
+                );
+                $stmt->bind_param('iis', $targetUserId, $orgId, $role);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.org_admin.member_add', 'organisation', (string)$orgId, [
+                    'user_id'    => $targetUserId,
+                    'identifier' => $identifier,
+                    'role'       => $role,
+                ]);
+
+                sendJson([
+                    'ok'      => true,
+                    'org_id'  => $orgId,
+                    'user_id' => $targetUserId,
+                    'role'    => $role,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.member_add', 'organisation', (string)$orgId, $e, [
+                    'identifier' => $identifier,
+                ]);
+                error_log('[org_admin_member_add] ' . $e->getMessage());
+                sendJson(['error' => 'Could not add member.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Org-admin: change a member's role
+         * POST body: { org_id, user_id, member_role }
+         * ----------------------------------------------------------------- */
+        case 'org_admin_member_role_change': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $body         = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId        = (int)($body['org_id']  ?? 0);
+            $targetUserId = (int)($body['user_id'] ?? 0);
+            $role         = (string)($body['member_role'] ?? 'member');
+
+            if (!userCanActOnOrg($authUser, $orgId)) {
+                sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                break;
+            }
+            if ($targetUserId <= 0) {
+                sendJson(['error' => 'user_id required.'], 400);
+                break;
+            }
+            if (!in_array($role, ORG_MEMBER_ROLES, true)) {
+                sendJson(['error' => 'Unknown member role.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare(
+                    'UPDATE tblOrganisationMembers SET Role = ? WHERE OrgId = ? AND UserId = ?'
+                );
+                $stmt->bind_param('sii', $role, $orgId, $targetUserId);
+                $stmt->execute();
+                $changed = $stmt->affected_rows;
+                $stmt->close();
+
+                if ($changed === 0) {
+                    sendJson(['error' => 'Member not found in this organisation.'], 404);
+                    break;
+                }
+
+                logActivity('api.org_admin.member_role_change', 'organisation', (string)$orgId, [
+                    'user_id' => $targetUserId,
+                    'role'    => $role,
+                ]);
+
+                sendJson(['ok' => true, 'org_id' => $orgId, 'user_id' => $targetUserId, 'role' => $role]);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.member_role_change', 'organisation', (string)$orgId, $e, [
+                    'user_id' => $targetUserId,
+                ]);
+                error_log('[org_admin_member_role_change] ' . $e->getMessage());
+                sendJson(['error' => 'Could not change member role.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Org-admin: remove a member
+         * POST body: { org_id, user_id }
+         * Self-removal guard mirrors the web admin: an org admin cannot
+         * remove themselves (have to ask a sibling admin / owner /
+         * system admin) — prevents accidental lockout.
+         * ----------------------------------------------------------------- */
+        case 'org_admin_member_remove': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $body         = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId        = (int)($body['org_id']  ?? 0);
+            $targetUserId = (int)($body['user_id'] ?? 0);
+
+            if (!userCanActOnOrg($authUser, $orgId)) {
+                sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                break;
+            }
+            if ($targetUserId <= 0) {
+                sendJson(['error' => 'user_id required.'], 400);
+                break;
+            }
+
+            $actingId    = (int)($authUser['Id']   ?? 0);
+            $isSysAdmin  = in_array((string)($authUser['Role'] ?? ''), ['admin', 'global_admin'], true);
+            if ($targetUserId === $actingId && !$isSysAdmin) {
+                sendJson([
+                    'error' => 'You cannot remove yourself from an organisation. Ask a co-admin or system admin to remove you.',
+                ], 403);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('DELETE FROM tblOrganisationMembers WHERE OrgId = ? AND UserId = ?');
+                $stmt->bind_param('ii', $orgId, $targetUserId);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.org_admin.member_remove', 'organisation', (string)$orgId, [
+                    'user_id' => $targetUserId,
+                ]);
+
+                sendJson(['ok' => true, 'org_id' => $orgId, 'user_id' => $targetUserId]);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.member_remove', 'organisation', (string)$orgId, $e, [
+                    'user_id' => $targetUserId,
+                ]);
+                error_log('[org_admin_member_remove] ' . $e->getMessage());
+                sendJson(['error' => 'Could not remove member.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Org-admin: add (or upsert) a licence row
+         * POST body: {
+         *   org_id, licence_type, licence_number?,
+         *   expires_at?, is_active?, notes?
+         * }
+         * INSERT … ON DUPLICATE KEY UPDATE — the unique key is
+         * (OrganisationId, LicenceType) so re-adding the same type for
+         * the same org is an update of number/expiry/notes.
+         * ----------------------------------------------------------------- */
+        case 'org_admin_licence_add': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $body          = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId         = (int)($body['org_id'] ?? 0);
+            $licenceType   = (string)($body['licence_type']   ?? '');
+            $licenceNumber = trim((string)($body['licence_number'] ?? ''));
+            $expiresAt     = trim((string)($body['expires_at']    ?? '')) ?: null;
+            $isActive      = !empty($body['is_active']) ? 1 : 0;
+            $notes         = trim((string)($body['notes']         ?? '')) ?: null;
+
+            /* Same per-row licence-type allowlist /manage/my-organisations
+               uses (5 keys). Distinct from the system-admin update path
+               which uses the 4-key primary set with `none` sentinel. */
+            $licenceKeys = ['ccli', 'mrl', 'ihymns_basic', 'ihymns_pro', 'custom'];
+
+            if (!userCanActOnOrg($authUser, $orgId)) {
+                sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                break;
+            }
+            if (!in_array($licenceType, $licenceKeys, true)) {
+                sendJson(['error' => 'Unknown licence type.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare(
+                    'INSERT INTO tblOrganisationLicences
+                        (OrganisationId, LicenceType, LicenceNumber, IsActive, ExpiresAt, Notes)
+                     VALUES (?, ?, ?, ?, ?, ?)
+                     ON DUPLICATE KEY UPDATE
+                        LicenceNumber = VALUES(LicenceNumber),
+                        IsActive      = VALUES(IsActive),
+                        ExpiresAt     = VALUES(ExpiresAt),
+                        Notes         = VALUES(Notes)'
+                );
+                $stmt->bind_param('ississ',
+                    $orgId, $licenceType, $licenceNumber, $isActive, $expiresAt, $notes);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.org_admin.licence_add', 'organisation', (string)$orgId, [
+                    'licence_type'   => $licenceType,
+                    'licence_number' => $licenceNumber,
+                    'is_active'      => (bool)$isActive,
+                ]);
+
+                sendJson(['ok' => true, 'org_id' => $orgId, 'licence_type' => $licenceType]);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.licence_add', 'organisation', (string)$orgId, $e, [
+                    'licence_type' => $licenceType,
+                ]);
+                error_log('[org_admin_licence_add] ' . $e->getMessage());
+                sendJson(['error' => 'Could not save licence.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Org-admin: change an existing licence row
+         * POST body: {
+         *   org_id, licence_id,
+         *   licence_number?, expires_at?, is_active?, notes?
+         * }
+         * Belt-and-braces: confirms the licence row actually belongs to
+         * the org we already authorised on. Stops a crafted POST that
+         * mixes a licence_id from one org with an org_id the user CAN
+         * admin.
+         * ----------------------------------------------------------------- */
+        case 'org_admin_licence_change': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $body          = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId         = (int)($body['org_id']     ?? 0);
+            $licenceId     = (int)($body['licence_id'] ?? 0);
+            $licenceNumber = trim((string)($body['licence_number'] ?? ''));
+            $expiresAt     = trim((string)($body['expires_at']    ?? '')) ?: null;
+            $isActive      = !empty($body['is_active']) ? 1 : 0;
+            $notes         = trim((string)($body['notes']         ?? '')) ?: null;
+
+            if (!userCanActOnOrg($authUser, $orgId)) {
+                sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                break;
+            }
+            if ($licenceId <= 0) {
+                sendJson(['error' => 'licence_id required.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare(
+                    'SELECT 1 FROM tblOrganisationLicences WHERE Id = ? AND OrganisationId = ?'
+                );
+                $stmt->bind_param('ii', $licenceId, $orgId);
+                $stmt->execute();
+                $owns = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if (!$owns) {
+                    sendJson(['error' => 'Licence row does not belong to that organisation.'], 404);
+                    break;
+                }
+
+                $stmt = $db->prepare(
+                    'UPDATE tblOrganisationLicences
+                        SET LicenceNumber = ?, IsActive = ?, ExpiresAt = ?, Notes = ?
+                      WHERE Id = ?'
+                );
+                $stmt->bind_param('sissi', $licenceNumber, $isActive, $expiresAt, $notes, $licenceId);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.org_admin.licence_change', 'organisation', (string)$orgId, [
+                    'licence_id'     => $licenceId,
+                    'licence_number' => $licenceNumber,
+                    'is_active'      => (bool)$isActive,
+                ]);
+
+                sendJson(['ok' => true, 'org_id' => $orgId, 'licence_id' => $licenceId]);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.licence_change', 'organisation', (string)$orgId, $e, [
+                    'licence_id' => $licenceId,
+                ]);
+                error_log('[org_admin_licence_change] ' . $e->getMessage());
+                sendJson(['error' => 'Could not change licence.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Org-admin: remove a licence row
+         * POST body: { org_id, licence_id }
+         * Same belt-and-braces ownership check as licence_change.
+         * ----------------------------------------------------------------- */
+        case 'org_admin_licence_remove': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $body      = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId     = (int)($body['org_id']     ?? 0);
+            $licenceId = (int)($body['licence_id'] ?? 0);
+
+            if (!userCanActOnOrg($authUser, $orgId)) {
+                sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                break;
+            }
+            if ($licenceId <= 0) {
+                sendJson(['error' => 'licence_id required.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare(
+                    'SELECT 1 FROM tblOrganisationLicences WHERE Id = ? AND OrganisationId = ?'
+                );
+                $stmt->bind_param('ii', $licenceId, $orgId);
+                $stmt->execute();
+                $owns = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if (!$owns) {
+                    sendJson(['error' => 'Licence row does not belong to that organisation.'], 404);
+                    break;
+                }
+
+                $stmt = $db->prepare('DELETE FROM tblOrganisationLicences WHERE Id = ?');
+                $stmt->bind_param('i', $licenceId);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.org_admin.licence_remove', 'organisation', (string)$orgId, [
+                    'licence_id' => $licenceId,
+                ]);
+
+                sendJson(['ok' => true, 'org_id' => $orgId, 'licence_id' => $licenceId]);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.licence_remove', 'organisation', (string)$orgId, $e, [
+                    'licence_id' => $licenceId,
+                ]);
+                error_log('[org_admin_licence_remove] ' . $e->getMessage());
+                sendJson(['error' => 'Could not remove licence.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * CREDIT PEOPLE — admin CRUD parity (#719 PR 2d)
+         *
+         * Mirrors /manage/credit-people.php POST handlers (#545). Every
+         * mutating endpoint runs inside $db->begin_transaction() so a
+         * partial failure (e.g. a child-row INSERT failing after the
+         * parent UPDATE landed) rolls back cleanly.
+         *
+         * Activity-log verb prefix is `api.admin.credit_person.*` —
+         * distinguishes API-driven changes from web-UI changes (which
+         * write `credit_person.*`) so /manage/activity-log shows both
+         * sides clearly.
+         *
+         * Validation rules (link-type allowlist, IPI shape) live in
+         * includes/credit_people_helpers.php — the same file
+         * /manage/credit-people uses.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: add a new credit-person registry row
+         * POST body: {
+         *   name (required), notes?, birth_place?, birth_date?,
+         *   death_place?, death_date?, is_special_case?, is_group?,
+         *   links?: [{type,url,label,sort_order}], ipi?: [{number,name_used,notes}]
+         * }
+         * Birth/death dates must be YYYY-MM-DD if supplied.
+         * ----------------------------------------------------------------- */
+        case 'admin_credit_person_add': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $name        = trim((string)($body['name']         ?? ''));
+            $notesRaw    = trim((string)($body['notes']        ?? ''));
+            $birthPlace  = trim((string)($body['birth_place']  ?? '')) ?: null;
+            $birthDate   = trim((string)($body['birth_date']   ?? '')) ?: null;
+            $deathPlace  = trim((string)($body['death_place']  ?? '')) ?: null;
+            $deathDate   = trim((string)($body['death_date']   ?? '')) ?: null;
+            $notes       = $notesRaw !== '' ? $notesRaw : null;
+            $rawLinks    = $body['links']   ?? null;
+            $ipi         = normaliseCreditPersonIpi($body['ipi']       ?? null);
+            $isni        = normaliseCreditPersonIsni($body['isni']      ?? null);
+            $aliases     = normaliseCreditPersonAliases($body['aliases'] ?? null);
+            $isSpecialCase = !empty($body['is_special_case']) ? 1 : 0;
+            $isGroup       = !empty($body['is_group'])        ? 1 : 0;
+            /* Mutually exclusive in the UI; if both arrive we prefer
+               special-case (more constraining). */
+            if ($isSpecialCase && $isGroup) { $isGroup = 0; }
+
+            if ($name === '')           { sendJson(['error' => 'Name is required.'], 400); break; }
+            if (mb_strlen($name) > 255) { sendJson(['error' => 'Name must be 255 characters or fewer.'], 400); break; }
+            if ($birthDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $birthDate)) {
+                sendJson(['error' => 'birth_date must be YYYY-MM-DD.'], 400); break;
+            }
+            if ($deathDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $deathDate)) {
+                sendJson(['error' => 'death_date must be YYYY-MM-DD.'], 400); break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                /* #833 — link normaliser resolves slug ↔ registry id via
+                   tblExternalLinkTypes, so it needs the live mysqli. */
+                $links = normaliseCreditPersonLinks($db, $rawLinks);
+
+                $stmt = $db->prepare('SELECT Id FROM tblCreditPeople WHERE Name = ?');
+                $stmt->bind_param('s', $name);
+                $stmt->execute();
+                $exists = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($exists) {
+                    sendJson(['error' => "A person with the name '{$name}' is already registered."], 409);
+                    break;
+                }
+
+                $db->begin_transaction();
+                try {
+                    /* #630 — flag columns may not exist on a partly-
+                       migrated install. Skip them when absent. */
+                    $hasFlagsCols = creditPeopleFlagsColumnsExist($db);
+                    /* Slug — NOT NULL DEFAULT '' with UNIQUE uk_Slug
+                       per migrate-credit-people-slug.php. Every INSERT
+                       MUST carry a slug or it'll trip the orphan
+                       empty-Slug collision. The helper returns '' when
+                       the column doesn't exist yet so a pre-migration
+                       install can still INSERT. */
+                    $slug       = generateUniqueCreditPersonSlug($db, $name);
+                    $hasSlugCol = $slug !== '';
+                    if ($hasFlagsCols && $hasSlugCol) {
+                        $stmt = $db->prepare(
+                            'INSERT INTO tblCreditPeople
+                                (Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate, IsSpecialCase, IsGroup)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                        );
+                        $stmt->bind_param('sssssssii',
+                            $name, $slug, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
+                            $isSpecialCase, $isGroup
+                        );
+                    } elseif ($hasFlagsCols) {
+                        $stmt = $db->prepare(
+                            'INSERT INTO tblCreditPeople
+                                (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate, IsSpecialCase, IsGroup)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+                        );
+                        $stmt->bind_param('ssssssii',
+                            $name, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
+                            $isSpecialCase, $isGroup
+                        );
+                    } elseif ($hasSlugCol) {
+                        $stmt = $db->prepare(
+                            'INSERT INTO tblCreditPeople
+                                (Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate)
+                             VALUES (?, ?, ?, ?, ?, ?, ?)'
+                        );
+                        $stmt->bind_param('sssssss',
+                            $name, $slug, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate
+                        );
+                    } else {
+                        $stmt = $db->prepare(
+                            'INSERT INTO tblCreditPeople
+                                (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate)
+                             VALUES (?, ?, ?, ?, ?, ?)'
+                        );
+                        $stmt->bind_param('ssssss',
+                            $name, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate
+                        );
+                    }
+                    $stmt->execute();
+                    $newId = (int)$db->insert_id;
+                    $stmt->close();
+
+                    if ($links) {
+                        $linkStmt = $db->prepare(
+                            'INSERT INTO tblCreditPersonExternalLinks
+                                (CreditPersonId, LinkTypeId, Url, Note, SortOrder)
+                             VALUES (?, ?, ?, ?, ?)'
+                        );
+                        foreach ($links as $l) {
+                            $linkStmt->bind_param('iissi',
+                                $newId, $l['type_id'], $l['url'], $l['label'], $l['sort_order']);
+                            $linkStmt->execute();
+                        }
+                        $linkStmt->close();
+                    }
+                    if ($ipi || $isni) {
+                        $idStmt = $db->prepare(
+                            'INSERT INTO tblCreditPersonIdentifiers
+                                (CreditPersonId, IdentifierType, IdentifierValue, NameUsed, Notes)
+                             VALUES (?, ?, ?, ?, ?)'
+                        );
+                        $type = 'ipi';
+                        foreach ($ipi as $r) {
+                            $idStmt->bind_param('issss',
+                                $newId, $type, $r['number'], $r['name_used'], $r['notes']);
+                            $idStmt->execute();
+                        }
+                        $type = 'isni';
+                        foreach ($isni as $r) {
+                            $idStmt->bind_param('issss',
+                                $newId, $type, $r['number'], $r['name_used'], $r['notes']);
+                            $idStmt->execute();
+                        }
+                        $idStmt->close();
+                    }
+                    /* AKA / alias names — schema-tolerant: replaceCreditPersonAliases
+                       no-ops cleanly on installs where the aliases table isn't present. */
+                    if ($aliases) {
+                        replaceCreditPersonAliases($db, $newId, $aliases);
+                    }
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                logActivity('api.admin.credit_person.add', 'credit_person', (string)$newId, [
+                    'name'        => $name,
+                    'fields'      => array_filter([
+                        'birth_place' => $birthPlace,
+                        'birth_date'  => $birthDate,
+                        'death_place' => $deathPlace,
+                        'death_date'  => $deathDate,
+                        'notes'       => $notes,
+                    ], static fn($v) => $v !== null),
+                    'link_count'  => count($links),
+                    'ipi_count'   => count($ipi),
+                    'isni_count'  => count($isni),
+                    'alias_count' => count($aliases),
+                ]);
+
+                sendJson([
+                    'ok'   => true,
+                    'id'   => $newId,
+                    'name' => $name,
+                ], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.credit_person.add', 'credit_person', '', $e, ['name' => $name]);
+                error_log('[admin_credit_person_add] ' . $e->getMessage());
+                sendJson(['error' => 'Could not add person.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: update an existing credit-person registry row
+         * POST body: { id (required), name, notes?, biographical
+         *              fields, is_special_case?, is_group?,
+         *              links?, ipi? }
+         * The Name column is NOT changed here — renames have their own
+         * endpoint because their blast radius is cross-table. If the
+         * body's name field differs from the stored name we reject
+         * with 400 and direct the caller to admin_credit_person_rename.
+         * ----------------------------------------------------------------- */
+        case 'admin_credit_person_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id          = (int)($body['id']           ?? 0);
+            $name        = trim((string)($body['name']         ?? ''));
+            $notesRaw    = trim((string)($body['notes']        ?? ''));
+            $birthPlace  = trim((string)($body['birth_place']  ?? '')) ?: null;
+            $birthDate   = trim((string)($body['birth_date']   ?? '')) ?: null;
+            $deathPlace  = trim((string)($body['death_place']  ?? '')) ?: null;
+            $deathDate   = trim((string)($body['death_date']   ?? '')) ?: null;
+            $notes       = $notesRaw !== '' ? $notesRaw : null;
+            $rawLinks    = $body['links']   ?? null;
+            $ipi         = normaliseCreditPersonIpi($body['ipi']       ?? null);
+            $isni        = normaliseCreditPersonIsni($body['isni']      ?? null);
+            $aliases     = normaliseCreditPersonAliases($body['aliases'] ?? null);
+            $isSpecialCase = !empty($body['is_special_case']) ? 1 : 0;
+            $isGroup       = !empty($body['is_group'])        ? 1 : 0;
+            if ($isSpecialCase && $isGroup) { $isGroup = 0; }
+
+            if ($id <= 0)               { sendJson(['error' => 'Person id required.'], 400); break; }
+            if ($name === '')           { sendJson(['error' => 'Name is required.'], 400); break; }
+            if ($birthDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $birthDate)) {
+                sendJson(['error' => 'birth_date must be YYYY-MM-DD.'], 400); break;
+            }
+            if ($deathDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $deathDate)) {
+                sendJson(['error' => 'death_date must be YYYY-MM-DD.'], 400); break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                /* #833 — link normaliser resolves slug ↔ registry id via
+                   tblExternalLinkTypes, so it needs the live mysqli. */
+                $links = normaliseCreditPersonLinks($db, $rawLinks);
+                $stmt = $db->prepare(
+                    'SELECT Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate
+                       FROM tblCreditPeople WHERE Id = ?'
+                );
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $beforeRow = $stmt->get_result()->fetch_assoc() ?: null;
+                $stmt->close();
+                if ($beforeRow === null) {
+                    sendJson(['error' => 'Person not found.'], 404);
+                    break;
+                }
+                if ((string)$beforeRow['Name'] !== $name) {
+                    sendJson([
+                        'error' => 'Use admin_credit_person_rename to change a person\'s name — the change cascades to every song that cites them.',
+                    ], 400);
+                    break;
+                }
+
+                $db->begin_transaction();
+                try {
+                    if (creditPeopleFlagsColumnsExist($db)) {
+                        $stmt = $db->prepare(
+                            'UPDATE tblCreditPeople
+                                SET Notes = ?, BirthPlace = ?, BirthDate = ?,
+                                    DeathPlace = ?, DeathDate = ?,
+                                    IsSpecialCase = ?, IsGroup = ?
+                              WHERE Id = ?'
+                        );
+                        $stmt->bind_param('sssssiii',
+                            $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
+                            $isSpecialCase, $isGroup, $id);
+                    } else {
+                        $stmt = $db->prepare(
+                            'UPDATE tblCreditPeople
+                                SET Notes = ?, BirthPlace = ?, BirthDate = ?,
+                                    DeathPlace = ?, DeathDate = ?
+                              WHERE Id = ?'
+                        );
+                        $stmt->bind_param('sssssi',
+                            $notes, $birthPlace, $birthDate, $deathPlace, $deathDate, $id);
+                    }
+                    $stmt->execute();
+                    $stmt->close();
+
+                    /* Child rows: DELETE then INSERT — simpler than
+                       diffing and the per-person row counts are small
+                       (typically < 10 each). The child Ids change as a
+                       side effect, but no other table references them. */
+                    $del = $db->prepare('DELETE FROM tblCreditPersonExternalLinks WHERE CreditPersonId = ?');
+                    $del->bind_param('i', $id);
+                    $del->execute();
+                    $del->close();
+                    if ($links) {
+                        $linkStmt = $db->prepare(
+                            'INSERT INTO tblCreditPersonExternalLinks
+                                (CreditPersonId, LinkTypeId, Url, Note, SortOrder)
+                             VALUES (?, ?, ?, ?, ?)'
+                        );
+                        foreach ($links as $l) {
+                            $linkStmt->bind_param('iissi',
+                                $id, $l['type_id'], $l['url'], $l['label'], $l['sort_order']);
+                            $linkStmt->execute();
+                        }
+                        $linkStmt->close();
+                    }
+
+                    $del = $db->prepare('DELETE FROM tblCreditPersonIdentifiers WHERE CreditPersonId = ?');
+                    $del->bind_param('i', $id);
+                    $del->execute();
+                    $del->close();
+                    if ($ipi || $isni) {
+                        $idStmt = $db->prepare(
+                            'INSERT INTO tblCreditPersonIdentifiers
+                                (CreditPersonId, IdentifierType, IdentifierValue, NameUsed, Notes)
+                             VALUES (?, ?, ?, ?, ?)'
+                        );
+                        $type = 'ipi';
+                        foreach ($ipi as $r) {
+                            $idStmt->bind_param('issss',
+                                $id, $type, $r['number'], $r['name_used'], $r['notes']);
+                            $idStmt->execute();
+                        }
+                        $type = 'isni';
+                        foreach ($isni as $r) {
+                            $idStmt->bind_param('issss',
+                                $id, $type, $r['number'], $r['name_used'], $r['notes']);
+                            $idStmt->execute();
+                        }
+                        $idStmt->close();
+                    }
+                    /* Replace the alias set unconditionally — the curator's
+                       submitted list is the new truth, an empty list deletes
+                       all aliases. Schema-tolerant on installs where the
+                       table is absent (helper no-ops). */
+                    replaceCreditPersonAliases($db, $id, $aliases);
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                $afterRow = [
+                    'Notes'      => $notes,
+                    'BirthPlace' => $birthPlace,
+                    'BirthDate'  => $birthDate,
+                    'DeathPlace' => $deathPlace,
+                    'DeathDate'  => $deathDate,
+                ];
+                $changed = [];
+                foreach ($afterRow as $k => $v) {
+                    if ((string)($beforeRow[$k] ?? '') !== (string)($v ?? '')) {
+                        $changed[] = $k;
+                    }
+                }
+
+                logActivity('api.admin.credit_person.update', 'credit_person', (string)$id, [
+                    'name'        => $name,
+                    'fields'      => $changed,
+                    'before'      => array_intersect_key($beforeRow, array_flip($changed)),
+                    'after'       => array_intersect_key($afterRow,  array_flip($changed)),
+                    'link_count'  => count($links),
+                    'alias_count' => count($aliases),
+                    'ipi_count'   => count($ipi),
+                    'isni_count'  => count($isni),
+                ]);
+
+                sendJson([
+                    'ok'             => true,
+                    'id'             => $id,
+                    'name'           => $name,
+                    'fields_changed' => $changed,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.credit_person.update', 'credit_person', (string)$id, $e);
+                error_log('[admin_credit_person_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update person.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: rename a credit-person — cascades across the five
+         * song-credit tables AND the registry row inside one transaction.
+         * POST body: { id, new_name }
+         * Refuses with 409 if the new name already belongs to a different
+         * registry row (caller should use admin_credit_person_merge).
+         * ----------------------------------------------------------------- */
+        case 'admin_credit_person_rename': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body    = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id      = (int)($body['id']       ?? 0);
+            $newName = trim((string)($body['new_name'] ?? ''));
+
+            if ($id <= 0)                  { sendJson(['error' => 'Person id required.'], 400); break; }
+            if ($newName === '')           { sendJson(['error' => 'new_name is required.'], 400); break; }
+            if (mb_strlen($newName) > 255) { sendJson(['error' => 'new_name must be 255 characters or fewer.'], 400); break; }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('SELECT Name FROM tblCreditPeople WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $oldName = (string)($row[0] ?? '');
+                if ($oldName === '')        { sendJson(['error' => 'Person not found.'], 404); break; }
+                if ($oldName === $newName)  { sendJson(['error' => 'new_name is the same as the current name.'], 400); break; }
+
+                $stmt = $db->prepare('SELECT Id FROM tblCreditPeople WHERE Name = ? AND Id <> ?');
+                $stmt->bind_param('si', $newName, $id);
+                $stmt->execute();
+                $clash = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($clash) {
+                    sendJson([
+                        'error' => "Another registry row already uses '{$newName}'. Use admin_credit_person_merge to combine them.",
+                    ], 409);
+                    break;
+                }
+
+                $db->begin_transaction();
+                $affected = [];
+                try {
+                    /* Cascade across the five song-credit tables. */
+                    $tables = [
+                        'tblSongWriters', 'tblSongComposers', 'tblSongArrangers',
+                        'tblSongAdaptors', 'tblSongTranslators',
+                    ];
+                    foreach ($tables as $tbl) {
+                        $stmt = $db->prepare("UPDATE {$tbl} SET Name = ? WHERE Name = ?");
+                        $stmt->bind_param('ss', $newName, $oldName);
+                        $stmt->execute();
+                        $affected[$tbl] = $stmt->affected_rows;
+                        $stmt->close();
+                    }
+                    $stmt = $db->prepare('UPDATE tblCreditPeople SET Name = ? WHERE Id = ?');
+                    $stmt->bind_param('si', $newName, $id);
+                    $stmt->execute();
+                    $stmt->close();
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                $totalRenamed = array_sum($affected);
+                logActivity('api.admin.credit_person.rename', 'credit_person', (string)$id, [
+                    'before'   => ['name' => $oldName],
+                    'after'    => ['name' => $newName],
+                    'affected' => [
+                        'writers'     => $affected['tblSongWriters'],
+                        'composers'   => $affected['tblSongComposers'],
+                        'arrangers'   => $affected['tblSongArrangers'],
+                        'adaptors'    => $affected['tblSongAdaptors'],
+                        'translators' => $affected['tblSongTranslators'],
+                    ],
+                ]);
+
+                sendJson([
+                    'ok'                  => true,
+                    'id'                  => $id,
+                    'old_name'            => $oldName,
+                    'new_name'            => $newName,
+                    'song_credit_renames' => $totalRenamed,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.credit_person.rename', 'credit_person', (string)$id, $e);
+                error_log('[admin_credit_person_rename] ' . $e->getMessage());
+                sendJson(['error' => 'Could not rename person.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: merge two registry entries
+         * POST body: {
+         *   source_id, target_id,
+         *   keep_link_ids?: [int], keep_ipi_ids?: [int]
+         * }
+         * Re-points every song-credit row from source name → target name,
+         * migrates the chosen child rows from source → target, then
+         * deletes the source registry row (FK cascade drops any child
+         * rows the caller chose not to migrate).
+         * ----------------------------------------------------------------- */
+        case 'admin_credit_person_merge': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body      = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $sourceId  = (int)($body['source_id'] ?? 0);
+            $targetId  = (int)($body['target_id'] ?? 0);
+            $keepLinks = array_map('intval', (array)($body['keep_link_ids'] ?? []));
+            $keepIpi   = array_map('intval', (array)($body['keep_ipi_ids']  ?? []));
+
+            if ($sourceId <= 0 || $targetId <= 0) {
+                sendJson(['error' => 'source_id and target_id required.'], 400);
+                break;
+            }
+            if ($sourceId === $targetId) {
+                sendJson(['error' => 'Source and target must be different people.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('SELECT Id, Name FROM tblCreditPeople WHERE Id IN (?, ?)');
+                $stmt->bind_param('ii', $sourceId, $targetId);
+                $stmt->execute();
+                $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+                $byId = [];
+                foreach ($rows as $r) { $byId[(int)$r['Id']] = (string)$r['Name']; }
+                if (!isset($byId[$sourceId])) { sendJson(['error' => 'Source person not found.'], 404); break; }
+                if (!isset($byId[$targetId])) { sendJson(['error' => 'Target person not found.'], 404); break; }
+                $sourceName = $byId[$sourceId];
+                $targetName = $byId[$targetId];
+
+                $db->begin_transaction();
+                $affected     = [];
+                $linksKept    = 0;
+                $linksDropped = 0;
+                $ipiKept      = 0;
+                $ipiDropped   = 0;
+                try {
+                    /* Re-point song-credit rows: source → target across
+                       all five tables. */
+                    $tables = [
+                        'tblSongWriters', 'tblSongComposers', 'tblSongArrangers',
+                        'tblSongAdaptors', 'tblSongTranslators',
+                    ];
+                    foreach ($tables as $tbl) {
+                        $stmt = $db->prepare("UPDATE {$tbl} SET Name = ? WHERE Name = ?");
+                        $stmt->bind_param('ss', $targetName, $sourceName);
+                        $stmt->execute();
+                        $affected[$tbl] = $stmt->affected_rows;
+                        $stmt->close();
+                    }
+
+                    /* Migrate the chosen child rows from source → target.
+                       Anything not in keep_link_ids / keep_ipi_ids gets
+                       dropped via the cascade when the source row is
+                       deleted below. */
+                    $stmt = $db->prepare('SELECT Id FROM tblCreditPersonExternalLinks WHERE CreditPersonId = ?');
+                    $stmt->bind_param('i', $sourceId);
+                    $stmt->execute();
+                    $sourceLinkIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
+                    $stmt->close();
+
+                    $stmt = $db->prepare('SELECT Id FROM tblCreditPersonIdentifiers WHERE CreditPersonId = ?');
+                    $stmt->bind_param('i', $sourceId);
+                    $stmt->execute();
+                    $sourceIpiIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
+                    $stmt->close();
+
+                    if ($keepLinks && $sourceLinkIds) {
+                        $toMove = array_intersect($keepLinks, array_map('intval', $sourceLinkIds));
+                        if ($toMove) {
+                            $upd = $db->prepare(
+                                'UPDATE tblCreditPersonExternalLinks SET CreditPersonId = ? WHERE Id = ? AND CreditPersonId = ?'
+                            );
+                            foreach ($toMove as $lid) {
+                                $upd->bind_param('iii', $targetId, $lid, $sourceId);
+                                $upd->execute();
+                                $linksKept += $upd->affected_rows;
+                            }
+                            $upd->close();
+                        }
+                    }
+                    $linksDropped = max(0, count($sourceLinkIds) - $linksKept);
+
+                    if ($keepIpi && $sourceIpiIds) {
+                        $toMove = array_intersect($keepIpi, array_map('intval', $sourceIpiIds));
+                        if ($toMove) {
+                            $upd = $db->prepare(
+                                'UPDATE tblCreditPersonIdentifiers SET CreditPersonId = ? WHERE Id = ? AND CreditPersonId = ?'
+                            );
+                            foreach ($toMove as $iid) {
+                                $upd->bind_param('iii', $targetId, $iid, $sourceId);
+                                $upd->execute();
+                                $ipiKept += $upd->affected_rows;
+                            }
+                            $upd->close();
+                        }
+                    }
+                    $ipiDropped = max(0, count($sourceIpiIds) - $ipiKept);
+
+                    /* Drop the source registry row. Cascade removes
+                       any child rows we chose not to migrate. */
+                    $stmt = $db->prepare('DELETE FROM tblCreditPeople WHERE Id = ?');
+                    $stmt->bind_param('i', $sourceId);
+                    $stmt->execute();
+                    $stmt->close();
+
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                $totalRenamed = array_sum($affected);
+                logActivity('api.admin.credit_person.merge', 'credit_person', (string)$targetId, [
+                    'source'     => ['id' => $sourceId, 'name' => $sourceName],
+                    'target'     => ['id' => $targetId, 'name' => $targetName],
+                    'affected'   => [
+                        'writers'     => $affected['tblSongWriters'],
+                        'composers'   => $affected['tblSongComposers'],
+                        'arrangers'   => $affected['tblSongArrangers'],
+                        'adaptors'    => $affected['tblSongAdaptors'],
+                        'translators' => $affected['tblSongTranslators'],
+                    ],
+                    'child_rows' => [
+                        'links_kept'    => $linksKept,
+                        'links_dropped' => $linksDropped,
+                        'ipi_kept'      => $ipiKept,
+                        'ipi_dropped'   => $ipiDropped,
+                    ],
+                ]);
+
+                sendJson([
+                    'ok'                  => true,
+                    'source_id'           => $sourceId,
+                    'target_id'           => $targetId,
+                    'source_name'         => $sourceName,
+                    'target_name'         => $targetName,
+                    'song_credit_renames' => $totalRenamed,
+                    'links_kept'          => $linksKept,
+                    'links_dropped'       => $linksDropped,
+                    'ipi_kept'            => $ipiKept,
+                    'ipi_dropped'         => $ipiDropped,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.credit_person.merge', 'credit_person', (string)$targetId, $e, [
+                    'source_id' => $sourceId,
+                ]);
+                error_log('[admin_credit_person_merge] ' . $e->getMessage());
+                sendJson(['error' => 'Could not merge people.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete a registry row
+         * POST body: { id, force? }
+         * Refuses with 422 + usage_count if any song-credit table still
+         * cites the name AND force is not set. With force=true the
+         * registry row is removed even if song credits still reference
+         * the name (the credits stay — only the registry row goes).
+         * ----------------------------------------------------------------- */
+        case 'admin_credit_person_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body  = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id    = (int)($body['id'] ?? 0);
+            $force = !empty($body['force']);
+            if ($id <= 0) {
+                sendJson(['error' => 'Person id required.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('SELECT Name FROM tblCreditPeople WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $name = (string)($row[0] ?? '');
+                if ($name === '') {
+                    sendJson(['error' => 'Person not found.'], 404);
+                    break;
+                }
+
+                /* Single round-trip count across all five song-credit
+                   tables. */
+                $stmt = $db->prepare(
+                    "SELECT (
+                        (SELECT COUNT(*) FROM tblSongWriters     WHERE Name = ?) +
+                        (SELECT COUNT(*) FROM tblSongComposers   WHERE Name = ?) +
+                        (SELECT COUNT(*) FROM tblSongArrangers   WHERE Name = ?) +
+                        (SELECT COUNT(*) FROM tblSongAdaptors    WHERE Name = ?) +
+                        (SELECT COUNT(*) FROM tblSongTranslators WHERE Name = ?)
+                     ) AS total"
+                );
+                $stmt->bind_param('sssss', $name, $name, $name, $name, $name);
+                $stmt->execute();
+                $usage = (int)($stmt->get_result()->fetch_row()[0] ?? 0);
+                $stmt->close();
+
+                if ($usage > 0 && !$force) {
+                    sendJson([
+                        'error'        => "Cannot delete '{$name}': {$usage} song-credit row(s) still cite this name.",
+                        'usage_count'  => $usage,
+                        'name'         => $name,
+                        'hint'         => 'Pass force=true to delete the registry row anyway — the song credits stay.',
+                    ], 422);
+                    break;
+                }
+
+                $stmt = $db->prepare('DELETE FROM tblCreditPeople WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.admin.credit_person.delete', 'credit_person', (string)$id, [
+                    'name'        => $name,
+                    'had_credits' => $usage > 0,
+                    'force'       => $force,
+                ]);
+
+                sendJson([
+                    'ok'           => true,
+                    'id'           => $id,
+                    'name'         => $name,
+                    'usage_count'  => $usage,
+                    'forced'       => $force,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.credit_person.delete', 'credit_person', (string)$id, $e);
+                error_log('[admin_credit_person_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete person.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * ADMIN ANALYTICS — search-query reporting (#719 PR 2d)
+         *
+         * Mirrors the Top search queries / Zero-result panels on
+         * /manage/analytics. The other two analytics verbs
+         * (`top_songs` / `top_books`) are already covered by the
+         * existing `popular_songs` endpoint; this fills the search-side
+         * gap.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: top + zero-result search queries
+         * GET ?action=admin_analytics_searches&range=7|30|90&limit=15
+         * Default range = 30 days, limit = 15.
+         * ----------------------------------------------------------------- */
+        case 'admin_analytics_searches': {
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $range = (int)($_GET['range'] ?? 30);
+            if (!in_array($range, [7, 30, 90], true)) { $range = 30; }
+            $limit = (int)($_GET['limit'] ?? 15);
+            if ($limit < 1 || $limit > 100)           { $limit = 15; }
+            $since = (new DateTime("-{$range} days"))->format('Y-m-d H:i:s');
+
+            $top  = [];
+            $zero = [];
+            try {
+                $db = getDbMysqli();
+
+                $stmt = $db->prepare(
+                    'SELECT Query AS query, COUNT(*) AS hits, MAX(ResultCount) AS top_count
+                       FROM tblSearchQueries
+                      WHERE SearchedAt >= ? AND Query <> ""
+                      GROUP BY Query
+                      ORDER BY hits DESC
+                      LIMIT ?'
+                );
+                $stmt->bind_param('si', $since, $limit);
+                $stmt->execute();
+                $top = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+
+                $stmt = $db->prepare(
+                    'SELECT Query AS query, COUNT(*) AS hits
+                       FROM tblSearchQueries
+                      WHERE SearchedAt >= ? AND ResultCount = 0 AND Query <> ""
+                      GROUP BY Query
+                      ORDER BY hits DESC
+                      LIMIT ?'
+                );
+                $stmt->bind_param('si', $since, $limit);
+                $stmt->execute();
+                $zero = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+
+                /* Coerce numeric fields from string (mysqli_result default)
+                   so JSON consumers don't have to parseInt. */
+                foreach ($top as &$r) {
+                    $r['hits']      = (int)$r['hits'];
+                    $r['top_count'] = $r['top_count'] !== null ? (int)$r['top_count'] : 0;
+                }
+                unset($r);
+                foreach ($zero as &$r) { $r['hits'] = (int)$r['hits']; }
+                unset($r);
+            } catch (\Throwable $e) {
+                /* tblSearchQueries may not exist on a pre-#404 deploy.
+                   Surface as 503 so the caller knows it's a setup issue
+                   rather than malformed input. */
+                error_log('[admin_analytics_searches] ' . $e->getMessage());
+                sendJson([
+                    'error' => 'Search analytics not yet available — tblSearchQueries may not be created.',
+                    'note'  => 'Run /manage/setup-database to apply the search-query migration.',
+                ], 503);
+                break;
+            }
+
+            sendJson([
+                'range_days' => $range,
+                'since'      => $since,
+                'top'        => $top,
+                'zero'       => $zero,
+            ]);
+            break;
+        }
+
+        /* =================================================================
+         * READ-SIDE DIAGNOSTICS (#719 PR 2d)
+         *
+         * Three operational endpoints natives + tooling clients (CI,
+         * monitoring) probably want. All admin / global_admin gated.
+         * Pure read paths; no mutations.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: data-health snapshot
+         * GET ?action=admin_data_health
+         * Returns table-row counts for the canonical tables, plus the
+         * legacy-fallback state (songs.json fallback active? share JSON
+         * file count vs DB row count? legacy SQLite present?). Mirrors
+         * /manage/data-health's panel.
+         * ----------------------------------------------------------------- */
+        case 'admin_data_health': {
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            /* Same allowlist /manage/data-health uses. Hard-coded so a
+               future tweak to the canonical-table list lands once and
+               both surfaces pick it up by reading this constant. */
+            $healthTables = [
+                'tblSongs', 'tblSongbooks', 'tblUsers', 'tblUserSetlists',
+                'tblSharedSetlists', 'tblSongRequests', 'tblSongRevisions',
+                'tblUserGroups', 'tblOrganisations',
+            ];
+
+            try {
+                $db = getDbMysqli();
+            } catch (\Throwable $dbErr) {
+                sendJson([
+                    'error'         => 'Database unreachable.',
+                    'database_up'   => false,
+                    'detail'        => $dbErr->getMessage(),
+                ], 503);
+                break;
+            }
+
+            $tableCounts = [];
+            foreach ($healthTables as $tbl) {
+                try {
+                    /* Allowlist guard: $tbl came from the literal array
+                       above, but a belt-and-braces in_array check makes
+                       the safety provable at the query site without
+                       tracing control flow. */
+                    if (!in_array($tbl, $healthTables, true)) { continue; }
+                    $stmt = $db->prepare('SELECT COUNT(*) FROM `' . $tbl . '`');
+                    $stmt->execute();
+                    $row = $stmt->get_result()->fetch_row();
+                    $tableCounts[$tbl] = (int)($row[0] ?? 0);
+                    $stmt->close();
+                } catch (\Throwable $_e) {
+                    /* Table missing on a fresh deploy is expected;
+                       represent as null. */
+                    $tableCounts[$tbl] = null;
+                }
+            }
+
+            /* SongData JSON fallback probe — non-fatal on partly-loaded
+               configs. The probe runs the SongData constructor which
+               may throw when songs.json is corrupt; we surface the
+               exception text in `note` rather than failing the whole
+               response. */
+            $songDataJsonFallback = null;
+            $songDataNote         = null;
+            try {
+                if (class_exists('\\SongData')) {
+                    $probe = new \SongData();
+                    $songDataJsonFallback = $probe->isJsonFallback();
+                }
+            } catch (\Throwable $sdErr) {
+                $songDataNote = 'SongData probe failed: ' . $sdErr->getMessage();
+            }
+
+            /* Legacy share-directory + SQLite presence checks. Defined
+               constants come from config.php; treat absence as "not
+               configured" rather than a 500. */
+            $songsJsonPath = defined('APP_DATA_FILE')          ? APP_DATA_FILE          : '';
+            $shareDirPath  = defined('APP_SETLIST_SHARE_DIR')  ? APP_SETLIST_SHARE_DIR  : '';
+            $sqliteDbPath  = defined('APP_ROOT')
+                ? dirname(APP_ROOT) . DIRECTORY_SEPARATOR . 'data_share' . DIRECTORY_SEPARATOR . 'SQLite'
+                  . DIRECTORY_SEPARATOR . 'ihymns.db'
+                : '';
+
+            $shareFileCount      = null;
+            $unimportedShareIds  = [];
+            if ($shareDirPath && is_dir($shareDirPath)) {
+                $files = glob($shareDirPath . DIRECTORY_SEPARATOR . '*.json') ?: [];
+                $shareFileCount = count($files);
+                if ($shareFileCount > 0 && isset($tableCounts['tblSharedSetlists'])) {
+                    $idsOnDisk = array_filter(array_map(
+                        fn($f) => preg_match('/^[a-f0-9]{6,32}$/i', basename($f, '.json'))
+                                    ? basename($f, '.json') : null,
+                        $files
+                    ));
+                    try {
+                        $stmt = $db->prepare('SELECT ShareId FROM tblSharedSetlists');
+                        $stmt->execute();
+                        $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                        $stmt->close();
+                        $inDb = array_fill_keys(array_column($rows, 'ShareId'), true);
+                        foreach ($idsOnDisk as $id) {
+                            if (!isset($inDb[$id])) $unimportedShareIds[] = $id;
+                        }
+                    } catch (\Throwable $_e) {
+                        /* tblSharedSetlists missing — leave unimported list empty. */
+                    }
+                }
+            }
+            $sqliteExists = $sqliteDbPath && file_exists($sqliteDbPath);
+            $sqliteSize   = $sqliteExists ? (int)@filesize($sqliteDbPath) : 0;
+
+            sendJson([
+                'database_up'           => true,
+                'table_counts'          => $tableCounts,
+                'songs_json_fallback'   => $songDataJsonFallback,
+                'songs_json_note'       => $songDataNote,
+                'share_dir' => [
+                    'configured'        => $shareDirPath !== '',
+                    'present'           => $shareDirPath !== '' && is_dir($shareDirPath),
+                    'file_count'        => $shareFileCount,
+                    'unimported_count'  => count($unimportedShareIds),
+                    'unimported_ids'    => $unimportedShareIds,
+                ],
+                'legacy_sqlite' => [
+                    'present'   => $sqliteExists,
+                    'size_bytes'=> $sqliteSize,
+                ],
+            ]);
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: schema-audit JSON
+         * GET ?action=admin_schema_audit
+         * Mirrors /manage/schema-audit's diff payload — schema.sql vs
+         * live DB vs migration coverage. Returns the same {byTable, summary}
+         * shape the page consumes.
+         * ----------------------------------------------------------------- */
+        case 'admin_schema_audit': {
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $schemaSrc = dirname(__DIR__, 1) . DIRECTORY_SEPARATOR . '.sql' . DIRECTORY_SEPARATOR . 'schema.sql';
+            $sqlDir    = dirname(__DIR__, 1) . DIRECTORY_SEPARATOR . '.sql';
+
+            try {
+                $db = getDbMysqli();
+                if (!is_readable($schemaSrc)) {
+                    throw new \RuntimeException('schema.sql not readable at ' . $schemaSrc);
+                }
+                $schemaSql  = (string)file_get_contents($schemaSrc);
+                $schemaCols = schemaAuditParseSchema($schemaSql);
+                if (!$schemaCols) {
+                    throw new \RuntimeException('Parsed zero tables from schema.sql — parser broken or file shape changed.');
+                }
+                $migrations = schemaAuditScanMigrations($sqlDir);
+                $dbCols     = schemaAuditReadDb($db);
+                $audit      = schemaAuditCompare($schemaCols, $dbCols, $migrations);
+
+                sendJson([
+                    'summary'  => $audit['summary'],
+                    'by_table' => $audit['byTable'],
+                ]);
+            } catch (\Throwable $e) {
+                error_log('[admin_schema_audit] ' . $e->getMessage());
+                sendJson(['error' => 'Schema audit failed: ' . $e->getMessage()], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: migrations status
+         * GET ?action=admin_migrations_status
+         * Walks every migrate-*.php under appWeb/.sql/, matches each
+         * declared (table, column) against the live DB, and reports
+         * an applied|partial|pending status per migration. Designed
+         * for tooling clients (CI, monitoring) — derives state from
+         * the schema rather than maintaining a separate registry.
+         * ----------------------------------------------------------------- */
+        case 'admin_migrations_status': {
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $sqlDir = dirname(__DIR__, 1) . DIRECTORY_SEPARATOR . '.sql';
+
+            try {
+                $db = getDbMysqli();
+                $migrations = schemaAuditScanMigrations($sqlDir);
+                $dbCols     = schemaAuditReadDb($db);
+
+                /* Invert: [tbl.col => [files...]] becomes [file => [(tbl,col), ...]]. */
+                $byFile = [];
+                foreach ($migrations as $key => $files) {
+                    [$tbl, $col] = explode('.', $key, 2);
+                    foreach ($files as $f) {
+                        $byFile[$f][] = ['table' => $tbl, 'column' => $col];
+                    }
+                }
+
+                $report = [];
+                foreach ($byFile as $file => $declared) {
+                    $applied = 0;
+                    foreach ($declared as $d) {
+                        if (in_array($d['column'], $dbCols[$d['table']] ?? [], true)) {
+                            $applied++;
+                        }
+                    }
+                    $total  = count($declared);
+                    $status = $applied === 0       ? 'pending'
+                            : ($applied === $total ? 'applied' : 'partial');
+                    $report[] = [
+                        'file'             => $file,
+                        'declared_columns' => $total,
+                        'applied_columns'  => $applied,
+                        'status'           => $status,
+                    ];
+                }
+
+                /* Stable sort: pending first, then partial, then applied;
+                   alphabetic within each group so the report reads as a
+                   "what to run next" punchlist. */
+                usort($report, function (array $a, array $b): int {
+                    $rank = ['pending' => 0, 'partial' => 1, 'applied' => 2];
+                    return $rank[$a['status']] <=> $rank[$b['status']]
+                         ?: strcmp($a['file'], $b['file']);
+                });
+
+                $summary = ['pending' => 0, 'partial' => 0, 'applied' => 0];
+                foreach ($report as $r) { $summary[$r['status']]++; }
+
+                sendJson([
+                    'summary'    => $summary,
+                    'migrations' => $report,
+                ]);
+            } catch (\Throwable $e) {
+                error_log('[admin_migrations_status] ' . $e->getMessage());
+                sendJson(['error' => 'Could not derive migrations status: ' . $e->getMessage()], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: refresh IANA Language Subtag Registry + CLDR English (#738)
+         *
+         * Fetches the live IANA registry + CLDR English JSON files,
+         * overwrites the bundled snapshots in appWeb/.sql/data/, then
+         * re-runs migrate-iana-language-subtag-registry.php so the
+         * picker tables pick up new rows. Reports per-table counts in
+         * the response.
+         *
+         * Global-admin only. POST + X-Requested-With per the standard
+         * CSRF guard.
+         * ----------------------------------------------------------------- */
+        case 'admin_refresh_iana_cldr': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || ($authUser['Role'] ?? '') !== 'global_admin') {
+                sendJson(['error' => 'Global admin access required.'], 403);
+                break;
+            }
+
+            $dataDir = dirname(__DIR__, 1) . DIRECTORY_SEPARATOR . '.sql' . DIRECTORY_SEPARATOR . 'data';
+            if (!is_dir($dataDir) || !is_writable($dataDir)) {
+                sendJson([
+                    'error' => "Snapshot directory not writable: {$dataDir}",
+                ], 500);
+                break;
+            }
+
+            /* Live URLs. The CLDR base hits the unicode-org/cldr-json
+               GitHub mirror raw content; IANA serves the registry as
+               a stable URL. Both are publicly fetchable, no auth. */
+            $sources = [
+                'iana-language-subtag-registry.txt'
+                    => 'https://www.iana.org/assignments/language-subtag-registry',
+                'cldr-en-languages.json'
+                    => 'https://raw.githubusercontent.com/unicode-org/cldr-json/main/cldr-json/cldr-localenames-full/main/en/languages.json',
+                'cldr-en-scripts.json'
+                    => 'https://raw.githubusercontent.com/unicode-org/cldr-json/main/cldr-json/cldr-localenames-full/main/en/scripts.json',
+                'cldr-en-territories.json'
+                    => 'https://raw.githubusercontent.com/unicode-org/cldr-json/main/cldr-json/cldr-localenames-full/main/en/territories.json',
+                'cldr-en-variants.json'
+                    => 'https://raw.githubusercontent.com/unicode-org/cldr-json/main/cldr-json/cldr-localenames-full/main/en/variants.json',
+            ];
+
+            $fetched = [];
+            $failed  = [];
+            foreach ($sources as $filename => $url) {
+                $ctx = stream_context_create([
+                    'http' => [
+                        'timeout'        => 30,
+                        'follow_location' => 1,
+                        'header'         => "User-Agent: iHymns-IANA-Refresh/1.0\r\n",
+                    ],
+                ]);
+                $body = @file_get_contents($url, false, $ctx);
+                if ($body === false || strlen($body) < 100) {
+                    $failed[] = $filename;
+                    continue;
+                }
+                $target = $dataDir . DIRECTORY_SEPARATOR . $filename;
+                if (@file_put_contents($target, $body) === false) {
+                    $failed[] = $filename . ' (write failed)';
+                    continue;
+                }
+                $fetched[] = $filename . ' (' . number_format(strlen($body)) . ' bytes)';
+            }
+
+            if (!empty($failed)) {
+                sendJson([
+                    'error'   => 'One or more source fetches failed.',
+                    'fetched' => $fetched,
+                    'failed'  => $failed,
+                    'hint'    => 'Check server outbound HTTPS connectivity. The bundled snapshots remain in place; pre-existing data is untouched.',
+                ], 502);
+                break;
+            }
+
+            /* Snapshots refreshed. Now re-run the migration so the DB
+               picks up new rows. Run as a sub-process include so the
+               migration's "echo" output is captured in our response
+               instead of streaming through. */
+            ob_start();
+            try {
+                define('IHYMNS_SETUP_DASHBOARD', true);
+                require __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . '.sql' . DIRECTORY_SEPARATOR . 'migrate-iana-language-subtag-registry.php';
+                $migOutput = ob_get_clean();
+            } catch (\Throwable $e) {
+                ob_end_clean();
+                sendJson([
+                    'error'   => 'Snapshots refreshed but migration re-run failed: ' . $e->getMessage(),
+                    'fetched' => $fetched,
+                ], 500);
+                break;
+            }
+
+            sendJson([
+                'ok'             => true,
+                'fetched'        => $fetched,
+                'migrationLog'   => $migOutput,
+            ]);
+            break;
+        }
 
         /* -----------------------------------------------------------------
          * Unknown action
@@ -5700,11 +10807,31 @@ function getAuthenticatedUser(): ?array
     $db = getDbMysqli();
     $hashedToken = hash('sha256', $token);
     $now = gmdate('c');
+
+    /* AvatarService (#616) is selected only when the column exists, so
+       a partly-migrated install keeps working. The check is cached for
+       the lifetime of the request via a static. */
+    static $hasAvatarSvcCol = null;
+    if ($hasAvatarSvcCol === null) {
+        $r = $db->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblUsers'
+                AND COLUMN_NAME  = 'AvatarService' LIMIT 1"
+        );
+        $hasAvatarSvcCol = ($r && $r->fetch_row() !== null);
+        if ($r) $r->close();
+    }
+    $avatarSvcCol = $hasAvatarSvcCol ? ', u.AvatarService' : ', NULL AS AvatarService';
+    $emailCol     = ', u.Email';
+
     $stmt = $db->prepare(
-        'SELECT u.Id, u.Username, u.DisplayName, u.Role
+        "SELECT u.Id, u.Username, u.DisplayName, u.Role
+                {$emailCol}
+                {$avatarSvcCol}
          FROM tblApiTokens t
          JOIN tblUsers u ON u.Id = t.UserId
-         WHERE t.Token = ? AND t.ExpiresAt > ? AND u.IsActive = 1'
+         WHERE t.Token = ? AND t.ExpiresAt > ? AND u.IsActive = 1"
     );
     $stmt->bind_param('ss', $hashedToken, $now);
     $stmt->execute();

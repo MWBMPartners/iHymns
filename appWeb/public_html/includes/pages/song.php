@@ -31,17 +31,65 @@ if ($song === null) {
     return;
 }
 
-/* Extract metadata for convenience — Number is null for Misc songs (#392) */
+/* Extract metadata for convenience — Number is NULL for Misc songs and
+   for any custom-songbook entry that wasn't given a position (#392, #797).
+   Treat null, '', '0' and 0 as equivalent — the canonical "unnumbered"
+   value is NULL, but legacy rows and JS payloads sometimes carry 0 or '0'
+   and the rest of the page must treat them the same way. */
 $rawSongNumber = $song['number'] ?? null;
-$songNumber    = ($rawSongNumber === null || $rawSongNumber === '') ? null : (int)$rawSongNumber;
+$songNumber    = ($rawSongNumber === null || $rawSongNumber === '' || (int)$rawSongNumber <= 0)
+    ? null
+    : (int)$rawSongNumber;
 $songTitle   = toTitleCase($song['title'] ?? 'Untitled');
 $songbook    = $song['songbook'] ?? '';
 $bookName    = $song['songbookName'] ?? '';
+/* Songbook colour for the reading-progress bar (#109). Fetched here
+   instead of leaving it to a CSS variable lookup so custom songbooks
+   created via /manage/songbooks (whose abbreviation isn't in the
+   hardcoded --songbook-{ABBR} CSS-var set) still get their assigned
+   colour on the bar. Empty string means "let the bar fall back to
+   the default accent". */
+$songbookColour = '';
+$songbookParent = null;   /* #782 phase D — nested array shape: id, abbreviation, name, relationship */
+if ($songbook !== '') {
+    $bookData = $songData->getSongbook($songbook);
+    if (is_array($bookData)) {
+        if (!empty($bookData['colour'])) {
+            $songbookColour = trim((string)$bookData['colour']);
+        }
+        if (!empty($bookData['parent']) && is_array($bookData['parent'])) {
+            $songbookParent = $bookData['parent'];
+        }
+    }
+}
+
+/* #782 phase D — if the songbook has a parent (translation / edition /
+   abridgement of a canonical source), try to deep-link to the parent's
+   same-numbered song. Falls back to the parent songbook's index when
+   the parent doesn't carry that number. Skipped silently on unnumbered
+   songs (the parent-link only makes sense at hymn-number granularity). */
+$parentSongLinkUrl  = '';
+$parentSongLinkType = ''; /* 'song' | 'songbook' | '' */
+if ($songbookParent !== null
+    && $songNumber !== null
+    && (string)($songbookParent['abbreviation'] ?? '') !== ''
+) {
+    $parentAbbr = (string)$songbookParent['abbreviation'];
+    $parentSid  = $songData->findSongIdByNumber($parentAbbr, $songNumber);
+    if ($parentSid !== null) {
+        $parentSongLinkUrl  = '/song/' . $parentSid;
+        $parentSongLinkType = 'song';
+    } else {
+        $parentSongLinkUrl  = '/songbook/' . $parentAbbr;
+        $parentSongLinkType = 'songbook';
+    }
+}
 $writers     = $song['writers']     ?? [];
 $composers   = $song['composers']   ?? [];
 $arrangers   = $song['arrangers']   ?? [];   /* #497 */
 $adaptors    = $song['adaptors']    ?? [];   /* #497 */
 $translators = $song['translators'] ?? [];   /* #497 */
+$artists     = $song['artists']     ?? [];   /* #587 — recording / release artist */
 $tuneName    = $song['tuneName']    ?? '';   /* #497 */
 $iswc        = $song['iswc']        ?? '';   /* #497 */
 $copyright   = $song['copyright']   ?? '';
@@ -49,6 +97,9 @@ $ccli        = $song['ccli']        ?? '';
 $hasAudio    = !empty($song['hasAudio']);
 $hasSheet    = !empty($song['hasSheetMusic']);
 $components  = $song['components'] ?? [];
+$lyricsPublicDomain = !empty($song['lyricsPublicDomain']);
+$musicPublicDomain  = !empty($song['musicPublicDomain']);
+$fullyPublicDomain  = $lyricsPublicDomain && $musicPublicDomain;
 
 /* ===================================================================
  * Translations (#281) — list of other-language versions of this song
@@ -133,12 +184,73 @@ foreach ($translations as &$_t) {
 }
 unset($_t);
 
+/* ===================================================================
+ * Cross-book counterparts (#807) — same hymn appearing in different
+ * songbooks at unrelated numbers.
+ *
+ * Distinct from the translations list above (different language)
+ * and from the songbook-level parent link (#782 phase D, which only
+ * fires when the parent songbook carries the same hymn number).
+ *
+ * Probes for tblSongLinks first so deployments that haven't run the
+ * migration silently skip the panel rather than 500ing.
+ * =================================================================== */
+$songLinks = [];
+try {
+    if (!isset($translationsDb)) {
+        require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+        $translationsDb = getDbMysqli();
+    }
+    $probe = $translationsDb->query(
+        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'tblSongLinks' LIMIT 1"
+    );
+    $hasLinksTable = $probe && $probe->fetch_row() !== null;
+    if ($probe) $probe->close();
+
+    if ($hasLinksTable) {
+        $sid = (string)($song['id'] ?? '');
+        $stmt = $translationsDb->prepare(
+            'SELECT s.SongId       AS song_id,
+                    s.Title        AS title,
+                    s.Number       AS number,
+                    s.SongbookAbbr AS songbook,
+                    sb.Name        AS songbook_name,
+                    s.Language     AS language
+               FROM tblSongLinks self
+               JOIN tblSongLinks other ON other.GroupId = self.GroupId
+                                     AND other.SongId <> self.SongId
+               JOIN tblSongs s         ON s.SongId = other.SongId
+               JOIN tblSongbooks sb    ON sb.Abbreviation = s.SongbookAbbr
+              WHERE self.SongId = ?
+              ORDER BY s.SongbookAbbr ASC, s.Number ASC'
+        );
+        if ($stmt !== false) {
+            $stmt->bind_param('s', $sid);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            while ($row = $res->fetch_assoc()) {
+                $row['number'] = ($row['number'] === null || $row['number'] === '' || (int)$row['number'] <= 0)
+                    ? null
+                    : (int)$row['number'];
+                $songLinks[] = $row;
+            }
+            $stmt->close();
+        }
+    }
+} catch (\Throwable $_e) {
+    /* Table missing or DB hiccup — hide the panel rather than block
+       the page render. The panel is decorative; the song still loads. */
+    $songLinks = [];
+}
+
 ?>
 
 <!-- ================================================================
      SONG PAGE — Full lyrics and metadata
      ================================================================ -->
-<article class="page-song" aria-label="<?= htmlspecialchars($songTitle) ?>" data-song-id="<?= htmlspecialchars($song['id']) ?>" data-songbook="<?= htmlspecialchars($songbook) ?>" data-song-number="<?= (int)$songNumber ?>"<?php if (!empty($song['capo'])): ?> data-capo="<?= (int)$song['capo'] ?>"<?php endif; ?><?php if (!empty($song['key'])): ?> data-key="<?= htmlspecialchars($song['key']) ?>"<?php endif; ?>>
+<article class="page-song" aria-label="<?= htmlspecialchars($songTitle) ?>" data-song-id="<?= htmlspecialchars($song['id']) ?>" data-songbook="<?= htmlspecialchars($songbook) ?>"<?php if ($songbookColour !== ''): ?> data-songbook-color="<?= htmlspecialchars($songbookColour) ?>"<?php endif; ?><?php if ($songNumber !== null): ?> data-song-number="<?= (int)$songNumber ?>"<?php endif; ?><?php if (!empty($song['capo'])): ?> data-capo="<?= (int)$song['capo'] ?>"<?php endif; ?><?php if (!empty($song['key'])): ?> data-key="<?= htmlspecialchars($song['key']) ?>"<?php endif; ?>>
 
     <!-- Breadcrumb navigation with schema.org markup (#151) -->
     <nav aria-label="Breadcrumb" class="mb-3">
@@ -159,7 +271,11 @@ unset($_t);
                 <meta itemprop="position" content="2">
             </li>
             <li class="breadcrumb-item active" aria-current="page" itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
-                <span itemprop="name">#<?= $songNumber ?></span>
+                <?php /* Unnumbered songs (Misc, custom collections without a
+                         position) fall back to the song title so the final
+                         crumb is meaningful (#797) — "#0" was the bug we
+                         saw in alpha. */ ?>
+                <span itemprop="name"><?= $songNumber !== null ? '#' . (int)$songNumber : htmlspecialchars($songTitle) ?></span>
                 <meta itemprop="position" content="3">
             </li>
         </ol>
@@ -168,18 +284,96 @@ unset($_t);
     <!-- Song header card -->
     <div class="card card-song-header mb-4">
         <div class="card-body">
-            <!-- Song number and title -->
+            <!-- Song number and title — the coloured badge is rendered only
+                 for songs that actually have a songbook position. Unnumbered
+                 songs (Misc, custom collections without a position) drop the
+                 badge entirely so the title sits flush left (#797). -->
             <div class="d-flex align-items-start gap-3 mb-3">
+                <?php if ($songNumber !== null): ?>
                 <span class="song-number-badge-lg" data-songbook="<?= htmlspecialchars($songbook) ?>"
-                      aria-label="<?= $songNumber === null ? 'Unnumbered song' : 'Song number ' . (int)$songNumber ?>">
-                    <?= $songNumber === null ? '' : (int)$songNumber ?>
+                      aria-label="Song number <?= (int)$songNumber ?>">
+                    <?= (int)$songNumber ?>
                 </span>
+                <?php endif; ?>
                 <div class="flex-grow-1">
                     <h1 class="h4 mb-1"><?= htmlspecialchars($songTitle) ?><?php if (!empty($song['verified'])): ?><span class="verified-badge" title="Verified lyrics" aria-label="Verified lyrics"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.15"/><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M7.5 12.5L10.5 15.5L16.5 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><?php endif; ?></h1>
+                    <?php
+                        /* #832 — "Also known as …" line. Hidden when this
+                           song has no alt titles (or pre-migration). Per-row
+                           Note appears in muted parentheses; per-row Language
+                           tag appears as a small badge (e.g. "es") so a user
+                           can see which alt belongs to which language variant. */
+                        $altTitles = $song['alternativeTitles'] ?? [];
+                        if (!empty($altTitles)):
+                    ?>
+                        <p class="text-muted small mb-1">
+                            <span class="me-1">Also known as:</span>
+                            <?php foreach ($altTitles as $i => $a): ?>
+                                <?php if ($i > 0): ?>, <?php endif; ?>
+                                <em><?= htmlspecialchars($a['title']) ?></em>
+                                <?php if (!empty($a['language'])): ?>
+                                    <?php
+                                        /* #856 — tooltip resolves the IETF tag to
+                                           the full language name. Lazy-require here
+                                           because most songs have no alt titles and
+                                           we don't want a SELECT for every page. */
+                                        require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'language_names.php';
+                                    ?>
+                                    <span class="badge bg-secondary text-light small"
+                                          title="<?= htmlspecialchars(resolveLanguageName($a['language'])) ?>"><?= htmlspecialchars($a['language']) ?></span>
+                                <?php endif; ?>
+                                <?php if (!empty($a['note'])): ?>
+                                    <span class="text-muted">(<?= htmlspecialchars($a['note']) ?>)</span>
+                                <?php endif; ?>
+                            <?php endforeach; ?>
+                        </p>
+                    <?php endif; ?>
                     <p class="text-muted mb-0">
                         <span class="badge bg-body-secondary"><?= htmlspecialchars($songbook) ?></span>
                         <?= htmlspecialchars($bookName) ?>
                     </p>
+                    <?php if ($songbookParent !== null && $parentSongLinkUrl !== ''):
+                        /* #782 phase D — canonical-source link. Renders only
+                           when the current songbook declares a parent AND we
+                           have an absolute number to deep-link with. The icon
+                           varies by ParentRelationship — translate / bookmark
+                           (edition) / scissors (abridgement) — matching the
+                           admin-side Parent column in /manage/songbooks. The
+                           prose stays neutral ("Original …") so the badge
+                           reads naturally regardless of relationship type. */
+                        $rel    = (string)($songbookParent['relationship'] ?? '');
+                        $relLbl = match ($rel) {
+                            'translation' => 'Translation of',
+                            'edition'     => 'Edition of',
+                            'abridgement' => 'Abridgement of',
+                            default       => 'Original',
+                        };
+                        $relIcn = match ($rel) {
+                            'translation' => 'fa-language',
+                            'edition'     => 'fa-bookmark',
+                            'abridgement' => 'fa-scissors',
+                            default       => 'fa-link',
+                        };
+                        $parentName = (string)($songbookParent['name']         ?? '');
+                        $parentAbbr = (string)($songbookParent['abbreviation'] ?? '');
+                    ?>
+                    <p class="small mt-2 mb-0">
+                        <a href="<?= htmlspecialchars($parentSongLinkUrl) ?>"
+                           class="text-decoration-none"
+                           data-navigate="<?= htmlspecialchars($parentSongLinkType) ?>"
+                           <?php if ($parentSongLinkType === 'song'): ?>data-song-id="<?= htmlspecialchars(basename($parentSongLinkUrl)) ?>"<?php endif; ?>
+                           <?php if ($parentSongLinkType === 'songbook'): ?>data-songbook-id="<?= htmlspecialchars($parentAbbr) ?>"<?php endif; ?>
+                           title="View this hymn in its canonical source">
+                            <i class="fa-solid <?= htmlspecialchars($relIcn) ?> me-1" aria-hidden="true"></i>
+                            <?= htmlspecialchars($relLbl) ?>
+                            <span class="badge bg-body-secondary ms-1"><?= htmlspecialchars($parentAbbr) ?></span>
+                            <?= htmlspecialchars($parentName) ?>
+                            <?php if ($parentSongLinkType === 'song'): ?>
+                                <span class="text-muted">— hymn #<?= (int)$songNumber ?></span>
+                            <?php endif; ?>
+                        </a>
+                    </p>
+                    <?php endif; ?>
                 </div>
             </div>
 
@@ -191,13 +385,41 @@ unset($_t);
                  surname-first hymnal citations can legitimately contain
                  commas inside a single name. -->
             <?php
-            $_creditRows = [
-                ['words',       'Words',       'fa-solid fa-pen-fancy',   $writers],
-                ['music',       'Music',       'fa-solid fa-music',       $composers],
-                ['arranged',    'Arranged by', 'fa-solid fa-sliders',     $arrangers],
-                ['adapted',     'Adapted by',  'fa-solid fa-compact-disc',$adaptors],
-                ['translated',  'Translated by','fa-solid fa-language',   $translators],
-            ];
+            /* Combine Words + Music into a single "Words & Music:" row
+               when the two sets are identical (#603) — common for
+               contemporary songs where the songwriter is also the
+               composer (e.g. Graham Kendrick, Stuart Townend). Set
+               equality, not list equality, so order-of-names doesn't
+               break the combine. */
+            $_writersNorm = array_values(array_unique(array_filter(
+                array_map(static fn($n) => trim((string)$n), $writers ?: [])
+            )));
+            $_composersNorm = array_values(array_unique(array_filter(
+                array_map(static fn($n) => trim((string)$n), $composers ?: [])
+            )));
+            sort($_writersNorm);
+            sort($_composersNorm);
+            $_combineWordsMusic = !empty($_writersNorm)
+                && $_writersNorm === $_composersNorm;
+
+            if ($_combineWordsMusic) {
+                $_creditRows = [
+                    ['words-music', 'Words & Music', 'fa-solid fa-pen-fancy', $writers],
+                    ['arranged',    'Arranged by',   'fa-solid fa-sliders',     $arrangers],
+                    ['adapted',     'Adapted by',    'fa-solid fa-compact-disc',$adaptors],
+                    ['translated',  'Translated by', 'fa-solid fa-language',    $translators],
+                    ['artist',      'Artist',        'fa-solid fa-microphone',  $artists],         /* #587 */
+                ];
+            } else {
+                $_creditRows = [
+                    ['words',       'Words',       'fa-solid fa-pen-fancy',   $writers],
+                    ['music',       'Music',       'fa-solid fa-music',       $composers],
+                    ['arranged',    'Arranged by', 'fa-solid fa-sliders',     $arrangers],
+                    ['adapted',     'Adapted by',  'fa-solid fa-compact-disc',$adaptors],
+                    ['translated',  'Translated by','fa-solid fa-language',   $translators],
+                    ['artist',      'Artist',      'fa-solid fa-microphone',  $artists],          /* #587 */
+                ];
+            }
             $_hasAnyCredit = false;
             foreach ($_creditRows as $row) { if (!empty($row[3])) { $_hasAnyCredit = true; break; } }
             ?>
@@ -209,9 +431,9 @@ unset($_t);
                         <p class="mb-<?= $rowIdx === count($_creditRows) - 1 || empty(array_slice($_creditRows, $rowIdx + 1, null, true)) ? '0' : '1' ?> song-credit-row" data-credit-kind="<?= htmlspecialchars($rowId) ?>">
                             <i class="<?= htmlspecialchars($rowIcon) ?> me-2 text-muted" aria-hidden="true"></i>
                             <strong><?= htmlspecialchars($rowLabel) ?>:</strong>
-                            <?php foreach ($rowNames as $i => $name): ?><a href="/writer/<?= htmlspecialchars(urlencode(strtolower(str_replace(' ', '-', $name)))) ?>"
-                                   class="writer-link"
-                                   data-navigate="writer"><?= htmlspecialchars($name) ?></a><?php if ($i < count($rowNames) - 1): ?>;&nbsp;<?php endif; ?><?php endforeach; ?>
+                            <?php foreach ($rowNames as $i => $name): ?><a href="/people/<?= htmlspecialchars(urlencode(strtolower(str_replace(' ', '-', $name)))) ?>"
+                                   class="song-meta-link"
+                                   data-navigate="person"><?= htmlspecialchars($name) ?></a><?php if ($i < count($rowNames) - 1): ?>;&nbsp;<?php endif; ?><?php endforeach; ?>
                         </p>
                     <?php endforeach; ?>
                 </div>
@@ -219,14 +441,31 @@ unset($_t);
 
             <!-- Tune name (#497). Rendered when set so the viewer sees
                  "Tune: HYFRYDOL" — a meaningful pointer for hymnbook
-                 users. The link target `/tune/<slug>` is reserved for
-                 a future cross-reference listing (#494); until that
-                 ships we still render the label as plain text. -->
-            <?php if ($tuneName !== ''): ?>
-                <p class="song-meta-tune small text-muted mb-2">
-                    <i class="fa-solid fa-music-note-list me-2" aria-hidden="true"></i>
-                    <strong>Tune:</strong> <?= htmlspecialchars($tuneName) ?>
-                </p>
+                 users. Layout matches the people-credit rows above
+                 (#599) — same wrapper class, same icon styling, same
+                 bold-label-then-value pattern — so the song header
+                 reads as a single consistent credit block instead of
+                 the credits + a smaller dimmer Tune line.
+                 #940 — tune is now a link to `/tune/<slug>` listing
+                 every song that uses that tune; lets a worship leader
+                 mix-n-match lyrics across hymns with the same melody. -->
+            <?php if ($tuneName !== ''):
+                $_tuneSlug = strtolower(trim(preg_replace('/[^A-Za-z0-9]+/', '-', $tuneName), '-'));
+                ?>
+                <div class="song-meta mb-3">
+                    <p class="mb-0 song-credit-row" data-credit-kind="tune">
+                        <i class="fa-solid fa-music me-2 text-muted" aria-hidden="true"></i>
+                        <strong>Tune:</strong>
+                        <?php if ($_tuneSlug !== ''): ?>
+                            <a href="/tune/<?= htmlspecialchars($_tuneSlug) ?>"
+                               class="song-meta-link"
+                               data-navigate="tune"
+                               title="See all songs that use this tune"><?= htmlspecialchars($tuneName) ?></a>
+                        <?php else: ?>
+                            <?= htmlspecialchars($tuneName) ?>
+                        <?php endif; ?>
+                    </p>
+                </div>
             <?php endif; ?>
 
             <!-- ============================================================
@@ -276,7 +515,55 @@ unset($_t);
                 </div>
             <?php endif; ?>
 
-            <!-- Copyright, CCLI Song Number, ISWC in song header (#497). -->
+            <!-- ============================================================
+                 Cross-book counterparts (#807) — "Also appears in" dropdown.
+                 Shown when this song shares a tblSongLinks.GroupId with one
+                 or more other songs (same hymn, different songbook, often
+                 same language). Sits beside the translations dropdown so
+                 the two are visually parallel but semantically distinct.
+                 ============================================================ -->
+            <?php if (!empty($songLinks)): ?>
+                <div class="song-cross-book-links mb-3">
+                    <div class="dropdown">
+                        <button type="button"
+                                class="btn btn-sm btn-outline-secondary dropdown-toggle"
+                                data-bs-toggle="dropdown"
+                                aria-expanded="false"
+                                aria-label="Also appears in other songbooks">
+                            <i class="fa-solid fa-link me-1" aria-hidden="true"></i>
+                            Also appears in
+                            <?php if (count($songLinks) === 1): ?>
+                                <?= htmlspecialchars($songLinks[0]['songbook']) ?>
+                            <?php else: ?>
+                                <?= count($songLinks) ?> songbooks
+                            <?php endif; ?>
+                        </button>
+                        <ul class="dropdown-menu">
+                            <?php foreach ($songLinks as $sl): ?>
+                                <li>
+                                    <a class="dropdown-item"
+                                       href="/song/<?= htmlspecialchars($sl['song_id']) ?>"
+                                       data-navigate="song"
+                                       data-song-id="<?= htmlspecialchars($sl['song_id']) ?>">
+                                        <span class="badge bg-body-secondary me-2"><?= htmlspecialchars($sl['songbook']) ?></span>
+                                        <span class="fw-semibold"><?= htmlspecialchars($sl['songbook_name']) ?></span>
+                                        <?php if ($sl['number'] !== null): ?>
+                                            <small class="text-muted ms-1">— hymn #<?= (int)$sl['number'] ?></small>
+                                        <?php endif; ?>
+                                    </a>
+                                </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    </div>
+                </div>
+            <?php endif; ?>
+
+            <!-- Copyright, CCLI Song Number, ISWC in song header (#497).
+                 ID labels (CCLI / ISWC) are bold with a definite gap
+                 between label and value (#600). The two ID rows sit
+                 in a flex row that wraps: side-by-side at wide widths,
+                 stacked at narrow. Copyright stays on its own line
+                 above — it's prose, not a labelled field. -->
             <?php if (!empty($copyright) || !empty($ccli) || $iswc !== ''): ?>
                 <div class="song-meta-copyright mb-3">
                     <?php if (!empty($copyright)): ?>
@@ -285,17 +572,41 @@ unset($_t);
                             <?= htmlspecialchars($copyright) ?>
                         </p>
                     <?php endif; ?>
-                    <?php if (!empty($ccli)): ?>
-                        <p class="mb-<?= $iswc !== '' ? '1' : '0' ?> small text-muted">
-                            <i class="fa-solid fa-hashtag me-2" aria-hidden="true"></i>
-                            CCLI Song #<?= htmlspecialchars($ccli) ?>
-                        </p>
-                    <?php endif; ?>
-                    <?php if ($iswc !== ''): ?>
-                        <p class="mb-0 small text-muted" title="International Standard Musical Work Code">
-                            <i class="fa-solid fa-barcode me-2" aria-hidden="true"></i>
-                            ISWC <?= htmlspecialchars($iswc) ?>
-                        </p>
+                    <?php if (!empty($ccli) || $iswc !== ''): ?>
+                        <div class="song-id-row d-flex flex-wrap column-gap-4 row-gap-1">
+                            <?php if (!empty($ccli)):
+                                /* #940 — link the CCLI number itself to SongSelect.
+                                   Per the spec the link opens in a new tab. */
+                                $_ccliEnc = rawurlencode((string)$ccli);
+                                ?>
+                                <span class="small text-muted">
+                                    <i class="fa-solid fa-hashtag me-2" aria-hidden="true"></i>
+                                    <strong>CCLI Song #</strong>&nbsp;<a
+                                        href="https://songselect.ccli.com/songs/<?= htmlspecialchars($_ccliEnc) ?>"
+                                        class="song-meta-link"
+                                        target="_blank"
+                                        rel="noopener noreferrer external"
+                                        title="View on CCLI SongSelect (opens in new tab)"><?= htmlspecialchars($ccli) ?></a>
+                                </span>
+                            <?php endif; ?>
+                            <?php if ($iswc !== ''):
+                                /* #940 — link the ISWC to an internal page listing
+                                   every song that shares this code. Internal rather
+                                   than external to ISWCnet because catalogue
+                                   navigation is more useful than a search-result
+                                   redirect. The route is /iswc/<encoded-iswc>. */
+                                $_iswcEnc = rawurlencode((string)$iswc);
+                                ?>
+                                <span class="small text-muted" title="International Standard Musical Work Code">
+                                    <i class="fa-solid fa-barcode me-2" aria-hidden="true"></i>
+                                    <strong>ISWC:</strong>&nbsp;<a
+                                        href="/iswc/<?= htmlspecialchars($_iswcEnc) ?>"
+                                        class="song-meta-link"
+                                        data-navigate="iswc"
+                                        title="See all songs sharing this ISWC"><?= htmlspecialchars($iswc) ?></a>
+                                </span>
+                            <?php endif; ?>
+                        </div>
                     <?php endif; ?>
                 </div>
             <?php endif; ?>
@@ -454,27 +765,76 @@ unset($_t);
                 : $components;
             $renderOrder = array_filter($renderOrder);
         ?>
+        <?php
+            /* #858 — collect the union of song-level + per-component
+               languages so we can extend the JSON-LD MusicComposition
+               with a multi-valued inLanguage further down. Tracked in
+               $songLanguageUnion (lowercase BCP 47 tags). */
+            $songLanguageUnion = [];
+            $songPrimaryLang = (string)($song['language'] ?? '');
+            if ($songPrimaryLang !== '') {
+                $songLanguageUnion[] = strtolower($songPrimaryLang);
+            }
+        ?>
         <?php foreach ($renderOrder as $component): ?>
             <?php
                 $type   = $component['type'] ?? 'verse';
                 $number = $component['number'] ?? null;
                 $lines  = $component['lines'] ?? [];
+                /* #858 — per-component language override. NULL / empty
+                   means "inherit from the song"; an explicit value
+                   sets lang="…" on this <div> so screen readers /
+                   browser hyphenation switch locales correctly, and
+                   surfaces a small badge so a reader can see that
+                   "this verse is in Spanish" at a glance. */
+                $compLangRaw = $component['language'] ?? null;
+                $compLang    = ($compLangRaw && trim((string)$compLangRaw) !== '')
+                             ? trim((string)$compLangRaw)
+                             : '';
+                $effectiveLang = $compLang !== ''
+                                ? $compLang
+                                : ($songPrimaryLang !== '' ? $songPrimaryLang : 'en');
+                if ($compLang !== '' && !in_array(strtolower($compLang), $songLanguageUnion, true)) {
+                    $songLanguageUnion[] = strtolower($compLang);
+                }
 
                 /* Build a human-readable label for the component.
-                   "refrain" is an alias for "chorus" — display as Chorus. */
+                   "refrain" is an alias for "chorus" — display as Chorus.
+                   The editor stores `number: 0` as a sentinel for "this is the
+                   only one of its kind" (issue #795). Treat any non-positive
+                   or non-numeric value as "no number" so single-component songs
+                   render as plain "Verse" / "Chorus" rather than "Verse 0". */
                 $displayType = ($type === 'refrain') ? 'chorus' : $type;
                 $label = ucfirst($displayType);
-                if ($number !== null) {
-                    $label .= ' ' . $number;
+                if (is_numeric($number) && (int)$number > 0) {
+                    $label .= ' ' . (int)$number;
                 }
 
                 /* CSS class for styling different component types */
                 $typeClass = 'lyric-' . htmlspecialchars($type);
+
+                /* Badge shows the resolved name only when the component
+                   override DIFFERS from the song's primary language —
+                   no point flagging "this English verse is English". */
+                $showLangBadge = $compLang !== ''
+                              && strtolower($compLang) !== strtolower($songPrimaryLang);
+                if ($showLangBadge) {
+                    require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'language_names.php';
+                }
             ?>
-            <div class="lyric-component <?= $typeClass ?>" role="group" aria-label="<?= htmlspecialchars($label) ?>">
+            <div class="lyric-component <?= $typeClass ?>"
+                 lang="<?= htmlspecialchars($effectiveLang) ?>"
+                 role="group" aria-label="<?= htmlspecialchars($label) ?>">
                 <!-- Component type label -->
                 <div class="lyric-label" aria-hidden="true">
                     <?= htmlspecialchars($label) ?>
+                    <?php if ($showLangBadge): ?>
+                        <span class="badge bg-info text-dark ms-2"
+                              style="font-size: 0.65rem; vertical-align: middle;"
+                              title="<?= htmlspecialchars(resolveLanguageName($compLang)) ?>">
+                            <?= htmlspecialchars(strtoupper(preg_replace('/-.*$/', '', $compLang) ?: $compLang)) ?>
+                        </span>
+                    <?php endif; ?>
                 </div>
                 <!-- Lyrics lines -->
                 <div class="lyric-lines">
@@ -486,27 +846,105 @@ unset($_t);
         <?php endforeach; ?>
     </div>
 
-    <!-- Copyright notice -->
-    <?php if (!empty($copyright) || !empty($ccli)): ?>
-        <div class="song-copyright mt-4 pt-3 border-top" role="contentinfo">
-            <?php if (!empty($copyright)): ?>
-                <p class="text-muted small mb-1">
+    <!-- Credits + copyright footer at end of lyrics (#601). Mirrors the
+         hymnal / projection convention: a small right-aligned block
+         after the last verse listing Words / Music / Adapted by /
+         Translated by / Tune, then the copyright line. The same data
+         is already rendered in the header, but the footer is the copy
+         users see when projecting or when they have scrolled past the
+         masthead. The .song-credits-footer class is kept distinct from
+         the older .song-copyright (used only by print.css) so the
+         right-aligned layout doesn't bleed into print rules. */ -->
+    <?php if (
+        !empty($_creditRows) && $_hasAnyCredit
+        || $tuneName !== ''
+        || !empty($ccli)
+        || $iswc !== ''
+        || (!$fullyPublicDomain && !empty($copyright))
+        || $fullyPublicDomain
+    ): ?>
+        <footer class="song-credits-footer text-end small text-muted mt-4 pt-3 border-top" role="contentinfo">
+            <?php if ($_hasAnyCredit): ?>
+                <?php foreach ($_creditRows as $row): ?>
+                    <?php [$rowId, $rowLabel, , $rowNames] = $row; ?>
+                    <?php if (empty($rowNames)) continue; ?>
+                    <div data-credit-kind="<?= htmlspecialchars($rowId) ?>">
+                        <strong><?= htmlspecialchars($rowLabel) ?>:</strong>
+                        <?php /* #951 — credits-block author / composer / etc. now
+                                 click through to the same /people/<slug> page the
+                                 header credits do. Same .song-meta-link styling so
+                                 the footer reads as a muted parity copy of the
+                                 header, not a separate visual treatment. */
+                              foreach ($rowNames as $i => $name): ?><a
+                            href="/people/<?= htmlspecialchars(urlencode(strtolower(str_replace(' ', '-', $name)))) ?>"
+                            class="song-meta-link"
+                            data-navigate="person"><?= htmlspecialchars($name) ?></a><?php if ($i < count($rowNames) - 1): ?>;&nbsp;<?php endif; ?><?php endforeach; ?>
+                    </div>
+                <?php endforeach; ?>
+            <?php endif; ?>
+            <?php if ($tuneName !== ''):
+                /* #940 — same link as the header, mirrored in the
+                   after-lyrics credits block for parity. */
+                $_tuneSlugFooter = strtolower(trim(preg_replace('/[^A-Za-z0-9]+/', '-', $tuneName), '-'));
+                ?>
+                <div data-credit-kind="tune">
+                    <strong>Tune:</strong>
+                    <?php if ($_tuneSlugFooter !== ''): ?>
+                        <a href="/tune/<?= htmlspecialchars($_tuneSlugFooter) ?>"
+                           class="song-meta-link"
+                           data-navigate="tune"
+                           title="See all songs that use this tune"><?= htmlspecialchars($tuneName) ?></a>
+                    <?php else: ?>
+                        <?= htmlspecialchars($tuneName) ?>
+                    <?php endif; ?>
+                </div>
+            <?php endif; ?>
+            <?php if (!empty($ccli)):
+                /* #940 — CCLI / ISWC are surfaced in the credits block
+                   too so a viewer who's scrolled past the masthead can
+                   still see (and click) the catalogue identifiers. */
+                $_ccliEncFooter = rawurlencode((string)$ccli);
+                ?>
+                <div data-credit-kind="ccli">
+                    <strong>CCLI Song #</strong>
+                    <a href="https://songselect.ccli.com/songs/<?= htmlspecialchars($_ccliEncFooter) ?>"
+                       class="song-meta-link"
+                       target="_blank"
+                       rel="noopener noreferrer external"
+                       title="View on CCLI SongSelect (opens in new tab)"><?= htmlspecialchars($ccli) ?></a>
+                </div>
+            <?php endif; ?>
+            <?php if ($iswc !== ''):
+                $_iswcEncFooter = rawurlencode((string)$iswc);
+                ?>
+                <div data-credit-kind="iswc" title="International Standard Musical Work Code">
+                    <strong>ISWC:</strong>
+                    <a href="/iswc/<?= htmlspecialchars($_iswcEncFooter) ?>"
+                       class="song-meta-link"
+                       data-navigate="iswc"
+                       title="See all songs sharing this ISWC"><?= htmlspecialchars($iswc) ?></a>
+                </div>
+            <?php endif; ?>
+            <?php if ($fullyPublicDomain): ?>
+                <div class="mt-1" data-credit-kind="public-domain">
+                    <i class="fa-regular fa-copyright me-1" aria-hidden="true"></i>
+                    Public Domain
+                </div>
+            <?php elseif (!empty($copyright)): ?>
+                <div class="mt-1" data-credit-kind="copyright">
                     <i class="fa-regular fa-copyright me-1" aria-hidden="true"></i>
                     <?= htmlspecialchars($copyright) ?>
-                </p>
+                </div>
             <?php endif; ?>
-            <?php if (!empty($ccli)): ?>
-                <p class="text-muted small mb-0">
-                    <i class="fa-solid fa-hashtag me-1" aria-hidden="true"></i>
-                    CCLI Song #<?= htmlspecialchars($ccli) ?>
-                </p>
-            <?php endif; ?>
-        </div>
+        </footer>
     <?php endif; ?>
 
-    <!-- Report missing song link -->
+    <!-- Report missing song link — points at the dedicated form page (#656)
+         rather than dumping the user at the bottom of the long /help
+         article where the request form used to live. URL is /request (#658)
+         with /request-a-song retained as a back-compat alias. -->
     <div class="mt-3">
-        <a href="/help" data-navigate="help" class="text-muted small text-decoration-none">
+        <a href="/request" data-navigate="request" class="text-muted small text-decoration-none">
             <i class="fa-solid fa-flag me-1" aria-hidden="true"></i>
             Report a missing song or suggest a correction
         </a>
@@ -525,6 +963,210 @@ unset($_t);
             </div>
         </div>
     </section>
+
+    <?php
+        /* #853 — accompanying media (audio + sheet PDF + MIDI + MusicXML).
+           Reads $song['media'] attached by SongData::_songMediaMap.
+           Audio gets an inline <audio> player (HTML5 native, supports
+           HTTP Range so the streaming endpoint's 206 response lets the
+           seek-bar work). Sheet music / MIDI / MusicXML get download
+           buttons. Annotations render as a per-row caption. Hidden
+           when no media is attached. */
+        $songMedia = $song['media'] ?? [];
+        if (!empty($songMedia)):
+            $mediaByKind = [
+                'audio' => [], 'sheet-music' => [], 'midi' => [], 'musicxml' => [],
+            ];
+            foreach ($songMedia as $m) {
+                $k = (string)($m['kind'] ?? '');
+                if (isset($mediaByKind[$k])) $mediaByKind[$k][] = $m;
+            }
+    ?>
+    <section id="song-media" class="song-media mt-4 pt-3 border-top" aria-label="Recordings &amp; resources">
+        <h2 class="h6 mb-3 d-flex align-items-center gap-2">
+            <i class="fa-solid fa-music me-1 text-muted" aria-hidden="true"></i>
+            Recordings &amp; resources
+        </h2>
+
+        <?php if (!empty($mediaByKind['audio'])): ?>
+            <div class="song-media-audio mb-3">
+                <?php foreach ($mediaByKind['audio'] as $m): ?>
+                    <div class="mb-2">
+                        <div class="small text-muted mb-1">
+                            <?= htmlspecialchars($m['fileName']) ?>
+                            <?php if (!empty($m['annotation'])): ?>
+                                — <em><?= htmlspecialchars($m['annotation']) ?></em>
+                            <?php endif; ?>
+                        </div>
+                        <audio controls preload="none" class="w-100"
+                               src="<?= htmlspecialchars($m['streamUrl']) ?>"
+                               type="<?= htmlspecialchars($m['mimeType']) ?>">
+                            Your browser doesn't support the audio element.
+                            <a href="<?= htmlspecialchars($m['streamUrl']) ?>">Download <?= htmlspecialchars($m['fileName']) ?></a>.
+                        </audio>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
+
+        <?php
+            /* Non-audio kinds render as a chip-row of download buttons
+               so the section stays compact when a song has 1 PDF + 1
+               MIDI + 1 MusicXML. */
+            $downloadKinds = [
+                'sheet-music' => ['label' => 'Sheet music',  'icon' => 'fa-file-pdf'],
+                'midi'        => ['label' => 'MIDI',         'icon' => 'fa-music'],
+                'musicxml'    => ['label' => 'MusicXML',     'icon' => 'fa-file-code'],
+            ];
+            $hasDownloads = false;
+            foreach ($downloadKinds as $k => $_) {
+                if (!empty($mediaByKind[$k])) { $hasDownloads = true; break; }
+            }
+        ?>
+        <?php if ($hasDownloads): ?>
+            <?php foreach ($downloadKinds as $kind => $kMeta): ?>
+                <?php if (empty($mediaByKind[$kind])) continue; ?>
+                <div class="mb-2">
+                    <div class="text-uppercase small text-muted mb-1"><?= htmlspecialchars($kMeta['label']) ?></div>
+                    <div class="d-flex flex-wrap gap-2">
+                        <?php foreach ($mediaByKind[$kind] as $m): ?>
+                            <a href="<?= htmlspecialchars($m['streamUrl']) ?>"
+                               class="btn btn-sm btn-outline-secondary d-inline-flex align-items-center gap-2"
+                               download="<?= htmlspecialchars($m['fileName']) ?>">
+                                <i class="fa-solid <?= htmlspecialchars($kMeta['icon']) ?>" aria-hidden="true"></i>
+                                <span><?= htmlspecialchars($m['fileName']) ?></span>
+                                <?php if (!empty($m['annotation'])): ?>
+                                    <span class="text-muted small">— <?= htmlspecialchars($m['annotation']) ?></span>
+                                <?php endif; ?>
+                            </a>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+            <?php endforeach; ?>
+        <?php endif; ?>
+    </section>
+    <?php endif; ?>
+
+    <?php
+        /* #840 — "Part of work" panel. Reads $song['works'] attached by
+           SongData::_worksMap (#840). Lists each Work this song belongs
+           to with its sibling members ("other versions of this work")
+           grouped under it. Hidden when empty + when the schema isn't
+           applied. */
+        $songWorks = $song['works'] ?? [];
+        if (!empty($songWorks)):
+    ?>
+    <section id="song-works" class="song-works mt-4 pt-3 border-top" aria-label="Part of work">
+        <h2 class="h6 mb-3 d-flex align-items-center gap-2">
+            <i class="fa-solid fa-diagram-project me-1 text-muted" aria-hidden="true"></i>
+            Part of work
+        </h2>
+        <?php foreach ($songWorks as $w): ?>
+            <div class="mb-3 song-work-block">
+                <div class="d-flex flex-wrap align-items-baseline gap-2 mb-1">
+                    <a href="/work/<?= htmlspecialchars($w['slug']) ?>"
+                       class="fw-semibold"
+                       data-navigate="work"
+                       data-work-slug="<?= htmlspecialchars($w['slug']) ?>">
+                        <?= htmlspecialchars($w['title']) ?>
+                    </a>
+                    <?php if (!empty($w['iswc'])): ?>
+                        <span class="text-muted small">ISWC: <code><?= htmlspecialchars($w['iswc']) ?></code></span>
+                    <?php endif; ?>
+                    <?php if (!empty($w['isCanonical'])): ?>
+                        <span class="badge bg-success-subtle text-success-emphasis">Canonical version</span>
+                    <?php endif; ?>
+                </div>
+                <?php
+                    $siblings = array_values(array_filter(
+                        $w['members'] ?? [],
+                        static fn($m) => (string)$m['songId'] !== (string)$song['id']
+                    ));
+                ?>
+                <?php if (!empty($siblings)): ?>
+                    <div class="text-uppercase small text-muted mb-1">Other versions of this work</div>
+                    <div class="list-group list-group-flush song-list">
+                        <?php foreach ($siblings as $m): ?>
+                            <a href="/song/<?= htmlspecialchars($m['songId']) ?>"
+                               class="list-group-item list-group-item-action song-list-item d-flex align-items-center gap-2"
+                               data-navigate="song"
+                               data-song-id="<?= htmlspecialchars($m['songId']) ?>">
+                                <span class="badge bg-body-secondary"><?= htmlspecialchars($m['songbook']) ?></span>
+                                <?php if ((int)$m['number'] > 0): ?>
+                                    <span class="text-muted small">#<?= (int)$m['number'] ?></span>
+                                <?php endif; ?>
+                                <span class="flex-grow-1"><?= htmlspecialchars(toTitleCase((string)$m['title'])) ?></span>
+                                <?php if (!empty($m['isCanonical'])): ?>
+                                    <i class="fa-solid fa-star text-warning small" aria-label="Canonical version" title="Canonical version"></i>
+                                <?php endif; ?>
+                                <i class="fa-solid fa-chevron-right text-muted small" aria-hidden="true"></i>
+                            </a>
+                        <?php endforeach; ?>
+                    </div>
+                <?php endif; ?>
+            </div>
+        <?php endforeach; ?>
+    </section>
+    <?php endif; ?>
+
+    <?php
+        /* #833 — "Find this hymn elsewhere" panel. Reads tblSongExternalLinks
+           via the `links` array attached by SongData::_externalLinksMap('song'),
+           groups by Category, hides when empty. Each link opens in a new
+           tab with rel="noopener nofollow" so search-engine PageRank
+           doesn't leak. */
+        $songLinksRows = $song['links'] ?? [];
+        if (!empty($songLinksRows)):
+            $sLinksByCat = [];
+            foreach ($songLinksRows as $l) {
+                $cat = (string)($l['category'] ?? 'other');
+                if (!isset($sLinksByCat[$cat])) $sLinksByCat[$cat] = [];
+                $sLinksByCat[$cat][] = $l;
+            }
+            $sCatLabels = [
+                'official'    => 'Official',
+                'information' => 'Information',
+                'read'        => 'Read',
+                'sheet-music' => 'Sheet music',
+                'listen'      => 'Listen',
+                'watch'       => 'Watch',
+                'purchase'    => 'Purchase',
+                'authority'   => 'Authority',
+                'social'      => 'Social',
+                'other'       => 'Other',
+            ];
+    ?>
+    <section id="song-external-links" class="song-external-links mt-4 pt-3 border-top" aria-label="Find this hymn elsewhere">
+        <h2 class="h6 mb-3 d-flex align-items-center gap-2">
+            <i class="fa-solid fa-link me-1 text-muted" aria-hidden="true"></i>
+            Find this hymn elsewhere
+        </h2>
+        <?php foreach ($sCatLabels as $cat => $catLabel): ?>
+            <?php if (empty($sLinksByCat[$cat])) continue; ?>
+            <div class="mb-2">
+                <div class="text-uppercase small text-muted mb-1"><?= htmlspecialchars($catLabel) ?></div>
+                <div class="d-flex flex-wrap gap-2">
+                    <?php foreach ($sLinksByCat[$cat] as $l): ?>
+                        <a href="<?= htmlspecialchars($l['url']) ?>"
+                           target="_blank" rel="noopener nofollow"
+                           class="btn btn-sm btn-outline-secondary d-inline-flex align-items-center gap-2">
+                            <?php if (!empty($l['iconClass'])): ?>
+                                <i class="<?= htmlspecialchars($l['iconClass']) ?>" aria-hidden="true"></i>
+                            <?php endif; ?>
+                            <span><?= htmlspecialchars($l['name']) ?></span>
+                            <?php if (!empty($l['note'])): ?>
+                                <span class="text-muted small">— <?= htmlspecialchars($l['note']) ?></span>
+                            <?php endif; ?>
+                            <?php if (!empty($l['verified'])): ?>
+                                <i class="fa-solid fa-circle-check text-success small" aria-label="Verified" title="Verified"></i>
+                            <?php endif; ?>
+                        </a>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+        <?php endforeach; ?>
+    </section>
+    <?php endif; ?>
 
     <!-- Related songs (#118) — populated client-side from songs.json -->
     <section id="related-songs" class="related-songs mt-4 pt-3 border-top d-none" aria-label="Related songs">

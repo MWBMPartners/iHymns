@@ -26,6 +26,52 @@
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
+-- tblPlaces
+-- Canonical registry of geographic places (suburb / city / state / country)
+-- backed by a live geocoder lookup (Photon primary, Nominatim fallback —
+-- both OpenStreetMap-derived). Other tables FK in here for consistent
+-- place names across the catalogue. The geocoder identity (Provider +
+-- OsmType + OsmId) is the natural key — a curator picking "Sydney" twice
+-- in two different editors resolves to the same row. DisplayName is the
+-- full hierarchical label as returned by the geocoder; Name is the short
+-- label (city / village name). Latitude / Longitude are stored so future
+-- map widgets don't need a re-fetch. Created via migrate-places.php.
+--
+-- Defined here at the top of the file (before every table that FKs
+-- into it) so a fresh install can build all the inbound constraints
+-- in declaration order without flipping foreign_key_checks.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblPlaces (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    Provider        VARCHAR(20)     NOT NULL DEFAULT 'osm' COMMENT 'Geocoder family the OsmType/OsmId pair is namespaced under',
+    OsmType         CHAR(1)         NULL COMMENT 'N=node, W=way, R=relation; NULL for manually-entered places',
+    OsmId           BIGINT          NULL COMMENT 'OSM object id within OsmType; NULL for manually-entered places',
+    DisplayName     VARCHAR(500)    NOT NULL COMMENT 'Full hierarchical label as returned by the geocoder',
+    Name            VARCHAR(255)    NULL COMMENT 'Short label (city / village / suburb)',
+    Suburb          VARCHAR(255)    NULL,
+    City            VARCHAR(255)    NULL COMMENT 'City / town / village level (collapsed from OSM city/town/village/hamlet keys)',
+    County          VARCHAR(255)    NULL,
+    Region          VARCHAR(255)    NULL COMMENT 'State / province / region',
+    Country         VARCHAR(255)    NULL,
+    CountryCode     CHAR(2)         NULL COMMENT 'ISO-3166-1 alpha-2, lowercase',
+    Latitude        DECIMAL(10,7)   NULL,
+    Longitude       DECIMAL(10,7)   NULL,
+    PlaceType       VARCHAR(50)     NULL COMMENT 'Geocoder-reported type: city, town, village, state, country, …',
+    CreatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                    ON UPDATE CURRENT_TIMESTAMP,
+
+    /* Natural key — a Provider+OsmType+OsmId triple identifies a unique
+       geocoder object. NULL OsmId rows (manual entries) are exempt from
+       the uniqueness constraint because MySQL treats NULLs as distinct,
+       which is the behaviour we want. */
+    UNIQUE KEY uk_OsmRef (Provider, OsmType, OsmId),
+    INDEX idx_DisplayName (DisplayName),
+    INDEX idx_CountryCode (CountryCode)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
 -- tblSongbooks
 -- Stores the songbook/collection definitions (CP, JP, MP, SDAH, CH, Misc).
 -- ----------------------------------------------------------------------------
@@ -39,12 +85,67 @@ CREATE TABLE IF NOT EXISTS tblSongbooks (
     IsOfficial      TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = published hymnal; 0 = curated grouping / pseudo-songbook (#502)',
     Publisher       VARCHAR(255)    NULL DEFAULT NULL COMMENT 'Publisher or originator (e.g. Praise Trust, Hope Publishing) (#502)',
     PublicationYear VARCHAR(50)     NULL DEFAULT NULL COMMENT 'Year / edition range (free-form: 1986, 1986-2003, 2nd edition 2011) (#502)',
+    /* Publication city — VARCHAR mirror for JOIN-free reads + FK
+       into tblPlaces for normalised country/region grouping. */
+    PublicationCity   VARCHAR(255)  NULL DEFAULT NULL,
+    PublicationCityId INT UNSIGNED  NULL DEFAULT NULL,
     Copyright       VARCHAR(500)    NULL DEFAULT NULL COMMENT 'Copyright notice for the collection as a whole (#502)',
-    Affiliation     VARCHAR(120)    NULL DEFAULT NULL COMMENT 'Denominational / religious affiliation; free-text for now, lookup table later (#502)',
+    Affiliation     VARCHAR(120)    NULL DEFAULT NULL COMMENT 'Denominational / religious affiliation; backed by tblSongbookAffiliations registry (#670)',
+    Language        VARCHAR(35)     NULL DEFAULT NULL COMMENT 'Optional IETF BCP 47 tag (language[-script][-region], e.g. en, pt-BR, zh-Hans-CN); NULL = not specified. Soft validation via the composite picker dropdowns; widened from VARCHAR(10) to fit script+region subtags (#681)',
+
+    /* Bibliographic + authority-control identifiers (#672). All
+       optional, all VARCHAR — no FKs, no CHECK constraints. Curators
+       fill these in by pasting the canonical form from a library
+       catalogue / WikiData / WorldCat. */
+    WebsiteUrl          VARCHAR(500)    NULL DEFAULT NULL COMMENT 'Publisher / official website URL for the songbook (#672)',
+    InternetArchiveUrl  VARCHAR(500)    NULL DEFAULT NULL COMMENT 'Internet Archive page (e.g. https://archive.org/details/<id>) or bare IA identifier (#672)',
+    WikipediaUrl        VARCHAR(500)    NULL DEFAULT NULL COMMENT 'Wikipedia article URL (#672)',
+    WikidataId          VARCHAR(20)     NULL DEFAULT NULL COMMENT 'WikiData Q-number (e.g. Q12345) (#672)',
+    OclcNumber          VARCHAR(30)     NULL DEFAULT NULL COMMENT 'OCLC WorldCat number (#672)',
+    OcnNumber           VARCHAR(30)     NULL DEFAULT NULL COMMENT 'OCLC Control Number (often prefixed ocn/ocm/on); kept distinct from OclcNumber so catalogues that record both can carry both (#672)',
+    LcpNumber           VARCHAR(30)     NULL DEFAULT NULL COMMENT 'Library of Congress permalink / project number (#672)',
+    Isbn                VARCHAR(20)     NULL DEFAULT NULL COMMENT 'ISBN-10 or ISBN-13 (dashes optional) (#672)',
+    ArkId               VARCHAR(80)     NULL DEFAULT NULL COMMENT 'Archival Resource Key (e.g. ark:/13960/t8jf3w89z) (#672)',
+    IsniId              VARCHAR(25)     NULL DEFAULT NULL COMMENT 'International Standard Name Identifier (16 digits, optional spacing) (#672)',
+    ViafId              VARCHAR(20)     NULL DEFAULT NULL COMMENT 'Virtual International Authority File ID (#672)',
+    Lccn                VARCHAR(20)     NULL DEFAULT NULL COMMENT 'Library of Congress Control Number (#672)',
+    LcClass             VARCHAR(50)     NULL DEFAULT NULL COMMENT 'Library of Congress Classification call number (#672)',
+
+    /* Hierarchical relationships (#782): translations / editions /
+       abridgements of another songbook. NULL = standalone. */
+    ParentSongbookId    INT UNSIGNED    NULL DEFAULT NULL COMMENT 'Parent songbook for hierarchical relationships (translation / edition / abridgement of) (#782)',
+    ParentRelationship  ENUM('translation','edition','abridgement','derivative','companion')
+                                        NULL DEFAULT NULL COMMENT 'Type of relationship to ParentSongbookId (#782)',
+
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-    INDEX idx_DisplayOrder (DisplayOrder)
+    INDEX idx_DisplayOrder (DisplayOrder),
+    INDEX idx_ParentSongbook (ParentSongbookId),
+    INDEX idx_PublicationCityId (PublicationCityId),
+    CONSTRAINT fk_Songbook_Parent
+        FOREIGN KEY (ParentSongbookId) REFERENCES tblSongbooks(Id) ON DELETE SET NULL,
+    CONSTRAINT fk_Songbooks_PublicationCity
+        FOREIGN KEY (PublicationCityId) REFERENCES tblPlaces(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongbookAffiliations (#670)
+-- Controlled vocabulary for the Affiliation column on tblSongbooks. Acts as a
+-- parallel registry — Affiliation stays a denormalised VARCHAR on tblSongbooks
+-- (no FK), but every non-empty value the songbook editor saves is also
+-- INSERT IGNOREd here so the typeahead can prevent duplicate-creation drift
+-- (e.g. "Seventh-day Adventist Church" vs "Seventh-Day Adventist Church"
+-- vs "SDA Church"). Same shape as tblCreditPeople below.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongbookAffiliations (
+    Id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    Name        VARCHAR(120)    NOT NULL,
+    CreatedAt   TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE KEY ux_affiliation_name (Name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -62,8 +163,13 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     Title               VARCHAR(500)    NOT NULL,
     SongbookAbbr        VARCHAR(10)     NOT NULL COMMENT 'FK to tblSongbooks.Abbreviation',
     SongbookName        VARCHAR(255)    NOT NULL COMMENT 'Denormalised songbook name for convenience',
-    Language            VARCHAR(10)     NOT NULL DEFAULT 'en',
+    Language            VARCHAR(35)     NOT NULL DEFAULT 'en' COMMENT 'IETF BCP 47 tag (language[-script][-region]); widened from VARCHAR(10) to fit script + region subtags (#681)',
     Copyright           VARCHAR(500)    NOT NULL DEFAULT '',
+    /* Composition / first-performance origin (places sweep #2). The
+       VARCHAR mirror keeps reads JOIN-free; the FK lets the future
+       country/region report group across the catalogue. */
+    OriginCity          VARCHAR(255)    NULL DEFAULT NULL,
+    OriginCityId        INT UNSIGNED    NULL DEFAULT NULL,
     TuneName            VARCHAR(120)    NULL DEFAULT NULL COMMENT 'Traditional tune name, e.g. HYFRYDOL, OLD HUNDREDTH (#497)',
     Ccli                VARCHAR(50)     NOT NULL DEFAULT '' COMMENT 'CCLI Song Number',
     Iswc                VARCHAR(15)     NULL DEFAULT NULL COMMENT 'International Standard Musical Work Code, e.g. T-034.524.680-C (#497)',
@@ -73,19 +179,24 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     HasAudio            TINYINT(1)      NOT NULL DEFAULT 0,
     HasSheetMusic       TINYINT(1)      NOT NULL DEFAULT 0,
     LyricsText          MEDIUMTEXT      NOT NULL DEFAULT ('') COMMENT 'Concatenated lyrics for full-text search',
+    ArrangementJson     JSON            NULL DEFAULT NULL COMMENT 'Optional int-array of indices into components[] that overrides the stored SortOrder (lets a refrain repeat between verses) (#892)',
     CreatedAt           TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt           TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
     INDEX idx_Songbook          (SongbookAbbr),
     INDEX idx_SongbookNumber    (SongbookAbbr, Number),
     INDEX idx_TuneName          (TuneName),
+    INDEX idx_OriginCityId      (OriginCityId),
     FULLTEXT idx_TitleFt        (Title),
     FULLTEXT idx_LyricsFt       (LyricsText),
     FULLTEXT idx_TitleLyricsFt  (Title, LyricsText),
 
     CONSTRAINT fk_Songs_Songbook
         FOREIGN KEY (SongbookAbbr) REFERENCES tblSongbooks(Abbreviation)
-        ON DELETE RESTRICT ON UPDATE CASCADE
+        ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT fk_Songs_OriginCity
+        FOREIGN KEY (OriginCityId) REFERENCES tblPlaces(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -183,6 +294,30 @@ CREATE TABLE IF NOT EXISTS tblSongTranslators (
 
 
 -- ----------------------------------------------------------------------------
+-- tblSongArtists (#587)
+-- Recording / release artist credits — distinct from the Writers /
+-- Composers / Arrangers etc. roles. Captures the performing artist
+-- (e.g. "Hillsong Worship" for "What a Beautiful Name") rather than
+-- the songwriter. Feeds the future ProPresenter export which wants
+-- the artist name on every slide. Created via migrate-song-artists.php.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongArtists (
+    Id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    SongId      VARCHAR(20)     NOT NULL,
+    Name        VARCHAR(255)    NOT NULL,
+    SortOrder   INT             NOT NULL DEFAULT 0 COMMENT 'Display order when a song has multiple artists',
+    CreatedAt   TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_SongId    (SongId),
+    INDEX idx_Name      (Name),
+
+    CONSTRAINT fk_Artists_Song
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
 -- tblCreditPeople (#545)
 -- Registry of people credited on songs. Holds the canonical Name plus
 -- optional biographical metadata. The five song-credit tables above
@@ -194,19 +329,55 @@ CREATE TABLE IF NOT EXISTS tblSongTranslators (
 -- intact.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblCreditPeople (
-    Id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
-    Name        VARCHAR(255)    NOT NULL,
-    Notes       TEXT            NULL,
-    BirthPlace  VARCHAR(255)    NULL,
-    BirthDate   DATE            NULL,
-    DeathPlace  VARCHAR(255)    NULL,
-    DeathDate   DATE            NULL,
-    CreatedAt   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UpdatedAt   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
-                                ON UPDATE CURRENT_TIMESTAMP,
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    Name            VARCHAR(255)    NOT NULL,
+    /* URL-safe slug (#588) — backfilled from Name with collision-safe
+       numeric suffixes so two "John Smith" rows still map to two
+       distinct slugs. Used for the public /people/<slug> page. */
+    Slug            VARCHAR(255)    NULL UNIQUE,
+    /* Special-case + Group flags (#584 / #585) — distinguish
+       Anonymous / Traditional / Public Domain / Unknown ("special
+       case") from real individuals, and Hillsong United / Bethel
+       Music ("group / collective") from solo writers. Both flags
+       feed UI rules in the Credit People editor (e.g. disable
+       birth/death fields when special case; relabel dates as
+       Founded/Disbanded when group). */
+    IsSpecialCase   TINYINT(1)      NOT NULL DEFAULT 0,
+    IsGroup         TINYINT(1)      NOT NULL DEFAULT 0,
+    /* Structured-name parts (#934). Backfilled from Name on first run
+       of migrate-credit-people-name-parts.php; new inserts populate
+       these alongside the canonical Name string. Group / special-case
+       rows leave these NULL — only real individuals get split. */
+    FirstNames      VARCHAR(255)    NULL,
+    Surname         VARCHAR(255)    NULL,
+    Suffix          VARCHAR(64)     NULL,
+    Notes           TEXT            NULL,
+    BirthPlace      VARCHAR(255)    NULL,
+    /* FK into tblPlaces; nullable for legacy / free-text rows where
+       no canonical place was picked from the geocoder. BirthPlace
+       stays alongside as a denormalised display string so reports
+       and read paths don't need a JOIN. */
+    BirthPlaceId    INT UNSIGNED    NULL,
+    BirthDate       DATE            NULL,
+    DeathPlace      VARCHAR(255)    NULL,
+    DeathPlaceId    INT UNSIGNED    NULL,
+    DeathDate       DATE            NULL,
+    CreatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                    ON UPDATE CURRENT_TIMESTAMP,
 
     UNIQUE KEY uk_Name (Name),
-    INDEX idx_Name (Name)
+    INDEX idx_Name (Name),
+    INDEX idx_Slug (Slug),
+    INDEX idx_BirthPlaceId (BirthPlaceId),
+    INDEX idx_DeathPlaceId (DeathPlaceId),
+
+    CONSTRAINT fk_CreditPeople_BirthPlace
+        FOREIGN KEY (BirthPlaceId) REFERENCES tblPlaces(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_CreditPeople_DeathPlace
+        FOREIGN KEY (DeathPlaceId) REFERENCES tblPlaces(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -269,6 +440,34 @@ CREATE TABLE IF NOT EXISTS tblCreditPersonIPI (
 
 
 -- ----------------------------------------------------------------------------
+-- tblCreditPersonIdentifiers
+-- Unified MusicBrainz-style identifier table: holds IPI Name Numbers AND
+-- ISNI (International Standard Name Identifier) rows side by side, with
+-- IdentifierType discriminating. Replaces the per-kind tblCreditPersonIPI
+-- table going forward; the legacy table stays as a one-release rollback
+-- snapshot and is dropped in a follow-up migration.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblCreditPersonIdentifiers (
+    Id              INT UNSIGNED       AUTO_INCREMENT PRIMARY KEY,
+    CreditPersonId  INT UNSIGNED       NOT NULL,
+    IdentifierType  ENUM('ipi','isni') NOT NULL,
+    IdentifierValue VARCHAR(64)        NOT NULL,
+    NameUsed        VARCHAR(255)       NULL,
+    Notes           VARCHAR(255)       NULL,
+    CreatedAt       DATETIME           NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       DATETIME           NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                       ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uk_PersonIdValue (CreditPersonId, IdentifierType, IdentifierValue),
+    INDEX idx_TypeValue (IdentifierType, IdentifierValue),
+
+    CONSTRAINT fk_CreditPersonId_Person
+        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
 -- tblSongComponents
 -- Each component stores its lyrics lines as a JSON array.
 -- `SortOrder` preserves the display sequence from the original data.
@@ -280,6 +479,7 @@ CREATE TABLE IF NOT EXISTS tblSongComponents (
     Number      INT UNSIGNED    NOT NULL COMMENT 'Component number (e.g., verse 1, verse 2)',
     SortOrder   INT UNSIGNED    NOT NULL COMMENT 'Display order within the song',
     LinesJson   JSON            NOT NULL COMMENT 'Array of lyric lines',
+    Language    VARCHAR(35)     NULL DEFAULT NULL COMMENT 'Optional per-component language override; NULL = inherit from parent tblSongs.Language. Used for multi-language medleys (#858)',
 
     INDEX idx_SongId        (SongId),
     INDEX idx_SongOrder     (SongId, SortOrder),
@@ -340,6 +540,8 @@ CREATE TABLE IF NOT EXISTS tblUsers (
     LastLoginAt     TIMESTAMP       NULL DEFAULT NULL COMMENT 'Last successful login timestamp',
     LoginCount      INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'Total successful login count',
     Settings        JSON            NULL DEFAULT NULL COMMENT 'Synced per-user app preferences (theme, font, accessibility, etc.)',
+    AvatarService   VARCHAR(20)     NULL DEFAULT NULL COMMENT 'Avatar resolver: gravatar, libravatar, dicebear, none. NULL = use site default. (#616)',
+    PreferredLanguagesJson JSON     NULL DEFAULT NULL COMMENT 'Synced per-user language-filter choice — JSON array of IETF BCP 47 primary subtags (e.g. ["en","es"]). NULL / [] = show all languages (#736)',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
@@ -400,7 +602,13 @@ CREATE TABLE IF NOT EXISTS tblApiTokens (
 -- 48-character hex string (24 random bytes), 1-hour default expiry.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblPasswordResetTokens (
-    Token           VARCHAR(48)     NOT NULL PRIMARY KEY,
+    -- CHAR(64) holds the full sha256 hex of the raw token. Pre-#898
+    -- this column was VARCHAR(48), which silently truncated the 64-
+    -- char hash to 48. Lookups still worked (insert + lookup
+    -- truncated identically) but the on-disk hash was effectively
+    -- 192 bits instead of 256. The follow-up migration widens
+    -- existing installs in place.
+    Token           CHAR(64)        NOT NULL PRIMARY KEY,
     UserId          INT UNSIGNED    NOT NULL,
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     ExpiresAt       TIMESTAMP       NOT NULL,
@@ -426,8 +634,17 @@ CREATE TABLE IF NOT EXISTS tblEmailLoginTokens (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
     Email           VARCHAR(255)    NOT NULL COMMENT 'Email address the token was sent to',
     UserId          INT UNSIGNED    NULL COMMENT 'FK to tblUsers if email matches existing account',
-    Token           VARCHAR(64)     NOT NULL UNIQUE COMMENT '48-char hex token for magic link',
-    Code            VARCHAR(6)      NOT NULL COMMENT '6-digit numeric code for manual entry',
+    -- Stores sha256(raw token) hex (64 chars). The raw 48-char hex
+    -- token only ever lives in the outbound email body. Pre-#898
+    -- this column held the raw token; the follow-up migration drops
+    -- any unused rows and flips the storage discipline.
+    Token           VARCHAR(64)     NOT NULL UNIQUE COMMENT 'sha256 hex of raw 48-char hex magic-link token',
+    -- Code stays plaintext: 6-digit numeric is ~20 bits of entropy,
+    -- below the threshold where hashing provides meaningful defence
+    -- against an attacker with the table contents. The defence-in-
+    -- depth here is single-use + 10-minute expiry + email-scoped
+    -- lookup, all enforced by tblEmailLoginTokens itself.
+    Code            VARCHAR(6)      NOT NULL COMMENT '6-digit numeric code for manual entry (plaintext)',
     Used            TINYINT(1)      NOT NULL DEFAULT 0,
     ExpiresAt       TIMESTAMP       NOT NULL,
     IpAddress       VARCHAR(45)     NOT NULL DEFAULT '' COMMENT 'IP that requested the token',
@@ -439,6 +656,30 @@ CREATE TABLE IF NOT EXISTS tblEmailLoginTokens (
     INDEX idx_Expires   (ExpiresAt),
 
     CONSTRAINT fk_EmailLogin_User
+        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblEmailVerificationTokens (#898)
+-- Single-use tokens for confirming a user's email address after password
+-- registration. Stores the SHA-256 hash of a 48-char hex token (raw token
+-- only ever lives in the email body); 24-hour expiry. On consumption,
+-- tblUsers.EmailVerified flips 0 -> 1 and the row is marked Used.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblEmailVerificationTokens (
+    TokenHash       CHAR(64)        NOT NULL PRIMARY KEY COMMENT 'sha256 of raw token',
+    UserId          INT UNSIGNED    NOT NULL,
+    Email           VARCHAR(255)    NOT NULL COMMENT 'Email at the moment the token was issued',
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ExpiresAt       TIMESTAMP       NOT NULL,
+    Used            TINYINT(1)      NOT NULL DEFAULT 0,
+
+    INDEX idx_User      (UserId),
+    INDEX idx_Expires   (ExpiresAt),
+
+    CONSTRAINT fk_VerifyTokens_User
         FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
         ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -514,6 +755,10 @@ CREATE TABLE IF NOT EXISTS tblOrganisations (
     Slug            VARCHAR(100)    NOT NULL UNIQUE COMMENT 'URL-safe identifier',
     ParentOrgId     INT UNSIGNED    NULL DEFAULT NULL COMMENT 'Self-ref FK for nested orgs',
     Description     TEXT            NOT NULL DEFAULT (''),
+    /* Physical address — VARCHAR mirror for JOIN-free reads + FK
+       into tblPlaces for country grouping / regional filters. */
+    PhysicalCity     VARCHAR(255)   NULL DEFAULT NULL,
+    PhysicalCityId   INT UNSIGNED   NULL DEFAULT NULL,
     LicenceType     VARCHAR(30)     NOT NULL DEFAULT 'none' COMMENT 'none, ihymns_basic, ihymns_pro, ccli',
     LicenceNumber   VARCHAR(100)    NOT NULL DEFAULT '' COMMENT 'CCLI licence number or iHymns key',
     LicenceExpiresAt TIMESTAMP      NULL DEFAULT NULL,
@@ -524,9 +769,13 @@ CREATE TABLE IF NOT EXISTS tblOrganisations (
     INDEX idx_Parent    (ParentOrgId),
     INDEX idx_Slug      (Slug),
     INDEX idx_Licence   (LicenceType),
+    INDEX idx_PhysicalCityId (PhysicalCityId),
 
     CONSTRAINT fk_Org_Parent
         FOREIGN KEY (ParentOrgId) REFERENCES tblOrganisations(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_Organisations_PhysicalCity
+        FOREIGN KEY (PhysicalCityId) REFERENCES tblPlaces(Id)
         ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -548,6 +797,37 @@ CREATE TABLE IF NOT EXISTS tblOrganisationMembers (
         ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT fk_OrgMember_Org
         FOREIGN KEY (OrgId) REFERENCES tblOrganisations(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblOrganisationLicences
+-- Multi-licence-per-org join table (#640). An organisation can hold
+-- several licence types in parallel — e.g. CCLI for the lyrics + MRL
+-- for the print rights — each with its own number, expiry, and
+-- active flag. The original tblOrganisations.LicenceType /
+-- LicenceNumber columns remain as the "primary" licence and are
+-- mirrored into a row in this table; additional licences live only
+-- here. Created via migrate-organisation-licences.php.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblOrganisationLicences (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    OrganisationId  INT UNSIGNED    NOT NULL,
+    LicenceType     VARCHAR(30)     NOT NULL COMMENT 'ccli, mrl, ihymns_basic, ihymns_pro, custom',
+    LicenceNumber   VARCHAR(100)    NOT NULL DEFAULT '',
+    IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
+    ExpiresAt       TIMESTAMP       NULL DEFAULT NULL,
+    Notes           TEXT            NULL DEFAULT NULL,
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uniq_OrgLicence (OrganisationId, LicenceType),
+    INDEX idx_LicenceType (LicenceType),
+    INDEX idx_IsActive    (IsActive),
+
+    CONSTRAINT fk_OrgLicence_Org
+        FOREIGN KEY (OrganisationId) REFERENCES tblOrganisations(Id)
         ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -722,10 +1002,57 @@ CREATE TABLE IF NOT EXISTS tblUserFavorites (
 -- Reference table for supported languages. Uses ISO 639-1 codes.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblLanguages (
-    Code            VARCHAR(10)     NOT NULL PRIMARY KEY COMMENT 'ISO 639-1 code (e.g. en, fr, es)',
-    Name            VARCHAR(100)    NOT NULL COMMENT 'English name (e.g. French)',
-    NativeName      VARCHAR(100)    NOT NULL DEFAULT '' COMMENT 'Native name (e.g. Français)',
+    Code            VARCHAR(35)     NOT NULL PRIMARY KEY COMMENT 'IANA language subtag (ISO 639-1/2/3 + extensions; widened from 10 → 35 in #738)',
+    Name            VARCHAR(250)    NOT NULL COMMENT 'English name (CLDR-polished form preferred over raw IANA Description)',
+    NativeName      VARCHAR(250)    NOT NULL DEFAULT '' COMMENT 'Native name (e.g. Français)',
     TextDirection   VARCHAR(3)      NOT NULL DEFAULT 'ltr' COMMENT 'ltr or rtl',
+    Scope           ENUM('individual','macrolanguage','collection','private-use','special') NOT NULL DEFAULT 'individual' COMMENT 'IANA Scope; macrolanguages (zh, ar, fa) outrank narrower variants in the picker (#738)',
+    IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblLanguageScripts (#681 / renamed in #738 from tblScripts)
+-- Reference table for ISO 15924 four-letter script codes (e.g. Latn, Cyrl,
+-- Hans, Hant, Arab). Used as the optional second subtag in an IETF BCP 47
+-- language tag (e.g. zh-Hans, sr-Latn). Curators pick from this list via the
+-- songbook + song editors' composite IETF language picker. Renamed for
+-- clarity — "Scripts" alone reads as mini-programs/processors.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblLanguageScripts (
+    Code            VARCHAR(4)      NOT NULL PRIMARY KEY COMMENT 'ISO 15924 four-letter code (Title Case: Latn, Cyrl, Hans, …)',
+    Name            VARCHAR(150)    NOT NULL COMMENT 'English name (CLDR-polished where available)',
+    NativeName      VARCHAR(150)    NOT NULL DEFAULT '' COMMENT 'Native or contextual name where useful (e.g. 简体)',
+    IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblRegions (#681)
+-- Reference table for ISO 3166-1 alpha-2 region codes (e.g. GB, US, BR, PT).
+-- Used as the optional third subtag in an IETF BCP 47 language tag (e.g.
+-- pt-BR, en-GB). VARCHAR(3) leaves room for the M.49 numeric area codes
+-- (e.g. 419 for Latin America) that BCP 47 also accepts.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblRegions (
+    Code            VARCHAR(3)      NOT NULL PRIMARY KEY COMMENT 'ISO 3166-1 alpha-2 (uppercase) or M.49 numeric area code',
+    Name            VARCHAR(150)    NOT NULL COMMENT 'English name (CLDR-polished where available)',
+    IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblLanguageVariants (#738)
+-- Reference table for IANA variant subtags (5-8 chars, e.g. 1996 for German
+-- post-1996 orthography, fonipa for IPA phonetics, valencia for Valencian).
+-- Used as the optional fourth subtag in an IETF BCP 47 language tag.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblLanguageVariants (
+    Code            VARCHAR(8)      NOT NULL PRIMARY KEY COMMENT 'IANA variant subtag (5-8 chars)',
+    Name            VARCHAR(250)    NOT NULL COMMENT 'English name (CLDR-polished where available; raw IANA Description otherwise)',
     IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -740,7 +1067,7 @@ CREATE TABLE IF NOT EXISTS tblSongTranslations (
     Id                  INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
     SourceSongId        VARCHAR(20)     NOT NULL COMMENT 'Original song ID',
     TranslatedSongId    VARCHAR(20)     NOT NULL COMMENT 'Translated song ID',
-    TargetLanguage      VARCHAR(10)     NOT NULL COMMENT 'ISO 639-1 code of translation',
+    TargetLanguage      VARCHAR(35)     NOT NULL COMMENT 'IETF BCP 47 tag of translation; widened from VARCHAR(10) to align with tblSongs.Language (#681)',
     Translator          VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Translator name(s)',
     Verified            TINYINT(1)      NOT NULL DEFAULT 0,
     CreatedAt           TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -775,7 +1102,7 @@ CREATE TABLE IF NOT EXISTS tblSongRequests (
     Title           VARCHAR(500)    NOT NULL COMMENT 'Requested song title',
     Songbook        VARCHAR(100)    NOT NULL DEFAULT '' COMMENT 'Songbook name or abbreviation (if known)',
     SongNumber      VARCHAR(20)     NOT NULL DEFAULT '' COMMENT 'Song number (if known)',
-    Language        VARCHAR(10)     NOT NULL DEFAULT 'en' COMMENT 'Language of the requested song',
+    Language        VARCHAR(35)     NOT NULL DEFAULT 'en' COMMENT 'IETF BCP 47 tag of requested song; widened from VARCHAR(10) for consistency (#681)',
     Details         TEXT            NOT NULL DEFAULT ('') COMMENT 'Additional info (first line of lyrics, etc.)',
     ContactEmail    VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Optional email for follow-up',
     UserId          INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK to tblUsers (NULL for anonymous)',
@@ -824,23 +1151,55 @@ CREATE TABLE IF NOT EXISTS tblActivityLog (
     Result          ENUM('success','failure','error') NOT NULL DEFAULT 'success'
                     COMMENT 'success = OK; failure = user-side reject; error = server-side exception (#535)',
     Details         JSON            NULL COMMENT 'Additional context (before/after diff, error message, request body)',
-    IpAddress       VARCHAR(45)     NOT NULL DEFAULT '',
+    IpAddress       VARCHAR(45)     NOT NULL DEFAULT '' COMMENT 'Real client IP after proxy resolution (CF-Connecting-IP / X-Forwarded-For / REMOTE_ADDR), IPv6-capable',
+    IpProxyChain    VARCHAR(255)    NULL COMMENT 'Comma-separated proxy chain from X-Forwarded-For; last hop = proxy that delivered to PHP',
+    ProxyVpnIndicator VARCHAR(50)   NULL COMMENT 'Heuristic/external classification: none | cloudflare | xff | datacentre | vpn | tor | proxy',
+    ProxyVpnDetail  JSON            NULL COMMENT 'Provider / score / source headers — populated by heuristic resolver + (future) external lookup',
     UserAgent       VARCHAR(500)    NOT NULL DEFAULT '' COMMENT 'Truncated UA — useful for "mobile vs desktop" debugging (#535)',
     RequestId       CHAR(16)        NOT NULL DEFAULT '' COMMENT 'Per-HTTP-request correlation ID; groups every row from one request (#535)',
     Method          VARCHAR(10)     NOT NULL DEFAULT '' COMMENT 'HTTP method (GET/POST/etc) for HTTP-driven events; blank for cron/system (#535)',
     DurationMs      INT UNSIGNED    NULL COMMENT 'Wall-clock duration of the logged operation in milliseconds (#535)',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    INDEX idx_User      (UserId),
-    INDEX idx_Action    (Action),
-    INDEX idx_Entity    (EntityType, EntityId),
-    INDEX idx_Created   (CreatedAt),
-    INDEX idx_Result    (Result),
-    INDEX idx_RequestId (RequestId),
+    INDEX idx_User              (UserId),
+    INDEX idx_Action            (Action),
+    INDEX idx_Entity            (EntityType, EntityId),
+    INDEX idx_Created           (CreatedAt),
+    INDEX idx_Result            (Result),
+    INDEX idx_RequestId         (RequestId),
+    INDEX idx_ProxyVpnIndicator (ProxyVpnIndicator),
 
     CONSTRAINT fk_Log_User
         FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
         ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------
+-- tblIpReputation
+--
+-- Cache table for proxy/VPN classification of client IPs. Keyed by
+-- IpAddress; one row per unique client. The activity-log resolver
+-- reads through this table on every request, only paying the
+-- external-lookup latency on the first request from a new IP within
+-- the configured TTL window.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblIpReputation (
+    IpAddress      VARCHAR(45)  NOT NULL PRIMARY KEY,
+    Indicator      VARCHAR(50)  NULL
+                   COMMENT 'cloudflare | xff | datacentre | vpn | tor | proxy | none',
+    Provider       VARCHAR(100) NULL
+                   COMMENT 'Provider name from external lookup (e.g. NordVPN, AWS, Cloudflare WARP)',
+    Score          SMALLINT     NULL
+                   COMMENT 'Confidence score 0-100 if the lookup source provides one',
+    Detail         JSON         NULL
+                   COMMENT 'Raw lookup response, kept for forensic + audit',
+    Source         VARCHAR(50)  NOT NULL DEFAULT ''
+                   COMMENT 'header | ipqs | maxmind | ipinfo | manual',
+    LookedUpAt     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ExpiresAt      TIMESTAMP    NULL,
+
+    INDEX idx_Indicator (Indicator),
+    INDEX idx_Expires   (ExpiresAt)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -1168,6 +1527,49 @@ CREATE TABLE IF NOT EXISTS tblSongTagMap (
 
 
 -- ----------------------------------------------------------------------------
+-- tblBulkImportJobs (#676)
+-- Tracks long-running bulk_import_zip jobs so the browser can poll for
+-- progress and the persistent progress widget on every iHymns page can
+-- survive navigation. Created when an editor uploads a zip via
+-- /manage/editor/api.php?action=bulk_import_zip; the action saves the
+-- tmp file path here, returns {job_id} immediately, calls
+-- fastcgi_finish_request() to release the HTTP connection, then
+-- continues processing in the freed worker, updating ProcessedEntries
+-- + counts every N entries. The bulk_import_status endpoint reads
+-- this row.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblBulkImportJobs (
+    Id                       INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    UserId                   INT UNSIGNED NULL COMMENT 'editor who started the import; NULL if global_admin used a CLI invocation',
+    Filename                 VARCHAR(255) NOT NULL COMMENT 'Original upload filename (display only)',
+    TempPath                 VARCHAR(500) NOT NULL DEFAULT '' COMMENT 'Server-side path to the moved temp file; cleared on completion',
+    SizeBytes                BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Original upload size in bytes (display only)',
+    Status                   ENUM('queued','running','completed','failed') NOT NULL DEFAULT 'queued',
+    TotalEntries             INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Real .txt entries the worker has classified for processing',
+    ProcessedEntries         INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Counter the worker bumps every ~50 rows so the polling endpoint can render a percentage',
+    SongbooksCreatedJson     JSON NULL COMMENT 'Result summary — list of abbrevs created in this run',
+    SongbooksExistingJson    JSON NULL COMMENT 'Result summary — list of abbrevs that already existed',
+    SongsCreated             INT UNSIGNED NOT NULL DEFAULT 0,
+    SongsSkippedExisting     INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'INSERT-only contract: existing SongIds are left untouched',
+    SongsFailed              INT UNSIGNED NOT NULL DEFAULT 0,
+    ErrorsJson               JSON NULL COMMENT 'Per-entry [{entry, error}, …] from the parser / save path',
+    SkippedSongIdsJson       JSON NULL COMMENT 'JSON array of SongIds the worker skipped because the row already existed. Powers the bulk-import completion notification\'s "Download skipped SongIds" CSV button.',
+    PerSongbookJson          JSON NULL COMMENT 'Per-songbook breakdown of created / skipped / failed counts so the import-summary notification can render a per-book table instead of a single aggregate (#906)',
+    PhaseLabel               VARCHAR(64) NULL DEFAULT NULL COMMENT 'Human-readable phase the worker is currently in (walking-zip, parsing-songs, flushing-songbooks, …). Lets the polling frontend show progress text before the percentage starts moving (#907)',
+    StartedAt                TIMESTAMP NULL DEFAULT NULL COMMENT 'When the worker began processing (post-fastcgi_finish_request)',
+    CompletedAt              TIMESTAMP NULL DEFAULT NULL,
+    CreatedAt                TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt                TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    /* Per-user lookup for the polling endpoint (always WHERE
+       UserId = ? AND Status IN (...)). */
+    INDEX idx_user_status (UserId, Status),
+    /* Ops-side audit: "show me jobs that have been running > 1h" */
+    INDEX idx_status_updated (Status, UpdatedAt)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
 -- tblNotifications
 -- In-app notification system for users (new songs, request status changes,
 -- system announcements, etc.).
@@ -1224,6 +1626,78 @@ ALTER TABLE tblSongs MODIFY Number INT UNSIGNED NULL DEFAULT NULL;
 -- Zero out any existing Misc song numbers (historic placeholders).
 UPDATE tblSongs SET Number = NULL WHERE SongbookAbbr = 'Misc' AND Number IS NOT NULL;
 
+-- ----------------------------------------------------------------------------
+-- tblSongLinks (#807) — cross-book counterparts.
+-- All rows sharing a GroupId represent the same hymn in different songbooks
+-- (Amazing Grace as MP-031 / CH-376 / SDAH-108 / SoF-29 / JP-006). Distinct
+-- from tblSongTranslations (different-language same hymn) and from
+-- tblSongbooks.ParentSongbookId (which only handles translated / edition
+-- derivatives at the songbook level, requiring matching hymn numbers).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongLinks (
+    Id           INT UNSIGNED  AUTO_INCREMENT PRIMARY KEY,
+    GroupId      INT UNSIGNED  NOT NULL
+                 COMMENT 'All songs sharing a GroupId are the same hymn (cross-book counterparts).',
+    SongId       VARCHAR(20)   NOT NULL,
+    Note         VARCHAR(255)  NOT NULL DEFAULT ''
+                 COMMENT 'Optional curator-set annotation, e.g. "uses 1990 Wesley revision text"',
+    Verified     TINYINT(1)    NOT NULL DEFAULT 0,
+    CreatedBy    INT UNSIGNED  NULL DEFAULT NULL
+                 COMMENT 'tblUsers.Id of the curator who linked this row, if signed in',
+    CreatedAt    TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_song (SongId),
+    KEY idx_GroupId (GroupId),
+    CONSTRAINT fk_SongLinks_Song
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongLinkSuggestions (#808) — pre-computed pairwise similarity scores.
+-- Populated by appWeb/public_html/includes/tools/build-song-link-suggestions.php; consumed by the
+-- /manage/song-link-suggestions admin page. Pairs are stored canonically
+-- with SongIdA < SongIdB so each unordered pair has at most one row.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongLinkSuggestions (
+    Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    SongIdA         VARCHAR(20)  NOT NULL COMMENT 'Always lexicographically <= SongIdB',
+    SongIdB         VARCHAR(20)  NOT NULL,
+    Score           DECIMAL(4,3) NOT NULL COMMENT 'Composite similarity, 0.000-1.000',
+    TitleScore      DECIMAL(4,3) NOT NULL DEFAULT 0.000,
+    LyricsScore     DECIMAL(4,3) NOT NULL DEFAULT 0.000,
+    AuthorsScore    DECIMAL(4,3) NOT NULL DEFAULT 0.000,
+    ComputedAt      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_pair (SongIdA, SongIdB),
+    KEY idx_Score (Score),
+    KEY idx_SongA (SongIdA),
+    KEY idx_SongB (SongIdB),
+    CONSTRAINT fk_SongLinkSugg_A FOREIGN KEY (SongIdA)
+        REFERENCES tblSongs(SongId) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_SongLinkSugg_B FOREIGN KEY (SongIdB)
+        REFERENCES tblSongs(SongId) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongLinkSuggestionsDismissed (#808) — curator-rejected pairs.
+-- The build job consults this table and skips dismissed pairs so the
+-- suggestion list doesn't keep proposing pairs the curator has already
+-- said no to.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongLinkSuggestionsDismissed (
+    Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    SongIdA         VARCHAR(20)  NOT NULL COMMENT 'Always lexicographically <= SongIdB',
+    SongIdB         VARCHAR(20)  NOT NULL,
+    DismissedBy     INT UNSIGNED NULL DEFAULT NULL,
+    DismissedAt     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    Reason          VARCHAR(255) NOT NULL DEFAULT '',
+    UNIQUE KEY uk_pair (SongIdA, SongIdB),
+    KEY idx_SongA (SongIdA),
+    KEY idx_SongB (SongIdB)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
 -- Search-query log for analytics (#404). Captures every search so we can
 -- surface top queries + zero-result queries in the admin dashboard.
 CREATE TABLE IF NOT EXISTS tblSearchQueries (
@@ -1236,4 +1710,464 @@ CREATE TABLE IF NOT EXISTS tblSearchQueries (
     INDEX idx_Query      (Query(191)),
     CONSTRAINT fk_Search_User FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
         ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ============================================================================
+-- Tables added by migrations (sync target for the schema-audit page).
+-- Each table below was originally introduced via an appWeb/.sql/migrate-*.php
+-- script; the definitions are mirrored here so schema.sql remains the
+-- canonical source of truth for what the live database is expected to hold.
+-- Adding a new table that ships via a migration? Append the matching
+-- CREATE TABLE block here so the schema-audit page (#518) stays clean.
+-- ============================================================================
+
+
+-- ----------------------------------------------------------------------------
+-- tblCatalogues (#941) — many-to-many curatorial groupings orthogonal to the
+-- songbook hierarchy. CRUD at /manage/catalogues.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblCatalogues (
+    Id           INT UNSIGNED      AUTO_INCREMENT PRIMARY KEY,
+    Slug         VARCHAR(255)      NOT NULL,
+    Title        VARCHAR(255)      NOT NULL,
+    Description  TEXT              NULL,
+    SortOrder    SMALLINT          NOT NULL DEFAULT 0,
+    Visibility   ENUM('public','curated','admin_only')
+                                    NOT NULL DEFAULT 'public',
+    CreatedAt    DATETIME          NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt    DATETIME          NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                    ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_Slug (Slug),
+    INDEX idx_Visibility (Visibility),
+    INDEX idx_SortOrder  (SortOrder)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblCatalogueSongs (#941) — join table for the Catalogues many-to-many.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblCatalogueSongs (
+    CatalogueId  INT UNSIGNED      NOT NULL,
+    SongId       VARCHAR(20)       NOT NULL,
+    SortOrder    INT               NOT NULL DEFAULT 0,
+    AddedBy      INT UNSIGNED      NULL,
+    AddedAt      DATETIME          NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (CatalogueId, SongId),
+    INDEX idx_SongId (SongId),
+    INDEX idx_SortOrder (CatalogueId, SortOrder),
+    CONSTRAINT fk_CatalogueSongs_Catalogue
+        FOREIGN KEY (CatalogueId) REFERENCES tblCatalogues(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_CatalogueSongs_Song
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblExternalLinkTypes (#833) — controlled vocabulary of link providers
+-- (Hymnary, CCLI Songselect, IMSLP, YouTube, Spotify, Internet Archive,
+-- Wikipedia, MusicBrainz, …). Seeded by migrate-external-links.php.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblExternalLinkTypes (
+    Id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    Slug          VARCHAR(60)  NOT NULL,
+    Name          VARCHAR(120) NOT NULL,
+    Category      ENUM(
+                      'information', 'listen', 'watch', 'read',
+                      'sheet-music', 'purchase', 'authority',
+                      'official', 'social', 'other'
+                  ) NOT NULL DEFAULT 'other',
+    UrlPattern    VARCHAR(255) NULL,
+    IconClass     VARCHAR(60)  NULL,
+    AppliesTo     SET('song','songbook','person','work') NOT NULL DEFAULT 'song,songbook,person',
+    AllowMultiple TINYINT(1)   NOT NULL DEFAULT 1,
+    IsActive      TINYINT(1)   NOT NULL DEFAULT 1,
+    DisplayOrder  INT UNSIGNED NOT NULL DEFAULT 0,
+    CreatedAt     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_slug   (Slug),
+    INDEX     idx_active   (IsActive),
+    INDEX     idx_category (Category, DisplayOrder)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblExternalLinkPatterns (#845) — curator-editable host/path patterns that
+-- map a pasted URL to its tblExternalLinkTypes entry (replaces the legacy
+-- JS-hardcoded provider regex list).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblExternalLinkPatterns (
+    Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    LinkTypeId      INT UNSIGNED NOT NULL,
+    Host            VARCHAR(255) NOT NULL,
+    PathPrefix      VARCHAR(255) NULL,
+    MatchSubdomains TINYINT(1)   NOT NULL DEFAULT 1,
+    Priority        INT UNSIGNED NOT NULL DEFAULT 100,
+    IsActive        TINYINT(1)   NOT NULL DEFAULT 1,
+    Note            VARCHAR(255) NULL,
+    CreatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_type     (LinkTypeId),
+    INDEX idx_host     (Host),
+    INDEX idx_priority (Priority),
+
+    CONSTRAINT fk_linkpat_type
+        FOREIGN KEY (LinkTypeId) REFERENCES tblExternalLinkTypes(Id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongbookExternalLinks (#833) — per-songbook external-link rows.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongbookExternalLinks (
+    Id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    SongbookId  INT UNSIGNED NOT NULL,
+    LinkTypeId  INT UNSIGNED NOT NULL,
+    Url         VARCHAR(2048) NOT NULL,
+    Note        VARCHAR(255) NULL,
+    SortOrder   INT UNSIGNED NOT NULL DEFAULT 0,
+    Verified    TINYINT(1)   NOT NULL DEFAULT 0,
+    CreatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_book (SongbookId),
+    INDEX idx_type (LinkTypeId),
+
+    CONSTRAINT fk_link_book
+        FOREIGN KEY (SongbookId) REFERENCES tblSongbooks(Id) ON DELETE CASCADE,
+    CONSTRAINT fk_link_type_book
+        FOREIGN KEY (LinkTypeId) REFERENCES tblExternalLinkTypes(Id) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongExternalLinks (#833) — per-song external-link rows.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongExternalLinks (
+    Id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    SongId      VARCHAR(20)  NOT NULL,
+    LinkTypeId  INT UNSIGNED NOT NULL,
+    Url         VARCHAR(2048) NOT NULL,
+    Note        VARCHAR(255) NULL,
+    SortOrder   INT UNSIGNED NOT NULL DEFAULT 0,
+    Verified    TINYINT(1)   NOT NULL DEFAULT 0,
+    CreatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_song (SongId),
+    INDEX idx_type (LinkTypeId),
+
+    CONSTRAINT fk_link_song
+        FOREIGN KEY (SongId)     REFERENCES tblSongs(SongId)         ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_link_type_song
+        FOREIGN KEY (LinkTypeId) REFERENCES tblExternalLinkTypes(Id) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblCreditPersonExternalLinks (#833) — per-credit-person external links.
+-- Replaces the legacy free-text tblCreditPersonLinks (kept as read-fallback).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblCreditPersonExternalLinks (
+    Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    CreditPersonId  INT UNSIGNED NOT NULL,
+    LinkTypeId      INT UNSIGNED NOT NULL,
+    Url             VARCHAR(2048) NOT NULL,
+    Note            VARCHAR(255) NULL,
+    SortOrder       INT UNSIGNED NOT NULL DEFAULT 0,
+    Verified        TINYINT(1)   NOT NULL DEFAULT 0,
+    CreatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_person (CreditPersonId),
+    INDEX idx_type   (LinkTypeId),
+
+    CONSTRAINT fk_link_person
+        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id)        ON DELETE CASCADE,
+    CONSTRAINT fk_link_type_person
+        FOREIGN KEY (LinkTypeId)     REFERENCES tblExternalLinkTypes(Id)   ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblCreditPersonAliases — AKA / alternative names for searchability.
+-- MusicBrainz-style alias model: one row per (person, name) with a Type
+-- classification, optional Locale tag for transliterations, and an
+-- IsPrimary flag for the preferred display form within a locale.
+-- Searched alongside Name in site search + admin filter + editor
+-- typeahead. /people/<slug> renders aliases under the bio header and
+-- emits JSON-LD alternateName.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblCreditPersonAliases (
+    Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    CreditPersonId  INT UNSIGNED NOT NULL,
+    Name            VARCHAR(255) NOT NULL COMMENT 'Display form of the alias',
+    SortName        VARCHAR(255) NULL COMMENT 'Surname-first sortable form; NULL = derive from Name',
+    Type            ENUM('legal','artist','pseudonym','nickname','maiden','search-hint','misspelling','other')
+                                 NOT NULL DEFAULT 'other'
+                                 COMMENT 'MusicBrainz-style alias classification',
+    Locale          VARCHAR(35)  NULL COMMENT 'Optional IETF BCP 47 tag for transliterations (ja, ru-Latn, zh-Hans, …)',
+    IsPrimary       TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '1 = preferred display form in this Locale',
+    SortOrder       INT UNSIGNED NOT NULL DEFAULT 0,
+    Note            VARCHAR(255) NULL,
+    CreatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_person_name (CreditPersonId, Name),
+    INDEX idx_person (CreditPersonId),
+    INDEX idx_name   (Name),
+    INDEX idx_type   (Type),
+
+    CONSTRAINT fk_alias_person
+        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongAlternativeTitles (#832) — multiple "also known as" titles per song.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongAlternativeTitles (
+    Id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    SongId       VARCHAR(20)  NOT NULL,
+    Title        VARCHAR(255) NOT NULL,
+    Language     VARCHAR(35)  NULL,
+    SortOrder    INT UNSIGNED NOT NULL DEFAULT 0,
+    Note         VARCHAR(255) NULL,
+    CreatedAt    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_song   (SongId),
+    INDEX idx_title  (Title),
+    UNIQUE KEY uq_song_title (SongId, Title),
+
+    CONSTRAINT fk_alt_song
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongbookAlternativeTitles (#832) — multiple "also known as" titles per
+-- songbook (e.g. "Adventist Hymnal" → The Church Hymnal).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongbookAlternativeTitles (
+    Id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    SongbookId   INT UNSIGNED NOT NULL,
+    Title        VARCHAR(255) NOT NULL,
+    SortOrder    INT UNSIGNED NOT NULL DEFAULT 0,
+    Note         VARCHAR(255) NULL,
+    CreatedAt    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_book   (SongbookId),
+    INDEX idx_title  (Title),
+    UNIQUE KEY uq_book_title (SongbookId, Title),
+
+    CONSTRAINT fk_alt_book
+        FOREIGN KEY (SongbookId) REFERENCES tblSongbooks(Id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongbookLanguages (#778) — multi-language songbook chip-list. Mirrors
+-- the legacy tblSongbooks.Language column as IsPrimary=1 on first backfill.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongbookLanguages (
+    SongbookId  INT UNSIGNED NOT NULL,
+    Language    VARCHAR(35)  NOT NULL COMMENT 'IETF BCP 47 tag — same shape as tblSongbooks.Language',
+    IsPrimary   TINYINT(1)   NOT NULL DEFAULT 0
+                COMMENT 'Display-default language for this songbook; exactly one row per songbook should carry IsPrimary=1',
+    SortOrder   SMALLINT     NOT NULL DEFAULT 0
+                COMMENT 'Render order in chip-list editor; lower comes first',
+    CreatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (SongbookId, Language),
+    KEY idx_Language (Language),
+    KEY idx_Primary  (SongbookId, IsPrimary),
+    CONSTRAINT fk_sblang_songbook FOREIGN KEY (SongbookId)
+        REFERENCES tblSongbooks(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongLanguages (#778) — multi-language song chip-list.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongLanguages (
+    SongId      VARCHAR(20) NOT NULL,
+    Language    VARCHAR(35) NOT NULL,
+    IsPrimary   TINYINT(1)  NOT NULL DEFAULT 0,
+    SortOrder   SMALLINT    NOT NULL DEFAULT 0,
+    CreatedAt   TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (SongId, Language),
+    KEY idx_Language (Language),
+    KEY idx_Primary  (SongId, IsPrimary),
+    CONSTRAINT fk_slang_song FOREIGN KEY (SongId)
+        REFERENCES tblSongs(SongId)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongbookSeries (#782) — peer-to-peer songbook collections (Songs of
+-- Fellowship volumes, themed compilations).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongbookSeries (
+    Id           INT UNSIGNED  AUTO_INCREMENT PRIMARY KEY,
+    Name         VARCHAR(120)  NOT NULL,
+    Description  VARCHAR(255)  NOT NULL DEFAULT '',
+    Slug         VARCHAR(120)  NOT NULL UNIQUE
+                 COMMENT 'URL-safe lowercase form for /series/<slug> public listing pages',
+    CreatedAt    TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_Name (Name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongbookSeriesMembership (#782) — songbook ↔ series many-to-many.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongbookSeriesMembership (
+    SeriesId     INT UNSIGNED NOT NULL,
+    SongbookId   INT UNSIGNED NOT NULL,
+    SortOrder    SMALLINT     NOT NULL DEFAULT 0
+                 COMMENT 'Display order within the series (e.g. volume 1 → 10, volume 2 → 20, …)',
+    Note         VARCHAR(120) NOT NULL DEFAULT ''
+                 COMMENT 'Optional free-text annotation, e.g. "published 1998" or "combined edition"',
+    CreatedAt    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (SeriesId, SongbookId),
+    KEY idx_member (SongbookId),
+    CONSTRAINT fk_sbsm_series   FOREIGN KEY (SeriesId)
+        REFERENCES tblSongbookSeries(Id) ON DELETE CASCADE,
+    CONSTRAINT fk_sbsm_songbook FOREIGN KEY (SongbookId)
+        REFERENCES tblSongbooks(Id)      ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongbookCompilers (#831) — many-to-many credit at the songbook level
+-- (compilers / editors of a hymnal, e.g. Mission Praise → Horrobin & Leavers).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongbookCompilers (
+    Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    SongbookId      INT UNSIGNED NOT NULL,
+    CreditPersonId  INT UNSIGNED NOT NULL,
+    SortOrder       INT UNSIGNED NOT NULL DEFAULT 0,
+    Note            VARCHAR(255) NULL,
+    CreatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_book_person (SongbookId, CreditPersonId),
+    INDEX idx_book   (SongbookId),
+    INDEX idx_person (CreditPersonId),
+
+    CONSTRAINT fk_compiler_book
+        FOREIGN KEY (SongbookId)     REFERENCES tblSongbooks(Id)    ON DELETE CASCADE,
+    CONSTRAINT fk_compiler_person
+        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongMedia (#853) — per-song accompanying files (audio / sheet-music /
+-- midi / musicxml). Hybrid storage: PDF / MIDI / MusicXML → MEDIUMBLOB,
+-- audio → filesystem under appWeb/uploads/songs/<hash>.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongMedia (
+    Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    SongId          VARCHAR(20)  NOT NULL,
+    Kind            ENUM('audio','sheet-music','midi','musicxml') NOT NULL,
+    StorageBackend  ENUM('filesystem','database') NOT NULL,
+    FileName        VARCHAR(255) NOT NULL,
+    MimeType        VARCHAR(127) NOT NULL,
+    SizeBytes       BIGINT UNSIGNED NOT NULL,
+    Sha256          CHAR(64)     NOT NULL,
+    Content         MEDIUMBLOB   NULL,
+    StoragePath     VARCHAR(255) NULL,
+    Annotation      VARCHAR(255) NULL,
+    SortOrder       INT UNSIGNED NOT NULL DEFAULT 0,
+    UploadedBy      INT UNSIGNED NULL,
+    UploadedAt      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_song_kind (SongId, Kind, SortOrder),
+    INDEX idx_kind      (Kind),
+    INDEX idx_sha256    (Sha256),
+
+    CONSTRAINT fk_media_song
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblWorks (#840) — composition grouping. Mirrors MusicBrainz Work ↔
+-- Recording: one Work can span multiple tblSongs (different songbooks /
+-- arrangements / translations of the same underlying composition).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblWorks (
+    Id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    ParentWorkId  INT UNSIGNED NULL,
+    Iswc          CHAR(15)     NULL,
+    Title         VARCHAR(255) NOT NULL,
+    Slug          VARCHAR(80)  NOT NULL,
+    Notes         TEXT         NULL,
+    /* Composition origin — VARCHAR mirror + FK into tblPlaces. */
+    OriginCity    VARCHAR(255) NULL,
+    OriginCityId  INT UNSIGNED NULL,
+    CreatedAt     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_slug   (Slug),
+    UNIQUE KEY uq_iswc   (Iswc),
+    INDEX      idx_title (Title),
+    INDEX      idx_parent (ParentWorkId),
+    INDEX      idx_OriginCityId (OriginCityId),
+
+    CONSTRAINT fk_work_parent
+        FOREIGN KEY (ParentWorkId) REFERENCES tblWorks(Id) ON DELETE SET NULL,
+    CONSTRAINT fk_Works_OriginCity
+        FOREIGN KEY (OriginCityId) REFERENCES tblPlaces(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblWorkSongs (#840) — tblWorks ↔ tblSongs membership.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblWorkSongs (
+    WorkId       INT UNSIGNED NOT NULL,
+    SongId       VARCHAR(20)  NOT NULL,
+    IsCanonical  TINYINT(1)   NOT NULL DEFAULT 0,
+    SortOrder    INT UNSIGNED NOT NULL DEFAULT 0,
+    Note         VARCHAR(255) NULL,
+    CreatedAt    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (WorkId, SongId),
+    INDEX idx_song (SongId),
+    INDEX idx_work_canonical (WorkId, IsCanonical),
+
+    CONSTRAINT fk_work_song_work
+        FOREIGN KEY (WorkId) REFERENCES tblWorks(Id)        ON DELETE CASCADE,
+    CONSTRAINT fk_work_song_song
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId)    ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblWorkExternalLinks (#840) — per-work external-link rows.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblWorkExternalLinks (
+    Id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    WorkId      INT UNSIGNED NOT NULL,
+    LinkTypeId  INT UNSIGNED NOT NULL,
+    Url         VARCHAR(2048) NOT NULL,
+    Note        VARCHAR(255) NULL,
+    SortOrder   INT UNSIGNED NOT NULL DEFAULT 0,
+    Verified    TINYINT(1)   NOT NULL DEFAULT 0,
+    CreatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_work (WorkId),
+    INDEX idx_type (LinkTypeId),
+
+    CONSTRAINT fk_link_work
+        FOREIGN KEY (WorkId)     REFERENCES tblWorks(Id)             ON DELETE CASCADE,
+    CONSTRAINT fk_link_type_work
+        FOREIGN KEY (LinkTypeId) REFERENCES tblExternalLinkTypes(Id) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

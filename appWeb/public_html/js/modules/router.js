@@ -41,6 +41,18 @@ export class Router {
 
         /** @type {AbortController|null} For cancelling in-flight AJAX requests */
         this.abortController = null;
+
+        /** @type {number} Monotonic counter stored in history.state so
+         *  we can detect navigation direction on popstate. Each forward
+         *  navigation pushes counter+1; back navigation lands on a
+         *  smaller counter, forward (re-)navigation on a larger one.
+         *  (#752) */
+        this._navCounter = 0;
+
+        /** @type {Map<string, number>} Per-path scroll positions.
+         *  Saved on navigation, restored on popstate when the user
+         *  goes back to a previously-seen page. (#752) */
+        this._scrollByPath = new Map();
     }
 
     /**
@@ -50,10 +62,53 @@ export class Router {
         /* Handle magic link login before any routing (#magic-link) */
         this._handleMagicLink();
 
-        /* Handle browser back/forward navigation */
-        window.addEventListener('popstate', () => {
-            this.handleCurrentRoute();
+        /* Seed the initial history entry with a navigation counter so
+           direction detection works from the first popstate. If we
+           don't seed, the very first back-navigation lands on a state
+           with no counter and the direction lookup falls through to
+           the "forward" default. (#752) */
+        if (!window.history.state || typeof window.history.state.counter !== 'number') {
+            window.history.replaceState(
+                { ...(window.history.state || {}), path: window.location.pathname, counter: this._navCounter },
+                '',
+                window.location.pathname + window.location.search
+            );
+        } else {
+            this._navCounter = window.history.state.counter;
+        }
+
+        /* Handle browser back/forward navigation. The popstate event's
+           target state carries the counter we set when navigate()
+           pushed it; comparing against our local counter tells us
+           which direction the user moved.
+
+           We save the OUTGOING path's scroll position before
+           handleCurrentRoute updates this.currentPath so a
+           back-then-forward cycle can restore the user to where they
+           were on each side. */
+        window.addEventListener('popstate', (e) => {
+            const newCounter = (e.state && typeof e.state.counter === 'number')
+                ? e.state.counter
+                : 0;
+            const direction = newCounter < this._navCounter ? 'back' : 'forward';
+            this._navCounter = newCounter;
+            document.body.dataset.navDirection = direction;
+            if (this.currentPath) {
+                this._scrollByPath.set(this.currentPath, window.scrollY || 0);
+            }
+            this.handleCurrentRoute({ isPopstate: true });
         });
+    }
+
+    /**
+     * Re-load the current route's content. Used by the pull-to-refresh
+     * gesture (#822) — same as if the user navigated away and back,
+     * but without changing the URL. Re-fetches the page HTML and
+     * re-runs the after-load hooks so any cached page state (favourites
+     * counts, song-of-the-day, etc.) refreshes.
+     */
+    async refresh() {
+        await this.handleCurrentRoute({ isPopstate: false, isRefresh: true });
     }
 
     /**
@@ -72,19 +127,29 @@ export class Router {
         /* Don't reload if already on this path */
         if (path === this.currentPath) return;
 
-        /* Push new state to browser history */
-        window.history.pushState({ path }, '', path);
+        /* Save current scroll position before leaving this page so
+           popstate-back can restore it. (#752) */
+        if (this.currentPath) {
+            this._scrollByPath.set(this.currentPath, window.scrollY || 0);
+        }
+
+        /* Push new state to browser history with an incremented
+           counter so popstate can detect direction. (#752) */
+        this._navCounter += 1;
+        window.history.pushState({ path, counter: this._navCounter }, '', path);
+        document.body.dataset.navDirection = 'forward';
 
         /* Load the page content */
-        await this.handleCurrentRoute();
+        await this.handleCurrentRoute({ isPopstate: false });
     }
 
     /**
      * Handle the current URL route — determine which page to load
      * and fetch its content from the API.
      */
-    async handleCurrentRoute() {
+    async handleCurrentRoute(opts = {}) {
         const path = window.location.pathname || '/';
+        const previousPath = this.currentPath;
         this.currentPath = path;
 
         /* Parse the route into an API request */
@@ -140,9 +205,28 @@ export class Router {
         /* Run post-load hooks (e.g., initialise favourites on song pages) */
         this.afterPageLoad(page, params);
 
-        /* Scroll to top on navigation */
+        /* Scroll handling. On popstate-back / forward to a previously-
+           seen path, restore the saved scroll position with a smooth
+           scroll. On forward navigation (or when no saved position
+           exists), jump to the top instantly. (#752) */
+        const saved = opts.isPopstate ? this._scrollByPath.get(path) : undefined;
         document.getElementById('main-content')?.scrollTo(0, 0);
-        window.scrollTo(0, 0);
+        if (typeof saved === 'number' && saved > 0) {
+            /* Two rAFs so the page-entering transform has a chance to
+               settle before we scroll — otherwise the browser scrolls
+               into a transformed coordinate system. */
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    window.scrollTo({
+                        top: saved,
+                        left: 0,
+                        behavior: document.body.classList.contains('reduce-motion') ? 'auto' : 'smooth',
+                    });
+                });
+            });
+        } else {
+            window.scrollTo(0, 0);
+        }
     }
 
     /**
@@ -184,14 +268,54 @@ export class Router {
                 return { page: 'stats', params: {} };
             case 'writer':
                 return { page: 'writer', params: { id: segments[1] || '' } };
+            case 'people':
+            case 'person':
+                /* Credit Person public page (#588). Both /people/<slug>
+                   and /person/<slug> resolve to the same page so the URL
+                   is forgiving — Wikipedia-style /wiki/Foo + linked-data
+                   habits both work. */
+                return { page: 'person', params: { slug: segments[1] || '' } };
+            case 'work':
+            case 'works':
+                /* Work public page (#840). /work/<slug> is canonical;
+                   /works/<slug> accepted as a forgiving alias matching
+                   the people / person convention. */
+                return { page: 'work', params: { slug: segments[1] || '' } };
+            case 'tune':
+                /* #940 — /tune/<slug> lists every song that uses the
+                   named tune. Slugified upstream (lowercase + hyphen-
+                   separated). Empty / unknown slug renders the page's
+                   own friendly empty state. */
+                return { page: 'tune', params: { slug: segments[1] || '' } };
+            case 'iswc':
+                /* #940 — /iswc/<code> lists every song that shares the
+                   ISWC. The code is the standard T-NNN.NNN.NNN-N format
+                   url-encoded; the page handler decodes and strips
+                   non-T/digit characters defensively. */
+                return { page: 'iswc', params: { code: segments[1] || '' } };
             case 'help':
                 return { page: 'help', params: {} };
             case 'terms':
                 return { page: 'terms', params: {} };
             case 'privacy':
                 return { page: 'privacy', params: {} };
-            case 'request-a-song':
-                return { page: 'request-a-song', params: {} };
+            case 'request':
+            case 'request-a-song': {
+                /* /request is the canonical URL (#658). /request-a-song
+                   stays as a back-compat alias so older bookmarks /
+                   shared links / offline-queue submissions still resolve.
+                   Forward `?songbook=` and `?number=` through to the API
+                   so the partial can bake them into the form server-side
+                   (#666) — relying on a client-side prefill alone proved
+                   racy across SW caches + module-import timing. */
+                const sp = new URLSearchParams(window.location.search || '');
+                const params = {};
+                const sb = (sp.get('songbook') || '').trim();
+                const num = (sp.get('number')   || '').trim();
+                if (sb)  params.songbook = sb.slice(0, 100);
+                if (num) params.number   = num.slice(0, 500);
+                return { page: 'request', params };
+            }
             case 'login':
                 return { page: 'login', params: {} };
             default:
@@ -239,6 +363,25 @@ export class Router {
         if (params.id) {
             url.searchParams.set('id', params.id);
         }
+        /* Person page (#588) carries `slug`, not `id`. */
+        if (params.slug) {
+            url.searchParams.set('slug', params.slug);
+        }
+        /* #940 — ISWC pages key on the `code` parameter (the actual
+           ISWC value, not a slug — the format T-NNN.NNN.NNN-N is
+           already canonical). */
+        if (params.code) {
+            url.searchParams.set('code', params.code);
+        }
+        /* Request-a-song deep-link prefill (#666) — forwarded straight
+           through to the partial so it can echo them into the input
+           value attributes server-side. */
+        if (params.songbook) {
+            url.searchParams.set('songbook', params.songbook);
+        }
+        if (params.number) {
+            url.searchParams.set('number', params.number);
+        }
 
         return url.toString();
     }
@@ -259,9 +402,15 @@ export class Router {
         this.abortController = new AbortController();
 
         try {
-            /* Start loading bar and exit transition in parallel */
+            /* #864 — fetch FIRST, animate the swap second, so old and
+               new content animate simultaneously via the View
+               Transitions API. The previous implementation was
+               sequential (out → fetch → in) which produced a "blank
+               gap" between the old and new pages that looked staged
+               rather than fluid. Loading bar still kicks off here so
+               the user has a visible affordance during the fetch
+               itself (especially on slow networks). */
             this.app.transitions.startLoading();
-            await this.app.transitions.pageOut(content);
 
             /* Fetch the page content from the API */
             const response = await fetch(url, {
@@ -278,21 +427,28 @@ export class Router {
 
             const html = await response.text();
 
-            /* Inject the new content */
-            content.innerHTML = html;
+            /* Hand the DOM swap to the transition runner. On modern
+               browsers (View Transitions API), the browser snapshots
+               the current page, runs the swap synchronously, and
+               animates the cross-fade in CSS — all in one frame, no
+               class-toggle dance. On older browsers it falls back
+               to the legacy pageOut → swap → pageIn flow. */
+            await this.app.transitions.runViewTransition(() => {
+                content.innerHTML = html;
+                /* Browsers intentionally do NOT run <script> tags
+                   inserted via innerHTML, so any inline JS in the
+                   injected page template (e.g. home.php's Popular
+                   Songs / Browse by Theme / Recently Viewed fetches)
+                   silently no-ops. Replace each script node with a
+                   freshly-created one so the browser parses and runs
+                   it as if it had been in the original document.
+                   Preserves type, src, async/defer and other
+                   attributes. */
+                this._executeInlineScripts(content);
+            }, content);
 
-            /* Browsers intentionally do NOT run <script> tags inserted via
-               innerHTML, so any inline JS in the injected page template
-               (e.g. home.php's Popular Songs / Browse by Theme / Recently
-               Viewed fetches) silently no-ops. Replace each script node
-               with a freshly-created one so the browser parses and runs
-               it as if it had been in the original document. Preserves
-               type, src, async/defer and other attributes. */
-            this._executeInlineScripts(content);
-
-            /* Complete loading bar and start enter transition */
+            /* Complete loading bar after the transition is done. */
             this.app.transitions.completeLoading();
-            await this.app.transitions.pageIn(content);
 
         } catch (error) {
             if (error.name === 'AbortError') {
@@ -375,7 +531,7 @@ export class Router {
             'help': 'Help — ' + appName,
             'terms': 'Terms of Use — ' + appName,
             'privacy': 'Privacy Policy — ' + appName,
-            'request-a-song': 'Request a Song — ' + appName,
+            'request': 'Request a Song — ' + appName,
         };
         document.title = titles[page] || appName;
     }
@@ -393,6 +549,15 @@ export class Router {
            that already have handlers. */
         import('./offline-ui.js').then(m => m.bootOfflineUi()).catch(() => {});
 
+        /* Reading-progress bar on every scrollable page (#751). Was
+           song-only originally (#109); the module's short-page
+           short-circuit handles non-scrollable pages cleanly so
+           there's no need to gate per-page-type here. Songbook colour
+           still inherits from .page-song / .page-songbook when
+           present; everywhere else the CSS default (--bs-primary)
+           applies. */
+        this.app.readingProgress.initOnAnyPage();
+
         /* Initialise favourites state on song pages */
         if (page === 'song') {
             this.app.favorites.initSongPage();
@@ -402,7 +567,18 @@ export class Router {
             this.app.display.initSongPage();
             this.app.compare.initSongPage();
             this.app.transpose.initSongPage();
-            this.app.readingProgress.initSongPage();
+            /* readingProgress.initOnAnyPage() already ran at the top
+               of afterPageLoad — covers every page including song.
+               Removing the song-specific re-call avoids a redundant
+               cleanup-then-recreate cycle. (#751) */
+
+            /* Audio button — hide if the browser can't actually play
+               our MIDI-via-Tone.js pipeline (#602). The audio module
+               feature-detects Web Audio support; if absent, every
+               .btn-audio on the page is hidden so curators don't see
+               a button that wouldn't work. Idempotent — safe to call
+               on every navigation. */
+            this.app.audio?.hideButtonsIfUnsupported?.();
 
             /* Edit button — show only to users whose role carries the
                `edit_songs` entitlement (#407). The PHP editor API
@@ -480,6 +656,47 @@ export class Router {
                 .then(m => m.initHomePage())
                 .catch(err => console.error('[Router] home-page init failed:', err));
         }
+
+        /* Songbook language filter (#679). Booted on both /home and
+           /songbooks since the filter sits above the tile grid on
+           each. The module is idempotent so a quick navigation
+           home → songbooks → home doesn't double-bind handlers. The
+           partial that renders the <select> silently returns early
+           when the catalogue spans only one language, in which case
+           bootSongbookLanguageFilter is a no-op too (no selector
+           found). */
+        if (page === 'home' || page === 'songbooks') {
+            import('./songbook-language-filter.js')
+                .then(m => m.bootSongbookLanguageFilter())
+                .catch(err => console.error('[Router] songbook-language-filter init failed:', err));
+        }
+
+        /* Settings page — language preferences picker (#736). The
+           settings page hosts a duplicate of the language filter UI
+           inside the Language Preferences section, so the user can
+           adjust their preference from a non-grid context. The
+           module is idempotent. */
+        if (page === 'settings') {
+            import('./settings-language-filter.js')
+                .then(m => m.bootSettingsLanguageFilter())
+                .catch(err => console.error('[Router] settings-language-filter init failed:', err));
+            /* Also boot the songbook-filter module so the global
+               fetch-header patch + saved subtag list propagation
+               applies even when the home grid isn't on screen. */
+            import('./songbook-language-filter.js')
+                .then(m => m.bootSongbookLanguageFilter())
+                .catch(() => { /* non-critical */ });
+        }
+
+        /* Persistent bulk-import progress widget (#676). Booted on
+           every SPA navigation so a curator who started an import
+           on /manage/editor and switched to the public app still
+           sees the widget on the home / songbooks / song pages.
+           The module reads the active job_id from localStorage and
+           renders nothing if there's no in-flight import. */
+        import('./bulk-import-progress.js')
+            .then(m => m.bootBulkImportProgressWidget())
+            .catch(err => console.error('[Router] bulk-import-progress init failed:', err));
 
         /* Initialise favourites list on favorites page */
         if (page === 'favorites') {

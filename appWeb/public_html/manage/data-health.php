@@ -65,7 +65,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         echo 'Invalid CSRF token';
         exit;
     }
-    if (($_POST['action'] ?? '') === 'disconnect_fallbacks') {
+    if (($_POST['action'] ?? '') === 'regenerate_songs_cache') {
+        /* #932 — manual rebuild of appWeb/data_share/song_data/songs.json
+           and its precompressed siblings. Save / bulk-import flows
+           regenerate automatically; this button covers the case where
+           the cache file was deleted, the disk fill caused a write
+           failure, or a curator wants to force a refresh. */
+        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes'
+            . DIRECTORY_SEPARATOR . 'songs_cache.php';
+        try {
+            $stats = songsCacheRegenerate();
+            $msg = sprintf(
+                'Songs cache regenerated: %s bytes raw, %s bytes gzip%s in %d ms.',
+                number_format($stats['bytes']),
+                $stats['gzip_bytes'] !== null ? number_format($stats['gzip_bytes']) : '—',
+                $stats['brotli_bytes'] !== null ? ', ' . number_format($stats['brotli_bytes']) . ' bytes brotli' : '',
+                $stats['took_ms']
+            );
+            $flash = $msg;
+            if (function_exists('logActivity')) {
+                logActivity(
+                    'songs_cache.regenerated',
+                    'songs_cache',
+                    '',
+                    [
+                        'bytes'        => $stats['bytes'],
+                        'gzip_bytes'   => $stats['gzip_bytes'],
+                        'brotli_bytes' => $stats['brotli_bytes'],
+                        'took_ms'      => $stats['took_ms'],
+                        'context'      => 'data_health.manual',
+                    ],
+                    'success'
+                );
+            }
+        } catch (\Throwable $e) {
+            $error = 'Songs cache regeneration failed: ' . $e->getMessage();
+            error_log('[data-health regenerate_songs_cache] ' . $e->getMessage());
+        }
+    } elseif (($_POST['action'] ?? '') === 'disconnect_fallbacks') {
         $renamed = [];
         $skipped = [];
         $failed  = [];
@@ -167,15 +204,53 @@ if ($shareDirPath && is_dir($shareDirPath)) {
 $sqliteExists = $sqliteDbPath && file_exists($sqliteDbPath);
 $sqliteSize   = $sqliteExists ? @filesize($sqliteDbPath) : 0;
 
-/* Overall green light: MySQL authoritative, no unimported shares, SQLite gone */
-$allGreen = (
-    $songDataJsonFallback === false
-    && $shareFileCount === 0
-    && count($unimportedShareIds) === 0
-    && !$sqliteExists
-    && ($tableCounts['tblSongs'] ?? 0) > 0
-    && ($tableCounts['tblUsers'] ?? 0) > 0
-);
+/* Build a precise list of what's blocking the disconnect (#710). The
+   earlier "Resolve the amber / red items above first" copy made
+   curators guess which row was the culprit — instead, enumerate
+   exactly what's still keeping MySQL non-authoritative. Each entry
+   includes a short reason + the section anchor so the warning links
+   straight to the row that needs attention. */
+$disconnectBlockers = [];
+if ($songDataJsonFallback !== false) {
+    $disconnectBlockers[] = [
+        'reason' => 'data_share/song_data/songs.json fallback is still active',
+        'anchor' => '#songs-json-fallback',
+    ];
+}
+if ($shareFileCount > 0 || count($unimportedShareIds) > 0) {
+    $disconnectBlockers[] = [
+        'reason' => sprintf(
+            '%d share JSON file(s) on disk%s',
+            $shareFileCount,
+            count($unimportedShareIds) > 0
+                ? ' (' . count($unimportedShareIds) . ' not yet imported)'
+                : ''
+        ),
+        'anchor' => '#shared-setlist-json',
+    ];
+}
+if ($sqliteExists) {
+    $disconnectBlockers[] = [
+        'reason' => 'Legacy SQLite database still on disk (' . basename($sqliteDbPath) . ', '
+                    . number_format((int)$sqliteSize) . ' bytes)',
+        'anchor' => '#legacy-sqlite',
+    ];
+}
+if (($tableCounts['tblSongs'] ?? 0) === 0) {
+    $disconnectBlockers[] = [
+        'reason' => 'tblSongs is empty — MySQL has no song data to fall back to',
+        'anchor' => '#table-tblSongs',
+    ];
+}
+if (($tableCounts['tblUsers'] ?? 0) === 0) {
+    $disconnectBlockers[] = [
+        'reason' => 'tblUsers is empty — no migrated user accounts',
+        'anchor' => '#table-tblUsers',
+    ];
+}
+
+/* Overall green light = no blockers. */
+$allGreen = empty($disconnectBlockers);
 
 function health_badge(string $state, string $label): string {
     $cls = match ($state) {
@@ -190,7 +265,7 @@ function health_badge(string $state, string $label): string {
 $csrf = csrfToken();
 ?>
 <!DOCTYPE html>
-<html lang="en" data-bs-theme="dark">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -223,12 +298,12 @@ $csrf = csrfToken();
         <!-- MySQL table counts -->
         <div class="card-admin p-3 mb-3">
             <h2 class="h6 mb-3"><i class="bi bi-database me-2"></i>MySQL table counts</h2>
-            <table class="table table-sm mb-0 align-middle">
+            <table class="table table-sm mb-0 align-middle cp-sortable">
                 <thead>
                     <tr class="text-muted small">
-                        <th>Table</th>
-                        <th class="text-end">Rows</th>
-                        <th>Status</th>
+                        <th data-sort-key="table" data-sort-type="text">Table</th>
+                        <th class="text-end" data-sort-key="rows" data-sort-type="number">Rows</th>
+                        <th data-sort-key="status" data-sort-type="text">Status</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -338,6 +413,50 @@ $csrf = csrfToken();
             <?php endif; ?>
         </div>
 
+        <!-- Songs corpus cache (#932) -->
+        <?php
+        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes'
+            . DIRECTORY_SEPARATOR . 'songs_cache.php';
+        $cachePaths   = songsCachePaths();
+        $cacheExists  = is_file($cachePaths['raw']);
+        $cacheSize    = $cacheExists ? (int)filesize($cachePaths['raw']) : 0;
+        $cacheMtime   = $cacheExists ? (int)filemtime($cachePaths['raw']) : 0;
+        $gzipExists   = is_file($cachePaths['gzip']);
+        $brotliExists = is_file($cachePaths['brotli']);
+        $cacheAgeSec  = $cacheExists ? (time() - $cacheMtime) : null;
+        $cacheAgeStr  = $cacheAgeSec === null ? 'never built'
+                      : ($cacheAgeSec < 60       ? $cacheAgeSec . 's ago'
+                      : ($cacheAgeSec < 3600     ? floor($cacheAgeSec / 60)   . ' min ago'
+                      : ($cacheAgeSec < 86400    ? floor($cacheAgeSec / 3600) . ' h ago'
+                      :                            floor($cacheAgeSec / 86400) . ' days ago')));
+        ?>
+        <div class="card-admin p-3 mb-3">
+            <h2 class="h6 mb-3"><i class="bi bi-archive me-2"></i>Songs corpus cache</h2>
+            <p class="mb-2 small text-secondary">
+                Pre-computed JSON used by the Song Editor and the public PWA.
+                Auto-regenerated on save / bulk-import; this button forces a
+                manual rebuild if the cache file is missing or stale.
+            </p>
+            <?php if ($cacheExists): ?>
+                <?= health_badge('green', sprintf(
+                    '%s bytes raw · gzip %s · brotli %s · built %s',
+                    number_format($cacheSize),
+                    $gzipExists ? '✓' : '—',
+                    $brotliExists ? '✓' : '—',
+                    htmlspecialchars($cacheAgeStr)
+                )) ?>
+            <?php else: ?>
+                <?= health_badge('amber', 'Cache file not yet built — first request will build it inline.') ?>
+            <?php endif; ?>
+            <form method="POST" class="mt-3">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                <input type="hidden" name="action"     value="regenerate_songs_cache">
+                <button type="submit" class="btn btn-outline-info btn-sm">
+                    <i class="bi bi-arrow-clockwise me-1"></i>Regenerate songs cache
+                </button>
+            </form>
+        </div>
+
         <!-- Disconnect action -->
         <div class="card-admin p-3 mb-3 <?= $allGreen ? '' : 'opacity-75' ?>">
             <h2 class="h6 mb-3"><i class="bi bi-plug me-2"></i>Disconnect legacy fallbacks</h2>
@@ -348,15 +467,29 @@ $csrf = csrfToken();
             </p>
             <?php if (!$allGreen): ?>
                 <div class="alert alert-warning py-2 small mb-3">
-                    Resolve the amber / red items above first. Disconnect is
-                    disabled until every surface is fully served by MySQL.
+                    <strong>Disconnect blocked by <?= count($disconnectBlockers) ?> item<?= count($disconnectBlockers) === 1 ? '' : 's' ?>:</strong>
+                    <ul class="mb-0 mt-1">
+                        <?php foreach ($disconnectBlockers as $b): ?>
+                            <li>
+                                <?= htmlspecialchars($b['reason']) ?>
+                                <?php if (!empty($b['anchor'])): ?>
+                                    <a href="<?= htmlspecialchars($b['anchor']) ?>" class="ms-1">[jump]</a>
+                                <?php endif; ?>
+                            </li>
+                        <?php endforeach; ?>
+                    </ul>
                 </div>
             <?php endif; ?>
             <form method="POST" onsubmit="return confirm('Disconnect legacy fallbacks by renaming them to *.disabled?')">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                 <input type="hidden" name="action"     value="disconnect_fallbacks">
                 <button type="submit" class="btn btn-danger btn-sm" <?= $allGreen ? '' : 'disabled' ?>>
-                    <i class="bi bi-plug me-1"></i>Disconnect legacy fallbacks
+                    <i class="bi bi-plug me-1"></i>
+                    <?php if ($allGreen): ?>
+                        Disconnect legacy fallbacks (all clear)
+                    <?php else: ?>
+                        Disconnect legacy fallbacks (<?= count($disconnectBlockers) ?> blocker<?= count($disconnectBlockers) === 1 ? '' : 's' ?> remaining)
+                    <?php endif; ?>
                 </button>
             </form>
         </div>

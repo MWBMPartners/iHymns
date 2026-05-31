@@ -217,6 +217,34 @@ $stmt->execute();
 $users = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
 $stmt->close();
 
+/* Organisation memberships per user (#636). One round-trip groups
+   the rows by UserId so the table renderer below can drop the list
+   into a new column without an N+1 query. The table is gated on
+   existence — pre-migration installs (or installs that never created
+   any org) just see no extra column data. */
+$orgsByUserId = [];
+try {
+    $stmt = $db->prepare(
+        'SELECT m.UserId, o.Id AS org_id, o.Name AS org_name, m.Role AS member_role
+           FROM tblOrganisationMembers m
+           JOIN tblOrganisations o ON o.Id = m.OrgId
+          ORDER BY o.Name ASC'
+    );
+    $stmt->execute();
+    foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $row) {
+        $orgsByUserId[(int)$row['UserId']][] = [
+            'id'   => (int)$row['org_id'],
+            'name' => (string)$row['org_name'],
+            'role' => (string)($row['member_role'] ?? ''),
+        ];
+    }
+    $stmt->close();
+} catch (\Throwable $_e) {
+    /* Org tables missing on a partly-migrated install — hide the
+       column rather than breaking the page. */
+    $orgsByUserId = [];
+}
+
 /* Available access tiers for the Change-tier modal. Falls back to an empty
    list if the table is missing (e.g. pre-migration DB) — in that case the
    Tier button is hidden rather than breaking the page. */
@@ -242,7 +270,7 @@ function canManage(array $target, array $actor): bool {
 }
 ?>
 <!DOCTYPE html>
-<html lang="en" data-bs-theme="dark">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -277,15 +305,18 @@ function canManage(array $target, array $actor): bool {
         <div class="card-admin p-3 mb-4">
             <h2 class="h6 mb-3">All Users <span class="badge bg-secondary ms-1"><?= count($users) ?></span></h2>
             <div class="table-responsive">
-                <table class="table table-sm table-borderless mb-0">
+                <table class="table table-sm table-borderless mb-0 cp-sortable">
                     <thead>
                         <tr class="text-muted small">
-                            <th>Username</th>
-                            <th>Display Name</th>
-                            <th>Email</th>
-                            <th>Role</th>
-                            <th title="Access tier — controls lyrics / audio / MIDI / PDF / offline access for regular users">Tier</th>
-                            <th>Status</th>
+                            <th data-sort-key="username"     data-sort-type="text">Username</th>
+                            <th data-sort-key="display_name" data-sort-type="text">Display Name</th>
+                            <th data-sort-key="email"        data-sort-type="text">Email</th>
+                            <th data-sort-key="role"         data-sort-type="text">Role</th>
+                            <th data-sort-key="tier"         data-sort-type="text"
+                                title="Access tier — controls lyrics / audio / MIDI / PDF / offline access for regular users">Tier</th>
+                            <th data-sort-key="orgs"         data-sort-type="text"
+                                title="Organisations this user is a direct member of (#636) — the user inherits each org's licence-derived tier transitively up the nesting chain">Orgs</th>
+                            <th data-sort-key="status"       data-sort-type="text">Status</th>
                             <th class="text-end">Actions</th>
                         </tr>
                     </thead>
@@ -313,6 +344,20 @@ function canManage(array $target, array $actor): bool {
                                 <span class="badge bg-dark border border-secondary text-light" style="font-size: 0.7rem;">
                                     <?= htmlspecialchars((string)($u['access_tier'] ?? 'free')) ?>
                                 </span>
+                            </td>
+                            <td class="small">
+                                <?php
+                                    $userOrgs = $orgsByUserId[(int)$u['id']] ?? [];
+                                    if (empty($userOrgs)):
+                                ?>
+                                    <span class="text-muted">—</span>
+                                <?php else: ?>
+                                    <?php foreach ($userOrgs as $i => $org): ?>
+                                        <a class="badge bg-info-subtle text-info-emphasis text-decoration-none"
+                                           href="/manage/organisations.php?edit=<?= (int)$org['id'] ?>"
+                                           title="<?= htmlspecialchars($org['name']) ?><?= $org['role'] !== '' ? ' — ' . htmlspecialchars($org['role']) : '' ?>"><?= htmlspecialchars($org['name']) ?></a><?= $i < count($userOrgs) - 1 ? ' ' : '' ?>
+                                    <?php endforeach; ?>
+                                <?php endif; ?>
                             </td>
                             <td>
                                 <?php if ($u['is_active']): ?>
@@ -663,6 +708,12 @@ function canManage(array $target, array $actor): bool {
             setTimeout(() => { input.focus(); input.select(); }, 200);
         }
     </script>
+    <!-- Sortable table headers (#644). -->
+    <script type="module">
+        import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+        bootSortableTables();
+    </script>
+
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>
 </html>

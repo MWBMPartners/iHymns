@@ -45,6 +45,9 @@ Usage:
 # ---------------------------------------------------------------------------
 import urllib.request   # For making HTTP requests to fetch hymn pages
 import urllib.error     # For handling HTTP error responses (404, 500, etc.)
+import urllib.parse     # For decoding percent-encoded path components in
+                         # the redirect-to-home detection (#699 multilingual
+                         # sister sites use Cyrillic paths in the URL).
 import html.parser      # Base class for our custom HTML parser (no BeautifulSoup needed)
 import sys
 
@@ -58,34 +61,267 @@ import os               # File system operations (makedirs, path joining, etc.)
 import re               # Regular expressions for text cleaning and parsing
 import time             # For rate-limiting delays between requests
 import argparse         # Command-line argument parsing
+import random           # User-Agent rotation pool
+import gzip             # Response decompression (#968 — we now send
+import zlib             #   Accept-Encoding so the server compresses;
+                        #   urllib doesn't auto-decompress)
+
+
+# ---------------------------------------------------------------------------
+# User-Agent rotation pool (anti-throttle)
+# ---------------------------------------------------------------------------
+# Several SDA-network sister sites (himnario.net / hinarioadventista.com)
+# fingerprint clients on the User-Agent and throttle a single consistent
+# UA aggressively — ~50 requests then a per-IP daily ban. Rotating
+# through a small pool of real recent browser UAs makes the burst look
+# like a handful of normal visitors rather than one automated client.
+#
+# Each entry is a CURRENT (2026-Q2) production UA from a major browser:
+# Safari on macOS, Safari on iPadOS, Chrome on macOS, Chrome on Windows,
+# Firefox on macOS, Firefox on Windows, Edge on Windows. The Accept and
+# Accept-Language headers below are common-modern values that all of
+# these browsers emit, so the cross-product is plausible.
+# (#967 / #968) Each pool entry now carries both the UA string AND the
+# per-browser Client-Hints (sec-ch-ua, sec-ch-ua-mobile,
+# sec-ch-ua-platform). A bare UA without matching Client-Hints is the
+# tell that flags us to competent WAFs — real Chrome 130 always emits
+# sec-ch-ua-* alongside its UA. Safari and Firefox don't emit those
+# headers at all, so their entries carry an empty hints dict. Sec-Fetch-*
+# (sec-fetch-dest/mode/site/user) are universal across modern browsers
+# on navigation requests and applied per-fetch in fetch_hymn_page()
+# rather than baked into the pool.
+USER_AGENT_POOL = [
+    # Safari 18 on macOS Sequoia — no Client-Hints emitted by Safari.
+    {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+              "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+              "Version/18.0 Safari/605.1.15",
+        "hints": {},
+    },
+    # Safari 18 on iPadOS 18 — no Client-Hints.
+    {
+        "ua": "Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) "
+              "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+              "Version/18.0 Mobile/15E148 Safari/604.1",
+        "hints": {},
+    },
+    # Chrome 130 on macOS Sequoia.
+    {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+              "AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/130.0.0.0 Safari/537.36",
+        "hints": {
+            "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"macOS"',
+        },
+    },
+    # Chrome 130 on Windows 11.
+    {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+              "AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/130.0.0.0 Safari/537.36",
+        "hints": {
+            "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+        },
+    },
+    # Firefox 132 on macOS — no Client-Hints (Firefox doesn't emit them).
+    {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.7; rv:132.0) "
+              "Gecko/20100101 Firefox/132.0",
+        "hints": {},
+    },
+    # Firefox 132 on Windows — no Client-Hints.
+    {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) "
+              "Gecko/20100101 Firefox/132.0",
+        "hints": {},
+    },
+    # Edge 130 on Windows 11 — emits "Microsoft Edge" alongside Chromium.
+    {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+              "AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
+        "hints": {
+            "sec-ch-ua": '"Chromium";v="130", "Microsoft Edge";v="130", "Not?A_Brand";v="99"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+        },
+    },
+]
 
 
 # ---------------------------------------------------------------------------
 # Site configuration — both sites share the same HTML structure
 # ---------------------------------------------------------------------------
 # Both sdahymnal.org and hymnal.xyz are built on the same web platform,
-# so they use identical CSS class names and page layouts. This allows us
-# to use a single parser class (HymnParser) for both sites. Each site
-# entry defines:
+# so they use identical CSS class names and page layouts. The same
+# .NET-based codebase also powers a network of multilingual sister
+# sites (#699), which means a single parser class (HymnParser) can
+# cover them all. Each site entry defines:
 #   - base_url:  The hymn page URL template (hymn number passed as ?no=N)
 #   - home_url:  The site homepage (used to detect end-of-hymnal redirects)
 #   - label:     Short identifier used in output filenames, e.g. "SDAH"
 #   - subdir:    Human-readable subdirectory name for organised output
-#   - lang:      ISO 639-1 language code for the songbook's language (e.g. "en")
+#   - lang:      IETF BCP 47 tag for the songbook's primary language.
+#                Plain ISO 639-1 ("en", "fr", "pt") is fine; the picker
+#                in the song editor reconciles to a full BCP 47 tag.
+#
+# #699 Phase B finding: the South-Slavic sister sites (himne.net /
+# hristianskipesni.com / hristijanskipesni.com / pesmarica.net /
+# pjesme.net) DO use the same parser markers — but their songbook
+# index paths (e.g. /HAC-pesmarica) only render a search form. The
+# actual hymn-display URL is a separate path discovered by submitting
+# the search-by-number form for hymn 1 and observing the redirect:
+#
+#   himne.net               /Himna?no=N              (SR Latin)
+#   hristianskipesni.com    /%D0%9F%D0%B5%D1%81%D0%B5%D0%BD?no=N (BG: Песен)
+#   hristijanskipesni.com   /%D0%9F%D0%B5%D1%81%D0%BD%D0%B0?no=N (MK: Песна)
+#   pesmarica.net           /%D0%A5%D0%B8%D0%BC%D0%BD%D0%B0?no=N (SR Cyrl: Химна)
+#   pjesme.net              /Himna?no=N              (HR)
+#
+# These five sites are wired in below as keys hac / hp / hjp / pes / pj.
 SITES = {
     "sdah": {
         "base_url":  "https://www.sdahymnal.org/Hymn",
         "home_url":  "https://www.sdahymnal.org",
         "label":     "SDAH",
         "subdir":    "Seventh-day Adventist Hymnal [SDAH]",
-        "lang":      "en",   # ISO 639-1: English
+        "lang":      "en",
     },
     "ch": {
         "base_url":  "https://www.hymnal.xyz/Hymn",
         "home_url":  "https://www.hymnal.xyz",
         "label":     "CH",
         "subdir":    "The Church Hymnal [CH]",
-        "lang":      "en",   # ISO 639-1: English
+        "lang":      "en",
+    },
+    # ---- #699 Phase A: multilingual sister sites confirmed to use the
+    #      same DOM hooks (block-heading-three/four/five + wedding-heading).
+    # ---- Non-English sister sites. The `subdir` value uses the canonical
+    #      native-script title taken from sdahymnal.org's "Choose another
+    #      Hymnal" picker (#901, 2026-05-08). Source of truth: the JS array
+    #      embedded in https://www.sdahymnal.org's homepage that backs the
+    #      DevExpress combobox `cboLanguages_DDD_L` — extract via:
+    #        curl https://www.sdahymnal.org | grep cboLanguages | grep itemsInfo
+    #      Picker text format is `<NativeName> (<NativeLanguage>)`; we keep
+    #      the NativeName portion only (the language already lives in `lang`
+    #      → LANG_NAMES suffix) and append the bracketed [<ABBR>] so the
+    #      `compose_subdir()` regex still extracts an ASCII abbreviation.
+    #      The abbreviation in brackets MUST stay Latin / ASCII — it lands
+    #      in tblSongbooks.Abbreviation (VARCHAR(10), indexed) and is the
+    #      URL-safe slug for /songbook/<abbr> routes; non-ASCII would
+    #      break both.
+    "ha": {
+        "base_url":  "https://www.himnario.net/Himno",
+        "home_url":  "https://www.himnario.net",
+        "label":     "HA",
+        "subdir":    "El Himnario Adventista (1962) [HA]",
+        "lang":      "es",
+    },
+    "nha": {
+        # nuevohimnario.com is the modern Spanish hymnal (2010) — distinct
+        # from the classic himnario.net (1962, mapped to "ha" above) — so
+        # it gets its own label + folder. Curators can run --site ha or
+        # --site nha individually as needed.
+        "base_url":  "https://www.nuevohimnario.com/Himno",
+        "home_url":  "https://www.nuevohimnario.com",
+        "label":     "NHA",
+        "subdir":    "El Himnario Adventista Nuevo (2010) [NHA]",
+        "lang":      "es",
+    },
+    "hasd": {
+        # Per the sdahymnal.org picker the canonical native title is just
+        # "Hinário Adventista" (matching the publisher's branding). Earlier
+        # versions of this manifest carried "Hinario Adventista do Setimo
+        # Dia" — that's the formal full English-style transliteration but
+        # not what the source site or its readers use.
+        "base_url":  "https://www.hinarioadventista.com/Hino",
+        "home_url":  "https://www.hinarioadventista.com",
+        "label":     "HASD",
+        "subdir":    "Hinário Adventista [HASD]",
+        "lang":      "pt",
+    },
+    "hl": {
+        # Note the URL is /Cantique?no=N, NOT /Hymne (which 200s but
+        # serves an empty shell). The site's English-translated brand
+        # is "Hymns and Songs of Praise" (Hymnes & Louanges).
+        "base_url":  "https://www.hymnes.net/Cantique",
+        "home_url":  "https://www.hymnes.net",
+        "label":     "HL",
+        "subdir":    "Hymnes et Louanges, Cantiques [HL]",
+        "lang":      "fr",
+    },
+    "ia": {
+        # innarioavventista.com matched 4 of 6 markers on probe — fewer
+        # than the canonical 6 but still parseable. If a future probe
+        # shows missing fields we may need a parser tweak; flagging this
+        # under #699 Phase B for follow-up.
+        "base_url":  "https://www.innarioavventista.com/Inno",
+        "home_url":  "https://www.innarioavventista.com",
+        "label":     "IA",
+        "subdir":    "Innario Avventista [IA]",
+        "lang":      "it",
+    },
+    # ---- #699 Phase B: sister sites where the *index* paths
+    #      (HAC-pesmarica / Адвентната-песнарка / etc.) only serve a
+    #      search form. The actual hymn-display URL is a separate path
+    #      (Himna / Песен / Песна / Химна), discovered by submitting
+    #      the search-by-number form for hymn 1 and observing the
+    #      redirect target. Once you GET that URL with ?no=N you get
+    #      the same DOM markers (block-heading-three/four/five +
+    #      wedding-heading) the existing parser already handles.
+    #
+    #      Cyrillic-path sites use percent-encoded URLs in the
+    #      base_url so the scraper's `f"{base_url}?no={n}"` doesn't
+    #      need to round-trip through urllib's IRI handling.
+    "hac": {
+        # Serbian (Latin script) — Hrišćanske adventističke himne via
+        # himne.net. The site exposes 3 sub-songbooks but /Himna?no=N
+        # maps to the default volume.
+        "base_url":  "https://www.himne.net/Himna",
+        "home_url":  "https://www.himne.net",
+        "label":     "HAC",
+        "subdir":    "Hrišćanske adventističke himne [HAC]",
+        "lang":      "sr-Latn",   # Serbian, Latin script (composite IETF tag)
+    },
+    "hp": {
+        # Bulgarian — Християнски песни via hristianskipesni.com.
+        # Display URL is /Песен?no=N (BG: "song"), percent-encoded.
+        "base_url":  "https://www.hristianskipesni.com/%D0%9F%D0%B5%D1%81%D0%B5%D0%BD",
+        "home_url":  "https://www.hristianskipesni.com",
+        "label":     "HP",
+        "subdir":    "Християнски песни [HP]",
+        "lang":      "bg",
+    },
+    "hjp": {
+        # Macedonian — Христијански песни via hristijanskipesni.com.
+        # Display URL is /Песна?no=N.
+        "base_url":  "https://www.hristijanskipesni.com/%D0%9F%D0%B5%D1%81%D0%BD%D0%B0",
+        "home_url":  "https://www.hristijanskipesni.com",
+        "label":     "HJP",
+        "subdir":    "Христијански песни [HJP]",
+        "lang":      "mk",
+    },
+    "pes": {
+        # Serbian (Cyrillic) — Хришћанске адвентистичке химне via
+        # pesmarica.net. Display URL is /Химна?no=N (SR: "hymn").
+        "base_url":  "https://www.pesmarica.net/%D0%A5%D0%B8%D0%BC%D0%BD%D0%B0",
+        "home_url":  "https://www.pesmarica.net",
+        "label":     "PES",
+        "subdir":    "Хришћанске адвентистичке химне [PES]",
+        "lang":      "sr-Cyrl",   # Serbian, Cyrillic script
+    },
+    "pj": {
+        # Croatian — Kršćanske adventističke himne via pjesme.net.
+        # Display URL is /Himna?no=N (HR: "hymn").
+        "base_url":  "https://www.pjesme.net/Himna",
+        "home_url":  "https://www.pjesme.net",
+        "label":     "PJ",
+        "subdir":    "Kršćanske adventističke himne [PJ]",
+        "lang":      "hr",
     },
 }
 
@@ -96,6 +332,106 @@ DEFAULT_OUTPUT_DIR = "./hymns"
 # and avoid triggering rate limits. 1.0s is a reasonable balance between
 # speed and politeness.
 DELAY              = 1.0
+
+# Language-name lookup for the output-folder suffix (#780). Each scraper
+# manifest carries a `lang` field (BCP 47 primary subtag) and we compose
+# the subdir as "<Title> [<ABBR>]_<LanguageName>-<lang>" so a curator
+# (and the bulk-import handler) can read the language straight off
+# disk without a separate manifest lookup. Fallback for an unknown code
+# is the code itself uppercased — keeps the suffix non-empty rather
+# than degrading to the legacy shape.
+LANG_NAMES = {
+    "en":      "English",
+    "es":      "Spanish",
+    "pt":      "Portuguese",
+    "fr":      "French",
+    "it":      "Italian",
+    "de":      "German",
+    "nl":      "Dutch",
+    "ru":      "Russian",
+    "uk":      "Ukrainian",
+    "pl":      "Polish",
+    "bg":      "Bulgarian",
+    "mk":      "Macedonian",
+    "hr":      "Croatian",
+    "sr-Latn": "Serbian (Latin)",
+    "sr-Cyrl": "Serbian (Cyrillic)",
+    "sl":      "Slovenian",
+    "sk":      "Slovak",
+    "cs":      "Czech",
+    "ro":      "Romanian",
+    "el":      "Greek",
+    "tr":      "Turkish",
+    "ar":      "Arabic",
+    "he":      "Hebrew",
+    "fa":      "Persian",
+    "hi":      "Hindi",
+    "bn":      "Bengali",
+    "ta":      "Tamil",
+    "ml":      "Malayalam",
+    "te":      "Telugu",
+    "zh":      "Chinese",
+    "ja":      "Japanese",
+    "ko":      "Korean",
+    "vi":      "Vietnamese",
+    "th":      "Thai",
+    "id":      "Indonesian",
+    "ms":      "Malay",
+    "tl":      "Tagalog",
+    "sw":      "Swahili",
+    "rw":      "Kinyarwanda",
+    "to":      "Tonga",
+    "tn":      "Tswana",
+    "st":      "Sotho",
+    "ny":      "Chichewa",
+    "sn":      "Shona",
+    "ve":      "Venda",
+    "nd":      "Northern Ndebele",
+    "xh":      "Xhosa",
+    "ts":      "Xitsonga",
+    "ki":      "Kikuyu",
+    "guz":     "Gusii",
+    "luo":     "Luo",
+    "tum":     "Tumbuka",
+    "nso":     "Sepedi",
+    "bem":     "Bemba",
+    "tw":      "Twi",
+    "yo":      "Yoruba",
+    "ig":      "Igbo",
+    "ha":      "Hausa",
+    "am":      "Amharic",
+    "mg":      "Malagasy",
+}
+
+
+def language_label(code):
+    """
+    Look up the English display name for a BCP 47 primary subtag.
+    Returns the code itself uppercased when unknown — better to keep
+    the folder suffix non-empty than to silently degrade.
+    """
+    if not code:
+        return ""
+    return LANG_NAMES.get(code, code.upper())
+
+
+def compose_subdir(title, abbrev, lang_code):
+    """
+    Build the output sub-directory name for a hymnal (#780):
+
+        "<Title> [<ABBR>]_<LanguageName>-<lang>"
+
+    e.g. "Seventh-day Adventist Hymnal [SDAH]_English-en"
+         "Himnario Adventista [HA]_Spanish-es"
+
+    When lang_code is empty/None we fall back to the legacy shape
+    so a manifest entry without a language stays valid.
+    """
+    base = f"{title} [{abbrev}]"
+    if not lang_code:
+        return base
+    label = language_label(lang_code)
+    return f"{base}_{label}-{lang_code}"
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +456,31 @@ DELAY              = 1.0
 # The parser pairs each indicator with its following lyrics block,
 # producing a list of (indicator, lyrics) tuples in self.sections.
 # ---------------------------------------------------------------------------
+
+"""
+HTML void elements — opens with no matching close tag in regular HTML
+(e.g. <br>, <hr>, <img>). html.parser.HTMLParser fires handle_starttag
+on `<br>` but no handle_endtag (since `</br>` doesn't exist), so
+incrementing _depth on starttag without a balancing decrement on
+endtag corrupts the depth counter. The XHTML self-closing form
+`<br />` is dispatched via handle_startendtag, which by default fires
+BOTH starttag and endtag — those balance correctly. The bug surfaces
+on hymns where the source HTML uses the bare `<br>` form (e.g.
+himnario.net/Himno?no=331+ mixes `<br>` between every verse line):
+each unbalanced open leaves _depth net +1, the closing `</div>` of
+the lyrics block never fires the section flush, and the page parses
+as title + zero sections — which the structural rate-limit fallback
+then misclassifies as "Still rate limited" and stops the run.
+
+Fix: skip depth-tracking on void elements in BOTH paths so `<br>`
+and `<br />` are equally depth-neutral. The `<br>` → newline side
+effect inside lyrics is preserved.
+"""
+VOID_TAGS = frozenset({
+    'br', 'hr', 'img', 'input', 'meta', 'link',
+    'area', 'base', 'col', 'embed', 'param', 'source', 'track', 'wbr',
+})
+
 
 class HymnParser(html.parser.HTMLParser):
     """
@@ -235,16 +596,20 @@ class HymnParser(html.parser.HTMLParser):
             self._in_bh4    = True
             self._bh4_depth = 1       # We're 1 level deep (the container itself)
         elif self._in_bh4:
-            # We're inside block-heading-four; track depth of nested tags
-            self._bh4_depth += 1
+            # We're inside block-heading-four; track depth of nested tags.
+            # Skip void elements — see VOID_TAGS comment above.
+            if tag not in VOID_TAGS:
+                self._bh4_depth += 1
 
             # Step 2: Look for the wedding-heading wrapper inside bh4
             if "wedding-heading" in cls and not self._in_wh:
                 self._in_wh    = True
                 self._wh_depth = 0    # Will increment as child tags are encountered
             elif self._in_wh:
-                # We're inside wedding-heading; track its child depth
-                self._wh_depth += 1
+                # We're inside wedding-heading; track its child depth.
+                # Skip void elements for the same reason.
+                if tag not in VOID_TAGS:
+                    self._wh_depth += 1
 
                 # Step 3: Look for the <strong> tag that contains the actual title
                 # Only capture if we haven't already found a title (first match wins)
@@ -255,7 +620,13 @@ class HymnParser(html.parser.HTMLParser):
         # If we're already inside a lyrics or indicator section, just track depth.
         # Also convert <br> tags to newlines within lyrics blocks.
         if self._current:
-            self._depth += 1
+            # Skip void elements — see VOID_TAGS comment above. Without
+            # this guard, plain `<br>` (no matching `</br>`) increments
+            # _depth on open with no decrement on close, the lyrics
+            # block's `</div>` never reaches _depth==0 to flush, and
+            # parser.sections stays empty — masking as a rate-limit page.
+            if tag not in VOID_TAGS:
+                self._depth += 1
             # Convert <br> tags to newline characters within lyrics sections
             # (the site uses <br> for line breaks within verses)
             if tag == "br" and self._current == "lyrics":
@@ -294,8 +665,13 @@ class HymnParser(html.parser.HTMLParser):
                 # Subsequent <strong> tags (shouldn't happen, but be safe) — discard
                 self._buf = []
 
-        # Track depth within block-heading-four to detect when we leave it
-        if self._in_bh4:
+        # Track depth within block-heading-four to detect when we leave it.
+        # Void elements never had a depth-incrementing starttag (see
+        # VOID_TAGS guard above), so they must not decrement here either —
+        # otherwise an XHTML self-closing `<br />` (which html.parser
+        # dispatches as starttag + endtag via handle_startendtag) would
+        # leave _bh4_depth net -1 and prematurely zero the container.
+        if self._in_bh4 and tag not in VOID_TAGS:
             self._bh4_depth -= 1
             if self._bh4_depth == 0:
                 # We've fully exited the block-heading-four container
@@ -309,6 +685,12 @@ class HymnParser(html.parser.HTMLParser):
         # --- LYRICS PATH ---
         if not self._current:
             return  # Not inside any lyrics/indicator section
+
+        # Skip void elements for the same reason as in handle_starttag —
+        # `<br />` html.parser fires both start + end via the default
+        # handle_startendtag, and we deliberately keep both depth-neutral.
+        if tag in VOID_TAGS:
+            return
 
         self._depth -= 1
         if self._depth == 0:
@@ -448,6 +830,117 @@ class HymnParser(html.parser.HTMLParser):
 # Fetch & parse — HTTP request handling and hymn data extraction
 # ---------------------------------------------------------------------------
 
+# Known rate-limit / error-shell page signatures across the multilingual
+# sister-site set (#699). These are short fragments of the limit-page
+# body text that don't appear in real hymn lyrics. Add new phrases as
+# they're discovered — but the structural check in _is_rate_limit_page()
+# is the fail-closed default, so missing a phrase here only costs one
+# extra wait/retry per language, never a 3000-file garbage flood.
+RATE_LIMIT_PHRASES = [
+    # English — sdahymnal.org, hymnal.xyz
+    "reached limit for today",
+    "we are sorry",
+    # Portuguese — hinarioadventista.com (HASD).
+    # Discovered the hard way on 2026-05-01 when the English-only
+    # detector let 3404 "Desculpe, mas você chegou o limite de hoje"
+    # pages parse as fake successful hymns.
+    "desculpe, mas você chegou o limite de hoje",
+    "limite de hoje",
+    # Italian — innarioavventista.com (IA).
+    # Discovered 2026-05-10 (#967): IA went silent after the daily
+    # quota and started returning a page whose title was
+    # "Siamo Spiacenti, Ma Per Oggi Hai Raggiunto Il Limite." with
+    # at least one block-heading-five-shaped element — defeating
+    # BOTH the phrase-list check (no IT entry yet) and the structural
+    # fallback (parser.sections was non-empty). Result: ~9,500
+    # garbage files saved before the eventual end-of-hymnal redirect.
+    # The verbatim title is the most specific signature; the shorter
+    # "raggiunto il limite" fragment is added as belt-and-braces and
+    # is unlikely to appear in real hymn lyrics.
+    "siamo spiacenti, ma per oggi hai raggiunto il limite",
+    "raggiunto il limite",
+    # Other languages: add phrases here as they're observed. The
+    # structural fallback below catches new languages without code
+    # changes — these explicit phrases just avoid the 60s retry pause
+    # on the first hit. **The IA bug above also showed the structural
+    # fallback isn't perfect** (some walls render with at least one
+    # section-shaped element); when adding a new language, prefer
+    # capturing the verbatim phrase from the observed page rather
+    # than relying on the structural fallback alone.
+    # TODO: ES (himnario.net / nuevohimnario.com)
+    # TODO: FR (hymnes.net)
+    # TODO: HR / SR-Latn (himne.net / pjesme.net)
+    # TODO: BG (hristianskipesni.com)
+    # TODO: MK (hristijanskipesni.com)
+    # TODO: SR-Cyrl (pesmarica.net)
+]
+
+
+def _is_rate_limit_page(html_text, parser):
+    """
+    Detect a rate-limit / error-shell page by EITHER signal:
+
+    1. Phrase match — page body contains a known limit phrase
+       (English, Portuguese, etc. — see RATE_LIMIT_PHRASES).
+
+    2. Structural — parser found a title but ZERO lyrics sections.
+       Every real hymn on this site network has at least one
+       verse/chorus block (div.block-heading-five). An error
+       shell that reuses the standard title layout but carries no
+       hymn data is the language-agnostic rate-limit indicator.
+
+    The structural check is the fail-closed default: any future
+    language whose phrase isn't in RATE_LIMIT_PHRASES still gets
+    caught, so a missing phrase string costs at most one extra
+    wait/retry per language rather than thousands of garbage saves.
+
+    Args:
+        html_text: The raw HTML text of the response.
+        parser:    A HymnParser already fed with html_text.
+
+    Returns:
+        bool: True if the page looks like a rate-limit / error shell.
+    """
+    lower = html_text.lower()
+    if any(phrase in lower for phrase in RATE_LIMIT_PHRASES):
+        return True
+    # Structural fallback: title parsed but no sections.
+    if parser.title and not parser.sections:
+        return True
+    return False
+
+
+def _read_response_body(resp):
+    """
+    Read the response body, decompressing if the server returned
+    `Content-Encoding: gzip` or `deflate`.
+
+    The scraper now sends `Accept-Encoding: gzip, deflate` (#968) so its
+    request fingerprint matches what every real browser asks for —
+    a Chrome-/Edge-/Safari-/Firefox-claiming UA that omits Accept-Encoding
+    is the kind of thing a competent WAF flags. urllib doesn't
+    auto-decompress, so we have to do it here before the HTML parser
+    sees raw bytes.
+
+    `br` (Brotli) is deliberately NOT requested: the scraper's "no
+    third-party dependencies" rule (see module docstring) forbids the
+    `brotli` pip package, and asking for `br` without being able to
+    decode it would be its own fingerprint giveaway.
+    """
+    raw = resp.read()
+    encoding = (resp.headers.get('Content-Encoding') or '').lower().strip()
+    if encoding == 'gzip':
+        return gzip.decompress(raw)
+    if encoding == 'deflate':
+        # raw zlib stream (no gzip header) — some servers send
+        # this without the standard wrapper, so try both shapes.
+        try:
+            return zlib.decompress(raw)
+        except zlib.error:
+            return zlib.decompress(raw, -zlib.MAX_WBITS)
+    return raw
+
+
 def fetch_hymn(number, base_url, home_url):
     """
     Fetch a single hymn page from the website and parse it into structured data.
@@ -476,11 +969,53 @@ def fetch_hymn(number, base_url, home_url):
     # Construct the hymn page URL using the query parameter format used by both sites
     url = f"{base_url}?no={number}"
 
-    # Create a request with a polite User-Agent identifying the scraper
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "Mozilla/5.0 (compatible; HymnScraper/2.0; personal use)"}
-    )
+    # Real-browser headers — the previous polite "HymnScraper/2.0" UA
+    # was triggering aggressive anti-bot throttling on himnario.net (HA)
+    # and hinarioadventista.com (HASD), which key on UA + Accept-* shape
+    # to filter automated traffic. Rotating through USER_AGENT_POOL on
+    # every request makes the burst look like a handful of normal
+    # visitors from different browsers rather than one consistent
+    # automated client — defeats UA-based per-client throttling without
+    # touching upstream servers' rate budget.
+    #
+    # (#968 follow-up) Each pool entry is a {"ua", "hints"} dict. The
+    # `hints` carry per-browser Client-Hints (sec-ch-ua, sec-ch-ua-mobile,
+    # sec-ch-ua-platform) — Chrome and Edge always emit these alongside
+    # their UA, and a competent WAF flags a request that claims a
+    # Chromium UA but omits them. Safari and Firefox don't emit them at
+    # all, so their entries carry an empty hints dict (the resulting
+    # request is correctly Client-Hints-free, matching what those
+    # browsers actually send).
+    #
+    # Sec-Fetch-* headers (dest / mode / site / user) are emitted by
+    # every modern browser on top-level navigation requests — Chrome,
+    # Edge, Firefox, Safari 16+ — so they're applied universally below.
+    # Accept-Encoding gzip,deflate is now sent (real browsers always
+    # request compression); the response is decompressed before the
+    # parser sees it.
+    pool_entry = random.choice(USER_AGENT_POOL)
+    headers = {
+        "User-Agent": pool_entry["ua"],
+        "Accept":
+            "text/html,application/xhtml+xml,application/xml;q=0.9,"
+            "image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
+        "Accept-Encoding": "gzip, deflate",
+        "Referer": home_url + "/",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        # Top-level navigation request from the home page (Referer above).
+        # `same-origin` matches what a click on a hymn-list anchor would
+        # send; navigating from the home page to /Hymn?no=N is same-site.
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-User": "?1",
+    }
+    # Merge per-UA Client-Hints (only for Chromium-family UAs).
+    headers.update(pool_entry["hints"])
+
+    req = urllib.request.Request(url, headers=headers)
 
     raw = None  # Will hold the raw response bytes if the request succeeds
 
@@ -492,12 +1027,23 @@ def fetch_hymn(number, base_url, home_url):
                 # the requested hymn number doesn't exist (we've gone past the
                 # end of the hymnal). We only check for number > 1 because
                 # hymn 1 should always exist.
+                #
+                # Multilingual sister sites (#699) use language-specific path
+                # leaves: Hymn / Himno / Hino / Cantique / Inno / Himna /
+                # Песен / Песна / Химна. The leaf to look for is whatever
+                # came after the last slash in base_url. urllib.parse.unquote
+                # so a percent-encoded Cyrillic leaf compares cleanly against
+                # whatever form the server returns in the redirect.
+                base_path_leaf = urllib.parse.unquote(
+                    base_url.rstrip("/").rsplit("/", 1)[-1]
+                )
                 final_url = resp.url.rstrip("/")
-                if "Hymn" not in final_url and number > 1:
+                final_url_decoded = urllib.parse.unquote(final_url)
+                if base_path_leaf not in final_url_decoded and number > 1:
                     print(f"\n  Hymn {number}: redirected to home — reached end.")
                     return None  # Signal to stop scraping entirely
 
-                raw = resp.read()
+                raw = _read_response_body(resp)
             break  # Success — exit the retry loop
 
         except urllib.error.HTTPError as e:
@@ -536,34 +1082,64 @@ def fetch_hymn(number, base_url, home_url):
     parser = HymnParser()
     parser.feed(html_text)
 
-    # --- Rate limit detection ---
-    # Both sites show a "reached limit for today" message when you've made
-    # too many requests. If detected, pause for 60 seconds and try once more.
-    if "reached limit for today" in html_text.lower() or "we are sorry" in html_text.lower():
-        print(f"  rate limit hit — pausing 60s...", flush=True)
+    # --- Rate-limit detection (multilingual + structural) ---
+    #
+    # Two complementary signals:
+    #
+    #   (a) Phrase match — short fragments of the limit-page body text
+    #       across the languages we know about. These don't appear in
+    #       real hymn lyrics. Add new phrases to RATE_LIMIT_PHRASES as
+    #       they're discovered.
+    #
+    #   (b) Structural — parser found a title but ZERO lyrics sections.
+    #       Real hymn pages always have ≥1 verse/chorus block; an error
+    #       shell that reuses the site's standard layout (title + body)
+    #       but carries no hymn data is the multilingual rate-limit
+    #       indicator we don't yet have a phrase for.
+    #
+    # Why (b) matters: hinarioadventista.com (Portuguese / HASD) burned
+    # 3404 garbage saves on 2026-05-01 because the original detector
+    # only knew the English phrase "reached limit for today" and the
+    # Portuguese page (`Desculpe, mas você chegou o limite de hoje.`)
+    # parsed cleanly as a "successful" hymn with title+no-sections.
+    # The structural check catches every future language fail-closed
+    # without us having to hand-curate phrase strings per locale.
+    if _is_rate_limit_page(html_text, parser):
+        print(f"  rate limit / error shell hit — pausing 60s...", flush=True)
         time.sleep(60)
 
         # One retry after the cooldown period
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
-                raw2 = resp.read()
+                raw2 = _read_response_body(resp)
             html_text2 = raw2.decode("utf-8", errors="replace")
 
+            # Re-parse so the structural check can re-evaluate
+            parser2 = HymnParser()
+            parser2.feed(html_text2)
+
             # Check if we're still rate limited after waiting
-            if "reached limit for today" in html_text2.lower():
+            if _is_rate_limit_page(html_text2, parser2):
                 print(f"  Still rate limited — stopping. Try again tomorrow.")
                 return None   # Stop entirely — no point continuing today
 
-            # Rate limit cleared — re-parse with the fresh response
+            # Rate limit cleared — adopt the fresh response
             html_text = html_text2
-            parser = HymnParser()
-            parser.feed(html_text)
+            parser = parser2
         except Exception:
             return None  # Network error during retry — stop scraping
 
     # Validate that the parser found a title (indicates a valid hymn page)
     if not parser.title:
         print(f"  no title found.")
+        return "SKIP"
+
+    # Belt-and-braces — even after the rate-limit retry path, a successful
+    # parse with a title but zero sections is not a real hymn. Treat as
+    # SKIP so the caller's MAX_CONSEC=10 safety net catches a sustained
+    # error-shell stream that somehow slipped past detection.
+    if parser.title and not parser.sections:
+        print(f"  title parsed but no sections — likely error shell, skipping.")
         return "SKIP"
 
     # Return the structured hymn data
@@ -666,7 +1242,19 @@ def title_case(s):
         "o'er the hills"     → "O'er The Hills"
         "EAGLE\u2019S WINGS" → "Eagle\u2019s Wings"
     """
-    return re.sub(r"[a-zA-Z]+(['\u2019\u2018][a-zA-Z]+)?", lambda m: m.group(0).capitalize(), s)
+    # Unicode-aware: `[^\W\d_]` is the standard Python 3 idiom for "any
+    # Unicode letter" (a word char that is not a digit and not an
+    # underscore). Earlier `[a-zA-Z]+` only matched ASCII letters, which
+    # mangled "SE\u00d1OR" \u2192 "Se\u00f1Or" (matched "SE", skipped "\u00d1", then
+    # matched "OR" as a fresh word and capitalised the O) and left
+    # Cyrillic titles entirely uncased on the multilingual sister sites.
+    # str.capitalize() is itself Unicode-aware in Python 3, so
+    # "SE\u00d1OR".capitalize() == "Se\u00f1or" and "\u0425\u0420\u0418\u0421\u0422\u0415".capitalize() == "\u0425\u0440\u0438\u0441\u0442\u0435".
+    return re.sub(
+        r"[^\W\d_]+(['\u2019\u2018][^\W\d_]+)?",
+        lambda m: m.group(0).capitalize(),
+        s,
+    )
 
 
 def build_existing_set(label, output_dir):
@@ -707,7 +1295,140 @@ def build_existing_set(label, output_dir):
     return existing
 
 
-def save_hymn(hymn, label, output_dir):
+def _normalise_for_diff(text):
+    """
+    Normalise a hymn text for cross-source comparison (#699 Phase C).
+
+    The two sources we compare (SDAHymnal-network sites + ChristInSong.app
+    extracts) format the same hymn with small typographic differences:
+    - SDAHymnal wraps titles in double quotes; ChristInSong doesn't.
+    - SDAHymnal omits trailing whitespace before a comma; ChristInSong
+      occasionally inserts one (e.g. "Senhor ," vs "Senhor,").
+    - Hyphenation differs ("sem par" vs "sem-par").
+    - Unicode normalisation form may differ (NFC vs NFD).
+
+    These differences are real but cosmetic — the underlying lyric is
+    identical. The integrity check should flag a song as "identical"
+    when only those differences exist, and as "differs" when there's
+    a genuine word-level divergence.
+
+    The transformation:
+        - NFC-normalise unicode so combining-character vs precomposed
+          forms compare equal.
+        - Strip leading/trailing double quotes from the title line
+          (SDAHymnal-style "..." → bare).
+        - Collapse runs of whitespace to a single space.
+        - Strip trailing whitespace per line.
+        - Normalise hyphen-vs-space inside compound words (treat
+          "sem-par" and "sem par" as equivalent).
+        - Lower-case for comparison only (the saved file keeps the
+          original casing).
+    """
+    import unicodedata
+    text = unicodedata.normalize('NFC', text)
+    out_lines = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if line.startswith('"') and line.endswith('"') and len(line) >= 2:
+            line = line[1:-1].strip()       # strip surrounding quotes from title
+        line = re.sub(r'\s+', ' ', line)    # collapse internal whitespace
+        line = re.sub(r'\s+([,.!?;:])', r'\1', line)  # drop space-before-punct
+        line = line.replace('-', ' ')       # hyphen ≡ space for compound words
+        # The hyphen→space substitution can re-introduce double spaces
+        # (e.g. "sem-par," → "sem par,"  AND  earlier collapse already
+        # ran), so collapse one more time to keep the normal form clean.
+        line = re.sub(r'\s+', ' ', line)
+        out_lines.append(line.lower())
+    return '\n'.join(out_lines).strip()
+
+
+def _find_existing_hymn_file(number, label, book_dir):
+    """
+    Look for an already-existing hymn file for this number + label
+    in book_dir. Used by the integrity check so the same hymn from a
+    second source (e.g. ChristInSong.app extract) gets compared
+    rather than overwritten.
+
+    Returns the full path to the first matching file, or None if no
+    file exists for this number. The match is on the
+    "NNN (LABEL) - " prefix; the title portion can differ between
+    sources (e.g. "Ó Deus De Amor" vs "Ó Deus de Amor") and we still
+    want them paired up.
+    """
+    if not os.path.isdir(book_dir):
+        return None
+    padded = str(number).zfill(3)
+    prefix = f"{padded} ({label}) - "
+    for name in os.listdir(book_dir):
+        if name.startswith(prefix) and name.endswith('.txt'):
+            return os.path.join(book_dir, name)
+    return None
+
+
+def _write_integrity_report(book_dir, number, label, status, existing_path,
+                            existing_text, new_text):
+    """
+    Append one entry to {book_dir}/_integrity-check.md describing how the
+    fresh-scraped hymn compares to the file already on disk for the same
+    number. (#699 Phase C)
+
+    Sections per entry:
+        ### NNN — Title (status)
+        - existing file: …
+        - normalised:    identical | differs (word count delta, first-mismatch
+                         location)
+        - diff (only when status="differs"): unified diff trimmed to ±3
+          lines around each change
+
+    The report is markdown so it renders cleanly on GitHub when the
+    output folder is committed for cross-checking.
+    """
+    import difflib
+    report_path = os.path.join(book_dir, '_integrity-check.md')
+    is_new_report = not os.path.exists(report_path)
+
+    with open(report_path, 'a', encoding='utf-8') as f:
+        if is_new_report:
+            f.write(f"# Cross-source integrity check — {label}\n\n")
+            f.write(
+                "Compares hymns scraped from the SDAHymnal.org network against "
+                "files already present in this folder (typically ChristInSong.app "
+                "extracts). \"identical\" means the two sources match after "
+                "normalisation (NFC unicode, collapsed whitespace, hyphen ≡ space, "
+                "case-insensitive). \"differs\" means a real word-level divergence "
+                "is present.\n\n"
+                "Generated by `SDAHymnals_SDAHymnal.org.py` (#699 Phase C).\n\n"
+                "---\n\n"
+            )
+        # Pull the title from the first non-empty line of either text
+        title = (existing_text.splitlines() or [''])[0].strip().strip('"')
+        f.write(f"### {str(number).zfill(3)} — {title}  ({status})\n\n")
+        f.write(f"- existing file: `{os.path.basename(existing_path)}`\n")
+
+        if status == 'identical':
+            f.write("- normalised: **identical** — only cosmetic differences "
+                    "(quotes, whitespace, hyphenation)\n\n")
+        else:
+            # Word-count delta is a quick "how big is this?" signal
+            ew = len(existing_text.split())
+            nw = len(new_text.split())
+            f.write(f"- normalised word counts: existing={ew}, fresh={nw} "
+                    f"(delta {nw - ew:+d})\n")
+            # Unified diff between normalised forms — keeps the report
+            # short while still surfacing what changed
+            diff = list(difflib.unified_diff(
+                _normalise_for_diff(existing_text).splitlines(),
+                _normalise_for_diff(new_text).splitlines(),
+                fromfile='existing', tofile='fresh', lineterm='', n=2,
+            ))
+            f.write("- diff (normalised):\n\n```diff\n")
+            f.write('\n'.join(diff[:60]))   # cap at 60 lines per song
+            if len(diff) > 60:
+                f.write(f"\n... ({len(diff) - 60} more lines truncated)")
+            f.write("\n```\n\n")
+
+
+def save_hymn(hymn, label, output_dir, prefer_source=None):
     """
     Save a parsed hymn to a plain-text file in the output directory.
 
@@ -715,13 +1436,39 @@ def save_hymn(hymn, label, output_dir):
     content, and writes it to a file with the standard naming convention:
         {number zero-padded to 3} ({label}) - {Title Case Title}.txt
 
+    When `prefer_source` is None (the default), behaves as a plain write:
+    creates the file unconditionally. The caller (scrape_site) only
+    invokes save_hymn for hymns that aren't already on disk in this
+    case, so there is no overwrite risk.
+
+    When `prefer_source` is set (the cross-source integrity-check mode,
+    #699 Phase C), and a file for this number+label already exists,
+    the fresh scrape is compared against it and a markdown entry is
+    appended to `_integrity-check.md`. The handling of the actual
+    write then depends on the value:
+
+        'sidebar' — keep the existing file, write the fresh scrape
+            with `.sdah-fresh` suffix on the same name so a curator
+            can diff manually.
+
+        'sdah' — overwrite the existing file with the fresh scrape.
+            Useful for re-syncing a folder where ChristInSong's
+            extract is known to be stale.
+
+        'cis' — keep the existing file, do NOT write the fresh scrape
+            at all. Useful for an audit-only pass where the curator
+            just wants the report.
+
     Args:
-        hymn:       Dict with "number" (int), "title" (str), and "sections" (list)
-        label:      Book label for the filename (e.g. "SDAH", "CH")
-        output_dir: Directory path where the file should be saved
+        hymn:          Dict with "number" (int), "title" (str), "sections" (list)
+        label:         Book label for the filename (e.g. "SDAH", "CH")
+        output_dir:    Directory path where the file should be saved
+        prefer_source: None | 'sidebar' | 'sdah' | 'cis' — see above
 
     Returns:
-        str: The full file path of the saved file
+        str | None: The full file path of the saved file, or None if
+        prefer_source='cis' and an existing file was kept (so the
+        caller can adjust counters).
     """
     # Ensure the output directory exists (creates parent dirs too if needed)
     os.makedirs(output_dir, exist_ok=True)
@@ -734,10 +1481,44 @@ def save_hymn(hymn, label, output_dir):
     # then convert to Title Case for consistent, readable filenames
     filename = f"{padded} ({label}) - {title_case(sanitize(hymn['title']))}.txt"
     filepath = os.path.join(output_dir, filename)
+    new_text = format_hymn(hymn)
 
-    # Write the formatted hymn text to the file
+    # Cross-source integrity check (#699 Phase C). Only runs when the
+    # caller explicitly opted in via prefer_source. When prefer_source
+    # is None, save_hymn is the plain-write path and we skip the
+    # comparison entirely (the call site has its own resumability
+    # check). When prefer_source is set, look for an existing file
+    # under the same NNN (LABEL) prefix; if one exists, compare and
+    # write per the chosen mode.
+    if prefer_source is not None:
+        existing_path = _find_existing_hymn_file(hymn["number"], label, output_dir)
+        if existing_path:
+            with open(existing_path, 'r', encoding='utf-8') as ef:
+                existing_text = ef.read()
+            status = ('identical'
+                      if _normalise_for_diff(existing_text) == _normalise_for_diff(new_text)
+                      else 'differs')
+            _write_integrity_report(
+                output_dir, hymn["number"], label, status,
+                existing_path, existing_text, new_text,
+            )
+
+            if prefer_source == 'sdah':
+                with open(existing_path, 'w', encoding='utf-8') as f:
+                    f.write(new_text)
+                return existing_path
+            if prefer_source == 'cis':
+                return None
+            # 'sidebar': write side-by-side with .sdah-fresh suffix so
+            # the curator can pick the survivor manually.
+            sidebar = filepath + '.sdah-fresh'
+            with open(sidebar, 'w', encoding='utf-8') as f:
+                f.write(new_text)
+            return sidebar
+
+    # No conflict / no integrity check — straightforward write.
     with open(filepath, "w", encoding="utf-8") as f:
-        f.write(format_hymn(hymn))
+        f.write(new_text)
 
     return filepath
 
@@ -773,7 +1554,7 @@ def log_skip(number, label, reason, book_dir):
 # ---------------------------------------------------------------------------
 
 
-def scrape_site(site_key, start, end, output_dir, delay, force=False):
+def scrape_site(site_key, start, end, output_dir, delay, force=False, prefer_source=None):
     """
     Scrape all hymns from a single site (SDAH or CH).
 
@@ -811,9 +1592,23 @@ def scrape_site(site_key, start, end, output_dir, delay, force=False):
     base_url = site["base_url"]
     home_url = site["home_url"]
 
-    # Route output into a book-specific subdirectory within the base output dir
-    # e.g. "./hymns/Seventh-day Adventist Hymnal [SDAH]/"
-    book_dir = os.path.join(output_dir, site["subdir"])
+    # Route output into a book-specific subdirectory within the base output dir.
+    # The folder name now embeds the language (#780) — e.g.
+    #   "./hymns/Seventh-day Adventist Hymnal [SDAH]_English-en/"
+    # The site["subdir"] value carries the legacy "<Title> [<ABBR>]" shape; we
+    # extract title + abbrev from that and compose the new shape via
+    # compose_subdir() with site["lang"]. Sites with no `lang` set fall through
+    # to the legacy shape automatically.
+    legacy_subdir = site["subdir"]
+    # Strip trailing " [<ABBR>]" to get the bare title for the new composition.
+    m = re.match(r"^(?P<title>.+?)\s*\[(?P<abbr>[A-Za-z0-9_\-]+)\]$", legacy_subdir)
+    if m:
+        title_part = m.group("title").strip()
+        abbr_part  = m.group("abbr")
+        new_subdir = compose_subdir(title_part, abbr_part, site.get("lang", ""))
+    else:
+        new_subdir = legacy_subdir
+    book_dir = os.path.join(output_dir, new_subdir)
 
     # Print a banner with configuration details for this scrape run
     print(f"\n{'='*50}")
@@ -823,10 +1618,17 @@ def scrape_site(site_key, start, end, output_dir, delay, force=False):
     print(f"{'='*50}\n")
 
     # Scan the output directory for already-saved hymns to enable resumability.
-    # When --force is set, we skip this check and re-download everything.
-    existing     = set() if force else build_existing_set(label, book_dir)
+    # Two opt-outs:
+    #   --force                          — re-download + overwrite everything
+    #   --prefer-source {sidebar|sdah|cis} — re-download every hymn so the
+    #     integrity check can compare against the existing file
+    integrity_mode = prefer_source is not None
+    existing = set() if (force or integrity_mode) else build_existing_set(label, book_dir)
     if force:
         print(f"  Force mode: will re-download and overwrite existing files.\n")
+    elif integrity_mode:
+        print(f"  Integrity mode (--prefer-source={prefer_source}): will re-download "
+              f"every hymn and compare against existing files in this folder.\n")
     elif existing:
         print(f"  Found {len(existing)} existing {label} hymns — will skip.\n")
 
@@ -880,11 +1682,19 @@ def scrape_site(site_key, start, end, output_dir, delay, force=False):
             time.sleep(delay)   # Rate limit even on failures
             continue
 
-        # Success — reset the consecutive skip counter and save the hymn
+        # Success — reset the consecutive skip counter and save the hymn.
+        # save_hymn returns None when prefer_source='cis' kept an
+        # existing file; treat that as a successful scrape (the network
+        # request happened) but with a different success message.
         consec_skip = 0
-        path = save_hymn(hymn, label, book_dir)
+        path = save_hymn(hymn, label, book_dir, prefer_source=prefer_source)
         saved += 1
-        print(f"✓  {os.path.basename(path)}")
+        if path is None:
+            print(f"✓  kept existing (prefer_source=cis)")
+        elif path.endswith('.sdah-fresh'):
+            print(f"✓  side-by-side: {os.path.basename(path)}")
+        else:
+            print(f"✓  {os.path.basename(path)}")
 
         number += 1
         time.sleep(delay)  # Rate limit between successful requests
@@ -913,13 +1723,17 @@ def main():
     if "-?" in sys.argv:
         sys.argv[sys.argv.index("-?")] = "--help"
 
+    site_keys = list(SITES.keys())   # source of truth — one place to add a site
     ap = argparse.ArgumentParser(
-        description="Hymnal scraper — SDAH + CH (no pip required)",
+        description="Hymnal scraper — SDAHymnal.org network (no pip required)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""examples:
-  python3 %(prog)s                         Scrape both sites from hymn 1
+  python3 %(prog)s                         Scrape every configured site (--site all)
   python3 %(prog)s --site sdah             Only scrape sdahymnal.org (SDAH)
   python3 %(prog)s --site ch               Only scrape hymnal.xyz (CH)
+  python3 %(prog)s --site ha               Only scrape himnario.net (HA)
+  python3 %(prog)s --site hasd             Only scrape hinarioadventista.com (HASD)
+  python3 %(prog)s --site hl               Only scrape hymnes.net (HL)
   python3 %(prog)s --start 50              Resume scraping from hymn 50
   python3 %(prog)s --start 1 --end 100     Scrape a specific range of hymns
   python3 %(prog)s --output ~/Desktop/hymns
@@ -929,18 +1743,21 @@ def main():
 output:
   Files are saved as plain text in book-specific subdirectories:
     hymns/Seventh-day Adventist Hymnal [SDAH]/001 (SDAH) - Praise To The Lord.txt
-    hymns/The Church Hymnal [CH]/001 (CH) - Praise To The Lord.txt
+    hymns/Himnario Adventista [HA]/001 (HA) - Cantad Al Senor.txt
 
   The scraper is resumable — existing files are detected and skipped.
   Skipped hymns (errors, missing data) are logged to skipped.log.
 
 notes:
   - No dependencies required — uses only Python standard library modules.
-  - Both sites share the same HTML structure, so one parser handles both.
+  - Sister sites share the same HTML structure (block-heading-* +
+    wedding-heading), so one parser handles them all (#699).
   - The scraper auto-detects the end of the hymnal (no --end needed).
   - Rate limiting is handled automatically (pauses 60s, retries once).""")
-    ap.add_argument("--site",   choices=["sdah", "ch", "both"], default="both",
-                    help="which site to scrape (default: both)")
+    ap.add_argument("--site",   choices=site_keys + ["all", "both"], default="all",
+                    help="which site to scrape (default: all). 'both' is an alias "
+                         "for 'all' kept for backwards compatibility with prior "
+                         "two-site default; new callers should prefer 'all'.")
     ap.add_argument("--start",  type=int,   default=1,
                     help="first hymn number to scrape (default: 1)")
     ap.add_argument("--end",    type=int,   default=None,
@@ -951,15 +1768,40 @@ notes:
                     help="seconds to wait between HTTP requests (default: 1.0)")
     ap.add_argument("--force",  action="store_true", default=False,
                     help="force re-download of all hymns, even if files already exist")
+    # --prefer-source defaults to None (not passed) so the existing
+    # resumability behaviour stays the default for normal scrape runs.
+    # When the curator passes the flag, the scraper switches into
+    # integrity-check mode: it re-fetches every hymn (bypassing the
+    # "already exists, skipping" optimisation) so it can compare
+    # against the file already on disk. (#699 Phase C.)
+    ap.add_argument("--prefer-source", choices=['sidebar', 'sdah', 'cis'], default=None,
+                    dest='prefer_source',
+                    help="opt-in cross-source integrity check. When a hymn file "
+                         "already exists for this number+label (typically a "
+                         "ChristInSong.app extract), the fresh scrape is compared "
+                         "against it and a diff is appended to _integrity-check.md. "
+                         "'sidebar' — keep existing, write fresh with .sdah-fresh "
+                         "suffix. 'sdah' — overwrite existing with fresh. 'cis' — "
+                         "keep existing, do not write fresh (report only). Passing "
+                         "the flag also disables resumability so every hymn is "
+                         "re-fetched for comparison.")
     args = ap.parse_args()
 
-    # Determine which sites to scrape based on the --site argument
-    sites_to_run = ["sdah", "ch"] if args.site == "both" else [args.site]
+    # Determine which sites to scrape based on the --site argument.
+    # 'all' (the new default) walks every configured site; 'both' is
+    # the legacy alias from when there were only two sites — kept
+    # working so existing scripts / scheduled jobs don't break (#699).
+    if args.site in ("all", "both"):
+        sites_to_run = site_keys
+    else:
+        sites_to_run = [args.site]
     total = 0
 
     # Scrape each site sequentially, accumulating the total saved count
     for site_key in sites_to_run:
-        total += scrape_site(site_key, args.start, args.end, args.output, args.delay, args.force)
+        total += scrape_site(site_key, args.start, args.end, args.output,
+                             args.delay, args.force,
+                             prefer_source=args.prefer_source)
 
     print(f"\nAll done! {total} hymns total saved to: {os.path.abspath(args.output)}")
 

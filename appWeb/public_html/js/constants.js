@@ -66,6 +66,17 @@ export const SONGBOOK_NAMES = {
     Misc: 'Miscellaneous',
 };
 
+/* Local HTML escaper — kept inline to keep constants.js DOM-free and
+   avoid pulling utils/html.js into the dependency graph. The output of
+   songbookLabel is interpolated into innerHTML across many modules, so
+   any caller-supplied abbr/fullName must be escaped here at the source
+   to satisfy CodeQL's "DOM text reinterpreted as HTML" rule and stay
+   safe even when callers forget to escape. */
+const _ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+function _escSongbook(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => _ESC_MAP[c]);
+}
+
 /**
  * Return responsive songbook label HTML showing full name by default
  * and abbreviation on narrow screens. Both are always present in the
@@ -77,6 +88,7 @@ export const SONGBOOK_NAMES = {
  */
 export function songbookLabel(abbr, fullName) {
     const full = fullName || SONGBOOK_NAMES[abbr] || abbr;
-    if (full === abbr) return abbr; /* no full name available */
-    return `<span class="songbook-name-full">${full}</span><span class="songbook-name-abbr">${abbr}</span>`;
+    const safeAbbr = _escSongbook(abbr);
+    if (full === abbr) return safeAbbr; /* no full name available */
+    return `<span class="songbook-name-full">${_escSongbook(full)}</span><span class="songbook-name-abbr">${safeAbbr}</span>`;
 }

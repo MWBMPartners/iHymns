@@ -44,10 +44,77 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'debug_mode.php';
 enableDebugModeIfRequested();
 
+/* =========================================================================
+ * BOOTSTRAP SAFETY NET (#811)
+ *
+ * Catch any uncaught Throwable during request bootstrap and render a
+ * friendly fallback page instead of a blank screen. Triggers when the
+ * deployed code references schema (table / column) that the matching
+ * migrate-*.php hasn't been applied for yet — typically the brief
+ * window between a deploy landing and an admin running the migrations.
+ *
+ * Production: shows a generic "service starting" message.
+ * Alpha / Beta: includes the exception text + the exact admin path
+ *               to apply pending migrations.
+ *
+ * Register before any DB-touching require (config.php pulls APP_CONFIG
+ * but doesn't connect; SongData / channel_gate do).
+ * ========================================================================= */
+set_exception_handler(function (\Throwable $e): void {
+    error_log('[index.php bootstrap] uncaught ' . get_class($e) . ': ' . $e->getMessage()
+            . ' at ' . basename($e->getFile()) . ':' . $e->getLine());
+    if (!headers_sent()) {
+        http_response_code(503);
+        header('Content-Type: text/html; charset=UTF-8');
+        header('Retry-After: 30');
+    }
+    /* Best-effort: if we can detect Alpha/Beta from the server path, give
+       the admin a direct link to fix it. Production keeps the message
+       generic so a casual visitor isn't shown internals. */
+    $serverPath = (string)($_SERVER['SCRIPT_FILENAME'] ?? '');
+    $isPreProd  = str_contains($serverPath, 'public_html_dev')
+               || str_contains($serverPath, 'public_html_beta');
+    $detail = '';
+    if ($isPreProd) {
+        $detail = '<p class="muted">'
+                . htmlspecialchars(get_class($e) . ': ' . $e->getMessage())
+                . '</p><p>Admins: visit '
+                . '<a href="/manage/setup-database">/manage/setup-database</a> '
+                . 'and click <strong>Apply all pending migrations</strong>.</p>';
+    }
+    echo <<<HTML
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>iHymns — Service starting</title>
+<style>
+ body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#1a1d21;color:#e8e6e3;
+      margin:0;padding:2rem;display:flex;min-height:100vh;align-items:center;justify-content:center}
+ main{max-width:480px;text-align:center}
+ h1{font-size:1.5rem;margin:0 0 .75rem}
+ p{line-height:1.5;margin:.5rem 0}
+ .muted{color:#888;font-size:.85rem;font-family:ui-monospace,monospace;text-align:left;
+        background:#0f1115;padding:.75rem;border-radius:6px;overflow-wrap:break-word}
+ a{color:#67aaff}
+</style></head>
+<body><main>
+ <h1>iHymns is starting up</h1>
+ <p>The service is initialising. Please retry in a moment.</p>
+ {$detail}
+</main></body></html>
+HTML;
+});
+
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+/* Mirror every uncaught \Throwable + PHP fatal into tblActivityLog so
+   curators reading /manage/activity-log see every public-site error
+   alongside admin events. Chains to the 503-emitting bootstrap
+   safety net registered above. */
+installGlobalActivityLogHandlers('index');
 
 /* Channel gate (#407) — alpha / beta subdomains require the user to
    hold access_alpha / access_beta entitlements. Never gates production
@@ -177,13 +244,62 @@ try {
             $ogImage = getCanonicalUrl('/og-image?song=' . urlencode($matches[1]));
             $ogImageAlt = 'Preview of "' . $ogSong['title'] . '" from ' . $ogSong['songbookName'];
 
-            /* JSON-LD: MusicComposition */
+            /* JSON-LD: MusicComposition. #858 — inLanguage is the
+               union of the song's primary language and every per-
+               component override, so a Spanish-chorus / English-verse
+               medley is correctly indexed as multilingual. Falls back
+               to a single-string $locale when no per-component data
+               is attached (pre-migration / no overrides). */
+            $jsonLdLanguages = [];
+            if (!empty($ogSong['language'])) {
+                $jsonLdLanguages[] = (string)$ogSong['language'];
+            } elseif ($locale !== '') {
+                $jsonLdLanguages[] = $locale;
+            }
+            foreach (($ogSong['components'] ?? []) as $cmp) {
+                $cl = trim((string)($cmp['language'] ?? ''));
+                if ($cl !== '' && !in_array($cl, $jsonLdLanguages, true)) {
+                    $jsonLdLanguages[] = $cl;
+                }
+            }
             $musicComposition = [
                 '@context' => 'https://schema.org',
                 '@type'    => 'MusicComposition',
                 'name'     => $ogSong['title'],
-                'inLanguage' => $locale,
+                /* Single-value when only one language; array when the
+                   song carries per-component overrides. Both shapes
+                   are valid schema.org per the Web Schemas
+                   recommendation. */
+                'inLanguage' => count($jsonLdLanguages) > 1
+                    ? $jsonLdLanguages
+                    : ($jsonLdLanguages[0] ?? $locale),
             ];
+            /* #832 — alternateName for SEO. Search engines pick this up
+               so a query for the original title / common misspelling /
+               vernacular name still surfaces this song. Empty array on
+               pre-migration deployments — key omitted in that case so
+               the JSON-LD stays clean. */
+            if (!empty($ogSong['alternativeTitles'])) {
+                $musicComposition['alternateName'] = array_values(array_map(
+                    static fn(array $a): string => (string)($a['title'] ?? ''),
+                    array_filter(
+                        $ogSong['alternativeTitles'],
+                        static fn($a) => is_array($a) && !empty($a['title'])
+                    )
+                ));
+            }
+            /* #833 — sameAs for SEO. Search engines pick up the
+               external-link URLs as authority signals; e.g. a
+               linked Hymnary.org page reinforces the song identity. */
+            if (!empty($ogSong['links']) && is_array($ogSong['links'])) {
+                $sameAs = array_values(array_filter(array_map(
+                    static fn($l) => is_array($l) ? (string)($l['url'] ?? '') : '',
+                    $ogSong['links']
+                )));
+                if (!empty($sameAs)) {
+                    $musicComposition['sameAs'] = $sameAs;
+                }
+            }
             if (!empty($ogSong['composers'])) {
                 $musicComposition['composer'] = array_map(
                     fn($name) => ['@type' => 'Person', 'name' => $name],
@@ -222,6 +338,21 @@ try {
             $ogTitle = htmlspecialchars($ogBook['name']) . ' — ' . $app["Application"]["Name"];
             $ogDescription = 'Browse ' . number_format($ogBook['songCount'])
                            . ' songs from ' . $ogBook['name'] . ' on ' . $app["Application"]["Name"];
+            /* #832 — append "Also known as: …" to social previews when
+               alt names are present, so a Twitter/Facebook share card
+               surfaces vernacular names too. Capped at 3 alts to keep
+               the OG description from blowing past the ~200 char
+               threshold platforms truncate at. */
+            if (!empty($ogBook['alternativeNames'])) {
+                $altSlice = array_slice($ogBook['alternativeNames'], 0, 3);
+                $altText  = implode(', ', array_map(
+                    static fn(array $a): string => (string)($a['title'] ?? ''),
+                    $altSlice
+                ));
+                if ($altText !== '') {
+                    $ogDescription .= '. Also known as: ' . $altText;
+                }
+            }
             $ogImage = getCanonicalUrl('/og-image?songbook=' . urlencode($matches[1]));
             $ogImageAlt = $ogBook['name'] . ' songbook on ' . $app["Application"]["Name"];
 
@@ -231,7 +362,164 @@ try {
                 ['name' => 'Songbooks', 'url' => getCanonicalUrl('/songbooks')],
                 ['name' => $ogBook['name'], 'url' => $canonicalUrl],
             ];
+
+            /* JSON-LD: MusicAlbum (#832 — alternateName, #833 — sameAs for SEO). */
+            $musicAlbum = [
+                '@context'  => 'https://schema.org',
+                '@type'     => 'MusicAlbum',
+                'name'      => $ogBook['name'],
+                'numTracks' => (int)($ogBook['songCount'] ?? 0),
+            ];
+            if (!empty($ogBook['alternativeNames'])) {
+                $musicAlbum['alternateName'] = array_values(array_map(
+                    static fn(array $a): string => (string)($a['title'] ?? ''),
+                    array_filter(
+                        $ogBook['alternativeNames'],
+                        static fn($a) => is_array($a) && !empty($a['title'])
+                    )
+                ));
+            }
+            if (!empty($ogBook['links']) && is_array($ogBook['links'])) {
+                $albumSameAs = array_values(array_filter(array_map(
+                    static fn($l) => is_array($l) ? (string)($l['url'] ?? '') : '',
+                    $ogBook['links']
+                )));
+                if (!empty($albumSameAs)) {
+                    $musicAlbum['sameAs'] = $albumSameAs;
+                }
+            }
+            $jsonLdScripts[] = $musicAlbum;
         }
+    }
+    /* Person page: /people/<slug> (#833 — sameAs JSON-LD) */
+    elseif (preg_match('#^/people/([a-z0-9\-]+)$#', $requestPath, $matches)) {
+        $pageType = 'other';
+        $personSlug = $matches[1];
+        try {
+            $personDb = getDbMysqli();
+            $stmt = $personDb->prepare(
+                'SELECT Id, Name, Slug FROM tblCreditPeople WHERE Slug = ? LIMIT 1'
+            );
+            $stmt->bind_param('s', $personSlug);
+            $stmt->execute();
+            $personRow = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if ($personRow) {
+                $personJsonLd = [
+                    '@context' => 'https://schema.org',
+                    '@type'    => 'Person',
+                    'name'     => (string)$personRow['Name'],
+                ];
+                /* Check both new and legacy link tables — same fallback
+                   as the public page. */
+                $personLinks = [];
+                $r = $personDb->query(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblCreditPersonExternalLinks' LIMIT 1"
+                );
+                $hasNewPersonLinks = $r && $r->fetch_row() !== null;
+                if ($r) $r->close();
+                if ($hasNewPersonLinks) {
+                    $stmt = $personDb->prepare(
+                        'SELECT Url FROM tblCreditPersonExternalLinks WHERE CreditPersonId = ?'
+                    );
+                    $pid = (int)$personRow['Id'];
+                    $stmt->bind_param('i', $pid);
+                    $stmt->execute();
+                    $personLinks = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                    $stmt->close();
+                }
+                if (empty($personLinks)) {
+                    try {
+                        $stmt = $personDb->prepare(
+                            'SELECT Url FROM tblCreditPersonLinks WHERE CreditPersonId = ?'
+                        );
+                        $pid = (int)$personRow['Id'];
+                        $stmt->bind_param('i', $pid);
+                        $stmt->execute();
+                        $personLinks = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                        $stmt->close();
+                    } catch (\Throwable $_e) { /* legacy table missing */ }
+                }
+                if (!empty($personLinks)) {
+                    $personSameAs = array_values(array_filter(array_map(
+                        static fn($l) => (string)($l['Url'] ?? $l['url'] ?? ''),
+                        $personLinks
+                    )));
+                    if (!empty($personSameAs)) {
+                        $personJsonLd['sameAs'] = $personSameAs;
+                    }
+                }
+                $jsonLdScripts[] = $personJsonLd;
+            }
+        } catch (\Throwable $_e) { /* table missing — no JSON-LD */ }
+    }
+    /* Work page: /work/<slug> (#840 — sameAs JSON-LD + breadcrumb) */
+    elseif (preg_match('#^/work/([a-z0-9\-]+)$#', $requestPath, $matches)) {
+        $pageType = 'other';
+        $workSlug = $matches[1];
+        try {
+            $workDb = getDbMysqli();
+            /* Probe tblWorks; pre-migration deployments skip silently. */
+            $r = $workDb->query(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblWorks' LIMIT 1"
+            );
+            $hasWorksTable = $r && $r->fetch_row() !== null;
+            if ($r) $r->close();
+            if ($hasWorksTable) {
+                $stmt = $workDb->prepare(
+                    'SELECT Id, Title, Slug, Iswc FROM tblWorks WHERE Slug = ? LIMIT 1'
+                );
+                $stmt->bind_param('s', $workSlug);
+                $stmt->execute();
+                $workRow = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                if ($workRow) {
+                    $ogTitle       = htmlspecialchars((string)$workRow['Title']) . ' — Work — ' . $app["Application"]["Name"];
+                    $ogDescription = 'Work record on ' . $app["Application"]["Name"]
+                                   . (!empty($workRow['Iswc']) ? ' — ISWC ' . htmlspecialchars((string)$workRow['Iswc']) : '');
+                    $breadcrumbItems = [
+                        ['name' => 'Home',  'url' => getCanonicalUrl('/')],
+                        ['name' => 'Works', 'url' => getCanonicalUrl('/works')],
+                        ['name' => (string)$workRow['Title'], 'url' => $canonicalUrl],
+                    ];
+                    $workJsonLd = [
+                        '@context' => 'https://schema.org',
+                        '@type'    => 'MusicComposition',
+                        'name'     => (string)$workRow['Title'],
+                    ];
+                    if (!empty($workRow['Iswc'])) {
+                        $workJsonLd['iswcCode'] = (string)$workRow['Iswc'];
+                    }
+                    $hasWorkLinks = false;
+                    $r2 = $workDb->query(
+                        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblWorkExternalLinks' LIMIT 1"
+                    );
+                    $hasWorkLinks = $r2 && $r2->fetch_row() !== null;
+                    if ($r2) $r2->close();
+                    if ($hasWorkLinks) {
+                        $stmt = $workDb->prepare(
+                            'SELECT Url FROM tblWorkExternalLinks WHERE WorkId = ?'
+                        );
+                        $wid = (int)$workRow['Id'];
+                        $stmt->bind_param('i', $wid);
+                        $stmt->execute();
+                        $linkRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                        $stmt->close();
+                        $sameAs = array_values(array_filter(array_map(
+                            static fn($l) => (string)($l['Url'] ?? ''),
+                            $linkRows
+                        )));
+                        if (!empty($sameAs)) {
+                            $workJsonLd['sameAs'] = $sameAs;
+                        }
+                    }
+                    $jsonLdScripts[] = $workJsonLd;
+                }
+            }
+        } catch (\Throwable $_e) { /* schema missing — no JSON-LD */ }
     }
     /* Shared setlist page: /setlist/shared/abc123 */
     elseif (preg_match('#^/setlist/shared/([a-f0-9]+)$#', $requestPath, $matches)) {
@@ -272,8 +560,13 @@ try {
     else {
         $pageType = 'other';
     }
-} catch (\RuntimeException $e) {
-    /* If song data isn't available, use defaults — no fatal error */
+} catch (\Throwable $e) {
+    /* If song data isn't available, use defaults — no fatal error.
+       Widened from \RuntimeException → \Throwable (#811) so a fresh
+       deploy that lands new-schema code before its migrations have
+       run still renders the page; the metadata block falls back to
+       the static defaults rather than blanking the site. */
+    error_log('[index.php] OG/route detection failed: ' . $e->getMessage());
 }
 
 /* JSON-LD: WebSite schema with SearchAction (home page only) */
@@ -580,7 +873,12 @@ if (!empty($breadcrumbItems)) {
                         <i class="fa-solid fa-music fa-lg" aria-hidden="true"></i>
                         <span class="fw-bold"><?= htmlspecialchars($app["Application"]["Name"]) ?></span>
                         <?php if ($app["Application"]["Version"]["Development"]["Status"]): ?>
-                            <span class="badge bg-warning text-dark ms-1 small"><?= htmlspecialchars($app["Application"]["Version"]["Development"]["Status"]) ?></span>
+                            <!-- Environment badge (#812) — must remain visible at every
+                                 viewport so functional differences between Alpha/Beta and
+                                 production stay obvious. Uses the dedicated `env-badge`
+                                 class (admin.css / app.css) for stable padding instead of
+                                 Bootstrap's `small` modifier which collapsed awkwardly. -->
+                            <span class="badge env-badge bg-warning text-dark ms-1"><?= htmlspecialchars($app["Application"]["Version"]["Development"]["Status"]) ?></span>
                         <?php endif; ?>
                     </button>
                     <ul class="dropdown-menu" aria-labelledby="logo-nav-btn">
@@ -600,36 +898,38 @@ if (!empty($breadcrumbItems)) {
                         <li><a class="dropdown-item" href="/stats" data-navigate="stats">
                             <i class="fa-solid fa-chart-simple me-2" aria-hidden="true"></i> Statistics
                         </a></li>
-                        <li><a class="dropdown-item" href="/help" data-navigate="help">
-                            <i class="fa-solid fa-circle-question me-2" aria-hidden="true"></i> Help
-                        </a></li>
 
                         <!-- Single "Manage" entry — opens /manage/ which
                              shows per-entitlement cards for every
                              curator and administration surface. Visible
                              to any signed-in user with at least one
                              management entitlement (toggled by
-                             user-auth.js). -->
-                        <li id="nav-manage-divider" class="d-none"><hr class="dropdown-divider"></li>
+                             user-auth.js). Sits in the same operations
+                             group as Statistics (#582). -->
                         <li id="nav-manage-li" class="d-none">
                             <a class="dropdown-item" href="/manage/">
                                 <i class="fa-solid fa-gears me-2" aria-hidden="true"></i> Manage
                             </a>
                         </li>
+
+                        <!-- Help moved to the bottom (#582) — support
+                             content is the natural last section in the
+                             menu, separated from operations by its own
+                             divider. -->
+                        <li><hr class="dropdown-divider"></li>
+                        <li><a class="dropdown-item" href="/help" data-navigate="help">
+                            <i class="fa-solid fa-circle-question me-2" aria-hidden="true"></i> Help
+                        </a></li>
                     </ul>
                 </div>
 
                 <!-- Right-side header actions -->
                 <div class="d-flex align-items-center gap-2">
-                    <!-- Search toggle button -->
-                    <button type="button"
-                            class="btn btn-header-icon"
-                            id="header-search-toggle"
-                            aria-label="Toggle search"
-                            aria-expanded="false"
-                            aria-controls="header-search-bar">
-                        <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
-                    </button>
+                    <!-- Search toggle button removed (#812) — the bottom
+                         footer-nav already exposes a "Search" entry that
+                         navigates to /search; one affordance is enough,
+                         and the saved real-estate matters most on mobile
+                         portrait. -->
 
                     <!-- Shuffle button — randomly pick a song -->
                     <button type="button"
@@ -788,35 +1088,11 @@ if (!empty($breadcrumbItems)) {
             </div>
         </nav>
 
-        <!-- ============================================================
-             COLLAPSIBLE SEARCH BAR — Slides down below the header
-             when the search toggle is activated.
-             ============================================================ -->
-        <div id="header-search-bar" class="header-search-bar" aria-hidden="true">
-            <div class="container-fluid px-3 py-2">
-                <form id="search-form" role="search" aria-label="Search songs" autocomplete="off">
-                    <div class="input-group">
-                        <span class="input-group-text" aria-hidden="true">
-                            <i class="fa-solid fa-magnifying-glass"></i>
-                        </span>
-                        <input type="search"
-                               class="form-control"
-                               id="search-input"
-                               name="q"
-                               placeholder="Search songs, hymns, lyrics..."
-                               aria-label="Search songs"
-                               autocomplete="off"
-                               spellcheck="false">
-                        <button type="button"
-                                class="btn btn-outline-secondary d-none"
-                                id="search-clear-btn"
-                                aria-label="Clear search">
-                            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
-                        </button>
-                    </div>
-                </form>
-            </div>
-        </div>
+        <!-- Collapsible header search bar removed (#812) alongside its
+             toggle button. The dedicated /search page reached via the
+             footer-nav handles the use case. The autocomplete + Fuse
+             index logic in js/modules/search.js degrades gracefully
+             when neither element is present. -->
     </header>
 
     <!-- ================================================================

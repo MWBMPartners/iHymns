@@ -43,11 +43,17 @@ mkdir -p "${DEST_DIR}"
 
 # --- find the project hash dir ---------------------------------------
 PROJECT_HASH_DIR=""
-# Claude Code's current encoding is to replace `/` with `-` in the path;
-# try that first before falling back to content-based matching.
-CANDIDATE="${CLAUDE_PROJECTS}/$(echo "${REPO_ROOT}" | sed 's|/|-|g')"
-if [[ -d "${CANDIDATE}" ]]; then
-    PROJECT_HASH_DIR="${CANDIDATE}"
+# Claude Code's current encoding normalises every non-alphanumeric path
+# character (`/`, `.`, `_`, space, etc.) to `-` so the result is a flat
+# hyphen-delimited folder name. Try that first; fall back to a `/`→`-`
+# only encoding for older Claude Code installs that didn't normalise
+# dots/spaces, then to content-based matching against the first line.
+CANDIDATE_NORMALISED="${CLAUDE_PROJECTS}/$(echo "${REPO_ROOT}" | sed 's|[^A-Za-z0-9]|-|g')"
+CANDIDATE_LEGACY="${CLAUDE_PROJECTS}/$(echo "${REPO_ROOT}" | sed 's|/|-|g')"
+if [[ -d "${CANDIDATE_NORMALISED}" ]]; then
+    PROJECT_HASH_DIR="${CANDIDATE_NORMALISED}"
+elif [[ -d "${CANDIDATE_LEGACY}" ]]; then
+    PROJECT_HASH_DIR="${CANDIDATE_LEGACY}"
 else
     for d in "${CLAUDE_PROJECTS}"/*/; do
         first_jsonl="$(find "$d" -maxdepth 1 -name '*.jsonl' -print -quit 2>/dev/null)"
@@ -58,6 +64,7 @@ else
         fi
     done
 fi
+CANDIDATE="${CANDIDATE_NORMALISED}"
 
 if [[ -z "${PROJECT_HASH_DIR}" ]]; then
     echo "Could not locate a Claude Code transcript dir for this repo." >&2
@@ -83,7 +90,14 @@ done
 if [[ $LATEST_ONLY -eq 1 ]]; then
     SOURCE_FILES=("$(ls -t "${PROJECT_HASH_DIR}"/*.jsonl 2>/dev/null | head -n 1)")
 else
-    mapfile -t SOURCE_FILES < <(ls -t "${PROJECT_HASH_DIR}"/*.jsonl 2>/dev/null)
+    # Portable replacement for `mapfile -t` (bash 4+ only — macOS ships
+    # bash 3.2 by default and many devs run the system bash without
+    # noticing). Read newline-separated `ls -t` output into an indexed
+    # array via a while-loop.
+    SOURCE_FILES=()
+    while IFS= read -r _line; do
+        [[ -n "${_line}" ]] && SOURCE_FILES+=("${_line}")
+    done < <(ls -t "${PROJECT_HASH_DIR}"/*.jsonl 2>/dev/null)
 fi
 
 if [[ ${#SOURCE_FILES[@]} -eq 0 || -z "${SOURCE_FILES[0]:-}" ]]; then

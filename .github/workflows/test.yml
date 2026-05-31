@@ -32,16 +32,14 @@ on:
       - '.eslintrc*'
       - 'eslint.config.*'
 
-  pull_request:
-    paths:
-      - 'appWeb/**/*.js'
-      - 'appWeb/**/*.css'
-      - 'appWeb/**/*.php'
-      - 'appWeb/**/*.html'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.eslintrc*'
-      - 'eslint.config.*'
+  # PRs intentionally have NO paths filter — see #851. Branch protection
+  # on `alpha` requires this workflow as a status check; skipping the
+  # workflow on workflow-only / docs-only PRs leaves the required check
+  # in a permanent "not satisfied" state and deadlocks auto-merge. Each
+  # lint step internally early-exits with "skipping" when its target file
+  # set is empty, so running unconditionally here is cheap and keeps the
+  # required check satisfiable on every PR shape.
+  pull_request: {}
 
 # Cancel any in-progress CI run on the same branch / PR
 concurrency:
@@ -190,6 +188,32 @@ jobs:
           else
             echo "All PHP files passed syntax check."
           fi
+
+      # -----------------------------------------------------------------------
+      # Step 5b: Migration registry sanity
+      # Asserts (1) every entry in $migrationOrder has a matching
+      # $migrationProbes entry, and (2) no probe is hardcoded to
+      # `=> true`. Both regressions are silent at runtime — the
+      # symptom only surfaces as "Apply all pending migrations" never
+      # reaching 0 on the Database Setup page.
+      # -----------------------------------------------------------------------
+      - name: Migration registry sanity
+        run: |
+          echo "Running migration-registry sanity test..."
+          php tests/php/test-migration-registry.php
+
+      # -----------------------------------------------------------------------
+      # Step 5c: Schema-coverage drift guard
+      # Asserts every table / column created by an appWeb/.sql/migrate-*.php
+      # script is also declared in appWeb/.sql/schema.sql. Catches the
+      # "migration adds it but schema.sql never picks it up" class of
+      # drift that the Schema Audit page (#518) surfaces at runtime as
+      # "Orphan in DB".
+      # -----------------------------------------------------------------------
+      - name: Schema-coverage drift guard
+        run: |
+          echo "Running schema-coverage drift guard..."
+          php tests/php/test-schema-coverage.php
 
       # -----------------------------------------------------------------------
       # Step 6: Validate JSON files

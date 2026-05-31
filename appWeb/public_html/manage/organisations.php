@@ -11,6 +11,15 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* Shared org-validation include (#719 PR 2c) — exports the
+   ORG_MEMBER_ROLES const + slugifyOrganisationName(). Same helpers
+   used by the admin_organisation_* and org_admin_* API endpoints. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'organisation_validation.php';
+/* Places adoption helper — exposes placeColumnExists() so the
+   create / update paths can persist PhysicalCityId alongside the
+   legacy PhysicalCity display string only when the
+   places-adoption migration has landed. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -39,13 +48,11 @@ $LICENCE_TYPES  = [
     'ccli'         => ['label' => 'CCLI',          'description' => 'Christian Copyright Licensing International licence'],
 ];
 $LICENCE_TYPE_KEYS = array_keys($LICENCE_TYPES);
-$MEMBER_ROLES   = ['member', 'admin', 'owner'];
-
-$slugify = function (string $s): string {
-    $s = strtolower(trim($s));
-    $s = preg_replace('/[^a-z0-9]+/', '-', $s);
-    return trim((string)$s, '-');
-};
+/* Member roles + slugify lifted into includes/organisation_validation.php
+   (#719 PR 2c). Closure kept as a thin wrapper so existing call sites
+   below keep working unchanged. */
+$MEMBER_ROLES = ORG_MEMBER_ROLES;
+$slugify      = fn(string $s): string => slugifyOrganisationName($s);
 
 /* ----- POST actions ----- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -66,6 +73,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $licenceType = (string)($_POST['licence_type']      ?? 'none');
                 $licenceNum  = trim((string)($_POST['licence_number'] ?? ''));
                 $active      = !empty($_POST['is_active']) ? 1 : 0;
+                /* Places adoption — physical address. */
+                $physicalCity   = trim((string)($_POST['physical_city']    ?? '')) ?: null;
+                $physicalCityId = (int)($_POST['physical_city_id'] ?? 0) ?: null;
 
                 if ($name === '') { $error = 'Name is required.'; break; }
                 $slug = $slugInput !== '' ? $slugify($slugInput) : $slugify($name);
@@ -95,6 +105,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute();
                 $newOrgId = (int)$db->insert_id;
                 $stmt->close();
+                /* Place columns — schema-tolerant separate UPDATE. */
+                if (placeColumnExists($db, 'tblOrganisations', 'PhysicalCityId')) {
+                    $stmt = $db->prepare(
+                        'UPDATE tblOrganisations
+                            SET PhysicalCity = ?, PhysicalCityId = ?
+                          WHERE Id = ?'
+                    );
+                    $stmt->bind_param('sii', $physicalCity, $physicalCityId, $newOrgId);
+                    $stmt->execute();
+                    $stmt->close();
+                }
                 logActivity('org.create', 'organisation', (string)$newOrgId, [
                     'name'           => $name,
                     'slug'           => $slug,
@@ -115,6 +136,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $licenceType = (string)($_POST['licence_type']      ?? 'none');
                 $licenceNum  = trim((string)($_POST['licence_number'] ?? ''));
                 $active      = !empty($_POST['is_active']) ? 1 : 0;
+                $physicalCity   = trim((string)($_POST['physical_city']    ?? '')) ?: null;
+                $physicalCityId = (int)($_POST['physical_city_id'] ?? 0) ?: null;
                 if ($id <= 0) { $error = 'Organisation id missing.'; break; }
                 if ($name === '') { $error = 'Name is required.'; break; }
                 if ($slug === '') { $error = 'Slug is required.'; break; }
@@ -154,6 +177,61 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 );
                 $stmt->execute();
                 $stmt->close();
+
+                /* Place columns — schema-tolerant separate UPDATE. */
+                if (placeColumnExists($db, 'tblOrganisations', 'PhysicalCityId')) {
+                    $stmt = $db->prepare(
+                        'UPDATE tblOrganisations
+                            SET PhysicalCity = ?, PhysicalCityId = ?
+                          WHERE Id = ?'
+                    );
+                    $stmt->bind_param('sii', $physicalCity, $physicalCityId, $id);
+                    $stmt->execute();
+                    $stmt->close();
+                }
+
+                /* Multi-licence sync (#640). The submitted set replaces the
+                   join-table state. The primary licence_type is also folded
+                   in as one of the rows so the two surfaces stay coherent.
+                   Wrapped in try/catch so a partly-migrated install (no
+                   tblOrganisationLicences) just no-ops the join writes. */
+                try {
+                    $picked = (array)($_POST['additional_licences'] ?? []);
+                    $picked = array_values(array_unique(array_filter(
+                        array_map('strval', $picked),
+                        static fn($k) => $k !== '' && $k !== 'none'
+                    )));
+                    if ($licenceType !== '' && $licenceType !== 'none' && !in_array($licenceType, $picked, true)) {
+                        $picked[] = $licenceType;
+                    }
+                    /* Validate every picked key against the catalogue. */
+                    $picked = array_values(array_intersect($picked, $LICENCE_TYPE_KEYS));
+
+                    $del = $db->prepare('DELETE FROM tblOrganisationLicences WHERE OrganisationId = ?');
+                    $del->bind_param('i', $id);
+                    $del->execute();
+                    $del->close();
+
+                    if (!empty($picked)) {
+                        $ins = $db->prepare(
+                            'INSERT INTO tblOrganisationLicences
+                                (OrganisationId, LicenceType, LicenceNumber)
+                             VALUES (?, ?, ?)'
+                        );
+                        foreach ($picked as $key) {
+                            /* Carry the primary's number onto the matching
+                               row so the two views agree; other rows
+                               carry NULL until edited individually in a
+                               future per-licence sub-form. */
+                            $num = ($key === $licenceType && $licenceNum !== '') ? $licenceNum : null;
+                            $ins->bind_param('iss', $id, $key, $num);
+                            $ins->execute();
+                        }
+                        $ins->close();
+                    }
+                } catch (\Throwable $_e) {
+                    /* tblOrganisationLicences not yet created — silent no-op. */
+                }
 
                 if ($beforeOrg !== null) {
                     $afterOrg = [
@@ -275,6 +353,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     } catch (\Throwable $e) {
         error_log('[manage/organisations.php] ' . $e->getMessage());
+        /* Mirror to Activity Log so admins can see why an org-edit
+           save failed without server-log access (#695). */
+        logActivityError('admin.organisations.save', 'organisation',
+            (string)($_POST['id'] ?? ''), $e, [
+                'action' => $_POST['action'] ?? null,
+            ]);
         $error = $error ?: 'Database error — check server logs for details.';
     }
 }
@@ -294,13 +378,16 @@ try {
     $stmt->close();
 } catch (\Throwable $e) {
     error_log('[manage/organisations.php] ' . $e->getMessage());
+    logActivityError('admin.organisations.list', 'organisation', '', $e);
     $error = $error ?: 'Could not load organisations.';
 }
 
 /* Edit mode */
-$editOrg     = null;
-$editMembers = [];
-$candidates  = [];
+$editOrg      = null;
+$editMembers  = [];
+$candidates   = [];
+$editLicences = [];                  /* keys present in tblOrganisationLicences (#640) */
+$multiLicenceTableExists = false;    /* Cached so the listing render can decide quickly */
 $editId = (int)($_GET['edit'] ?? 0);
 if ($editId > 0) {
     try {
@@ -309,6 +396,24 @@ if ($editId > 0) {
         $stmt->execute();
         $editOrg = $stmt->get_result()->fetch_assoc() ?: null;
         $stmt->close();
+
+        /* Pre-load the multi-licence rows for this org (#640). Wrapped
+           in try/catch so an install without migrate-organisation-
+           licences applied just renders the section empty. */
+        try {
+            $stmt = $db->prepare(
+                'SELECT LicenceType FROM tblOrganisationLicences
+                  WHERE OrganisationId = ? AND IsActive = 1'
+            );
+            $stmt->bind_param('i', $editId);
+            $stmt->execute();
+            $editLicences = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'LicenceType');
+            $stmt->close();
+            $multiLicenceTableExists = true;
+        } catch (\Throwable $_e) {
+            $editLicences = [];
+            $multiLicenceTableExists = false;
+        }
 
         if ($editOrg) {
             $stmt = $db->prepare(
@@ -339,13 +444,15 @@ if ($editId > 0) {
         }
     } catch (\Throwable $e) {
         error_log('[manage/organisations.php] ' . $e->getMessage());
+        logActivityError('admin.organisations.edit_load', 'organisation',
+            (string)$editId, $e);
     }
 }
 
 $csrf = csrfToken();
 ?>
 <!DOCTYPE html>
-<html lang="en" data-bs-theme="dark">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -376,15 +483,15 @@ $csrf = csrfToken();
 
             <div class="card-admin p-3 mb-4">
                 <h2 class="h6 mb-3">All organisations</h2>
-                <table class="table table-sm mb-0 align-middle">
+                <table class="table table-sm mb-0 align-middle cp-sortable">
                     <thead>
                         <tr class="text-muted small">
-                            <th>Name</th>
-                            <th>Slug</th>
-                            <th>Parent</th>
-                            <th>Licence</th>
-                            <th class="text-center">Active</th>
-                            <th class="text-center">Members</th>
+                            <th data-sort-key="name"    data-sort-type="text">Name</th>
+                            <th data-sort-key="slug"    data-sort-type="text">Slug</th>
+                            <th data-sort-key="parent"  data-sort-type="text">Parent</th>
+                            <th data-sort-key="licence" data-sort-type="text">Licence</th>
+                            <th class="text-center" data-sort-key="active"  data-sort-type="text">Active</th>
+                            <th class="text-center" data-sort-key="members" data-sort-type="number">Members</th>
                             <th class="text-end">Actions</th>
                         </tr>
                     </thead>
@@ -406,7 +513,7 @@ $csrf = csrfToken();
                                         <small class="text-muted ms-1"><?= htmlspecialchars($o['LicenceNumber']) ?></small>
                                     <?php endif; ?>
                                 </td>
-                                <td class="text-center">
+                                <td class="text-center" data-sort-value="<?= (int)$o['IsActive'] ?>">
                                     <?= (int)$o['IsActive'] ? '<i class="bi bi-check-circle text-success"></i>' : '<i class="bi bi-x-circle text-muted"></i>' ?>
                                 </td>
                                 <td class="text-center"><?= (int)$o['MemberCount'] ?></td>
@@ -460,6 +567,14 @@ $csrf = csrfToken();
                 <div class="mb-2">
                     <label class="form-label small">Description</label>
                     <input type="text" name="description" class="form-control form-control-sm">
+                </div>
+                <div class="mb-2">
+                    <label class="form-label small">Physical city <small class="text-muted">(optional)</small></label>
+                    <input type="text" id="create-physical-city" name="physical_city"
+                           class="form-control form-control-sm js-place-search"
+                           maxlength="255"
+                           placeholder="Start typing — e.g. Brisbane, Queensland">
+                    <input type="hidden" id="create-physical-city-id" name="physical_city_id" value="">
                 </div>
                 <div class="row g-2 mb-2">
                     <div class="col-sm-4">
@@ -531,9 +646,19 @@ $csrf = csrfToken();
                     <input type="text" name="description" class="form-control form-control-sm"
                            value="<?= htmlspecialchars($editOrg['Description']) ?>">
                 </div>
+                <div class="mb-2">
+                    <label class="form-label small">Physical city <small class="text-muted">(optional)</small></label>
+                    <input type="text" id="edit-physical-city" name="physical_city"
+                           class="form-control form-control-sm js-place-search"
+                           maxlength="255"
+                           placeholder="Start typing — e.g. Brisbane, Queensland"
+                           value="<?= htmlspecialchars((string)($editOrg['PhysicalCity'] ?? '')) ?>">
+                    <input type="hidden" id="edit-physical-city-id" name="physical_city_id"
+                           value="<?= isset($editOrg['PhysicalCityId']) && $editOrg['PhysicalCityId'] !== null ? (int)$editOrg['PhysicalCityId'] : '' ?>">
+                </div>
                 <div class="row g-2 mb-2">
                     <div class="col-sm-4">
-                        <label class="form-label small">Licence type</label>
+                        <label class="form-label small">Primary licence</label>
                         <select name="licence_type" class="form-select form-select-sm">
                             <?php foreach ($LICENCE_TYPES as $key => $info): ?>
                                 <option value="<?= htmlspecialchars($key) ?>"
@@ -556,6 +681,41 @@ $csrf = csrfToken();
                         </div>
                     </div>
                 </div>
+
+                <!-- Additional licences (#640). Each org can hold any
+                     number of licences alongside the primary — e.g. a
+                     church holding both CCLI (lyrics) and MRL (musical
+                     notation). Tier resolution unions all of them. The
+                     Primary picker above is kept for back-compat with
+                     existing tools that read tblOrganisations.LicenceType
+                     directly; saving the form syncs primary into the
+                     join table too so neither side can drift. -->
+                <?php if ($multiLicenceTableExists): ?>
+                <div class="mb-2">
+                    <label class="form-label small mb-1">Additional licences <small class="text-muted">(beyond the primary above)</small></label>
+                    <div class="d-flex flex-wrap gap-3">
+                        <?php foreach ($LICENCE_TYPES as $key => $info): ?>
+                            <?php if ($key === 'none') continue; ?>
+                            <div class="form-check small">
+                                <input class="form-check-input" type="checkbox"
+                                       name="additional_licences[]"
+                                       value="<?= htmlspecialchars($key) ?>"
+                                       id="edit-add-licence-<?= htmlspecialchars($key) ?>"
+                                       <?= in_array($key, $editLicences, true) ? 'checked' : '' ?>>
+                                <label class="form-check-label" for="edit-add-licence-<?= htmlspecialchars($key) ?>"
+                                       title="<?= htmlspecialchars($info['description']) ?>">
+                                    <?= htmlspecialchars($info['label']) ?>
+                                </label>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                    <div class="form-text small">
+                        Tick every licence the org holds. The org's effective
+                        access tier is the max across the primary + every
+                        additional licence + every parent-org licence (#636).
+                    </div>
+                </div>
+                <?php endif; ?>
                 <button type="submit" class="btn btn-amber-solid btn-sm mt-2">
                     <i class="bi bi-save me-1"></i>Save settings
                 </button>
@@ -651,6 +811,32 @@ $csrf = csrfToken();
 
     </div>
 
+
+    <!-- Sortable table headers (#644). -->
+    <script type="module">
+        import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+        bootSortableTables();
+    </script>
+
+    <!-- Live location autocomplete on the Physical city inputs
+         (both create form + edit form). Powered by /manage/places-api.php
+         (Photon + Nominatim) with tblPlaces upsert on pick. -->
+    <script src="/js/modules/place-search.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/place-search.js') ?>"></script>
+    <script>
+        (function () {
+            if (!window.iHymnsPlaceSearch) return;
+            [
+                ['create-physical-city', 'create-physical-city-id'],
+                ['edit-physical-city',   'edit-physical-city-id'],
+            ].forEach(([inputId, hiddenId]) => {
+                const visible = document.getElementById(inputId);
+                const hidden  = document.getElementById(hiddenId);
+                if (visible && hidden) {
+                    window.iHymnsPlaceSearch.attach(visible, { hiddenIdInput: hidden });
+                }
+            });
+        })();
+    </script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>

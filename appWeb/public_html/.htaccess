@@ -69,6 +69,14 @@ RewriteRule ^api$ api.php [QSA,L]
 # /og-image → og-image.php (hides PHP extension from OG meta tags)
 RewriteRule ^og-image$ og-image.php [QSA,L]
 
+# /song-media/<id> → song-media.php?id=<id>  (#853)
+# Gated streaming endpoint for tblSongMedia rows. The handler does
+# checkContentAccess('song', <SongId>) so this URL is safe to expose
+# regardless of the song's restriction state. Only numeric ids are
+# routed; any other shape falls through to the SPA catch-all and
+# 404s naturally.
+RewriteRule ^song-media/([0-9]+)$ song-media.php?id=$1 [L]
+
 # ==========================================================================
 # SERVICE WORKER ROUTING (#81)
 #

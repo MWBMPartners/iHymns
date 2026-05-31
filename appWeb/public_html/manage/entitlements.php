@@ -76,9 +76,9 @@ $effective = effectiveEntitlements();
 $groups = [
     'Song data' => ['edit_songs', 'delete_songs', 'bulk_edit_songs', 'verify_songs'],
     'User management' => ['view_users', 'edit_users', 'change_user_roles', 'assign_global_admin', 'delete_users'],
-    'Database & operations' => ['view_admin_dashboard', 'view_analytics', 'run_db_install', 'run_db_migrate', 'run_db_backup', 'run_db_restore', 'drop_legacy_tables'],
+    'Database & operations' => ['view_admin_dashboard', 'view_analytics', 'run_db_install', 'run_db_migrate', 'run_db_backup', 'run_db_restore', 'drop_legacy_tables', 'manage_configuration', 'manage_notifications', 'view_diagnostics'],
     'Content moderation' => ['review_song_requests'],
-    'Content structure'  => ['manage_songbooks', 'manage_user_groups', 'manage_organisations', 'manage_credit_people'],
+    'Content structure'  => ['manage_songbooks', 'manage_user_groups', 'manage_organisations', 'manage_credit_people', 'manage_languages', 'manage_tags'],
     'Channel access'     => ['access_alpha', 'access_beta'],
     'Meta' => ['manage_entitlements'],
 ];
@@ -118,6 +118,8 @@ $ENTITLEMENT_LABELS = [
     'manage_user_groups'        => ['Manage user groups',            'CRUD over groups + channel-access toggles'],
     'manage_organisations'      => ['Manage organisations',          'CRUD over orgs + licence metadata + members'],
     'manage_credit_people'      => ['Manage credit people',           'Edit / merge / rename people credited on songs (#545)'],
+    'manage_languages'          => ['Manage languages',                'CRUD over the IETF BCP 47 language registry (tblLanguages)'],
+    'manage_tags'               => ['Manage tags & themes',            'CRUD + merge over the song-tag registry (#770)'],
     'manage_content_restrictions' => ['Manage content restrictions', 'Per-song / per-songbook gating rules'],
     'manage_access_tiers'       => ['Manage access tiers',           'Define tiers that gate audio / MIDI / PDF / offline'],
     'assign_user_tier'          => ['Assign a user\'s access tier',  'Move users between tiers'],
@@ -127,6 +129,10 @@ $ENTITLEMENT_LABELS = [
     'access_beta'               => ['Reach the Beta channel',        'Sign in on beta.ihymns.app when gate is on'],
     'view_activity_log'         => ['View activity log',             'Open the audit-trail viewer (#535)'],
     'manage_entitlements'       => ['Manage entitlements',           'Edit this map itself — Global Admin only'],
+    'manage_configuration'      => ['Manage system configuration',   'Email service, system flags — Global Admin only (#768)'],
+    'manage_notifications'      => ['Manage notifications',          'Compose & broadcast in-app notifications — Global Admin only (#813)'],
+    'view_diagnostics'          => ['View SQL Diagnostics',           'SELECT-only read access to tblSongs/tblSongbooks/etc — Global Admin only'],
+    'view_api_docs'             => ['View API docs',                  'Browse the OpenAPI spec via Swagger UI at /manage/api-docs'],
 ];
 
 $entLabel = static function (string $key) use ($ENTITLEMENT_LABELS): array {
@@ -139,7 +145,7 @@ $isGlobalAdmin = ($currentUser['role'] ?? '') === 'global_admin';
 
 ?>
 <!DOCTYPE html>
-<html lang="en" data-bs-theme="dark">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">

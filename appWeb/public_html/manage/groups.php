@@ -156,6 +156,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     } catch (\Throwable $e) {
         error_log('[manage/groups.php] ' . $e->getMessage());
+        logActivityError('admin.groups.save', 'group',
+            (string)($_POST['id'] ?? ''), $e, [
+                'action' => $_POST['action'] ?? null,
+            ]);
         $error = $error ?: 'Database error — check server logs for details.';
     }
 }
@@ -177,6 +181,7 @@ try {
     $stmt->close();
 } catch (\Throwable $e) {
     error_log('[manage/groups.php] ' . $e->getMessage());
+    logActivityError('admin.groups.list', 'group', '', $e);
     $error = $error ?: 'Could not load groups.';
 }
 
@@ -217,13 +222,14 @@ if ($editId > 0) {
         }
     } catch (\Throwable $e) {
         error_log('[manage/groups.php] ' . $e->getMessage());
+        logActivityError('admin.groups.edit_load', 'group', (string)$editId, $e);
     }
 }
 
 $csrf = csrfToken();
 ?>
 <!DOCTYPE html>
-<html lang="en" data-bs-theme="dark">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -254,16 +260,16 @@ $csrf = csrfToken();
             <!-- List of groups -->
             <div class="card-admin p-3 mb-4">
                 <h2 class="h6 mb-3">All groups</h2>
-                <table class="table table-sm mb-0 align-middle">
+                <table class="table table-sm mb-0 align-middle cp-sortable">
                     <thead>
                         <tr class="text-muted small">
-                            <th>Name</th>
-                            <th>Description</th>
+                            <th data-sort-key="name"        data-sort-type="text">Name</th>
+                            <th data-sort-key="description" data-sort-type="text">Description</th>
                             <th class="text-center" title="Alpha">α</th>
                             <th class="text-center" title="Beta">β</th>
                             <th class="text-center" title="Release Candidate">RC</th>
                             <th class="text-center" title="Release to Web">RTW</th>
-                            <th class="text-center">Members</th>
+                            <th class="text-center" data-sort-key="members" data-sort-type="number">Members</th>
                             <th class="text-end">Actions</th>
                         </tr>
                     </thead>
@@ -309,12 +315,12 @@ $csrf = csrfToken();
                 <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a group</h2>
                 <div class="row g-2 mb-2">
                     <div class="col-sm-4">
-                        <label class="form-label small">Name</label>
-                        <input type="text" name="name" class="form-control form-control-sm" maxlength="100" required>
+                        <label class="form-label small" for="new-group-name">Name</label>
+                        <input type="text" name="name" id="new-group-name" class="form-control form-control-sm" maxlength="100" required>
                     </div>
                     <div class="col-sm-8">
-                        <label class="form-label small">Description</label>
-                        <input type="text" name="description" class="form-control form-control-sm">
+                        <label class="form-label small" for="new-group-description">Description</label>
+                        <input type="text" name="description" id="new-group-description" class="form-control form-control-sm">
                     </div>
                 </div>
                 <div class="d-flex flex-wrap gap-3">
@@ -446,6 +452,12 @@ $csrf = csrfToken();
 
     </div>
 
+
+    <!-- Sortable table headers (#644). -->
+    <script type="module">
+        import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+        bootSortableTables();
+    </script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>

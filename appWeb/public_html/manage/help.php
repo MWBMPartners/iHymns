@@ -121,6 +121,12 @@ $sections = [
         'group' => 'People',
     ],
     [
+        'id'    => 'my-organisations',
+        'icon'  => 'bi-building-check',
+        'title' => 'My Organisations',
+        'group' => 'People',
+    ],
+    [
         'id'    => 'entitlements',
         'icon'  => 'bi-key',
         'title' => 'Entitlements',
@@ -157,9 +163,21 @@ $sections = [
         'group' => 'Operations',
     ],
     [
+        'id'    => 'diagnostics',
+        'icon'  => 'bi-terminal',
+        'title' => 'SQL Diagnostics',
+        'group' => 'Operations',
+    ],
+    [
         'id'    => 'setup-database',
         'icon'  => 'bi-database-gear',
         'title' => 'Database Setup',
+        'group' => 'Operations',
+    ],
+    [
+        'id'    => 'native-api',
+        'icon'  => 'bi-broadcast',
+        'title' => 'Native API surface',
         'group' => 'Operations',
     ],
     [
@@ -178,7 +196,7 @@ foreach ($sections as $s) {
 
 ?>
 <!DOCTYPE html>
-<html lang="en" data-bs-theme="dark">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -401,6 +419,16 @@ foreach ($sections as $s) {
                         affects only new users — existing users keep whatever they
                         already had.
                     </div>
+                    <div class="gotcha small">
+                        <strong>Role-gated sections (#641):</strong> the dashboard
+                        renders different bottom-of-page cards depending on your
+                        role. Curators / Editors / Admins see a lightweight
+                        <em>Your session</em> card with their role + username.
+                        <strong>Global Admins</strong> see a richer <em>System Info</em>
+                        card carrying PHP version, database driver and the
+                        connected DB name — useful for triage but not relevant
+                        to curators, so it's deliberately hidden from lower roles.
+                    </div>
                 </section>
 
                 <!-- ====================================================================
@@ -435,7 +463,20 @@ foreach ($sections as $s) {
                         <dt>Metadata</dt>
                         <dd>Title, song number, songbook, CCLI number, Tune Name (e.g. <em>HYFRYDOL</em>), ISWC, language, region.</dd>
                         <dt>Structure</dt>
-                        <dd>The actual lyrics, broken into sections: verses, choruses, bridges, and so on. Drag to reorder; auto-resizing text areas grow as you type.</dd>
+                        <dd>
+                            The actual lyrics, broken into sections: verses, choruses, bridges, and so on. Drag to reorder; auto-resizing text areas grow as you type.
+                            <details class="mt-2">
+                                <summary class="small text-muted" style="cursor: pointer;">Verse-1-acts-as-chorus convention (e.g. SDAH-93 "All Things Bright and Beautiful")</summary>
+                                <div class="small text-muted mt-1">
+                                    Some hymns open with a stanza that's structurally a refrain — the song repeats it after every verse — but the hymnal still numbers it as <em>Verse 1</em>. To set these up:
+                                    <ol class="mb-0">
+                                        <li>Set the first component's <strong>Type</strong> to <strong>Refrain</strong>, leaving its number as <code>1</code>.</li>
+                                        <li>Click <strong>Chorus after each verse</strong> in the Arrangement quick-actions. Because the refrain comes before any verse, the arrangement starts <em>and</em> ends each cycle with the refrain — exactly the SDAH-93 playback pattern.</li>
+                                    </ol>
+                                    On the public song page, "Refrain" displays as "Chorus" via the standing alias so existing styling and screen-reader cues stay consistent.
+                                </div>
+                            </details>
+                        </dd>
                         <dt>Credits</dt>
                         <dd>Writer, composer, arranger, adaptor, translator, copyright holder. Names autocomplete from the <a href="#credit-people">Credit People</a> registry so you don't get duplicate spellings.</dd>
                         <dt>Tags</dt>
@@ -447,9 +488,42 @@ foreach ($sections as $s) {
                     <ul>
                         <li><strong>Save</strong> writes everything to the database. Auto-save runs in the background while you work, but always click Save before navigating away.</li>
                         <li><strong>Validate</strong> runs every song past a quality check (missing required fields, invalid language tags, orphaned references) and lists any problems.</li>
-                        <li><strong>Import</strong> from JSON or CSV. <strong>Export</strong> the current view as JSON or CSV.</li>
-                        <li><strong>History</strong> for the selected song shows a diff of every previous edit and a Restore button.</li>
+                        <li><strong>Import</strong> from JSON or CSV — small, single-file. For mass onboarding (e.g. a complete new hymnal), see the <strong>Bulk Import ZIP</strong> section below.</li>
+                        <li><strong>Export</strong> the current view as JSON or CSV.</li>
+                        <li><strong>Revisions</strong> for the selected song shows a diff of every previous edit and a Restore button.</li>
                     </ul>
+                    <h3 class="h6">Bulk Import ZIP (#664 / #676 / #882)</h3>
+                    <p>
+                        For onboarding an entire songbook at once. Upload a ZIP whose top-level folders match <code>&lt;Hymnal Name&gt; [&lt;ABBR&gt;]/</code> and whose files are one of:
+                    </p>
+                    <ul>
+                        <li><strong>Plain text</strong> — <code>&lt;number&gt; (&lt;ABBR&gt;) - &lt;Title&gt;.txt</code> with the canonical title / blank / section-marker / lyric-block layout the scrapers emit. The number in the filename and folder ABBR cross-check; mismatches are reported per-entry.</li>
+                        <li><strong>OpenSong XML</strong> (#882) — <code>.xml</code> or <code>.opensong</code> files anywhere inside the hymnal folder. The song number comes from the <code>&lt;hymn_number&gt;</code> element first, then any leading digits in the filename, then a per-songbook auto-increment. <code>&lt;author&gt;</code> splits on <code>/</code>, <code>&amp;</code>, <code>,</code>, <code>;</code> into the writers list. Chord rows (lines beginning with <code>.</code>) and comment rows (lines beginning with <code>;</code>) are stripped from the lyrics.</li>
+                    </ul>
+                    <p>
+                        Both file kinds may be mixed in the same archive — the importer dispatches per entry by extension. The summary's <code>parsed_by_format</code> counter shows how many of each landed.
+                    </p>
+                    <ul>
+                        <li><strong>INSERT-only contract:</strong> if a songbook or song already exists, it's left untouched — never overwritten. The summary reports created vs. existing counts so you can see what landed.</li>
+                        <li><strong>Live progress widget:</strong> the upload completes almost immediately; the actual import runs server-side. A small fixed-position card pinned bottom-right polls the job status, shows a progress bar, and survives navigation between admin pages and the public app. Hard-reload the page mid-import and the widget reattaches via localStorage.</li>
+                        <li><strong>Notification on completion:</strong> a row is written to <a href="#notifications">Notifications</a> when the worker finishes, and (if you've granted permission) a native browser notification fires.</li>
+                        <li><strong>Caps:</strong> 100 MB upload, 100,000 entries per archive, 5 MiB per uncompressed entry, 500 MiB cumulative uncompressed. These are zip-bomb defences (#682) — far above any real bundle.</li>
+                    </ul>
+                    <h3 class="h6">Language tagging (IETF BCP 47, #240 / #281 / #681 / #687)</h3>
+                    <p>
+                        The Metadata tab's Language field is a composite IETF picker — three sub-fields that compose into a single saved tag:
+                    </p>
+                    <ul>
+                        <li><strong>Language</strong> (required) — e.g. <em>English</em> (<code>en</code>) or <em>Portuguese</em> (<code>pt</code>).</li>
+                        <li><strong>Script</strong> (optional) — only when the script differs from the language default. e.g. <em>Simplified Chinese</em> for Mandarin written in Hans, or <em>Latin</em> for Serbian written Latn instead of the default Cyrl.</li>
+                        <li><strong>Region</strong> (optional) — e.g. <em>United Kingdom</em> for British English (<code>en-GB</code>) vs. <em>United States</em> for American English (<code>en-US</code>).</li>
+                    </ul>
+                    <p>
+                        The "IETF tag:" line below the picker shows the composed tag live as you type, with a human-readable rendering next to it (e.g. <em>"Spanish (Mexico)"</em> for <code>es-MX</code>). The full ISO 639 / ISO 15924 / ISO 3166-1 vocabulary is loaded from <code>tblLanguages</code> + <code>tblLanguageScripts</code> + <code>tblRegions</code> + <code>tblLanguageVariants</code> — every IANA-registered subtag — so the picker stays in sync with the songbook editor's identical picker. One source of truth across both surfaces. (#681 / #738)
+                    </p>
+                    <p class="small text-muted mb-2">
+                        The full IANA Language Subtag Registry plus CLDR English display names ship as bundled snapshots in <code>appWeb/.sql/data/</code>. <a href="/manage/setup-database#bcp47">Database Setup → "Refresh BCP 47 reference data"</a> has a live-fetch button if you need to pull the latest IANA / CLDR updates.
+                    </p>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Closing the tab while there are unsaved changes loses them — auto-save catches most things, but treat Save as the source of truth.
                     </div>
@@ -457,7 +531,7 @@ foreach ($sections as $s) {
                         <strong>Gotcha:</strong> A song's ID is set when it's first created and never changes. Renaming the title doesn't rename the ID. Numbering is independent of ID.
                     </div>
                     <div class="gotcha small">
-                        <strong>Gotcha:</strong> Deleting a song is permanent. Use <strong>History &rarr; Restore</strong> if you need an old version <em>before</em> you save further edits over it.
+                        <strong>Gotcha:</strong> Deleting a song is permanent. Use <strong>Revisions &rarr; Restore</strong> if you need an old version <em>before</em> you save further edits over it.
                     </div>
                 </section>
 
@@ -469,7 +543,7 @@ foreach ($sections as $s) {
                         <span class="badge bg-danger">global_admin</span>
                     </p>
                     <p>
-                        End users in the main app can submit a "Request a song" form. Those submissions land here so an editor can triage them.
+                        End users in the main app can submit a song request via the dedicated <a href="/request">/request</a> page &mdash; reachable from the &ldquo;Report a missing song or suggest a correction&rdquo; link at the bottom of every song page, the &ldquo;Suggest a Missing Song&rdquo; CTA on <a href="/help">/help</a>, and a deep-link from the editor's missing-numbers tool with the songbook + number prefilled. Submissions queue offline and replay automatically when the user is back online; each submission also returns a tracking ID the user can quote when following up. All paths land in this triage list.
                     </p>
                     <h3 class="h6">Key actions</h3>
                     <ul>
@@ -496,7 +570,7 @@ foreach ($sections as $s) {
                     <h3 class="h6">Key actions</h3>
                     <ul>
                         <li>Filter by user, song ID (partial match works), action (create / edit / restore / delete), and time range (7 / 30 / 90 / 365 days).</li>
-                        <li>Click a row to open that song in the editor; the History modal there shows the diff and lets you Restore.</li>
+                        <li>Click a row to open that song in the editor; the Revisions modal there shows the diff and lets you Restore.</li>
                     </ul>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Revisions are immutable. Restore creates a <em>new</em> revision rather than rewriting history, so the trail stays honest.
@@ -536,16 +610,41 @@ foreach ($sections as $s) {
                         <dt>Abbreviation</dt><dd>Short identifier (e.g. <code>HYM</code>). Unique. Max 10 chars, alphanumeric. This is the natural key referenced by every song.</dd>
                         <dt>Name</dt><dd>Friendly name (e.g. "Methodist Hymnal").</dd>
                         <dt>Display order</dt><dd>Numeric sort key — lower numbers appear first in the app.</dd>
-                        <dt>Colour</dt><dd>Hex code (<code>#RRGGBB</code>) used as the songbook badge colour. Leave blank to inherit a default.</dd>
-                        <dt>Publisher / Publication year / Copyright / Affiliation</dt><dd>Optional metadata for filtering and reports.</dd>
-                        <dt>Official flag</dt><dd>Marks "real" published books vs. user-curated collections.</dd>
+                        <dt>Colour</dt><dd>Hex code (<code>#RRGGBB</code>) used as the songbook tile colour on the home page. <strong>Leave blank</strong> to let the system auto-pick a tone from the current theme palette (#677) — the result is consistent with the rest of the UI and changes with the user's chosen theme.</dd>
+                        <dt>Official flag</dt><dd>Marks "real" published hymnals vs. user-curated collections / pseudo-songbooks. Used by the home-page filter to separate the two surfaces.</dd>
+                        <dt>Publisher / Publication year / Copyright</dt><dd>Issuing body, year of publication, and the copyright statement. Optional, surface in search and reports.</dd>
+                        <dt>Affiliation</dt><dd>Issuing organisation, drawn from a curated registry (#670). Type to search; new affiliations get added on save. Use this rather than free-text Publisher when the same organisation issues multiple songbooks.</dd>
+                        <dt>Language (IETF BCP 47)</dt><dd>The songbook's primary language as a composite IETF tag (#673 / #681) — same picker as the song editor, with three sub-fields: <strong>Language</strong> (required), <strong>Script</strong> (optional — only when the script differs from the language default), and <strong>Region</strong> (optional — e.g. <code>en-GB</code> vs <code>en-US</code>). Leave blank for multi-lingual collections.</dd>
+                        <dt>Online links — Official website / Internet Archive / Wikipedia (#672)</dt><dd>Free-text URLs. Used as outbound references on the songbook detail page so users can verify the source.</dd>
+                        <dt>Authority identifiers — WikiData ID, OCLC, OCN, LCP, ISBN, ARK, ISNI, VIAF, LCCN, LC Class (#672)</dt><dd>Standard cataloguing identifiers from major library and authority systems. All optional. Useful for cross-referencing and de-duplicating against external catalogues.</dd>
                     </dl>
                     <h3 class="h6">Renaming an abbreviation</h3>
                     <p>
                         Abbreviations are the natural key, so renaming is opt-in: you must tick the <strong>"Also rename song references"</strong> checkbox to cascade the rename to every song that uses it. Without that checkbox, songs keep the old abbreviation and orphan from the renamed songbook.
                     </p>
+                    <h3 class="h6">Colour picker</h3>
+                    <p>
+                        The <strong>Colour</strong> field accepts a 7-char <code>#RRGGBB</code> hex value (#715). The browser-native colour picker writes the canonical lower-case hex back into the text field when you confirm a swatch — handy if you want to copy the value into another tool. Leave the field blank to let the system auto-pick a tone the catalogue isn't already using; the next save fills the field in for you.
+                    </p>
+                    <h3 class="h6">Auto-colour bulk action</h3>
+                    <p>
+                        Two destructive-but-recoverable buttons live at the top of the songbook list (#716):
+                    </p>
+                    <dl class="actions">
+                        <dt>Auto-fill blank colours</dt>
+                        <dd>Walks every songbook; rows with NULL or non-<code>#RRGGBB</code> colours get a fresh palette pick. Existing valid hex values are left alone — idempotent, safe to re-run.</dd>
+                        <dt>Reassign every colour</dt>
+                        <dd>Overwrites every <code>Colour</code> value, regardless of whether it was set already. Gated by typing the literal phrase <strong>REASSIGN ALL</strong> — defence-in-depth so a stray click never re-themes the whole catalogue.</dd>
+                    </dl>
+                    <h3 class="h6">Cascade delete</h3>
+                    <p>
+                        The default Delete refuses if any song still references the songbook abbreviation. Admin / global_admin can use <strong>Cascade delete</strong> instead, which removes the songbook AND every song in it AND every credit / tag / chord / translation that referenced those songs (#706). Server-side typed-confirmation gate: the curator must type the songbook abbreviation exactly. The FK chain handles the rest atomically.
+                    </p>
                     <div class="gotcha small">
-                        <strong>Gotcha:</strong> Deleting a songbook does <em>not</em> delete its songs. The UI refuses if any song still references its abbreviation; reassign or delete those songs first.
+                        <strong>Gotcha:</strong> Deleting a songbook does <em>not</em> delete its songs unless you use Cascade delete. The standard UI refuses if any song still references its abbreviation; reassign or delete those songs first.
+                    </div>
+                    <div class="gotcha small">
+                        <strong>Tip:</strong> The home-page tile grid (#678) shows official hymnals first, with a language filter (#679 / #736 v2) that lets users pick which languages to <em>show</em> across both songbook tiles AND individual song listings (search, popular, recently-viewed). Multi-select is supported; signed-in users get the choice persisted to their account and synced across devices. The <strong>Misc</strong> pseudo-songbook is always pinned to the bottom of the grid (#717) regardless of <code>DisplayOrder</code> — it's a catch-all and should never out-rank a curated hymnal. Songbooks AND songs without a Language field always show, regardless of the filter — useful for catch-all collections.
                     </div>
                 </section>
 
@@ -570,6 +669,72 @@ foreach ($sections as $s) {
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Rename and Merge are atomic — either every credit on every song updates, or none does. Half-finished states are not possible.
                     </div>
+                    <h3 class="h6 mt-3">Bulk promote (#846)</h3>
+                    <p>
+                        When a fresh deployment has hundreds of typed credit names that haven't been registered, click <strong>Bulk promote with fuzzy-match</strong> on the Credit People page header. The bulk page surfaces every name cited on at least one song that doesn't have a registry row, scores each against the existing registry rows (and against other candidates), and lets you pick per-row: <em>Register as new</em>, <em>Merge into existing</em> (re-points every credit on every song to the canonical row's name), or <em>Skip</em>. The whole submit runs in a single transaction with one <code>bulk_run_id</code> on the audit log so you can review the run as a unit.
+                    </p>
+                </section>
+
+                <section id="works" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-diagram-3 me-2"></i>Works</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-warning text-dark">admin</span>
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <p>
+                        A <strong>Work</strong> groups multiple <code>tblSongs</code> rows that represent the same underlying composition across different songbooks / arrangements / translations &mdash; mirrors the <a href="https://musicbrainz.org/doc/Work" target="_blank" rel="noopener noreferrer">MusicBrainz Work</a> &harr; Recording relationship. So <em>Amazing Grace</em>, which appears in dozens of hymnals under slightly different titles, lives as one Work with each songbook entry as a member.
+                    </p>
+                    <h3 class="h6">Key actions</h3>
+                    <dl class="actions">
+                        <dt>Create</dt><dd>Title + slug (auto from title) + optional ISWC + optional parent Work + optional notes. Members are added via the Edit modal once the row exists.</dd>
+                        <dt>Edit</dt><dd>Add / remove member songs (typeahead over the whole catalogue), mark one as <em>canonical</em>, set sort order, attach external links (the provider dropdown auto-detects from the URL).</dd>
+                        <dt>Delete</dt><dd>Memberships and external links cascade away with the Work. Child Works (if any) <strong>orphan</strong> &mdash; their <code>ParentWorkId</code> goes to <code>NULL</code> &mdash; rather than cascade-delete.</dd>
+                    </dl>
+                    <h3 class="h6">Nesting</h3>
+                    <p>
+                        Works can be nested without limit: an original Work can have child Works for derivative arrangements, translations, choral versions, etc., each of which can in turn have its own children. Cycles are blocked server-side at update time (no Work can become its own ancestor).
+                    </p>
+                    <h3 class="h6">ISWC</h3>
+                    <p>
+                        The ISWC (<code>T-NNN.NNN.NNN-C</code>) is the international identifier for a musical composition, registered with CISAC societies (BMI, ASCAP, PRS, &hellip;). It's optional &mdash; many traditional hymns predate the system, and many newer compositions haven't been registered. When supplied, the field shape-validates and canonicalises to the standard format.
+                    </p>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> The same song <em>can</em> belong to multiple Works (e.g. a medley arrangement that quotes two compositions), but it's rare and usually a misclassification. The list view's "Members" column is the quickest sanity check.
+                    </div>
+                </section>
+
+                <section id="external-links" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-link-45deg me-2"></i>External Links</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-warning text-dark">admin</span>
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <p>
+                        Songs, Songbooks, Credit People and Works all support a <strong>card-list editor</strong> for external links &mdash; controlled-vocabulary providers (Wikipedia, Hymnary.org, Spotify, IMSLP, MusicBrainz, etc.) backed by <code>tblExternalLinkTypes</code>. Each link carries an optional Note and a curator-set Verified flag.
+                    </p>
+                    <h3 class="h6">URL auto-detect (#841)</h3>
+                    <p>
+                        Paste a URL into the URL field of any external-link row and the provider dropdown auto-selects the matching registry entry &mdash; Wikipedia detects Wikipedia, YouTube detects YouTube, Spotify detects Spotify, etc. The detector respects manual choices: if you pick a provider before pasting, your choice wins.
+                    </p>
+                    <p>
+                        The detector lives in a single global module &mdash; <code>js/modules/external-link-detect.js</code> &mdash; loaded on every <code>/manage/*</code> page. Every consumer (Songbook editor, Works editor, Credit People editor as it's added) inherits automatically.
+                    </p>
+                    <h3 class="h6 mt-3">URL patterns (#845)</h3>
+                    <p>
+                        Provider rules live in the <code>tblExternalLinkPatterns</code> table &mdash; curator-editable at <a href="/manage/external-link-types">/manage/external-link-types</a>. Add a new provider, sub-domain or path-prefix-discriminated rule (e.g. <code>musicbrainz.org/work/</code>) at any time without a code deploy. Lower priority numbers win, so put more-specific patterns first. The JS module falls back to a bundled rule list on pre-migration deployments so behaviour stays consistent during rollout.
+                    </p>
+                    <h3 class="h6">Categories</h3>
+                    <p>Links group on the public site under: <em>Official, Information, Read, Sheet music, Listen, Watch, Purchase, Authority, Social, Other</em>. The seeded type registry decides which category each provider belongs to; curators don't pick the category &mdash; it's derived from the type.</p>
+                </section>
+
+                <section id="mobile-admin" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-phone me-2"></i>Mobile admin (responsive list views)</h2>
+                    <p>
+                        Admin list pages opt into a column-priority responsive convention (#842). Tag the table <code>.admin-table-responsive</code>, then mark each <code>&lt;th&gt;</code> + <code>&lt;td&gt;</code> with <code>data-col-priority="primary"</code>, <code>"secondary"</code>, or <code>"tertiary"</code>. Below 992px tertiary columns hide; below 768px secondary columns hide too. Primary columns are always visible.
+                    </p>
+                    <p>
+                        Pages currently opted in: Credit People, Songbooks, Songbook Series, Works. The convention is documented in <code>DEV_NOTES.md</code>; rolling it forward to the remaining list pages is a per-page cosmetic change with zero CSS work.
+                    </p>
                 </section>
 
                 <section id="restrictions" class="help-section card-admin mb-4">
@@ -669,6 +834,14 @@ foreach ($sections as $s) {
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> One group per user. Re-assigning moves them; there's no &ldquo;in two groups at once.&rdquo;
                     </div>
+                    <div class="gotcha small">
+                        <strong>Role vs Group (#642):</strong> these names sound similar but they're independent concepts.
+                        <ul class="small mb-0">
+                            <li><strong>User Role</strong> (Curator / Admin / Global Admin) controls which Manage pages a user can <em>access</em>. The four roles are hard-coded today; new roles need a code change.</li>
+                            <li><strong>User Group</strong> controls which release channel a user sees on the public site (Alpha / Beta / RC / RTW). Group membership is freely admin-managed via this page.</li>
+                        </ul>
+                        Don't expect adding a User Group to grant Manage access — for that, change the user's Role from User Management. Issue #642 tracks the rationalisation.
+                    </div>
                 </section>
 
                 <section id="organisations" class="help-section card-admin mb-4">
@@ -691,6 +864,44 @@ foreach ($sections as $s) {
                     <p>Two-pane picker, same shape as User Groups. Each member also gets a sub-role: <em>member</em> (no extra perms), <em>admin</em> (can manage other members), or <em>owner</em> (full control of the org).</p>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> An org cannot be its own parent (and we block circular chains in general).
+                    </div>
+                </section>
+
+                <section id="my-organisations" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-building-check me-2"></i>My Organisations</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-secondary">org admin</span>
+                        <span class="badge bg-secondary">org owner</span>
+                        <span class="badge bg-warning text-dark">admin</span>
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <p>
+                        The org-admin surface (#707, #726). Visible to anyone who holds an <code>admin</code> or <code>owner</code> row in <code>tblOrganisationMembers</code> for at least one organisation — they don't need system-admin role to see this page. System admins see it too, scoped to every org.
+                    </p>
+                    <h3 class="h6">What it does</h3>
+                    <ul>
+                        <li>Lists every organisation the current user can manage.</li>
+                        <li>For each, shows the member roster with role badges and the licence rows on file.</li>
+                        <li>Inline forms for the six edit actions described below — you don't need <code>/manage/organisations</code> for routine org-admin work.</li>
+                    </ul>
+                    <h3 class="h6">Member actions</h3>
+                    <dl class="actions">
+                        <dt>Add member</dt><dd>Free-text identifier — type a username OR an email, the server resolves to a <code>tblUsers.Id</code>. New member rows pick a sub-role (<em>member</em> / <em>admin</em> / <em>owner</em>).</dd>
+                        <dt>Change member role</dt><dd>Inline picker per row.</dd>
+                        <dt>Remove member</dt><dd>You can't remove yourself unless you're also a system admin — prevents accidental org lock-out. Ask a co-admin.</dd>
+                    </dl>
+                    <h3 class="h6">Licence actions</h3>
+                    <dl class="actions">
+                        <dt>Add licence</dt><dd>Per-row licence types: <code>ccli</code>, <code>mrl</code>, <code>ihymns_basic</code>, <code>ihymns_pro</code>, <code>custom</code>. INSERT-on-conflict-UPDATE so re-adding the same type updates number / expiry / notes in place.</dd>
+                        <dt>Change licence</dt><dd>Edit number, expiry date, active flag, notes. Type is immutable on a row — to switch types, remove and re-add.</dd>
+                        <dt>Remove licence</dt><dd>Drops the row. Belt-and-braces ownership check on the server.</dd>
+                    </dl>
+                    <h3 class="h6">Row-level gate</h3>
+                    <p>
+                        Every action runs <code>userCanActOnOrg($userId, $orgId)</code> server-side before any mutation, regardless of whether the call came from the form or a crafted POST. A licence_id from one org can never be edited via an org_id you happen to admin elsewhere.
+                    </p>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> System admins (<em>admin</em> / <em>global_admin</em>) bypass the row-level gate by default. The audit log records the action under <code>org_admin.&lt;verb&gt;</code> regardless, so the timeline reads as one surface.
                     </div>
                 </section>
 
@@ -792,6 +1003,13 @@ foreach ($sections as $s) {
                     </ul>
                     <h3 class="h6">CSV export</h3>
                     <p class="small">Respects every active filter; capped at 10 000 rows per download.</p>
+                    <h3 class="h6">Error capture (#695)</h3>
+                    <p>
+                        Server-side exceptions raised by admin POST handlers (the &ldquo;Database error — check server logs&rdquo; banner) are mirrored into the activity log with <code>Result='error'</code> and the exception message + class in the <code>Details</code> column. The viewer's <strong>Result = error</strong> filter is a one-click triage list — you no longer need SSH to see why a save failed.
+                    </p>
+                    <p class="small text-muted">
+                        Verb prefix convention: web admin writes <code>&lt;entity&gt;.&lt;verb&gt;</code> (e.g. <code>songbook.create</code>, <code>org.member_add</code>); the public-API surfaces use <code>api.admin.&lt;entity&gt;.&lt;verb&gt;</code> (e.g. <code>api.admin.songbook.create</code>) so timeline readers can tell which surface drove the change.
+                    </p>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Rows are immutable. There's no edit, no delete &mdash; that's the whole point of an audit log.
                     </div>
@@ -817,6 +1035,25 @@ foreach ($sections as $s) {
                     </div>
                 </section>
 
+                <section id="diagnostics" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-terminal me-2"></i>SQL Diagnostics</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <p>
+                        A read-only SQL console for the "what's actually in the database right now?" questions the per-entity grids don't answer. Type a query, hit <strong>Run query</strong>, read the rows. A few preset starters (table sizes, record counts, recent activity) sit above the box.
+                    </p>
+                    <h3 class="h6">What's allowed</h3>
+                    <dl class="actions">
+                        <dt>SELECT / SHOW / EXPLAIN / DESCRIBE</dt><dd>Anything else is rejected before it reaches the database.</dd>
+                        <dt>One statement</dt><dd>No semicolon-chaining; a single trailing <code>;</code> is fine.</dd>
+                        <dt>Up to 1,000 rows</dt><dd>Results are capped; add a <code>LIMIT</code> and a tight <code>WHERE</code> for a focused slice.</dd>
+                    </dl>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> this runs against the <strong>production</strong> connection. Writes (<code>INSERT</code>/<code>UPDATE</code>/<code>DELETE</code>/<code>ALTER</code>…), <code>SELECT … INTO OUTFILE</code>, and the <code>mysql</code>/<code>performance_schema</code>/<code>sys</code> schemas are all blocked, and every run is logged to the <a href="#activity-log">Activity Log</a> — but a heavy join can still load the server.
+                    </div>
+                </section>
+
                 <section id="setup-database" class="help-section card-admin mb-4">
                     <h2><i class="bi bi-database-gear me-2"></i>Database Setup</h2>
                     <p class="role-badges">
@@ -837,6 +1074,13 @@ foreach ($sections as $s) {
                     <p>
                         Re-run <strong>Install schema</strong> if anything changed in <code>schema.sql</code> (it's safe), then run only the migrations that <a href="#schema-audit">Schema Audit</a> flagged as missing. Migrations are idempotent &mdash; running one that's already been applied just reports &ldquo;[skip]&rdquo; for everything.
                     </p>
+                    <h3 class="h6">Apply all pending migrations (#577)</h3>
+                    <p>
+                        The <strong>Apply all pending migrations</strong> button runs every <code>migrate-*.php</code> script in deployment order. Each script is already idempotent, so re-running the bulk action after some have been applied is safe — they no-op individually.
+                    </p>
+                    <p class="small">
+                        If a migration fails mid-run, the dashboard captures the first-failing step and surfaces it in a prominent banner <em>above</em> the (sometimes long, scrollable) output panel (#720), so you don't miss the FAILED line in the noise. Fix the underlying issue and re-run — the steps that succeeded earlier no-op the second time.
+                    </p>
                     <h3 class="h6">Backups</h3>
                     <ul>
                         <li><strong>Backup</strong> downloads a SQL dump of the entire database. Keep at least one before running unfamiliar migrations.</li>
@@ -852,6 +1096,41 @@ foreach ($sections as $s) {
                     </div>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Restore overwrites everything. There is no &ldquo;merge&rdquo; option.
+                    </div>
+                </section>
+
+                <section id="native-api" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-broadcast me-2"></i>Native API surface</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-warning text-dark">admin</span>
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <p>
+                        Every admin verb on this site is also reachable via the public REST API at <code>/api.php?action=&lt;verb&gt;</code> (#719). Native clients (Apple, Android, FireOS) and tooling clients (CI, monitoring, dashboards) can drive the same surfaces the web admin uses without a webview or a separate auth flow.
+                    </p>
+                    <h3 class="h6">Auth</h3>
+                    <p>
+                        Bearer-token auth via the <code>Authorization: Bearer &lt;token&gt;</code> header. Tokens are issued by the existing email-magic-link or password login flows and live on <code>tblApiTokens</code>. POSTs also need <code>X-Requested-With: XMLHttpRequest</code> as a CSRF defence (#293). Same role gates as the web admin — <code>admin</code> / <code>global_admin</code> for system-wide write verbs, plus the row-level <code>userCanActOnOrg()</code> check for org-admin endpoints.
+                    </p>
+                    <h3 class="h6">What's covered</h3>
+                    <ul>
+                        <li><strong>Songbooks</strong> — create / update / delete / cascade-delete / reorder / auto-colour fill / auto-colour reassign (PR 2a).</li>
+                        <li><strong>Users + Groups + Tiers</strong> — full CRUD plus role / activate / password-reset / member-add-remove (PR 2b).</li>
+                        <li><strong>Organisations + My Organisations</strong> — system-admin updates plus the six org-admin verbs from this surface (PR 2c).</li>
+                        <li><strong>Credit People</strong> — add / update / rename / merge / delete with the same cascade and confirmation gates (PR 2d).</li>
+                        <li><strong>Analytics + Diagnostics</strong> — top searches, data health snapshot, schema-audit report, per-migration applied/partial/pending status (PR 2d).</li>
+                        <li><strong>Editor</strong> — load / save / save_song / bulk_tag / list_revisions / restore_revision / get_translations / add_translation / remove_translation / song_tags / tag_search / credit_search / user_search / org_search / bulk_import_zip / bulk_import_status (PR 3 docs).</li>
+                    </ul>
+                    <h3 class="h6">OpenAPI spec</h3>
+                    <p>
+                        Every endpoint is documented in <a href="/api-docs.yaml"><code>/api-docs.yaml</code></a> as a single OpenAPI 3.0 file. Swagger UI / Stoplight / Redoc all render it cleanly. The spec is the source of truth for the request / response shapes — the web admin uses the helpers underneath, the native clients hit the documented endpoints, both stay in sync because the validators live in shared <code>includes/</code> files.
+                    </p>
+                    <h3 class="h6">Activity-log surface prefix</h3>
+                    <p class="small">
+                        API-driven changes write under <code>api.admin.&lt;entity&gt;.&lt;verb&gt;</code> (e.g. <code>api.admin.songbook.create</code>, <code>api.org_admin.licence_change</code>). The <a href="#activity-log">Activity Log</a> viewer can show both surfaces side-by-side; the prefix tells you which.
+                    </p>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> Status codes follow REST: 400 (validation), 401, 403 (role gate or row-level refusal), 404, 405 (wrong method), 409 (duplicate key), 422 (cannot delete because dependents exist). Native UIs can render the right toast without parsing the error string.
                     </div>
                 </section>
 
@@ -880,7 +1159,7 @@ foreach ($sections as $s) {
 
                     <h3 class="h6">&ldquo;I deleted a song by mistake.&rdquo;</h3>
                     <p class="small">
-                        Open <a href="#revisions">Revisions Audit</a>, find the song's last edit before the delete, click through to the editor, and use <strong>History &rarr; Restore</strong>. Revisions are kept indefinitely so older deletes are still recoverable.
+                        Open <a href="#revisions">Revisions Audit</a>, find the song's last edit before the delete, click through to the editor, and use <strong>Revisions &rarr; Restore</strong>. Revisions are kept indefinitely so older deletes are still recoverable.
                     </p>
 
                     <h3 class="h6">&ldquo;The dashboard / a /manage page is blank.&rdquo;</h3>

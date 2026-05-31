@@ -41,6 +41,11 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+/* Mirror every uncaught \Throwable + PHP fatal into tblActivityLog
+   so a broken OG image (e.g. GD failure, SongData migration drift)
+   surfaces in /manage/activity-log alongside other server errors. */
+installGlobalActivityLogHandlers('og_image');
 
 /* Cache for 24 hours — images rarely change */
 header('Cache-Control: public, max-age=86400');
