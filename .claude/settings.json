@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(php -l appWeb/public_html/manage/diagnostics.php)",
+      "Bash(grep -rln \"bind_param\\\\|->query\\(\\\\|manage/\\\\|admin-links\\\\|SELECT.*\\\\$\" tests/php)",
+      "Bash(php tests/php/test-schema-coverage.php)",
+      "Bash(php tests/php/test-migration-registry.php)",
+      "Bash(awk '{print $1}')"
+    ]
+  }
+}
