@@ -1414,6 +1414,34 @@ function completeEmailLogin(string $email, ?int $userId): array
 {
     $db = getDbMysqli();
 
+    /* #1011 — atomic find-or-create + token issue. Old bug: the new-user
+       row was INSERTed (and committed under autocommit), then a failed
+       follow-up read threw an uncaught 500 — leaving the user in the DB
+       while the client saw an error. The whole flow now runs in ONE
+       transaction: it either fully commits or fully rolls back, and a
+       missing post-upsert row raises a clear exception instead of
+       indexing a null record. (InnoDB; on a MyISAM build begin/commit are
+       no-ops but the explicit null-guard still prevents the crash.) */
+    $db->begin_transaction();
+    try {
+        $result = _completeEmailLoginTxn($db, $email, $userId);
+        $db->commit();
+        return $result;
+    } catch (\Throwable $e) {
+        try { $db->rollback(); } catch (\Throwable $_ignore) { /* best-effort */ }
+        throw $e;
+    }
+}
+
+/**
+ * Inner body of completeEmailLogin(), executed inside the transaction
+ * opened by the wrapper above. Returns { token, user } on success or
+ * throws (which the wrapper rolls back). (#1011)
+ *
+ * @return array{token: string, user: array}
+ */
+function _completeEmailLoginTxn(\mysqli $db, string $email, ?int $userId): array
+{
     if ($userId === null) {
         /* Create a new user from the email address */
         $username = strstr($email, '@', true); /* Part before @ */
@@ -1480,6 +1508,16 @@ function completeEmailLogin(string $email, ?int $userId): array
     $stmt->execute();
     $user = $stmt->get_result()->fetch_assoc();
     $stmt->close();
+
+    /* #1011 — never index a null row. If the just-upserted user can't be
+       read back, something is wrong; throw so the wrapper rolls the whole
+       flow back (no orphaned account) and the caller returns a clean
+       error instead of a 500 mid-response. */
+    if (!is_array($user)) {
+        throw new \RuntimeException(
+            'completeEmailLogin: user row not found after upsert (id ' . (int)$userId . ')'
+        );
+    }
 
     /* Generate API bearer token (30-day expiry) */
     $token = bin2hex(random_bytes(32));
