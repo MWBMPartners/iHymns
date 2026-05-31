@@ -1710,8 +1710,11 @@ class SongData
            round-trip surfaces the persisted custom order. Pre-
            migration deploys keep the legacy column list. */
         $arrSelect = $this->_hasArrangementColumn() ? ', s.ArrangementJson AS arrangementJson' : '';
+        /* WS-E (#1013): songbookName from the LIVE tblSongbooks JOIN (b),
+           not the denormalised s.SongbookName, so songbook renames
+           propagate immediately. (b is LEFT JOINed below.) */
         $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title, s.SongbookAbbr AS songbook,
-                       s.SongbookName AS songbookName, s.Language AS language, s.Copyright AS copyright,
+                       b.Name AS songbookName, s.Language AS language, s.Copyright AS copyright,
                        s.TuneName AS tuneName, s.Ccli AS ccli, s.Iswc AS iswc,
                        s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
                        s.MusicPublicDomain AS musicPublicDomain,
@@ -3532,10 +3535,13 @@ class SongData
 
             /* Members */
             $stmt = $this->db->prepare(
+                /* WS-E (#1013): live songbook name via JOIN, not the
+                   denormalised s.SongbookName. */
                 'SELECT ws.SongId, ws.IsCanonical, ws.SortOrder, ws.Note,
-                        s.Title, s.Number, s.SongbookAbbr, s.SongbookName
+                        s.Title, s.Number, s.SongbookAbbr, sb.Name AS SongbookName
                    FROM tblWorkSongs ws
                    JOIN tblSongs s ON s.SongId = ws.SongId
+                   LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                   WHERE ws.WorkId = ?
                   ORDER BY ws.IsCanonical DESC, s.SongbookAbbr ASC, s.Number ASC'
             );
