@@ -260,9 +260,14 @@ paths:
       tags: [Songs]
       summary: Search songs
       description: |
-        Full-text search across song titles, lyrics, writers, and composers.
-        Uses MySQL FULLTEXT for queries of 3+ characters with a LIKE fallback
-        for shorter queries. Results are returned as lightweight summaries.
+        Live MySQL full-text search across song titles, lyrics, writers, and
+        composers. Queries of 3+ characters use FULLTEXT BOOLEAN mode with each
+        term prefix-matched and required (e.g. `+amaz* +grac*`), broadening to
+        ANY-term then writer/composer LIKE then SOUNDEX when a pass is empty;
+        shorter queries use a LIKE scan. Curator-priority matches (alternative
+        titles, scripture-reference tags) are prepended on the first page.
+        Results are lightweight summaries; pass `offset` to page with the
+        returned `hasMore` flag.
       parameters:
         - name: action
           in: query
@@ -288,12 +293,31 @@ paths:
         - name: limit
           in: query
           required: false
-          description: Maximum number of results to return
+          description: Maximum number of results to return per page
           schema:
             type: integer
             default: 50
             minimum: 1
-            maximum: 200
+            maximum: 100
+        - name: offset
+          in: query
+          required: false
+          description: Pagination offset; combine with the returned hasMore flag
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+        - name: lyrics
+          in: query
+          required: false
+          description: |
+            Search (and snippet) song bodies as well as titles — mirrors the
+            public "search within lyrics" toggle. Defaults ON for direct API
+            callers. Accepts 1/true/yes (on) or 0/false (off).
+          schema:
+            type: string
+            enum: ["1", "0", "true", "false", "yes"]
+            default: "1"
       responses:
         "200":
           description: Search results
@@ -308,8 +332,16 @@ paths:
                       $ref: "#/components/schemas/SongSummary"
                   total:
                     type: integer
-                    description: Number of results returned
+                    description: Number of results on this page
                     example: 3
+                  hasMore:
+                    type: boolean
+                    description: True when another page is available (use offset)
+                    example: false
+                  offset:
+                    type: integer
+                    description: The offset this page was served from
+                    example: 0
                   query:
                     type: string
                     description: The search query that was executed
@@ -325,6 +357,8 @@ paths:
                     hasAudio: false
                     hasSheetMusic: true
                 total: 1
+                hasMore: false
+                offset: 0
                 query: amazing grace
 
   /api.php?action=search_num:
@@ -3370,6 +3404,12 @@ paths:
       operationId: suggest
       tags: [Discovery]
       summary: Typeahead suggestions for the search box
+      description: |
+        Lightweight, relevance-ranked title typeahead (live MySQL). Uses the
+        same FULLTEXT BOOLEAN prefix strategy as `action=search` (`+term*`)
+        with a LIKE fallback for sub-3-char queries, returning at most 8
+        minimal rows. Honours the active language filter. Powers the header
+        autocomplete (#1014).
       parameters:
         - name: action
           in: query
@@ -3378,10 +3418,10 @@ paths:
         - name: q
           in: query
           required: true
-          schema: { type: string, minLength: 1 }
+          schema: { type: string, minLength: 2 }
       responses:
         "200":
-          description: Suggestion list
+          description: Suggestion list (empty when q is shorter than 2 chars)
           content:
             application/json:
               schema:
@@ -3392,9 +3432,10 @@ paths:
                     items:
                       type: object
                       properties:
-                        label: { type: string }
-                        type:  { type: string, enum: [song, writer, songbook, tag] }
-                        id:    { type: string, nullable: true }
+                        id:       { type: string, example: CP-0202 }
+                        title:    { type: string, example: Amazing Grace }
+                        songbook: { type: string, example: CP }
+                        number:   { type: integer, nullable: true, example: 202 }
 
   /api.php?action=related_songs:
     get:
@@ -7494,6 +7535,21 @@ components:
           type: boolean
         hasSheetMusic:
           type: boolean
+        lyricsSnippet:
+          type: string
+          description: |
+            First body line containing a query term — present only on
+            search hits driven by a lyrics match (lyrics search on).
+          example: "Through many dangers, toils and snares"
+        matchedVia:
+          type: object
+          description: |
+            Why a curated result was surfaced — present only when the hit
+            came from an alternative-title match (#832).
+          properties:
+            alternativeTitle:
+              type: string
+              example: "Faith's Review and Expectation"
 
     Songbook:
       type: object

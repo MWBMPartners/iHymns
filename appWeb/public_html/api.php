@@ -491,14 +491,28 @@ if ($action !== null) {
         case 'search':
             $query    = isset($_GET['q']) ? trim($_GET['q']) : '';
             $bookId   = isset($_GET['songbook']) ? trim($_GET['songbook']) : null;
-            $limit    = isset($_GET['limit']) ? (int)$_GET['limit'] : 50;
+            $limit    = isset($_GET['limit'])  ? (int)$_GET['limit']  : 50;
+            $offset   = isset($_GET['offset']) ? (int)$_GET['offset'] : 0;
+            /* "search within lyrics" toggle — defaults ON for direct API
+               callers, but the web client passes it explicitly (off by
+               default) to mirror the old Fuse title-only behaviour. */
+            $includeLyrics = isset($_GET['lyrics'])
+                ? in_array($_GET['lyrics'], ['1', 'true', 'yes'], true)
+                : true;
+
+            $limit = max(1, min(100, $limit));
+            if ($offset < 0) {
+                $offset = 0;
+            }
 
             if ($query === '') {
-                sendJson(['results' => [], 'total' => 0]);
+                sendJson(['results' => [], 'total' => 0, 'hasMore' => false]);
                 break;
             }
 
-            $results = $songData->searchSongs($query, $bookId, $limit);
+            /* Over-fetch by one so we can report hasMore for "load more"
+               pagination without a separate COUNT round-trip. */
+            $results = $songData->searchSongs($query, $bookId, $limit + 1, $offset, $includeLyrics);
 
             /* Language filter (#736). Apply the active preferred-subtag
                set in-memory so search results respect the user's
@@ -509,31 +523,41 @@ if ($action !== null) {
             );
             $results = array_values(array_filter($results, $_langPred));
 
-            /* Fire-and-forget search-query logging (#404). Silently no-ops
-               if the table is missing (fresh installs before the schema
-               ALTER has been applied). */
-            try {
-                $logDb = getDbMysqli();
-                $uid   = null;
-                $logAuth = getAuthenticatedUser();
-                if ($logAuth) $uid = (int)$logAuth['Id'];
-                $logStmt = $logDb->prepare(
-                    'INSERT INTO tblSearchQueries (Query, ResultCount, UserId) VALUES (?, ?, ?)'
-                );
-                $resultCount = count($results);
-                $logStmt->bind_param('sii', $query, $resultCount, $uid);
-                $logStmt->execute();
-                $logStmt->close();
-            } catch (\Throwable $_e) {
-                /* Best-effort — search-query analytics is non-critical.
-                   Logged so admins notice if the INSERT is failing
-                   systematically (e.g., tblSearchQueries DDL drift). */
-                error_log('[api/search log] ' . $_e->getMessage());
+            $hasMore = count($results) > $limit;
+            if ($hasMore) {
+                $results = array_slice($results, 0, $limit);
+            }
+
+            /* Fire-and-forget search-query logging (#404), first page
+               only so a "load more" doesn't double-count. Silently
+               no-ops if the table is missing (fresh installs before the
+               schema ALTER has been applied). */
+            if ($offset === 0) {
+                try {
+                    $logDb = getDbMysqli();
+                    $uid   = null;
+                    $logAuth = getAuthenticatedUser();
+                    if ($logAuth) $uid = (int)$logAuth['Id'];
+                    $logStmt = $logDb->prepare(
+                        'INSERT INTO tblSearchQueries (Query, ResultCount, UserId) VALUES (?, ?, ?)'
+                    );
+                    $resultCount = count($results);
+                    $logStmt->bind_param('sii', $query, $resultCount, $uid);
+                    $logStmt->execute();
+                    $logStmt->close();
+                } catch (\Throwable $_e) {
+                    /* Best-effort — search-query analytics is non-critical.
+                       Logged so admins notice if the INSERT is failing
+                       systematically (e.g., tblSearchQueries DDL drift). */
+                    error_log('[api/search log] ' . $_e->getMessage());
+                }
             }
 
             sendJson([
                 'results' => array_map('songToSummary', $results),
                 'total'   => count($results),
+                'hasMore' => $hasMore,
+                'offset'  => $offset,
                 'query'   => $query,
             ]);
             break;
@@ -4622,24 +4646,27 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDbMysqli();
-            $stmt = $db->prepare(
-                'SELECT SongId AS id, Title AS title,
-                        SongbookAbbr AS songbook, Number AS number
-                 FROM tblSongs
-                 WHERE Title LIKE ?
-                 LIMIT 8'
-            );
-            $like = '%' . $suggestQ . '%';
-            $stmt->bind_param('s', $like);
-            $stmt->execute();
-            $suggestions = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-            $stmt->close();
+            /* Live, relevance-ranked typeahead (D2 prefix match) via the
+               shared SongData pipeline — replaces the old inline
+               Title LIKE scan, and powers the header autocomplete now
+               that the client no longer holds a Fuse corpus (#1014). */
+            $suggestRows = $songData->suggestSongs($suggestQ, 8);
 
-            foreach ($suggestions as &$sg) {
-                $sg['number'] = (int)$sg['number'];
-            }
-            unset($sg);
+            /* Respect the active language filter the same way the main
+               search does — untagged songs always pass. */
+            $_sgPred = makeLanguageFilterPredicate(
+                resolvePreferredLanguagesForRequest(getAuthenticatedUser())
+            );
+            $suggestRows = array_values(array_filter($suggestRows, $_sgPred));
+
+            $suggestions = array_map(static function (array $r): array {
+                return [
+                    'id'       => $r['id'] ?? '',
+                    'title'    => $r['title'] ?? '',
+                    'songbook' => $r['songbook'] ?? '',
+                    'number'   => $r['number'] ?? null,
+                ];
+            }, $suggestRows);
 
             sendJson(['suggestions' => $suggestions]);
             break;
@@ -10884,7 +10911,7 @@ function getAuthenticatedUser(): ?array
  */
 function songToSummary(array $song): array
 {
-    return [
+    $summary = [
         'id'           => $song['id'] ?? '',
         'number'       => $song['number'] ?? 0,
         'title'        => $song['title'] ?? '',
@@ -10894,4 +10921,17 @@ function songToSummary(array $song): array
         'hasAudio'     => $song['hasAudio'] ?? false,
         'hasSheetMusic' => $song['hasSheetMusic'] ?? false,
     ];
+
+    /* Live-search extras (#1014) — only present when set, so number /
+       songbook summaries stay minimal. lyricsSnippet rides along when
+       a body match drove the hit; matchedVia carries the curator
+       alt-title hint (#832). */
+    if (!empty($song['lyricsSnippet'])) {
+        $summary['lyricsSnippet'] = $song['lyricsSnippet'];
+    }
+    if (!empty($song['matchedVia'])) {
+        $summary['matchedVia'] = $song['matchedVia'];
+    }
+
+    return $summary;
 }

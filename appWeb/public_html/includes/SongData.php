@@ -1891,16 +1891,23 @@ class SongData
      * Uses MySQL FULLTEXT search on title and lyrics_text for relevance-ranked
      * results, with a fallback to LIKE for short queries.
      *
-     * @param string      $query      Search query string
-     * @param string|null $songbookId Limit search to a specific songbook
-     * @param int         $limit      Maximum results to return (0 = no limit)
+     * @param string      $query         Search query string
+     * @param string|null $songbookId    Limit search to a specific songbook
+     * @param int         $limit         Maximum results to return (0 = no limit)
+     * @param int         $offset        Pagination offset into the result set
+     * @param bool        $includeLyrics Search (and snippet) song bodies too,
+     *                                   not just titles — mirrors the public
+     *                                   "search within lyrics" toggle
      * @return array Matching song objects
      */
-    public function searchSongs(string $query, ?string $songbookId = null, int $limit = 50): array
+    public function searchSongs(string $query, ?string $songbookId = null, int $limit = 50, int $offset = 0, bool $includeLyrics = true): array
     {
         $query = trim($query);
         if ($query === '') {
             return [];
+        }
+        if ($offset < 0) {
+            $offset = 0;
         }
 
         /* Scripture-reference awareness (#397): if the query looks like a
@@ -1919,128 +1926,368 @@ class SongData
                 if (mb_stripos($song['title'] ?? '', $q) !== false) { $results[] = $song; continue; }
                 foreach ($song['writers'] ?? [] as $w) { if (mb_stripos($w, $q) !== false) { $results[] = $song; continue 2; } }
                 foreach ($song['composers'] ?? [] as $c) { if (mb_stripos($c, $q) !== false) { $results[] = $song; continue 2; } }
-                foreach ($song['components'] ?? [] as $comp) {
-                    foreach ($comp['lines'] ?? [] as $line) {
-                        if (mb_stripos($line, $q) !== false) { $results[] = $song; continue 3; }
+                if ($includeLyrics) {
+                    foreach ($song['components'] ?? [] as $comp) {
+                        foreach ($comp['lines'] ?? [] as $line) {
+                            if (mb_stripos($line, $q) !== false) { $results[] = $song; continue 3; }
+                        }
                     }
                 }
             }
-            return $limit > 0 ? array_slice($results, 0, $limit) : $results;
+            return $limit > 0 ? array_slice($results, $offset, $limit) : array_slice($results, $offset);
         }
+
+        if ($songbookId !== null) {
+            $songbookId = strtoupper(trim($songbookId));
+            if ($songbookId === '') {
+                $songbookId = null;
+            }
+        }
+
+        /* Which columns participate in the FULLTEXT match — title-only
+           when the caller hasn't opted into lyrics search (mirrors the
+           public "search within lyrics" toggle, off by default), and
+           title + lyrics when they have. Both column sets are backed by
+           a dedicated FULLTEXT index (idx_TitleFt / idx_TitleLyricsFt). */
+        $matchCols = $includeLyrics ? 's.Title, s.LyricsText' : 's.Title';
 
         $results = [];
+        $tokens  = self::_tokenizeSearch($query);
 
-        /* For short queries (< 3 chars), use LIKE — FULLTEXT has min word length */
-        if (mb_strlen($query) < 3) {
-            $likeQuery = '%' . $query . '%';
-
-            $where = ["(s.Title LIKE ? OR s.LyricsText LIKE ?)"];
-            $params = [$likeQuery, $likeQuery];
-            $types = 'ss';
-
-            if ($songbookId !== null) {
-                $songbookId = strtoupper(trim($songbookId));
-                $where[] = "s.SongbookAbbr = ?";
-                $params[] = $songbookId;
-                $types .= 's';
-            }
-
-            $limitClause = $limit > 0 ? "LIMIT ?" : "";
-            if ($limit > 0) {
-                $params[] = $limit;
-                $types .= 'i';
-            }
-
-            $whereClause = implode(' AND ', $where);
-
-            $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
-                           s.SongbookAbbr AS songbook, s.SongbookName AS songbookName,
-                           s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
-                           s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
-                           s.MusicPublicDomain AS musicPublicDomain,
-                           s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
-                    FROM tblSongs s
-                    WHERE {$whereClause}
-                    ORDER BY s.SongbookAbbr, s.Number
-                    {$limitClause}";
+        /* Very short queries (< 3 chars) sit below InnoDB's FULLTEXT
+           minimum token length, so a LIKE scan is the only option. */
+        if (mb_strlen($query) < 3 || empty($tokens)) {
+            $results = $this->_searchByLike($query, $songbookId, $limit, $offset, $includeLyrics);
         } else {
-            /* FULLTEXT search for longer queries.
-               If the query looked like a scripture reference, OR in the
-               canonical expansion via BOOLEAN MODE so "Ps 23" also
-               matches "Psalm 23" and vice versa (#397). */
-            $ftQuery = $query;
+            /* D2 hybrid — step 1: relevance-ranked FULLTEXT with each
+               term prefix-matched AND required (+term*). Catches partial
+               words ("amaz grac" → "Amazing Grace") the way the old Fuse
+               index did, while staying a live, indexed MySQL query.
+               A scripture reference ORs in its canonical expansion so
+               "Ps 23" still reaches "Psalm 23" (#397). */
+            $primary = self::_booleanPrefixExpr($tokens, true);
             if ($scriptureExpansion !== null && $scriptureExpansion !== $query) {
-                $ftQuery = '(' . $query . ') (' . $scriptureExpansion . ')';
+                $expExpr = self::_booleanPrefixExpr(self::_tokenizeSearch($scriptureExpansion), true);
+                if ($expExpr !== '') {
+                    $primary = '(' . $primary . ') (' . $expExpr . ')';
+                }
             }
+            $results = $this->_runFulltextSearch($primary, $matchCols, $songbookId, $limit, $offset);
 
-            $where = ["MATCH(s.Title, s.LyricsText) AGAINST(? IN BOOLEAN MODE)"];
-            $params = [$ftQuery];
-            $types = 's';
-
-            if ($songbookId !== null) {
-                $songbookId = strtoupper(trim($songbookId));
-                $where[] = "s.SongbookAbbr = ?";
-                $params[] = $songbookId;
-                $types .= 's';
+            /* D2 hybrid — step 2: if requiring every term found nothing,
+               broaden to ANY term (drop the +) so a single mistyped
+               token doesn't sink the whole query. */
+            if (empty($results)) {
+                $loose   = self::_booleanPrefixExpr($tokens, false);
+                $results = $this->_runFulltextSearch($loose, $matchCols, $songbookId, $limit, $offset);
             }
-
-            $limitClause = $limit > 0 ? "LIMIT ?" : "";
-            if ($limit > 0) {
-                $params[] = $limit;
-                $types .= 'i';
-            }
-
-            $whereClause = implode(' AND ', $where);
-
-            $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
-                           s.SongbookAbbr AS songbook, s.SongbookName AS songbookName,
-                           s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
-                           s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
-                           s.MusicPublicDomain AS musicPublicDomain,
-                           s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic,
-                           MATCH(s.Title, s.LyricsText) AGAINST(? IN BOOLEAN MODE) AS relevance
-                    FROM tblSongs s
-                    WHERE {$whereClause}
-                    ORDER BY relevance DESC, s.SongbookAbbr, s.Number
-                    {$limitClause}";
-
-            /* Add the MATCH param again for SELECT (relevance score) */
-            $params = array_merge([$ftQuery], $params);
-            $types = 's' . $types;
         }
-
-        $stmt = $this->db->prepare($sql);
-        $stmt->bind_param($types, ...$params);
-        $stmt->execute();
-        $result = $stmt->get_result();
-
-        while ($row = $result->fetch_assoc()) {
-            unset($row['relevance']);
-            $row['number'] = normaliseSongNumber($row['number']);
-            $row['verified'] = (bool)$row['verified'];
-            $row['lyricsPublicDomain'] = (bool)$row['lyricsPublicDomain'];
-            $row['musicPublicDomain'] = (bool)$row['musicPublicDomain'];
-            $row['hasAudio'] = (bool)$row['hasAudio'];
-            $row['hasSheetMusic'] = (bool)$row['hasSheetMusic'];
-            $results[] = $row;
-        }
-        $stmt->close();
 
         /* Bulk-attach writers / composers / components — was 3 queries
            per matched row, now one per side table (#533). */
         $this->_attachSearchResultCredits($results);
 
-        /* If FULLTEXT returned no results, fall back to LIKE search on writers/composers */
+        /* Server-side lyrics snippet (replaces the old client-side Fuse
+           snippet) — only when lyrics search is on and the hit is in the
+           body rather than the title. */
+        if ($includeLyrics) {
+            $this->_attachLyricsSnippets($results, $tokens);
+        }
+
+        /* D2 hybrid — step 3: writer/composer LIKE fallback when the
+           text passes came up empty. */
         if (empty($results) && mb_strlen($query) >= 3) {
             $results = $this->_searchByWriterComposer($query, $songbookId, $limit);
         }
 
-        /* Alternative-title matches (#832) — also surface songs whose
-           tblSongAlternativeTitles row matches the query. Merges
-           de-duplicated into the existing result list AT THE TOP so
-           a curator-flagged alt match outranks a body-text fuzzy hit
-           (a search for "Faith's Review and Expectation" should put
-           Amazing Grace first, not buried below lyrics matches). */
+        /* D2 hybrid — step 4: phonetic (SOUNDEX) last resort, so an
+           "Halleluyah"/"Hallelujah"-style misspelling still lands
+           something. Only runs when every other pass came up empty, so
+           the unindexed SOUNDEX scan stays a rare cost. */
+        if (empty($results) && mb_strlen($query) >= 3) {
+            $results = $this->_searchBySoundex($query, $songbookId, $limit);
+        }
+
+        /* Curated merges (alt-title #832, scripture-tag #397) belong at
+           the TOP of the FIRST page only — re-prepending them on every
+           "load more" page would duplicate them. */
+        if ($offset === 0) {
+            $results = $this->_mergeCuratedHits($results, $query, $scriptureExpansion, $songbookId, $limit);
+        }
+
+        return $results;
+    }
+
+    /**
+     * Split a user query into FULLTEXT-safe tokens. Strips the
+     * characters that carry meaning in BOOLEAN mode (+ - > < ( ) ~ * "
+     * @) so a raw user string can never inject operators or break the
+     * parser; we re-add our own operators in _booleanPrefixExpr().
+     *
+     * @return string[]
+     */
+    private static function _tokenizeSearch(string $query): array
+    {
+        $clean = preg_replace('/[+\-><()~*"@]+/u', ' ', $query);
+        $parts = preg_split('/\s+/u', trim((string)$clean), -1, PREG_SPLIT_NO_EMPTY);
+        return $parts ?: [];
+    }
+
+    /**
+     * Build a BOOLEAN-mode expression with every token prefix-matched.
+     * $require = true  → "+amaz* +grac*" (all terms required),
+     * $require = false → "amaz* grac*"   (any term, used to broaden).
+     */
+    private static function _booleanPrefixExpr(array $tokens, bool $require): string
+    {
+        $op = $require ? '+' : '';
+        $terms = [];
+        foreach ($tokens as $t) {
+            $t = trim((string)$t);
+            if ($t === '') continue;
+            $terms[] = $op . $t . '*';
+        }
+        return implode(' ', $terms);
+    }
+
+    /**
+     * Run a single FULLTEXT BOOLEAN-mode pass and return lightweight,
+     * relevance-ordered rows (credits are bulk-attached by the caller).
+     * songbookName comes from the LIVE tblSongbooks JOIN, not the
+     * denormalised tblSongs.SongbookName (WS-E #1013).
+     */
+    private function _runFulltextSearch(string $ftQuery, string $matchCols, ?string $songbookId, int $limit, int $offset): array
+    {
+        if (trim($ftQuery) === '') {
+            return [];
+        }
+
+        $where  = ["MATCH({$matchCols}) AGAINST(? IN BOOLEAN MODE)"];
+        $params = [$ftQuery];
+        $types  = 's';
+
+        if ($songbookId !== null) {
+            $where[]  = 's.SongbookAbbr = ?';
+            $params[] = $songbookId;
+            $types   .= 's';
+        }
+
+        $limitClause = $limit > 0 ? 'LIMIT ? OFFSET ?' : '';
+        $whereClause = implode(' AND ', $where);
+
+        $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
+                       s.SongbookAbbr AS songbook, sb.Name AS songbookName,
+                       s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
+                       s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
+                       s.MusicPublicDomain AS musicPublicDomain,
+                       s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic,
+                       MATCH({$matchCols}) AGAINST(? IN BOOLEAN MODE) AS relevance
+                FROM tblSongs s
+                LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+                WHERE {$whereClause}
+                ORDER BY relevance DESC, s.SongbookAbbr, s.Number
+                {$limitClause}";
+
+        /* MATCH appears in SELECT (relevance) and WHERE — bind twice. */
+        array_unshift($params, $ftQuery);
+        $types = 's' . $types;
+        if ($limit > 0) {
+            $params[] = $limit;  $types .= 'i';
+            $params[] = $offset; $types .= 'i';
+        }
+
+        $stmt = $this->db->prepare($sql);
+        $stmt->bind_param($types, ...$params);
+        $stmt->execute();
+        $rows = $this->_hydrateSearchRows($stmt->get_result());
+        $stmt->close();
+        return $rows;
+    }
+
+    /**
+     * Substring (LIKE) search — used for sub-3-char queries below the
+     * FULLTEXT minimum token length. Returns lightweight rows; credits
+     * are bulk-attached by the caller.
+     */
+    private function _searchByLike(string $query, ?string $songbookId, int $limit, int $offset, bool $includeLyrics): array
+    {
+        $like = '%' . $query . '%';
+
+        if ($includeLyrics) {
+            $where  = ['(s.Title LIKE ? OR s.LyricsText LIKE ?)'];
+            $params = [$like, $like];
+            $types  = 'ss';
+        } else {
+            $where  = ['s.Title LIKE ?'];
+            $params = [$like];
+            $types  = 's';
+        }
+
+        if ($songbookId !== null) {
+            $where[]  = 's.SongbookAbbr = ?';
+            $params[] = $songbookId;
+            $types   .= 's';
+        }
+
+        $limitClause = $limit > 0 ? 'LIMIT ? OFFSET ?' : '';
+        $whereClause = implode(' AND ', $where);
+
+        $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
+                       s.SongbookAbbr AS songbook, sb.Name AS songbookName,
+                       s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
+                       s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
+                       s.MusicPublicDomain AS musicPublicDomain,
+                       s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
+                FROM tblSongs s
+                LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+                WHERE {$whereClause}
+                ORDER BY s.SongbookAbbr, s.Number
+                {$limitClause}";
+
+        if ($limit > 0) {
+            $params[] = $limit;  $types .= 'i';
+            $params[] = $offset; $types .= 'i';
+        }
+
+        $stmt = $this->db->prepare($sql);
+        $stmt->bind_param($types, ...$params);
+        $stmt->execute();
+        $rows = $this->_hydrateSearchRows($stmt->get_result());
+        $stmt->close();
+        return $rows;
+    }
+
+    /**
+     * Phonetic (SOUNDEX) last-resort search. Unindexed — kept cheap by
+     * only ever running when every other search pass came up empty.
+     * Attaches its own credits because it is a terminal fallback.
+     */
+    private function _searchBySoundex(string $query, ?string $songbookId, int $limit): array
+    {
+        try {
+            $where  = ['SOUNDEX(s.Title) = SOUNDEX(?)'];
+            $params = [$query];
+            $types  = 's';
+
+            if ($songbookId !== null) {
+                $where[]  = 's.SongbookAbbr = ?';
+                $params[] = $songbookId;
+                $types   .= 's';
+            }
+
+            $limitClause = $limit > 0 ? 'LIMIT ?' : '';
+            $whereClause = implode(' AND ', $where);
+
+            $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
+                           s.SongbookAbbr AS songbook, sb.Name AS songbookName,
+                           s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
+                           s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
+                           s.MusicPublicDomain AS musicPublicDomain,
+                           s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
+                    FROM tblSongs s
+                    LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+                    WHERE {$whereClause}
+                    ORDER BY s.SongbookAbbr, s.Number
+                    {$limitClause}";
+
+            if ($limit > 0) {
+                $params[] = $limit;
+                $types   .= 'i';
+            }
+
+            $stmt = $this->db->prepare($sql);
+            $stmt->bind_param($types, ...$params);
+            $stmt->execute();
+            $rows = $this->_hydrateSearchRows($stmt->get_result());
+            $stmt->close();
+            $this->_attachSearchResultCredits($rows);
+            return $rows;
+        } catch (\Throwable $e) {
+            error_log('[SongData::_searchBySoundex] ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Normalise a raw search result row into the lightweight summary
+     * shape the API returns. Shared by every search SQL path.
+     */
+    private function _hydrateSearchRows(\mysqli_result $res): array
+    {
+        $rows = [];
+        while ($row = $res->fetch_assoc()) {
+            unset($row['relevance']);
+            $row['number']             = normaliseSongNumber($row['number']);
+            $row['verified']           = (bool)$row['verified'];
+            $row['lyricsPublicDomain'] = (bool)$row['lyricsPublicDomain'];
+            $row['musicPublicDomain']  = (bool)$row['musicPublicDomain'];
+            $row['hasAudio']           = (bool)$row['hasAudio'];
+            $row['hasSheetMusic']      = (bool)$row['hasSheetMusic'];
+            $rows[] = $row;
+        }
+        return $rows;
+    }
+
+    /**
+     * Attach a `lyricsSnippet` (first body line containing a query
+     * token) to each row whose match is in the body, not the title —
+     * the server-side replacement for the old Fuse match-snippet.
+     * Requires components to have been attached already.
+     *
+     * @param string[] $tokens
+     */
+    private function _attachLyricsSnippets(array &$rows, array $tokens): void
+    {
+        if (empty($rows) || empty($tokens)) {
+            return;
+        }
+        $needles = [];
+        foreach ($tokens as $t) {
+            $t = mb_strtolower(trim((string)$t));
+            if ($t !== '') $needles[] = $t;
+        }
+        if (empty($needles)) {
+            return;
+        }
+
+        foreach ($rows as &$row) {
+            /* Snippet is only useful when the hit is NOT already in the
+               title — a title match is its own context. */
+            $title = mb_strtolower($row['title'] ?? '');
+            $inTitle = false;
+            foreach ($needles as $n) {
+                if (mb_stripos($title, $n) !== false) { $inTitle = true; break; }
+            }
+            if ($inTitle) continue;
+
+            foreach (($row['components'] ?? []) as $comp) {
+                foreach (($comp['lines'] ?? []) as $line) {
+                    $ll = mb_strtolower($line);
+                    foreach ($needles as $n) {
+                        if (mb_stripos($ll, $n) !== false) {
+                            $row['lyricsSnippet'] = $line;
+                            break 3;
+                        }
+                    }
+                }
+            }
+        }
+        unset($row);
+    }
+
+    /**
+     * Prepend curator-priority matches — alternative titles (#832) and
+     * scripture-reference tags (#397) — to the result list, de-duped by
+     * SongId. Applied to the first page only (offset 0). Extracted from
+     * searchSongs() so the page-1 merge stays one self-contained step.
+     */
+    private function _mergeCuratedHits(array $results, string $query, ?string $scriptureExpansion, ?string $songbookId, int $limit): array
+    {
+        /* Alternative-title matches (#832) — surface songs whose
+           tblSongAlternativeTitles row matches, AT THE TOP so a
+           curator-flagged alt match outranks a body-text fuzzy hit
+           (search "Faith's Review and Expectation" → Amazing Grace
+           first, not buried below lyrics matches). */
         $altHits = $this->_searchByAlternativeTitle($query, $songbookId, $limit);
         if (!empty($altHits)) {
             $seenAlt = [];
@@ -2052,27 +2299,22 @@ class SongData
                     $seenAlt[$hit['id']] = true;
                 }
             }
-            foreach ($results as $r) {
-                $merged[] = $r;
-            }
+            foreach ($results as $r) { $merged[] = $r; }
             $results = $merged;
             if ($limit > 0) $results = array_slice($results, 0, $limit);
         }
 
-        /* Scripture-reference tag matches (#397 follow-up) — if the query
-           looked like a scripture reference, ALSO surface songs that have
-           been tagged with the canonical book or full reference. Merges
-           de-duplicated into the existing result list at the top so
-           curated matches outrank text matches. */
+        /* Scripture-reference tag matches (#397 follow-up) — surface
+           songs tagged with the canonical book or full reference, at
+           the top, de-duped against the existing list. */
         if ($scriptureExpansion !== null) {
             $tagHits = $this->_searchByScriptureTag($scriptureExpansion, $songbookId);
             if (!empty($tagHits)) {
-                $seen = [];
-                foreach ($results as $r) { $seen[$r['id']] = true; }
+                $tagIds = [];
+                foreach ($tagHits as $th) { $tagIds[$th['id']] = true; }
                 $merged = $tagHits;
                 foreach ($results as $r) {
-                    if (!isset($seen[$r['id']])) $merged[] = $r; /* already seen via tag hit */
-                    elseif (!isset($tagHits[$r['id'] ?? ''])) $merged[] = $r;
+                    if (!isset($tagIds[$r['id']])) $merged[] = $r;
                 }
                 $results = array_values($merged);
                 if ($limit > 0) $results = array_slice($results, 0, $limit);
@@ -2080,6 +2322,81 @@ class SongData
         }
 
         return $results;
+    }
+
+    /**
+     * Lightweight autocomplete/typeahead suggestions (#307). Returns at
+     * most $limit minimal rows (id / title / songbook / number / language)
+     * ordered by relevance, deliberately skipping the heavy searchSongs()
+     * pipeline (credits, components, curated merges, snippets) so header
+     * typeahead stays snappy as a live MySQL query.
+     *
+     * Same D2 prefix strategy as searchSongs: FULLTEXT BOOLEAN +term* on
+     * Title, with a LIKE fallback for sub-3-char queries (below the
+     * FULLTEXT minimum token length) or when FULLTEXT finds nothing.
+     * `language` rides along so the caller can language-filter; the
+     * client ignores it.
+     */
+    public function suggestSongs(string $query, int $limit = 8): array
+    {
+        $query = trim($query);
+        if ($query === '' || $this->jsonMode || !$this->db) {
+            return [];
+        }
+        if ($limit <= 0) {
+            $limit = 8;
+        }
+
+        $tokens = self::_tokenizeSearch($query);
+        $rows   = [];
+
+        $collect = function (\mysqli_result $res) use (&$rows): void {
+            while ($row = $res->fetch_assoc()) {
+                $rows[] = [
+                    'id'       => $row['id'],
+                    'title'    => $row['title'],
+                    'songbook' => $row['songbook'],
+                    'number'   => normaliseSongNumber($row['number']),
+                    'language' => $row['language'] ?? '',
+                ];
+            }
+        };
+
+        if (mb_strlen($query) >= 3 && !empty($tokens)) {
+            $expr = self::_booleanPrefixExpr($tokens, true);
+            $sql  = "SELECT s.SongId AS id, s.Title AS title,
+                            s.SongbookAbbr AS songbook, s.Number AS number,
+                            s.Language AS language,
+                            MATCH(s.Title) AGAINST(? IN BOOLEAN MODE) AS relevance
+                     FROM tblSongs s
+                     WHERE MATCH(s.Title) AGAINST(? IN BOOLEAN MODE)
+                     ORDER BY relevance DESC, s.SongbookAbbr, s.Number
+                     LIMIT ?";
+            $stmt = $this->db->prepare($sql);
+            $stmt->bind_param('ssi', $expr, $expr, $limit);
+            $stmt->execute();
+            $collect($stmt->get_result());
+            $stmt->close();
+        }
+
+        /* LIKE fallback — short queries, or FULLTEXT came up empty. */
+        if (empty($rows)) {
+            $like = '%' . $query . '%';
+            $sql  = "SELECT s.SongId AS id, s.Title AS title,
+                            s.SongbookAbbr AS songbook, s.Number AS number,
+                            s.Language AS language
+                     FROM tblSongs s
+                     WHERE s.Title LIKE ?
+                     ORDER BY s.SongbookAbbr, s.Number
+                     LIMIT ?";
+            $stmt = $this->db->prepare($sql);
+            $stmt->bind_param('si', $like, $limit);
+            $stmt->execute();
+            $collect($stmt->get_result());
+            $stmt->close();
+        }
+
+        return $rows;
     }
 
     /**
@@ -2125,7 +2442,7 @@ class SongData
         try {
             $like = '%' . $query . '%';
             $sql  = 'SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
-                            s.SongbookAbbr AS songbook, s.SongbookName AS songbookName,
+                            s.SongbookAbbr AS songbook, sb.Name AS songbookName,
                             s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
                             s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
                             s.MusicPublicDomain AS musicPublicDomain,
@@ -2133,6 +2450,7 @@ class SongData
                             a.Title AS matchedAltTitle
                        FROM tblSongAlternativeTitles a
                        JOIN tblSongs s ON s.SongId = a.SongId
+                       LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                       WHERE a.Title LIKE ?';
             $params = [$like];
             $types  = 's';
@@ -2192,7 +2510,7 @@ class SongData
         $slugBook = self::_tagSlug($book);
 
         $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
-                       s.SongbookAbbr AS songbook, s.SongbookName AS songbookName,
+                       s.SongbookAbbr AS songbook, sb.Name AS songbookName,
                        s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
                        s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
                        s.MusicPublicDomain AS musicPublicDomain,
@@ -2200,6 +2518,7 @@ class SongData
                   FROM tblSongs s
                   JOIN tblSongTagMap m ON m.SongId = s.SongId
                   JOIN tblSongTags   t ON t.Id = m.TagId
+                  LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                  WHERE t.Name IN (?, ?) OR t.Slug IN (?, ?)";
         $types  = 'ssss';
         $params = [$scriptureRef, $book, $slugRef, $slugBook];
@@ -3211,12 +3530,13 @@ class SongData
         $whereClause = implode(' AND ', $where);
 
         $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
-                       s.SongbookAbbr AS songbook, s.SongbookName AS songbookName,
+                       s.SongbookAbbr AS songbook, sb.Name AS songbookName,
                        s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
                        s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
                        s.MusicPublicDomain AS musicPublicDomain,
                        s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
                 FROM tblSongs s
+                LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                 WHERE {$whereClause}
                 ORDER BY s.SongbookAbbr, s.Number
                 {$limitClause}";
