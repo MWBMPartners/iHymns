@@ -145,6 +145,7 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongOfTheDay.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_access.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'card_layout.php';
@@ -597,6 +598,43 @@ if ($action !== null) {
                 sendJson(['error' => 'No songs available.'], 404);
             } else {
                 sendJson(['song' => $song]);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
+         * Song of the Day (#108 / WS-C #1015) — deterministic per-day pick
+         * via a LIVE MySQL query (server-side calendar theming). Replaces
+         * the old client-side corpus scan.
+         * Parameters:
+         *   lang (optional) — preferred-language subtags (else resolved
+         *                     from the X-Preferred-Languages header / user)
+         *   date (optional) — YYYY-MM-DD; the client passes its LOCAL date
+         *                     so liturgical themes align to the user's
+         *                     calendar (exactly as the old client did).
+         *                     Falls back to the server date when absent /
+         *                     malformed.
+         * ----------------------------------------------------------------- */
+        case 'song_of_the_day':
+            $sotdLangs = resolvePreferredLanguagesForRequest(getAuthenticatedUser());
+
+            $sotdDate = new DateTimeImmutable('now');
+            $sotdRaw  = isset($_GET['date']) ? trim((string)$_GET['date']) : '';
+            if ($sotdRaw !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $sotdRaw) === 1) {
+                $sotdParsed = DateTimeImmutable::createFromFormat('!Y-m-d', $sotdRaw);
+                /* createFromFormat tolerates overflow (2026-13-40); reject
+                   anything that doesn't round-trip to the same string. */
+                if ($sotdParsed instanceof DateTimeImmutable && $sotdParsed->format('Y-m-d') === $sotdRaw) {
+                    $sotdDate = $sotdParsed;
+                }
+            }
+
+            $sotd = new SongOfTheDay(getDbMysqli());
+            $pick = $sotd->pickForDate($sotdDate, $sotdLangs);
+
+            if ($pick === null) {
+                sendJson(['song' => null, 'themeLabel' => '', 'firstLine' => '']);
+            } else {
+                sendJson($pick);
             }
             break;
 

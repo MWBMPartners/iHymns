@@ -563,6 +563,87 @@ paths:
               example:
                 error: No songs available.
 
+  /api.php?action=song_of_the_day:
+    get:
+      operationId: songOfTheDay
+      tags: [Discovery]
+      summary: Song of the Day
+      description: |
+        Deterministic per-day song pick via a live MySQL query (#1015).
+        Everyone sees the same song on the same calendar day; on key dates
+        in the Christian calendar (Advent, Christmas, Lent, Holy Week,
+        Easter, Pentecost, …) a themed song is chosen by keyword matching.
+        The selection is a bounded query — it never materialises the corpus.
+        Language filtering follows the standard rules (untagged songs pass;
+        empty filter = no filter), resolved from `lang` / the
+        X-Preferred-Languages header / the authenticated user.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [song_of_the_day]
+        - name: lang
+          in: query
+          required: false
+          description: |
+            Comma-separated preferred-language primary subtags (e.g. en,es).
+            Overrides the X-Preferred-Languages header / user preference.
+          schema:
+            type: string
+            example: en
+        - name: date
+          in: query
+          required: false
+          description: |
+            YYYY-MM-DD. The client passes its LOCAL date so liturgical
+            themes align to the user's calendar. Malformed/absent → the
+            server's current date.
+          schema:
+            type: string
+            pattern: '^\d{4}-\d{2}-\d{2}$'
+            example: "2026-12-25"
+      responses:
+        "200":
+          description: The chosen song (song is null only if the catalogue is empty)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  song:
+                    type: object
+                    nullable: true
+                    description: |
+                      Minimal card payload — exactly the fields the home
+                      card renders (not the shared SongSummary shape).
+                    properties:
+                      id:           { type: string, example: CP-0202 }
+                      number:       { type: integer, nullable: true, example: 202 }
+                      title:        { type: string, example: Amazing Grace }
+                      songbook:     { type: string, example: CP }
+                      songbookName: { type: string, example: Christian Praise }
+                      verified:     { type: boolean, example: true }
+                  themeLabel:
+                    type: string
+                    description: Card heading, e.g. "Easter Song of the Day"
+                    example: Christmas Song of the Day
+                  firstLine:
+                    type: string
+                    description: First lyric line, shown as a teaser
+                    example: "Hark! the herald angels sing"
+              example:
+                song:
+                  id: CP-0202
+                  number: 202
+                  title: Amazing Grace
+                  songbook: CP
+                  songbookName: Christian Praise
+                  verified: true
+                themeLabel: Song of the Day
+                firstLine: "Amazing grace! how sweet the sound"
+
   /api.php?action=stats:
     get:
       operationId: getStats

@@ -17,13 +17,10 @@
  *   Typo tolerance + partial-word matching is done server-side via the
  *   FULLTEXT BOOLEAN prefix strategy (see SongData::searchSongs, D2),
  *   so the UX that Fuse.js used to provide is preserved without
- *   shipping the whole catalogue to the browser.
- *
- *   NOTE: this module still fetches the song corpus once per page-load
- *   to feed Song of the Day (`songsData` / `songbooksData`). That is a
- *   TEMPORARY coupling — WS-C (#1015) moves Song of the Day to its own
- *   live endpoint, after which the corpus fetch here is removed and the
- *   client stops downloading the corpus entirely.
+ *   shipping the whole catalogue to the browser. As of WS-C (#1015)
+ *   neither search nor Song of the Day fetches the corpus — SoTD has
+ *   its own live endpoint. (The only remaining client corpus consumer
+ *   is the offline-download feature in settings.js, addressed by WS-I.)
  */
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { toTitleCase } from '../utils/text.js';
@@ -44,13 +41,6 @@ export class Search {
 
         /** @type {number|null} Debounce timer ID */
         this.debounceTimer = null;
-
-        /** @type {Array|null} Song corpus — kept ONLY for Song of the Day
-         *  (#1015 will remove this). Not used by search itself. */
-        this.songsData = null;
-
-        /** @type {Array|null} Songbook metadata — also for Song of the Day. */
-        this.songbooksData = null;
 
         /** @type {boolean} Whether "search within lyrics" is active */
         this.lyricsSearchEnabled = false;
@@ -117,9 +107,6 @@ export class Search {
             });
         }
 
-        /* Eagerly load the corpus in the background — Song of the Day
-           only (see file header). Search does not wait on this. */
-        this.loadSongCorpus();
     }
 
     /**
@@ -146,42 +133,6 @@ export class Search {
             bar.setAttribute('aria-hidden', 'true');
             document.body.classList.remove('search-open');
             toggle?.setAttribute('aria-expanded', 'false');
-        }
-    }
-
-    /* =====================================================================
-     * SONG CORPUS — Song of the Day ONLY (TEMPORARY, removed in WS-C #1015)
-     * ===================================================================== */
-
-    /**
-     * Fetch the song corpus once and hand it to Song of the Day.
-     *
-     * This is the ONLY remaining consumer of the corpus on the client.
-     * Search no longer uses it (every search is a live MySQL query). When
-     * WS-C (#1015) gives Song of the Day its own live endpoint, this
-     * method and the corpus download go away.
-     */
-    async loadSongCorpus() {
-        if (this.songsData) return;
-
-        try {
-            const response = await fetch(this.app.config.dataUrl);
-            if (!response.ok) throw new Error('Failed to fetch song corpus');
-            const data = await response.json();
-
-            this.songsData = data.songs || [];
-            /* Per-songbook metadata (primary `language`, `languages`
-               array, `isOfficial`, …) for Song of the Day's language
-               filtering. */
-            this.songbooksData = Array.isArray(data.songbooks) ? data.songbooks : [];
-
-            /* Re-render Song of the Day if the home page is active (#108) —
-               it may have rendered before song data finished loading. */
-            if (document.getElementById('song-of-the-day') && this.app.songOfTheDay) {
-                this.app.songOfTheDay.renderHomeSection();
-            }
-        } catch (error) {
-            console.warn('[Search] Corpus load failed (Song of the Day only):', error);
         }
     }
 
