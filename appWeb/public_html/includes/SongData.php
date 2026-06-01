@@ -1645,6 +1645,49 @@ class SongData
     }
 
     /**
+     * Slim index of EVERY song — lightweight fields only (no lyrics,
+     * components, or credits). Powers the Song Editor sidebar (WS-D
+     * #1016): one query returns id/number/title/songbook/songbookName per
+     * song so the editor lists the whole catalogue without downloading
+     * the ~140 MB corpus; the full editable record is fetched per song on
+     * open via getSongById(). songbookName is the LIVE tblSongbooks.Name
+     * (WS-E #1013). Canonical order mirrors getSongsIndex/getSongs.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public function getSongsSlimIndex(): array
+    {
+        if (!$this->db) {
+            throw new \RuntimeException('getSongsSlimIndex requires a live database connection.');
+        }
+
+        /* No parameters — pure constant SQL, safe to run via query(). */
+        $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
+                       s.SongbookAbbr AS songbook, sb.Name AS songbookName,
+                       s.Language AS language,
+                       s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
+                FROM tblSongs s
+                LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+                ORDER BY s.SongbookAbbr ASC,
+                         CASE WHEN sb.IsOfficial = 1 AND s.Number IS NOT NULL THEN 0 ELSE 1 END ASC,
+                         s.Number ASC,
+                         LOWER(s.Title) ASC";
+
+        $res  = $this->db->query($sql);
+        $rows = [];
+        if ($res instanceof \mysqli_result) {
+            while ($row = $res->fetch_assoc()) {
+                $row['number']        = normaliseSongNumber($row['number']);
+                $row['hasAudio']      = (bool)$row['hasAudio'];
+                $row['hasSheetMusic'] = (bool)$row['hasSheetMusic'];
+                $rows[] = $row;
+            }
+            $res->free();
+        }
+        return $rows;
+    }
+
+    /**
      * Get all songs, optionally filtered by songbook.
      *
      * When the hidden 'public_domain_only' feature flag is enabled,

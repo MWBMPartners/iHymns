@@ -276,6 +276,13 @@ switch ($action) {
 
     /* -----------------------------------------------------------------
      * LOAD — Read all song data from MySQL and return as JSON
+     *
+     * WS-D #1016: the EDITOR no longer calls this — it loads a slim index
+     * (load_index) + per-record (load_song). This case is kept ONLY
+     * because /manage/songbooks.php still fetches it to export songs
+     * grouped by songbook; it (and the songs.json cache) are decommissioned
+     * in WS-J once that page moves to a dedicated endpoint. Don't "clean
+     * it up" before then — songbooks export depends on it.
      * ----------------------------------------------------------------- */
     case 'load':
         /* #932 — serve the precomputed corpus cache instead of
@@ -342,346 +349,133 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
-     * SAVE — Write song data to MySQL from the POST body
+     * LOAD_INDEX — lightweight slim index for the editor sidebar (#1016)
+     *
+     * id/number/title/songbook/songbookName per song, NO lyrics or
+     * components. Replaces the whole-corpus 'load' on editor open so the
+     * editor stops downloading the ~140 MB corpus; the full per-song
+     * record is fetched on demand via 'load_song'. Returns the same
+     * { meta, songbooks, songs } envelope the client already consumes,
+     * just with lightweight song rows.
      * ----------------------------------------------------------------- */
-    case 'save':
+    case 'load_index':
+        try {
+            $songData = new SongData();
+            echo json_encode([
+                'meta'      => $songData->getMeta(),
+                'songbooks' => $songData->getSongbooks(),
+                'songs'     => $songData->getSongsSlimIndex(),
+            ]);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[iHymns Editor] load_index failed: ' . $e->getMessage());
+            echo json_encode([
+                'error'  => 'Failed to load song index.',
+                'detail' => get_class($e) . ': ' . $e->getMessage(),
+            ]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * LOAD_SONG — full editable record for ONE song (#1016)
+     *
+     * Per-record live fetch used when the curator opens a song from the
+     * sidebar. Returns the same rich shape the corpus used to carry
+     * (components + every credit type + tags + translations + alt titles
+     * + external links + works + media), via SongData::getSongById().
+     * ----------------------------------------------------------------- */
+    case 'load_song':
+        $songId = isset($_GET['id']) ? trim((string)$_GET['id']) : '';
+        if ($songId === '') {
+            http_response_code(400);
+            echo json_encode(['error' => 'Song id is required.']);
+            break;
+        }
+        try {
+            $songData = new SongData();
+            $song = $songData->getSongById($songId);
+            if ($song === null) {
+                http_response_code(404);
+                echo json_encode(['error' => 'Song not found: ' . $songId]);
+            } else {
+                echo json_encode(['song' => $song]);
+            }
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[iHymns Editor] load_song failed: ' . $e->getMessage());
+            echo json_encode([
+                'error'  => 'Failed to load song.',
+                'detail' => get_class($e) . ': ' . $e->getMessage(),
+            ]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * LOAD_SONGS — batch full-record fetch (#1016)
+     *
+     * POST { ids: [...] }. Returns the full editable record for each id,
+     * so the multi-select bulk operations (verify / move / export) work
+     * on COMPLETE songs. Without this, a bulk edit would mutate a slim
+     * sidebar stub and save_song would then DELETE-then-INSERT empty
+     * credits/components — wiping the song's lyrics + credits. Bounded so
+     * a pathological request can't fan out unboundedly.
+     * ----------------------------------------------------------------- */
+    case 'load_songs':
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
             http_response_code(405);
             echo json_encode(['error' => 'POST method required.']);
             break;
         }
-
-        /* Read and validate the POST body */
-        $rawBody = file_get_contents('php://input');
-        if (empty($rawBody)) {
-            http_response_code(400);
-            echo json_encode(['error' => 'Empty request body.']);
+        $body = json_decode((string)file_get_contents('php://input'), true);
+        $ids  = (is_array($body) && isset($body['ids']) && is_array($body['ids'])) ? $body['ids'] : [];
+        if (empty($ids)) {
+            echo json_encode(['songs' => []]);
             break;
         }
-
-        /* Validate JSON structure */
-        $data = json_decode($rawBody, true);
-        if ($data === null) {
-            http_response_code(400);
-            echo json_encode(['error' => 'Invalid JSON format.']);
-            break;
+        if (count($ids) > 2000) {
+            $ids = array_slice($ids, 0, 2000);
         }
-
-        /* Validate required top-level keys */
-        if (!isset($data['meta']) || !isset($data['songbooks']) || !isset($data['songs'])) {
-            http_response_code(400);
-            echo json_encode(['error' => 'Invalid songs data structure. Required keys: meta, songbooks, songs.']);
-            break;
-        }
-
-        /* Save to MySQL using transaction */
         try {
-            $db = getDbMysqli();
-            $db->query("SET FOREIGN_KEY_CHECKS = 0");
-            $db->begin_transaction();
-
-            /* Clear existing data. New credit tables (#497) are TRUNCATEd
-               alongside the originals so a bulk import yields a clean
-               slate; the migration must have been run first or the query
-               will fail with a clear "Table … doesn't exist" error that
-               points the admin at /manage/setup-database. */
-            $db->query("TRUNCATE TABLE tblSongComponents");
-            $db->query("TRUNCATE TABLE tblSongComposers");
-            $db->query("TRUNCATE TABLE tblSongWriters");
-            $db->query("TRUNCATE TABLE tblSongArrangers");
-            $db->query("TRUNCATE TABLE tblSongAdaptors");
-            $db->query("TRUNCATE TABLE tblSongTranslators");
-            $db->query("TRUNCATE TABLE tblSongs");
-            $db->query("TRUNCATE TABLE tblSongbooks");
-
-            $db->query("SET FOREIGN_KEY_CHECKS = 1");
-
-            /* Insert songbooks */
-            $stmtSongbook = $db->prepare(
-                "INSERT INTO tblSongbooks (Abbreviation, Name, SongCount) VALUES (?, ?, ?)"
-            );
-            /* Build an IsOfficial lookup keyed by abbreviation so the
-               per-song INSERT below can null out Number for any song
-               whose songbook is unofficial (Misc and any custom
-               collection). #392. The payload's `isOfficial` is sourced
-               from SongData::getSongbooks() and is always boolean. */
-            $officialByAbbr = [];
-            foreach ($data['songbooks'] as $book) {
-                $abbr  = $book['id'];
-                $name  = $book['name'];
-                $count = (int)($book['songCount'] ?? 0);
-                $officialByAbbr[$abbr] = !empty($book['isOfficial']);
-                $stmtSongbook->bind_param('ssi', $abbr, $name, $count);
-                $stmtSongbook->execute();
-            }
-            $stmtSongbook->close();
-
-            /* #892 — schema-probe for tblSongs.ArrangementJson once
-               per bulk save so the per-song INSERT loop binds the
-               right column shape. Pre-migration deploys keep the
-               legacy 16-column INSERT. */
-            $hasArrangementCol = false;
-            try {
-                $arrProbe = $db->prepare(
-                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
-                      WHERE TABLE_SCHEMA = DATABASE()
-                        AND TABLE_NAME   = 'tblSongs'
-                        AND COLUMN_NAME  = 'ArrangementJson' LIMIT 1"
-                );
-                $arrProbe->execute();
-                $hasArrangementCol = $arrProbe->get_result()->fetch_row() !== null;
-                $arrProbe->close();
-            } catch (\Throwable $_e) { /* default false */ }
-
-            /* Prepare song statements. tblSongs INSERT now carries the
-               #497 TuneName + Iswc columns; both are nullable and bind
-               as the string types below (mysqli emits NULL when the
-               bound PHP value is null). */
-            if ($hasArrangementCol) {
-                $stmtSong = $db->prepare(
-                    "INSERT INTO tblSongs (SongId, Number, Title, SongbookAbbr, SongbookName,
-                     Language, Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
-                     MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText, ArrangementJson)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                );
-            } else {
-                $stmtSong = $db->prepare(
-                    "INSERT INTO tblSongs (SongId, Number, Title, SongbookAbbr, SongbookName,
-                     Language, Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
-                     MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                );
-            }
-            $stmtWriter     = $db->prepare("INSERT INTO tblSongWriters     (SongId, Name) VALUES (?, ?)");
-            $stmtComposer   = $db->prepare("INSERT INTO tblSongComposers   (SongId, Name) VALUES (?, ?)");
-            $stmtArranger   = $db->prepare("INSERT INTO tblSongArrangers   (SongId, Name) VALUES (?, ?)");
-            $stmtAdaptor    = $db->prepare("INSERT INTO tblSongAdaptors    (SongId, Name) VALUES (?, ?)");
-            $stmtTranslator = $db->prepare("INSERT INTO tblSongTranslators (SongId, Name) VALUES (?, ?)");
-            /* Silently keep the credit-people registry in sync with every
-               name that lands in the five song-credit tables (#545).
-               Route through the shared helper so the new row carries
-               a Slug — direct `INSERT IGNORE (Name)` would default
-               Slug='' and silently no-op on every new credit once an
-               orphan empty-Slug row exists. The helper does its own
-               existence check so concurrent saves stay idempotent. */
-            require_once dirname(dirname(__DIR__)) . '/includes/credit_people_helpers.php';
-            $stmtComponent  = $db->prepare(
-                "INSERT INTO tblSongComponents (SongId, Type, Number, SortOrder, LinesJson)
-                 VALUES (?, ?, ?, ?, ?)"
-            );
-
-            /* Insert songs */
-            foreach ($data['songs'] as $song) {
-                $songId       = $song['id'];
-                $songbookAbbr = $song['songbook'];
-
-                /* Songs in non-official songbooks (Misc, custom
-                   collections) persist Number as NULL — and so does
-                   anything missing/zero/negative. The internal SongId
-                   ties the record together. #392. */
-                $rawNumber  = $song['number'] ?? null;
-                $isOfficial = !empty($officialByAbbr[$songbookAbbr]);
-                $number     = (!$isOfficial || $rawNumber === null || $rawNumber === '' || (int)$rawNumber <= 0)
-                    ? null
-                    : (int)$rawNumber;
-
-                $title        = $song['title'];
-                $songbookName = $song['songbookName'] ?? '';
-                /* Legacy bulk-save path. Soft-fallback on a malformed
-                   IETF tag rather than aborting the whole corpus save —
-                   the action 'save' rewrites every song and refusing
-                   one malformed entry would lose the curator's other
-                   work. The save_song single-song path 400s instead,
-                   which is the right behaviour there since the user is
-                   editing one row. (#681) */
-                $rawLang  = $song['language'] ?? 'en';
-                $validLang = _ietfBcp47Validate((string)$rawLang);
-                $language  = $validLang ?? 'en';
-                $copyright    = $song['copyright'] ?? '';
-                /* TuneName / Iswc: empty strings normalise to NULL so
-                   the indexed TuneName column groups "unknown" rows
-                   together and doesn't fragment on empty values. */
-                $tuneRaw      = trim((string)($song['tuneName'] ?? ''));
-                $tuneName     = $tuneRaw === '' ? null : $tuneRaw;
-                $ccli         = $song['ccli'] ?? '';
-                $iswcRaw      = trim((string)($song['iswc'] ?? ''));
-                $iswc         = $iswcRaw === '' ? null : $iswcRaw;
-                $verified     = (int)($song['verified'] ?? false);
-                $lyricsPD     = (int)($song['lyricsPublicDomain'] ?? false);
-                $musicPD      = (int)($song['musicPublicDomain'] ?? false);
-                $hasAudio     = (int)($song['hasAudio'] ?? false);
-                $hasSheet     = (int)($song['hasSheetMusic'] ?? false);
-
-                /* Build lyrics_text */
-                $lyricsLines = [];
-                foreach ($song['components'] ?? [] as $comp) {
-                    foreach ($comp['lines'] ?? [] as $line) {
-                        $lyricsLines[] = $line;
-                    }
+            $songData = new SongData();
+            $out = [];
+            foreach ($ids as $rawId) {
+                $id = trim((string)$rawId);
+                if ($id === '') {
+                    continue;
                 }
-                $lyricsText = implode("\n", $lyricsLines);
-
-                if ($hasArrangementCol) {
-                    /* #892 — round-trip the per-song arrangement when
-                       the column is present. The bulk-save path is
-                       used by the legacy "save the entire songs.json"
-                       flow, which already carries `arrangement` per
-                       song in the JSON shape. */
-                    $arrangementJson = _sanitiseArrangement(
-                        $song['arrangement'] ?? null,
-                        is_array($song['components'] ?? null) ? count($song['components']) : 0
-                    );
-                    $stmtSong->bind_param(
-                        'sissssssssiiiiiss',
-                        $songId, $number, $title, $songbookAbbr, $songbookName,
-                        $language, $copyright, $tuneName, $ccli, $iswc,
-                        $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText,
-                        $arrangementJson
-                    );
-                } else {
-                    $stmtSong->bind_param(
-                        'sissssssssiiiiis',
-                        $songId, $number, $title, $songbookAbbr, $songbookName,
-                        $language, $copyright, $tuneName, $ccli, $iswc,
-                        $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText
-                    );
-                }
-                $stmtSong->execute();
-
-                /* Credit collections — one table each. The registry sync
-                   (INSERT IGNORE into tblCreditPeople) runs once per
-                   credited name across all five collections, deduped
-                   per song so we don't fire identical INSERTs five
-                   times for someone credited in multiple roles on the
-                   same song. (#545) */
-                $regNames = [];
-                foreach ($song['writers']     ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtWriter->bind_param('ss', $songId, $v);     $stmtWriter->execute();     $regNames[$v] = true; } }
-                foreach ($song['composers']   ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtComposer->bind_param('ss', $songId, $v);   $stmtComposer->execute();   $regNames[$v] = true; } }
-                foreach ($song['arrangers']   ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtArranger->bind_param('ss', $songId, $v);   $stmtArranger->execute();   $regNames[$v] = true; } }
-                foreach ($song['adaptors']    ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtAdaptor->bind_param('ss', $songId, $v);    $stmtAdaptor->execute();    $regNames[$v] = true; } }
-                foreach ($song['translators'] ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtTranslator->bind_param('ss', $songId, $v); $stmtTranslator->execute(); $regNames[$v] = true; } }
-                foreach (array_keys($regNames) as $regName) {
-                    /* AKA / alias auto-detection. parseCreditPersonAliasHints
-                       only fires on conservative patterns (explicit
-                       a.k.a. / aka / "also known as" markers, or a
-                       slash-separated A / B with both halves looking
-                       like person names). Bare parentheticals like
-                       "(b. 1850)" are deliberately NOT matched —
-                       biographical content stays attached to the
-                       primary name. When no marker is detected,
-                       parseCreditPersonAliasHints returns
-                       ['name' => $regName, 'aliases' => []] so the
-                       legacy path runs unchanged.
-
-                       Registers the PRIMARY name as the registry row
-                       (so later edits land on the canonical form) and
-                       fires replaceCreditPersonAliases() to attach
-                       the discovered aliases. The 'other' Type marks
-                       them as auto-detected so a curator can re-classify
-                       (legal / artist / etc.) in the chip-list editor. */
-                    $hint    = parseCreditPersonAliasHints($regName);
-                    $primary = $hint['name'] !== '' ? $hint['name'] : $regName;
-                    $cpId    = registerCreditPersonByName($db, $primary);
-                    if (!empty($hint['aliases']) && $cpId > 0 && creditPeopleAliasesTableExists($db)) {
-                        $existing = loadCreditPersonAliases($db, $cpId);
-                        $merged   = $existing;
-                        $byName   = [];
-                        foreach ($merged as $a) { $byName[mb_strtolower($a['Name'])] = true; }
-                        $idx = count($merged);
-                        foreach ($hint['aliases'] as $aliasName) {
-                            if (isset($byName[mb_strtolower($aliasName)])) continue;
-                            $merged[] = [
-                                'Name'      => $aliasName,
-                                'SortName'  => null,
-                                'Type'      => 'other',
-                                'Locale'    => null,
-                                'IsPrimary' => 0,
-                                'SortOrder' => $idx++,
-                                'Note'      => 'auto-detected from bulk-import',
-                            ];
-                            $byName[mb_strtolower($aliasName)] = true;
-                        }
-                        /* Re-shape into the normaliser-friendly form
-                           (lower-case keys). replaceCreditPersonAliases
-                           deletes the existing set + re-inserts; passing
-                           the union keeps every prior alias intact
-                           alongside the new auto-detected ones. */
-                        $shaped = array_map(static function (array $a): array {
-                            return [
-                                'name'       => $a['Name'],
-                                'sort_name'  => $a['SortName']  ?? null,
-                                'type'       => $a['Type']      ?? 'other',
-                                'locale'     => $a['Locale']    ?? null,
-                                'is_primary' => (int)($a['IsPrimary'] ?? 0),
-                                'sort_order' => (int)($a['SortOrder'] ?? 0),
-                                'note'       => $a['Note']      ?? null,
-                            ];
-                        }, $merged);
-                        replaceCreditPersonAliases($db, $cpId, $shaped);
-                    }
-                }
-
-                /* Components */
-                $sortOrder = 0;
-                foreach ($song['components'] ?? [] as $comp) {
-                    $compType   = $comp['type'];
-                    $compNumber = (int)$comp['number'];
-                    $linesJson  = json_encode($comp['lines'] ?? [], JSON_UNESCAPED_UNICODE);
-                    $stmtComponent->bind_param('ssiis', $songId, $compType, $compNumber, $sortOrder, $linesJson);
-                    $stmtComponent->execute();
-                    $sortOrder++;
+                $song = $songData->getSongById($id);
+                if ($song !== null) {
+                    $out[] = $song;
                 }
             }
-
-            $stmtSong->close();
-            $stmtWriter->close();
-            $stmtComposer->close();
-            $stmtArranger->close();
-            $stmtAdaptor->close();
-            $stmtTranslator->close();
-            $stmtComponent->close();
-            $stmtRegistry->close();
-
-            /*
-             * Import translation links from songs.json (#352).
-             * Each song may have a "translations" array with {songId, language} entries.
-             * Clear and re-import so translations stay in sync with the data file.
-             */
-            $db->query("DELETE FROM tblSongTranslations");
-            $stmtTrans = $db->prepare(
-                "INSERT IGNORE INTO tblSongTranslations (SourceSongId, TranslatedSongId, TargetLanguage)
-                 VALUES (?, ?, ?)"
-            );
-            foreach ($data['songs'] as $song) {
-                if (!empty($song['translations']) && is_array($song['translations'])) {
-                    $srcId = $song['id'];
-                    foreach ($song['translations'] as $tr) {
-                        $tgtId = $tr['songId'] ?? '';
-                        $lang  = $tr['language'] ?? '';
-                        if ($tgtId !== '' && $lang !== '') {
-                            $stmtTrans->bind_param('sss', $srcId, $tgtId, $lang);
-                            $stmtTrans->execute();
-                        }
-                    }
-                }
-            }
-            $stmtTrans->close();
-
-            $db->commit();
-
-            echo json_encode([
-                'success'   => true,
-                'songs'     => count($data['songs']),
-                'songbooks' => count($data['songbooks']),
-            ]);
-
-        } catch (\Exception $e) {
-            $db->rollback();
-            $db->query("SET FOREIGN_KEY_CHECKS = 1");
+            echo json_encode(['songs' => $out]);
+        } catch (\Throwable $e) {
             http_response_code(500);
-            error_log('[iHymns Editor] Save failed: ' . $e->getMessage());
-            echo json_encode(['error' => 'Failed to save song data. Check server logs for details.']);
+            error_log('[iHymns Editor] load_songs failed: ' . $e->getMessage());
+            echo json_encode([
+                'error'  => 'Failed to load songs.',
+                'detail' => get_class($e) . ': ' . $e->getMessage(),
+            ]);
         }
+        break;
+
+    /* -----------------------------------------------------------------
+     * SAVE — RETIRED (#1016)
+     *
+     * The whole-corpus save (TRUNCATE-all + re-INSERT-all) was dead code
+     * — the editor saves per record via save_song — and a data-loss
+     * footgun: a malformed or partial POST body would wipe every song,
+     * songbook, credit, and component row. Per-record save_song is the
+     * only write path now. Kept as a guarded 410 so any stray caller
+     * gets a clear, safe error instead of silently destroying data.
+     * ----------------------------------------------------------------- */
+    case 'save':
+        http_response_code(410);
+        echo json_encode([
+            'error'  => 'The whole-corpus save endpoint has been retired (#1016). '
+                      . 'Use save_song for per-record writes.',
+            'action' => 'save_song',
+        ]);
         break;
 
     /* -----------------------------------------------------------------

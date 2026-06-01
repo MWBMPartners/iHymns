@@ -88,48 +88,12 @@ try {
 <body>
 
     <!-- =================================================================
-         HIDDEN FILE INPUTS
-         These are invisible <input type="file"> elements triggered by
-         JavaScript when the user clicks "Load JSON" or "Import".
-         They live outside the visible DOM to keep the layout clean.
-         ================================================================= -->
-
-    <!-- Hidden file input for loading the primary songs.json file -->
-    <input
-        type="file"
-        id="fileInputLoad"
-        accept=".json"
-        style="display: none;"
-        aria-label="Load songs.json file"
-    >
-
-    <!-- Hidden file input for importing songs from an external file.
-         Accepts .json (curator-edited corpus or VideoPsalm songbook)
-         and .zip bulk archives. A bulk-import ZIP mirrors the
-         .SourceSongData/ folder layout (#664) and may contain
-         plain-text .txt files (one per song), OpenSong .xml files
-         (#882), or VideoPsalm .json songbooks (#883). All three
-         kinds may be mixed in the same archive — the server
-         dispatches per-entry by extension and content shape. The zip
-         path inserts directly into MySQL via the
-         /manage/editor/api.php?action=bulk_import_zip endpoint and
-         never overwrites existing songbook or song rows. A single
-         VideoPsalm .json file is routed to
-         action=bulk_import_videopsalm with the same insert-only
-         contract. -->
-    <input
-        type="file"
-        id="fileInputImport"
-        accept=".json,.zip,application/json,application/zip"
-        style="display: none;"
-        aria-label="Import songs from file"
-    >
-
-
-    <!-- =================================================================
          TOP NAVBAR
-         Contains the editor branding and primary action buttons:
-         Load JSON, Save JSON, Export dropdown, and Import.
+         Editor branding + primary action buttons: Save, Revisions,
+         Import (server-side bulk: .zip / VideoPsalm), and per-song
+         Export in the sidebar footer. (The whole-corpus Load/Save/Export
+         JSON workflow was retired in WS-D #1016 — the editor is fully
+         DB-direct.)
          ================================================================= -->
     <nav class="navbar navbar-editor d-flex align-items-center">
 
@@ -181,20 +145,6 @@ try {
                 <i class="bi bi-floppy me-1"></i>Save
             </button>
 
-            <!-- VALIDATE — Check the entire loaded catalogue for data
-                 quality issues (#235). Catalogue-wide, not per-song —
-                 starts disabled until the editor has finished loading
-                 songs (#590), then enables. -->
-            <button
-                type="button"
-                class="btn btn-sm btn-outline-success"
-                id="btn-validate"
-                title="Validate every song in the loaded catalogue"
-                disabled
-            >
-                <i class="bi bi-check-circle me-1"></i>Validate
-            </button>
-
             <!-- REVISIONS — Show revision history for the currently-selected
                  song, with a restore action per revision (#400). Renamed
                  from "History" in #591 for consistency with the
@@ -211,42 +161,12 @@ try {
                 <i class="bi bi-clock-history me-1"></i>Revisions
             </button>
 
-            <!-- EXPORT DROPDOWN — Provides JSON and CSV export options.
-                 Tooltip clarifies the scope (#591): exports the entire
-                 currently-loaded catalogue, not the selected song. -->
-            <div class="dropdown">
-                <button
-                    class="btn btn-sm btn-amber dropdown-toggle"
-                    type="button"
-                    id="dropdownExport"
-                    data-bs-toggle="dropdown"
-                    aria-expanded="false"
-                    title="Export the entire loaded catalogue (JSON or CSV)"
-                >
-                    <i class="bi bi-box-arrow-up me-1"></i>Export
-                </button>
-                <ul class="dropdown-menu dropdown-menu-dark" aria-labelledby="dropdownExport">
-                    <!-- Export as JSON — full data export -->
-                    <li>
-                        <a class="dropdown-item" href="#" id="btn-export-json">
-                            <i class="bi bi-filetype-json me-2"></i>Export as JSON
-                        </a>
-                    </li>
-                    <!-- Export as CSV — tabular export for spreadsheets -->
-                    <li>
-                        <a class="dropdown-item" href="#" id="btn-export-csv">
-                            <i class="bi bi-filetype-csv me-2"></i>Export as CSV
-                        </a>
-                    </li>
-                </ul>
-            </div>
-
             <!-- IMPORT — Triggers the hidden import file input -->
             <button
                 type="button"
                 class="btn btn-sm btn-amber"
                 id="btn-import"
-                title="Import songs from a JSON corpus (in-memory merge), a VideoPsalm songbook .json (whole-hymnal upload), or a .zip bulk archive. ZIPs accept the .SourceSongData layout (one .txt per song), OpenSong .xml files in the same &lt;Hymnal&gt; [&lt;ABBR&gt;]/ folder shape, or VideoPsalm .json songbooks at any depth. Bulk imports insert directly into MySQL and never overwrite existing rows."
+                title="Bulk-import songs from a .zip archive or a VideoPsalm songbook .json (whole-hymnal upload). ZIPs accept the .SourceSongData layout (one .txt per song), OpenSong .xml files in the same &lt;Hymnal&gt; [&lt;ABBR&gt;]/ folder shape, or VideoPsalm .json songbooks at any depth. Bulk imports insert directly into MySQL and never overwrite existing rows."
             >
                 <i class="bi bi-box-arrow-in-down me-1"></i>Import
             </button>
@@ -360,11 +280,11 @@ try {
                      </div>
                 -->
 
-                <!-- Empty state shown when no songs are loaded -->
+                <!-- Empty state shown before the song index has loaded -->
                 <div class="empty-state py-5" id="songListEmpty">
                     <i class="bi bi-music-note-list"></i>
                     <p class="mb-1">No songs loaded</p>
-                    <small>Click "Load JSON" to begin</small>
+                    <small>Loading songs from the database…</small>
                 </div>
             </div>
 

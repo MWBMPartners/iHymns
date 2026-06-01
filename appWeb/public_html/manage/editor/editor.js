@@ -36,23 +36,33 @@ var songData = {
 var EDITOR_API_URL = '/manage/editor/api';
 
 /**
- * Fallback relative paths for loading songs.json when the PHP API
- * is not available (e.g., running the editor without PHP).
+ * WS-D #1016 — the editor loads a LIGHTWEIGHT slim index of every song
+ * (id/number/title/songbook, no lyrics/components) live from MySQL via
+ * ?action=load_index, then fetches each song's full editable record on
+ * demand when it is opened (?action=load_song). The legacy whole-corpus
+ * load (?action=load → songs.json) and its static-file fallbacks are
+ * gone — the editor never holds the corpus in memory. SONGS_URL_CANDIDATES
+ * stays a (now single-entry) list because the post-import reload reuses
+ * SONGS_URL_CANDIDATES[0] to refresh the sidebar index.
  */
-var SONGS_URL_CANDIDATES = [
-    'api?action=load',                        /* Primary: PHP API reads from data_share/ */
-    '../data/songs.json',                     /* Deployed server: data/ inside private_html/ */
-    '../../data/songs.json',                  /* Alternative: data/ one up from private_html/ */
-    '../../../data/songs.json',               /* Local dev: relative to appWeb/private_html/editor/ → appWeb/data/ */
-    '../../../../data/songs.json',            /* Local dev: relative to editor/ → project root data/ */
-    'data/songs.json'                         /* Fallback: same directory */
-];
+var SONGS_URL_CANDIDATES = [EDITOR_API_URL + '?action=load_index'];
 
-/** Default URL shown in the manual load prompt. */
+/** Slim-index load endpoint (all songs, lightweight). */
 var DEFAULT_SONGS_URL = SONGS_URL_CANDIDATES[0];
 
-/** ID of the song currently loaded into the edit form (null when nothing selected). */
+/** Per-record full-song load endpoint, hit when a song is opened. */
+var LOAD_SONG_URL = EDITOR_API_URL + '?action=load_song';
+
+/** ID of the song the user has SELECTED (null when nothing selected). May
+ *  briefly differ from the song actually rendered in the form while that
+ *  song's full record is being fetched (WS-D #1016). */
 var currentSongId = null;
+
+/** ID of the song whose full record is actually RENDERED in the form right
+ *  now (null when the form is empty/loading). Distinct from currentSongId:
+ *  external-links flushing keys off this so a rapid A→B→A switch can't write
+ *  the displayed song's DOM into a different song's record (WS-D #1016). */
+var _renderedSongId = null;
 
 /** Set of song IDs that have been modified since last save. */
 var modifiedSongIds = new Set();
@@ -66,61 +76,6 @@ var currentSortMode = 'title';
 /* ========================================================================
  *  SECTION 2 — Data Management (#53, #58)
  * ======================================================================== */
-
-/**
- * loadSongsFromFile(file)
- * -----------------------
- * Reads a File object (from an <input type="file">) as text, parses it as JSON,
- * and stores the result in the global `songData` object.
- *
- * @param {File} file - A File reference chosen by the user.
- * @returns {Promise<void>}
- */
-function loadSongsFromFile(file) {
-    return new Promise(function (resolve, reject) {
-        /* Create a FileReader to read the file contents as a UTF-8 string. */
-        var reader = new FileReader();
-
-        /* When the read completes successfully, parse the JSON string. */
-        reader.onload = function (event) {
-            try {
-                /* Parse the raw text into a JavaScript object. */
-                var parsed = JSON.parse(event.target.result);
-
-                /* Store each top-level key into the global songData. */
-                songData.meta      = parsed.meta      || {};
-                songData.songbooks = parsed.songbooks  || [];
-                songData.songs     = parsed.songs      || [];
-
-                /* Reset modification tracking because we just loaded fresh data. */
-                modifiedSongIds.clear();
-                currentSongId = null;
-
-                /* Re-render the UI to reflect the newly loaded data. */
-                renderSongList();      // rebuild sidebar
-                clearEditForm();       // nothing selected yet
-                updateStatusBar();     // refresh counts
-
-                /* Notify the user that loading succeeded. */
-                showToast('Loaded ' + songData.songs.length + ' song(s) from file.', 'success');
-                resolve();
-            } catch (err) {
-                /* JSON parsing failed — inform the user. */
-                showToast('Failed to parse JSON: ' + err.message, 'danger');
-                reject(err);
-            }
-        };
-
-        /* If the FileReader itself errors, reject the promise. */
-        reader.onerror = function () {
-            showToast('Failed to read file.', 'danger');
-            reject(reader.error);
-        };
-
-        /* Start reading the file as a text string. */
-        reader.readAsText(file);
-    });
-}
 
 /**
  * loadSongsFromURL(url)
@@ -276,10 +231,6 @@ function saveSongs() {
         /* fall through — warnings are informational, save proceeds */
     }
 
-    /* Refresh the generatedAt timestamp so any subsequent export
-       reflects the save time. */
-    songData.meta.generatedAt = new Date().toISOString();
-
     /* Stream each song to the per-song endpoint. */
     autoSaveSongsPerSong(ids).then(function (summary) {
         if (summary.saved.length > 0) {
@@ -299,45 +250,6 @@ function saveSongs() {
             });
         }
     });
-}
-
-/* Backwards-compatible alias for the old function name. */
-var saveSongsToFile = saveSongs;
-
-/**
- * downloadSongsJson(jsonString)
- * -----------------------------
- * Fallback: triggers a browser download of the songs.json data when the
- * server-side save is not available.
- *
- * @param {string} jsonString - The JSON string to download.
- */
-function downloadSongsJson(jsonString) {
-    /* Create a Blob (binary large object) from the JSON string. */
-    var blob = new Blob([jsonString], { type: 'application/json' });
-
-    /* Build a temporary object URL that points to the Blob. */
-    var url = URL.createObjectURL(blob);
-
-    /* Create a hidden <a> element, set its href to the blob URL, and click it. */
-    var anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = 'songs.json';      // suggested file name
-    document.body.appendChild(anchor);    // must be in DOM for Firefox
-    anchor.click();                       // trigger the download
-    document.body.removeChild(anchor);    // clean up the DOM
-    URL.revokeObjectURL(url);             // free the blob memory
-
-    /* Record the save time and clear modification flags. */
-    lastSaveTime = new Date();
-    modifiedSongIds.clear();
-
-    /* Refresh UI to reflect saved state. */
-    renderSongList();
-    updateStatusBar();
-
-    /* Confirm to the user. */
-    showToast('songs.json downloaded (manual placement required).', 'info');
 }
 
 /* ========================================================================
@@ -570,26 +482,181 @@ function populateSongbookFilterDropdown() {
  * @param {string} songId - The unique ID of the song to select.
  */
 function selectSong(songId) {
-    /* Find the song object in the data array. */
+    /* Find the song stub in the slim index. */
     var song = songData.songs.find(function (s) { return s.id === songId; });
     if (!song) {
         showToast('Song not found: ' + songId, 'danger');
         return;
     }
 
-    /* #833 — flush any pending External-Links DOM changes back into
-       the previously-open song before we navigate away. Without this
-       a user who edits links on song A and clicks song B in the
-       sidebar would lose the in-flight edits when the rows get
-       replaced. syncSongExternalLinksFromDom() reads the current
-       DOM state into the open song's `.links` and re-arms auto-save. */
-    if (typeof currentSongId !== 'undefined' && currentSongId && currentSongId !== songId) {
+    /* #833 — flush any pending External-Links DOM changes back into the
+       song that is actually RENDERED before we navigate away. Keyed off
+       _renderedSongId (not currentSongId) so a rapid A→B→A switch can't
+       flush the displayed song's DOM into a different song (WS-D #1016). */
+    if (typeof _renderedSongId !== 'undefined' && _renderedSongId && _renderedSongId !== songId) {
         try { syncSongExternalLinksFromDom(); } catch (_e) { /* defensive — must not block navigation */ }
     }
 
-    /* Store the selection globally. */
+    /* Store the selection globally + highlight it in the sidebar right
+       away, so the active state and the currentSongId async-guards engage
+       even while the full record is still loading. */
     currentSongId = songId;
     updateHistoryButtonState();
+    renderSongList();
+
+    /* WS-D #1016 — the sidebar carries only the slim index, so fetch the
+       full editable record per song on open. Songs already loaded
+       (_full), freshly added, or imported are populated straight from
+       memory; everything else is fetched live from MySQL. */
+    if (song._full) {
+        _populateSongForm(song);
+        return;
+    }
+
+    /* Clear the form to a loading state so the previous song's data isn't
+       left on screen (mismatching the sidebar highlight) during the fetch. */
+    clearEditForm();
+    _setEditorLoading(true);
+
+    _loadSongFull(songId).then(function (full) {
+        if (currentSongId !== songId) return; /* user switched away mid-fetch */
+        _setEditorLoading(false);
+        if (!full) {
+            /* Deleted / not found — keep the form empty rather than
+               populating a slim stub (which would look like an empty song
+               and, if saved, wipe its DB rows). currentSongId is reset so
+               a subsequent Save can't write under this id. */
+            currentSongId = null;
+            renderSongList();
+            updateStatusBar();
+            showToast('Song not found: ' + songId, 'danger');
+            return;
+        }
+        Object.assign(song, full);
+        song._full = true;
+        _populateSongForm(song);
+    }).catch(function (err) {
+        if (currentSongId !== songId) return;
+        _setEditorLoading(false);
+        /* Fetch failed (offline / 500). Leave the form empty + deselect so
+           the form never misrepresents another song under this id. */
+        currentSongId = null;
+        clearEditForm();
+        renderSongList();
+        updateStatusBar();
+        showToast('Could not load song ' + songId + ': ' +
+                  (err && err.message ? err.message : err), 'danger');
+    });
+}
+
+/**
+ * _setEditorLoading(on)
+ * ---------------------
+ * Toggles a lightweight "loading song" hint in the status bar while a
+ * per-record fetch is in flight (WS-D #1016). Kept minimal — the form is
+ * already cleared, so there is no stale data; this just signals progress.
+ */
+function _setEditorLoading(on) {
+    var statusEl = document.getElementById('status-text');
+    if (!statusEl) return;
+    /* Restore the resting "Ready" text on clear so the indicator can't get
+       stuck (e.g. when a quick switch to an already-loaded song renders
+       synchronously and never re-runs the fetch path). */
+    statusEl.textContent = on ? 'Loading song…' : 'Ready';
+}
+
+/**
+ * _loadSongFull(songId)
+ * ---------------------
+ * Fetches ONE song's full editable record from MySQL (WS-D #1016) — the
+ * per-record replacement for reading it out of the old in-memory corpus.
+ *
+ * @param {string} songId
+ * @returns {Promise<object|null>} The full song, or null if not found.
+ */
+function _loadSongFull(songId) {
+    return fetch(LOAD_SONG_URL + '&id=' + encodeURIComponent(songId), {
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        credentials: 'same-origin'
+    }).then(function (r) {
+        if (!r.ok) {
+            return r.text().then(function (body) {
+                var detail = '';
+                try {
+                    var p = body ? JSON.parse(body) : null;
+                    if (p && typeof p === 'object') detail = p.detail || p.error || '';
+                } catch (_e) { /* not JSON */ }
+                throw new Error('HTTP ' + r.status + (detail ? ' — ' + detail : ''));
+            });
+        }
+        return r.json();
+    }).then(function (d) { return d && d.song ? d.song : null; });
+}
+
+/**
+ * _loadSongsFull(ids)
+ * -------------------
+ * Batch-fetches the full editable records for the given song IDs (WS-D
+ * #1016) and merges them into their slim sidebar stubs, marking each
+ * _full. Used by the multi-select bulk operations (verify / move /
+ * export) so they never mutate or persist a slim stub — which would make
+ * save_song DELETE-then-INSERT empty credits/components and wipe the
+ * song's lyrics. Only fetches the stubs that aren't already _full.
+ *
+ * @param {string[]} ids
+ * @returns {Promise<void>}
+ */
+function _loadSongsFull(ids) {
+    var need = (ids || []).filter(function (id) {
+        var s = (songData.songs || []).find(function (x) { return x.id === id; });
+        return s && !s._full;
+    });
+    if (!need.length) return Promise.resolve();
+
+    return fetch(EDITOR_API_URL + '?action=load_songs', {
+        method:      'POST',
+        headers:     { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        credentials: 'same-origin',
+        body:        JSON.stringify({ ids: need })
+    }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+    }).then(function (d) {
+        var byId = Object.create(null);
+        (d && d.songs || []).forEach(function (full) {
+            if (full && full.id) byId[full.id] = full;
+        });
+        (songData.songs || []).forEach(function (s) {
+            if (byId[s.id]) {
+                Object.assign(s, byId[s.id]);
+                s._full = true;
+            }
+        });
+        /* Any id we asked for but didn't get back no longer exists in the
+           DB — surface it rather than silently bulk-editing a ghost. */
+        var missing = need.filter(function (id) { return !byId[id]; });
+        if (missing.length) {
+            throw new Error(missing.length + ' selected song(s) could not be loaded.');
+        }
+    });
+}
+
+/**
+ * _populateSongForm(song)
+ * -----------------------
+ * Renders an open song's full record into the edit form. Split out of
+ * selectSong() (WS-D #1016) so the per-record fetch can populate the form
+ * once the data arrives.
+ *
+ * @param {object} song Full editable song record
+ */
+function _populateSongForm(song) {
+    /* This song's full record is now the one on screen — track it so the
+       external-links flush keys off the displayed song (WS-D #1016). */
+    _renderedSongId = song.id;
+    /* A song is rendering — clear any "Loading song…" indicator. Covers the
+       synchronous _full path (no fetch) and the async success path. */
+    _setEditorLoading(false);
 
     /* Enable the toolbar's Export-current-song button (#883 follow-up).
        Stays disabled while no song is open so the user can't trigger
@@ -604,7 +671,7 @@ function selectSong(songId) {
        for late-joiners that miss the event. */
     try {
         document.dispatchEvent(new CustomEvent('iHymns:song-loaded', {
-            detail: { songId: songId }
+            detail: { songId: song.id }
         }));
     } catch (_e) { /* IE11 polyfill territory; harmless to skip */ }
 
@@ -2459,12 +2526,16 @@ function captureSongExternalLinksFromDom() {
  * mark the song as modified so the auto-save flow ships the change.
  */
 function syncSongExternalLinksFromDom() {
-    if (typeof currentSongId === 'undefined' || !currentSongId) return;
-    var song = (songData && songData.songs || []).find(function (s) { return s.id === currentSongId; });
+    /* Key off the RENDERED song, not currentSongId (WS-D #1016): during an
+       async open, currentSongId may already point at the song being
+       fetched while the DOM still shows the previous one — keying off
+       currentSongId would write the displayed links into the wrong song. */
+    if (typeof _renderedSongId === 'undefined' || !_renderedSongId) return;
+    var song = (songData && songData.songs || []).find(function (s) { return s.id === _renderedSongId; });
     if (!song) return;
     song.links = captureSongExternalLinksFromDom();
     if (typeof modifiedSongIds !== 'undefined' && modifiedSongIds && typeof modifiedSongIds.add === 'function') {
-        modifiedSongIds.add(currentSongId);
+        modifiedSongIds.add(_renderedSongId);
     }
     if (typeof scheduleAutoSave === 'function') scheduleAutoSave();
     if (typeof updateStatusBar === 'function') updateStatusBar();
@@ -3296,92 +3367,22 @@ function attachCreditAutocomplete(input, row, kind, onChange) {
  *  SECTION 7 — JSON Validation & Save (#58)
  * ======================================================================== */
 
-/**
- * validateSongData()
- * ------------------
- * Checks every song in songData.songs for required fields:
- *   - id (non-empty string)
- *   - title (non-empty string)
- *   - number (must exist)
- *   - songbook (non-empty string)
- *   - components (must be an array with at least one entry)
- *
- * @returns {string[]} An array of human-readable error messages. Empty = valid.
- */
-/* #961 — both validateSongData() and validateSongsByIds() now return
-   { errors: [...], warnings: [...] }. The split lets the save handlers
-   block on genuine integrity problems (missing id / title / songbook /
-   components) while passing along soft cautions (e.g. missing number
-   on an official songbook) as informational toasts that DON'T block
-   the save. The server's save_song handler already accepts NULL number
-   when no value is provided, so the warning is purely user-facing —
-   the data path remains correct either way. */
-function validateSongData() {
-    /* Accumulator for error messages. */
-    var errors = [];
-
-    /* IsOfficial lookup by songbook abbreviation. Songs in non-
-       official songbooks (Misc, custom collections, etc.) don't
-       have a meaningful per-songbook number — the internal Song ID
-       (`song-<ts>-<rand>`) is the cross-record link instead. Per
-       #392 / #738 follow-up: number is required ONLY when the
-       songbook is flagged IsOfficial=1. */
-    var officialByAbbr = (songData.songbooks || []).reduce(function (map, b) {
-        if (b && typeof b.id === 'string') map[b.id] = !!b.isOfficial;
-        return map;
-    }, Object.create(null));
-
-    /* Iterate over every song. */
-    var warnings = [];
-    songData.songs.forEach(function (song, i) {
-        /* Build a label for this song to make errors identifiable. */
-        var label = 'Song [' + i + '] (' + (song.title || 'no title') + ')';
-
-        /* id is required. */
-        if (!song.id || typeof song.id !== 'string' || song.id.trim() === '') {
-            errors.push(label + ': missing or empty "id".');
-        }
-
-        /* title is required. */
-        if (!song.title || typeof song.title !== 'string' || song.title.trim() === '') {
-            errors.push(label + ': missing or empty "title".');
-        }
-
-        /* songbook is required. */
-        if (!song.songbook || typeof song.songbook !== 'string' || song.songbook.trim() === '') {
-            errors.push(label + ': missing or empty "songbook".');
-        }
-
-        /* #961 — number is WARNING-only when the songbook is flagged
-           IsOfficial=1 and no number is supplied. The save proceeds
-           (server accepts NULL number gracefully), and a non-blocking
-           toast surfaces the gap so the curator notices. Previously
-           this was a hard error that blocked the save entirely —
-           unhelpful when the curator legitimately doesn't have the
-           number yet, or when the songbook is flagged Official by
-           mistake. The "official requires number" expectation lives
-           in the songbook's metadata, not in this validator. (#392) */
-        var isOfficial = !!officialByAbbr[(song.songbook || '').trim()];
-        if (isOfficial && (song.number == null || String(song.number).trim() === '')) {
-            warnings.push(label + ': no "number" supplied. The songbook is flagged Official — saved as NULL.');
-        }
-
-        /* components must be a non-empty array. */
-        if (!Array.isArray(song.components) || song.components.length === 0) {
-            errors.push(label + ': must have at least one component.');
-        }
-    });
-
-    return { errors: errors, warnings: warnings };
-}
+/* #961 — validateSongsByIds() returns { errors: [...], warnings: [...] }.
+   Hard errors (missing id / title / songbook / components) block the save;
+   soft cautions (e.g. a missing number on an Official songbook, which the
+   server stores as NULL) surface as non-blocking toasts. The whole-corpus
+   validateSongData() was removed in WS-D (#1016): with the catalogue in
+   MySQL the DB enforces these constraints, /manage/data-health owns
+   catalogue-wide checks, and the editor only ever holds the songs it has
+   actually opened — so there is no in-memory corpus to scan. */
 
 /**
  * validateSongsByIds(ids)
  * -----------------------
- * Same validation rules as validateSongData(), but scoped to a specific
- * list of song IDs. Used by the manual Save button so that missing
- * fields on a song the admin never touched don't block a save of the
- * song they actually edited.
+ * Validation rules for the per-song Save, scoped to a specific list of
+ * song IDs. Used by the manual Save button so that missing fields on a
+ * song the admin never touched don't block a save of the song they
+ * actually edited.
  *
  * @param {string[]} ids Song IDs to validate
  * @returns {string[]} Human-readable error messages; empty if all valid
@@ -3390,7 +3391,7 @@ function validateSongsByIds(ids) {
     var wanted = new Set(ids);
     var errors = [];
     var warnings = [];
-    /* Same IsOfficial map as validateSongData() — number is required
+    /* IsOfficial map by songbook abbreviation — number is required
        only when the song's songbook is flagged IsOfficial=1. (#392) */
     var officialByAbbr = (songData.songbooks || []).reduce(function (map, b) {
         if (b && typeof b.id === 'string') map[b.id] = !!b.isOfficial;
@@ -3409,9 +3410,9 @@ function validateSongsByIds(ids) {
         if (!song.songbook || typeof song.songbook !== 'string' || song.songbook.trim() === '') {
             errors.push(label + ': missing or empty "songbook".');
         }
-        /* #961 — see validateSongData() for the rationale. Missing
-           number on an official songbook is now a non-blocking
-           warning, not a hard error. The server accepts NULL. */
+        /* #961 — a missing number on an Official songbook is a
+           non-blocking warning, not a hard error. The server accepts
+           NULL, so the save still proceeds. */
         var isOfficial = !!officialByAbbr[(song.songbook || '').trim()];
         if (isOfficial && (song.number == null || String(song.number).trim() === '')) {
             warnings.push(label + ': no "number" supplied. The songbook is flagged Official — saved as NULL.');
@@ -3483,83 +3484,22 @@ function exportCurrentSong() {
 }
 
 /**
- * exportJSON()
- * ------------
- * Downloads the full songs.json file. This is essentially the same as
- * saveSongsToFile() but exposed under a distinct name for the toolbar.
- */
-function exportJSON() {
-    saveSongsToFile(); // delegate to the existing save logic
-}
-
-/**
- * exportCSV()
- * -----------
- * Builds a CSV string with the columns:
- *   id, number, title, songbook, writers, composers, ccli, componentCount
- * and triggers a file download.
- */
-function exportCSV() {
-    /* CSV header row. */
-    var rows = ['id,number,title,songbook,writers,composers,ccli,componentCount'];
-
-    /* One row per song. */
-    songData.songs.forEach(function (song) {
-        var cols = [
-            csvEscape(song.id || ''),
-            csvEscape(String(song.number || '')),
-            csvEscape(song.title || ''),
-            csvEscape(song.songbook || ''),
-            csvEscape((song.writers   || []).map(creditEntryAsString).join('; ')),
-            csvEscape((song.composers || []).map(creditEntryAsString).join('; ')),
-            csvEscape(song.ccli || ''),
-            String((song.components || []).length)
-        ];
-        rows.push(cols.join(','));
-    });
-
-    /* Join all rows with newlines. */
-    var csvString = rows.join('\r\n');
-
-    /* Trigger download. */
-    downloadBlob(csvString, 'songs.csv', 'text/csv');
-
-    /* Notify the user. */
-    showToast('CSV exported (' + songData.songs.length + ' songs).', 'success');
-}
-
-/**
- * csvEscape(value)
- * ----------------
- * Wraps a value in double-quotes and escapes internal double-quotes,
- * making it safe for inclusion in a CSV cell.
- *
- * @param {string} value - The raw cell value.
- * @returns {string} The escaped CSV cell.
- */
-function csvEscape(value) {
-    /* Replace any double-quote with two double-quotes (CSV escaping rule). */
-    var escaped = String(value).replace(/"/g, '""');
-    /* Wrap the whole thing in double-quotes. */
-    return '"' + escaped + '"';
-}
-
-/**
  * importJSON()
  * ------------
- * Opens a file picker that accepts a JSON corpus or a .zip bulk
- * archive, then routes the picked file to the right handler:
- *
- *   .json — In-memory merge into the editor's loaded catalogue.
- *           Songs with matching IDs replace the loaded copy; new IDs
- *           are appended. The curator must hit Save to persist.
+ * Opens a file picker for a server-side bulk import, then routes the
+ * picked file:
  *
  *   .zip  — Streamed straight to /manage/editor/api.php?action=
  *           bulk_import_zip, which inserts directly into MySQL.
  *           INSERT-ONLY semantics: existing songbook + song rows are
  *           NEVER overwritten. After a successful zip import, the
- *           editor reloads its catalogue so newly inserted rows
- *           appear in the song list immediately. (#664)
+ *           editor reloads its (slim) song index so newly inserted rows
+ *           appear in the list immediately. (#664)
+ *
+ *   .json — VideoPsalm whole-hymnal payload (top-level `Songs[]`),
+ *           uploaded to the bulk-import endpoint. The historic iHymns
+ *           full-corpus JSON merge was retired in WS-D (#1016) — songs
+ *           are edited live in the database now.
  *
  * Anything else surfaces a "use .json or .zip" toast.
  */
@@ -3592,16 +3532,15 @@ function importJSON() {
 /**
  * importJsonCorpus(file)
  * ----------------------
- * Routes a picked .json file to the right handler based on its shape:
- *
- *   - iHymns full-corpus (lowercase `songs[]`): in-memory merge into
- *     the loaded catalogue. The curator must hit Save afterwards to
- *     persist.
+ * Inspects a picked .json file:
  *
  *   - VideoPsalm songbook (top-level `Songs[]` with capital S, #883):
  *     uploaded straight to the bulk-import endpoint, which writes
- *     directly to MySQL. No in-memory merge step — VideoPsalm files
- *     are whole-hymnal payloads, not corpus diffs.
+ *     directly to MySQL.
+ *
+ *   - Anything else (the historic iHymns lowercase `songs[]` corpus):
+ *     rejected with a notice — the whole-corpus in-memory merge was
+ *     retired in WS-D (#1016).
  */
 function importJsonCorpus(file) {
     var reader = new FileReader();
@@ -3620,43 +3559,17 @@ function importJsonCorpus(file) {
                 return;
             }
 
-            var importedSongs = imported.songs || [];
-
-            var added = 0;
-            var updated = 0;
-
-            importedSongs.forEach(function (incoming) {
-                var existingIndex = songData.songs.findIndex(function (s) {
-                    return s.id === incoming.id;
-                });
-
-                if (existingIndex !== -1) {
-                    songData.songs[existingIndex] = incoming;
-                    markModified(incoming.id);
-                    updated++;
-                } else {
-                    songData.songs.push(incoming);
-                    markModified(incoming.id);
-                    added++;
-                }
-            });
-
-            if (imported.songbooks && Array.isArray(imported.songbooks)) {
-                imported.songbooks.forEach(function (sb) {
-                    var exists = songData.songbooks.some(function (existing) {
-                        return existing.id === sb.id;
-                    });
-                    if (!exists) {
-                        songData.songbooks.push(sb);
-                    }
-                });
-            }
-
-            populateSongbookFilterDropdown();
-            renderSongList();
-            updateStatusBar();
-
-            showToast('Import complete: ' + added + ' added, ' + updated + ' updated. Hit Save to persist.', 'success');
+            /* WS-D #1016 — the historic iHymns whole-corpus JSON merge is
+               retired. Songs are edited live in the database; there is no
+               in-memory corpus to merge into. Bulk imports go through the
+               server: a VideoPsalm .json (handled above) or a .zip archive,
+               both of which INSERT directly into MySQL. */
+            showToast(
+                'Importing a full songs.json corpus is no longer supported — ' +
+                'songs are edited live in the database. For bulk import use a ' +
+                '.zip archive or a VideoPsalm .json songbook.',
+                'warning'
+            );
         } catch (err) {
             showToast('Import failed: ' + err.message, 'danger');
         }
@@ -4076,8 +3989,10 @@ function scheduleAutoSave() {
         /* #961 — auto-save only blocks on hard errors; warnings are
            informational (and we don't surface them on auto-save to
            avoid toast spam when the user pauses on an in-progress
-           edit). The user gets the warning on manual Save instead. */
-        if (validateSongData().errors.length > 0) return;
+           edit). The user gets the warning on manual Save instead.
+           Scoped to the modified set (WS-D #1016) — there is no whole
+           corpus in memory to validate. */
+        if (validateSongsByIds(Array.from(modifiedSongIds)).errors.length > 0) return;
 
         _autoSaveRunning = true;
         var text = document.getElementById('status-text');
@@ -4123,8 +4038,11 @@ function serialiseSongForSave(song) {
        'input' listener syncs them eagerly on every keystroke, but
        capturing here too is cheap and protects against any race where
        a save fires before the listener has flushed. Off-screen songs
-       send whatever was already in their `.links`. */
-    if (typeof currentSongId !== 'undefined' && song && song.id === currentSongId) {
+       send whatever was already in their `.links`. Keyed off the RENDERED
+       song (WS-D #1016), not currentSongId, so we only ever read live DOM
+       for the song actually displayed — never capture it into a different
+       song that happens to be mid-load. */
+    if (typeof _renderedSongId !== 'undefined' && song && song.id === _renderedSongId) {
         try {
             out.externalLinks = captureSongExternalLinksFromDom();
         } catch (_e) {
@@ -4389,6 +4307,10 @@ function toTitleCase(str) {
  * Called when no song is selected or data is freshly loaded.
  */
 function clearEditForm() {
+    /* No song rendered any more — clear the displayed-song tracker so a
+       stray external-links flush can't target a now-blank form (WS-D #1016). */
+    _renderedSongId = null;
+
     /* Hide the editor form, show the empty state (#246). */
     var editorEmpty = document.getElementById('editorEmpty');
     var editorForm = document.getElementById('editorForm');
@@ -4579,7 +4501,10 @@ function addNewSong() {
                 number: 1,
                 lines: ['']
             }
-        ]
+        ],
+        /* WS-D #1016 — a new draft is fully in memory; mark it so
+           selectSong() doesn't try to fetch (and overwrite) it. */
+        _full: true
     };
 
     /* Append to the songs array. */
@@ -4692,23 +4617,7 @@ function bindGlobalEventListeners() {
         });
     }
 
-    /* ---- Export JSON button (#235) ---- */
-    var jsonExportBtn = document.getElementById('btn-export-json');
-    if (jsonExportBtn) {
-        jsonExportBtn.addEventListener('click', function () {
-            exportJSON();
-        });
-    }
-
-    /* ---- Export CSV button ---- */
-    var csvBtn = document.getElementById('btn-export-csv');
-    if (csvBtn) {
-        csvBtn.addEventListener('click', function () {
-            exportCSV();
-        });
-    }
-
-    /* ---- Import / Merge JSON button ---- */
+    /* ---- Import button (server-side bulk import: .zip / VideoPsalm) ---- */
     var importBtn = document.getElementById('btn-import');
     if (importBtn) {
         importBtn.addEventListener('click', function () {
@@ -4748,28 +4657,6 @@ function bindGlobalEventListeners() {
     if (addCompBtn) {
         addCompBtn.addEventListener('click', function () {
             addComponent();
-        });
-    }
-
-    /* ---- Validate button (optional standalone trigger) ---- */
-    var validateBtn = document.getElementById('btn-validate');
-    if (validateBtn) {
-        validateBtn.addEventListener('click', function () {
-            /* #961 — split errors (toast danger) from warnings
-               (toast warning). The standalone Validate button is the
-               one place where surfacing warnings is unambiguously
-               useful — the curator explicitly asked for a check. */
-            var validation = validateSongData();
-            if (validation.errors.length === 0 && validation.warnings.length === 0) {
-                showToast('All songs are valid.', 'success');
-            } else {
-                validation.errors.forEach(function (msg) {
-                    showToast(msg, 'danger');
-                });
-                validation.warnings.forEach(function (msg) {
-                    showToast(msg, 'warning');
-                });
-            }
         });
     }
 
@@ -5025,25 +4912,33 @@ function bindMultiSelectListeners() {
     if (verify) verify.addEventListener('click', function () {
         var ids = Array.from(window._selectedIds || []);
         if (!ids.length) return;
-        var idSet = new Set(ids);
-        var changed = 0;
-        (songData.songs || []).forEach(function (s) {
-            if (!idSet.has(s.id)) return;
-            if (!s.verified) {
-                s.verified = true;
-                modifiedSongIds.add(s.id);
-                changed++;
-            }
+        /* WS-D #1016 — load full records first so Save persists COMPLETE
+           songs; mutating a slim stub would make save_song wipe its
+           credits/components. */
+        _loadSongsFull(ids).then(function () {
+            var idSet = new Set(ids);
+            var changed = 0;
+            (songData.songs || []).forEach(function (s) {
+                if (!idSet.has(s.id)) return;
+                if (!s.verified) {
+                    s.verified = true;
+                    modifiedSongIds.add(s.id);
+                    changed++;
+                }
+            });
+            renderSongList();
+            updateStatusBar();
+            updateBulkActionsBar();
+            showToast(
+                changed > 0
+                    ? 'Marked ' + changed + ' song(s) verified. Click Save to persist.'
+                    : 'Nothing to change — all selected songs were already verified.',
+                changed > 0 ? 'success' : 'info'
+            );
+        }).catch(function (err) {
+            showToast('Could not load songs for bulk verify: ' +
+                      (err && err.message ? err.message : err), 'danger');
         });
-        renderSongList();
-        updateStatusBar();
-        updateBulkActionsBar();
-        showToast(
-            changed > 0
-                ? 'Marked ' + changed + ' song(s) verified. Click Save to persist.'
-                : 'Nothing to change — all selected songs were already verified.',
-            changed > 0 ? 'success' : 'info'
-        );
     });
 
     /* Bulk Move (#399) — relocates every selected song to a different
@@ -5065,18 +4960,24 @@ function bindMultiSelectListeners() {
         var sb = (songData.songbooks || []).find(function (s) { return s.id === targetId; });
         if (!sb) { showToast('No songbook "' + targetId + '".', 'warning'); return; }
 
-        var idSet = new Set(ids);
-        (songData.songs || []).forEach(function (s) {
-            if (!idSet.has(s.id)) return;
-            s.songbook = sb.id;
-            s.songbookName = sb.name;
-            s.number = null;
-            modifiedSongIds.add(s.id);
+        /* WS-D #1016 — load full records first (see bulk verify). */
+        _loadSongsFull(ids).then(function () {
+            var idSet = new Set(ids);
+            (songData.songs || []).forEach(function (s) {
+                if (!idSet.has(s.id)) return;
+                s.songbook = sb.id;
+                s.songbookName = sb.name;
+                s.number = null;
+                modifiedSongIds.add(s.id);
+            });
+            renderSongList();
+            updateStatusBar();
+            updateBulkActionsBar();
+            showToast('Moved ' + ids.length + ' song(s) to ' + sb.id + '. Click Save to persist.', 'success');
+        }).catch(function (err) {
+            showToast('Could not load songs for bulk move: ' +
+                      (err && err.message ? err.message : err), 'danger');
         });
-        renderSongList();
-        updateStatusBar();
-        updateBulkActionsBar();
-        showToast('Moved ' + ids.length + ' song(s) to ' + sb.id + '. Click Save to persist.', 'success');
     });
 
     /* Bulk Export (#399) — downloads the selected songs as JSON.
@@ -5088,51 +4989,58 @@ function bindMultiSelectListeners() {
     if (exp) exp.addEventListener('click', function () {
         var ids = Array.from(window._selectedIds || []);
         if (!ids.length) return;
-        var idSet = new Set(ids);
-        var subset = (songData.songs || []).filter(function (s) { return idSet.has(s.id); });
+        /* WS-D #1016 — load full records first so the export file holds
+           COMPLETE songs (components, credits, …), not slim sidebar stubs. */
+        _loadSongsFull(ids).then(function () {
+            var idSet = new Set(ids);
+            var subset = (songData.songs || []).filter(function (s) { return idSet.has(s.id); });
 
-        import('/js/modules/export-filename.js?v=' + Date.now())
-            .then(function (m) {
-                var filenameBase;
-                if (subset.length === 1) {
-                    var only = subset[0];
-                    var bookSongs = (songData.songs || []).filter(function (s) {
-                        return s.songbook === only.songbook;
-                    });
-                    filenameBase = m.songExportFilename(only, bookSongs);
-                } else {
-                    /* All in one songbook? Use the bundle convention. */
-                    var firstAbbr = subset[0].songbook;
-                    var allSameBook = subset.every(function (s) { return s.songbook === firstAbbr; });
-                    if (allSameBook) {
-                        var sb = (songData.songbooks || []).find(function (b) { return b.id === firstAbbr; });
-                        filenameBase = m.songbookExportFilename({
-                            id:   firstAbbr,
-                            name: (sb && sb.name) || subset[0].songbookName || firstAbbr,
+            return import('/js/modules/export-filename.js?v=' + Date.now())
+                .then(function (m) {
+                    var filenameBase;
+                    if (subset.length === 1) {
+                        var only = subset[0];
+                        var bookSongs = (songData.songs || []).filter(function (s) {
+                            return s.songbook === only.songbook;
                         });
+                        filenameBase = m.songExportFilename(only, bookSongs);
                     } else {
-                        filenameBase = 'songs-export-' + new Date().toISOString().slice(0, 10);
+                        /* All in one songbook? Use the bundle convention. */
+                        var firstAbbr = subset[0].songbook;
+                        var allSameBook = subset.every(function (s) { return s.songbook === firstAbbr; });
+                        if (allSameBook) {
+                            var sb = (songData.songbooks || []).find(function (b) { return b.id === firstAbbr; });
+                            filenameBase = m.songbookExportFilename({
+                                id:   firstAbbr,
+                                name: (sb && sb.name) || subset[0].songbookName || firstAbbr,
+                            });
+                        } else {
+                            filenameBase = 'songs-export-' + new Date().toISOString().slice(0, 10);
+                        }
                     }
-                }
-                downloadBlob(
-                    JSON.stringify({ songs: subset }, null, 2),
-                    filenameBase + '.json',
-                    'application/json'
-                );
-                showToast('Exported ' + subset.length + ' song(s) to JSON.', 'success');
-            })
-            .catch(function (err) {
-                /* Helper module unavailable (broken deploy / offline) — fall
-                   back to the legacy date-stamped filename so the export
-                   still works. */
-                try { console.warn('[bulk_export] filename helper load failed:', err); } catch (_e) {}
-                downloadBlob(
-                    JSON.stringify({ songs: subset }, null, 2),
-                    'songs-export-' + new Date().toISOString().slice(0, 10) + '.json',
-                    'application/json'
-                );
-                showToast('Exported ' + subset.length + ' song(s) to JSON.', 'success');
-            });
+                    downloadBlob(
+                        JSON.stringify({ songs: subset }, null, 2),
+                        filenameBase + '.json',
+                        'application/json'
+                    );
+                    showToast('Exported ' + subset.length + ' song(s) to JSON.', 'success');
+                })
+                .catch(function (err) {
+                    /* Helper module unavailable (broken deploy / offline) — fall
+                       back to the legacy date-stamped filename so the export
+                       still works. */
+                    try { console.warn('[bulk_export] filename helper load failed:', err); } catch (_e) {}
+                    downloadBlob(
+                        JSON.stringify({ songs: subset }, null, 2),
+                        'songs-export-' + new Date().toISOString().slice(0, 10) + '.json',
+                        'application/json'
+                    );
+                    showToast('Exported ' + subset.length + ' song(s) to JSON.', 'success');
+                });
+        }).catch(function (err) {
+            showToast('Could not load songs for export: ' +
+                      (err && err.message ? err.message : err), 'danger');
+        });
     });
 
     /* Bulk Tag (#399) — adds and/or removes tags on every selected song.
@@ -5228,14 +5136,6 @@ function updateHistoryButtonState() {
         saveBtn.title = hasSong
             ? 'Save all changes to the database'
             : 'Select a song to enable Save';
-    }
-
-    var validateBtn = document.getElementById('btn-validate');
-    if (validateBtn) {
-        validateBtn.disabled = !hasSongs;
-        validateBtn.title = hasSongs
-            ? 'Validate every song in the loaded catalogue'
-            : 'Songs are still loading…';
     }
 
     var historyBtn = document.getElementById('btn-history');
