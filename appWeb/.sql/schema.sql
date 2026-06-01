@@ -161,8 +161,7 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     SongId              VARCHAR(20)     NOT NULL UNIQUE COMMENT 'Canonical ID, e.g. CP-0001',
     Number              INT UNSIGNED    NULL DEFAULT NULL COMMENT 'Song number within its songbook; NULL for Misc (unstructured collection)',
     Title               VARCHAR(500)    NOT NULL,
-    SongbookAbbr        VARCHAR(10)     NOT NULL COMMENT 'FK to tblSongbooks.Abbreviation',
-    SongbookName        VARCHAR(255)    NOT NULL COMMENT 'Denormalised songbook name for convenience',
+    SongbookAbbr        VARCHAR(10)     NOT NULL COMMENT 'FK to tblSongbooks.Abbreviation; the songbook NAME is read live via JOIN to tblSongbooks.Name (de-normalised SongbookName dropped in WS-E #1013 ph2)',
     Language            VARCHAR(35)     NOT NULL DEFAULT 'en' COMMENT 'IETF BCP 47 tag (language[-script][-region]); widened from VARCHAR(10) to fit script + region subtags (#681)',
     Copyright           VARCHAR(500)    NOT NULL DEFAULT '',
     /* Composition / first-performance origin (places sweep #2). The

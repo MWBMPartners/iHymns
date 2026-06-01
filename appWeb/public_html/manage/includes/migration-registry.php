@@ -1339,4 +1339,23 @@ return [
         ],
         'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongbooks', 'PublicationCityId'),
     ],
+    'drop-songbook-name' => [
+        'script' => 'migrate-drop-songbook-name.php',
+        'card' => [
+            'title'  => 'Drop denormalised SongbookName (WS-E #1013)',
+            'body'   => 'Removes the denormalised <code>tblSongs.SongbookName</code> column. The'
+                      . ' songbook name is now read live via JOIN to <code>tblSongbooks.Name</code>'
+                      . ' everywhere, so the per-row copy is dead weight that also drifts when a'
+                      . ' songbook is renamed. Data-preserving: BEFORE the drop it ensures every'
+                      . ' <code>SongbookAbbr</code> has a <code>tblSongbooks</code> row and'
+                      . ' backfills any empty <code>tblSongbooks.Name</code> from the denorm value,'
+                      . ' and refuses to drop the column if that preservation step fails.'
+                      . ' Idempotent — once the column is gone the migration is a no-op.',
+            'button' => 'Drop denormalised SongbookName',
+        ],
+        /* Pending while the column STILL EXISTS (inverse of the ADD
+           migrations above): a DROP is "applied" once the column is gone,
+           so the probe self-clears after a successful run. */
+        'probe' => static fn(\mysqli $db) => _migProbe_columnExists($db, 'tblSongs', 'SongbookName'),
+    ],
 ];

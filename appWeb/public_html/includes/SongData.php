@@ -2631,14 +2631,15 @@ class SongData
         /* Use LIKE for prefix matching on the number cast to string */
         $likeNumber = $number . '%';
         $stmt = $this->db->prepare(
-            "SELECT SongId AS id, Number AS number, Title AS title, SongbookAbbr AS songbook,
-                    SongbookName AS songbookName, Language AS language, Copyright AS copyright, Ccli AS ccli,
-                    Verified AS verified, LyricsPublicDomain AS lyricsPublicDomain,
-                    MusicPublicDomain AS musicPublicDomain,
-                    HasAudio AS hasAudio, HasSheetMusic AS hasSheetMusic
-             FROM tblSongs
-             WHERE SongbookAbbr = ? AND CAST(Number AS CHAR) LIKE ?
-             ORDER BY Number"
+            "SELECT s.SongId AS id, s.Number AS number, s.Title AS title, s.SongbookAbbr AS songbook,
+                    sb.Name AS songbookName, s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
+                    s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
+                    s.MusicPublicDomain AS musicPublicDomain,
+                    s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
+             FROM tblSongs s
+             LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+             WHERE s.SongbookAbbr = ? AND CAST(s.Number AS CHAR) LIKE ?
+             ORDER BY s.Number"
         );
         $stmt->bind_param('ss', $songbookId, $likeNumber);
         $stmt->execute();
@@ -2846,16 +2847,17 @@ class SongData
             ? ', OriginCity AS originCity, OriginCityId AS originCityId'
             : '';
         $stmt = $this->db->prepare(
-            "SELECT SongId AS id, Number AS number, Title AS title, SongbookAbbr AS songbook,
-                    SongbookName AS songbookName, Language AS language, Copyright AS copyright,
-                    TuneName AS tuneName, Ccli AS ccli, Iswc AS iswc,
-                    Verified AS verified, LyricsPublicDomain AS lyricsPublicDomain,
-                    MusicPublicDomain AS musicPublicDomain,
-                    HasAudio AS hasAudio, HasSheetMusic AS hasSheetMusic
+            "SELECT s.SongId AS id, s.Number AS number, s.Title AS title, s.SongbookAbbr AS songbook,
+                    sb.Name AS songbookName, s.Language AS language, s.Copyright AS copyright,
+                    s.TuneName AS tuneName, s.Ccli AS ccli, s.Iswc AS iswc,
+                    s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
+                    s.MusicPublicDomain AS musicPublicDomain,
+                    s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
                     {$arrSelect}
                     {$placeSelect}
-             FROM tblSongs
-             WHERE SongId = ?
+             FROM tblSongs s
+             LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+             WHERE s.SongId = ?
              LIMIT 1"
         );
         $stmt->bind_param('s', $songId);
@@ -3718,9 +3720,10 @@ class SongData
                                s.Title AS title,
                                s.Number AS number,
                                s.SongbookAbbr AS songbook,
-                               s.SongbookName AS songbookName
+                               sb.Name AS songbookName
                           FROM tblWorkSongs ws
                           JOIN tblSongs s ON s.SongId = ws.SongId
+                          LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                          WHERE ws.WorkId IN ($ph2)
                          ORDER BY s.SongbookAbbr ASC, s.Number ASC, s.Title ASC";
             $stmt2 = $this->db->prepare($sql2);

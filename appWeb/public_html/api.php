@@ -4431,13 +4431,14 @@ if ($action !== null) {
                             s.Title         AS title,
                             s.Number        AS number,
                             s.SongbookAbbr  AS songbook,
-                            s.SongbookName  AS songbookName,
+                            sb.Name         AS songbookName,
                             s.Language      AS language,
                             COUNT(*)        AS views
                      FROM tblSongHistory h
                      JOIN tblSongs s ON s.SongId = h.SongId
+                     LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                      WHERE h.ViewedAt > DATE_SUB(NOW(), INTERVAL ? DAY)
-                     GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, s.SongbookName, s.Language
+                     GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, sb.Name, s.Language
                      ORDER BY views DESC
                      LIMIT ?'
                 );
@@ -4497,13 +4498,14 @@ if ($action !== null) {
                             s.Title         AS title,
                             s.Number        AS number,
                             s.SongbookAbbr  AS songbook,
-                            s.SongbookName  AS songbookName,
+                            sb.Name         AS songbookName,
                             s.Language      AS language,
                             MAX(h.ViewedAt) AS viewedAt
                      FROM tblSongHistory h
                      JOIN tblSongs s ON s.SongId = h.SongId
+                     LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                      WHERE h.UserId = ?
-                     GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, s.SongbookName, s.Language
+                     GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, sb.Name, s.Language
                      ORDER BY MAX(h.ViewedAt) DESC
                      LIMIT 50'
                 );
@@ -5376,10 +5378,11 @@ if ($action !== null) {
 
             /* Fetch all songs with writers and composers */
             $stmt = $db->prepare(
-                'SELECT s.SongId, s.Number, s.Title, s.SongbookAbbr, s.SongbookName,
+                'SELECT s.SongId, s.Number, s.Title, s.SongbookAbbr, sb.Name AS SongbookName,
                         s.Language, s.Copyright, s.Ccli, s.Verified, s.HasAudio, s.HasSheetMusic,
                         s.LyricsText
                  FROM tblSongs s
+                 LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                  ORDER BY s.SongbookAbbr, s.Number'
             );
             $stmt->execute();

@@ -1186,14 +1186,14 @@ switch ($action) {
             if ($hasArrangementCol) {
                 $upsert = $db->prepare(
                     'INSERT INTO tblSongs
-                        (SongId, Number, Title, SongbookAbbr, SongbookName, Language,
+                        (SongId, Number, Title, SongbookAbbr, Language,
                          Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
                          MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText,
                          ArrangementJson)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                      ON DUPLICATE KEY UPDATE
                         Number = VALUES(Number), Title = VALUES(Title),
-                        SongbookAbbr = VALUES(SongbookAbbr), SongbookName = VALUES(SongbookName),
+                        SongbookAbbr = VALUES(SongbookAbbr),
                         Language = VALUES(Language), Copyright = VALUES(Copyright),
                         TuneName = VALUES(TuneName),
                         Ccli = VALUES(Ccli), Iswc = VALUES(Iswc),
@@ -1204,9 +1204,11 @@ switch ($action) {
                         LyricsText = VALUES(LyricsText),
                         ArrangementJson = VALUES(ArrangementJson)'
                 );
+                /* SongbookName denorm column dropped (WS-E #1013 ph2) —
+                   16 cols / 16 placeholders / 16 bind types. */
                 $upsert->bind_param(
-                    'sissssssssiiiiiss',
-                    $songId, $number, $title, $songbookAbbr, $songbookName,
+                    'sisssssssiiiiiss',
+                    $songId, $number, $title, $songbookAbbr,
                     $language, $copyright, $tuneName, $ccli, $iswc,
                     $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText,
                     $arrangementJson
@@ -1214,13 +1216,13 @@ switch ($action) {
             } else {
                 $upsert = $db->prepare(
                     'INSERT INTO tblSongs
-                        (SongId, Number, Title, SongbookAbbr, SongbookName, Language,
+                        (SongId, Number, Title, SongbookAbbr, Language,
                          Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
                          MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                      ON DUPLICATE KEY UPDATE
                         Number = VALUES(Number), Title = VALUES(Title),
-                        SongbookAbbr = VALUES(SongbookAbbr), SongbookName = VALUES(SongbookName),
+                        SongbookAbbr = VALUES(SongbookAbbr),
                         Language = VALUES(Language), Copyright = VALUES(Copyright),
                         TuneName = VALUES(TuneName),
                         Ccli = VALUES(Ccli), Iswc = VALUES(Iswc),
@@ -1230,9 +1232,11 @@ switch ($action) {
                         HasAudio = VALUES(HasAudio), HasSheetMusic = VALUES(HasSheetMusic),
                         LyricsText = VALUES(LyricsText)'
                 );
+                /* SongbookName denorm column dropped (WS-E #1013 ph2) —
+                   15 cols / 15 placeholders / 15 bind types. */
                 $upsert->bind_param(
-                    'sissssssssiiiiis',
-                    $songId, $number, $title, $songbookAbbr, $songbookName,
+                    'sisssssssiiiiis',
+                    $songId, $number, $title, $songbookAbbr,
                     $language, $copyright, $tuneName, $ccli, $iswc,
                     $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText
                 );
@@ -3199,8 +3203,10 @@ switch ($action) {
             $placeholders = implode(',', array_fill(0, count($skipped), '?'));
             $types        = str_repeat('s', count($skipped));
             $look = $db->prepare(
-                "SELECT SongId, Title, SongbookAbbr, SongbookName
-                   FROM tblSongs WHERE SongId IN ({$placeholders})"
+                "SELECT s.SongId, s.Title, s.SongbookAbbr, sb.Name AS SongbookName
+                   FROM tblSongs s
+                   LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+                  WHERE s.SongId IN ({$placeholders})"
             );
             $look->bind_param($types, ...$skipped);
             $look->execute();
@@ -4009,15 +4015,16 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
             );
             $insert = $db->prepare(
                 'INSERT INTO tblSongs
-                    (SongId, Number, Title, SongbookAbbr, SongbookName, Language,
+                    (SongId, Number, Title, SongbookAbbr, Language,
                      Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
                      MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText,
                      ArrangementJson)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
             );
+            /* SongbookName denorm column dropped (WS-E #1013 ph2). */
             $insert->bind_param(
-                'sissssssssiiiiiss',
-                $songId, $number, $title, $songbookAbbr, $songbookName,
+                'sisssssssiiiiiss',
+                $songId, $number, $title, $songbookAbbr,
                 $language, $copyright, $tuneName, $ccli, $iswc,
                 $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText,
                 $arrangementJson
@@ -4025,14 +4032,15 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
         } else {
             $insert = $db->prepare(
                 'INSERT INTO tblSongs
-                    (SongId, Number, Title, SongbookAbbr, SongbookName, Language,
+                    (SongId, Number, Title, SongbookAbbr, Language,
                      Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
                      MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
             );
+            /* SongbookName denorm column dropped (WS-E #1013 ph2). */
             $insert->bind_param(
-                'sissssssssiiiiis',
-                $songId, $number, $title, $songbookAbbr, $songbookName,
+                'sisssssssiiiiis',
+                $songId, $number, $title, $songbookAbbr,
                 $language, $copyright, $tuneName, $ccli, $iswc,
                 $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText
             );

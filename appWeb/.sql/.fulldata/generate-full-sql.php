@@ -89,7 +89,6 @@ foreach ($data['songs'] as $i => $song) {
     $number       = (int)$song['number'];
     $title        = addslashes($song['title']);
     $songbookAbbr = addslashes($song['songbook']);
-    $songbookName = addslashes($song['songbookName'] ?? '');
     $language     = addslashes($song['language'] ?? 'en');
     $copyright    = addslashes($song['copyright'] ?? '');
     $ccli         = addslashes($song['ccli'] ?? '');
@@ -108,7 +107,7 @@ foreach ($data['songs'] as $i => $song) {
     }
     $lyricsText = addslashes(implode("\n", $lyricsLines));
 
-    fwrite($out, "INSERT INTO tblSongs (SongId, Number, Title, SongbookAbbr, SongbookName, Language, Copyright, Ccli, Verified, LyricsPublicDomain, MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText) VALUES ('{$songId}', {$number}, '{$title}', '{$songbookAbbr}', '{$songbookName}', '{$language}', '{$copyright}', '{$ccli}', {$verified}, {$lyricsPD}, {$musicPD}, {$hasAudio}, {$hasSheet}, '{$lyricsText}');\n");
+    fwrite($out, "INSERT INTO tblSongs (SongId, Number, Title, SongbookAbbr, Language, Copyright, Ccli, Verified, LyricsPublicDomain, MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText) VALUES ('{$songId}', {$number}, '{$title}', '{$songbookAbbr}', '{$language}', '{$copyright}', '{$ccli}', {$verified}, {$lyricsPD}, {$musicPD}, {$hasAudio}, {$hasSheet}, '{$lyricsText}');\n");
 
     /* Writers */
     foreach ($song['writers'] ?? [] as $writer) {
