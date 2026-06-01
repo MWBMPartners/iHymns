@@ -672,6 +672,48 @@ paths:
                     name: Christian Praise
                     songCount: 650
 
+  /api.php?action=songs_index:
+    get:
+      operationId: songsIndex
+      tags: [Songs]
+      summary: Slim catalogue index (PWA offline)
+      description: |
+        The FULL catalogue as lightweight rows (id/number/title/songbook/
+        songbookName + language + media flags) in one response — a few
+        hundred KB gzipped vs the ~5.7 MB whole-song corpus (#1017). The
+        service worker precaches this so that OFFLINE the client can browse
+        + run a basic title/number search and fall back to cached song
+        pages. Online, every read is still the live API; this index is the
+        offline-only fallback. No pagination, no lyrics.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [songs_index]
+      responses:
+        "200":
+          description: Slim song index
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  songs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:           { type: string, example: CP-0202 }
+                        number:       { type: integer, nullable: true, example: 202 }
+                        title:        { type: string, example: Amazing Grace }
+                        songbook:     { type: string, example: CP }
+                        songbookName: { type: string, example: Christian Praise }
+                        language:     { type: string, example: en }
+                        hasAudio:     { type: boolean }
+                        hasSheetMusic: { type: boolean }
+
   /api.php?action=songs_json:
     get:
       operationId: exportSongsJson

@@ -1505,7 +1505,10 @@ if (!empty($breadcrumbItems)) {
             'devStatus'       => $app["Application"]["Version"]["Development"]["Status"],
             'appUrl'          => $app["Application"]["Website"]["URL"],
             'apiUrl'          => '/api',
-            'dataUrl'         => '/api?action=songs_json',
+            /* Slim catalogue index for offline browse/search + the offline-
+               download enumerator (WS-I #1017) — replaces the ~5.7 MB
+               whole-song corpus. Online reads are always the live API. */
+            'dataUrl'         => '/api?action=songs_index',
             'nativeApps'      => [
                 'ios'             => $iosApp['verified'] ? ($iosApp['storeUrl'] ?? $nativeApps['ios']) : null,
                 'iosVerified'     => $iosApp['verified'],
@@ -1546,7 +1549,7 @@ if (!empty($breadcrumbItems)) {
             $iHymnsConfigJson = json_encode([
                 'appName'    => 'iHymns',
                 'apiUrl'     => '/api',
-                'dataUrl'    => '/api?action=songs_json',
+                'dataUrl'    => '/api?action=songs_index',
                 'songbooks'  => [],
                 'features'   => [],
                 'analytics'  => ['hasGa4' => false, 'hasClarity' => false, 'hasPlausible' => false],

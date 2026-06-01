@@ -68,7 +68,7 @@ $swCacheKey = $swCommitStamp !== ''
  *   /                                          network-first (no-store)
  *   /songbooks/, /song/<id>, /tag/<slug>, …    network-first (no-store)
  *   /api?...   (incl. ?page=song, action=*)    network-first (no-store)
- *   /api?action=songs_json                     network-first (no-store)
+ *   /api?action=songs_index (slim index)       network-first (no-store)
  *   CSS / JS / fonts (same-origin)             network-first (no-store)
  *   Trusted CDN (jsdelivr, cdnjs)              network-first (no-store)
  *   /data/audio/*, /data/music/*               cache-first (large media)
@@ -184,17 +184,20 @@ const PRECACHE_ASSETS = [
  * Best-effort precache list (#354). Items here are fetched at install
  * time but failures don't block SW activation. Used for URLs that may
  * be slow or unreliable but are valuable to have warm-cached:
- *   - /api?action=songs_json — the entire songs corpus (~5 MB), needed
- *     by the search module to build its in-memory index. Without this
- *     warm-cached, a user who installs the PWA, browses only the home
- *     page, then goes offline cannot search — a major UX gap.
+ *   - /api?action=songs_index — the SLIM catalogue index (WS-I #1017):
+ *     id/number/title/songbook per song, a few hundred KB gzipped (vs the
+ *     ~5.7 MB whole-song corpus we used to precache). It lets a user who
+ *     installs the PWA, browses only the home page, then goes offline,
+ *     still browse + run a basic title/number search (the client-side
+ *     offline fallback in search.js). Online, every read is still live;
+ *     this index is the OFFLINE-ONLY fallback.
  *
  * We intentionally do NOT put this in PRECACHE_ASSETS (which is strict)
  * because it would fail the entire SW install if the endpoint is slow
  * on the install-tab's network.
  */
 const PRECACHE_BEST_EFFORT_ASSETS = [
-    '/api?action=songs_json',
+    '/api?action=songs_index',
 ];
 
 /**
@@ -305,10 +308,10 @@ self.addEventListener('install', (event) => {
                 );
 
                 /*
-                 * Best-effort large-payload precache (#354) — songs_json
-                 * etc. Failures here MUST NOT block SW install (otherwise
-                 * a flaky network at install-time prevents offline support
-                 * forever). Cached opportunistically.
+                 * Best-effort precache (#354) — the slim song index
+                 * (WS-I #1017). Failures here MUST NOT block SW install
+                 * (otherwise a flaky network at install-time prevents
+                 * offline support forever). Cached opportunistically.
                  */
                 const bestEffortPromise = Promise.allSettled(
                     PRECACHE_BEST_EFFORT_ASSETS.map(path =>
@@ -423,6 +426,17 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
+    /* --- Slim song index (WS-I #1017): network-first, cached to the
+       CACHE_VERSION bucket so the OFFLINE browse/search fallback in
+       search.js can read it. MUST precede the generic /api branch below,
+       which returns a 503 for non-song-page API calls when offline rather
+       than serving the cached index. networkFirstWithCache() refreshes the
+       cached copy on every online fetch and serves it on network failure. */
+    if (url.pathname === '/api' && url.searchParams.get('action') === 'songs_index') {
+        event.respondWith(networkFirstWithCache(event.request));
+        return;
+    }
+
     /* --- API requests: network-first with cache for song pages (#105, #131) --- */
     if (url.pathname.startsWith('/api')) {
         const isSongPage = url.searchParams.get('page') === 'song';
@@ -497,11 +511,10 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
-    /* --- Song data (served via API): network-first, cache for offline (#154) --- */
-    if (url.pathname === '/api' && url.searchParams.get('action') === 'songs_json') {
-        event.respondWith(networkFirstWithCache(event.request));
-        return;
-    }
+    /* (The whole-corpus songs_json branch was removed in WS-I #1017 — it was
+       unreachable anyway, since the generic /api branch above catches it
+       first, and nothing on the client requests the corpus any more. The
+       slim index has its own branch ahead of the generic /api one.) */
 
     /* --- Navigation requests: network-first, offline shell fallback --- */
     /* Deduplicates concurrent fetches for the same URL (#140) */

@@ -301,12 +301,20 @@ export class Search {
             }
         } catch (error) {
             console.error('[Search] Error:', error);
+            /* Live search failed (offline / server error). Signal the offline
+               indicator (#112) and, for a fresh search, fall back to the
+               precached slim index so the user can still find titles. */
+            try { window.dispatchEvent(new Event('ihymns:fetch-failed')); } catch (_e) {}
             if (!append) {
-                container.innerHTML = `
-                    <div class="alert alert-danger">
-                        <i class="fa-solid fa-triangle-exclamation me-2"></i>
-                        Search failed. Please try again.
-                    </div>`;
+                const handled = await this._offlineSearchFallback(query, songbook, container);
+                if (!handled) {
+                    container.innerHTML = `
+                        <div class="alert alert-warning">
+                            <i class="fa-solid fa-wifi-slash me-2" aria-hidden="true"></i>
+                            Search is unavailable offline and the song index hasn't been
+                            cached yet. Reconnect to search.
+                        </div>`;
+                }
             } else {
                 /* Keep the existing results; just reset the Load-more button. */
                 const moreEl = container.querySelector('#search-loadmore');
@@ -337,11 +345,92 @@ export class Search {
         });
         if (!response.ok) throw new Error(`Search API: HTTP ${response.status}`);
         const data = await response.json();
+        /* A live response means we're online — let the offline indicator
+           clear its "you're offline" banner (#112 / WS-I). */
+        try { window.dispatchEvent(new Event('ihymns:fetch-succeeded')); } catch (_e) {}
         return {
             results: data.results || [],
             hasMore: !!data.hasMore,
             total: data.total || 0,
         };
+    }
+
+    /* =====================================================================
+     * OFFLINE FALLBACK (WS-I #1017) — slim index, no live API
+     * ===================================================================== */
+
+    /**
+     * Fetch + memoise the slim catalogue index (id/number/title/songbook).
+     * Served live when online; served from the service-worker cache when
+     * offline (it's precached). This is the offline-only fallback for
+     * search + autocomplete now that the Fuse.js corpus is gone.
+     *
+     * @returns {Promise<Array>}
+     */
+    async _getSlimIndex() {
+        if (this._slimIndex) return this._slimIndex;
+        const url = new URL(this.app.config.dataUrl, window.location.origin);
+        const response = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+        if (!response.ok) throw new Error(`Slim index: HTTP ${response.status}`);
+        const data = await response.json();
+        this._slimIndex = data.songs || [];
+        return this._slimIndex;
+    }
+
+    /**
+     * Filter the slim index by title / number (and songbook) — the basic
+     * client-side search used when the live API is unreachable.
+     *
+     * @param {Array} index Slim song rows
+     * @param {string} query
+     * @param {string} songbook
+     * @returns {Array} Matching rows (capped at PAGE_SIZE)
+     */
+    _filterSlimIndex(index, query, songbook) {
+        const q = query.toLowerCase();
+        const book = songbook ? songbook.toUpperCase() : '';
+        const out = [];
+        for (const s of index) {
+            if (book && (s.songbook || '').toUpperCase() !== book) continue;
+            const title = (s.title || '').toLowerCase();
+            const num = String(s.number == null ? '' : s.number);
+            if (title.indexOf(q) !== -1 || (q && num.indexOf(q) !== -1)) {
+                out.push(s);
+                if (out.length >= PAGE_SIZE) break;
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Offline fallback for the search page: render results filtered from the
+     * precached slim index with a clear "you're offline" note. Returns true
+     * if it rendered (index available), false otherwise.
+     *
+     * @param {string} query
+     * @param {string} songbook
+     * @param {HTMLElement} container
+     * @returns {Promise<boolean>}
+     */
+    async _offlineSearchFallback(query, songbook, container) {
+        let index;
+        try {
+            index = await this._getSlimIndex();
+        } catch (_e) {
+            return false;
+        }
+        if (!Array.isArray(index) || index.length === 0) return false;
+
+        const results = this._filterSlimIndex(index, query, songbook);
+        container.innerHTML = `
+            <div class="alert alert-warning py-2 small mb-2" role="status">
+                <i class="fa-solid fa-wifi-slash me-1" aria-hidden="true"></i>
+                You're offline — searching cached song titles only. Songs you've
+                opened before will still open; others need a connection.
+            </div>
+            <p class="text-muted small mb-2">${results.length} match${results.length !== 1 ? 'es' : ''} in the offline index</p>
+            <div class="list-group">${this._renderResultItems(results)}</div>`;
+        return true;
     }
 
     /* =====================================================================
@@ -444,10 +533,15 @@ export class Search {
             const data = await response.json();
             suggestions = data.suggestions || [];
         } catch (error) {
-            /* Offline / server error — silently drop the dropdown; the
-               full search page still works on Enter. */
-            this._closeAutocomplete(input);
-            return;
+            /* Offline / server error — fall back to the precached slim
+               index so the header typeahead still works offline (WS-I). */
+            try {
+                const index = await this._getSlimIndex();
+                suggestions = this._filterSlimIndex(index, query, '').slice(0, 8);
+            } catch (_e) {
+                this._closeAutocomplete(input);
+                return;
+            }
         }
 
         /* A newer keystroke superseded this request, or the input was

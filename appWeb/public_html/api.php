@@ -791,6 +791,22 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
+         * Slim song index for PWA offline browse/search (WS-I #1017)
+         *
+         * The FULL catalogue as lightweight rows (id/number/title/songbook/
+         * songbookName + language + media flags) in ONE response — a few
+         * hundred KB gzipped vs the ~5.7 MB whole-song corpus. The service
+         * worker precaches THIS (replacing the corpus precache), so that
+         * OFFLINE the client can still browse + run a basic title/number
+         * search over the index and fall back to cached song pages.
+         * Online, every read is still the live API — this is the
+         * offline-only fallback. No pagination, no lyrics: one fetch.
+         * ----------------------------------------------------------------- */
+        case 'songs_index':
+            sendJson(['songs' => $songData->getSongsSlimIndex()]);
+            break;
+
+        /* -----------------------------------------------------------------
          * Get collection statistics
          * ----------------------------------------------------------------- */
         case 'stats':
