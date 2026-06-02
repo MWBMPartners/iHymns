@@ -2361,8 +2361,12 @@ paths:
                 properties:
                   maintenance:
                     type: boolean
-                    description: Whether the app is in maintenance mode
+                    description: Whether the app is in maintenance mode (WS-K #1021). Always returned 200 even during maintenance so the PWA can learn the flag + show a banner.
                     example: false
+                  maintenanceMessage:
+                    type: string
+                    description: Optional admin-set message shown on the maintenance banner/page (empty = default text).
+                    example: ""
                   songRequestsEnabled:
                     type: boolean
                     description: Whether song requests are currently accepted

@@ -123,6 +123,16 @@ installGlobalActivityLogHandlers('index');
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'channel_gate.php';
 enforceChannelGate($app["Application"]["Version"]["Development"]["Status"] ?? null);
 
+/* System maintenance mode (WS-K #1021) — admin-toggled in
+   /manage/configuration. When on, the public SPA serves a branded
+   maintenance landing page (503 + Retry-After) to everyone. /manage/* is a
+   separate entry point (not routed through index.php), so admins keep access
+   to turn it off. A returning PWA user's service worker treats the 503 like a
+   network error and serves the cached shell, preserving their offline-capable
+   experience; the app shows a maintenance banner from ?action=app_status. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
+enforceMaintenanceForPublicSite();
+
 /* =========================================================================
  * APPLICATION METADATA — accessed directly via $app array
  * ========================================================================= */

@@ -223,6 +223,31 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     ];
                 }
             }
+        } elseif ($action === 'save_maintenance') {
+            /* System maintenance mode (WS-K #1021). Toggles the public site
+               into a 503 maintenance landing page; /manage stays reachable
+               (separate entry point) so this can always be turned back off. */
+            try {
+                $mmVal  = ((string)($_POST['maintenance_mode'] ?? '0')) === '1' ? '1' : '0';
+                $msgVal = mb_substr(trim((string)($_POST['maintenance_message'] ?? '')), 0, 500);
+                $saveSetting($db, 'maintenance_mode', $mmVal);
+                $saveSetting($db, 'maintenance_message', $msgVal);
+                if (function_exists('logActivity')) {
+                    logActivity(
+                        'app_setting.update',
+                        'app_setting',
+                        'maintenance_mode',
+                        ['keys' => ['maintenance_mode', 'maintenance_message'], 'enabled' => $mmVal === '1'],
+                        'success'
+                    );
+                }
+                $saveSuccess = $mmVal === '1'
+                    ? 'Maintenance mode is now ON — the public site shows a maintenance page; /manage stays open so you can turn it off.'
+                    : 'Maintenance mode is now OFF — the public site is live again.';
+            } catch (\Throwable $e) {
+                error_log('[manage configuration save_maintenance] ' . $e->getMessage());
+                $saveError = 'Save failed: ' . $e->getMessage();
+            }
         }
     }
 }
@@ -230,8 +255,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 /* ----------------------------------------------------------------------
  * Read current settings (after any save)
  * ---------------------------------------------------------------------- */
-$currentSettings = $loadSettings($db, array_keys($EMAIL_SETTINGS));
-$currentService  = $currentSettings['email_service'] ?? 'none';
+$currentSettings    = $loadSettings($db, array_keys($EMAIL_SETTINGS));
+$currentService     = $currentSettings['email_service'] ?? 'none';
+$maintenanceSettings = $loadSettings($db, ['maintenance_mode', 'maintenance_message']);
+$maintenanceOn       = ($maintenanceSettings['maintenance_mode'] ?? '0') === '1';
+$maintenanceMsg      = (string)($maintenanceSettings['maintenance_message'] ?? '');
 
 require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php';
 ?>
@@ -276,6 +304,48 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             <i class="bi bi-exclamation-triangle me-1"></i><?= htmlspecialchars($saveError, ENT_QUOTES, 'UTF-8') ?>
         </div>
     <?php endif; ?>
+
+    <!-- ===========================
+         SYSTEM MAINTENANCE SECTION (WS-K #1021)
+         =========================== -->
+    <div class="card bg-dark border-secondary mb-4">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <h2 class="h5 mb-0">
+                <i class="bi bi-cone-striped me-2"></i>System maintenance
+            </h2>
+            <span class="badge <?= $maintenanceOn ? 'bg-danger' : 'bg-success' ?>">
+                <?= $maintenanceOn ? 'ON — public site in maintenance' : 'OFF — site is live' ?>
+            </span>
+        </div>
+        <div class="card-body">
+            <p class="small text-secondary mb-3">
+                When ON, the public site and API return a 503 maintenance page to
+                visitors. This admin area (<code>/manage</code>) and sign-in stay
+                available so you can turn it back off. Returning app users keep
+                their cached offline experience and see a maintenance banner.
+            </p>
+            <form method="post">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                <input type="hidden" name="action" value="save_maintenance">
+                <!-- hidden 0 before the checkbox so an unchecked box still posts a value -->
+                <input type="hidden" name="maintenance_mode" value="0">
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" role="switch"
+                           id="maintenance_mode" name="maintenance_mode" value="1" <?= $maintenanceOn ? 'checked' : '' ?>>
+                    <label class="form-check-label" for="maintenance_mode">Enable maintenance mode</label>
+                </div>
+                <div class="mb-3">
+                    <label for="maintenance_message" class="form-label">Message shown to visitors (optional)</label>
+                    <textarea name="maintenance_message" id="maintenance_message" class="form-control" rows="2"
+                              maxlength="500"
+                              placeholder="We&rsquo;ll be back shortly &mdash; scheduled maintenance in progress."><?= htmlspecialchars($maintenanceMsg, ENT_QUOTES, 'UTF-8') ?></textarea>
+                </div>
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-save me-1"></i>Save maintenance settings
+                </button>
+            </form>
+        </div>
+    </div>
 
     <!-- ===========================
          EMAIL SERVICE SECTION

@@ -325,6 +325,33 @@ class iHymnsApp {
             this.offlineIndicator = new OfflineIndicator(this);
             this.offlineIndicator.init();
 
+            /* Maintenance-mode banner (WS-K #1021). During maintenance the
+               server 503s the public site, but a returning PWA user loads the
+               cached shell (the service worker serves cache on the 503) and
+               ?action=app_status stays 200 with the flag — so surface a
+               non-blocking banner. New visitors instead get the full
+               server-side maintenance page (index.php) and never run this. */
+            this.userAuth?._ensureAppStatus?.().then((status) => {
+                if (!status || !status.maintenance) return;
+                if (document.getElementById('maintenance-banner')) return;
+                const bar = document.createElement('div');
+                bar.id = 'maintenance-banner';
+                bar.setAttribute('role', 'status');
+                bar.style.cssText = 'position:sticky;top:0;z-index:1080;background:#b45309;'
+                    + 'color:#fff;padding:.5rem 1rem;text-align:center;font-size:.9rem';
+                const icon = document.createElement('i');
+                icon.className = 'fa-solid fa-screwdriver-wrench me-2';
+                icon.setAttribute('aria-hidden', 'true');
+                const text = document.createElement('span');
+                /* textContent — the message is admin-set but render it as text
+                   so it can never inject markup. */
+                text.textContent = (status.maintenanceMessage || '').trim()
+                    || 'iHymns is in maintenance mode — some features may be unavailable until it ends.';
+                bar.appendChild(icon);
+                bar.appendChild(text);
+                document.body.prepend(bar);
+            }).catch(() => { /* status fetch failed — no banner */ });
+
             /* Touch gesture navigation (#143) */
             this.gestures = new Gestures(this);
             this.gestures.init();

@@ -90,7 +90,7 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
     $devStatus = $GLOBALS['app']['Application']['Version']['Development']['Status'] ?? null;
     $verbose = ($devStatus === 'Alpha' || $devStatus === 'Beta');
 
-    $emit = function (string $msg, string $class, ?string $where = null) use ($isAction, $verbose, $rid) {
+    $emit = function (string $msg, string $class, ?string $where = null, int $status = 500) use ($isAction, $verbose, $rid) {
         /* Always log the full detail to error_log so production admins
            can correlate via the request id even when the response is
            generic. */
@@ -99,12 +99,17 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
             $rid, $class, $msg, $where ? " @ {$where}" : ''
         ));
         if (headers_sent()) return; /* nothing we can do — response already started */
-        http_response_code(500);
+        http_response_code($status);
+        /* A DB outage is transient — tell clients (and the service worker,
+           which then serves cache) to retry rather than treating it as a
+           hard 500 (WS-K #1021; WS-J removed the stale-JSON fallback). */
+        $genericMsg = $status === 503 ? 'Service temporarily unavailable.' : 'Internal server error.';
+        if ($status === 503) header('Retry-After: 30');
         if ($isAction) {
             header('Content-Type: application/json; charset=UTF-8');
             header('X-Content-Type-Options: nosniff');
             header('Cache-Control: no-cache, must-revalidate');
-            $body = ['error' => 'Internal server error.', 'request_id' => $rid];
+            $body = ['error' => $genericMsg, 'request_id' => $rid];
             if ($verbose) {
                 $body['error']           = $msg;
                 $body['exception_class'] = $class;
@@ -116,8 +121,8 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
                into the page <div>. Same alpha/beta gating on what we
                disclose. */
             header('Content-Type: text/html; charset=UTF-8');
-            echo '<div class="alert alert-danger" role="alert">';
-            echo '<strong>Internal server error.</strong> ';
+            echo '<div class="alert ' . ($status === 503 ? 'alert-warning' : 'alert-danger') . '" role="alert">';
+            echo '<strong>' . htmlspecialchars($genericMsg, ENT_QUOTES) . '</strong> ';
             echo 'Reference: <code>' . htmlspecialchars($rid, ENT_QUOTES) . '</code>';
             if ($verbose) {
                 echo '<br><small>' . htmlspecialchars($class . ': ' . $msg, ENT_QUOTES) . '</small>';
@@ -127,8 +132,16 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
     };
 
     set_exception_handler(function (\Throwable $e) use ($emit) {
+        /* DB-connection failures (server down / unreachable / too many
+           connections / auth / unknown DB / missing credentials) are a
+           transient 503, not a 500 — WS-J removed the stale-JSON fallback so a
+           DB outage now reaches here (covers the deferred work/tune/iswc pages
+           dispatched via api.php). isDbConnectionFailure() (db_mysql.php) keeps
+           ordinary query errors as 500. */
+        $status = (function_exists('isDbConnectionFailure') && isDbConnectionFailure($e)) ? 503 : 500;
         $emit($e->getMessage(), get_class($e),
-              basename($e->getFile()) . ':' . $e->getLine());
+              basename($e->getFile()) . ':' . $e->getLine(),
+              $status);
     });
 
     register_shutdown_function(function () use ($emit) {
@@ -176,6 +189,20 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    and provides applyLanguageFilterSql() / makeLanguageFilterPredicate()
    helpers for endpoints to filter song / songbook results. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'language_filter.php';
+
+/* =========================================================================
+ * SYSTEM MAINTENANCE GATE (WS-K #1021)
+ *
+ * Admin-toggled in /manage/configuration. When maintenance is on, public
+ * requests get a 503, EXCEPT app_status (so the PWA learns the flag + shows
+ * its banner and the service worker keeps serving cached content) and the
+ * auth_* family (so users — incl. admins — can still sign in). Admin curation
+ * runs through the separate /manage/* entry points, which never reach here.
+ * No-op when maintenance is off or the DB is unavailable (the DB-down case is
+ * handled by the JSON error handler above as a 503).
+ * ========================================================================= */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
+enforceMaintenanceForApi();
 
 /* =========================================================================
  * CSRF DEFENCE POLICY (#293 / B15)
@@ -3194,7 +3221,7 @@ if ($action !== null) {
             $db = getDbMysqli();
             /* Only fetch public-safe settings — never expose internal config.
                Dynamic IN-list with str_repeat for the bind type string. */
-            $publicKeys = ['maintenance_mode', 'song_requests_enabled', 'motd', 'registration_mode', 'email_service', 'captcha_provider', 'ads_enabled'];
+            $publicKeys = ['maintenance_mode', 'maintenance_message', 'song_requests_enabled', 'motd', 'registration_mode', 'email_service', 'captcha_provider', 'ads_enabled'];
             $placeholders = implode(',', array_fill(0, count($publicKeys), '?'));
             $stmt = $db->prepare(
                 "SELECT SettingKey, SettingValue FROM tblAppSettings WHERE SettingKey IN ({$placeholders})"
@@ -3211,6 +3238,7 @@ if ($action !== null) {
 
             sendJson([
                 'maintenance'         => ($settings['maintenance_mode'] ?? '0') === '1',
+                'maintenanceMessage'  => $settings['maintenance_message'] ?? '',
                 'songRequestsEnabled' => ($settings['song_requests_enabled'] ?? '1') === '1',
                 'registrationMode'    => $settings['registration_mode'] ?? 'open',
                 'motd'                => $settings['motd'] ?? '',

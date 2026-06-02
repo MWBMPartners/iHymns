@@ -1453,6 +1453,7 @@ INSERT IGNORE INTO tblLanguages (Code, Name, NativeName, TextDirection) VALUES
 
 INSERT IGNORE INTO tblAppSettings (SettingKey, SettingValue, Description) VALUES
     ('maintenance_mode',    '0',    'Enable maintenance mode (0=off, 1=on)'),
+    ('maintenance_message', '',     'Custom message on the maintenance landing page (empty = default text)'),
     ('song_requests_enabled', '1',  'Allow users to submit song requests (0=off, 1=on)'),
     ('max_song_requests_per_day', '5', 'Maximum song requests per IP per day'),
     ('registration_mode', 'open', 'User registration mode: open, invite, admin_only'),
