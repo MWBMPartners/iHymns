@@ -11,9 +11,12 @@ declare(strict_types=1);
  * Protected by session-based authentication — only authenticated
  * admin users can access this endpoint.
  *
- * ENDPOINTS:
- *   GET  api.php?action=load  — Read all song data from MySQL, returns JSON
- *   POST api.php?action=save  — Write song data to MySQL from POST body
+ * ENDPOINTS (all DB-direct — no songs.json file cache as of WS-J #1020):
+ *   GET  ?action=load_index       — slim song index for the sidebar
+ *   GET  ?action=load_song&id=…   — one full editable record
+ *   GET  ?action=load_songs       — batch full records for bulk ops
+ *   GET  ?action=songbook_export&abbr=…  — one songbook's songs as a bundle
+ *   POST ?action=save_song        — write one song's edits to MySQL
  *
  * SECURITY:
  *   - Requires authenticated session (via /manage/ auth system)
@@ -275,75 +278,44 @@ $action = $_GET['action'] ?? '';
 switch ($action) {
 
     /* -----------------------------------------------------------------
-     * LOAD — Read all song data from MySQL and return as JSON
+     * SONGBOOK_EXPORT — full song bundle for ONE songbook (WS-J #1020)
      *
-     * WS-D #1016: the EDITOR no longer calls this — it loads a slim index
-     * (load_index) + per-record (load_song). This case is kept ONLY
-     * because /manage/songbooks.php still fetches it to export songs
-     * grouped by songbook; it (and the songs.json cache) are decommissioned
-     * in WS-J once that page moves to a dedicated endpoint. Don't "clean
-     * it up" before then — songbooks export depends on it.
+     * Replaces the old whole-corpus 'load' case that /manage/songbooks.php
+     * downloaded and filtered client-side (~140 MB via the songs.json file
+     * cache). Now a DB-direct per-songbook query: SongData::getSongs($abbr)
+     * returns exactly the same rich per-song shape exportAsJson() produced,
+     * scoped to one songbook, so the export bundle is byte-equivalent without
+     * materialising the corpus. The songbook record (for the canonical export
+     * filename) is returned alongside.
+     *
+     * GET ?action=songbook_export&abbr=CP
      * ----------------------------------------------------------------- */
-    case 'load':
-        /* #932 — serve the precomputed corpus cache instead of
-           rebuilding from MySQL on every editor open.
-           SongData::exportAsJson() costs ~140 MB of PHP-array memory
-           on the ~12,370-song corpus (#929 OOM); reading the static
-           cache via readfile() costs <2 MB and is ~50× faster end-to-end.
-           Cache is regenerated on each save_song / bulk-import write,
-           plus from the admin dashboard regenerate button. The 512 MB
-           ini_set lives inside songsCacheRegenerate() so it only
-           applies when actually rebuilding. */
-        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
-            . DIRECTORY_SEPARATOR . 'songs_cache.php';
+    case 'songbook_export':
+        $abbr = isset($_GET['abbr']) ? strtoupper(trim((string)$_GET['abbr'])) : '';
+        if ($abbr === '' || !preg_match('/^[A-Z0-9]{1,20}$/', $abbr)) {
+            http_response_code(400);
+            echo json_encode(['error' => 'A valid songbook abbreviation is required.']);
+            break;
+        }
         try {
             header('X-Content-Type-Options: nosniff');
-            songsCacheServe();
+            $songData = new SongData();
+            $songs = $songData->getSongs($abbr);
+            $songbook = null;
+            foreach ($songData->getSongbooks() as $b) {
+                $bid = strtoupper((string)($b['id'] ?? $b['abbreviation'] ?? ''));
+                if ($bid === $abbr) { $songbook = $b; break; }
+            }
+            echo json_encode(['songs' => $songs, 'songbook' => $songbook]);
         } catch (\Throwable $e) {
-            /* \Throwable (not \Exception) so PHP \Error subclasses —
-               TypeError, ValueError, mysqli_sql_exception edge cases
-               etc. — also land in the JSON 500 path instead of
-               escaping into an HTML fatal-error response that the
-               editor's toast can't read. */
             http_response_code(500);
-            $logLine = sprintf(
-                '[iHymns Editor] Failed to load song data: %s: %s @ %s:%d',
-                get_class($e),
-                $e->getMessage(),
-                $e->getFile(),
-                $e->getLine()
-            );
-            error_log($logLine);
-
-            /* Persist the failure to tblActivityLog so the curator who
-               hit the 500 (and the curator triaging from the activity
-               log later) sees the same exception class + message +
-               file:line that the toast surfaces. Best-effort —
-               logActivityError swallows its own failures so a logging
-               outage can't compound the original 500. */
-            $stack = $e->getTraceAsString();
-            logActivityError(
-                'editor.load_failed',
-                'song_corpus',
-                '',
-                $e,
-                [
-                    /* Truncate the trace defensively — tblActivityLog.Details
-                       is JSON, so MySQL imposes its own size limit and a
-                       full PHP backtrace can blow past 64 KB on a deep
-                       call stack. 4 KB is plenty to identify the failing
-                       frame without flooding the table. */
-                    'trace' => mb_substr($stack, 0, 4096),
-                ]
-            );
-
-            /* Endpoint is editor+ gated (auth check at the top of this
-               file), so returning the real exception class + message
-               is safe and gives the toast something actionable. */
+            error_log('[iHymns Editor] songbook_export failed: ' . $e->getMessage());
+            logActivityError('editor.songbook_export_failed', 'songbook', $abbr, $e, [
+                'trace' => mb_substr($e->getTraceAsString(), 0, 4096),
+            ]);
             echo json_encode([
-                'error'   => 'Failed to load song data from database.',
-                'detail'  => get_class($e) . ': ' . $e->getMessage(),
-                'file'    => basename($e->getFile()) . ':' . $e->getLine(),
+                'error'  => 'Failed to export songbook.',
+                'detail' => get_class($e) . ': ' . $e->getMessage(),
             ]);
         }
         break;
@@ -1737,14 +1709,10 @@ switch ($action) {
 
             $db->commit();
 
-            /* Refresh the on-disk songs cache so the editor's next
-               load (and the public PWA's next songs_json fetch) sees
-               the saved changes (#932). Best-effort — the user's save
-               has already committed; cache regen failure must not
-               undo it or surface as a save error. */
-            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
-                . DIRECTORY_SEPARATOR . 'songs_cache.php';
-            songsCacheRegenerateBestEffort('editor.save_song');
+            /* WS-J #1020: no songs.json cache to refresh — all reads are now
+               live MySQL (editor sidebar via load_index, songbook export via
+               songbook_export, the PWA via the slim songs_index). The corpus
+               file cache + its regeneration hooks were removed. */
 
             echo json_encode(['ok' => true, 'songId' => $songId, 'action' => $action]);
         } catch (\Throwable $e) {

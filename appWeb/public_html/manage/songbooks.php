@@ -2667,10 +2667,10 @@ $csrf = csrfToken();
                                        JSON document, named "<Title> (<ABBR>) [Bundle].json"
                                        per the shared export-filename convention. The
                                        click handler is wired in inline JS at the bottom
-                                       of this file; it shells out to the existing
-                                       /manage/editor/api?action=load endpoint and
-                                       filters client-side, so no new server endpoint
-                                       is required for this rollout. */
+                                       of this file; it calls the DB-direct
+                                       /manage/editor/api?action=songbook_export&abbr=…
+                                       endpoint (WS-J #1020), which returns only this
+                                       songbook's songs — no client-side corpus filter. */
                                 ?>
                                 <button type="button" class="btn btn-sm btn-outline-secondary songbook-export-btn"
                                         data-songbook-abbrev="<?= htmlspecialchars($r['Abbreviation'], ENT_QUOTES, 'UTF-8') ?>"
@@ -4693,27 +4693,26 @@ $csrf = csrfToken();
             btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
 
             try {
-                const res = await fetch('/manage/editor/api.php?action=load', {
-                    credentials: 'same-origin',
-                });
+                /* DB-direct per-songbook export (WS-J #1020): the server
+                   returns only this songbook's songs (+ its record), so we
+                   no longer download and filter the whole corpus. */
+                const res = await fetch(
+                    '/manage/editor/api.php?action=songbook_export&abbr=' + encodeURIComponent(abbr),
+                    { credentials: 'same-origin' },
+                );
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 const data = await res.json();
 
-                const songs = (data.songs || []).filter(
-                    (s) => (s.songbook || '').toUpperCase() === abbr.toUpperCase()
-                );
+                const songs = data.songs || [];
                 if (songs.length === 0) {
                     alert('No songs reference "' + abbr + '" — nothing to export.');
                     return;
                 }
 
-                /* Match the songbook record from the corpus so the
-                   bundle's filename uses the canonical display name
-                   (preserves accents, casing, etc.) rather than the
-                   row's `Name` column copy in the DOM. */
-                const sb = (data.songbooks || []).find(
-                    (b) => (b.id || b.abbreviation || '').toUpperCase() === abbr.toUpperCase()
-                ) || { id: abbr, name: name };
+                /* The server returns the songbook record so the bundle's
+                   filename uses the canonical display name (accents, casing)
+                   rather than the row's DOM copy. */
+                const sb = data.songbook || { id: abbr, name: name };
 
                 const filename = songbookExportFilename(sb) + '.json';
                 const blob     = new Blob(

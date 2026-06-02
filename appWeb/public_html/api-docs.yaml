@@ -714,59 +714,9 @@ paths:
                         hasAudio:     { type: boolean }
                         hasSheetMusic: { type: boolean }
 
-  /api.php?action=songs_json:
-    get:
-      operationId: exportSongsJson
-      tags: [Songs]
-      summary: Export full song database as JSON
-      description: |
-        Exports the complete song database as a single JSON payload for
-        client-side Fuse.js search and service worker caching. Supports
-        ETag-based conditional requests (returns 304 Not Modified when the
-        client cache is still valid).
-      parameters:
-        - name: action
-          in: query
-          required: true
-          schema:
-            type: string
-            enum: [songs_json]
-      responses:
-        "200":
-          description: Full song database
-          headers:
-            ETag:
-              description: Content hash for conditional caching
-              schema:
-                type: string
-            Cache-Control:
-              description: Caching directive
-              schema:
-                type: string
-                example: "public, max-age=3600, must-revalidate"
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  meta:
-                    type: object
-                    description: Collection metadata
-                    properties:
-                      totalSongs:
-                        type: integer
-                      totalSongbooks:
-                        type: integer
-                  songbooks:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/Songbook"
-                  songs:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/Song"
-        "304":
-          description: Not Modified (client cache is still valid)
+  # /api.php?action=songs_json removed in WS-J #1020 — the whole-corpus JSON
+  # export + its file cache were decommissioned. The PWA uses the slim
+  # /api?action=songs_index (live MySQL) instead.
 
   /api.php?action=missing_songs:
     get:
@@ -4302,17 +4252,37 @@ paths:
   # EDITOR API  (separate entry point — /manage/editor/api.php)
   # ===========================================================================
 
-  /manage/editor/api.php?action=load:
+  /manage/editor/api.php?action=songbook_export:
     get:
-      operationId: editorLoad
+      operationId: editorSongbookExport
       tags: [Editor API]
-      summary: Load every song + songbook + writer row the editor needs
+      summary: Export one songbook's songs as a JSON bundle (WS-J #1020)
       description: |
-        Editor SPA hits this once on open. Returns the full in-memory
-        model. Auth is the `/manage/` PHP session — not a Bearer token.
+        DB-direct per-songbook export used by /manage/songbooks.php. Returns
+        only the requested songbook's songs (the full importable shape) plus
+        its songbook record for the export filename. Replaces the old
+        whole-corpus ?action=load. Auth is the `/manage/` PHP session.
+      parameters:
+        - name: abbr
+          in: query
+          required: true
+          schema: { type: string, example: CP }
       responses:
         "200":
-          description: Full editor payload
+          description: Songbook bundle
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  songs:
+                    type: array
+                    items: { $ref: "#/components/schemas/Song" }
+                  songbook:
+                    type: object
+                    nullable: true
+        "400":
+          description: Missing or invalid abbr
         "401":
           description: Not authenticated (redirect the user to /manage/login)
         "403":

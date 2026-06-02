@@ -65,44 +65,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         echo 'Invalid CSRF token';
         exit;
     }
-    if (($_POST['action'] ?? '') === 'regenerate_songs_cache') {
-        /* #932 — manual rebuild of appWeb/data_share/song_data/songs.json
-           and its precompressed siblings. Save / bulk-import flows
-           regenerate automatically; this button covers the case where
-           the cache file was deleted, the disk fill caused a write
-           failure, or a curator wants to force a refresh. */
-        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes'
-            . DIRECTORY_SEPARATOR . 'songs_cache.php';
-        try {
-            $stats = songsCacheRegenerate();
-            $msg = sprintf(
-                'Songs cache regenerated: %s bytes raw, %s bytes gzip%s in %d ms.',
-                number_format($stats['bytes']),
-                $stats['gzip_bytes'] !== null ? number_format($stats['gzip_bytes']) : '—',
-                $stats['brotli_bytes'] !== null ? ', ' . number_format($stats['brotli_bytes']) . ' bytes brotli' : '',
-                $stats['took_ms']
-            );
-            $flash = $msg;
-            if (function_exists('logActivity')) {
-                logActivity(
-                    'songs_cache.regenerated',
-                    'songs_cache',
-                    '',
-                    [
-                        'bytes'        => $stats['bytes'],
-                        'gzip_bytes'   => $stats['gzip_bytes'],
-                        'brotli_bytes' => $stats['brotli_bytes'],
-                        'took_ms'      => $stats['took_ms'],
-                        'context'      => 'data_health.manual',
-                    ],
-                    'success'
-                );
-            }
-        } catch (\Throwable $e) {
-            $error = 'Songs cache regeneration failed: ' . $e->getMessage();
-            error_log('[data-health regenerate_songs_cache] ' . $e->getMessage());
-        }
-    } elseif (($_POST['action'] ?? '') === 'disconnect_fallbacks') {
+    if (($_POST['action'] ?? '') === 'disconnect_fallbacks') {
         $renamed = [];
         $skipped = [];
         $failed  = [];
@@ -413,49 +376,11 @@ $csrf = csrfToken();
             <?php endif; ?>
         </div>
 
-        <!-- Songs corpus cache (#932) -->
-        <?php
-        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes'
-            . DIRECTORY_SEPARATOR . 'songs_cache.php';
-        $cachePaths   = songsCachePaths();
-        $cacheExists  = is_file($cachePaths['raw']);
-        $cacheSize    = $cacheExists ? (int)filesize($cachePaths['raw']) : 0;
-        $cacheMtime   = $cacheExists ? (int)filemtime($cachePaths['raw']) : 0;
-        $gzipExists   = is_file($cachePaths['gzip']);
-        $brotliExists = is_file($cachePaths['brotli']);
-        $cacheAgeSec  = $cacheExists ? (time() - $cacheMtime) : null;
-        $cacheAgeStr  = $cacheAgeSec === null ? 'never built'
-                      : ($cacheAgeSec < 60       ? $cacheAgeSec . 's ago'
-                      : ($cacheAgeSec < 3600     ? floor($cacheAgeSec / 60)   . ' min ago'
-                      : ($cacheAgeSec < 86400    ? floor($cacheAgeSec / 3600) . ' h ago'
-                      :                            floor($cacheAgeSec / 86400) . ' days ago')));
-        ?>
-        <div class="card-admin p-3 mb-3">
-            <h2 class="h6 mb-3"><i class="bi bi-archive me-2"></i>Songs corpus cache</h2>
-            <p class="mb-2 small text-secondary">
-                Pre-computed JSON used by the Song Editor and the public PWA.
-                Auto-regenerated on save / bulk-import; this button forces a
-                manual rebuild if the cache file is missing or stale.
-            </p>
-            <?php if ($cacheExists): ?>
-                <?= health_badge('green', sprintf(
-                    '%s bytes raw · gzip %s · brotli %s · built %s',
-                    number_format($cacheSize),
-                    $gzipExists ? '✓' : '—',
-                    $brotliExists ? '✓' : '—',
-                    htmlspecialchars($cacheAgeStr)
-                )) ?>
-            <?php else: ?>
-                <?= health_badge('amber', 'Cache file not yet built — first request will build it inline.') ?>
-            <?php endif; ?>
-            <form method="POST" class="mt-3">
-                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
-                <input type="hidden" name="action"     value="regenerate_songs_cache">
-                <button type="submit" class="btn btn-outline-info btn-sm">
-                    <i class="bi bi-arrow-clockwise me-1"></i>Regenerate songs cache
-                </button>
-            </form>
-        </div>
+        <!-- Songs corpus cache removed in WS-J #1020: all reads are now live
+             MySQL (slim songs_index for the PWA, load_index/load_song for the
+             editor, songbook_export for songbook bundles). No file cache to
+             report or regenerate. The legacy songs.json file, if still on
+             disk, is inert and can be cleared via the disconnect action below. -->
 
         <!-- Disconnect action -->
         <div class="card-admin p-3 mb-3 <?= $allGreen ? '' : 'opacity-75' ?>">

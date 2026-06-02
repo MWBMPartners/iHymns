@@ -188,50 +188,22 @@ class SongData
     }
 
     /**
-     * Constructor — connects to MySQL, or falls back to JSON file.
+     * Constructor — connects to live MySQL.
      *
-     * When MySQL credentials are not configured (e.g., fresh deployment
-     * before database setup), the class falls back to reading songs.json
-     * so the app remains functional.
+     * WS-J #1020: DB-direct only. MySQL is the single source of truth. The
+     * old JSON-file fallback — which served a STALE songs.json corpus when the
+     * live DB was unreachable — was removed per the governing rule "server
+     * DB-down = graceful error, never stale". getDbMysqli() throws when MySQL
+     * is unavailable and we let that propagate; callers surface a clean error
+     * and WS-K's maintenance mode provides the user-facing UX.
+     *
+     * The $jsonMode / $jsonData members and their guards remain in the read
+     * methods as inert dead code (jsonMode can never become true now); a
+     * follow-up can strip the branches purely for tidiness.
      */
     public function __construct()
     {
-        try {
-            $this->db = getDbMysqli();
-        } catch (\Throwable $e) {
-            /* MySQL not available — fall back to JSON file. Logged
-               (#534) so admins notice when the live DB is unreachable;
-               otherwise the app degrades to read-only JSON without
-               any signal. Fresh-install case is handled by the broader
-               install-detection logic in includes/db_mysql.php. */
-            error_log('[SongData] MySQL unavailable, using JSON fallback: ' . $e->getMessage());
-            $this->jsonMode = true;
-            $this->_loadJsonFallback();
-        }
-    }
-
-    /**
-     * Load song data from the JSON file as a fallback.
-     */
-    private function _loadJsonFallback(): void
-    {
-        $candidates = [
-            defined('APP_DATA_FILE') ? APP_DATA_FILE : '',
-            dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'data_share' . DIRECTORY_SEPARATOR . 'song_data' . DIRECTORY_SEPARATOR . 'songs.json',
-            dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR . 'songs.json',
-        ];
-
-        foreach ($candidates as $path) {
-            if ($path !== '' && file_exists($path)) {
-                $json = file_get_contents($path);
-                if ($json !== false) {
-                    $this->jsonData = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
-                    return;
-                }
-            }
-        }
-
-        throw new \RuntimeException('Song data not available: MySQL not configured and songs.json not found.');
+        $this->db = getDbMysqli();
     }
 
     /* =====================================================================
@@ -2809,22 +2781,11 @@ class SongData
      * EXPORT METHOD — Generate full JSON for client-side caching / PWA
      * ===================================================================== */
 
-    /**
-     * Export the complete song database as a JSON-compatible array.
-     *
-     * Reproduces the same structure as the original songs.json for
-     * backward compatibility with the PWA client-side cache and Fuse.js.
-     *
-     * @return array Full data array with meta, songbooks, and songs
-     */
-    public function exportAsJson(): array
-    {
-        return [
-            'meta'      => $this->getMeta(),
-            'songbooks' => $this->getSongbooks(),
-            'songs'     => $this->getSongs(),
-        ];
-    }
+    /* WS-J #1020: exportAsJson() — the whole-corpus materialiser that fed the
+       songs.json file cache (~140 MB of PHP-array memory, #929 OOM) — was
+       removed with the cache itself. Reads are live MySQL now: getSongsSlimIndex()
+       for the lightweight index, getSongs($abbr) for a single songbook bundle,
+       getSongById() for one full record. Nothing materialises the whole corpus. */
 
     /* =====================================================================
      * PRIVATE HELPER METHODS

@@ -15,15 +15,16 @@
 #   beta   → appWeb/public_html/ → SFTP_BETA_PATH  (beta)
 #   alpha  → appWeb/public_html/ → SFTP_DEV_PATH   (alpha/dev)
 #
-# Shared data (songs.json, shared setlists) is deployed from
-# appWeb/data_share/ → remote data_share/ (sibling to public_html)
+# Shared data directory scaffolding (.htaccess guards) is deployed from
+# appWeb/data_share/ → remote data_share/ (sibling to public_html). The
+# songs.json corpus cache was decommissioned in WS-J #1020 (all reads are
+# live MySQL), so no song data is staged here any more.
 #
 # FLOW:
-#   1. Copy songs.json into data_share/
-#   2. Inject build metadata and channel into deploy source
-#   3. Minify JS/CSS/HTML before upload
-#   4. Upload via lftp (SSH key or password auth)
-#   5. Upload data_share/ alongside public_html
+#   1. Inject build metadata and channel into deploy source
+#   2. Minify JS/CSS/HTML before upload
+#   3. Upload via lftp (SSH key or password auth)
+#   4. Upload data_share/ scaffolding alongside public_html
 #
 # SECRETS REQUIRED:
 #   SFTP_HOST, SFTP_PORT, SFTP_USER, SFTP_KEY (or SFTP_PASSWORD)
@@ -164,17 +165,10 @@ jobs:
             fi
           fi
 
-      # -- Copy songs.json into the shared data directory (#154) --
-      # Songs data is stored outside the web root in data_share/song_data/
-      # and served to JS clients via the PHP API (api.php?action=songs_json).
-      # This ensures a single source of truth across all environments.
-      - name: Copy songs.json into shared data directory
-        if: steps.changes.outputs.has_changes == 'true'
-        run: |
-          mkdir -p appWeb/data_share/song_data
-          mkdir -p appWeb/data_share/setlist_json
-          cp data/songs.json appWeb/data_share/song_data/songs.json
-          echo "Copied data/songs.json into appWeb/data_share/song_data/"
+      # WS-J #1020: the songs.json corpus file cache was decommissioned — every
+      # read is live MySQL now (slim songs_index for the PWA, load_index /
+      # load_song / songbook_export for the editor + songbook bundles), so there
+      # is no songs.json to stage into data_share/song_data/ on deploy.
 
       # -- Inject .env-channel file for server-side environment detection --
       # Since all branches deploy from the same source directory, the PHP code
@@ -362,13 +356,8 @@ jobs:
       # Runs alongside the public deployment when private files changed.
       # ================================================================
 
-      # -- Copy songs.json into private_html/ for the editor --
-      - name: Copy songs.json into private_html
-        if: steps.changes.outputs.has_changes == 'true' || contains(github.event.head_commit.message, '[deploy all]')
-        run: |
-          mkdir -p appWeb/private_html/data
-          cp data/songs.json appWeb/private_html/data/songs.json
-          echo "Copied data/songs.json into appWeb/private_html/data/"
+      # WS-J #1020: the legacy private_html editor's songs.json copy is gone —
+      # the Song Editor is DB-direct (load_index / load_song / load_songs).
 
       # -- Check if private_html/ files changed --
       - name: Check private_html changes

@@ -1183,10 +1183,9 @@ if (!empty($breadcrumbItems)) {
                 <?= $app["Application"]["Copyright"]["Full"] ?>
                 &nbsp;|&nbsp;
                 v<?= htmlspecialchars($versionDisplay) ?><?php
-                    /* Subtle data source indicator — Alpha/Beta only */
-                    if ($app["Application"]["Version"]["Development"]["Status"] !== null && isset($songData) && $songData->isJsonFallback()) {
-                        echo ' <span title="Using JSON fallback (MySQL not configured)" style="opacity:0.4;cursor:help">&#9679; json</span>';
-                    }
+                    /* WS-J #1020: the "● json" data-source indicator is gone —
+                       there is no JSON fallback any more (DB-direct only), so
+                       it could never light up. */
                 ?>
                 &nbsp;|&nbsp;
                 <a href="/terms" data-navigate="terms" class="footer-link">Terms</a>
@@ -1516,8 +1515,6 @@ if (!empty($breadcrumbItems)) {
                 'androidVerified' => $androidApp['verified'],
             ],
             'features'        => APP_CONFIG['features'],
-            'fuseJsCdn'       => $libs['fusejs']['js_cdn'],
-            'fuseJsLocal'     => $libs['fusejs']['js_local'],
             'toneJsCdn'       => $libs['tonejs']['js_cdn'],
             'toneJsLocal'     => $libs['tonejs']['js_local'],
             'pdfjsCdn'        => $libs['pdfjs']['js_cdn'],

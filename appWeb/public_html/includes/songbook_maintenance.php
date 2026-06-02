@@ -6,14 +6,13 @@ declare(strict_types=1);
  * iHymns — Post-write songbook maintenance helper.
  *
  * Single entry point every "I just wrote to the songbook catalogue"
- * code path can call to keep the public-facing reads consistent
- * without each writer having to remember the two follow-up steps:
+ * code path can call to keep the public-facing reads consistent.
  *
- *   1. Regenerate the precomputed songs.json cache that the public
- *      PWA + Song Editor consume (songsCacheRegenerateBestEffort).
- *      Already best-effort + logged; safe to call after every save.
+ *   (WS-J #1020: the old step 1 — regenerate the songs.json corpus
+ *   file cache — is gone; all reads are live MySQL now, so there is
+ *   nothing to rebuild after a write.)
  *
- *   2. Re-prefix any tblSongs row whose SongId prefix has drifted
+ *   Re-prefix any tblSongs row whose SongId prefix has drifted
  *      from its declared SongbookAbbr. Pre-#997 renames produced
  *      these "orphan-prefix" rows; PR #997 made the rename code
  *      self-consistent, but a bulk-import on a catalogue that
@@ -32,7 +31,6 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
-require_once __DIR__ . DIRECTORY_SEPARATOR . 'songs_cache.php';
 
 /**
  * If we end up with more orphan-prefix rows than this on a single
@@ -215,17 +213,12 @@ function songbookMaintenanceRun(\mysqli $db, string $context): array
         'fixup_ms'    => 0,
     ];
 
-    /* Step 1 — cache regen. Already best-effort + logs its own
-       failures. We just time it. */
-    $t0 = microtime(true);
-    $cacheResult = songsCacheRegenerateBestEffort($context);
-    $summary['cache_ms']    = (int) ((microtime(true) - $t0) * 1000);
-    $summary['cache_built'] = $cacheResult !== null;
-    if ($summary['cache_ms'] > 200) {
-        error_log(sprintf('[songbook_maint] cache regen slow: %dms (context=%s)', $summary['cache_ms'], $context));
-    }
+    /* WS-J #1020: the songs.json corpus file cache was removed (all reads are
+       live MySQL now), so there is no cache to regenerate here. The
+       cache_built / cache_ms summary fields stay (false / 0) for callers that
+       still read the shape. */
 
-    /* Step 2 — stale-prefix probe-and-fixup. Cheap on a clean DB. */
+    /* Stale-prefix probe-and-fixup. Cheap on a clean DB. */
     $t1                       = microtime(true);
     $fixup                    = songIdPrefixProbeAndFixup($db);
     $summary['fixup_ms']      = (int) ((microtime(true) - $t1) * 1000);
