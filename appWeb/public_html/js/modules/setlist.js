@@ -34,6 +34,16 @@ export class SetList {
 
         /** @type {string|null} Currently active set list ID (for navigation) */
         this.activeSetListId = null;
+
+        /** @type {boolean} Authoritative 'replace' pushes are armed only once
+         *  the first-login MERGE reconcile has hydrated localStorage (set by
+         *  UserAuth.triggerSetlistSync) — until then a per-edit replace could
+         *  push an empty/partial list and DELETE other-device setlists
+         *  (review #1). */
+        this._syncReady = false;
+        /** @type {boolean} Set when getAll() hit a JSON parse error — a
+         *  corrupt cache must never drive an authoritative replace (review #2). */
+        this._loadError = false;
     }
 
     /** Initialise — re-render the sync bar whenever auth state flips. */
@@ -56,19 +66,53 @@ export class SetList {
      */
     getAll() {
         try {
-            return JSON.parse(localStorage.getItem(this.storageKey)) || [];
+            const v = JSON.parse(localStorage.getItem(this.storageKey)) || [];
+            this._loadError = false;
+            return v;
         } catch {
+            /* Corrupt cache — flag it so _scheduleSync won't turn the empty
+               fallback into an authoritative replace that wipes the server. */
+            this._loadError = true;
             return [];
         }
     }
 
     /**
-     * Save all set lists to localStorage.
-     * @param {Array} lists
+     * Save all set lists to localStorage (the client cache) and, for
+     * signed-in users, schedule a DB-first push.
+     *
+     * @param {Array}   lists
+     * @param {object}  [opts]
+     * @param {boolean} [opts.sync=true] When false, persist locally WITHOUT
+     *   scheduling a server push. Used by the sync-result handlers
+     *   (triggerSetlistSync / offline drain) that have just written the
+     *   server's own merged copy back — re-pushing it would be redundant.
      */
-    saveAll(lists) {
+    saveAll(lists, { sync = true } = {}) {
         localStorage.setItem(this.storageKey, JSON.stringify(lists));
         this.app.syncStorage(this.storageKey);
+        if (sync) this._scheduleSync();
+    }
+
+    /**
+     * Debounced authoritative push of the current setlists to the server
+     * (WS-F #1018). Mirrors favourites' `_scheduleSync`: 1.5 s debounce so a
+     * flurry of edits (drag-reorder, bulk add) collapses into one POST. Uses
+     * 'replace' mode so a setlist deleted locally is deleted server-side too
+     * — the offline path is handled inside syncSetlists (queue + replay).
+     */
+    _scheduleSync() {
+        if (!this.app?.userAuth?.isLoggedIn?.()) return;
+        /* Hold off destructive 'replace' pushes until the first-login merge
+           reconcile has hydrated the cache (review #1) — the reconcile unions
+           any edits made meanwhile and then flushes this. */
+        if (!this._syncReady) return;
+        clearTimeout(this._syncTimer);
+        this._syncTimer = setTimeout(() => {
+            const all = this.getAll();
+            if (this._loadError) return; /* corrupt cache — never replace (review #2) */
+            this.app.userAuth.syncSetlists(all, 'replace');
+        }, 1500);
     }
 
     /**

@@ -808,8 +808,9 @@ export class Router {
                 /* Show success toast */
                 this.app.showToast('Signed in successfully!', 'success', 3000);
 
-                /* Trigger setlist sync in background */
-                this.app.userAuth?.triggerSetlistSync();
+                /* Trigger a full user-data backfill in the background
+                   (setlists + favourites + tags + history) (WS-F/G). */
+                this.app.userAuth?.triggerUserDataSync();
             } else {
                 /* Token invalid or expired */
                 const message = data.error || 'Login link expired. Please request a new one.';

@@ -1358,4 +1358,28 @@ return [
            so the probe self-clears after a successful run. */
         'probe' => static fn(\mysqli $db) => _migProbe_columnExists($db, 'tblSongs', 'SongbookName'),
     ],
+    'user-data-sync' => [
+        'script' => 'migrate-user-data-sync.php',
+        'card' => [
+            'title'  => 'User-data DB-first sync (WS-F/G #1018 / #1019)',
+            'body'   => 'Adds the two schema pieces the DB-first + auto-sync rewrite of the'
+                      . ' user data stores needs: <code>tblUserCustomTags</code> (per-user pool'
+                      . ' of custom favourite-tag names — the DB-first counterpart of the'
+                      . ' localStorage <code>ihymns_custom_tags</code> array, distinct from the'
+                      . ' curator-managed global <code>tblSongTags</code>) and a'
+                      . ' <code>Tags</code> JSON column on <code>tblUserFavorites</code> so each'
+                      . ' favourite&rsquo;s per-song tags survive a cross-device sync (previously'
+                      . ' the sync sent bare song IDs and silently dropped tags). Setlists,'
+                      . ' favourites and history already have their server tables; this only'
+                      . ' fills the gaps. Data-preserving + idempotent — safe to re-run.',
+            'button' => 'Run User-data Sync Migration',
+        ],
+        /* Pending until BOTH pieces exist — the new table and the new
+           column. Either missing keeps the card actionable so the
+           dashboard counter only clears once the migration has fully
+           landed. */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblUserCustomTags')
+            || !_migProbe_columnExists($db, 'tblUserFavorites', 'Tags'),
+    ],
 ];

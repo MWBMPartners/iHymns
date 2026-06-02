@@ -1323,10 +1323,15 @@ paths:
       tags: [Setlists]
       summary: Sync setlists with server
       description: |
-        Merge local setlists with server-side storage. New setlists (by ID)
-        are inserted; existing setlists are updated if the local version is
-        newer; server-only setlists are preserved. Maximum 50 setlists per
-        user with up to 200 songs each.
+        Reconcile local setlists with server-side storage. Behaviour depends
+        on `mode` (WS-F #1018):
+          * `replace` (default for per-edit auto-sync) — the client's full
+            current list is authoritative: setlists present in the payload are
+            upserted, and server setlists ABSENT from the payload are DELETED,
+            so a deletion on one device propagates to the others.
+          * `merge` (first-login backfill) — union: payload setlists are
+            upserted and server-only setlists are preserved (never deleted).
+        Maximum 50 setlists per user with up to 200 songs each.
       security:
         - bearerAuth: []
       parameters:
@@ -1344,6 +1349,13 @@ paths:
               type: object
               required: [setlists]
               properties:
+                mode:
+                  type: string
+                  enum: [replace, merge]
+                  default: merge
+                  description: >
+                    'replace' deletes server setlists absent from the payload;
+                    'merge' only adds/updates. Omitted → 'merge'.
                 setlists:
                   type: array
                   maxItems: 50
@@ -1544,7 +1556,9 @@ paths:
       operationId: getFavorites
       tags: [Favorites]
       summary: Get user favorites
-      description: Retrieve all favorite song IDs for the authenticated user.
+      description: |
+        Retrieve the authenticated user's favorites as `{id, tags}` objects
+        (WS-G #1019 — `tags` is the per-favourite tag array, empty if none).
       security:
         - bearerAuth: []
       parameters:
@@ -1556,7 +1570,7 @@ paths:
             enum: [favorites]
       responses:
         "200":
-          description: Favorite song IDs
+          description: Favorite objects
           content:
             application/json:
               schema:
@@ -1565,8 +1579,7 @@ paths:
                   favorites:
                     type: array
                     items:
-                      type: string
-                    example: ["CP-0202", "MP-0042"]
+                      $ref: "#/components/schemas/FavoriteEntry"
         "401":
           description: Not authenticated
           content:
@@ -1580,9 +1593,15 @@ paths:
       tags: [Favorites]
       summary: Sync favorites
       description: |
-        Merge local favorites with server-side storage. The result is the
-        union of both sets (no favorites are removed during sync). Maximum
-        500 favorites per user.
+        Reconcile local favorites with server-side storage (WS-G #1019).
+        Behaviour depends on `mode`:
+          * `replace` (default for per-edit auto-sync) — the client's list is
+            authoritative: favourites absent from the payload are DELETED, so a
+            removal on one device propagates; per-song tags are upserted.
+          * `merge` (first-login backfill) — union: nothing is deleted.
+        The payload accepts BOTH the legacy bare-id array and the tagged
+        `{id, tags}` object form. A bare id leaves any existing server tags
+        intact; a `{id, tags}` entry sets them. Maximum 500 favorites.
       security:
         - bearerAuth: []
       parameters:
@@ -1600,17 +1619,27 @@ paths:
               type: object
               required: [favorites]
               properties:
+                mode:
+                  type: string
+                  enum: [replace, merge]
+                  default: merge
+                  description: >
+                    'replace' deletes favourites absent from the payload;
+                    'merge' only adds. Omitted → 'merge'.
                 favorites:
                   type: array
-                  description: Array of song IDs from local storage
+                  description: >
+                    Song IDs (legacy) or {id, tags} objects (preferred).
                   maxItems: 500
                   items:
-                    type: string
-                    pattern: "^[A-Za-z]+-\\d+$"
-                  example: ["CP-0202", "MP-0042"]
+                    oneOf:
+                      - type: string
+                        pattern: "^[A-Za-z]+-\\d+$"
+                      - $ref: "#/components/schemas/FavoriteEntry"
+                  example: [{ "id": "CP-0202", "tags": ["Easter"] }, "MP-0042"]
       responses:
         "200":
-          description: Merged favorites
+          description: Stored favorites as {id, tags} objects
           content:
             application/json:
               schema:
@@ -1619,8 +1648,7 @@ paths:
                   favorites:
                     type: array
                     items:
-                      type: string
-                    example: ["CP-0202", "MP-0042", "CP-0501"]
+                      $ref: "#/components/schemas/FavoriteEntry"
         "400":
           description: Invalid request body
           content:
@@ -1671,6 +1699,101 @@ paths:
                 $ref: "#/components/schemas/SuccessResponse"
         "400":
           description: Invalid song ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api.php?action=custom_tags:
+    get:
+      operationId: getCustomTags
+      tags: [Favorites]
+      summary: Get the user's custom tag pool
+      description: |
+        Retrieve the authenticated user's per-user custom favourite-tag pool
+        (WS-G #1019) — distinct from the curator-managed global song tags.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [custom_tags]
+      responses:
+        "200":
+          description: Custom tag names
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tags:
+                    type: array
+                    items: { type: string, maxLength: 50 }
+                    example: ["Easter", "Quiet Time"]
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api.php?action=custom_tags_sync:
+    post:
+      operationId: syncCustomTags
+      tags: [Favorites]
+      summary: Sync the user's custom tag pool
+      description: |
+        Reconcile the local custom-tag pool with the server (WS-G #1019).
+        `mode=replace` (default for edits) deletes tags absent from the
+        payload; `mode=merge` (first-login backfill) only adds. Max 200 tags.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [custom_tags_sync]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tags]
+              properties:
+                mode:
+                  type: string
+                  enum: [replace, merge]
+                  default: merge
+                tags:
+                  type: array
+                  maxItems: 200
+                  items: { type: string, maxLength: 50 }
+                  example: ["Easter", "Quiet Time"]
+      responses:
+        "200":
+          description: Stored tag list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tags:
+                    type: array
+                    items: { type: string }
+        "400":
+          description: Invalid request body
           content:
             application/json:
               schema:
@@ -4876,6 +4999,93 @@ paths:
                         title:    { type: string }
                         songbook: { type: string }
                         viewedAt: { type: string, format: date-time }
+
+  /api.php?action=song_history_backfill:
+    post:
+      operationId: songHistoryBackfill
+      tags: [Song Metadata]
+      summary: One-time push of local recently-viewed into the server (WS-G #1019)
+      description: |
+        Pushes a signed-in user's pre-existing LOCAL recently-viewed list
+        (e.g. songs viewed while anonymous, before this device signed in) into
+        `tblSongHistory` so Recently Viewed is consistent across devices. The
+        client runs this once per device, guarded by a localStorage flag; the
+        read path dedupes, so an occasional duplicate row is invisible.
+        Capped at 50 views; ViewedAt preserved (invalid → NOW()).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song_history_backfill] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [views]
+              properties:
+                views:
+                  type: array
+                  maxItems: 50
+                  items:
+                    type: object
+                    required: [song_id]
+                    properties:
+                      song_id:   { type: string, pattern: "^[A-Za-z0-9_-]{1,32}$" }
+                      viewed_at: { type: string, format: date-time }
+      responses:
+        "200":
+          description: Imported count
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:       { type: boolean }
+                  imported: { type: integer }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api.php?action=song_history_clear:
+    post:
+      operationId: songHistoryClear
+      tags: [Song Metadata]
+      summary: Clear the caller's recently-viewed history (WS-G #1019)
+      description: |
+        Deletes the authenticated user's own `tblSongHistory` rows so a
+        "Clear" propagates across devices instead of repopulating from the
+        server on the next pull. Anonymous (UserId NULL) rows — which drive
+        aggregate popularity — are untouched.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song_history_clear] }
+      responses:
+        "200":
+          description: Cleared count
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean }
+                  cleared: { type: integer }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api.php?action=song_key:
     get:
@@ -8117,6 +8327,23 @@ components:
             type: integer
             minimum: 0
           example: [0, 1, 2, 1, 3]
+
+    FavoriteEntry:
+      type: object
+      description: A user favourite with its per-song tags (WS-G #1019)
+      required: [id]
+      properties:
+        id:
+          type: string
+          pattern: "^[A-Za-z]+-\\d+$"
+          example: CP-0202
+        tags:
+          type: array
+          description: Per-favourite user tags (empty if none)
+          items:
+            type: string
+            maxLength: 50
+          example: ["Easter", "Communion"]
 
     # -------------------------------------------------------------------------
     # Song request models

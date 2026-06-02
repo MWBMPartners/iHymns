@@ -258,6 +258,16 @@ class iHymnsApp {
                circuit and re-bind on next login. */
             this.userAuth.bindOfflineDrains();
 
+            /* Bridged-session catch-up (WS-F/G #1018/#1019): a token already
+               in localStorage at page load (cross-subdomain sign-in) never
+               fires a login handler, and the router's initial auth-changed
+               dispatch (router.init above) ran BEFORE bindOfflineDrains bound
+               its once-guard listener — so that first event was missed. Fire
+               the one-time DB-first backfill directly for an already-signed-in
+               visitor; the _userDataSynced guard dedupes it against the
+               listener on later navigations. */
+            if (this.userAuth.isLoggedIn()) this.userAuth.triggerUserDataSync();
+
             /* Re-refresh the Settings → Account section now that userAuth
                exists and has read its localStorage credentials. Settings
                .init() ran earlier (with userAuth still undefined) and

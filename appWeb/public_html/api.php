@@ -1654,6 +1654,17 @@ if ($action !== null) {
             /* Cap at 50 setlists per user */
             $localLists = array_slice($body['setlists'], 0, 50);
 
+            /* Sync mode (WS-F #1018):
+             *   'merge'   — union local + server, never delete (the safe
+             *               first-login backfill; default for back-compat
+             *               with any client that omits the field).
+             *   'replace' — authoritative: the client's full current list
+             *               IS the truth, so server rows absent from the
+             *               payload are DELETED. This is what every per-edit
+             *               auto-sync sends so a setlist deleted on one
+             *               device propagates to the others. */
+            $syncMode = (($body['mode'] ?? 'merge') === 'replace') ? 'replace' : 'merge';
+
             $db = getDbMysqli();
             $userId = (int)$authUser['Id'];
 
@@ -1725,6 +1736,21 @@ if ($action !== null) {
                 unset($serverMap[$setlistId]);
             }
             $upsert->close();
+
+            /* Authoritative replace (WS-F #1018): anything still left in
+               $serverMap was on the server but NOT in the client's payload,
+               i.e. the user deleted it. Drop those rows so the deletion
+               propagates. In 'merge' mode they're preserved (server-only
+               wins), which is what the first-login backfill wants. */
+            if ($syncMode === 'replace' && count($serverMap) > 0) {
+                $del = $db->prepare('DELETE FROM tblUserSetlists WHERE UserId = ? AND SetlistId = ?');
+                $delId = '';
+                $del->bind_param('is', $userId, $delId);
+                foreach (array_keys($serverMap) as $delId) {
+                    $del->execute();
+                }
+                $del->close();
+            }
 
             /* Fetch the merged result (all setlists for this user) */
             $stmt = $db->prepare('SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt FROM tblUserSetlists WHERE UserId = ? ORDER BY UpdatedAt DESC');
@@ -2216,15 +2242,26 @@ if ($action !== null) {
 
             $db = getDbMysqli();
             $stmt = $db->prepare(
-                'SELECT SongId FROM tblUserFavorites WHERE UserId = ? ORDER BY CreatedAt DESC'
+                'SELECT SongId, Tags FROM tblUserFavorites WHERE UserId = ? ORDER BY CreatedAt DESC'
             );
             $authUserId = (int)$authUser['Id'];
             $stmt->bind_param('i', $authUserId);
             $stmt->execute();
-            $rows = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'SongId');
+            $favRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
             $stmt->close();
 
-            sendJson(['favorites' => $rows]);
+            /* Return objects {id, tags} (WS-G #1019) so per-favourite tags
+               survive a cross-device pull. The client unions these with its
+               local favourite metadata (title / songbook / number). */
+            $favorites = array_map(static function ($row) {
+                $tags = $row['Tags'] !== null ? json_decode($row['Tags'], true) : [];
+                return [
+                    'id'   => $row['SongId'],
+                    'tags' => is_array($tags) ? array_values($tags) : [],
+                ];
+            }, $favRows);
+
+            sendJson(['favorites' => $favorites]);
             break;
 
         /* -----------------------------------------------------------------
@@ -2250,62 +2287,145 @@ if ($action !== null) {
             $body = json_decode($rawBody, true);
 
             if (!is_array($body['favorites'] ?? null)) {
-                sendJson(['error' => 'Invalid request. Required: favorites (array of song IDs).'], 400);
+                sendJson(['error' => 'Invalid request. Required: favorites (array).'], 400);
                 break;
             }
+
+            /* Sync mode — same merge/replace contract as user_setlists_sync.
+               'replace' (per-edit auto-sync) deletes favourites absent from
+               the payload so a removed favourite propagates across devices;
+               'merge' (first-login backfill) only adds. Default 'merge' for
+               back-compat with any client that omits the field. */
+            $syncMode = (($body['mode'] ?? 'merge') === 'replace') ? 'replace' : 'merge';
 
             $db = getDbMysqli();
             $userId = (int)$authUser['Id'];
 
-            /* Sanitise incoming song IDs */
-            $localFavs = array_values(array_filter(
-                array_map('trim', $body['favorites']),
-                fn($s) => preg_match('/^[A-Za-z]+-\d+$/', $s)
-            ));
+            /* Accept BOTH payload shapes (WS-G #1019):
+                 - legacy : ["CP-0001", "MP-0042", ...]
+                 - tagged : [{ "id": "CP-0001", "tags": ["Easter"] }, ...]
+               Normalise to an ordered songId => tags(array|null) map. A
+               bare-string entry carries no tags (null → leave any existing
+               server tags untouched); an object with a tags array sets them
+               (including [] to clear). Last write per id wins. */
+            $localFavs = [];
+            foreach (array_slice($body['favorites'], 0, 500) as $entry) {
+                if (is_string($entry)) {
+                    $sid  = trim($entry);
+                    $tags = null;
+                } elseif (is_array($entry) && isset($entry['id'])) {
+                    $sid  = trim((string)$entry['id']);
+                    $tags = is_array($entry['tags'] ?? null)
+                        ? array_values(array_filter(
+                              array_map(fn($t) => mb_substr(trim((string)$t), 0, 50), $entry['tags']),
+                              fn($t) => $t !== ''
+                          ))
+                        : [];
+                } else {
+                    continue;
+                }
+                if (!preg_match('/^[A-Za-z]+-\d+$/', $sid)) continue;
+                $localFavs[$sid] = $tags;
+            }
 
-            /* Cap at 500 favorites */
-            $localFavs = array_slice($localFavs, 0, 500);
-
-            /* Get existing server favorites */
-            $stmt = $db->prepare('SELECT SongId FROM tblUserFavorites WHERE UserId = ?');
+            /* Existing server favourites — id + tags (for the replace diff and
+               the MERGE-mode tag union below). */
+            $stmt = $db->prepare('SELECT SongId, Tags FROM tblUserFavorites WHERE UserId = ?');
             $stmt->bind_param('i', $userId);
             $stmt->execute();
-            $serverFavs = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'SongId');
+            $serverRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
             $stmt->close();
+            $serverFavs = array_column($serverRows, 'SongId');
+            $serverTagMap = [];
+            foreach ($serverRows as $r) {
+                $decoded = $r['Tags'] !== null ? json_decode($r['Tags'], true) : [];
+                $serverTagMap[$r['SongId']] = is_array($decoded) ? $decoded : [];
+            }
 
-            /* Merge: union of local and server */
-            $merged = array_unique(array_merge($serverFavs, $localFavs));
+            /* Authoritative replace: delete server favourites the client no
+               longer has. In merge mode nothing is deleted. */
+            $deleted = 0;
+            if ($syncMode === 'replace') {
+                $toDelete = array_diff($serverFavs, array_keys($localFavs));
+                if (count($toDelete) > 0) {
+                    $del = $db->prepare('DELETE FROM tblUserFavorites WHERE UserId = ? AND SongId = ?');
+                    $delId = '';
+                    $del->bind_param('is', $userId, $delId);
+                    foreach ($toDelete as $delId) {
+                        $del->execute();
+                        $deleted += $del->affected_rows;
+                    }
+                    $del->close();
+                }
+            }
 
-            /* Insert any new favorites (ignore duplicates). Reused
-               prepared statement with $songId as a bound-by-reference
-               variable that we update each iteration. */
-            $insert = $db->prepare(
-                'INSERT IGNORE INTO tblUserFavorites (UserId, SongId) VALUES (?, ?)'
+            /* Upsert each payload favourite. Tags are only overwritten when
+               the client actually sent a tags array for that entry — a bare
+               string id leaves any existing server tags intact (COALESCE).
+               Per-row try/catch preserves the old INSERT IGNORE resilience:
+               an orphan song id (FK violation) is skipped, not fatal. */
+            $upsert = $db->prepare(
+                'INSERT INTO tblUserFavorites (UserId, SongId, Tags) VALUES (?, ?, ?)
+                 ON DUPLICATE KEY UPDATE Tags = COALESCE(VALUES(Tags), Tags)'
             );
             $songIdBound = '';
-            $insert->bind_param('is', $userId, $songIdBound);
+            $tagsBound = null;
+            $upsert->bind_param('iss', $userId, $songIdBound, $tagsBound);
             $newlyAdded = 0;
-            foreach ($localFavs as $songId) {
-                $songIdBound = $songId;
-                $insert->execute();
-                $newlyAdded += $insert->affected_rows;
+            foreach ($localFavs as $sid => $tags) {
+                $songIdBound = $sid;
+                if ($syncMode === 'merge') {
+                    /* MERGE = first-login reconcile: UNION the incoming tags
+                       with whatever this favourite already carries server-side
+                       (set by another device) so neither side's tags are lost.
+                       A bare-id (null) or empty incoming array contributes
+                       nothing, leaving the server tags intact. An empty union
+                       binds NULL so COALESCE preserves (and a brand-new row
+                       stays untagged). (review: cross-device tag union) */
+                    $incoming = is_array($tags) ? $tags : [];
+                    $union = array_values(array_unique(array_merge(
+                        $serverTagMap[$sid] ?? [], $incoming
+                    )));
+                    $tagsBound = empty($union)
+                        ? null
+                        : json_encode($union, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                } else {
+                    /* REPLACE = per-edit authoritative: the client's tags win,
+                       including [] to clear. A bare id (null) preserves via
+                       COALESCE. */
+                    $tagsBound = ($tags === null)
+                        ? null
+                        : json_encode(array_values($tags), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                }
+                try {
+                    $upsert->execute();
+                    if ($upsert->affected_rows === 1) $newlyAdded++; /* 1=insert, 2=update, 0=no change */
+                } catch (\Throwable $_e) {
+                    /* Orphan song id / transient error — skip, keep the batch. */
+                }
             }
-            $insert->close();
+            $upsert->close();
 
-            /* Return merged list */
+            /* Return the stored list as {id, tags} objects. */
             $stmt = $db->prepare(
-                'SELECT SongId FROM tblUserFavorites WHERE UserId = ? ORDER BY CreatedAt DESC'
+                'SELECT SongId, Tags FROM tblUserFavorites WHERE UserId = ? ORDER BY CreatedAt DESC'
             );
             $stmt->bind_param('i', $userId);
             $stmt->execute();
-            $finalFavs = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'SongId');
+            $finalRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
             $stmt->close();
+            $finalFavs = array_map(static function ($row) {
+                $t = $row['Tags'] !== null ? json_decode($row['Tags'], true) : [];
+                return ['id' => $row['SongId'], 'tags' => is_array($t) ? array_values($t) : []];
+            }, $finalRows);
 
-            /* Audit (#535) — only one row per sync, not per favourite,
-               since the sync is the meaningful user action. */
-            if ($newlyAdded > 0) {
+            /* Audit (#535) — one row per sync, since the sync is the
+               meaningful user action. */
+            if ($newlyAdded > 0 || $deleted > 0) {
                 logActivity('favorites.sync', 'user', (string)$userId, [
+                    'mode'        => $syncMode,
                     'newly_added' => $newlyAdded,
+                    'deleted'     => $deleted,
                     'total'       => count($finalFavs),
                 ]);
             }
@@ -2352,6 +2472,121 @@ if ($action !== null) {
             }
 
             sendJson(['ok' => true]);
+            break;
+
+        /* =================================================================
+         * USER CUSTOM TAGS — Per-user pool of favourite-tag names (WS-G #1019)
+         *
+         * The DB-first counterpart of the localStorage `ihymns_custom_tags`
+         * array. Distinct from the curator-managed global tblSongTags.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Get the authenticated user's custom tags
+         * Requires: Authorization: Bearer <token>
+         * Returns: { "tags": ["Easter", "Quiet", ...] }
+         * ----------------------------------------------------------------- */
+        case 'custom_tags':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $db = getDbMysqli();
+            $stmt = $db->prepare('SELECT Tag FROM tblUserCustomTags WHERE UserId = ? ORDER BY Tag ASC');
+            $authUserId = (int)$authUser['Id'];
+            $stmt->bind_param('i', $authUserId);
+            $stmt->execute();
+            $tagRows = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Tag');
+            $stmt->close();
+
+            sendJson(['tags' => $tagRows]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Sync custom tags. Same merge/replace contract as favorites_sync.
+         *
+         * POST body (JSON): { "tags": ["Easter", ...], "mode": "replace" }
+         * Returns: { "tags": [...stored...] }
+         * Requires: Authorization: Bearer <token>
+         * ----------------------------------------------------------------- */
+        case 'custom_tags_sync':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            if (!is_array($body['tags'] ?? null)) {
+                sendJson(['error' => 'Invalid request. Required: tags (array of strings).'], 400);
+                break;
+            }
+
+            $syncMode = (($body['mode'] ?? 'merge') === 'replace') ? 'replace' : 'merge';
+
+            $db = getDbMysqli();
+            $userId = (int)$authUser['Id'];
+
+            /* Sanitise: trim, cap length at 50, drop empties, de-dupe,
+               cap the pool at 200 tags. */
+            $localTags = [];
+            foreach ($body['tags'] as $t) {
+                if (!is_string($t)) continue;
+                $t = mb_substr(trim($t), 0, 50);
+                if ($t === '') continue;
+                $localTags[$t] = true;
+            }
+            $localTags = array_slice(array_keys($localTags), 0, 200);
+
+            /* Replace: delete tags the client no longer has. */
+            $deleted = 0;
+            if ($syncMode === 'replace') {
+                $stmt = $db->prepare('SELECT Tag FROM tblUserCustomTags WHERE UserId = ?');
+                $stmt->bind_param('i', $userId);
+                $stmt->execute();
+                $serverTags = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Tag');
+                $stmt->close();
+
+                $toDelete = array_diff($serverTags, $localTags);
+                if (count($toDelete) > 0) {
+                    $del = $db->prepare('DELETE FROM tblUserCustomTags WHERE UserId = ? AND Tag = ?');
+                    $delTag = '';
+                    $del->bind_param('is', $userId, $delTag);
+                    foreach ($toDelete as $delTag) {
+                        $del->execute();
+                        $deleted += $del->affected_rows;
+                    }
+                    $del->close();
+                }
+            }
+
+            /* Insert any new tags (ignore duplicates). */
+            $insert = $db->prepare('INSERT IGNORE INTO tblUserCustomTags (UserId, Tag) VALUES (?, ?)');
+            $tagBound = '';
+            $insert->bind_param('is', $userId, $tagBound);
+            foreach ($localTags as $t) {
+                $tagBound = $t;
+                $insert->execute();
+            }
+            $insert->close();
+
+            /* Return the stored list. */
+            $stmt = $db->prepare('SELECT Tag FROM tblUserCustomTags WHERE UserId = ? ORDER BY Tag ASC');
+            $stmt->bind_param('i', $userId);
+            $stmt->execute();
+            $finalTags = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Tag');
+            $stmt->close();
+
+            sendJson(['tags' => $finalTags]);
             break;
 
         /* =================================================================
@@ -4516,7 +4751,8 @@ if ($action !== null) {
                             s.SongbookAbbr  AS songbook,
                             sb.Name         AS songbookName,
                             s.Language      AS language,
-                            MAX(h.ViewedAt) AS viewedAt
+                            MAX(h.ViewedAt) AS viewedAt,
+                            UNIX_TIMESTAMP(MAX(h.ViewedAt)) AS viewedAtEpoch
                      FROM tblSongHistory h
                      JOIN tblSongs s ON s.SongId = h.SongId
                      LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
@@ -4594,6 +4830,114 @@ if ($action !== null) {
                 error_log('[api/song_view] ' . $e->getMessage());
                 sendJson(['ok' => false, 'fallback' => true]);
             }
+            break;
+
+        /* -----------------------------------------------------------------
+         * One-time history backfill (WS-G #1019)
+         *
+         * Pushes a signed-in user's pre-existing LOCAL recently-viewed list
+         * (viewed before this account existed on this device) into
+         * tblSongHistory so "Recently Viewed" is consistent across devices.
+         * The client runs this once per device, guarded by a localStorage
+         * flag. Idempotent enough: the read path GROUP BYs on SongId so the
+         * occasional duplicate row is invisible.
+         *
+         * POST body (JSON):
+         *   { "views": [{ "song_id": "CP-0001", "viewed_at": "ISO8601" }, ...] }
+         * Requires: Authorization: Bearer <token>
+         * ----------------------------------------------------------------- */
+        case 'song_history_backfill':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            if (!is_array($body['views'] ?? null)) {
+                sendJson(['error' => 'Invalid request. Required: views (array).'], 400);
+                break;
+            }
+
+            $db = getDbMysqli();
+            $userId = (int)$authUser['Id'];
+
+            /* Insert with the client-supplied ViewedAt so the order is
+               preserved. The client sends a UTC ISO-8601 string; we parse it
+               to a UTC epoch and bind it through FROM_UNIXTIME(), so the value
+               round-trips to the correct instant regardless of the MySQL
+               session timezone (a raw gmdate string would be reinterpreted in
+               the session tz and shifted on a non-UTC server). An invalid /
+               missing timestamp binds NULL → COALESCE → NOW(). Per-row
+               try/catch skips orphan song ids (FK violation) without aborting
+               the batch. Cap at 50 — the read path only surfaces 50 most recent. */
+            $insert = $db->prepare(
+                'INSERT INTO tblSongHistory (UserId, SongId, ViewedAt) VALUES (?, ?, COALESCE(FROM_UNIXTIME(?), NOW()))'
+            );
+            $sidBound = '';
+            $epochBound = null;
+            $insert->bind_param('isi', $userId, $sidBound, $epochBound);
+            $imported = 0;
+            foreach (array_slice($body['views'], 0, 50) as $v) {
+                if (!is_array($v)) continue;
+                $sid = trim((string)($v['song_id'] ?? ''));
+                if (!preg_match('/^[A-Za-z0-9_-]{1,32}$/', $sid)) continue;
+                $sidBound = $sid;
+                /* Parse the UTC ISO timestamp to an epoch; null → NOW(). */
+                $rawTs = trim((string)($v['viewed_at'] ?? ''));
+                $ts = $rawTs !== '' ? strtotime($rawTs) : false;
+                $epochBound = ($ts !== false) ? $ts : null;
+                try {
+                    $insert->execute();
+                    $imported++;
+                } catch (\Throwable $_e) {
+                    /* Orphan song id / transient error — skip. */
+                }
+            }
+            $insert->close();
+
+            sendJson(['ok' => true, 'imported' => $imported]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Clear the authenticated user's recently-viewed history (WS-G #1019)
+         *
+         * DB-first "Clear" companion: removes this user's own tblSongHistory
+         * rows so the cleared state propagates across devices (a local-only
+         * clear would just repopulate from the server on next load).
+         * Anonymous (UserId NULL) rows are untouched — those drive aggregate
+         * popularity, not a user's personal list.
+         *
+         * Requires: Authorization: Bearer <token>
+         * ----------------------------------------------------------------- */
+        case 'song_history_clear':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $db = getDbMysqli();
+            $stmt = $db->prepare('DELETE FROM tblSongHistory WHERE UserId = ?');
+            $authUserId = (int)$authUser['Id'];
+            $stmt->bind_param('i', $authUserId);
+            $stmt->execute();
+            $cleared = $stmt->affected_rows;
+            $stmt->close();
+
+            sendJson(['ok' => true, 'cleared' => $cleared]);
             break;
 
         /* =================================================================

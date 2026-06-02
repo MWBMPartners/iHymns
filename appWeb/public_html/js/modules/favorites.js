@@ -21,6 +21,15 @@ export class Favorites {
         this.selectMode = false;
         /** @type {Set<string>} Currently selected song IDs (#119) */
         this.selectedIds = new Set();
+        /** @type {boolean} Authoritative 'replace' pushes are armed only once
+         *  the first-login MERGE reconcile has hydrated localStorage with the
+         *  server's union (set by UserAuth.triggerFavoritesSync). Until then a
+         *  per-edit replace could push an empty/partial list and DELETE the
+         *  user's other-device favourites (review #1). */
+        this._syncReady = false;
+        /** @type {boolean} Set when getAll() hit a JSON parse error — a
+         *  corrupt cache must never drive an authoritative replace (review #2). */
+        this._loadError = false;
     }
 
     /** Initialise — nothing to do on startup */
@@ -32,19 +41,31 @@ export class Favorites {
      */
     getAll() {
         try {
-            return JSON.parse(localStorage.getItem(this.storageKey)) || [];
+            const v = JSON.parse(localStorage.getItem(this.storageKey)) || [];
+            this._loadError = false;
+            return v;
         } catch {
+            /* Corrupt cache — flag it so _scheduleSync won't turn the empty
+               fallback into an authoritative replace that wipes the server. */
+            this._loadError = true;
             return [];
         }
     }
 
     /**
-     * Save the favourites array to localStorage.
-     * @param {Array} favorites
+     * Save the favourites array to localStorage (the client cache) and, for
+     * signed-in users, schedule a DB-first push.
+     *
+     * @param {Array}   favorites
+     * @param {object}  [opts]
+     * @param {boolean} [opts.sync=true] When false, persist locally WITHOUT
+     *   scheduling a server push — used by the sync-result handlers that
+     *   have just written the server's own merged copy back.
      */
-    saveAll(favorites) {
+    saveAll(favorites, { sync = true } = {}) {
         localStorage.setItem(this.storageKey, JSON.stringify(favorites));
         this.app.syncStorage(this.storageKey);
+        if (sync) this._scheduleSync();
     }
 
     /**
@@ -88,21 +109,30 @@ export class Favorites {
             added = true;
         }
 
-        /* Push to server if signed in (#338). Debounced 1.5 s so a
-           flurry of toggles (bulk-edit dialog) collapses into one
-           POST. Offline path is handled inside syncFavorites — it
-           queues and replays when connectivity returns. */
-        this._scheduleSync();
+        /* saveAll() schedules the debounced server push (see _scheduleSync). */
         return added;
     }
 
-    /** Debounced server push for signed-in users (#338). */
+    /**
+     * Debounced authoritative push of the current favourites to the server
+     * (#338, WS-G #1019). 1.5 s debounce so a flurry of toggles (bulk-edit
+     * dialog) collapses into one POST. Sends {id, tags} objects in 'replace'
+     * mode so a removed favourite — and per-song tag edits — propagate
+     * across devices. Offline path is handled inside syncFavorites (queue +
+     * replay with the latest local state on reconnect).
+     */
     _scheduleSync() {
         if (!this.app?.userAuth?.isLoggedIn?.()) return;
+        /* Hold off destructive 'replace' pushes until the first-login merge
+           reconcile has hydrated the cache (review #1) — the reconcile itself
+           unions any edits made meanwhile and then flushes this. */
+        if (!this._syncReady) return;
         clearTimeout(this._syncTimer);
         this._syncTimer = setTimeout(() => {
-            const ids = this.getAll().map(f => f.id);
-            this.app.userAuth.syncFavorites(ids);
+            const all = this.getAll();
+            if (this._loadError) return; /* corrupt cache — never replace (review #2) */
+            const favs = all.map(f => ({ id: f.id, tags: f.tags || [] }));
+            this.app.userAuth.syncFavorites(favs, 'replace');
         }, 1500);
     }
 
@@ -162,6 +192,33 @@ export class Favorites {
     }
 
     /**
+     * Get the raw per-user custom-tag pool (the names the user has invented,
+     * independent of which favourites currently carry them). The DB-first
+     * sync layer reads this; getAllTags() above is the display union.
+     * @returns {string[]}
+     */
+    getCustomTags() {
+        try {
+            const custom = JSON.parse(localStorage.getItem(STORAGE_CUSTOM_TAGS)) || [];
+            return Array.isArray(custom) ? custom : [];
+        } catch {
+            return [];
+        }
+    }
+
+    /**
+     * Replace the entire custom-tag pool (used by the sync layer when the
+     * server's authoritative list comes back). Local-only write — does NOT
+     * re-push to the server (the caller already has the server's copy).
+     * @param {string[]} tags
+     */
+    saveCustomTags(tags) {
+        const clean = [...new Set((tags || []).filter(t => typeof t === 'string' && t.trim() !== ''))].sort();
+        localStorage.setItem(STORAGE_CUSTOM_TAGS, JSON.stringify(clean));
+        this.app.syncStorage?.(STORAGE_CUSTOM_TAGS);
+    }
+
+    /**
      * Save a custom tag to the user's tag list.
      * @param {string} tag
      */
@@ -172,7 +229,25 @@ export class Favorites {
             custom.push(tag);
             custom.sort();
             localStorage.setItem(STORAGE_CUSTOM_TAGS, JSON.stringify(custom));
+            this.app.syncStorage?.(STORAGE_CUSTOM_TAGS);
+            this._scheduleTagSync();
         }
+    }
+
+    /**
+     * Debounced DB-first push of the custom-tag pool (WS-G #1019). Uses MERGE
+     * mode: a tag ADD never needs to delete anything, so union is correct and
+     * closes the first-login race entirely (review #4) — no _syncReady gate
+     * needed because merge can't wipe. A future tag-REMOVAL UI would instead
+     * send 'replace' gated on _syncReady. Self-gates on auth + offline-queues
+     * inside syncCustomTags.
+     */
+    _scheduleTagSync() {
+        if (!this.app?.userAuth?.isLoggedIn?.()) return;
+        clearTimeout(this._tagSyncTimer);
+        this._tagSyncTimer = setTimeout(() => {
+            this.app.userAuth.syncCustomTags(this.getCustomTags(), 'merge');
+        }, 1500);
     }
 
     /**
@@ -300,9 +375,15 @@ export class Favorites {
         });
     }
 
-    /** Clear all favourites */
+    /** Clear all favourites (and propagate the clear to the server). */
     clearAll() {
         localStorage.removeItem(this.storageKey);
+        this.app.syncStorage?.(this.storageKey);
+        /* Authoritative empty push so the cleared state reaches the other
+           devices (WS-G #1019) — a local-only clear would just repopulate
+           from the server on the next pull. getAll() now returns [] so
+           syncFavorites([], 'replace') deletes the server rows. */
+        this._scheduleSync();
     }
 
     /**

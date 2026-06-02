@@ -979,6 +979,7 @@ CREATE TABLE IF NOT EXISTS tblSharedSetlists (
 CREATE TABLE IF NOT EXISTS tblUserFavorites (
     UserId          INT UNSIGNED    NOT NULL,
     SongId          VARCHAR(20)     NOT NULL,
+    Tags            JSON            NULL COMMENT 'Per-favourite user tags (#122) — JSON array of strings; NULL = untagged (WS-G #1019)',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     PRIMARY KEY (UserId, SongId),
@@ -988,6 +989,27 @@ CREATE TABLE IF NOT EXISTS tblUserFavorites (
         ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT fk_Favorites_Song
         FOREIGN KEY (SongId) REFERENCES tblSongs(SongId)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblUserCustomTags (WS-G #1019)
+-- Per-user pool of custom favourite-tag names. The DB-first counterpart of
+-- the localStorage `ihymns_custom_tags` string array. Distinct from the
+-- curator-managed global tblSongTags / tblSongTagMap — these are private,
+-- per-account labels the user invents for organising their own favourites.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblUserCustomTags (
+    UserId          INT UNSIGNED    NOT NULL,
+    Tag             VARCHAR(50)     NOT NULL,
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (UserId, Tag),
+    INDEX idx_User (UserId),
+
+    CONSTRAINT fk_CustomTags_User
+        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
         ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
