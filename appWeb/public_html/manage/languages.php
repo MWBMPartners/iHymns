@@ -439,10 +439,13 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Languages — iHymns Admin</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.2/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="/css/app.css">
-    <link rel="stylesheet" href="/css/admin.css">
+    <?php /* #955 — shared head bundle: runs admin-theme-init.php (the
+       synchronous theme resolver) BEFORE any CSS so this page honours the
+       user's Light/Dark/High-contrast/CVD/System preference with no FOUC,
+       and loads Bootstrap/Icons with SRI + cache-busted app.css/admin.css.
+       Replaces the previous inline, SRI-less, resolver-less CSS block that
+       left this page stuck in the default theme regardless of preference. */ ?>
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
 </head>
 <body>
 <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>
