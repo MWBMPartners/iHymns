@@ -307,6 +307,23 @@ try {
                             disabled>
                         <i class="bi bi-box-arrow-down me-1"></i>Export
                     </button>
+                    <!-- ProPresenter 7+ export (#887): single song → .pro,
+                         whole songbook (the active sidebar filter) → .probundle.
+                         Wired by the self-contained inline script near the
+                         bottom of this page; needs no editor.js changes. -->
+                    <div class="btn-group">
+                        <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle"
+                                id="btn-pp-export" data-bs-toggle="dropdown" aria-expanded="false"
+                                title="Export to ProPresenter 7+ (.pro / .probundle)" disabled>
+                            <i class="bi bi-easel me-1"></i>ProPresenter
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-dark">
+                            <li><a class="dropdown-item" href="#" id="pp-export-song">
+                                <i class="bi bi-file-earmark-music me-2"></i>This song (<code>.pro</code>)</a></li>
+                            <li><a class="dropdown-item" href="#" id="pp-export-songbook">
+                                <i class="bi bi-archive me-2"></i>This songbook (<code>.probundle</code>)</a></li>
+                        </ul>
+                    </div>
                     <button type="button" class="btn btn-sm btn-outline-danger" id="btn-delete-song" title="Delete selected song">
                         <i class="bi bi-trash me-1"></i>Delete
                     </button>
@@ -1506,6 +1523,94 @@ try {
     <!-- Editor JavaScript — all interactive logic (loading, saving, editing, previewing)
          is handled in this separate file to keep concerns separated -->
     <script src="editor.js"></script>
+
+    <!-- ProPresenter 7+ exporter (#887). protobufjs is vendored locally
+         (vendor/protobuf.min.js, BSD-3-Clause) so the editor works on shared
+         hosts + offline; propresenter-export.js exposes window.iHymnsProPresenter.
+         Loaded AFTER editor.js so the inline wiring can read its globals. -->
+    <script src="vendor/protobuf.min.js"></script>
+    <script src="propresenter-export.js"></script>
+    <script>
+    /* #887 — wire the ProPresenter dropdown to the exporter. Self-contained:
+       reads editor.js globals (currentSongId / songData / EDITOR_API_URL /
+       getSelectedSongbookFilter / _loadSongsFull) + the ?action=songbook_export
+       endpoint; makes NO changes to editor.js. Single song -> .pro; the active
+       sidebar songbook filter -> .probundle (bundle of every song in it). */
+    (function () {
+        'use strict';
+
+        function notify(msg, type) {
+            if (typeof showToast === 'function') {
+                showToast(msg, type === 'danger' ? 'error' : type);
+            } else {
+                console.log('[ProPresenter] ' + msg);
+            }
+        }
+
+        /* Zero-pad width for a song's songbook so files sort numerically. */
+        function paddingForSong(song) {
+            var sb = (songData.songbooks || []).find(function (x) { return x.id === song.songbook; });
+            return (sb && window.iHymnsProPresenter) ? window.iHymnsProPresenter.paddingFor(sb) : 0;
+        }
+
+        async function exportCurrentSong() {
+            if (!currentSongId) { notify('Open a song first, then export it.', 'warning'); return; }
+            var song = (songData.songs || []).find(function (s) { return s.id === currentSongId; });
+            if (!song) { notify('Could not find the open song.', 'danger'); return; }
+            /* Ensure the FULL record (components + credits), not the slim stub. */
+            if (!song._full && typeof _loadSongsFull === 'function') {
+                await _loadSongsFull([currentSongId]);
+                song = (songData.songs || []).find(function (s) { return s.id === currentSongId; }) || song;
+            }
+            var result = await window.iHymnsProPresenter.exportSong(song, { padNumber: paddingForSong(song) });
+            notify('Exported ' + result.filename, 'success');
+        }
+
+        async function exportCurrentSongbook() {
+            var abbr = (typeof getSelectedSongbookFilter === 'function') ? getSelectedSongbookFilter() : '';
+            if (!abbr) { notify('Filter the song list to one songbook first (sidebar dropdown), then export it.', 'warning'); return; }
+            notify('Building ProPresenter bundle for ' + abbr + '…', 'info');
+            var resp = await fetch(EDITOR_API_URL + '?action=songbook_export&abbr=' + encodeURIComponent(abbr), { credentials: 'same-origin' });
+            if (!resp.ok) { notify('Failed to load songbook ' + abbr + ' (HTTP ' + resp.status + ').', 'danger'); return; }
+            var payload = await resp.json();
+            var songs = payload.songs || [];
+            if (!songs.length) { notify('Songbook ' + abbr + ' has no songs to export.', 'warning'); return; }
+            var sb = payload.songbook || {};
+            var result = await window.iHymnsProPresenter.exportAllAsBundle(songs, {
+                songbookAbbrev: abbr,
+                songbookName: sb.name || sb.Name || abbr
+            });
+            notify('Exported ' + result.count + ' song' + (result.count === 1 ? '' : 's') + ' → ' + result.filename, 'success');
+        }
+
+        /* Load the protobuf descriptor up-front; enable the dropdown only
+           once the schema parses (so a broken bundle disables export rather
+           than failing mid-click). */
+        function eagerInit() {
+            if (!window.iHymnsProPresenter || !window.iHymnsProPresenter.init) return;
+            window.iHymnsProPresenter.init().then(function () {
+                var btn = document.getElementById('btn-pp-export');
+                if (btn) btn.disabled = false;
+            }).catch(function (err) {
+                console.warn('[ProPresenter] schema init failed; export disabled:', err);
+            });
+        }
+
+        document.addEventListener('DOMContentLoaded', function () {
+            var s = document.getElementById('pp-export-song');
+            var b = document.getElementById('pp-export-songbook');
+            if (s) s.addEventListener('click', function (e) {
+                e.preventDefault();
+                exportCurrentSong().catch(function (err) { notify('Export failed: ' + ((err && err.message) || err), 'danger'); });
+            });
+            if (b) b.addEventListener('click', function (e) {
+                e.preventDefault();
+                exportCurrentSongbook().catch(function (err) { notify('Export failed: ' + ((err && err.message) || err), 'danger'); });
+            });
+            eagerInit();
+        });
+    })();
+    </script>
     <!-- Wire the Composition origin field to the place-search module
          after editor.js boots. The hidden id input fires a synthetic
          `change` event when set, which the bindMetadataListeners

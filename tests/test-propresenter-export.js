@@ -30,11 +30,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 
+/* The editor moved to appWeb/public_html/manage/editor/ in the DB-direct
+   rewrite (WS-D #1016); the ProPresenter exporter + proto bundle were
+   salvaged there (#887). */
 const SCRIPT_PATH = path.join(
-    PROJECT_ROOT, 'appWeb', 'private_html', 'editor', 'propresenter-export.js'
+    PROJECT_ROOT, 'appWeb', 'public_html', 'manage', 'editor', 'propresenter-export.js'
 );
 const BUNDLE_PATH = path.join(
-    PROJECT_ROOT, 'appWeb', 'private_html', 'editor', 'protos', 'proto-bundle.json'
+    PROJECT_ROOT, 'appWeb', 'public_html', 'manage', 'editor', 'protos', 'proto-bundle.json'
 );
 
 const scriptSource = fs.readFileSync(SCRIPT_PATH, 'utf8');
