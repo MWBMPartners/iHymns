@@ -250,5 +250,14 @@ SourceSongData/*
 # it alongside the main repo lets Claude / IDEs read wiki content without a
 # network round-trip. The clone is its own repository — never commit it
 # inside the main repo.
+# Directory form (no trailing /*) is required to suppress an *embedded git
+# repo* — a nested clone is a gitlink that `iHymns.wiki/*` does not ignore.
+iHymns.wiki/
 iHymns.wiki/*
+iHymns.wiki.git/
 iHymns.wiki.git/*
+
+# Legacy SQLite copy of the user DB (holds password hashes — must never land
+# in the repo; recover from git history if a deployment hasn't migrated).
+SQLite/
+SQLite/*
