@@ -262,12 +262,20 @@ $lifespanText = $person
 /* ---------------------------------------------------------------------- */
 if (!$person && $totalSongs === 0) {
     http_response_code(404);
-    echo '<div class="alert alert-warning" role="alert">';
-    echo '<i class="fa-solid fa-circle-exclamation me-2" aria-hidden="true"></i>';
-    echo 'No person found for: <strong>' . htmlspecialchars($personName) . '</strong>';
-    echo '</div>';
-    echo '<a href="/songbooks" class="btn btn-primary" data-navigate="songbooks">';
-    echo '<i class="fa-solid fa-arrow-left me-2" aria-hidden="true"></i>Back to Songbooks</a>';
+    if (function_exists('renderErrorFragment')) {
+        echo renderErrorFragment(404, [
+            'title'   => 'Person not found',
+            'message' => 'We couldn\'t find anyone matching "' . $personName . '" — no registry entry and no credited songs.',
+            'fa'      => 'fa-user',
+            'actions' => [
+                ['label' => 'Browse Songbooks', 'href' => '/songbooks', 'navigate' => 'songbooks', 'primary' => true, 'fa' => 'fa-book-open'],
+                ['label' => 'Search',           'href' => '/search',     'navigate' => 'search',    'fa' => 'fa-magnifying-glass'],
+            ],
+        ]);
+    } else {
+        echo '<div class="alert alert-warning" role="alert">No person found for: <strong>'
+           . htmlspecialchars($personName) . '</strong></div>';
+    }
     return;
 }
 

@@ -44,6 +44,10 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'debug_mode.php';
 enableDebugModeIfRequested();
 
+/* Themed error-page renderer — loaded BEFORE the bootstrap safety net below so
+   it's available even if a later require fails. Self-contained, no deps. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'error_page.php';
+
 /* =========================================================================
  * BOOTSTRAP SAFETY NET (#811)
  *
@@ -63,46 +67,39 @@ enableDebugModeIfRequested();
 set_exception_handler(function (\Throwable $e): void {
     error_log('[index.php bootstrap] uncaught ' . get_class($e) . ': ' . $e->getMessage()
             . ' at ' . basename($e->getFile()) . ':' . $e->getLine());
-    if (!headers_sent()) {
-        http_response_code(503);
-        header('Content-Type: text/html; charset=UTF-8');
-        header('Retry-After: 30');
-    }
-    /* Best-effort: if we can detect Alpha/Beta from the server path, give
-       the admin a direct link to fix it. Production keeps the message
+
+    /* Pre-prod surfaces the exception + a setup link; production stays
        generic so a casual visitor isn't shown internals. */
     $serverPath = (string)($_SERVER['SCRIPT_FILENAME'] ?? '');
     $isPreProd  = str_contains($serverPath, 'public_html_dev')
                || str_contains($serverPath, 'public_html_beta');
-    $detail = '';
+
+    $opts = [
+        'title'      => 'iHymns is starting up',
+        'message'    => 'The service is initialising. Please retry in a moment.',
+        'code'       => '',
+        'retryAfter' => 30,
+        'actions'    => [['label' => 'Try again', 'href' => '/', 'primary' => true]],
+    ];
     if ($isPreProd) {
-        $detail = '<p class="muted">'
-                . htmlspecialchars(get_class($e) . ': ' . $e->getMessage())
-                . '</p><p>Admins: visit '
-                . '<a href="/manage/setup-database">/manage/setup-database</a> '
-                . 'and click <strong>Apply all pending migrations</strong>.</p>';
+        $opts['detail']    = get_class($e) . ': ' . $e->getMessage();
+        $opts['message']   = 'The service is initialising. Admins: open Setup database and apply any pending migrations.';
+        $opts['actions'][] = ['label' => 'Setup database', 'href' => '/manage/setup-database'];
     }
-    echo <<<HTML
-<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>iHymns — Service starting</title>
-<style>
- body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#1a1d21;color:#e8e6e3;
-      margin:0;padding:2rem;display:flex;min-height:100vh;align-items:center;justify-content:center}
- main{max-width:480px;text-align:center}
- h1{font-size:1.5rem;margin:0 0 .75rem}
- p{line-height:1.5;margin:.5rem 0}
- .muted{color:#888;font-size:.85rem;font-family:ui-monospace,monospace;text-align:left;
-        background:#0f1115;padding:.75rem;border-radius:6px;overflow-wrap:break-word}
- a{color:#67aaff}
-</style></head>
-<body><main>
- <h1>iHymns is starting up</h1>
- <p>The service is initialising. Please retry in a moment.</p>
- {$detail}
-</main></body></html>
-HTML;
+
+    if (function_exists('renderErrorPage')) {
+        renderErrorPage(503, $opts);          /* themed, theme-aware (no dark flash) */
+    } else {
+        /* error_page.php somehow unavailable — last-resort minimal fallback. */
+        if (!headers_sent()) {
+            http_response_code(503);
+            header('Content-Type: text/html; charset=UTF-8');
+            header('Retry-After: 30');
+            header('Cache-Control: no-store');
+        }
+        echo '<!DOCTYPE html><title>iHymns</title><p style="font-family:system-ui;padding:2rem">'
+           . 'iHymns is starting up. Please retry in a moment.</p>';
+    }
 });
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';

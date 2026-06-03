@@ -90,30 +90,18 @@ function maintenanceSend503Headers(): void
  */
 function renderMaintenancePageHtml(): void
 {
-    maintenanceSend503Headers();
-    if (!headers_sent()) {
-        header('Content-Type: text/html; charset=UTF-8');
-    }
-    $msg = htmlspecialchars(maintenanceMessage(), ENT_QUOTES, 'UTF-8');
-    echo <<<HTML
-<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>iHymns — Maintenance</title>
-<style>
- body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#1a1d21;color:#e8e6e3;
-      margin:0;padding:2rem;display:flex;min-height:100vh;align-items:center;justify-content:center}
- main{max-width:480px;text-align:center}
- .icon{font-size:2.5rem;margin-bottom:.5rem;line-height:1}
- h1{font-size:1.5rem;margin:0 0 .75rem}
- p{line-height:1.6;margin:.5rem 0;color:#cfd2d6}
-</style></head>
-<body><main>
- <div class="icon" aria-hidden="true">&#128295;</div>
- <h1>Under maintenance</h1>
- <p>{$msg}</p>
-</main></body></html>
-HTML;
+    /* Themed, self-contained 503 via the shared error-page renderer so the
+       maintenance page respects the user's light / dark / high-contrast / CVD
+       theme instead of the old hardcoded-dark flash. */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'error_page.php';
+    renderErrorPage(503, [
+        'title'      => 'Under maintenance',
+        'message'    => maintenanceMessage(),
+        'emoji'      => '&#128295;',
+        'code'       => '',                /* show the wrench + title, not "503" */
+        'retryAfter' => 120,
+        'actions'    => [['label' => 'Try again', 'href' => '/', 'primary' => true]],
+    ]);
 }
 
 /**

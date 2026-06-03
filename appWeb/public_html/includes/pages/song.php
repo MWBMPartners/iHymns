@@ -19,15 +19,23 @@ declare(strict_types=1);
 /* Fetch the full song data */
 $song = $songData->getSongById($songId);
 
-/* Handle song not found */
+/* Handle song not found — themed error card (unified renderer). */
 if ($song === null) {
     http_response_code(404);
-    echo '<div class="alert alert-warning" role="alert">';
-    echo '<i class="fa-solid fa-circle-exclamation me-2" aria-hidden="true"></i>';
-    echo 'Song not found: <strong>' . htmlspecialchars($songId) . '</strong>';
-    echo '</div>';
-    echo '<a href="/songbooks" class="btn btn-primary" data-navigate="songbooks">';
-    echo '<i class="fa-solid fa-arrow-left me-2" aria-hidden="true"></i>Back to Songbooks</a>';
+    if (function_exists('renderErrorFragment')) {
+        echo renderErrorFragment(404, [
+            'title'   => 'Song not found',
+            'message' => 'We couldn\'t find a song with the ID "' . $songId . '". It may have been removed, or the link is out of date.',
+            'fa'      => 'fa-music',
+            'actions' => [
+                ['label' => 'Browse Songbooks', 'href' => '/songbooks', 'navigate' => 'songbooks', 'primary' => true, 'fa' => 'fa-book-open'],
+                ['label' => 'Search',           'href' => '/search',     'navigate' => 'search',    'fa' => 'fa-magnifying-glass'],
+            ],
+        ]);
+    } else {
+        echo '<div class="alert alert-warning" role="alert">Song not found: <strong>'
+           . htmlspecialchars($songId) . '</strong></div>';
+    }
     return;
 }
 
@@ -100,6 +108,33 @@ $components  = $song['components'] ?? [];
 $lyricsPublicDomain = !empty($song['lyricsPublicDomain']);
 $musicPublicDomain  = !empty($song['musicPublicDomain']);
 $fullyPublicDomain  = $lyricsPublicDomain && $musicPublicDomain;
+
+/* Content gating for lyrics (forward-looking — e.g. gating copyrighted lyrics).
+   Does NOTHING unless the content_gating_enabled flag is ON, so there is zero
+   cost (no tblContentRestrictions query) on the hot song-page path by default.
+   When a restriction matches the viewer, the lyrics are replaced with the
+   themed "Lyrics protected" card (renderContentGatedFragment).
+   NOTE: ?page= renders are currently anonymous (router.loadPage doesn't send
+   the bearer token), so a signed-in ENTITLED user is treated as anonymous
+   until (a) loadPage forwards auth and (b) the song page is excluded from the
+   shared ETag cache when gated — both small follow-ups for when gating is
+   actually switched on. */
+$lyricsGated = false;
+$gateReason  = '';
+if (function_exists('getAppSetting') && getAppSetting('content_gating_enabled', '0') === '1'
+    && function_exists('checkContentAccess')) {
+    try {
+        $gateViewer = function_exists('getAuthenticatedUser') ? getAuthenticatedUser() : null;
+        $gateAccess = checkContentAccess('song', (string)$songId, isset($gateViewer['Id']) ? (int)$gateViewer['Id'] : null, 'PWA');
+        if (empty($gateAccess['allowed'])) {
+            $lyricsGated = true;
+            $gateReason  = (string)($gateAccess['reason'] ?? '');
+        }
+    } catch (\Throwable $_e) {
+        /* Gating must never break a song render — fail open (show lyrics). */
+        error_log('[song.php] content-gate check failed: ' . $_e->getMessage());
+    }
+}
 
 /* ===================================================================
  * Translations (#281) — list of other-language versions of this song
@@ -764,7 +799,12 @@ try {
                 ? array_map(fn($i) => $components[$i] ?? null, $arrangement)
                 : $components;
             $renderOrder = array_filter($renderOrder);
+            /* Gated: suppress the lyric components; the card is shown instead. */
+            if ($lyricsGated) { $renderOrder = []; }
         ?>
+        <?php if ($lyricsGated && function_exists('renderContentGatedFragment')): ?>
+            <?= renderContentGatedFragment($gateReason) ?>
+        <?php endif; ?>
         <?php
             /* #858 — collect the union of song-level + per-component
                languages so we can extend the JSON-LD MusicComposition

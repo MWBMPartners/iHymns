@@ -605,11 +605,12 @@ self.addEventListener('fetch', (event) => {
  * All styles and assets are inlined so no external requests are needed.
  */
 const OFFLINE_FALLBACK_HTML = `<!DOCTYPE html>
-<html lang="en" data-bs-theme="light">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>iHymns — Offline</title>
+<script>(function(){try{var t=(window.localStorage&&localStorage.getItem('ihymns_theme'))||'system';var bs='light',it=t;if(t==='system'){var d=window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches;it=d?'dark':'light';bs=it;}else if(t==='dark'){bs='dark';}else if(t==='high-contrast'){bs='light';}var h=document.documentElement;h.setAttribute('data-bs-theme',bs);h.setAttribute('data-ihymns-theme',it);if(it==='high-contrast')h.setAttribute('data-ihymns-contrast','high');var c=localStorage.getItem('ihymns_cvd_mode');if(c)h.setAttribute('data-ihymns-cvd',c);}catch(e){}})();</script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -622,6 +623,12 @@ const OFFLINE_FALLBACK_HTML = `<!DOCTYPE html>
   --bg:#0f172a;--card:#1e293b;--text:#f1f5f9;--text-sec:#94a3b8;--text-muted:#64748b;
   --shadow:0 4px 24px rgba(0,0,0,.3);
 }}
+/* Explicit user theme (set by the inline script above from localStorage) wins
+   over the OS @media fallback so a manual light/dark/high-contrast choice is
+   honoured offline too. */
+[data-bs-theme="light"]{--accent:#6366f1;--accent-end:#8b5cf6;--bg:#f8fafc;--card:#fff;--text:#1e293b;--text-sec:#64748b;--text-muted:#94a3b8;--shadow:0 4px 24px rgba(0,0,0,.08)}
+[data-bs-theme="dark"]{--accent:#818cf8;--accent-end:#a78bfa;--bg:#0f172a;--card:#1e293b;--text:#f1f5f9;--text-sec:#94a3b8;--text-muted:#64748b;--shadow:0 4px 24px rgba(0,0,0,.3)}
+[data-ihymns-theme="high-contrast"]{--accent:#0000cc;--accent-end:#0000cc;--bg:#fff;--card:#fff;--text:#000;--text-sec:#333;--text-muted:#555;--shadow:none}
 html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;
   -webkit-font-smoothing:antialiased;background:var(--bg);color:var(--text)}
 body{display:flex;align-items:center;justify-content:center;padding:24px;
@@ -636,10 +643,11 @@ body{display:flex;align-items:center;justify-content:center;padding:24px;
   50%{box-shadow:0 8px 48px rgba(99,102,241,.4)}}
 .offline-card{background:var(--card);border-radius:var(--radius);padding:32px 28px;
   box-shadow:var(--shadow)}
-h1{font-size:1.5rem;font-weight:700;margin-bottom:8px;
+h1{font-size:1.5rem;font-weight:700;margin-bottom:8px;color:var(--accent);
   background:linear-gradient(135deg,var(--accent),var(--accent-end));
   -webkit-background-clip:text;-webkit-text-fill-color:transparent;
   background-clip:text}
+[data-ihymns-theme="high-contrast"] h1{background:none;-webkit-text-fill-color:currentColor}
 .subtitle{font-size:.95rem;color:var(--text-sec);margin-bottom:24px;line-height:1.5}
 .divider{width:48px;height:3px;border-radius:2px;margin:0 auto 24px;
   background:linear-gradient(90deg,var(--accent),var(--accent-end))}

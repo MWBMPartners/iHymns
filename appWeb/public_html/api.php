@@ -204,6 +204,10 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
 enforceMaintenanceForApi();
 
+/* Themed error-card renderer for the ?page= partials (song/songbook/work/…
+   not-found etc.) so every in-SPA error state is one consistent card. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'error_page.php';
+
 /* =========================================================================
  * CSRF DEFENCE POLICY (#293 / B15)
  *
