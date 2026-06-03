@@ -2897,12 +2897,15 @@ switch ($action) {
             if (!($summary['ok'] ?? false)) {
                 http_response_code(400);
             } elseif (($summary['songs_created'] ?? 0) > 0) {
-                /* Songs were actually written — refresh the on-disk
-                   songs cache (#932) plus run the stale-prefix
-                   probe as a belt-and-braces sweep. Best-effort. */
+                /* Songs were actually written — run the stale-prefix probe as a
+                   belt-and-braces sweep (the songs.json cache was removed in
+                   WS-J #1020, so there's nothing to regenerate). Best-effort.
+                   FIX: this case never assigned $db, so the previous
+                   songbookMaintenanceRun($db, …) threw a TypeError on a
+                   successful import (undefined → non-nullable \mysqli param). */
                 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
                     . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
-                $_maint = songbookMaintenanceRun($db, 'bulk_import_videopsalm');
+                $_maint = songbookMaintenanceRun(getDbMysqli(), 'bulk_import_videopsalm');
                 if ($_maint['rewritten'] > 0 || $_maint['deferred']) {
                     $summary['maintenance'] = $_maint;
                 }
