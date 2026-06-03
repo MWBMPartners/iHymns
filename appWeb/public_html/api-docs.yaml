@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: iHymns API
-  version: "0.57.0"
+  version: "0.200.0"
   description: |
     The iHymns API provides programmatic access to the iHymns hymn and song
     database. It powers the iHymns Progressive Web App (PWA), enabling song
@@ -776,9 +776,181 @@ paths:
               example:
                 error: Songbook parameter is required.
 
+  /api.php?action=song_detail:
+    get:
+      operationId: getSongDetail
+      tags: [Songs]
+      summary: Get full song data (alias of song_data)
+      description: |
+        Identical to `action=song_data` — same handler in api.php. Retained as
+        the name `songs_list` points callers to for fetching a full record
+        after a paginated index hit (#1012). Returns the complete song with
+        lyrics components, writers, composers and metadata.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song_detail] }
+        - name: id
+          in: query
+          required: true
+          description: "Song ID in BOOK-NUMBER format (e.g. CP-0001)"
+          schema: { type: string, example: CP-0001 }
+      responses:
+        "200":
+          description: Full song data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  song:
+                    $ref: "#/components/schemas/Song"
+        "400":
+          description: Missing song ID
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=songs_list:
+    get:
+      operationId: songsList
+      tags: [Songs]
+      summary: Lightweight paginated song index (WS-A #1012)
+      description: |
+        Paginated, language-filtered slim index — id/number/title/songbook/
+        songbookName/language + media flags only (no lyrics, writers or
+        components). The language filter is applied in SQL so pagination is
+        correct. Fetch a full record via action=song_detail&id=…
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [songs_list] }
+        - name: songbook
+          in: query
+          required: false
+          description: Filter by songbook abbreviation
+          schema: { type: string, example: CP }
+        - name: limit
+          in: query
+          required: false
+          description: Rows per page (clamped server-side to 1..500)
+          schema: { type: integer, default: 50, minimum: 1, maximum: 500 }
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: One page of the slim song index
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  songs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:            { type: string, example: CP-0202 }
+                        number:        { type: integer, nullable: true, example: 202 }
+                        title:         { type: string, example: Amazing Grace }
+                        songbook:      { type: string, example: CP }
+                        songbookName:  { type: string, example: Christian Praise }
+                        language:      { type: string, example: en }
+                        hasAudio:      { type: boolean }
+                        hasSheetMusic: { type: boolean }
+                  total:   { type: integer, description: Total rows matching the filter (before paging), example: 650 }
+                  offset:  { type: integer, example: 0 }
+                  limit:   { type: integer, example: 50 }
+                  hasMore: { type: boolean, description: True when (offset + page length) < total, example: true }
+
+  /api.php?action=song_links:
+    get:
+      operationId: getSongLinks
+      tags: [Songs]
+      summary: Cross-book counterparts for one song (#807)
+      description: |
+        Every other song sharing this song's tblSongLinks.GroupId — the same
+        hymn in a different songbook. Distinct from translations (different
+        language). Deployments without tblSongLinks get a clean empty list
+        (groupId 0) rather than a 500.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song_links] }
+        - name: id
+          in: query
+          required: true
+          description: "Canonical SongId, e.g. CP-0001"
+          schema: { type: string, example: CP-0001 }
+      responses:
+        "200":
+          description: Cross-book counterparts (may be empty)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  groupId:
+                    type: integer
+                    description: Link group ID (0 when the song has no counterparts)
+                    example: 42
+                  songs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:           { type: string, example: MP-0031 }
+                        title:        { type: string, example: Amazing Grace }
+                        number:       { type: integer, nullable: true, example: 31 }
+                        songbook:     { type: string, example: MP }
+                        songbookName: { type: string, example: Mission Praise }
+                        language:     { type: string, example: en }
+                        note:         { type: string, nullable: true }
+                        verified:     { type: boolean }
+        "400":
+          description: Missing song ID
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "500":
+          description: Lookup failed
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
   # ===========================================================================
   # LANGUAGES
   # ===========================================================================
+
+  /api.php?action=catalogue_language_subtags:
+    get:
+      operationId: catalogueLanguageSubtags
+      tags: [Languages]
+      summary: Distinct primary language subtags present in the catalogue (#776)
+      description: |
+        The union of primary language subtags actually present across
+        tblSongbooks.Language and tblSongs.Language (lowercase, sorted,
+        de-duplicated). Lightweight replacement for hitting `songbooks` just to
+        derive the language chip set. No authentication; cached 5 min.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [catalogue_language_subtags] }
+      responses:
+        "200":
+          description: Sorted unique primary subtags
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subtags:
+                    type: array
+                    items: { type: string }
+                    example: ["en", "es", "fr", "sw"]
 
   /api.php?action=languages:
     get:
@@ -1941,6 +2113,99 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api.php?action=auth_verify_email:
+    post:
+      operationId: authVerifyEmail
+      tags: [Authentication]
+      summary: Verify an email-verification token
+      description: |
+        Consumes a one-time email-verification token (from the verification
+        link). The token may be supplied in the POST JSON body OR as a `token`
+        query parameter (GET) for direct link clicks. Failures are logged with
+        a hashed token prefix only.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [auth_verify_email] }
+        - name: token
+          in: query
+          required: false
+          description: Verification token (GET path — used by link clicks)
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string, description: Verification token (POST path) }
+      responses:
+        "200":
+          description: Email verified
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean, example: true }
+                  message: { type: string, example: Email verified successfully. }
+                  user_id: { type: integer, example: 123 }
+        "400":
+          description: Missing, invalid, or expired token
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=auth_update_avatar_service:
+    post:
+      operationId: authUpdateAvatarService
+      tags: [Authentication]
+      summary: Update avatar-service preference (#616)
+      description: |
+        Sets the authenticated user's avatar resolver. `null` clears the
+        override (inherit the project default). Returns 503 if the
+        tblUsers.AvatarService column has not been migrated yet.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [auth_update_avatar_service] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [avatar_service]
+              properties:
+                avatar_service:
+                  type: string
+                  nullable: true
+                  description: Resolver name (gravatar / libravatar / dicebear / none), or null to inherit the project default.
+      responses:
+        "200":
+          description: Preference saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:             { type: boolean, example: true }
+                  avatar_service: { type: string, nullable: true, example: gravatar }
+        "400":
+          description: Invalid avatar_service value
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "503":
+          description: AvatarService column not yet migrated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
   /api.php?action=auth_update_profile:
     post:
       operationId: updateProfile
@@ -2371,6 +2636,26 @@ paths:
                     type: boolean
                     description: Whether song requests are currently accepted
                     example: true
+                  registrationMode:
+                    type: string
+                    description: Account-registration mode (e.g. open / invite / closed).
+                    example: open
+                  motd:
+                    type: string
+                    description: Message of the day (empty when unset).
+                    example: ""
+                  emailLoginEnabled:
+                    type: boolean
+                    description: True when an email service is configured (email_service != 'none').
+                    example: true
+                  captchaProvider:
+                    type: string
+                    description: Active CAPTCHA provider key ('none' when disabled).
+                    example: none
+                  adsEnabled:
+                    type: boolean
+                    description: Whether ad slots are enabled.
+                    example: false
 
   /api.php?action=ccli_validate:
     post:

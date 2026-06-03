@@ -138,7 +138,8 @@ declare(strict_types=1);
                     <ul>
                         <li>Tap the <i class="fa-regular fa-heart" aria-hidden="true"></i> heart icon on any song to add it to your favourites</li>
                         <li>Access your favourites from the <strong>Favourites</strong> tab in the bottom navigation</li>
-                        <li>Favourites are saved locally on your device and persist between sessions</li>
+                        <li>Favourites are kept on your device and persist between sessions &mdash; and when you&rsquo;re <strong>signed in</strong> they also sync automatically across all your devices, so a song you favourite on your phone shows up on your tablet too</li>
+                        <li><strong>Organise with tags:</strong> add your own labels (e.g. &ldquo;Communion&rdquo;, &ldquo;Christmas&rdquo;) to a favourite from the tag <i class="fa-solid fa-tags" aria-hidden="true"></i> button, then filter the list by tag. Tags sync across devices when signed in too</li>
                         <li>Tap the filled heart <i class="fa-solid fa-heart text-danger" aria-hidden="true"></i> to remove a song from favourites</li>
                     </ul>
                 </div>
