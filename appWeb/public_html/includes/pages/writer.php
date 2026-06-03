@@ -21,18 +21,22 @@ declare(strict_types=1);
 $writerSlug = urldecode($writerId);
 $writerName = mb_convert_case(str_replace('-', ' ', $writerSlug), MB_CASE_TITLE, 'UTF-8');
 
-/* Find all songs where this person is a writer or composer.
- * Uses case-insensitive comparison to handle inconsistent data casing.
- * Also tries the raw slug-derived name AND the original slug as fallbacks. */
-$allSongs    = $songData->getSongs();
-$matchedSongs = [];
-
-/* Build a list of name variants to match against */
+/* Build the name variants to match against FIRST, so the lookup can be
+ * scoped in SQL rather than scanning the whole corpus. Case-insensitive,
+ * tolerant of inconsistent data casing; tries the title-cased name, the
+ * slug-derived spaced name, and the raw slug as fallbacks. */
 $nameVariants = array_unique(array_map('mb_strtolower', [
     $writerName,
     str_replace('-', ' ', $writerSlug),
     $writerSlug,
 ]));
+
+/* Scoped lookup — ONLY the songs this person is credited on, matched in SQL
+ * via tblSongWriters / tblSongComposers (#1010 / CLAUDE.md rule #17). This
+ * replaces a previous $songData->getSongs() whole-corpus materialise
+ * (~10-15 MB, the #929 OOM class) that ran on every /writer/<slug> render. */
+$allSongs     = $songData->getSongsByCreditName($nameVariants);
+$matchedSongs = [];
 
 foreach ($allSongs as $song) {
     $isWriter   = false;

@@ -1828,6 +1828,77 @@ class SongData
     }
 
     /**
+     * Get the full records of every song on which a person is credited as a
+     * writer OR composer, matching any of the supplied name variants
+     * (compared case-insensitively).
+     *
+     * Scoped replacement for the old whole-corpus `getSongs()` scan in
+     * writer.php: the catalogue must NEVER materialise in full (CLAUDE.md
+     * rule #17 / the #929 OOM). The match is pushed into SQL using the same
+     * IN-subquery shape already used by searchSongs() and the credit→songs
+     * JOIN in person.php; only the (small) matched set is then hydrated, one
+     * record at a time, via the canonical getSongById().
+     *
+     * @param string[] $nameVariants Candidate names in any case; matched
+     *                 case-insensitively against tblSongWriters /
+     *                 tblSongComposers `.Name`.
+     * @return array<int,array> Full song records (same shape as getSongs()).
+     */
+    public function getSongsByCreditName(array $nameVariants): array
+    {
+        /* Normalise to a unique, lower-cased, non-empty set. */
+        $variants = [];
+        foreach ($nameVariants as $n) {
+            $n = mb_strtolower(trim((string)$n));
+            if ($n !== '') {
+                $variants[$n] = true;
+            }
+        }
+        $variants = array_keys($variants);
+        if ($variants === []) {
+            return [];
+        }
+
+        /* Matched song IDs where the person is a writer OR composer. The
+           placeholder string is built from a hardcoded count() (never from
+           user input) and every value is bound (CLAUDE.md SQL rule). */
+        $placeholders = implode(',', array_fill(0, count($variants), '?'));
+        $sql = "SELECT DISTINCT s.SongId
+                  FROM tblSongs s
+                 WHERE s.SongId IN (SELECT SongId FROM tblSongWriters   WHERE LOWER(Name) IN ($placeholders))
+                    OR s.SongId IN (SELECT SongId FROM tblSongComposers WHERE LOWER(Name) IN ($placeholders))";
+        $stmt = $this->db->prepare($sql);
+        /* Variants are bound twice — once for each subquery. */
+        $types  = str_repeat('s', count($variants) * 2);
+        $values = array_merge($variants, $variants);
+        $stmt->bind_param($types, ...$values);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $ids = [];
+        while ($row = $result->fetch_assoc()) {
+            $ids[] = $row['SongId'];
+        }
+        $stmt->close();
+        if ($ids === []) {
+            return [];
+        }
+
+        /* Hydrate only the matched set — bounded by the person's catalogue,
+           never O(corpus) — reusing the canonical per-record path. The
+           writer page is ETag-cached (api.php $_cacheablePages) so this cost
+           amortises; a batch hydrator (cf. _getWritersMap) is a possible
+           future optimisation for very prolific writers. */
+        $songs = [];
+        foreach ($ids as $songId) {
+            $rec = $this->getSongById($songId);
+            if ($rec !== null) {
+                $songs[] = $rec;
+            }
+        }
+        return $songs;
+    }
+
+    /**
      * Get a single song by its unique ID (e.g., 'CP-0001').
      *
      * Supports flexible ID formats: 'MP-1', 'MP-01', 'MP-001', and 'MP-0001'
@@ -2238,6 +2309,11 @@ class SongData
             $row['musicPublicDomain']  = (bool)$row['musicPublicDomain'];
             $row['hasAudio']           = (bool)$row['hasAudio'];
             $row['hasSheetMusic']      = (bool)$row['hasSheetMusic'];
+            /* Every search path LEFT JOINs tblSongbooks, so an orphan /
+               FK-less song yields a NULL songbookName. Coerce to '' so the
+               API contract never leaks a literal null (mirrors the
+               tuneName/iswc coercion in getSongById). */
+            $row['songbookName']       = $row['songbookName'] ?? '';
             $rows[] = $row;
         }
         return $rows;

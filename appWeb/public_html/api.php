@@ -872,15 +872,25 @@ if ($action !== null) {
          * requests into ~6 (one per songbook).
          *
          * Parameters:
-         *   songbook (optional) — filter by songbook abbreviation
+         *   songbook (REQUIRED) — songbook abbreviation to scope to. A
+         *     missing/empty value returns 400 (the old "all songbooks"
+         *     behaviour was removed — it OOM'd on the full corpus, #1010).
          *
          * Response: { "songs": { "CP-0001": "<html>...", ... } }
          * ----------------------------------------------------------------- */
         case 'bulk_songs':
             $bulkSongbook = isset($_GET['songbook']) ? trim($_GET['songbook']) : '';
-            $bulkSongs = $bulkSongbook !== ''
-                ? $songData->getSongs($bulkSongbook)
-                : $songData->getSongs();
+            /* #1010 / CLAUDE.md rule #17 — bulk_songs MUST be scoped to a
+               single songbook. The old unscoped fallback materialised AND
+               rendered the entire catalogue (~3,612 songs, the #929 OOM),
+               and was reachable unauthenticated by any direct request. The
+               service worker always passes &songbook= (service-worker.js.php),
+               so no real client is affected. */
+            if ($bulkSongbook === '') {
+                sendJson(['error' => 'A songbook parameter is required.'], 400);
+                break;
+            }
+            $bulkSongs = $songData->getSongs($bulkSongbook);
 
             if (empty($bulkSongs)) {
                 sendJson(['songs' => new \stdClass()]);
@@ -923,13 +933,18 @@ if ($action !== null) {
          * separately from song HTML. Only songs whose `hasAudio` flag
          * is set are returned.
          *
-         * Parameters: songbook (optional; all if omitted)
+         * Parameters: songbook (REQUIRED; missing/empty returns 400 — the
+         *   old "all if omitted" corpus scan was removed, #1010)
          * ----------------------------------------------------------------- */
         case 'bulk_audio':
             $audioBook  = isset($_GET['songbook']) ? trim($_GET['songbook']) : '';
-            $audioSongs = $audioBook !== ''
-                ? $songData->getSongs($audioBook)
-                : $songData->getSongs();
+            /* #1010 / CLAUDE.md rule #17 — must be scoped to one songbook
+               (see bulk_songs above). The SW always passes &songbook=. */
+            if ($audioBook === '') {
+                sendJson(['error' => 'A songbook parameter is required.'], 400);
+                break;
+            }
+            $audioSongs = $songData->getSongs($audioBook);
 
             $manifest = [];
             foreach ($audioSongs as $s) {
@@ -3225,7 +3240,7 @@ if ($action !== null) {
             $db = getDbMysqli();
             /* Only fetch public-safe settings — never expose internal config.
                Dynamic IN-list with str_repeat for the bind type string. */
-            $publicKeys = ['maintenance_mode', 'maintenance_message', 'song_requests_enabled', 'motd', 'registration_mode', 'email_service', 'captcha_provider', 'ads_enabled'];
+            $publicKeys = ['maintenance_mode', 'maintenance_message', 'song_requests_enabled', 'motd', 'registration_mode', 'email_service', 'captcha_provider', 'ads_enabled', 'content_gating_enabled'];
             $placeholders = implode(',', array_fill(0, count($publicKeys), '?'));
             $stmt = $db->prepare(
                 "SELECT SettingKey, SettingValue FROM tblAppSettings WHERE SettingKey IN ({$placeholders})"
@@ -3249,6 +3264,11 @@ if ($action !== null) {
                 'emailLoginEnabled'   => ($settings['email_service'] ?? 'none') !== 'none',
                 'captchaProvider'     => $settings['captcha_provider'] ?? 'none',
                 'adsEnabled'          => ($settings['ads_enabled'] ?? '0') === '1',
+                /* Whether copyrighted-lyrics gating is active. song.php only
+                   gates lyrics when this is on; PWA/native clients need it to
+                   decide between a "lyrics protected" surface and a full
+                   fetch (#1010 forward-looking content_gating_enabled flag). */
+                'contentGatingEnabled' => ($settings['content_gating_enabled'] ?? '0') === '1',
             ]);
             break;
 
@@ -10788,21 +10808,12 @@ if ($action !== null) {
                 }
             }
 
-            /* SongData JSON fallback probe — non-fatal on partly-loaded
-               configs. The probe runs the SongData constructor which
-               may throw when songs.json is corrupt; we surface the
-               exception text in `note` rather than failing the whole
-               response. */
-            $songDataJsonFallback = null;
-            $songDataNote         = null;
-            try {
-                if (class_exists('\\SongData')) {
-                    $probe = new \SongData();
-                    $songDataJsonFallback = $probe->isJsonFallback();
-                }
-            } catch (\Throwable $sdErr) {
-                $songDataNote = 'SongData probe failed: ' . $sdErr->getMessage();
-            }
+            /* The SongData JSON-fallback probe was removed here: the
+               whole-corpus songs.json fallback no longer exists (WS-J
+               #1020), so isJsonFallback() is permanently false and the
+               constructor now throws on DB-down (not corrupt JSON) — the
+               probe only mislabelled an outage. The `songs_json_fallback`
+               / `songs_json_note` response keys are dropped with it. */
 
             /* Legacy share-directory + SQLite presence checks. Defined
                constants come from config.php; treat absence as "not
@@ -10845,8 +10856,6 @@ if ($action !== null) {
             sendJson([
                 'database_up'           => true,
                 'table_counts'          => $tableCounts,
-                'songs_json_fallback'   => $songDataJsonFallback,
-                'songs_json_note'       => $songDataNote,
                 'share_dir' => [
                     'configured'        => $shareDirPath !== '',
                     'present'           => $shareDirPath !== '' && is_dir($shareDirPath),

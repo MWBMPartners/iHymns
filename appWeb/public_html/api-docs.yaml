@@ -2656,6 +2656,14 @@ paths:
                     type: boolean
                     description: Whether ad slots are enabled.
                     example: false
+                  contentGatingEnabled:
+                    type: boolean
+                    description: >-
+                      Whether copyrighted-lyrics gating is active. When true,
+                      the song page may serve a "lyrics protected" surface
+                      instead of full lyrics; clients use this to decide
+                      whether to fetch lyrics.
+                    example: false
 
   /api.php?action=ccli_validate:
     post:
@@ -9200,14 +9208,6 @@ components:
           additionalProperties:
             type: integer
             nullable: true
-        songs_json_fallback:
-          type: boolean
-          nullable: true
-          description: True when `SongData` is currently reading from songs.json instead of MySQL. `null` if the probe couldn't run.
-        songs_json_note:
-          type: string
-          nullable: true
-          description: Diagnostic note when the SongData probe threw (e.g. corrupt songs.json).
         share_dir:
           type: object
           properties:

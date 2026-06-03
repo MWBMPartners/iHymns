@@ -1,5 +1,32 @@
 # iHymns Web/PWA — Changelog
 
+## [0.200.0] — 2026-06-03
+
+### DB-direct data layer (epic #1010, WS-A → WS-K)
+
+Major architectural change: **every runtime read now hits live MySQL**; the whole-corpus `songs.json` file cache is gone; nothing materialises the full catalogue; a DB outage returns a graceful themed 503 instead of stale data.
+
+- Live MySQL fuzzy search replaces the client-side Fuse.js corpus download (#1014)
+- Song of the Day resolves via a live server endpoint, not a client corpus scan (#1015)
+- Song Editor is DB-direct — lightweight song index + per-record load/save; whole-corpus load/export removed (#1016)
+- De-normalised `tblSongs.SongbookName` dropped; readers resolve the live name via JOIN (#1013)
+- PWA offline uses a slim id/number/title/songbook index; the corpus is precached nowhere (#1017)
+- Setlists, favourites, tags, and view-history are DB-first with authoritative auto-sync + first-login merge backfill (#1018, #1019)
+- Decommissioned the file caches (`songs_cache.php`, `exportAsJson`, the SQLite mirror) and the DB-down JSON fallbacks (#1020)
+- System maintenance mode + global DB-down 503 intercept; `/manage/*` structurally exempt so admins can't be locked out (#1021)
+- Lightweight DB-direct paginated song index endpoint (`?action=songs_index`, #1012)
+
+### Error handling
+
+- Theme-aware custom error-page system (app-function + HTTP-standard 400/401/403/404/429/500/502/503), PWA-offline-capable; forward-looking gated-lyrics fragment behind `content_gating_enabled`
+
+### Security & hardening
+
+- Validate `postMessage` origin + source on the cross-domain storage bridge (CWE-346)
+- Same-site redirect guard on the admin login (CWE-601)
+- Scope the surviving whole-corpus loads: `/writer/<slug>` now matches in SQL; `bulk_songs`/`bulk_audio` require a `songbook` param (closes the #929 OOM path)
+- `app_status` exposes `contentGatingEnabled`; search rows never emit a null `songbookName`
+
 ## [0.25.1] — 2026-04-28
 - Add Song of the Day with Christian calendar theming (#108)
 - Add configurable page transition animations (#106)
