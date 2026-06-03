@@ -12,7 +12,7 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 - **Copyright**: © 2026– MWBM Partners Ltd
 - **License**: Proprietary (third-party components retain their own licenses)
 - **GitHub Repo**: <https://github.com/MWBMPartners/iHymns>
-- **Current Version**: alpha branch at 0.80.0 (pre-release, Phase 1); main was promoted from beta on 2026-05-07 (PR #896, merge `76154dc4`) and now sits at 0.25.2. Feature flow continues through the 2026-05 #840–#852 catalogue-refresh batch (Works composition grouping, DB-driven URL auto-detect, responsive admin lists, sortable headers everywhere, bulk-promote credit-people, plus three CI/auto-merge hotfixes). Bulk-import UX improvements landed 2026-05-09 in #909 (per-songbook breakdown), #910 (activity-log per-failure rows + summary headers), and #911 (instant + live progress UX with phase labels, XHR upload progress, top-right reposition, auto-dismiss).
+- **Current Version**: `0.200.0` (pre-release, Phase 1). The **DB-direct data-layer rewrite** (epic #1010, workstreams WS-A→WS-K) is complete on branch `claude/db-direct-data-layer` — every read now hits live MySQL; the whole-corpus `songs.json` file cache has been **decommissioned** (WS-J #1020); a DB outage returns a themed 503 (WS-K #1021) rather than stale data. main was promoted from beta on 2026-05-07 (PR #896, merge `76154dc4`) and now sits at 0.25.2. Feature flow continues through the 2026-05 #840–#852 catalogue-refresh batch (Works composition grouping, DB-driven URL auto-detect, responsive admin lists, sortable headers everywhere, bulk-promote credit-people, plus three CI/auto-merge hotfixes). Bulk-import UX improvements landed 2026-05-09 in #909 (per-songbook breakdown), #910 (activity-log per-failure rows + summary headers), and #911 (instant + live progress UX with phase labels, XHR upload progress, top-right reposition, auto-dismiss).
 - **Database**: MySQL 5.7+ (~50 tables, tblCamelCase naming). All three subdomains (`dev.ihymns.app` = alpha, `beta.ihymns.app` = beta, `www.ihymns.app` = main) connect to a **single shared MySQL** at `mysql.MWBMpartners.ltd:3306` / DB name `ihymns` — confirmed via `/manage/setup-database` connection banner across all three. 2026-04 added songbook metadata extensions (#672), an Affiliation registry (#670), optional Language column (#673 → composite IETF BCP 47 with `tblScripts` + `tblRegions` in #681), `tblBulkImportJobs` async-job table (#676), and Activity Log Result/Details columns (#695). 2026-05 added the MusicBrainz-style external-links registry (#833 — `tblExternalLinkTypes` + `tblSongExternalLinks` + `tblSongbookExternalLinks` + `tblCreditPersonExternalLinks`), Works composition grouping (#840 — `tblWorks` with self-FK nesting + `tblWorkSongs` + `tblWorkExternalLinks`, plus `AppliesTo` SET widened to `'work'`), curator-editable URL → provider rule table (#845 — `tblExternalLinkPatterns`), per-component language override (#858 — `tblSongComponents.Language`), song media uploads (#853 — `tblSongMedia`), arrangement persistence (#892 — `tblSongs.ArrangementJson`), and bulk-import diagnostics (#906 + #907 — `tblBulkImportJobs.PerSongbookJson` + `PhaseLabel`).
 - **API**: 60+ JSON endpoints via `api.php` (now including public `action=scripts` + `action=regions` listings for native clients, #682, and `?page=work&slug=…` for the Works public page, #840), plus the editor's separate `/manage/editor/api.php` (load / save_song / bulk_import_zip / bulk_import_status / typeaheads). OpenAPI 3.0 spec at `appWeb/public_html/api-docs.yaml` (refreshed for Works + ExternalLink shared schemas in #843)
 
@@ -73,7 +73,7 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 ### Web Directory Structure
 
 - `appWeb/public_html/` — Single source directory (deployed to all environments)
-- `appWeb/data_share/` — Shared data (songs.json, setlists; deployed alongside public_html)
+- `appWeb/data_share/` — Shared runtime data (deployed alongside public_html). **NOTE:** the whole-corpus song read cache (`data_share/song_data/songs.json` + the SQLite mirror) was removed in WS-J #1020 — reads now go DB-direct. This dir no longer carries a materialised corpus.
 - `appWeb/private_html/` — Private admin tools, song editor (separate SFTP path)
 
 ### Automated Deployment
@@ -107,8 +107,8 @@ State sharing across subdomains is **asymmetric** — easy to misdiagnose if you
 | `ihymns_auth` cookie | `.ihymns.app` | Set by `setAuthTokenCookie()` / `_authCookieOpts()`. Cross-subdomain auth IS designed to work. |
 | `ihymns_sync` cookie | `.ihymns.app` | Lightweight settings sync (theme, font size, default songbook) via `js/modules/subdomain-sync.js`. Only path for cross-subdomain settings. |
 | Bearer token in localStorage | per-origin | W3C spec — each subdomain has its own. The cookie fallback in `getAuthBearerToken()` covers the gap. |
-| Service-worker cache | per-origin | Most common cause of "alpha data not appearing on main" symptoms when the underlying DB row is verified-present. |
-| Setlist / favourite localStorage | per-origin | Sharing across subdomains requires explicit DB sync via the auth flow, not magic. |
+| Service-worker cache | per-origin | Caches only 2xx responses, so a 503 maintenance page is never cached. With DB-direct reads this is no longer a "stale song data" vector for logged-in reads; it can still serve stale *static assets* per-origin until SW update. |
+| Setlist / favourite / tag / history | **DB-first (signed-in)** | Since WS-F/G (#1011/#1012) these sync to MySQL on every edit (authoritative-replace + first-login MERGE backfill) — cross-device + cross-subdomain by design for signed-in users. localStorage is the offline mirror, not the source of truth. Anonymous users remain local-only. |
 
 When debugging "subdomain X has the data but Y doesn't", follow the diagnostic sequence in `.claude/project-rules.md` Section 14.3.
 
@@ -157,9 +157,10 @@ When debugging "subdomain X has the data but Y doesn't", follow the diagnostic s
 
 | File | Purpose |
 | --- | --- |
-| `data/songs.json` | Canonical song database (single source of truth) |
-| `data/songs.schema.json` | JSON Schema (draft 2020-12) for songs.json validation (#226) |
-| `tools/parse-songs.js` | Parses .SourceSongData/ → songs.json |
+| **MySQL `ihymns` DB** | **Canonical song database (single source of truth).** Every runtime read is DB-direct via `SongData` / `getSongsSlimIndex()` / `getSongs($abbr)` / `getSongById()`. |
+| `data/songs.json` | Ingestion **seed/build artifact** only (source-files → parse → DB). NOT a runtime read cache — that was removed in WS-J #1020. |
+| `data/songs.schema.json` | JSON Schema (draft 2020-12) for the ingestion songs.json validation (#226) |
+| `tools/parse-songs.js` | Parses .SourceSongData/ → songs.json (ingestion seed) |
 | `tools/build-web.js` | Web build/packaging script |
 | `appWeb/public_html/includes/infoAppVer.php` | App version metadata |
 | `appWeb/public_html/includes/components/*.php` | Modular PHP components |
@@ -284,3 +285,37 @@ Last updated: 2026-05-10 — refreshed at the close of the post-#852 catch-up ba
 
 1. **#945 (naming cleanup)** — most-impactful of the deferred large issues; every other large issue (especially #944 i18n) benefits from clearer vocabulary first.
 2. **DB-isolation diagnostic queries** from `project_db_environment_isolation_open.md` memo — cheap to run now that #898's email delivery is live; confirms whether the missing-user-signup hypothesis is closed.
+
+---
+
+Last updated: 2026-06-03 — **DB-direct data-layer rewrite complete + custom error pages + codebase hardening pass.** Branch `claude/db-direct-data-layer`, version `0.200.0`. NOT yet PR'd to alpha (owner gates the push).
+
+### The data-architecture fix (epic #1010 — root cause + remedy)
+
+**Root cause** of the long-running "alpha has the data but main doesn't" class of bug: song *reads* never touched MySQL. They served a **per-environment `songs.json` file cache** (`data_share/song_data/songs.json`, built writes-only on save). Each subdomain had its own file, so a row written on alpha was invisible on main until that env's file was regenerated — staleness was structural, not a SW-cache fluke. Remedy (owner's emphatic decision): **rip out every JSON/SQLite file read cache; make every read DB-direct; make setlists/favourites DB-first with auto-sync.** Full design in `.claude/data-architecture-remediation.md`.
+
+### Workstreams shipped (WS-A → WS-K)
+
+- **WS-A #1014 / WS-B #1015** — live DB search + live Song-of-the-Day (no corpus materialisation).
+- **WS-C / WS-D / WS-E** — DB-direct read paths across song/songbook/tune/iswc/work/person pages; live songbook-name JOINs (no denormalised columns; #1013).
+- **WS-F / WS-G #1011/#1012** — setlists, favourites, custom tags, view-history are now **DB-first auto-sync**: authoritative-replace per edit (deletions propagate, LWW) + first-login MERGE backfill (union, no loss); `_syncReady` gate arms destructive replace only after merge hydrates the cache; server-side tag-union in merge mode. New `tblUserFavorites.Tags` (JSON) + `tblUserCustomTags`; migration `migrate-user-data-sync.php`.
+- **WS-I** — PWA offline uses a **slim song index** only; the whole corpus is precached **nowhere**.
+- **WS-H** — lightweight DB-direct paginated song index endpoint (#1012).
+- **WS-J #1020** — **decommissioned** `includes/songs_cache.php` + `SongData::exportAsJson()`; deleted `data_share/song_data/songs.json` + the SQLite mirror; editor `?action=load` → `songbook_export` (`getSongs($abbr)`); `SongData` is DB-only (constructor throws if no DB; no JSON fallback).
+- **WS-K #1021** — **system maintenance mode** (`includes/maintenance.php`): admin toggle in `/manage/configuration`, themed 503 intercept in `index.php` + `api.php` (exempts `/manage/*` entry point, `app_status`, and `auth_*` so admins can never lock themselves out), `isDbConnectionFailure()` turns an unreachable DB into a graceful 503 — never stale data.
+
+### Custom error pages (theme-aware, PWA-offline-capable)
+
+`includes/error_page.php` (`renderErrorPage` / `renderErrorFragment` / `renderContentGatedFragment`) + standalone `error.php` (status whitelist 400/401/403/404/429/500/502/503). Page fragments (song/songbook/work/person/not-found) render in-theme 404s; bootstrap + maintenance failures render a themed 503; service-worker `OFFLINE_FALLBACK_HTML` is theme-aware so offline errors still match light/dark/HC. `.htaccess` `ErrorDocument` 403/500/503 → `/error.php`. Forward-looking **gated-lyrics** fragment wired into `song.php` behind the `content_gating_enabled` flag (copyrighted-lyrics gating is under consideration).
+
+### Codebase hardening pass (the queued 7-task program)
+
+1. **Lint/validity sweep** (`4acf696b`) — fixed an undefined-`$db` TypeError on successful VideoPsalm bulk-import in `editor/api.php`.
+2. **Security audit** (`ca5aefb7`) — added postMessage origin+source validation to `storage-bridge.js` (CWE-346) and a same-site `_manageSafeRedirect()` guard on `manage/login.php` (CWE-601). Rest of the codebase verified clean (no SQLi/XSS/IDOR/committed-secrets).
+3. **API/OpenAPI + help docs** (`26889b41`) — `api-docs.yaml` version 0.57→0.200, 6 newly-documented endpoints (song_detail/songs_list/song_links/catalogue_language_subtags/auth_verify_email/auth_update_avatar_service) + 5 new `app_status` fields; help-page Favourites cross-device-sync note.
+4. **GitHub issues audit** — 325 open issues classified against the live codebase (17-agent workflow); ~178 verified-implemented/obsolete closed with per-issue evidence comments (excluding the unmerged #1010–#1021 epic and #4 never-built genre filter).
+5–6. **`.claude/` + memory refresh** (this update) and **enhancement-issue backlog** creation.
+
+### Deferred hardening (tracked as new enhancement issues)
+
+CDN SRI on Bootstrap/Tone.js/pdf.js; SW message-handler validation; unguessable storage-bridge request IDs; editor-API OpenAPI coverage gap; content-gating auth-on-page-fetch + cache-exclusion follow-ups.
