@@ -1479,6 +1479,16 @@ INSERT IGNORE INTO tblAccessTiers (Name, DisplayName, Level, Description, CanVie
     ('pro',     'Professional',  40, 'All features including API access and bulk export.',              1, 1, 1, 1, 1, 1, 0);
 
 
+-- The canonical generic "Miscellaneous" songbook. EVERY song must belong to a
+-- songbook (tblSongs.SongbookAbbr is NOT NULL with an FK to tblSongbooks), and
+-- the editor defaults a song saved with no songbook to 'Misc' — so it MUST
+-- exist even on a bare install, not just after a data import. Language is
+-- intentionally left NULL: Misc is an unstructured, multi-language catch-all
+-- collection with no single language. (Number is likewise nullable for Misc.)
+INSERT IGNORE INTO tblSongbooks (Abbreviation, Name, SongCount) VALUES
+    ('Misc', 'Miscellaneous', 0);
+
+
 -- ============================================================================
 -- ENGAGEMENT & ANALYTICS TABLES
 -- ============================================================================

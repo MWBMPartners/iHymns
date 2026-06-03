@@ -1034,7 +1034,17 @@ switch ($action) {
         }
 
         $songId       = (string)$song['id'];
-        $songbookAbbr = (string)($song['songbook'] ?? '');
+        $songbookAbbr = trim((string)($song['songbook'] ?? ''));
+        /* Every song MUST belong to a songbook — tblSongs.SongbookAbbr is
+           NOT NULL with an FK to tblSongbooks. When a save arrives with no
+           songbook, default to the canonical generic "Misc" collection
+           rather than failing the INSERT on the constraint (or, on a
+           pre-FK install, silently creating an orphan with a blank
+           songbook). Misc is a seeded songbook whose Number is nullable,
+           so an unnumbered Misc song is valid. */
+        if ($songbookAbbr === '') {
+            $songbookAbbr = 'Misc';
+        }
 
         /* Probe tblSongbooks for IsOfficial so songs in unofficial
            songbooks (Misc, custom collections) can persist Number as
