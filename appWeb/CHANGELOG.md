@@ -1,5 +1,19 @@
 # iHymns Web/PWA — Changelog
 
+## [0.400.0] — 2026-06-03
+
+Minor-version jump reflecting the growing pre-release feature set on top of the DB-direct rewrite.
+
+### Editor
+
+- **ProPresenter 7+ export (#887)** — export the open song as a `.pro` file, or a whole songbook as a `.probundle` (a ProPresenter bundle: `Documents/<n>.pro` + `manifest.json`). Pure client-side via a vendored protobufjs runtime + the reverse-engineered Proto 7.16 schema; no server dependency. Verified by a 54-test suite (valid `.pro` round-trip, `.probundle`, RTF/CCLI/artist mapping, per-songbook number padding). _Setlist → `.probundle` is a tracked follow-up (PWA surface)._
+
+### Catalogue integrity
+
+- Every song must belong to a songbook: the editor defaults a songless save to the generic **Misc** collection, and **Misc** is now seeded in `schema.sql` so a bare install always has it (no language).
+- Scoped the last whole-corpus loads (`/writer/<slug>` matches in SQL; `bulk_songs`/`bulk_audio` require a `songbook` param) — closes the #929 OOM path.
+- Search rows never emit a null `songbookName`; `app_status` exposes `contentGatingEnabled`.
+
 ## [0.200.0] — 2026-06-03
 
 ### DB-direct data layer (epic #1010, WS-A → WS-K)
