@@ -623,6 +623,32 @@ CREATE TABLE IF NOT EXISTS tblLyricSyllables (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
+-- ----------------------------------------------------------------------------
+-- tblApiKeys (#1064) — machine-to-machine API keys for external services
+-- (e.g. MeedyaDL #907 pushing TTML to the lyrics-ingest endpoint). The raw key
+-- is shown once at creation and never stored; only its SHA-256 hash lives here.
+-- Space-separated Scope authorises each endpoint (e.g. "lyrics:ingest").
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblApiKeys (
+    Id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    Label       VARCHAR(120)    NOT NULL COMMENT 'Human label, e.g. MeedyaDL',
+    KeyHash     CHAR(64)        NOT NULL COMMENT 'SHA-256 hex of the raw key (raw never stored)',
+    KeyPrefix   VARCHAR(20)     NOT NULL DEFAULT '' COMMENT 'Non-secret leading chars for identification',
+    Scope       VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Space-separated scopes, e.g. lyrics:ingest',
+    Active      TINYINT(1)      NOT NULL DEFAULT 1,
+    LastUsedAt  DATETIME        NULL DEFAULT NULL,
+    LastUsedIp  VARCHAR(45)     NULL DEFAULT NULL,
+    CreatedBy   INT UNSIGNED    NULL DEFAULT NULL COMMENT 'tblUsers.Id of the admin who created it',
+    CreatedAt   TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_KeyHash (KeyHash),
+    INDEX idx_Active (Active),
+
+    CONSTRAINT fk_ApiKeys_CreatedBy
+        FOREIGN KEY (CreatedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
 -- ============================================================================
 -- USER ACCOUNTS & AUTHENTICATION
 -- ============================================================================

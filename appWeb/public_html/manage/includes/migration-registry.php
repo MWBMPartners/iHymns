@@ -1460,4 +1460,18 @@ return [
         ],
         'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblLyricSyllables'),
     ],
+
+    'api-keys' => [
+        'script' => 'migrate-api-keys.php',
+        'card' => [
+            'title'  => 'API keys (machine-to-machine) (#1064)',
+            'body'   => 'Creates <code>tblApiKeys</code> so external services (e.g. MeedyaDL)'
+                      . ' can authenticate to the lyrics-ingest endpoint with a per-client,'
+                      . ' SHA-256-hashed, scoped, revocable key instead of a session. The raw'
+                      . ' key is shown once at creation and never stored. Manage keys at'
+                      . ' <code>/manage/api-keys</code>. Additive + idempotent.',
+            'button' => 'Run API Keys Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblApiKeys'),
+    ],
 ];
