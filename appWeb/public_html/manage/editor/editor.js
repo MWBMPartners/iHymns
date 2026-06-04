@@ -3594,6 +3594,9 @@ function importJsonCorpus(file) {
 function importVideoPsalmSongbook(file) {
     var fd = new FormData();
     fd.append('videopsalm', file, file.name);
+    /* #1051 — opt-in title dedupe from the toolbar checkbox. */
+    var _ddVp = document.getElementById('import-dedupe-title');
+    fd.append('dedupeMode', (_ddVp && _ddVp.checked) ? 'skip-title' : 'off');
 
     fetch(EDITOR_API_URL + '?action=bulk_import_videopsalm', {
         method:      'POST',
@@ -3657,6 +3660,9 @@ function importBulkZip(file) {
        (broken deploy / offline / etc.) we fall through to a toast. */
     var fd = new FormData();
     fd.append('zip', file, file.name);
+    /* #1051 — opt-in title dedupe from the toolbar checkbox. */
+    var _ddZip = document.getElementById('import-dedupe-title');
+    fd.append('dedupeMode', (_ddZip && _ddZip.checked) ? 'skip-title' : 'off');
 
     /* Hand the widget a synthetic "uploading" job up-front so it can
        mount, start showing progress, and switch to real polling once

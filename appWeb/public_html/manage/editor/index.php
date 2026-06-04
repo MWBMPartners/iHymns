@@ -170,6 +170,13 @@ try {
             >
                 <i class="bi bi-box-arrow-in-down me-1"></i>Import
             </button>
+            <!-- #1051 — opt-in title dedupe for the next import; read by editor.js,
+                 posted as dedupeMode=skip-title. -->
+            <span class="form-check form-check-inline ms-1 align-middle"
+                  title="When ticked, the next import skips any song whose title already exists in the same songbook (matched ignoring case, punctuation and accents) — catching duplicates that have a different number.">
+                <input class="form-check-input" type="checkbox" id="import-dedupe-title">
+                <label class="form-check-label small text-muted" for="import-dedupe-title">Skip existing&nbsp;(by&nbsp;title)</label>
+            </span>
 
             <!-- Separator + Admin links / Logout -->
             <span class="text-muted mx-1 navbar-editor-separator">|</span>
