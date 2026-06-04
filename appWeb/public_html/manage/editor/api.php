@@ -3183,6 +3183,70 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
+     * BULK_IMPORT_PROCLAIM — single Proclaim text/RTF song import (#1062).
+     *
+     * POST /manage/editor/api?action=bulk_import_proclaim
+     *   multipart field "proclaim" = one .txt or .rtf song export.
+     *
+     * Proclaim has no rich structured export, so one file = one song. Files
+     * under a "Proclaim Import" (PC) songbook. Insert-only; honours #1051.
+     * ----------------------------------------------------------------- */
+    case 'bulk_import_proclaim':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        _bulkImport_dedupeMode((string)($_POST['dedupeMode'] ?? 'off'));  /* #1051 */
+        if (!isset($_FILES['proclaim']) || ($_FILES['proclaim']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $err = $_FILES['proclaim']['error'] ?? UPLOAD_ERR_NO_FILE;
+            $msg = 'Upload failed.';
+            if ($err === UPLOAD_ERR_INI_SIZE || $err === UPLOAD_ERR_FORM_SIZE) {
+                $msg = 'Uploaded file is larger than the server limit.';
+            } elseif ($err === UPLOAD_ERR_NO_FILE) {
+                $msg = 'No file received — expected a multipart upload with a "proclaim" field.';
+            }
+            http_response_code(400);
+            echo json_encode(['error' => $msg, 'phpError' => $err]);
+            break;
+        }
+
+        $sizeBytes = (int)($_FILES['proclaim']['size'] ?? 0);
+        if ($sizeBytes > 5 * 1024 * 1024) {
+            http_response_code(413);
+            echo json_encode(['error' => 'Uploaded Proclaim file exceeds the 5 MiB import limit.']);
+            break;
+        }
+
+        try {
+            $tmpPath  = (string)$_FILES['proclaim']['tmp_name'];
+            $origName = (string)($_FILES['proclaim']['name'] ?? 'song.txt');
+            $body     = (string)file_get_contents($tmpPath);
+            if (trim($body) === '') {
+                http_response_code(400);
+                echo json_encode(['error' => 'Uploaded file is empty.']);
+                break;
+            }
+            $summary = _bulkImport_processProclaim($body, $origName);
+            if (!($summary['ok'] ?? false)) {
+                http_response_code(400);
+            } elseif (($summary['songs_created'] ?? 0) > 0) {
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+                    . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                $_maint = songbookMaintenanceRun(getDbMysqli(), 'bulk_import_proclaim');
+                if ($_maint['rewritten'] > 0 || $_maint['deferred']) {
+                    $summary['maintenance'] = $_maint;
+                }
+            }
+            echo json_encode($summary, JSON_UNESCAPED_UNICODE);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[bulk_import_proclaim] ' . $e->getMessage());
+            echo json_encode(['error' => 'Import failed: ' . $e->getMessage()]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
      * BULK_IMPORT_STATUS — poll one async-import job (#676).
      *
      * GET /manage/editor/api?action=bulk_import_status&job_id=N
@@ -6769,6 +6833,146 @@ function _bulkImport_processEasyWorship(string $tmpPath, string $origName): arra
         'songs_skipped_existing' => $songsSkipped,
         'songs_failed'           => $songsFailed,
         'parsed_by_format'       => ['easyworship' => $songsCreated + $songsSkipped],
+        'errors'                 => $errors,
+    ];
+}
+
+/* ===========================================================================
+ *  Proclaim import (#1062)
+ * ---------------------------------------------------------------------------
+ * Faithlife Proclaim exports a song as plain text or RTF. There's no rich
+ * structured export to rely on, so this imports a single song from a .txt or
+ * .rtf body: RTF is decoded with the shared _bulkImport_rtfToText(); the
+ * first non-marker line is taken as the title; the rest is split into
+ * components (blank-line slides / "Verse 1"/"Chorus" labels) by the shared
+ * _bulkImport_easyWorshipSplitComponents(). Songs file under a "Proclaim
+ * Import" (PC) songbook.
+ * =========================================================================== */
+
+/**
+ * Parse a Proclaim text/RTF body into the neutral parsed-song structure.
+ *
+ * @return array{0: ?array, 1: ?string}  [parsed, errorReason]
+ */
+function _bulkImport_parseProclaimText(string $body, ?string $filenameHint = null): array
+{
+    $body = (string)preg_replace('/^\xEF\xBB\xBF/', '', $body);
+
+    /* RTF? Decode to plain text first. */
+    if (preg_match('/^\s*\{\\\\rtf/', $body)) {
+        $body = _bulkImport_rtfToText($body);
+    }
+    $body = str_replace(["\r\n", "\r"], "\n", $body);
+
+    /* Title: the first non-empty line, unless it's a section marker (in which
+       case fall back to the filename). */
+    $lines = explode("\n", $body);
+    $titleLineIdx = -1;
+    $title = '';
+    foreach ($lines as $idx => $ln) {
+        if (trim($ln) === '') { continue; }
+        if (!preg_match('/^(verse|chorus|refrain|bridge|pre[- ]?chorus|intro|outro|ending|tag)\s*\d*\s*$/i', trim($ln))) {
+            $title        = trim($ln);
+            $titleLineIdx = $idx;
+        }
+        break;
+    }
+
+    /* Body for component splitting = everything after the title line (or the
+       whole body if the first content line was a section marker). */
+    if ($titleLineIdx >= 0) {
+        $rest = implode("\n", array_slice($lines, $titleLineIdx + 1));
+    } else {
+        $rest = $body;
+    }
+
+    $components = _bulkImport_easyWorshipSplitComponents($rest);
+
+    /* If there was no separable title line but we did parse lyrics, fall back
+       to the filename stem for the title. */
+    if ($title === '') {
+        $title = trim((string)pathinfo((string)$filenameHint, PATHINFO_FILENAME));
+    }
+    if ($title === '') {
+        return [null, 'could not determine a song title'];
+    }
+    if (empty($components)) {
+        return [null, 'no lyric content found'];
+    }
+
+    return [[
+        'title'        => $title,
+        'songbookName' => '',
+        'entry'        => 0,
+        'language'     => '',
+        'ccli'         => '',
+        'copyright'    => '',
+        'writers'      => [],
+        'components'   => $components,
+    ], null];
+}
+
+/**
+ * Synchronous single-file Proclaim import — invoked from the
+ * bulk_import_proclaim dispatcher case. Same summary shape as the other
+ * single-file processors.
+ */
+function _bulkImport_processProclaim(string $body, ?string $filenameHint = null): array
+{
+    [$parsed, $reason] = _bulkImport_parseProclaimText($body, $filenameHint);
+    if ($parsed === null) {
+        return [
+            'ok'                     => false,
+            'error'                  => $reason ?: 'Proclaim parse failed',
+            'songbooks_created'      => [],
+            'songbooks_existing'     => [],
+            'songs_created'          => 0,
+            'songs_skipped_existing' => 0,
+            'songs_failed'           => 0,
+            'parsed_by_format'       => ['proclaim' => 0],
+            'errors'                 => [],
+        ];
+    }
+
+    $db       = getDbMysqli();
+    $abbr     = 'PC';
+    $bookName = 'Proclaim Import';
+    $state             = _bulkImport_upsertSongbook($db, $abbr, $bookName, null);
+    $songbooksCreated  = ($state === 'created')  ? [$abbr] : [];
+    $songbooksExisting = ($state === 'existing') ? [$abbr] : [];
+
+    $number = _bulkImport_nextSongNumberFor($db, $abbr);
+    $song   = _bulkImport_assembleSong($parsed, $abbr, $bookName, $number);
+
+    $songsCreated = 0;
+    $songsSkipped = 0;
+    $songsFailed  = 0;
+    $errors       = [];
+    [$action, $saveErr] = _bulkImport_saveSong($db, $song);
+    if ($action === 'create')      { $songsCreated = 1; }
+    elseif ($action === 'skipped') { $songsSkipped = 1; }
+    else {
+        $songsFailed = 1;
+        $errors[]    = ['entry' => ($filenameHint ?? 'proclaim') . ': ' . ($song['id'] ?? '?'), 'error' => 'save failed: ' . $saveErr];
+    }
+
+    if (!empty($songbooksCreated)) {
+        $cnt = $db->prepare(
+            'UPDATE tblSongbooks SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?) WHERE Abbreviation = ?'
+        );
+        $cnt->bind_param('ss', $abbr, $abbr);
+        $cnt->execute();
+        $cnt->close();
+    }
+
+    return [
+        'ok'                     => true,
+        'songbooks_created'      => $songbooksCreated,
+        'songbooks_existing'     => $songbooksExisting,
+        'songs_created'          => $songsCreated,
+        'songs_skipped_existing' => $songsSkipped,
+        'songs_failed'           => $songsFailed,
+        'parsed_by_format'       => ['proclaim' => $songsCreated + $songsSkipped],
         'errors'                 => $errors,
     ];
 }

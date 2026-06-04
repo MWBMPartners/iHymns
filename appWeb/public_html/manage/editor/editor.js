@@ -3506,7 +3506,7 @@ function exportCurrentSong() {
 function importJSON() {
     var input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.json,.zip,.xml,.pro6,.db,application/json,application/zip,text/xml,application/xml';
+    input.accept = '.json,.zip,.xml,.pro6,.db,.rtf,.txt,application/json,application/zip,text/xml,application/xml,application/rtf,text/plain';
 
     input.addEventListener('change', function () {
         if (!input.files || !input.files[0]) return; // user cancelled
@@ -3530,12 +3530,15 @@ function importJSON() {
                SongWords.db) is zipped and uses the ZIP path above, which the
                server auto-routes to EasyWorship on detecting a Songs.db. */
             importEasyWorship(file);
+        } else if (lower.endsWith('.rtf') || lower.endsWith('.txt')) {
+            /* Proclaim text/RTF single-song export (#1062). */
+            importProclaim(file);
         } else {
             showToast(
                 'Unsupported file type. Choose a .json corpus, a .zip archive ' +
                 '(.SourceSongData / OpenSong / OpenLyrics / ProPresenter 6 / ' +
-                'EasyWorship), an OpenLyrics .xml, a ProPresenter .pro6, or an ' +
-                'EasyWorship Songs.db.',
+                'EasyWorship), an OpenLyrics .xml, a ProPresenter .pro6, an ' +
+                'EasyWorship Songs.db, or a Proclaim .txt/.rtf.',
                 'danger'
             );
         }
@@ -3711,6 +3714,19 @@ function importEasyWorship(file) {
         action:     'bulk_import_easyworship',
         field:      'easyworship',
         consoleTag: 'bulk_import_easyworship',
+    });
+}
+
+/**
+ * importProclaim(file) — Proclaim text/RTF single-song import (#1062).
+ * Proclaim has no rich structured export, so one .txt/.rtf file = one song
+ * (RTF is decoded server-side); files under a "Proclaim Import" (PC) songbook.
+ */
+function importProclaim(file) {
+    importSingleFileFormat(file, {
+        action:     'bulk_import_proclaim',
+        field:      'proclaim',
+        consoleTag: 'bulk_import_proclaim',
     });
 }
 
