@@ -166,7 +166,7 @@ try {
                 type="button"
                 class="btn btn-sm btn-amber"
                 id="btn-import"
-                title="Bulk-import songs from a .zip archive, a VideoPsalm songbook .json, or an OpenLyrics/OpenLP .xml (whole-hymnal or single song). ZIPs accept the .SourceSongData layout (one .txt per song), OpenSong .xml or OpenLyrics .xml files (OpenLyrics carry their own songbook, so they ignore the folder shape), and VideoPsalm .json songbooks at any depth. Bulk imports insert directly into MySQL and never overwrite existing rows."
+                title="Bulk-import songs from a .zip archive, a VideoPsalm songbook .json, an OpenLyrics/OpenLP .xml, or a ProPresenter 6 .pro6 (whole-hymnal or single song). ZIPs accept the .SourceSongData layout (one .txt per song), OpenSong .xml, OpenLyrics .xml, ProPresenter .pro6 (these carry their own song/songbook, so they ignore the folder shape), and VideoPsalm .json songbooks at any depth. Bulk imports insert directly into MySQL and never overwrite existing rows."
             >
                 <i class="bi bi-box-arrow-in-down me-1"></i>Import
             </button>

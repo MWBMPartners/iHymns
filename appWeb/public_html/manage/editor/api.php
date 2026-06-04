@@ -3007,6 +3007,78 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
+     * BULK_IMPORT_PRO6 — single ProPresenter 6 (.pro6) song import (#1057).
+     *
+     * POST /manage/editor/api?action=bulk_import_pro6
+     *   multipart field "pro6" = one .pro6 XML document.
+     *
+     * A .pro6 presentation is one song; it carries no songbook, so the
+     * song is filed under a single "ProPresenter Import" (PP6) songbook.
+     * Slide text is base64 RTF — decoded + flattened by the parser. A ZIP
+     * of .pro6 files goes through bulk_import_zip (handled inline there).
+     *
+     * Insert-only; honours the #1051 dedupeMode flag. Same summary shape
+     * as the other single-file import endpoints.
+     * ----------------------------------------------------------------- */
+    case 'bulk_import_pro6':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        _bulkImport_dedupeMode((string)($_POST['dedupeMode'] ?? 'off'));  /* #1051 */
+        if (!isset($_FILES['pro6']) || ($_FILES['pro6']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $err = $_FILES['pro6']['error'] ?? UPLOAD_ERR_NO_FILE;
+            $msg = 'Upload failed.';
+            if ($err === UPLOAD_ERR_INI_SIZE || $err === UPLOAD_ERR_FORM_SIZE) {
+                $msg = 'Uploaded file is larger than the server limit.';
+            } elseif ($err === UPLOAD_ERR_NO_FILE) {
+                $msg = 'No file received — expected a multipart upload with a "pro6" field.';
+            }
+            http_response_code(400);
+            echo json_encode(['error' => $msg, 'phpError' => $err]);
+            break;
+        }
+
+        /* A .pro6 can embed media references but the text doc itself is
+           small; cap at the same 5 MiB ceiling as the other single-file
+           paths. */
+        $sizeBytes = (int)($_FILES['pro6']['size'] ?? 0);
+        if ($sizeBytes > 5 * 1024 * 1024) {
+            http_response_code(413);
+            echo json_encode(['error' => 'Uploaded .pro6 file exceeds the 5 MiB import limit.']);
+            break;
+        }
+
+        try {
+            $tmpPath  = (string)$_FILES['pro6']['tmp_name'];
+            $origName = (string)($_FILES['pro6']['name'] ?? 'song.pro6');
+            $body     = (string)file_get_contents($tmpPath);
+            if ($body === '') {
+                http_response_code(400);
+                echo json_encode(['error' => 'Uploaded file is empty.']);
+                break;
+            }
+            $summary = _bulkImport_processPro6($body, $origName);
+            if (!($summary['ok'] ?? false)) {
+                http_response_code(400);
+            } elseif (($summary['songs_created'] ?? 0) > 0) {
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+                    . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                $_maint = songbookMaintenanceRun(getDbMysqli(), 'bulk_import_pro6');
+                if ($_maint['rewritten'] > 0 || $_maint['deferred']) {
+                    $summary['maintenance'] = $_maint;
+                }
+            }
+            echo json_encode($summary, JSON_UNESCAPED_UNICODE);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[bulk_import_pro6] ' . $e->getMessage());
+            echo json_encode(['error' => 'Import failed: ' . $e->getMessage()]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
      * BULK_IMPORT_STATUS — poll one async-import job (#676).
      *
      * GET /manage/editor/api?action=bulk_import_status&job_id=N
@@ -4633,7 +4705,7 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
        the songbook on first encounter, then parse + save the song. */
     $songbookSeen      = [];   // abbrev → (created|existing) — caches the songbook upsert per archive
     $songbookCounters  = [];   // abbrev → next auto-assigned number (OpenSong fallback, #882)
-    $songsParsedByKind = ['txt' => 0, 'opensong' => 0, 'videopsalm' => 0, 'openlyrics' => 0];
+    $songsParsedByKind = ['txt' => 0, 'opensong' => 0, 'videopsalm' => 0, 'openlyrics' => 0, 'propresenter6' => 0];
 
     for ($i = 0; $i < $entryCount; $i++) {
         /* Periodic progress flush every $PROGRESS_BATCH iterations so
@@ -4681,6 +4753,8 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
             $kind = 'opensong';
         } elseif ($ext === 'json') {
             $kind = 'videopsalm';
+        } elseif ($ext === 'pro6') {
+            $kind = 'pro6';
         } else {
             continue;
         }
@@ -4782,7 +4856,7 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
                 }
                 $olNumber = (int)$olParsed['entry'] > 0 ? (int)$olParsed['entry'] : $songbookCounters[$olAbbr];
                 $songbookCounters[$olAbbr] = max($songbookCounters[$olAbbr], $olNumber) + 1;
-                $olSong = _bulkImport_assembleOpenLyricsSong($olParsed, $olAbbr, $olName, $olNumber);
+                $olSong = _bulkImport_assembleSong($olParsed, $olAbbr, $olName, $olNumber);
                 [$olAction, $olErr] = _bulkImport_saveSong($db, $olSong);
                 if ($olAction === 'create') {
                     $songsCreated++;
@@ -4801,6 +4875,61 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
                 }
                 continue;
             }
+        }
+
+        /* ProPresenter 6 (#1057): each .pro6 is one song and carries no
+           songbook. Handle inline (no folder convention): the song is filed
+           under the immediate parent folder's name when present (so a
+           curator can group .pro6 files into per-songbook folders), else a
+           default "ProPresenter Import" (PP6) songbook. Slide text is base64
+           RTF, decoded by the parser. */
+        if ($kind === 'pro6') {
+            $p6body = $zip->getFromIndex($i);
+            if ($p6body === false) {
+                $errors[] = ['entry' => $name, 'error' => 'could not read entry'];
+                $songsFailed++;
+                continue;
+            }
+            [$p6Parsed, $p6Reason] = _bulkImport_parsePro6($p6body);
+            if ($p6Parsed === null) {
+                $errors[] = ['entry' => $name, 'error' => 'ProPresenter 6 parse failed: ' . $p6Reason];
+                $songsFailed++;
+                continue;
+            }
+            $p6Segments = explode('/', $name);
+            $p6Folder   = count($p6Segments) >= 2 ? $p6Segments[count($p6Segments) - 2] : '';
+            $p6Name     = $p6Folder !== '' ? $p6Folder : 'ProPresenter Import';
+            $p6Abbr     = $p6Folder !== '' ? _bulkImport_videopsalmAbbrevFromHint($p6Folder, $p6Name) : 'PP6';
+            if ($p6Abbr === 'VP' || $p6Abbr === '') { $p6Abbr = 'PP6'; }
+            if (!isset($songbookSeen[$p6Abbr])) {
+                $state = _bulkImport_upsertSongbook($db, $p6Abbr, $p6Name, null);
+                $songbookSeen[$p6Abbr] = $state;
+                if ($state === 'created') { $songbooksCreated[] = $p6Abbr; }
+                else                       { $songbooksExisting[] = $p6Abbr; }
+            }
+            if (!isset($songbookCounters[$p6Abbr])) {
+                $songbookCounters[$p6Abbr] = _bulkImport_nextSongNumberFor($db, $p6Abbr);
+            }
+            $p6Number = $songbookCounters[$p6Abbr];
+            $songbookCounters[$p6Abbr] = $p6Number + 1;
+            $p6Song = _bulkImport_assembleSong($p6Parsed, $p6Abbr, $p6Name, $p6Number);
+            [$p6Action, $p6Err] = _bulkImport_saveSong($db, $p6Song);
+            if ($p6Action === 'create') {
+                $songsCreated++;
+                $songsParsedByKind['propresenter6']++;
+                $_perBookBump($p6Abbr, $p6Name, 'created');
+            } elseif ($p6Action === 'skipped') {
+                $songsSkippedExisting++;
+                $_perBookBump($p6Abbr, $p6Name, 'skipped');
+                if (isset($p6Song['id']) && $p6Song['id'] !== '') {
+                    $skippedSongIds[] = (string)$p6Song['id'];
+                }
+            } else {
+                $errors[] = ['entry' => $name, 'error' => 'save failed: ' . $p6Err];
+                $songsFailed++;
+                $_perBookBump($p6Abbr, $p6Name, 'failed', 'save failed: ' . $p6Err, $name, $p6Number ?: null, 'save');
+            }
+            continue;
         }
 
         /* Pull out the folder + file segments. We expect exactly one
@@ -5741,10 +5870,13 @@ function _bulkImport_parseOpenLyrics(string $body): array
 }
 
 /**
- * Assemble the parsed OpenLyrics structure into the song shape that
+ * Assemble a neutral parsed structure into the song shape that
  * _bulkImport_saveSong() consumes (mirrors _bulkImport_parseOpenSong()).
+ * Format-agnostic: any importer whose parser returns the
+ * { title, language, ccli, copyright, writers[], components[] } keys can
+ * reuse this (OpenLyrics #1052, ProPresenter 6 #1057, …).
  */
-function _bulkImport_assembleOpenLyricsSong(array $parsed, string $abbr, string $songbookName, int $number): array
+function _bulkImport_assembleSong(array $parsed, string $abbr, string $songbookName, int $number): array
 {
     return [
         'id'                 => sprintf('%s-%04d', strtoupper($abbr), $number),
@@ -5806,7 +5938,7 @@ function _bulkImport_processOpenLp(string $body, ?string $filenameHint = null): 
     $number = (int)$parsed['entry'] > 0
         ? (int)$parsed['entry']
         : _bulkImport_nextSongNumberFor($db, $abbr);
-    $song = _bulkImport_assembleOpenLyricsSong($parsed, $abbr, $bookName, $number);
+    $song = _bulkImport_assembleSong($parsed, $abbr, $bookName, $number);
 
     $songsCreated = 0;
     $songsSkipped = 0;
@@ -5844,6 +5976,404 @@ function _bulkImport_processOpenLp(string $body, ?string $filenameHint = null): 
         'songs_skipped_existing' => $songsSkipped,
         'songs_failed'           => $songsFailed,
         'parsed_by_format'       => ['openlyrics' => $songsCreated + $songsSkipped],
+        'errors'                 => $errors,
+    ];
+}
+
+/* ===========================================================================
+ *  ProPresenter 6 import (#1057)
+ * ---------------------------------------------------------------------------
+ * A ProPresenter 6 ".pro6" file is an XML <RVPresentationDocument>. Slides
+ * are organised into <RVSlideGrouping name="Verse 1"> groups; each slide's
+ * lyric text lives inside an <RVTextElement> as base64-encoded RTF (either an
+ * RTFData="…" attribute on older builds, or a <NSString rvXMLIvarName="RTFData">
+ * child on newer ones). Song metadata (title / author / CCLI / copyright)
+ * rides on the root element's CCLI* attributes.
+ *
+ * Each .pro6 is one song. A single file imports via the bulk_import_pro6
+ * action; a ZIP of .pro6 files is handled inline by _bulkImport_processZip().
+ * Both feed the shared _bulkImport_assembleSong() + dedupe-aware
+ * _bulkImport_saveSong() path.
+ * =========================================================================== */
+
+/**
+ * Minimal RTF → plain-text converter, sufficient for the simple RTF
+ * ProPresenter stores (lyric runs with \par / \line breaks, \uN unicode,
+ * \'XX hex bytes; \fonttbl / \colortbl / \*-destinations discarded).
+ *
+ * Implemented as a single-pass tokeniser tracking group depth so nested
+ * destination groups (font/colour/style tables, \* groups) are skipped
+ * wholesale rather than leaking control text into the lyrics.
+ */
+function _bulkImport_rtfToText(string $rtf): string
+{
+    $out = '';
+    $i   = 0;
+    $n   = strlen($rtf);
+    $depth          = 0;
+    $ucStack        = [1];   // \uc skip-count per group level
+    $unicodeSkip    = 0;     // literal chars still to swallow after a \uN
+    $skipUntilDepth = -1;    // when >=0, suppress output until depth drops below it
+
+    while ($i < $n) {
+        $c = $rtf[$i];
+
+        if ($c === '\\') {
+            $next = $i + 1 < $n ? $rtf[$i + 1] : '';
+
+            /* Escaped literal brace / backslash. */
+            if ($next === '\\' || $next === '{' || $next === '}') {
+                if ($skipUntilDepth < 0) {
+                    if ($unicodeSkip > 0) { $unicodeSkip--; }
+                    else                  { $out .= $next; }
+                }
+                $i += 2;
+                continue;
+            }
+
+            /* \'XX — one hex-encoded byte. */
+            if ($next === "'") {
+                $hex = substr($rtf, $i + 2, 2);
+                $i  += 4;
+                if ($skipUntilDepth < 0) {
+                    if ($unicodeSkip > 0) { $unicodeSkip--; }
+                    elseif (ctype_xdigit($hex)) { $out .= chr(hexdec($hex)); }
+                }
+                continue;
+            }
+
+            /* Control word: \word, optional signed number, optional single
+               trailing space delimiter. */
+            if (ctype_alpha($next)) {
+                $j = $i + 1;
+                while ($j < $n && ctype_alpha($rtf[$j])) { $j++; }
+                $word = substr($rtf, $i + 1, $j - ($i + 1));
+                $num  = '';
+                if ($j < $n && ($rtf[$j] === '-' || ctype_digit($rtf[$j]))) {
+                    $k = $j;
+                    if ($rtf[$k] === '-') { $k++; }
+                    while ($k < $n && ctype_digit($rtf[$k])) { $k++; }
+                    $num = substr($rtf, $j, $k - $j);
+                    $j   = $k;
+                }
+                if ($j < $n && $rtf[$j] === ' ') { $j++; }
+                $i = $j;
+
+                switch ($word) {
+                    case 'u':
+                        $code = (int)$num;
+                        if ($code < 0) { $code += 65536; }
+                        if ($skipUntilDepth < 0) {
+                            $ch = function_exists('mb_chr') ? mb_chr($code, 'UTF-8') : null;
+                            if ($ch !== null && $ch !== false) { $out .= $ch; }
+                        }
+                        $unicodeSkip = $ucStack[count($ucStack) - 1];
+                        break;
+                    case 'uc':
+                        $ucStack[count($ucStack) - 1] = max(0, (int)$num);
+                        break;
+                    case 'par':
+                    case 'line':
+                        if ($skipUntilDepth < 0) { $out .= "\n"; }
+                        break;
+                    case 'tab':
+                        if ($skipUntilDepth < 0) { $out .= "\t"; }
+                        break;
+                    case 'fonttbl':
+                    case 'colortbl':
+                    case 'stylesheet':
+                    case 'info':
+                    case 'pict':
+                    case 'object':
+                    case 'themedata':
+                    case 'datastore':
+                        /* Destination group we never want as text — skip the
+                           rest of the current group. */
+                        if ($skipUntilDepth < 0) { $skipUntilDepth = $depth; }
+                        break;
+                    default:
+                        /* Formatting control word with no textual output. */
+                        break;
+                }
+                continue;
+            }
+
+            /* \* — ignorable destination: skip the enclosing group. */
+            if ($next === '*') {
+                if ($skipUntilDepth < 0) { $skipUntilDepth = $depth; }
+                $i += 2;
+                continue;
+            }
+
+            /* Other control symbol (e.g. \~, \-) — drop it. */
+            $i += 2;
+            continue;
+        }
+
+        if ($c === '{') {
+            $depth++;
+            $ucStack[] = $ucStack[count($ucStack) - 1];
+            $i++;
+            continue;
+        }
+        if ($c === '}') {
+            if ($skipUntilDepth >= 0 && $depth <= $skipUntilDepth) {
+                $skipUntilDepth = -1;
+            }
+            if ($depth > 0) { $depth--; }
+            if (count($ucStack) > 1) { array_pop($ucStack); }
+            $i++;
+            continue;
+        }
+
+        /* Raw CR/LF inside RTF source are not text. */
+        if ($c === "\r" || $c === "\n") { $i++; continue; }
+
+        if ($skipUntilDepth < 0) {
+            if ($unicodeSkip > 0) { $unicodeSkip--; }
+            else                  { $out .= $c; }
+        }
+        $i++;
+    }
+
+    return $out;
+}
+
+/**
+ * Split a ProPresenter group label ("Verse 1", "Chorus", "Pre-Chorus 2")
+ * into [iHymns component type, number]. Reuses _bulkImport_componentTypeFor()
+ * for the word → type mapping (non-English / unknown labels → refrain).
+ */
+function _bulkImport_pro6GroupType(string $label): array
+{
+    $label = trim($label);
+    $num   = 0;
+    if (preg_match('/^(.*?)[\s_-]*(\d+)\s*$/u', $label, $m)) {
+        $word = trim($m[1]);
+        $num  = (int)$m[2];
+    } else {
+        $word = $label;
+    }
+    /* Normalise a few common ProPresenter labels to the marker words
+       _bulkImport_componentTypeFor() understands. */
+    $word  = strtolower($word);
+    $alias = [
+        'pre chorus' => 'pre-chorus',
+        'prechorus'  => 'pre-chorus',
+        'ending'     => 'outro',
+        'tag'        => 'outro',
+        'coda'       => 'outro',
+        'intro'      => 'intro',
+        'interlude'  => 'refrain',
+        'vamp'       => 'refrain',
+    ];
+    $word = $alias[$word] ?? $word;
+    return [_bulkImport_componentTypeFor($word), $num];
+}
+
+/**
+ * Extract the base64 RTF text from one <RVTextElement>, tolerating both the
+ * RTFData="…" attribute form and the <NSString rvXMLIvarName="RTFData"> child
+ * form. Returns the decoded plain text (may be '').
+ */
+function _bulkImport_pro6TextElementToText(\SimpleXMLElement $textEl): string
+{
+    $b64 = trim((string)($textEl['RTFData'] ?? ''));
+    if ($b64 === '') {
+        foreach ($textEl->xpath('.//*[@rvXMLIvarName="RTFData"]') ?: [] as $child) {
+            $b64 = trim((string)$child);
+            if ($b64 !== '') { break; }
+        }
+    }
+    if ($b64 === '') {
+        return '';
+    }
+    $rtf = base64_decode($b64, true);
+    if ($rtf === false || $rtf === '') {
+        return '';
+    }
+    return _bulkImport_rtfToText($rtf);
+}
+
+/**
+ * Parse one ProPresenter 6 ".pro6" XML body into the neutral parsed
+ * structure (no abbrev / number / SongId resolution — caller does that).
+ *
+ * @return array{0: ?array, 1: ?string}  [parsed, errorReason]
+ */
+function _bulkImport_parsePro6(string $body): array
+{
+    $body = (string)preg_replace('/^\xEF\xBB\xBF/', '', $body);
+
+    $prevInternal = libxml_use_internal_errors(true);
+    libxml_clear_errors();
+    $xml = simplexml_load_string($body, \SimpleXMLElement::class, LIBXML_NONET);
+    if ($xml === false) {
+        $err = libxml_get_last_error();
+        libxml_clear_errors();
+        libxml_use_internal_errors($prevInternal);
+        return [null, 'invalid XML' . ($err ? ': ' . trim($err->message) : '')];
+    }
+    libxml_clear_errors();
+    libxml_use_internal_errors($prevInternal);
+
+    if (strtolower($xml->getName()) !== 'rvpresentationdocument') {
+        return [null, 'XML root is <' . $xml->getName() . '>, expected <RVPresentationDocument>'];
+    }
+
+    /* Metadata from the root CCLI* attributes. */
+    $title     = trim((string)($xml['CCLISongTitle'] ?? ''));
+    $author    = trim((string)($xml['CCLIAuthor'] ?? ''));
+    $publisher = trim((string)($xml['CCLIPublisher'] ?? ''));
+    $ccli      = trim((string)($xml['CCLISongNumber'] ?? ''));
+    $year      = trim((string)($xml['CCLICopyrightYear'] ?? ''));
+    $copyright = trim(($publisher !== '' ? $publisher : '') . ($year !== '' ? ($publisher !== '' ? ' ' : '') . $year : ''));
+
+    $writers = [];
+    if ($author !== '') {
+        foreach (preg_split('/\s*[\/&,;]\s*/u', $author) as $w) {
+            $w = trim((string)$w);
+            if ($w !== '') { $writers[] = $w; }
+        }
+    }
+
+    /* Walk slide groupings. Each grouping → one component; its slides'
+       text-element lines concatenate into that component's lines. */
+    $components = [];
+    foreach ($xml->xpath('//RVSlideGrouping') ?: [] as $group) {
+        [$type, $num] = _bulkImport_pro6GroupType((string)($group['name'] ?? ''));
+        $lines = [];
+        foreach ($group->xpath('.//RVTextElement') ?: [] as $textEl) {
+            $text = _bulkImport_pro6TextElementToText($textEl);
+            if ($text === '') { continue; }
+            foreach (explode("\n", str_replace(["\r\n", "\r"], "\n", $text)) as $ln) {
+                $ln = rtrim($ln);
+                if ($ln !== '' || !empty($lines)) { $lines[] = $ln; }
+            }
+        }
+        while (!empty($lines) && trim((string)end($lines)) === '') { array_pop($lines); }
+        if (!empty($lines)) {
+            $components[] = ['type' => $type, 'number' => $num, 'lines' => $lines];
+        }
+    }
+
+    /* Fallback: some .pro6 files have no groupings — collect every slide's
+       text as sequential verses. */
+    if (empty($components)) {
+        $vnum = 0;
+        foreach ($xml->xpath('//RVDisplaySlide') ?: [] as $slide) {
+            $lines = [];
+            foreach ($slide->xpath('.//RVTextElement') ?: [] as $textEl) {
+                $text = _bulkImport_pro6TextElementToText($textEl);
+                if ($text === '') { continue; }
+                foreach (explode("\n", str_replace(["\r\n", "\r"], "\n", $text)) as $ln) {
+                    $ln = rtrim($ln);
+                    if ($ln !== '' || !empty($lines)) { $lines[] = $ln; }
+                }
+            }
+            while (!empty($lines) && trim((string)end($lines)) === '') { array_pop($lines); }
+            if (!empty($lines)) {
+                $components[] = ['type' => 'verse', 'number' => ++$vnum, 'lines' => $lines];
+            }
+        }
+    }
+
+    if (empty($components)) {
+        return [null, 'no slide text found in .pro6'];
+    }
+
+    /* Title fallback: first line of the first component (caller may further
+       fall back to the filename). */
+    if ($title === '') {
+        $title = trim((string)($components[0]['lines'][0] ?? ''));
+    }
+    if ($title === '') {
+        return [null, 'no song title (no CCLISongTitle and no slide text)'];
+    }
+
+    return [[
+        'title'        => $title,
+        'songbookName' => '',   // .pro6 carries no songbook; caller supplies one
+        'entry'        => 0,
+        'language'     => '',
+        'ccli'         => $ccli,
+        'copyright'    => $copyright,
+        'writers'      => $writers,
+        'components'   => $components,
+    ], null];
+}
+
+/**
+ * Synchronous single-file ProPresenter 6 import — invoked from the
+ * bulk_import_pro6 dispatcher case. Same summary shape as the other
+ * single-file processors. The songbook is supplied by the caller (filename
+ * hint), since .pro6 carries none.
+ */
+function _bulkImport_processPro6(string $body, ?string $filenameHint = null): array
+{
+    [$parsed, $reason] = _bulkImport_parsePro6($body);
+    if ($parsed === null) {
+        return [
+            'ok'                     => false,
+            'error'                  => $reason ?: 'ProPresenter 6 parse failed',
+            'songbooks_created'      => [],
+            'songbooks_existing'     => [],
+            'songs_created'          => 0,
+            'songs_skipped_existing' => 0,
+            'songs_failed'           => 0,
+            'parsed_by_format'       => ['propresenter6' => 0],
+            'errors'                 => [],
+        ];
+    }
+
+    /* .pro6 has no songbook — file them under a single "ProPresenter Import"
+       songbook (abbr "PP6", or a bracketed token from the upload filename). */
+    $db       = getDbMysqli();
+    $bookName = 'ProPresenter Import';
+    $abbr     = _bulkImport_videopsalmAbbrevFromHint($filenameHint, '');
+    if ($abbr === 'VP' || $abbr === '') { $abbr = 'PP6'; }
+
+    $state             = _bulkImport_upsertSongbook($db, $abbr, $bookName, null);
+    $songbooksCreated  = ($state === 'created')  ? [$abbr] : [];
+    $songbooksExisting = ($state === 'existing') ? [$abbr] : [];
+
+    $number = _bulkImport_nextSongNumberFor($db, $abbr);
+    $song   = _bulkImport_assembleSong($parsed, $abbr, $bookName, $number);
+
+    $songsCreated = 0;
+    $songsSkipped = 0;
+    $songsFailed  = 0;
+    $errors       = [];
+    [$action, $saveErr] = _bulkImport_saveSong($db, $song);
+    if ($action === 'create')       { $songsCreated = 1; }
+    elseif ($action === 'skipped')  { $songsSkipped = 1; }
+    else {
+        $songsFailed = 1;
+        $errors[]    = [
+            'entry' => ($filenameHint ?? 'pro6') . ': ' . ($song['id'] ?? '?'),
+            'error' => 'save failed: ' . $saveErr,
+        ];
+    }
+
+    if (!empty($songbooksCreated)) {
+        $cnt = $db->prepare(
+            'UPDATE tblSongbooks
+                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?)
+              WHERE Abbreviation = ?'
+        );
+        $cnt->bind_param('ss', $abbr, $abbr);
+        $cnt->execute();
+        $cnt->close();
+    }
+
+    return [
+        'ok'                     => true,
+        'songbooks_created'      => $songbooksCreated,
+        'songbooks_existing'     => $songbooksExisting,
+        'songs_created'          => $songsCreated,
+        'songs_skipped_existing' => $songsSkipped,
+        'songs_failed'           => $songsFailed,
+        'parsed_by_format'       => ['propresenter6' => $songsCreated + $songsSkipped],
         'errors'                 => $errors,
     ];
 }

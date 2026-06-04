@@ -3506,7 +3506,7 @@ function exportCurrentSong() {
 function importJSON() {
     var input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.json,.zip,.xml,application/json,application/zip,text/xml,application/xml';
+    input.accept = '.json,.zip,.xml,.pro6,application/json,application/zip,text/xml,application/xml';
 
     input.addEventListener('change', function () {
         if (!input.files || !input.files[0]) return; // user cancelled
@@ -3521,10 +3521,15 @@ function importJSON() {
             /* OpenLyrics / OpenLP single-song export (#1052). A folder of
                these exported as a .zip uses the ZIP path above instead. */
             importOpenLp(file);
+        } else if (lower.endsWith('.pro6')) {
+            /* ProPresenter 6 single-song export (#1057). A folder of .pro6
+               files exported as a .zip uses the ZIP path above instead. */
+            importPro6(file);
         } else {
             showToast(
                 'Unsupported file type. Choose a .json corpus, a .zip archive ' +
-                '(.SourceSongData / OpenSong / OpenLyrics), or an OpenLyrics .xml.',
+                '(.SourceSongData / OpenSong / OpenLyrics / ProPresenter 6), an ' +
+                'OpenLyrics .xml, or a ProPresenter .pro6.',
                 'danger'
             );
         }
@@ -3669,6 +3674,21 @@ function importOpenLp(file) {
         action:     'bulk_import_openlp',
         field:      'openlp',
         consoleTag: 'bulk_import_openlp',
+    });
+}
+
+/**
+ * importPro6(file) — ProPresenter 6 single-song .pro6 import (#1057).
+ * A .pro6 is one presentation/song with no songbook, so the server files it
+ * under a "ProPresenter Import" (PP6) songbook. A folder of .pro6 files
+ * exported as a .zip goes through importBulkZip() instead (the ZIP path
+ * recognises .pro6 entries and groups them by their containing folder).
+ */
+function importPro6(file) {
+    importSingleFileFormat(file, {
+        action:     'bulk_import_pro6',
+        field:      'pro6',
+        consoleTag: 'bulk_import_pro6',
     });
 }
 
