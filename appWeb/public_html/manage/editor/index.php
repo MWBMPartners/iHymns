@@ -376,6 +376,36 @@ try {
                                 <i class="bi bi-archive me-2"></i>This songbook (<code>.zip</code>)</a></li>
                         </ul>
                     </div>
+                    <!-- OpenLP / OpenLyrics export (#1053): single song → .xml,
+                         whole songbook → .osz (zip of OpenLyrics). Wired below. -->
+                    <div class="btn-group">
+                        <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle"
+                                id="btn-ol-export" data-bs-toggle="dropdown" aria-expanded="false"
+                                title="Export to OpenLP / OpenLyrics (.xml / .osz)" disabled>
+                            <i class="bi bi-easel me-1"></i>OpenLP
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-dark">
+                            <li><a class="dropdown-item" href="#" id="ol-export-song">
+                                <i class="bi bi-file-earmark-code me-2"></i>This song (<code>.xml</code>)</a></li>
+                            <li><a class="dropdown-item" href="#" id="ol-export-songbook">
+                                <i class="bi bi-archive me-2"></i>This songbook (<code>.osz</code>)</a></li>
+                        </ul>
+                    </div>
+                    <!-- Proclaim export (#1063): single song → .txt,
+                         whole songbook → .zip of .txt. Wired below. -->
+                    <div class="btn-group">
+                        <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle"
+                                id="btn-pc-export" data-bs-toggle="dropdown" aria-expanded="false"
+                                title="Export to Proclaim (.txt / .zip)" disabled>
+                            <i class="bi bi-file-text me-1"></i>Proclaim
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-dark">
+                            <li><a class="dropdown-item" href="#" id="pc-export-song">
+                                <i class="bi bi-file-earmark-text me-2"></i>This song (<code>.txt</code>)</a></li>
+                            <li><a class="dropdown-item" href="#" id="pc-export-songbook">
+                                <i class="bi bi-archive me-2"></i>This songbook (<code>.zip</code>)</a></li>
+                        </ul>
+                    </div>
                     <button type="button" class="btn btn-sm btn-outline-danger" id="btn-delete-song" title="Delete selected song">
                         <i class="bi bi-trash me-1"></i>Delete
                     </button>
@@ -1728,6 +1758,8 @@ try {
             bindFormat('openSong',   'OpenSong',   'btn-os-export', 'os-export-song', 'os-export-songbook');
             bindFormat('videoPsalm', 'VideoPsalm', 'btn-vp-export', 'vp-export-song', 'vp-export-songbook');
             bindFormat('freeShow',   'FreeShow',   'btn-fs-export', 'fs-export-song', 'fs-export-songbook');
+            bindFormat('openLyrics', 'OpenLP',     'btn-ol-export', 'ol-export-song', 'ol-export-songbook');
+            bindFormat('proclaim',   'Proclaim',   'btn-pc-export', 'pc-export-song', 'pc-export-songbook');
         });
     })();
     </script>

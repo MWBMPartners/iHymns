@@ -309,6 +309,158 @@
         return { filename: zipName, size: zip.length, count: files.length };
     }
 
+    /* ====================================================================
+     *  OpenLyrics / OpenLP (.xml / .osz) — #1053
+     * ====================================================================
+     * OpenLyrics is OpenLP's native per-song XML. A single song exports as a
+     * .xml; a songbook exports as an .osz (a zip of OpenLyrics files — the
+     * shape OpenLP reads). Round-trips with the iHymns OpenLP importer
+     * (#1052): verse `name` letters (v/c/b/p/i/e + number) map back to the
+     * same component types. */
+
+    var OL_TAG = {
+        'verse': 'v', 'chorus': 'c', 'refrain': 'c', 'bridge': 'b',
+        'pre-chorus': 'p', 'prechorus': 'p', 'intro': 'i', 'outro': 'e',
+        'tag': 'e', 'coda': 'e', 'interlude': 'c'
+    };
+    function olVerseName(comp, fallbackIdx) {
+        var letter = OL_TAG[String(comp.type || 'verse').toLowerCase()] || 'v';
+        var n = (comp.number != null && comp.number !== '' && String(comp.number) !== '0')
+            ? String(comp.number)
+            : (letter === 'v' ? String(fallbackIdx) : '');
+        return letter + n;
+    }
+
+    function buildOpenLyrics(song) {
+        if (!song) { throw new Error('buildOpenLyrics: song required'); }
+        var comps = song.components || [];
+        var names = [];
+        var verseXml = '';
+        var vIdx = 0;
+        comps.forEach(function (comp) {
+            vIdx++;
+            var vname = olVerseName(comp, vIdx);
+            names.push(vname);
+            var body = (comp.lines || []).map(function (line) {
+                return escapeXml(String(line == null ? '' : line));
+            }).join('<br/>');
+            verseXml += '    <verse name="' + escapeXml(vname) + '">\n'
+                     +  '      <lines>' + body + '</lines>\n'
+                     +  '    </verse>\n';
+        });
+
+        var authors = [].concat(song.writers || [], song.composers || []).filter(Boolean);
+        var x = '<?xml version="1.0" encoding="UTF-8"?>\n';
+        x += '<song xmlns="http://openlyrics.info/namespace/2009/song" version="0.8" createdIn="iHymns">\n';
+        x += '  <properties>\n';
+        x += '    <titles><title>' + escapeXml(String(song.title || 'Untitled')) + '</title></titles>\n';
+        if (authors.length) {
+            x += '    <authors>\n';
+            authors.forEach(function (a) { x += '      <author>' + escapeXml(String(a)) + '</author>\n'; });
+            x += '    </authors>\n';
+        }
+        if (song.copyright) { x += '    <copyright>' + escapeXml(String(song.copyright)) + '</copyright>\n'; }
+        if (song.ccli)      { x += '    <ccliNo>' + escapeXml(String(song.ccli)) + '</ccliNo>\n'; }
+        if (song.songbookName || song.songbook) {
+            var entry = (song.number != null && song.number !== '') ? ' entry="' + escapeXml(String(song.number)) + '"' : '';
+            x += '    <songbooks><songbook name="' + escapeXml(String(song.songbookName || song.songbook)) + '"' + entry + '/></songbooks>\n';
+        }
+        if (names.length) { x += '    <verseOrder>' + escapeXml(names.join(' ')) + '</verseOrder>\n'; }
+        x += '  </properties>\n';
+        x += '  <lyrics>\n' + verseXml + '  </lyrics>\n';
+        x += '</song>\n';
+        return x;
+    }
+
+    function exportSongOpenLyrics(song) {
+        var xml = buildOpenLyrics(song);
+        var filename = baseFilename(song) + '.xml';
+        download(xml, filename, 'application/xml');
+        return { filename: filename, size: xml.length };
+    }
+
+    function exportSongbookOpenLyrics(songs, options) {
+        options = options || {};
+        if (!Array.isArray(songs) || !songs.length) {
+            throw new Error('exportSongbookOpenLyrics: non-empty songs array required');
+        }
+        var enc = new TextEncoder();
+        var seen = Object.create(null);
+        var files = songs.map(function (song) {
+            var name = baseFilename(song) + '.xml';
+            if (seen[name]) { name = baseFilename(song) + ' (' + (seen[name]++) + ').xml'; }
+            else { seen[name] = 1; }
+            return { name: name, bytes: enc.encode(buildOpenLyrics(song)) };
+        });
+        var zip = buildZip(files);
+        var stem = options.songbookName
+            ? sanitizeFilename(options.songbookName + (options.songbookAbbr ? ' (' + options.songbookAbbr + ')' : ''))
+            : (options.songbookAbbr ? sanitizeFilename(options.songbookAbbr) : 'OpenLP Export');
+        var zipName = stem + '.osz';
+        download(zip, zipName, 'application/zip');
+        return { filename: zipName, size: zip.length, count: files.length };
+    }
+
+    /* ====================================================================
+     *  Proclaim (text/RTF) — #1063
+     * ====================================================================
+     * Proclaim has no rich import format, so the interchange is plain text:
+     * the title on the first line, a blank line, then blank-line-separated
+     * sections (each preceded by its label). Round-trips with the iHymns
+     * Proclaim importer (#1062). A songbook exports as a zip of .txt. */
+
+    var PC_LABEL = {
+        'verse': 'Verse', 'chorus': 'Chorus', 'refrain': 'Refrain', 'bridge': 'Bridge',
+        'pre-chorus': 'Pre-Chorus', 'prechorus': 'Pre-Chorus', 'intro': 'Intro',
+        'outro': 'Ending', 'tag': 'Tag', 'coda': 'Coda', 'interlude': 'Interlude'
+    };
+    function pcLabel(comp) {
+        var base = PC_LABEL[String(comp.type || 'verse').toLowerCase()] || 'Verse';
+        var n = (comp.number != null && comp.number !== '' && String(comp.number) !== '0') ? (' ' + comp.number) : '';
+        return base + n;
+    }
+
+    function buildProclaim(song) {
+        if (!song) { throw new Error('buildProclaim: song required'); }
+        var out = String(song.title || 'Untitled') + '\n';
+        (song.components || []).forEach(function (comp) {
+            out += '\n' + pcLabel(comp) + '\n';
+            (comp.lines || []).forEach(function (line) {
+                out += String(line == null ? '' : line) + '\n';
+            });
+        });
+        return out;
+    }
+
+    function exportSongProclaim(song) {
+        var txt = buildProclaim(song);
+        var filename = baseFilename(song) + '.txt';
+        download(txt, filename, 'text/plain');
+        return { filename: filename, size: txt.length };
+    }
+
+    function exportSongbookProclaim(songs, options) {
+        options = options || {};
+        if (!Array.isArray(songs) || !songs.length) {
+            throw new Error('exportSongbookProclaim: non-empty songs array required');
+        }
+        var enc = new TextEncoder();
+        var seen = Object.create(null);
+        var files = songs.map(function (song) {
+            var name = baseFilename(song) + '.txt';
+            if (seen[name]) { name = baseFilename(song) + ' (' + (seen[name]++) + ').txt'; }
+            else { seen[name] = 1; }
+            return { name: name, bytes: enc.encode(buildProclaim(song)) };
+        });
+        var zip = buildZip(files);
+        var stem = options.songbookName
+            ? sanitizeFilename(options.songbookName + (options.songbookAbbr ? ' (' + options.songbookAbbr + ')' : ''))
+            : (options.songbookAbbr ? sanitizeFilename(options.songbookAbbr) : 'Proclaim Export');
+        var zipName = stem + ' [Proclaim].zip';
+        download(zip, zipName, 'application/zip');
+        return { filename: zipName, size: zip.length, count: files.length };
+    }
+
     /* ---- public API ----------------------------------------------------- */
 
     var api = {
@@ -316,6 +468,16 @@
             build:           buildOpenSong,
             exportSong:      exportSongOpenSong,
             exportSongbook:  exportSongbookOpenSong
+        },
+        openLyrics: {
+            build:           buildOpenLyrics,
+            exportSong:      exportSongOpenLyrics,
+            exportSongbook:  exportSongbookOpenLyrics
+        },
+        proclaim: {
+            build:           buildProclaim,
+            exportSong:      exportSongProclaim,
+            exportSongbook:  exportSongbookProclaim
         },
         videoPsalm: {
             build:           buildVideoPsalm,
