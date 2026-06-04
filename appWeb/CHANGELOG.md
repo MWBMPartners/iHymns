@@ -1,5 +1,30 @@
 # iHymns Web/PWA — Changelog
 
+## [0.550.0] — 2026-06-04
+
+Minor-version jump for the multi-format interchange + lyrics-ingest program. (iLyricsDB follows this version numbering until the backends merge.)
+
+### Worship-software import / export (editor)
+
+- **Imports** (single file or ZIP, dedupe-aware, INSERT-only): OpenLyrics/OpenLP `.xml` (#1052), ProPresenter 6 `.pro6` (#1057, base64-RTF decode), FreeShow `.show` (#884), EasyWorship 6/7 SQLite `Songs.db`+`SongWords.db` (#1058, **beta**), Proclaim `.txt`/`.rtf` (#1062). Each round-trips with its exporter.
+- **Exports** (single song + whole songbook): OpenSong (#1054), VideoPsalm (#1055), FreeShow (#1056), OpenLP/OpenLyrics `.osz` (#1053), Proclaim (#1063), ProPresenter 6 `.pro6` (#889), EasyWorship `Songs.db` (#1059, **beta**) — all via the shared `format-export.js` module + the stored-ZIP writer.
+- **Max lines per slide** (#1065) — cap lyric lines per slide on presentation exports (PP6 / FreeShow / OpenLP / OpenSong / VideoPsalm) for lower-third use; per-export + remembered as a default.
+- **Dedupe on import** (#1051) — opt-in skip of songs whose title already exists in the songbook (accent/punctuation/case-insensitive).
+- EasyWorship import/export is flagged **beta/unverified** in the UI + help (round-trips internally; not yet confirmed against a live EasyWorship install).
+- MediaShout (#1060/#1061) + ProPresenter 7 (#885/#887) are documented as blocked (proprietary sample needed / protobuf) with ready-to-execute plans.
+
+### Lyrics ingest — timed lyrics from Apple Music (#1064)
+
+- **`lyrics_ingest` API** (`POST /api?action=lyrics_ingest`) — accepts Apple-Music **TTML** with word + syllable timing and writes it into the normalised `tblLyrics → tblLyricLines → tblLyricWords → tblLyricSyllables` model (lossless `MetaJson`). Lyrics default to `pending_review`.
+- **Per-client API keys** — new `tblApiKeys` (SHA-256-hashed, scoped, revocable) + `/manage/api-keys` admin page; machine-to-machine auth for external pushers (e.g. MeedyaDL).
+- **Song resolution + enrichment** — when no `songId` is given, the endpoint matches by ISRC → **normalized title** (artist tiebreak) → else creates a provisional song in **Misc** (`Verified=0`). It stores the payload's IDs/URLs (new `tblSongs.Isrc`/`Upc` columns; artists; MusicBrainz/Spotify/Genius/Apple links) so matching strengthens over time.
+- **Duplicate-songs review** (`/manage/duplicate-songs`, `manage_duplicate_songs`) — surfaces potential duplicates (shared normalised title / ISRC / provider URL) and merges them, re-pointing every `tblSongs.SongId` reference (22 FK tables + soft refs) to the survivor in one audited transaction.
+
+### Cross-repo (companion)
+
+- **iLyricsDB #146** — syllable-level TTML in the shared lyrics model (`tblLyricSyllables` + parser + commit pipeline).
+- **MeedyaDL #907** — pushes downloaded Apple-Music TTML + metadata to the ingest endpoint (opt-in; Rust client + download hook).
+
 ## [0.400.0] — 2026-06-03
 
 Minor-version jump reflecting the growing pre-release feature set on top of the DB-direct rewrite.
