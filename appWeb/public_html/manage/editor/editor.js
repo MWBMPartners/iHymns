@@ -3506,7 +3506,7 @@ function exportCurrentSong() {
 function importJSON() {
     var input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.json,.zip,application/json,application/zip';
+    input.accept = '.json,.zip,.xml,application/json,application/zip,text/xml,application/xml';
 
     input.addEventListener('change', function () {
         if (!input.files || !input.files[0]) return; // user cancelled
@@ -3517,10 +3517,14 @@ function importJSON() {
             importBulkZip(file);
         } else if (lower.endsWith('.json')) {
             importJsonCorpus(file);
+        } else if (lower.endsWith('.xml')) {
+            /* OpenLyrics / OpenLP single-song export (#1052). A folder of
+               these exported as a .zip uses the ZIP path above instead. */
+            importOpenLp(file);
         } else {
             showToast(
-                'Unsupported file type. Choose a .json corpus file or a .zip ' +
-                'archive in .SourceSongData/ layout.',
+                'Unsupported file type. Choose a .json corpus, a .zip archive ' +
+                '(.SourceSongData / OpenSong / OpenLyrics), or an OpenLyrics .xml.',
                 'danger'
             );
         }
@@ -3578,27 +3582,28 @@ function importJsonCorpus(file) {
 }
 
 /**
- * importVideoPsalmSongbook(file)
- * ------------------------------
- * Server-side single-file VideoPsalm import (#883). Streams the
- * picked .json document straight to the bulk_import_videopsalm
- * endpoint, which parses the whole-hymnal payload and inserts each
- * song under a (possibly new) songbook in one round-trip. Insert-
- * only — existing rows are reported as "skipped (existing)" and the
- * database is never overwritten.
+ * importSingleFileFormat(file, opts)
+ * ----------------------------------
+ * Shared single-file server-side import used by the VideoPsalm (#883)
+ * and OpenLyrics / OpenLP (#1052) paths. Streams `file` as multipart to
+ * `opts.action` under field `opts.field`, attaches the #1051 dedupe flag
+ * from the toolbar checkbox, and surfaces the standard summary toast.
+ * Insert-only by contract — existing rows report as "skipped (existing)".
  *
- * VideoPsalm files are tiny (a whole hymnal is well under a MiB), so
- * the endpoint runs synchronously and returns the summary in one go;
- * no async / progress-widget machinery needed.
+ * These single-song / single-songbook files are tiny, so the endpoints
+ * run synchronously and return the summary in one round-trip; no async /
+ * progress-widget machinery needed (that's reserved for large ZIPs).
+ *
+ * opts: { action, field, consoleTag }
  */
-function importVideoPsalmSongbook(file) {
+function importSingleFileFormat(file, opts) {
     var fd = new FormData();
-    fd.append('videopsalm', file, file.name);
+    fd.append(opts.field, file, file.name);
     /* #1051 — opt-in title dedupe from the toolbar checkbox. */
-    var _ddVp = document.getElementById('import-dedupe-title');
-    fd.append('dedupeMode', (_ddVp && _ddVp.checked) ? 'skip-title' : 'off');
+    var _dd = document.getElementById('import-dedupe-title');
+    fd.append('dedupeMode', (_dd && _dd.checked) ? 'skip-title' : 'off');
 
-    fetch(EDITOR_API_URL + '?action=bulk_import_videopsalm', {
+    fetch(EDITOR_API_URL + '?action=' + encodeURIComponent(opts.action), {
         method:      'POST',
         body:        fd,
         credentials: 'same-origin',
@@ -3630,13 +3635,40 @@ function importVideoPsalmSongbook(file) {
                 ' failed during import — see browser console for details.',
                 'warning'
             );
-            try { console.warn('[bulk_import_videopsalm] errors:', d.errors); } catch (_e) {}
+            try { console.warn('[' + opts.consoleTag + '] errors:', d.errors); } catch (_e) {}
         }
         if (typeof loadSongsFromURL === 'function' && typeof SONGS_URL_CANDIDATES !== 'undefined') {
             loadSongsFromURL(SONGS_URL_CANDIDATES[0]);
         }
     }).catch(function (err) {
         showToast('Import failed: ' + (err && err.message ? err.message : err), 'danger');
+    });
+}
+
+/**
+ * importVideoPsalmSongbook(file) — VideoPsalm single-file import (#883).
+ * Thin wrapper over importSingleFileFormat().
+ */
+function importVideoPsalmSongbook(file) {
+    importSingleFileFormat(file, {
+        action:     'bulk_import_videopsalm',
+        field:      'videopsalm',
+        consoleTag: 'bulk_import_videopsalm',
+    });
+}
+
+/**
+ * importOpenLp(file) — OpenLyrics / OpenLP single-song .xml import (#1052).
+ * Each OpenLyrics file carries its own <songbook> metadata, so the server
+ * derives the songbook from the file. A whole exported FOLDER of OpenLyrics
+ * files goes through importBulkZip() instead (the ZIP path content-sniffs
+ * .xml entries and routes OpenLyrics ones to the same parser).
+ */
+function importOpenLp(file) {
+    importSingleFileFormat(file, {
+        action:     'bulk_import_openlp',
+        field:      'openlp',
+        consoleTag: 'bulk_import_openlp',
     });
 }
 

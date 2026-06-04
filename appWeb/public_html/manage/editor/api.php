@@ -2933,6 +2933,80 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
+     * BULK_IMPORT_OPENLP — single OpenLyrics (.xml) song import (#1052).
+     *
+     * POST /manage/editor/api?action=bulk_import_openlp
+     *   multipart field "openlp" = one OpenLyrics .xml document.
+     *
+     * OpenLP "Export songs" writes one OpenLyrics .xml per song, each
+     * carrying its own <songbook name="…" entry="N"/> — so the songbook
+     * is derived from the file, not a folder convention. A whole FOLDER
+     * of OpenLyrics files exported as a .zip goes through the normal
+     * bulk_import_zip endpoint, which now content-sniffs .xml entries and
+     * routes OpenLyrics ones to the same parser (no folder convention).
+     *
+     * Insert-only — existing rows report as "skipped (existing)". Honours
+     * the #1051 dedupeMode flag. Returns the same summary shape as
+     * bulk_import_videopsalm so the frontend stays format-agnostic.
+     * ----------------------------------------------------------------- */
+    case 'bulk_import_openlp':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        _bulkImport_dedupeMode((string)($_POST['dedupeMode'] ?? 'off'));  /* #1051 */
+        if (!isset($_FILES['openlp']) || ($_FILES['openlp']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $err = $_FILES['openlp']['error'] ?? UPLOAD_ERR_NO_FILE;
+            $msg = 'Upload failed.';
+            if ($err === UPLOAD_ERR_INI_SIZE || $err === UPLOAD_ERR_FORM_SIZE) {
+                $msg = 'Uploaded file is larger than the server limit.';
+            } elseif ($err === UPLOAD_ERR_NO_FILE) {
+                $msg = 'No file received — expected a multipart upload with an "openlp" field.';
+            }
+            http_response_code(400);
+            echo json_encode(['error' => $msg, 'phpError' => $err]);
+            break;
+        }
+
+        /* A single OpenLyrics song is a few KiB; cap at the same 5 MiB
+           ceiling the other single-file path uses. */
+        $sizeBytes = (int)($_FILES['openlp']['size'] ?? 0);
+        if ($sizeBytes > 5 * 1024 * 1024) {
+            http_response_code(413);
+            echo json_encode(['error' => 'Uploaded OpenLyrics file exceeds the 5 MiB import limit.']);
+            break;
+        }
+
+        try {
+            $tmpPath  = (string)$_FILES['openlp']['tmp_name'];
+            $origName = (string)($_FILES['openlp']['name'] ?? 'song.xml');
+            $body     = (string)file_get_contents($tmpPath);
+            if ($body === '') {
+                http_response_code(400);
+                echo json_encode(['error' => 'Uploaded file is empty.']);
+                break;
+            }
+            $summary = _bulkImport_processOpenLp($body, $origName);
+            if (!($summary['ok'] ?? false)) {
+                http_response_code(400);
+            } elseif (($summary['songs_created'] ?? 0) > 0) {
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+                    . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                $_maint = songbookMaintenanceRun(getDbMysqli(), 'bulk_import_openlp');
+                if ($_maint['rewritten'] > 0 || $_maint['deferred']) {
+                    $summary['maintenance'] = $_maint;
+                }
+            }
+            echo json_encode($summary, JSON_UNESCAPED_UNICODE);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[bulk_import_openlp] ' . $e->getMessage());
+            echo json_encode(['error' => 'Import failed: ' . $e->getMessage()]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
      * BULK_IMPORT_STATUS — poll one async-import job (#676).
      *
      * GET /manage/editor/api?action=bulk_import_status&job_id=N
@@ -4559,7 +4633,7 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
        the songbook on first encounter, then parse + save the song. */
     $songbookSeen      = [];   // abbrev → (created|existing) — caches the songbook upsert per archive
     $songbookCounters  = [];   // abbrev → next auto-assigned number (OpenSong fallback, #882)
-    $songsParsedByKind = ['txt' => 0, 'opensong' => 0, 'videopsalm' => 0];
+    $songsParsedByKind = ['txt' => 0, 'opensong' => 0, 'videopsalm' => 0, 'openlyrics' => 0];
 
     for ($i = 0; $i < $entryCount; $i++) {
         /* Periodic progress flush every $PROGRESS_BATCH iterations so
@@ -4674,6 +4748,59 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
                 }
             }
             continue;
+        }
+
+        /* OpenLyrics / OpenLP (#1052): per-song .xml files that carry their
+           own songbook metadata inside <songbooks><songbook name="…"
+           entry="N"/></songbooks>, so — like VideoPsalm — they don't follow
+           the "<Title> [<ABBR>]/" folder convention. Content-sniff the .xml
+           (an OpenSong .xml has neither the namespace nor <verse name>) and,
+           when it's OpenLyrics, handle it inline (songbook from the XML, or
+           the file's own basename) and continue; otherwise fall through to
+           the OpenSong path below. */
+        if ($kind === 'opensong') {
+            $peek = $zip->getFromIndex($i);
+            if ($peek !== false && _bulkImport_looksLikeOpenLyrics($peek)) {
+                [$olParsed, $olReason] = _bulkImport_parseOpenLyrics($peek);
+                if ($olParsed === null) {
+                    $errors[] = ['entry' => $name, 'error' => 'OpenLyrics parse failed: ' . $olReason];
+                    $songsFailed++;
+                    continue;
+                }
+                $olName = (string)$olParsed['songbookName'] !== ''
+                    ? (string)$olParsed['songbookName']
+                    : pathinfo($name, PATHINFO_FILENAME);
+                $olAbbr = _bulkImport_videopsalmAbbrevFromHint($name, $olName);
+                if (!isset($songbookSeen[$olAbbr])) {
+                    $state = _bulkImport_upsertSongbook($db, $olAbbr, $olName, ($olParsed['language'] ?? '') ?: null);
+                    $songbookSeen[$olAbbr] = $state;
+                    if ($state === 'created') { $songbooksCreated[] = $olAbbr; }
+                    else                       { $songbooksExisting[] = $olAbbr; }
+                }
+                if (!isset($songbookCounters[$olAbbr])) {
+                    $songbookCounters[$olAbbr] = _bulkImport_nextSongNumberFor($db, $olAbbr);
+                }
+                $olNumber = (int)$olParsed['entry'] > 0 ? (int)$olParsed['entry'] : $songbookCounters[$olAbbr];
+                $songbookCounters[$olAbbr] = max($songbookCounters[$olAbbr], $olNumber) + 1;
+                $olSong = _bulkImport_assembleOpenLyricsSong($olParsed, $olAbbr, $olName, $olNumber);
+                [$olAction, $olErr] = _bulkImport_saveSong($db, $olSong);
+                if ($olAction === 'create') {
+                    $songsCreated++;
+                    $songsParsedByKind['openlyrics']++;
+                    $_perBookBump($olAbbr, $olName, 'created');
+                } elseif ($olAction === 'skipped') {
+                    $songsSkippedExisting++;
+                    $_perBookBump($olAbbr, $olName, 'skipped');
+                    if (isset($olSong['id']) && $olSong['id'] !== '') {
+                        $skippedSongIds[] = (string)$olSong['id'];
+                    }
+                } else {
+                    $errors[] = ['entry' => $name, 'error' => 'save failed: ' . $olErr];
+                    $songsFailed++;
+                    $_perBookBump($olAbbr, $olName, 'failed', 'save failed: ' . $olErr, $name, $olNumber ?: null, 'save');
+                }
+                continue;
+            }
         }
 
         /* Pull out the folder + file segments. We expect exactly one
@@ -5425,6 +5552,298 @@ function _bulkImport_processVideoPsalm(string $body, ?string $filenameHint = nul
         'songs_skipped_existing' => $songsSkippedExisting,
         'songs_failed'           => $songsFailed,
         'parsed_by_format'       => ['videopsalm' => $songsCreated + $songsSkippedExisting],
+        'errors'                 => $errors,
+    ];
+}
+
+/* ===========================================================================
+ *  OpenLP / OpenLyrics import (#1052)
+ * ---------------------------------------------------------------------------
+ * OpenLP exports each song as a standalone OpenLyrics XML file
+ * (http://openlyrics.info). Unlike the .SourceSongData / OpenSong ZIP
+ * layout, OpenLyrics carries its OWN songbook metadata inside
+ * <properties><songbooks><songbook name="…" entry="N"/> — so, like the
+ * VideoPsalm path, these files do NOT follow the "<Title> [<ABBR>]/" folder
+ * convention. The functions below parse one OpenLyrics document into the
+ * shared song shape that _bulkImport_saveSong() consumes (inheriting the
+ * #1051 title-dedupe), and a single-file processor mirrors
+ * _bulkImport_processVideoPsalm() for the bulk_import_openlp action.
+ *
+ * A ZIP of OpenLyrics files is handled inline by _bulkImport_processZip()
+ * (it content-sniffs .xml entries via _bulkImport_looksLikeOpenLyrics() and
+ * routes OpenLyrics ones here instead of the OpenSong parser).
+ * =========================================================================== */
+
+/**
+ * Cheap content sniff: is this XML body an OpenLyrics document?
+ * Avoids a full parse — used to disambiguate OpenLyrics .xml from OpenSong
+ * .xml inside the generic ZIP import loop.
+ */
+function _bulkImport_looksLikeOpenLyrics(string $body): bool
+{
+    $head = substr($body, 0, 4096);
+    if (stripos($head, 'openlyrics.info') !== false) {
+        return true;
+    }
+    /* Namespace may be absent on some exports; fall back to the structural
+       fingerprint OpenSong never has: a <verse name="…"> with a <lines>
+       child. */
+    return (bool)preg_match('/<verse\b[^>]*\bname=/i', $body)
+        && stripos($body, '<lines') !== false;
+}
+
+/**
+ * Map an OpenLyrics verse `name` (v1, c, c2, b, p, e, i, o, …) to an
+ * [iHymns component type, number] pair.
+ */
+function _bulkImport_openLyricsVerseType(string $name): array
+{
+    $letter = 'v';
+    $num    = 0;
+    if (preg_match('/^([A-Za-z]+)\s*(\d*)$/', trim($name), $m)) {
+        $letter = strtolower($m[1]);
+        $num    = $m[2] !== '' ? (int)$m[2] : 0;
+    }
+    $map = [
+        'v' => 'verse', 'c' => 'chorus', 'b' => 'bridge', 'p' => 'pre-chorus',
+        'r' => 'refrain', 'e' => 'outro', 'i' => 'intro', 'o' => 'outro',
+        't' => 'outro',
+    ];
+    return [$map[$letter] ?? 'refrain', $num];
+}
+
+/**
+ * Flatten one OpenLyrics <lines> element into an array of plain-text lines.
+ * <br/> separates lines; <comment>/<chord>/<tag> and any other inline markup
+ * is stripped (iHymns is lyrics-only).
+ */
+function _bulkImport_openLyricsLinesToArray(\SimpleXMLElement $linesNode): array
+{
+    $inner = (string)$linesNode->asXML();
+    $inner = (string)preg_replace('#^<lines\b[^>]*>#i', '', $inner);
+    $inner = (string)preg_replace('#</lines>\s*$#i', '', $inner);
+    /* Self-closing or paired <br> → newline. */
+    $inner = (string)preg_replace('#<br\s*/?>#i', "\n", $inner);
+    /* Drop comments wholesale (including their text), then any remaining
+       inline markup (chords, tags) leaving the bare lyric text. */
+    $inner = (string)preg_replace('#<comment\b[^>]*>.*?</comment>#is', '', $inner);
+    $inner = (string)preg_replace('#<[^>]+>#', '', $inner);
+    $text  = html_entity_decode($inner, ENT_QUOTES | ENT_XML1, 'UTF-8');
+    $lines = array_map('rtrim', explode("\n", $text));
+    /* Trim leading / trailing blank lines but preserve internal spacing. */
+    while (!empty($lines) && trim($lines[0]) === '')          array_shift($lines);
+    while (!empty($lines) && trim((string)end($lines)) === '') array_pop($lines);
+    return $lines;
+}
+
+/**
+ * Parse one OpenLyrics XML document into a neutral structure (no songbook
+ * abbreviation / number / SongId resolution — the caller does that, since it
+ * depends on the live DB auto-increment).
+ *
+ * @return array{0: ?array, 1: ?string}  [parsed, errorReason]
+ *   parsed = { title, songbookName, entry, language, ccli, copyright,
+ *              writers[], components[] }
+ */
+function _bulkImport_parseOpenLyrics(string $body): array
+{
+    $body = (string)preg_replace('/^\xEF\xBB\xBF/', '', $body);
+
+    /* Strip namespace declarations so plain SimpleXML traversal works
+       regardless of the OpenLyrics namespace year (2009/…). We only read
+       local element/attribute names, so dropping namespaces is safe. */
+    $clean = (string)preg_replace('/\sxmlns(:\w+)?\s*=\s*("|\').*?\2/i', '', $body);
+
+    $prevInternal = libxml_use_internal_errors(true);
+    libxml_clear_errors();
+    $xml = simplexml_load_string($clean, \SimpleXMLElement::class, LIBXML_NONET);
+    if ($xml === false) {
+        $err = libxml_get_last_error();
+        libxml_clear_errors();
+        libxml_use_internal_errors($prevInternal);
+        return [null, 'invalid XML' . ($err ? ': ' . trim($err->message) : '')];
+    }
+    libxml_clear_errors();
+    libxml_use_internal_errors($prevInternal);
+
+    if (strtolower($xml->getName()) !== 'song') {
+        return [null, 'XML root is <' . $xml->getName() . '>, expected <song>'];
+    }
+
+    $props = $xml->properties ?? null;
+    $title = $props ? trim((string)($props->titles->title ?? '')) : '';
+    if ($title === '') {
+        return [null, 'no <title> element'];
+    }
+
+    /* Authors — OpenLyrics lists one <author> per credit. */
+    $writers = [];
+    if ($props && isset($props->authors->author)) {
+        foreach ($props->authors->author as $a) {
+            $w = trim((string)$a);
+            if ($w !== '') {
+                $writers[] = $w;
+            }
+        }
+    }
+
+    $copyright = $props ? trim((string)($props->copyright ?? '')) : '';
+    $ccli      = $props ? trim((string)($props->ccliNo ?? '')) : '';
+
+    /* Songbook name + entry number (the first <songbook> wins). */
+    $songbookName = '';
+    $entry        = 0;
+    if ($props && isset($props->songbooks->songbook)) {
+        $sb           = $props->songbooks->songbook[0];
+        $songbookName = trim((string)($sb['name'] ?? ''));
+        $entryRaw     = trim((string)($sb['entry'] ?? ''));
+        if ($entryRaw !== '' && ctype_digit($entryRaw)) {
+            $entry = (int)$entryRaw;
+        }
+    }
+
+    /* Song-level language: OpenLyrics may set xml:lang on <verse> or on a
+       <title lang>; we read the first verse's lang as a best-effort hint. */
+    $language = '';
+
+    $components = [];
+    if (isset($xml->lyrics->verse)) {
+        foreach ($xml->lyrics->verse as $verse) {
+            [$type, $num] = _bulkImport_openLyricsVerseType((string)($verse['name'] ?? 'v'));
+            if ($language === '' && isset($verse['lang'])) {
+                $language = trim((string)$verse['lang']);
+            }
+            $lines = [];
+            foreach (($verse->lines ?? []) as $linesNode) {
+                foreach (_bulkImport_openLyricsLinesToArray($linesNode) as $ln) {
+                    $lines[] = $ln;
+                }
+            }
+            if (!empty($lines)) {
+                $components[] = ['type' => $type, 'number' => $num, 'lines' => $lines];
+            }
+        }
+    }
+    if (empty($components)) {
+        return [null, 'no <verse>/<lines> content found'];
+    }
+
+    return [[
+        'title'        => $title,
+        'songbookName' => $songbookName,
+        'entry'        => $entry,
+        'language'     => $language,
+        'ccli'         => $ccli,
+        'copyright'    => $copyright,
+        'writers'      => $writers,
+        'components'   => $components,
+    ], null];
+}
+
+/**
+ * Assemble the parsed OpenLyrics structure into the song shape that
+ * _bulkImport_saveSong() consumes (mirrors _bulkImport_parseOpenSong()).
+ */
+function _bulkImport_assembleOpenLyricsSong(array $parsed, string $abbr, string $songbookName, int $number): array
+{
+    return [
+        'id'                 => sprintf('%s-%04d', strtoupper($abbr), $number),
+        'title'              => (string)$parsed['title'],
+        'number'             => $number,
+        'songbook'           => strtoupper($abbr),
+        'songbookName'       => $songbookName,
+        'language'           => ($parsed['language'] ?? '') !== '' ? (string)$parsed['language'] : 'en',
+        'ccli'               => (string)($parsed['ccli'] ?? ''),
+        'iswc'               => '',
+        'tuneName'           => '',
+        'copyright'          => (string)($parsed['copyright'] ?? ''),
+        'verified'           => 0,
+        'lyricsPublicDomain' => 0,
+        'musicPublicDomain'  => 0,
+        'hasAudio'           => 0,
+        'hasSheetMusic'      => 0,
+        'writers'            => (array)($parsed['writers'] ?? []),
+        'composers'          => [],
+        'arrangers'          => [],
+        'adaptors'           => [],
+        'translators'        => [],
+        'components'         => (array)($parsed['components'] ?? []),
+    ];
+}
+
+/**
+ * Synchronous single-file OpenLyrics import — invoked from the
+ * bulk_import_openlp dispatcher case. Returns the same summary shape as
+ * _bulkImport_processVideoPsalm() / _bulkImport_processZip().
+ */
+function _bulkImport_processOpenLp(string $body, ?string $filenameHint = null): array
+{
+    [$parsed, $reason] = _bulkImport_parseOpenLyrics($body);
+    if ($parsed === null) {
+        return [
+            'ok'                     => false,
+            'error'                  => $reason ?: 'OpenLyrics parse failed',
+            'songbooks_created'      => [],
+            'songbooks_existing'     => [],
+            'songs_created'          => 0,
+            'songs_skipped_existing' => 0,
+            'songs_failed'           => 0,
+            'parsed_by_format'       => ['openlyrics' => 0],
+            'errors'                 => [],
+        ];
+    }
+
+    $db       = getDbMysqli();
+    $bookName = (string)$parsed['songbookName'] !== ''
+        ? (string)$parsed['songbookName']
+        : (pathinfo((string)$filenameHint, PATHINFO_FILENAME) ?: 'OpenLP Import');
+    $abbr  = _bulkImport_videopsalmAbbrevFromHint($filenameHint, $bookName);
+
+    $state             = _bulkImport_upsertSongbook($db, $abbr, $bookName, ($parsed['language'] ?? '') ?: null);
+    $songbooksCreated  = ($state === 'created')  ? [$abbr] : [];
+    $songbooksExisting = ($state === 'existing') ? [$abbr] : [];
+
+    $number = (int)$parsed['entry'] > 0
+        ? (int)$parsed['entry']
+        : _bulkImport_nextSongNumberFor($db, $abbr);
+    $song = _bulkImport_assembleOpenLyricsSong($parsed, $abbr, $bookName, $number);
+
+    $songsCreated = 0;
+    $songsSkipped = 0;
+    $songsFailed  = 0;
+    $errors       = [];
+    [$action, $saveErr] = _bulkImport_saveSong($db, $song);
+    if ($action === 'create') {
+        $songsCreated = 1;
+    } elseif ($action === 'skipped') {
+        $songsSkipped = 1;
+    } else {
+        $songsFailed = 1;
+        $errors[]    = [
+            'entry' => ($filenameHint ?? 'openlp') . ': ' . ($song['id'] ?? '?'),
+            'error' => 'save failed: ' . $saveErr,
+        ];
+    }
+
+    if (!empty($songbooksCreated)) {
+        $cnt = $db->prepare(
+            'UPDATE tblSongbooks
+                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?)
+              WHERE Abbreviation = ?'
+        );
+        $cnt->bind_param('ss', $abbr, $abbr);
+        $cnt->execute();
+        $cnt->close();
+    }
+
+    return [
+        'ok'                     => true,
+        'songbooks_created'      => $songbooksCreated,
+        'songbooks_existing'     => $songbooksExisting,
+        'songs_created'          => $songsCreated,
+        'songs_skipped_existing' => $songsSkipped,
+        'songs_failed'           => $songsFailed,
+        'parsed_by_format'       => ['openlyrics' => $songsCreated + $songsSkipped],
         'errors'                 => $errors,
     ];
 }
