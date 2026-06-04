@@ -509,6 +509,32 @@ foreach ($sections as $s) {
                         <li><strong>Notification on completion:</strong> a row is written to <a href="#notifications">Notifications</a> when the worker finishes, and (if you've granted permission) a native browser notification fires.</li>
                         <li><strong>Caps:</strong> 100 MB upload, 100,000 entries per archive, 5 MiB per uncompressed entry, 500 MiB cumulative uncompressed. These are zip-bomb defences (#682) — far above any real bundle.</li>
                     </ul>
+
+                    <h3 class="h6">Worship-software import / export</h3>
+                    <p>
+                        Beyond the <code>.SourceSongData</code> / OpenSong ZIP layout above, the editor reads and writes the common church-presentation formats. <strong>Import</strong> is via the same <em>Import</em> button (a single file or a ZIP of them); <strong>export</strong> is via the per-format dropdowns next to it (this song, or the whole filtered songbook).
+                    </p>
+                    <ul>
+                        <li><strong>OpenLP / OpenLyrics</strong> (<code>.xml</code>, <code>.osz</code>) — import + export. OpenLyrics carries its own songbook (<code>&lt;songbook name entry&gt;</code>), so single files don't need the folder convention.</li>
+                        <li><strong>ProPresenter 6</strong> (<code>.pro6</code>) — import + export. Slide text is base64 RTF; round-trips both ways.</li>
+                        <li><strong>FreeShow</strong> (<code>.show</code>) — import + export.</li>
+                        <li><strong>VideoPsalm</strong> (<code>.json</code>) — import + export (a whole songbook is one JSON).</li>
+                        <li><strong>OpenSong</strong> (<code>.xml</code>) — import (in ZIPs) + export.</li>
+                        <li><strong>Proclaim</strong> (<code>.txt</code> / <code>.rtf</code>) — import + export (plain text, one song per file).</li>
+                        <li><strong class="text-warning">EasyWorship</strong> (SQLite <code>Songs.db</code> + <code>SongWords.db</code>) — import + export. <span class="badge bg-warning text-dark">beta</span>
+                            <div class="alert alert-warning small mt-1 mb-1">
+                                <i class="bi bi-exclamation-triangle me-1"></i>
+                                <strong>EasyWorship import/export is a beta, unverified feature.</strong> It reads/writes the core EasyWorship SQLite schema (the <code>song</code> + <code>word</code>[RTF] tables) and round-trips correctly within iHymns, but it has <em>not</em> been verified against a live EasyWorship install — a real EasyWorship may expect additional index/FTS tables when reading an exported <code>Songs.db</code>. Treat results as provisional and check them in EasyWorship before relying on them. (#1058 / #1059)
+                            </div>
+                        </li>
+                    </ul>
+                    <p>
+                        <strong>Dedupe on import</strong> (#1051): tick <em>"Skip existing (by title)"</em> next to the Import button to skip any incoming song whose title already exists in the same songbook (matched ignoring case, punctuation and accents) — catches duplicates that carry a different number. Imports are always INSERT-only; existing rows are never overwritten.
+                    </p>
+                    <p>
+                        <strong>Lines per slide</strong> (#1065): the <em>"Lines/slide"</em> box next to the export dropdowns caps how many lyric lines land on each slide when exporting to the presentation formats (ProPresenter 6 / FreeShow / OpenLP / OpenSong / VideoPsalm) — useful for lower-third layouts. <code>0</code> keeps each verse whole. Your value is remembered as your default for next time.
+                    </p>
+
                     <h3 class="h6">Language tagging (IETF BCP 47, #240 / #281 / #681 / #687)</h3>
                     <p>
                         The Metadata tab's Language field is a composite IETF picker — three sub-fields that compose into a single saved tag:

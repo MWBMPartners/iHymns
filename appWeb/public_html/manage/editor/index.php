@@ -166,7 +166,7 @@ try {
                 type="button"
                 class="btn btn-sm btn-amber"
                 id="btn-import"
-                title="Bulk-import songs from a .zip archive, a VideoPsalm songbook .json, an OpenLyrics/OpenLP .xml, a ProPresenter 6 .pro6, a FreeShow .show, an EasyWorship Songs.db, or a Proclaim .txt/.rtf (whole-hymnal or single song). ZIPs accept the .SourceSongData layout (one .txt per song), OpenSong .xml, OpenLyrics .xml, ProPresenter .pro6, FreeShow .show, EasyWorship Songs.db + SongWords.db (these carry their own song/songbook, so they ignore the folder shape), and VideoPsalm .json songbooks at any depth. Bulk imports insert directly into MySQL and never overwrite existing rows."
+                title="Bulk-import songs from a .zip archive, a VideoPsalm songbook .json, an OpenLyrics/OpenLP .xml, a ProPresenter 6 .pro6, a FreeShow .show, an EasyWorship Songs.db (BETA — unverified against live EasyWorship), or a Proclaim .txt/.rtf (whole-hymnal or single song). ZIPs accept the .SourceSongData layout (one .txt per song), OpenSong .xml, OpenLyrics .xml, ProPresenter .pro6, FreeShow .show, EasyWorship Songs.db + SongWords.db (these carry their own song/songbook, so they ignore the folder shape), and VideoPsalm .json songbooks at any depth. Bulk imports insert directly into MySQL and never overwrite existing rows."
             >
                 <i class="bi bi-box-arrow-in-down me-1"></i>Import
             </button>
@@ -419,6 +419,24 @@ try {
                                 <i class="bi bi-file-earmark-text me-2"></i>This song (<code>.txt</code>)</a></li>
                             <li><a class="dropdown-item" href="#" id="pc-export-songbook">
                                 <i class="bi bi-archive me-2"></i>This songbook (<code>.zip</code>)</a></li>
+                        </ul>
+                    </div>
+                    <!-- EasyWorship export (#1059) — server-side: builds a
+                         SQLite Songs.db. BETA / unverified against real
+                         EasyWorship (#1059). Wired below (not via bindFormat —
+                         this hits a server endpoint, not format-export.js). -->
+                    <div class="btn-group">
+                        <button type="button" class="btn btn-sm btn-outline-warning dropdown-toggle"
+                                id="btn-ew-export" data-bs-toggle="dropdown" aria-expanded="false"
+                                title="Export to EasyWorship (SQLite Songs.db). BETA — produces an EasyWorship-schema database that round-trips with the iHymns importer; reading it in a live EasyWorship install is not yet verified.">
+                            <i class="bi bi-database me-1"></i>EasyWorship <span class="badge bg-warning text-dark ms-1">beta</span>
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-dark">
+                            <li><h6 class="dropdown-header text-warning"><i class="bi bi-exclamation-triangle me-1"></i>Beta — unverified in EasyWorship</h6></li>
+                            <li><a class="dropdown-item" href="#" id="ew-export-song">
+                                <i class="bi bi-file-earmark-binary me-2"></i>This song (<code>Songs.db</code>)</a></li>
+                            <li><a class="dropdown-item" href="#" id="ew-export-songbook">
+                                <i class="bi bi-database-down me-2"></i>This songbook (<code>Songs.db</code>)</a></li>
                         </ul>
                     </div>
                     <!-- #1065 — max lyric lines per slide for the presentation
@@ -1819,6 +1837,38 @@ try {
             bindFormat('openLyrics',    'OpenLP',       'btn-ol-export', 'ol-export-song', 'ol-export-songbook');
             bindFormat('proclaim',      'Proclaim',     'btn-pc-export', 'pc-export-song', 'pc-export-songbook');
             bindFormat('proPresenter6', 'ProPresenter 6', 'btn-p6-export', 'p6-export-song', 'p6-export-songbook');
+
+            /* EasyWorship export (#1059) — server-side endpoint, so it can't go
+               through bindFormat()/format-export.js. The dropdown items trigger
+               a download of the generated Songs.db. BETA — see the button title.
+               Honours the same lines-per-slide value. */
+            function triggerEwExport(query) {
+                var url = EDITOR_API_URL + '?action=easyworship_export&' + query
+                        + '&maxLinesPerSlide=' + encodeURIComponent(linesPerSlide());
+                var a = document.createElement('a');
+                a.href = url;
+                a.rel = 'noopener';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            }
+            var ewBtn  = document.getElementById('btn-ew-export');
+            var ewSong = document.getElementById('ew-export-song');
+            var ewBook = document.getElementById('ew-export-songbook');
+            if (ewBtn) { ewBtn.disabled = false; }
+            if (ewSong) ewSong.addEventListener('click', function (e) {
+                e.preventDefault();
+                if (!currentSongId) { notify('Open a song first, then export it.', 'warning'); return; }
+                notify('Building EasyWorship Songs.db (beta — verify it opens in EasyWorship)…', 'info');
+                triggerEwExport('id=' + encodeURIComponent(currentSongId));
+            });
+            if (ewBook) ewBook.addEventListener('click', function (e) {
+                e.preventDefault();
+                var abbr = (typeof getSelectedSongbookFilter === 'function') ? getSelectedSongbookFilter() : '';
+                if (!abbr) { notify('Filter the song list to one songbook first, then export it.', 'warning'); return; }
+                notify('Building EasyWorship Songs.db for ' + abbr + ' (beta — verify it opens in EasyWorship)…', 'info');
+                triggerEwExport('abbr=' + encodeURIComponent(abbr));
+            });
         });
     })();
     </script>
