@@ -544,6 +544,7 @@ CREATE TABLE IF NOT EXISTS tblLyrics (
     IsExplicit    TINYINT(1)      NOT NULL DEFAULT 0,
     HasTiming     TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = line-level timing present',
     HasWordTiming TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = word-level timing present (TTML/LRC-A)',
+    HasSyllableTiming TINYINT(1)  NOT NULL DEFAULT 0 COMMENT '1 = syllable-level timing present (TTML/karaoke) (#141)',
     Status        ENUM('draft','pending_review','approved','rejected','archived') NOT NULL DEFAULT 'approved',
     SubmittedBy   INT UNSIGNED    NULL DEFAULT NULL,
     ApprovedBy    INT UNSIGNED    NULL DEFAULT NULL,
@@ -576,6 +577,7 @@ CREATE TABLE IF NOT EXISTS tblLyricLines (
     EndTimeMs     INT UNSIGNED    NULL DEFAULT NULL,
     LanguageCode  VARCHAR(35)     NULL DEFAULT NULL COMMENT 'Per-line language override (IETF tag); NULL = song default',
     IsInstrumental TINYINT(1)     NOT NULL DEFAULT 0,
+    MetaJson      JSON            NULL DEFAULT NULL COMMENT 'Lossless TTML line attrs (ttm:role, ttm:agent, itunes:song-part, background-vocal) (#141)',
     CreatedAt     TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt     TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
@@ -593,12 +595,31 @@ CREATE TABLE IF NOT EXISTS tblLyricWords (
     WordText    VARCHAR(200)    NOT NULL,
     StartTimeMs INT UNSIGNED    NULL DEFAULT NULL,
     EndTimeMs   INT UNSIGNED    NULL DEFAULT NULL,
+    MetaJson    JSON            NULL DEFAULT NULL COMMENT 'Lossless TTML word attrs (itunes:key, …) (#141)',
     CreatedAt   TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     INDEX idx_Line (LineId, SortOrder),
 
     CONSTRAINT fk_LyricWords_Line
         FOREIGN KEY (LineId) REFERENCES tblLyricLines(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- tblLyricSyllables (#141) — syllable-level timing within a word (Apple Music
+-- syllable-synced TTML, karaoke). Empty until timed imports populate it.
+CREATE TABLE IF NOT EXISTS tblLyricSyllables (
+    Id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    WordId      BIGINT UNSIGNED NOT NULL,
+    SortOrder   INT UNSIGNED    NOT NULL DEFAULT 0,
+    SyllableText VARCHAR(100)   NOT NULL,
+    StartTimeMs INT UNSIGNED    NULL DEFAULT NULL,
+    EndTimeMs   INT UNSIGNED    NULL DEFAULT NULL,
+    MetaJson    JSON            NULL DEFAULT NULL COMMENT 'Lossless TTML/format attrs (itunes:key, role, …)',
+    CreatedAt   TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_Word (WordId, SortOrder),
+
+    CONSTRAINT fk_LyricSyllables_Word
+        FOREIGN KEY (WordId) REFERENCES tblLyricWords(Id) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 

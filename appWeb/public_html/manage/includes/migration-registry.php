@@ -1444,4 +1444,20 @@ return [
         ],
         'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblLyrics'),
     ],
+    'lyric-syllables' => [
+        'script' => 'migrate-lyric-syllables.php',
+        'card' => [
+            'title'  => 'Syllable timing + TTML metadata (#1047 / iLyricsDB #141)',
+            'body'   => 'Completes the timing model line → word → <strong>syllable</strong>:'
+                      . ' creates <code>tblLyricSyllables</code> (FK to <code>tblLyricWords</code>),'
+                      . ' adds <code>tblLyrics.HasSyllableTiming</code>, and adds a lossless'
+                      . ' <code>MetaJson</code> column to <code>tblLyricLines</code> /'
+                      . ' <code>tblLyricWords</code> / <code>tblLyricSyllables</code> so Apple'
+                      . ' Music syllable-synced TTML attributes (ttm:role, itunes:key,'
+                      . ' background-vocal, agent) are never discarded on import. Empty until'
+                      . ' timed imports populate it. Additive + idempotent.',
+            'button' => 'Run Syllable Timing Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblLyricSyllables'),
+    ],
 ];
