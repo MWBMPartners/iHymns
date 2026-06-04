@@ -1427,4 +1427,21 @@ return [
         ],
         'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongs', 'IsExplicit'),
     ],
+    'normalize-lyrics' => [
+        'script' => 'migrate-normalize-lyrics.php',
+        'card' => [
+            'title'  => 'Normalised lyrics model (#1047)',
+            'body'   => 'Creates <code>tblLyrics</code> / <code>tblLyricLines</code> /'
+                      . ' <code>tblLyricWords</code> — the generic, timing-capable lyrics model'
+                      . ' the shared iLyricsDB core uses and that TTML / word-timing ingest'
+                      . ' depends on. Backfills one primary &ldquo;ihymns&rdquo; lyrics per song'
+                      . ' and its lines from <code>tblSongComponents.LinesJson</code>.'
+                      . ' <strong>Additive</strong> — <code>tblSongComponents</code> stays'
+                      . ' authoritative and no read path changes yet;'
+                      . ' <code>tblLyricWords</code> starts empty for future timed imports.'
+                      . ' Idempotent — safe to re-run.',
+            'button' => 'Run Normalised Lyrics Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblLyrics'),
+    ],
 ];

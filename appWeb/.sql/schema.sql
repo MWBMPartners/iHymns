@@ -525,6 +525,83 @@ CREATE TABLE IF NOT EXISTS tblSongComponents (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
+-- ----------------------------------------------------------------------------
+-- Normalised lyrics model (#1047 — iLyricsDB alignment)
+-- Generic, timing-capable lyrics: a song MAY have several tblLyrics (the iHymns
+-- "approved" version, explicit vs clean, a timed Apple-Music import …); each is
+-- a list of tblLyricLines (optional line timing + per-line language), each of
+-- which MAY carry tblLyricWords for word/syllable timing (TTML / LRC-A).
+-- ADDITIVE: tblSongComponents.LinesJson stays authoritative; these are
+-- backfilled from it and no read path uses them yet.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblLyrics (
+    Id            INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    SongId        VARCHAR(20)     NOT NULL COMMENT 'FK to tblSongs.SongId',
+    Source        VARCHAR(100)    NOT NULL DEFAULT 'ihymns' COMMENT 'Provenance: ihymns / applemusic-ttml / user-submission / …',
+    SourceUrl     VARCHAR(1000)   NULL DEFAULT NULL,
+    FormatVersion VARCHAR(20)     NOT NULL DEFAULT '1.0',
+    IsPrimary     TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = the canonical lyrics shown for the song',
+    IsExplicit    TINYINT(1)      NOT NULL DEFAULT 0,
+    HasTiming     TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = line-level timing present',
+    HasWordTiming TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = word-level timing present (TTML/LRC-A)',
+    Status        ENUM('draft','pending_review','approved','rejected','archived') NOT NULL DEFAULT 'approved',
+    SubmittedBy   INT UNSIGNED    NULL DEFAULT NULL,
+    ApprovedBy    INT UNSIGNED    NULL DEFAULT NULL,
+    ApprovedAt    DATETIME        NULL DEFAULT NULL,
+    CreatedAt     TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt     TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_song_source (SongId, Source),
+    INDEX idx_SongId  (SongId),
+    INDEX idx_Primary (SongId, IsPrimary),
+    INDEX idx_Status  (Status),
+
+    CONSTRAINT fk_Lyrics_Song
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_Lyrics_SubmittedBy
+        FOREIGN KEY (SubmittedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL,
+    CONSTRAINT fk_Lyrics_ApprovedBy
+        FOREIGN KEY (ApprovedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS tblLyricLines (
+    Id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    LyricsId      INT UNSIGNED    NOT NULL,
+    ComponentId   INT UNSIGNED    NULL DEFAULT NULL COMMENT 'Source tblSongComponents.Id during transition (traceability)',
+    PartType      VARCHAR(20)     NULL DEFAULT NULL COMMENT 'Denorm of the component type (verse/chorus/…) for standalone use',
+    PartNumber    INT UNSIGNED    NULL DEFAULT NULL,
+    SortOrder     INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'Global line order within the lyrics',
+    LineText      TEXT            NOT NULL,
+    StartTimeMs   INT UNSIGNED    NULL DEFAULT NULL,
+    EndTimeMs     INT UNSIGNED    NULL DEFAULT NULL,
+    LanguageCode  VARCHAR(35)     NULL DEFAULT NULL COMMENT 'Per-line language override (IETF tag); NULL = song default',
+    IsInstrumental TINYINT(1)     NOT NULL DEFAULT 0,
+    CreatedAt     TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt     TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_Lyrics    (LyricsId, SortOrder),
+    INDEX idx_Component (ComponentId),
+
+    CONSTRAINT fk_LyricLines_Lyrics
+        FOREIGN KEY (LyricsId) REFERENCES tblLyrics(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS tblLyricWords (
+    Id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    LineId      BIGINT UNSIGNED NOT NULL,
+    SortOrder   INT UNSIGNED    NOT NULL DEFAULT 0,
+    WordText    VARCHAR(200)    NOT NULL,
+    StartTimeMs INT UNSIGNED    NULL DEFAULT NULL,
+    EndTimeMs   INT UNSIGNED    NULL DEFAULT NULL,
+    CreatedAt   TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_Line (LineId, SortOrder),
+
+    CONSTRAINT fk_LyricWords_Line
+        FOREIGN KEY (LineId) REFERENCES tblLyricLines(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
 -- ============================================================================
 -- USER ACCOUNTS & AUTHENTICATION
 -- ============================================================================
