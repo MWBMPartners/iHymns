@@ -331,6 +331,21 @@ try {
                                 <i class="bi bi-archive me-2"></i>This songbook (<code>.probundle</code>)</a></li>
                         </ul>
                     </div>
+                    <!-- OpenSong export (#1054): single song → .xml, whole
+                         songbook (active sidebar filter) → .zip. Wired below. -->
+                    <div class="btn-group">
+                        <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle"
+                                id="btn-os-export" data-bs-toggle="dropdown" aria-expanded="false"
+                                title="Export to OpenSong (.xml / .zip)" disabled>
+                            <i class="bi bi-filetype-xml me-1"></i>OpenSong
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-dark">
+                            <li><a class="dropdown-item" href="#" id="os-export-song">
+                                <i class="bi bi-file-earmark-music me-2"></i>This song (<code>.xml</code>)</a></li>
+                            <li><a class="dropdown-item" href="#" id="os-export-songbook">
+                                <i class="bi bi-archive me-2"></i>This songbook (<code>.zip</code>)</a></li>
+                        </ul>
+                    </div>
                     <button type="button" class="btn btn-sm btn-outline-danger" id="btn-delete-song" title="Delete selected song">
                         <i class="bi bi-trash me-1"></i>Delete
                     </button>
@@ -1615,6 +1630,68 @@ try {
                 exportCurrentSongbook().catch(function (err) { notify('Export failed: ' + ((err && err.message) || err), 'danger'); });
             });
             eagerInit();
+        });
+    })();
+    </script>
+
+    <!-- OpenSong exporter (#1054). format-export.js exposes
+         window.iHymnsFormatExport and reuses propresenter-export.js's ZIP
+         writer (loaded above) for the songbook .zip. -->
+    <script src="format-export.js"></script>
+    <script>
+    /* #1054 — wire the OpenSong dropdown. Reuses editor.js globals
+       (currentSongId / songData / EDITOR_API_URL / getSelectedSongbookFilter /
+       _loadSongsFull) + ?action=songbook_export, same pattern as ProPresenter. */
+    (function () {
+        'use strict';
+        function notify(msg, type) {
+            if (typeof showToast === 'function') { showToast(msg, type === 'danger' ? 'error' : type); }
+            else { console.log('[OpenSong] ' + msg); }
+        }
+        function currentFullSong() {
+            if (!currentSongId) { return null; }
+            return (songData.songs || []).find(function (s) { return s.id === currentSongId; }) || null;
+        }
+        async function exportSong() {
+            var song = currentFullSong();
+            if (!song) { notify('Open a song first, then export it.', 'warning'); return; }
+            if (!song._full && typeof _loadSongsFull === 'function') {
+                await _loadSongsFull([currentSongId]);
+                song = currentFullSong() || song;
+            }
+            var r = window.iHymnsFormatExport.openSong.exportSong(song);
+            notify('Exported ' + r.filename, 'success');
+        }
+        async function exportSongbook() {
+            var abbr = (typeof getSelectedSongbookFilter === 'function') ? getSelectedSongbookFilter() : '';
+            if (!abbr) { notify('Filter the song list to one songbook first, then export it.', 'warning'); return; }
+            notify('Building OpenSong export for ' + abbr + '…', 'info');
+            var resp = await fetch(EDITOR_API_URL + '?action=songbook_export&abbr=' + encodeURIComponent(abbr), { credentials: 'same-origin' });
+            if (!resp.ok) { notify('Failed to load songbook ' + abbr + ' (HTTP ' + resp.status + ').', 'danger'); return; }
+            var payload = await resp.json();
+            var songs = payload.songs || [];
+            if (!songs.length) { notify('Songbook ' + abbr + ' has no songs to export.', 'warning'); return; }
+            var sb = payload.songbook || {};
+            var r = window.iHymnsFormatExport.openSong.exportSongbook(songs, {
+                songbookAbbr: abbr,
+                songbookName: sb.name || sb.Name || abbr
+            });
+            notify('Exported ' + r.count + ' song' + (r.count === 1 ? '' : 's') + ' → ' + r.filename, 'success');
+        }
+        document.addEventListener('DOMContentLoaded', function () {
+            var s = document.getElementById('os-export-song');
+            var b = document.getElementById('os-export-songbook');
+            if (s) s.addEventListener('click', function (e) {
+                e.preventDefault();
+                exportSong().catch(function (err) { notify('Export failed: ' + ((err && err.message) || err), 'danger'); });
+            });
+            if (b) b.addEventListener('click', function (e) {
+                e.preventDefault();
+                exportSongbook().catch(function (err) { notify('Export failed: ' + ((err && err.message) || err), 'danger'); });
+            });
+            /* No protobuf init needed; enable once format-export.js is present. */
+            var btn = document.getElementById('btn-os-export');
+            if (btn && window.iHymnsFormatExport) { btn.disabled = false; }
         });
     })();
     </script>

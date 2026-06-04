@@ -1,0 +1,165 @@
+/**
+ * iHymns Song Editor — Worship-format exporters (#1054 …)
+ * ========================================================
+ *
+ * Client-side serialisers that turn an iHymns song record (the full shape
+ * SongData::getSongById returns: title / writers[] / composers[] / copyright /
+ * ccli / number / songbook / components[]{type,number,lines[]}) into the
+ * file formats of common worship software. Single song → one file; a
+ * songbook → a ZIP of files.
+ *
+ * Formats (added incrementally): OpenSong (.xml) [#1054]. VideoPsalm (.json)
+ * [#1055] and FreeShow (.show) [#1056] slot in alongside.
+ *
+ * Exposed on `window.iHymnsFormatExport`. The ZIP writer is reused from the
+ * ProPresenter exporter (propresenter-export.js `_internal.buildZip`) so we
+ * don't duplicate the stored-ZIP machinery; a tiny fallback is included for
+ * when that module isn't present.
+ *
+ * Copyright (c) 2026 iHymns. All rights reserved.
+ */
+(function (global) {
+    'use strict';
+
+    /* ---- small shared helpers ------------------------------------------- */
+
+    function escapeXml(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&apos;');
+    }
+
+    function sanitizeFilename(name) {
+        return String(name || 'Untitled')
+            .replace(/[\/\\?%*:|"<>]/g, '-')   /* filesystem-reserved */
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 120) || 'Untitled';
+    }
+
+    /* "<Number> <Title>" so files sort numerically; falls back to title. */
+    function baseFilename(song) {
+        var num = (song.number != null && song.number !== '') ? String(song.number) : '';
+        var title = song.title || 'Untitled';
+        return sanitizeFilename(num ? (num + ' ' + title) : title);
+    }
+
+    function download(content, filename, mime) {
+        if (typeof document === 'undefined' || typeof URL === 'undefined') { return; }
+        var blob = new Blob([content], { type: mime || 'application/octet-stream' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    /* Reuse the ProPresenter exporter's stored-ZIP writer, else a minimal
+       inline fallback so this module works standalone. files: [{name,bytes}]. */
+    function buildZip(files) {
+        if (global.iHymnsProPresenter &&
+            global.iHymnsProPresenter._internal &&
+            typeof global.iHymnsProPresenter._internal.buildZip === 'function') {
+            return global.iHymnsProPresenter._internal.buildZip(files);
+        }
+        throw new Error('ZIP writer unavailable (propresenter-export.js not loaded).');
+    }
+
+    /* ====================================================================
+     *  OpenSong (.xml) — #1054
+     * ====================================================================
+     * One XML doc per song. Lyrics are plain text with bracketed section
+     * markers ([V1], [C], [B] …) and each lyric line prefixed by a single
+     * space (the OpenSong convention the iHymns importer round-trips). */
+
+    var OPENSONG_LETTER = {
+        'verse': 'V', 'chorus': 'C', 'refrain': 'C', 'bridge': 'B',
+        'pre-chorus': 'P', 'prechorus': 'P', 'intro': 'I',
+        'outro': 'T', 'tag': 'T', 'coda': 'T', 'interlude': 'I'
+    };
+
+    function openSongMarker(comp) {
+        var t = String(comp.type || 'verse').toLowerCase();
+        var letter = OPENSONG_LETTER[t] || 'V';
+        var n = (comp.number != null && comp.number !== '') ? String(comp.number) : '';
+        return '[' + letter + n + ']';
+    }
+
+    function buildOpenSong(song) {
+        if (!song) { throw new Error('buildOpenSong: song required'); }
+        var authors = []
+            .concat(song.writers || [], song.composers || [])
+            .filter(Boolean);
+        var lyrics = '';
+        (song.components || []).forEach(function (comp) {
+            lyrics += openSongMarker(comp) + '\n';
+            (comp.lines || []).forEach(function (line) {
+                /* leading space = a lyric line (vs a chord/comment row). */
+                lyrics += ' ' + String(line == null ? '' : line) + '\n';
+            });
+        });
+
+        var x = '<?xml version="1.0" encoding="UTF-8"?>\n<song>\n';
+        x += '  <title>' + escapeXml(song.title) + '</title>\n';
+        if (authors.length) { x += '  <author>' + escapeXml(authors.join(', ')) + '</author>\n'; }
+        if (song.copyright)  { x += '  <copyright>' + escapeXml(song.copyright) + '</copyright>\n'; }
+        if (song.ccli)       { x += '  <ccli>' + escapeXml(song.ccli) + '</ccli>\n'; }
+        if (song.number != null && song.number !== '') {
+            x += '  <hymn_number>' + escapeXml(song.number) + '</hymn_number>\n';
+        }
+        if (song.tuneName)   { x += '  <tune>' + escapeXml(song.tuneName) + '</tune>\n'; }
+        x += '  <lyrics>' + escapeXml(lyrics) + '</lyrics>\n';
+        x += '</song>\n';
+        return x;
+    }
+
+    function exportSongOpenSong(song) {
+        var xml = buildOpenSong(song);
+        var filename = baseFilename(song) + '.xml';
+        download(xml, filename, 'application/xml');
+        return { filename: filename, size: xml.length };
+    }
+
+    function exportSongbookOpenSong(songs, options) {
+        options = options || {};
+        if (!Array.isArray(songs) || !songs.length) {
+            throw new Error('exportSongbookOpenSong: non-empty songs array required');
+        }
+        var enc = new TextEncoder();
+        var seen = Object.create(null);
+        var files = songs.map(function (song) {
+            var name = baseFilename(song) + '.xml';
+            /* de-dupe identical filenames within the bundle */
+            if (seen[name]) { name = baseFilename(song) + ' (' + (seen[name]++) + ').xml'; }
+            else { seen[name] = 1; }
+            return { name: name, bytes: enc.encode(buildOpenSong(song)) };
+        });
+        var zip = buildZip(files);
+        var stem = options.songbookName
+            ? sanitizeFilename(options.songbookName + (options.songbookAbbr ? ' (' + options.songbookAbbr + ')' : ''))
+            : (options.songbookAbbr ? sanitizeFilename(options.songbookAbbr) : 'OpenSong Export');
+        var zipName = stem + ' [OpenSong].zip';
+        download(zip, zipName, 'application/zip');
+        return { filename: zipName, size: zip.length, count: files.length };
+    }
+
+    /* ---- public API ----------------------------------------------------- */
+
+    var api = {
+        openSong: {
+            build:           buildOpenSong,
+            exportSong:      exportSongOpenSong,
+            exportSongbook:  exportSongbookOpenSong
+        },
+        _internal: { escapeXml: escapeXml, baseFilename: baseFilename, buildZip: buildZip, download: download }
+    };
+
+    if (typeof global !== 'undefined') { global.iHymnsFormatExport = api; }
+    if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
+})(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));
