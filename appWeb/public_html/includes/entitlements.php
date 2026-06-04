@@ -81,6 +81,11 @@ const ENTITLEMENTS = [
        the deployment. */
     'view_diagnostics'     => ['global_admin'],
 
+    /* Machine-to-machine API keys (#1064) — minting/revoking keys that let
+       external services write to the public API is the most sensitive admin
+       surface, so global_admin only. */
+    'manage_api_keys'      => ['global_admin'],
+
     /* Content moderation */
     'review_song_requests' => ['editor', 'admin', 'global_admin'],
 
