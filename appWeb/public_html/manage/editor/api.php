@@ -4080,6 +4080,93 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
 }
 
 /**
+ * Dedupe-on-import matcher (#1051) — shared by every importer.
+ *
+ * Today bulk-import dedupes only on SongId (<ABBR>-<NNNN>); a song imported
+ * under a different numbering scheme slips past it and creates a true
+ * duplicate. These two PURE helpers add matching on songbook + NORMALISED
+ * title so importers can detect existing songs before insert and offer
+ * skip / merge / replace. No DB writes; reused by the preview endpoint and
+ * (next) the processZip main flow.
+ */
+
+/**
+ * Normalise a title for fuzzy comparison: ASCII-fold accents, lowercase,
+ * drop all punctuation, collapse whitespace. "O God, Our Help in Ages Past"
+ * and "O God Our Help in Ages Past" normalise to the same string.
+ */
+function _bulkImport_normalizeTitle(string $title): string
+{
+    $t = trim($title);
+    /* Fold accents to ASCII so "Niño" ~ "Nino" (best-effort; locale-dependent). */
+    $folded = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $t);
+    if (is_string($folded) && $folded !== '') {
+        $t = $folded;
+    }
+    $t = mb_strtolower($t, 'UTF-8');
+    /* Keep only letters / numbers / whitespace; drop apostrophes, hyphens,
+       punctuation, smart quotes, etc. */
+    $t = (string)preg_replace('/[^\p{L}\p{N}\s]+/u', '', $t);
+    $t = (string)preg_replace('/\s+/', ' ', $t);
+    return trim($t);
+}
+
+/**
+ * Find existing songs in the same songbook whose NORMALISED title matches
+ * (exactly, or within `levThreshold` edits). Bound param on the songbook —
+ * no string-interpolated SQL (per the repo SQL rules); fuzzy matching is
+ * done in PHP via levenshtein() on the normalised strings.
+ *
+ * @return array<int,array{SongId:string,Title:string,Number:?int,matchType:string,distance:int}>
+ */
+function _bulkImport_findDuplicateCandidates(\mysqli $db, string $songbookAbbr, string $title, int $levThreshold = 2): array
+{
+    $norm = _bulkImport_normalizeTitle($title);
+    if ($norm === '' || $songbookAbbr === '') {
+        return [];
+    }
+    $stmt = $db->prepare(
+        "SELECT SongId, Title, Number FROM tblSongs WHERE SongbookAbbr = ? ORDER BY Number"
+    );
+    $stmt->bind_param('s', $songbookAbbr);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+
+    $matches = [];
+    foreach ($rows as $r) {
+        $cn = _bulkImport_normalizeTitle((string)$r['Title']);
+        if ($cn === '') {
+            continue;
+        }
+        if ($cn === $norm) {
+            $matches[] = [
+                'SongId'    => (string)$r['SongId'],
+                'Title'     => (string)$r['Title'],
+                'Number'    => $r['Number'] !== null ? (int)$r['Number'] : null,
+                'matchType' => 'exact-normalized',
+                'distance'  => 0,
+            ];
+            continue;
+        }
+        /* PHP levenshtein() caps inputs at 255 bytes — skip pathologically long titles. */
+        if (strlen($cn) <= 255 && strlen($norm) <= 255) {
+            $d = levenshtein($cn, $norm);
+            if ($d <= $levThreshold) {
+                $matches[] = [
+                    'SongId'    => (string)$r['SongId'],
+                    'Title'     => (string)$r['Title'],
+                    'Number'    => $r['Number'] !== null ? (int)$r['Number'] : null,
+                    'matchType' => 'fuzzy',
+                    'distance'  => $d,
+                ];
+            }
+        }
+    }
+    return $matches;
+}
+
+/**
  * INSERT-ONLY songbook helper. If a songbook with this Abbreviation
  * already exists, the row is left fully untouched — no rename, no
  * Name refresh — per the bulk-import contract: never overwrite
