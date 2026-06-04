@@ -86,6 +86,9 @@ const ENTITLEMENTS = [
        surface, so global_admin only. */
     'manage_api_keys'      => ['global_admin'],
 
+    /* Duplicate-songs review + merge (#1064) — destructive merge, so admin+. */
+    'manage_duplicate_songs' => ['admin', 'global_admin'],
+
     /* Content moderation */
     'review_song_requests' => ['editor', 'admin', 'global_admin'],
 

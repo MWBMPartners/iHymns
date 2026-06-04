@@ -45,6 +45,7 @@ $_adminLinks = [
     ['revisions',            '/manage/revisions',              'bi-clock-history',   'Revisions Audit',       'verify_songs',                'Songs'      ],
     ['missing-numbers',      '/manage/missing-numbers',        'bi-binoculars',      'Missing Numbers',       'edit_songs',                  'Songs'      ],
     ['song-link-suggestions','/manage/song-link-suggestions',  'bi-link-45deg',      'Song Link Suggestions', 'edit_songs',                  'Songs'      ],
+    ['duplicate-songs',      '/manage/duplicate-songs',        'bi-git-compare',     'Duplicate Songs',       'manage_duplicate_songs',      'Songs'      ],
 
     /* Catalogue — collection / metadata surfaces (#819) */
     ['songbooks',            '/manage/songbooks',              'bi-book',            'Songbooks',             'manage_songbooks',            'Catalogue'  ],
