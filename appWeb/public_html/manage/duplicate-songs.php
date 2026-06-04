@@ -45,11 +45,16 @@ $activePage = 'duplicate-songs';
 $db   = getDbMysqli();
 $csrf = csrfToken();
 
-/* Every table with a tblSongs.SongId foreign key (authoritative, from
-   schema.sql). The merge re-points each to the survivor. Single-column first;
-   the two-column relationship tables follow. Table + column names are fixed
+/* Every table that references tblSongs.SongId (authoritative, from schema.sql).
+   The merge re-points each to the survivor. Table + column names are fixed
    constants from THIS source (never user input) — safe to interpolate; the
-   SongId VALUES are always bound. */
+   SongId VALUES are always bound.
+
+   MERGE_FK_TABLES_* are the 22 tables with an explicit FOREIGN KEY constraint
+   (single-column, then two-column relationship tables). MERGE_SOFT_REFS are
+   columns that reference a SongId WITHOUT an FK constraint — they would leave
+   dangling values after the duplicate is deleted (the DB can't cascade them),
+   so the merge must repoint them too. (#1064 review finding.) */
 const MERGE_FK_TABLES_SINGLE = [
     'tblSongbookEntries', 'tblSongWriters', 'tblSongComposers', 'tblSongArrangers',
     'tblSongAdaptors', 'tblSongTranslators', 'tblSongArtists', 'tblSongComponents',
@@ -60,6 +65,11 @@ const MERGE_FK_TABLES_SINGLE = [
 const MERGE_FK_TABLES_PAIR = [
     'tblSongTranslations'   => ['SourceSongId', 'TranslatedSongId'],
     'tblSongLinkSuggestions' => ['SongIdA', 'SongIdB'],
+];
+const MERGE_SOFT_REFS = [
+    'tblSongRequests'                 => ['ResolvedSongId'],
+    'tblSongRevisions'                => ['SongId'],
+    'tblSongLinkSuggestionsDismissed' => ['SongIdA', 'SongIdB'],
 ];
 
 /* ----------------------------------------------------------------------
@@ -136,6 +146,21 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $d->close();
             }
         }
+        /* Soft references (no FK constraint → the DB won't cascade/null them,
+           so repoint explicitly or they dangle after the delete). Same
+           UPDATE IGNORE + DELETE-leftover idiom for any UNIQUE collisions. */
+        foreach (MERGE_SOFT_REFS as $t => $cols) {
+            foreach ($cols as $c) {
+                $u = $db->prepare("UPDATE IGNORE `{$t}` SET `{$c}` = ? WHERE `{$c}` = ?");
+                $u->bind_param('ss', $survivor, $duplicate);
+                $u->execute();
+                $u->close();
+                $d = $db->prepare("DELETE FROM `{$t}` WHERE `{$c}` = ?");
+                $d->bind_param('s', $duplicate);
+                $d->execute();
+                $d->close();
+            }
+        }
         /* Finally remove the duplicate song. */
         $del = $db->prepare('DELETE FROM tblSongs WHERE SongId = ?');
         $del->bind_param('s', $duplicate);
@@ -148,7 +173,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             try {
                 logActivity('song.merge', 'song', $survivor, [
                     'merged_from' => $duplicate,
-                    'tables'      => count(MERGE_FK_TABLES_SINGLE) + count(MERGE_FK_TABLES_PAIR),
+                    'tables'      => count(MERGE_FK_TABLES_SINGLE) + count(MERGE_FK_TABLES_PAIR) + count(MERGE_SOFT_REFS),
                 ]);
             } catch (\Throwable $_e) { /* audit best-effort */ }
         }
