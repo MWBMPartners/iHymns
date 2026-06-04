@@ -1474,4 +1474,17 @@ return [
         ],
         'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblApiKeys'),
     ],
+
+    'song-recording-ids' => [
+        'script' => 'migrate-song-recording-ids.php',
+        'card' => [
+            'title'  => 'Song recording IDs — ISRC/UPC (#1064)',
+            'body'   => 'Adds <code>tblSongs.Isrc</code> + <code>tblSongs.Upc</code> (indexed ISRC)'
+                      . ' so the lyrics-ingest endpoint can store the recording/release identifiers'
+                      . ' MeedyaDL supplies, and the duplicate-songs review page can detect songs that'
+                      . ' share an ISRC. Additive + idempotent.',
+            'button' => 'Run Song Recording IDs Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongs', 'Isrc'),
+    ],
 ];
