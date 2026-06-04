@@ -845,6 +845,108 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
+         * LYRICS_INGEST (#1064) — accept timed lyrics (Apple-Music TTML with
+         * word + syllable timing) from an external service (e.g. MeedyaDL
+         * #907) and write them into the normalized lyrics schema.
+         *
+         * POST /api?action=lyrics_ingest
+         *   Auth: API key with scope "lyrics:ingest"
+         *         (Authorization: Bearer <key>  OR  X-API-Key: <key>)
+         *   Body: JSON { songId, ttml, source?, sourceUrl?, isPrimary?,
+         *                isExplicit?, status? }
+         *         — or raw TTML body with ?songId=… (&source=…).
+         *
+         * Ingested lyrics default to status 'pending_review' (a curator
+         * approves before they go live). Re-ingesting the same (song, source)
+         * replaces its rows rather than duplicating.
+         * ----------------------------------------------------------------- */
+        case 'lyrics_ingest':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_keys.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyrics_ingest.php';
+            $ingestDb = getDbMysqli();
+            $ingestKey = apiKeyAuthorize($ingestDb, 'lyrics:ingest');
+            if ($ingestKey === null) { break; } /* 401 already emitted */
+
+            $rawBody = (string)file_get_contents('php://input');
+            if (strlen($rawBody) > 4 * 1024 * 1024) {
+                sendJson(['error' => 'Payload exceeds the 4 MiB ingest limit.'], 413);
+                break;
+            }
+            $payload   = json_decode($rawBody, true);
+            $songId    = '';
+            $ttml      = '';
+            $source    = null;
+            $sourceUrl = null;
+            $isPrimary = false;
+            $isExplicit = false;
+            $status    = 'pending_review';
+            if (is_array($payload)) {
+                $songId     = trim((string)($payload['songId'] ?? $payload['song_id'] ?? ''));
+                $ttml       = (string)($payload['ttml'] ?? '');
+                $source     = isset($payload['source']) ? (string)$payload['source'] : null;
+                $sourceUrl  = isset($payload['sourceUrl']) ? (string)$payload['sourceUrl'] : null;
+                $isPrimary  = !empty($payload['isPrimary']);
+                $isExplicit = !empty($payload['isExplicit']);
+                if (isset($payload['status'])) { $status = (string)$payload['status']; }
+            } else {
+                /* Raw TTML body + ?songId= (&source=). */
+                $songId = trim((string)($_GET['songId'] ?? $_GET['song_id'] ?? ''));
+                $ttml   = $rawBody;
+                $source = isset($_GET['source']) ? (string)$_GET['source'] : null;
+            }
+
+            if ($songId === '' || trim($ttml) === '') {
+                sendJson(['error' => 'songId and ttml are required (JSON {songId, ttml} or raw TTML with ?songId=).'], 400);
+                break;
+            }
+            /* Status is an enum — validate against the allow-list. */
+            if (!in_array($status, ['draft', 'pending_review', 'approved', 'rejected', 'archived'], true)) {
+                $status = 'pending_review';
+            }
+
+            try {
+                $parsed = lyricsIngest_parseTtml($ttml);
+                $result = lyricsIngest_writeToDb($ingestDb, $songId, $parsed, [
+                    'source'     => $source ?: 'applemusic-ttml',
+                    'sourceUrl'  => $sourceUrl,
+                    'isPrimary'  => $isPrimary,
+                    'isExplicit' => $isExplicit,
+                    'status'     => $status,
+                    /* Machine ingest has no user; SubmittedBy stays null. */
+                ]);
+                if (function_exists('logActivity')) {
+                    logActivity('lyrics.ingest', 'song', $songId, [
+                        'apiKey'    => (string)($ingestKey['Label'] ?? ''),
+                        'source'    => $source ?: 'applemusic-ttml',
+                        'lines'     => $result['lines'],
+                        'words'     => $result['words'],
+                        'syllables' => $result['syllables'],
+                        'status'    => $status,
+                    ]);
+                }
+                sendJson([
+                    'ok'                => true,
+                    'songId'            => $songId,
+                    'lyricsId'          => $result['lyricsId'],
+                    'lines'             => $result['lines'],
+                    'words'             => $result['words'],
+                    'syllables'         => $result['syllables'],
+                    'hasTiming'         => $parsed['hasTiming'],
+                    'hasWordTiming'     => $parsed['hasWordTiming'],
+                    'hasSyllableTiming' => $parsed['hasSyllableTiming'],
+                    'language'          => $parsed['language'],
+                    'status'            => $status,
+                ]);
+            } catch (\RuntimeException $e) {
+                sendJson(['error' => 'Ingest failed: ' . $e->getMessage()], 422);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
          * Get missing song numbers within a songbook (#285)
          * Parameters: songbook (required)
          * Requires: editor+ role (via bearer token or session)

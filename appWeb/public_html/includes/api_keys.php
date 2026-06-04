@@ -115,6 +115,7 @@ function apiKeyAuthorize(\mysqli $db, string $requiredScope): ?array
     $raw = apiKeyFromRequest();
     if ($raw === null) {
         http_response_code(401);
+        header('Content-Type: application/json; charset=UTF-8');
         header('WWW-Authenticate: Bearer realm="iHymns API", scope="' . $requiredScope . '"');
         echo json_encode(['error' => 'Missing API key. Send "Authorization: Bearer <key>" or "X-API-Key: <key>".']);
         return null;
@@ -122,6 +123,7 @@ function apiKeyAuthorize(\mysqli $db, string $requiredScope): ?array
     $row = apiKeyVerify($db, $raw, $requiredScope);
     if ($row === null) {
         http_response_code(401);
+        header('Content-Type: application/json; charset=UTF-8');
         header('WWW-Authenticate: Bearer realm="iHymns API", scope="' . $requiredScope . '"');
         echo json_encode(['error' => 'Invalid or unauthorized API key.']);
         return null;
