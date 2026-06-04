@@ -3506,7 +3506,7 @@ function exportCurrentSong() {
 function importJSON() {
     var input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.json,.zip,.xml,.pro6,.db,.rtf,.txt,application/json,application/zip,text/xml,application/xml,application/rtf,text/plain';
+    input.accept = '.json,.zip,.xml,.pro6,.show,.db,.rtf,.txt,application/json,application/zip,text/xml,application/xml,application/rtf,text/plain';
 
     input.addEventListener('change', function () {
         if (!input.files || !input.files[0]) return; // user cancelled
@@ -3530,6 +3530,10 @@ function importJSON() {
                SongWords.db) is zipped and uses the ZIP path above, which the
                server auto-routes to EasyWorship on detecting a Songs.db. */
             importEasyWorship(file);
+        } else if (lower.endsWith('.show')) {
+            /* FreeShow single-song export (#884). A folder of .show files
+               exported as a .zip uses the ZIP path above instead. */
+            importFreeShow(file);
         } else if (lower.endsWith('.rtf') || lower.endsWith('.txt')) {
             /* Proclaim text/RTF single-song export (#1062). */
             importProclaim(file);
@@ -3537,8 +3541,9 @@ function importJSON() {
             showToast(
                 'Unsupported file type. Choose a .json corpus, a .zip archive ' +
                 '(.SourceSongData / OpenSong / OpenLyrics / ProPresenter 6 / ' +
-                'EasyWorship), an OpenLyrics .xml, a ProPresenter .pro6, an ' +
-                'EasyWorship Songs.db, or a Proclaim .txt/.rtf.',
+                'FreeShow / EasyWorship), an OpenLyrics .xml, a ProPresenter ' +
+                '.pro6, a FreeShow .show, an EasyWorship Songs.db, or a ' +
+                'Proclaim .txt/.rtf.',
                 'danger'
             );
         }
@@ -3727,6 +3732,22 @@ function importProclaim(file) {
         action:     'bulk_import_proclaim',
         field:      'proclaim',
         consoleTag: 'bulk_import_proclaim',
+    });
+}
+
+/**
+ * importFreeShow(file) — FreeShow .show single-song import (#884).
+ * One .show is one song with no songbook, so the server files it under a
+ * "FreeShow Import" (FS) songbook. A folder of .show files exported as a .zip
+ * goes through importBulkZip() instead (the ZIP path recognises .show entries
+ * and groups them by their containing folder). Round-trips with the FreeShow
+ * exporter (#1056).
+ */
+function importFreeShow(file) {
+    importSingleFileFormat(file, {
+        action:     'bulk_import_freeshow',
+        field:      'freeshow',
+        consoleTag: 'bulk_import_freeshow',
     });
 }
 

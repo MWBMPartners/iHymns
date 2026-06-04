@@ -3247,6 +3247,72 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
+     * BULK_IMPORT_FREESHOW — single FreeShow (.show) song import (#884).
+     *
+     * POST /manage/editor/api?action=bulk_import_freeshow
+     *   multipart field "freeshow" = one .show JSON document.
+     *
+     * One .show is one song; it carries no songbook, so it files under a
+     * "FreeShow Import" (FS) songbook. Round-trips with the FreeShow exporter
+     * (#1056). A ZIP of .show files goes through bulk_import_zip (inline).
+     * Insert-only; honours #1051.
+     * ----------------------------------------------------------------- */
+    case 'bulk_import_freeshow':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        _bulkImport_dedupeMode((string)($_POST['dedupeMode'] ?? 'off'));  /* #1051 */
+        if (!isset($_FILES['freeshow']) || ($_FILES['freeshow']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $err = $_FILES['freeshow']['error'] ?? UPLOAD_ERR_NO_FILE;
+            $msg = 'Upload failed.';
+            if ($err === UPLOAD_ERR_INI_SIZE || $err === UPLOAD_ERR_FORM_SIZE) {
+                $msg = 'Uploaded file is larger than the server limit.';
+            } elseif ($err === UPLOAD_ERR_NO_FILE) {
+                $msg = 'No file received — expected a multipart upload with a "freeshow" field.';
+            }
+            http_response_code(400);
+            echo json_encode(['error' => $msg, 'phpError' => $err]);
+            break;
+        }
+
+        $sizeBytes = (int)($_FILES['freeshow']['size'] ?? 0);
+        if ($sizeBytes > 5 * 1024 * 1024) {
+            http_response_code(413);
+            echo json_encode(['error' => 'Uploaded .show file exceeds the 5 MiB import limit.']);
+            break;
+        }
+
+        try {
+            $tmpPath  = (string)$_FILES['freeshow']['tmp_name'];
+            $origName = (string)($_FILES['freeshow']['name'] ?? 'song.show');
+            $body     = (string)file_get_contents($tmpPath);
+            if (trim($body) === '') {
+                http_response_code(400);
+                echo json_encode(['error' => 'Uploaded file is empty.']);
+                break;
+            }
+            $summary = _bulkImport_processFreeShow($body, $origName);
+            if (!($summary['ok'] ?? false)) {
+                http_response_code(400);
+            } elseif (($summary['songs_created'] ?? 0) > 0) {
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+                    . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                $_maint = songbookMaintenanceRun(getDbMysqli(), 'bulk_import_freeshow');
+                if ($_maint['rewritten'] > 0 || $_maint['deferred']) {
+                    $summary['maintenance'] = $_maint;
+                }
+            }
+            echo json_encode($summary, JSON_UNESCAPED_UNICODE);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[bulk_import_freeshow] ' . $e->getMessage());
+            echo json_encode(['error' => 'Import failed: ' . $e->getMessage()]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
      * BULK_IMPORT_STATUS — poll one async-import job (#676).
      *
      * GET /manage/editor/api?action=bulk_import_status&job_id=N
@@ -4873,7 +4939,7 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
        the songbook on first encounter, then parse + save the song. */
     $songbookSeen      = [];   // abbrev → (created|existing) — caches the songbook upsert per archive
     $songbookCounters  = [];   // abbrev → next auto-assigned number (OpenSong fallback, #882)
-    $songsParsedByKind = ['txt' => 0, 'opensong' => 0, 'videopsalm' => 0, 'openlyrics' => 0, 'propresenter6' => 0];
+    $songsParsedByKind = ['txt' => 0, 'opensong' => 0, 'videopsalm' => 0, 'openlyrics' => 0, 'propresenter6' => 0, 'freeshow' => 0];
 
     for ($i = 0; $i < $entryCount; $i++) {
         /* Periodic progress flush every $PROGRESS_BATCH iterations so
@@ -4923,6 +4989,8 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
             $kind = 'videopsalm';
         } elseif ($ext === 'pro6') {
             $kind = 'pro6';
+        } elseif ($ext === 'show') {
+            $kind = 'freeshow';
         } else {
             continue;
         }
@@ -5096,6 +5164,59 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
                 $errors[] = ['entry' => $name, 'error' => 'save failed: ' . $p6Err];
                 $songsFailed++;
                 $_perBookBump($p6Abbr, $p6Name, 'failed', 'save failed: ' . $p6Err, $name, $p6Number ?: null, 'save');
+            }
+            continue;
+        }
+
+        /* FreeShow (#884): each .show is one song and carries no songbook.
+           Handle inline (no folder convention): file under the parent folder
+           name when present (so curators can group .show files into
+           per-songbook folders), else a default "FreeShow Import" (FS). */
+        if ($kind === 'freeshow') {
+            $fsBody = $zip->getFromIndex($i);
+            if ($fsBody === false) {
+                $errors[] = ['entry' => $name, 'error' => 'could not read entry'];
+                $songsFailed++;
+                continue;
+            }
+            [$fsParsed, $fsReason] = _bulkImport_parseFreeShow($fsBody);
+            if ($fsParsed === null) {
+                $errors[] = ['entry' => $name, 'error' => 'FreeShow parse failed: ' . $fsReason];
+                $songsFailed++;
+                continue;
+            }
+            $fsSegments = explode('/', $name);
+            $fsFolder   = count($fsSegments) >= 2 ? $fsSegments[count($fsSegments) - 2] : '';
+            $fsName     = $fsFolder !== '' ? $fsFolder : 'FreeShow Import';
+            $fsAbbr     = $fsFolder !== '' ? _bulkImport_videopsalmAbbrevFromHint($fsFolder, $fsName) : 'FS';
+            if ($fsAbbr === 'VP' || $fsAbbr === '') { $fsAbbr = 'FS'; }
+            if (!isset($songbookSeen[$fsAbbr])) {
+                $state = _bulkImport_upsertSongbook($db, $fsAbbr, $fsName, null);
+                $songbookSeen[$fsAbbr] = $state;
+                if ($state === 'created') { $songbooksCreated[] = $fsAbbr; }
+                else                       { $songbooksExisting[] = $fsAbbr; }
+            }
+            if (!isset($songbookCounters[$fsAbbr])) {
+                $songbookCounters[$fsAbbr] = _bulkImport_nextSongNumberFor($db, $fsAbbr);
+            }
+            $fsNumber = $songbookCounters[$fsAbbr];
+            $songbookCounters[$fsAbbr] = $fsNumber + 1;
+            $fsSong = _bulkImport_assembleSong($fsParsed, $fsAbbr, $fsName, $fsNumber);
+            [$fsAction, $fsErr] = _bulkImport_saveSong($db, $fsSong);
+            if ($fsAction === 'create') {
+                $songsCreated++;
+                $songsParsedByKind['freeshow']++;
+                $_perBookBump($fsAbbr, $fsName, 'created');
+            } elseif ($fsAction === 'skipped') {
+                $songsSkippedExisting++;
+                $_perBookBump($fsAbbr, $fsName, 'skipped');
+                if (isset($fsSong['id']) && $fsSong['id'] !== '') {
+                    $skippedSongIds[] = (string)$fsSong['id'];
+                }
+            } else {
+                $errors[] = ['entry' => $name, 'error' => 'save failed: ' . $fsErr];
+                $songsFailed++;
+                $_perBookBump($fsAbbr, $fsName, 'failed', 'save failed: ' . $fsErr, $name, $fsNumber ?: null, 'save');
             }
             continue;
         }
@@ -6973,6 +7094,199 @@ function _bulkImport_processProclaim(string $body, ?string $filenameHint = null)
         'songs_skipped_existing' => $songsSkipped,
         'songs_failed'           => $songsFailed,
         'parsed_by_format'       => ['proclaim' => $songsCreated + $songsSkipped],
+        'errors'                 => $errors,
+    ];
+}
+
+/* ===========================================================================
+ *  FreeShow import (#884)
+ * ---------------------------------------------------------------------------
+ * A FreeShow ".show" file is JSON: [ "<id>", { show } ]. The show holds a
+ * `slides` map (each slide: group label + items[].lines[].text[].value runs)
+ * and a `layouts` map whose active layout lists slide order. `meta` carries
+ * title / author / copyright / CCLI. One .show is one song. Round-trips with
+ * the iHymns FreeShow exporter (#1056). The group label → component type uses
+ * the shared _bulkImport_pro6GroupType().
+ * =========================================================================== */
+
+/**
+ * Flatten one FreeShow slide's items → an array of plain-text lines.
+ * Each item has lines[], each line has text[] runs with a `value`.
+ */
+function _bulkImport_freeShowSlideLines(array $slide): array
+{
+    $lines = [];
+    foreach (($slide['items'] ?? []) as $item) {
+        if (!is_array($item)) { continue; }
+        foreach (($item['lines'] ?? []) as $line) {
+            if (!is_array($line)) { continue; }
+            $buf = '';
+            foreach (($line['text'] ?? []) as $run) {
+                if (is_array($run) && isset($run['value'])) {
+                    $buf .= (string)$run['value'];
+                }
+            }
+            /* A run value may itself contain newlines. */
+            foreach (explode("\n", str_replace(["\r\n", "\r"], "\n", $buf)) as $ln) {
+                $lines[] = rtrim($ln);
+            }
+        }
+    }
+    while (!empty($lines) && trim((string)end($lines)) === '') { array_pop($lines); }
+    return $lines;
+}
+
+/**
+ * Parse one FreeShow .show document into the neutral parsed-song structure.
+ *
+ * @return array{0: ?array, 1: ?string}  [parsed, errorReason]
+ */
+function _bulkImport_parseFreeShow(string $body): array
+{
+    $body = (string)preg_replace('/^\xEF\xBB\xBF/', '', $body);
+    $data = json_decode($body, true);
+    if ($data === null && json_last_error() !== JSON_ERROR_NONE) {
+        return [null, 'invalid JSON: ' . json_last_error_msg()];
+    }
+
+    /* FreeShow stores [ "<id>", { show } ]; tolerate a bare show object too. */
+    $show = null;
+    if (is_array($data)) {
+        if (isset($data[1]) && is_array($data[1])) {
+            $show = $data[1];
+        } elseif (isset($data['slides']) || isset($data['name'])) {
+            $show = $data;
+        }
+    }
+    if (!is_array($show) || empty($show['slides']) || !is_array($show['slides'])) {
+        return [null, 'not a FreeShow .show document (no slides)'];
+    }
+
+    $meta  = is_array($show['meta'] ?? null) ? $show['meta'] : [];
+    $title = trim((string)($meta['title'] ?? ($show['name'] ?? '')));
+
+    /* Slide order from the active layout; fall back to the slides-map order. */
+    $order = [];
+    $layoutId = (string)($show['settings']['activeLayout'] ?? '');
+    $layouts  = is_array($show['layouts'] ?? null) ? $show['layouts'] : [];
+    if ($layoutId !== '' && isset($layouts[$layoutId]['slides']) && is_array($layouts[$layoutId]['slides'])) {
+        foreach ($layouts[$layoutId]['slides'] as $ref) {
+            if (is_array($ref) && isset($ref['id'])) { $order[] = (string)$ref['id']; }
+        }
+    } elseif (!empty($layouts)) {
+        /* No active layout pointer — take the first layout's order. */
+        $first = reset($layouts);
+        foreach (($first['slides'] ?? []) as $ref) {
+            if (is_array($ref) && isset($ref['id'])) { $order[] = (string)$ref['id']; }
+        }
+    }
+    if (empty($order)) {
+        $order = array_keys($show['slides']);
+    }
+
+    $components = [];
+    foreach ($order as $sid) {
+        $slide = $show['slides'][$sid] ?? null;
+        if (!is_array($slide)) { continue; }
+        $lines = _bulkImport_freeShowSlideLines($slide);
+        if (empty($lines)) { continue; }
+        [$type, $num] = _bulkImport_pro6GroupType((string)($slide['group'] ?? 'Verse'));
+        $components[] = ['type' => $type, 'number' => $num, 'lines' => $lines];
+    }
+    if (empty($components)) {
+        return [null, 'no slide text found'];
+    }
+
+    if ($title === '') {
+        $title = trim((string)($components[0]['lines'][0] ?? ''));
+    }
+    if ($title === '') {
+        return [null, 'no song title'];
+    }
+
+    $writers = [];
+    $author  = trim((string)($meta['author'] ?? ''));
+    if ($author !== '') {
+        foreach (preg_split('/\s*[\/&,;]\s*/u', $author) as $w) {
+            $w = trim((string)$w);
+            if ($w !== '') { $writers[] = $w; }
+        }
+    }
+
+    return [[
+        'title'        => $title,
+        'songbookName' => '',
+        'entry'        => 0,
+        'language'     => '',
+        'ccli'         => trim((string)($meta['CCLI'] ?? ($meta['ccli'] ?? ''))),
+        'copyright'    => trim((string)($meta['copyright'] ?? '')),
+        'writers'      => $writers,
+        'components'   => $components,
+    ], null];
+}
+
+/**
+ * Synchronous single-file FreeShow import — invoked from the
+ * bulk_import_freeshow dispatcher case. Files songs under a "FreeShow Import"
+ * (FS) songbook (.show carries none). Same summary shape as the other
+ * single-file processors.
+ */
+function _bulkImport_processFreeShow(string $body, ?string $filenameHint = null): array
+{
+    [$parsed, $reason] = _bulkImport_parseFreeShow($body);
+    if ($parsed === null) {
+        return [
+            'ok'                     => false,
+            'error'                  => $reason ?: 'FreeShow parse failed',
+            'songbooks_created'      => [],
+            'songbooks_existing'     => [],
+            'songs_created'          => 0,
+            'songs_skipped_existing' => 0,
+            'songs_failed'           => 0,
+            'parsed_by_format'       => ['freeshow' => 0],
+            'errors'                 => [],
+        ];
+    }
+
+    $db       = getDbMysqli();
+    $abbr     = 'FS';
+    $bookName = 'FreeShow Import';
+    $state             = _bulkImport_upsertSongbook($db, $abbr, $bookName, null);
+    $songbooksCreated  = ($state === 'created')  ? [$abbr] : [];
+    $songbooksExisting = ($state === 'existing') ? [$abbr] : [];
+
+    $number = _bulkImport_nextSongNumberFor($db, $abbr);
+    $song   = _bulkImport_assembleSong($parsed, $abbr, $bookName, $number);
+
+    $songsCreated = 0;
+    $songsSkipped = 0;
+    $songsFailed  = 0;
+    $errors       = [];
+    [$action, $saveErr] = _bulkImport_saveSong($db, $song);
+    if ($action === 'create')      { $songsCreated = 1; }
+    elseif ($action === 'skipped') { $songsSkipped = 1; }
+    else {
+        $songsFailed = 1;
+        $errors[]    = ['entry' => ($filenameHint ?? 'freeshow') . ': ' . ($song['id'] ?? '?'), 'error' => 'save failed: ' . $saveErr];
+    }
+
+    if (!empty($songbooksCreated)) {
+        $cnt = $db->prepare(
+            'UPDATE tblSongbooks SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?) WHERE Abbreviation = ?'
+        );
+        $cnt->bind_param('ss', $abbr, $abbr);
+        $cnt->execute();
+        $cnt->close();
+    }
+
+    return [
+        'ok'                     => true,
+        'songbooks_created'      => $songbooksCreated,
+        'songbooks_existing'     => $songbooksExisting,
+        'songs_created'          => $songsCreated,
+        'songs_skipped_existing' => $songsSkipped,
+        'songs_failed'           => $songsFailed,
+        'parsed_by_format'       => ['freeshow' => $songsCreated + $songsSkipped],
         'errors'                 => $errors,
     ];
 }
