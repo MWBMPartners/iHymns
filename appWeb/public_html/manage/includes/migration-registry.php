@@ -1382,4 +1382,49 @@ return [
             !_migProbe_tableExists($db, 'tblUserCustomTags')
             || !_migProbe_columnExists($db, 'tblUserFavorites', 'Tags'),
     ],
+
+    /* ---- iLyricsDB alignment, pre-deploy (#1044 / #1045 / #1046) ----------
+       Shape-readiness so the iHymns DB can become the shared iLyricsDB core
+       without a second re-architecture. All three are strictly additive. */
+    'songbook-entries' => [
+        'script' => 'migrate-add-songbook-entries.php',
+        'card' => [
+            'title'  => 'Songbook Entries N:N junction (#1044)',
+            'body'   => 'Creates <code>tblSongbookEntries</code> (many-to-many song↔songbook) and'
+                      . ' backfills one <em>home</em> entry per song from'
+                      . ' <code>(SongbookAbbr, Number)</code>. Lets a hymn live in several'
+                      . ' hymnals with different numbers, and a future non-Christian song have'
+                      . ' zero entries (owned via its artist). Strictly additive —'
+                      . ' <code>SongbookAbbr</code> / <code>Number</code> / the <code>SongId</code>'
+                      . ' prefix are untouched and nothing reads the junction yet. Idempotent.',
+            'button' => 'Run Songbook Entries Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongbookEntries'),
+    ],
+    'songbook-ischristian' => [
+        'script' => 'migrate-songbook-ischristian.php',
+        'card' => [
+            'title'  => 'Songbook IsChristian filter axis (#1045)',
+            'body'   => 'Adds <code>tblSongbooks.IsChristian</code> (default 1, indexed) — the'
+                      . ' machine axis that lets iHymns surface only Christian lyrics'
+                      . ' (<code>WHERE IsChristian=1</code>) from a shared generic corpus, while'
+                      . ' the iLyricsDB core applies no filter. Every existing songbook defaults'
+                      . ' to Christian. Idempotent — safe to re-run.',
+            'button' => 'Run Songbook IsChristian Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongbooks', 'IsChristian'),
+    ],
+    'song-explicit-genre' => [
+        'script' => 'migrate-song-explicit-genre.php',
+        'card' => [
+            'title'  => 'Song IsExplicit + Genre (#1046)',
+            'body'   => 'Adds two cheap additive columns the generic model carries:'
+                      . ' <code>tblSongs.IsExplicit</code> (default 0) and'
+                      . ' <code>tblSongs.Genre</code> (free-text, indexed). Genre is a secondary'
+                      . ' classification (Hymn / Contemporary Worship / …), NOT the Christian'
+                      . ' filter (that is <code>tblSongbooks.IsChristian</code>). Idempotent.',
+            'button' => 'Run Song IsExplicit + Genre Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongs', 'IsExplicit'),
+    ],
 ];

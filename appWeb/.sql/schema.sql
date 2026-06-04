@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS tblSongbooks (
     PublicationCityId INT UNSIGNED  NULL DEFAULT NULL,
     Copyright       VARCHAR(500)    NULL DEFAULT NULL COMMENT 'Copyright notice for the collection as a whole (#502)',
     Affiliation     VARCHAR(120)    NULL DEFAULT NULL COMMENT 'Denominational / religious affiliation; backed by tblSongbookAffiliations registry (#670)',
+    IsChristian     TINYINT(1)      NOT NULL DEFAULT 1 COMMENT 'Christian-corpus filter axis (#1045): iHymns surfaces only WHERE IsChristian=1; the shared iLyricsDB core applies no filter. Every iHymns songbook is Christian, hence default 1.',
     Language        VARCHAR(35)     NULL DEFAULT NULL COMMENT 'Optional IETF BCP 47 tag (language[-script][-region], e.g. en, pt-BR, zh-Hans-CN); NULL = not specified. Soft validation via the composite picker dropdowns; widened from VARCHAR(10) to fit script+region subtags (#681)',
 
     /* Bibliographic + authority-control identifiers (#672). All
@@ -123,6 +124,7 @@ CREATE TABLE IF NOT EXISTS tblSongbooks (
     INDEX idx_DisplayOrder (DisplayOrder),
     INDEX idx_ParentSongbook (ParentSongbookId),
     INDEX idx_PublicationCityId (PublicationCityId),
+    INDEX idx_IsChristian (IsChristian),
     CONSTRAINT fk_Songbook_Parent
         FOREIGN KEY (ParentSongbookId) REFERENCES tblSongbooks(Id) ON DELETE SET NULL,
     CONSTRAINT fk_Songbooks_PublicationCity
@@ -175,6 +177,8 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     Verified            TINYINT(1)      NOT NULL DEFAULT 0,
     LyricsPublicDomain  TINYINT(1)      NOT NULL DEFAULT 0,
     MusicPublicDomain   TINYINT(1)      NOT NULL DEFAULT 0,
+    IsExplicit          TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Explicit-content flag (#1046); 0 for the Christian corpus, axis exists for generic/secular imports',
+    Genre               VARCHAR(100)    NULL DEFAULT NULL COMMENT 'Free-text secondary genre (#1046): Hymn / Contemporary Worship / … (NOT the Christian-filter axis — that is tblSongbooks.IsChristian)',
     HasAudio            TINYINT(1)      NOT NULL DEFAULT 0,
     HasSheetMusic       TINYINT(1)      NOT NULL DEFAULT 0,
     LyricsText          MEDIUMTEXT      NOT NULL DEFAULT ('') COMMENT 'Concatenated lyrics for full-text search',
@@ -186,6 +190,7 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     INDEX idx_SongbookNumber    (SongbookAbbr, Number),
     INDEX idx_TuneName          (TuneName),
     INDEX idx_OriginCityId      (OriginCityId),
+    INDEX idx_Genre             (Genre),
     FULLTEXT idx_TitleFt        (Title),
     FULLTEXT idx_LyricsFt       (LyricsText),
     FULLTEXT idx_TitleLyricsFt  (Title, LyricsText),
@@ -196,6 +201,37 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     CONSTRAINT fk_Songs_OriginCity
         FOREIGN KEY (OriginCityId) REFERENCES tblPlaces(Id)
         ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongbookEntries (#1044 — iLyricsDB alignment)
+-- N:N song↔songbook membership so a song can appear in several hymnals with
+-- different numbers (cross-hymnal de-duplication) and a future non-Christian
+-- song can have ZERO entries (owned via its artist instead). The existing
+-- tblSongs.SongbookAbbr + Number are RETAINED as the song's "home" (IsHome=1);
+-- this junction is strictly additive and not yet read by the app.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongbookEntries (
+    Id            INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    SongbookAbbr  VARCHAR(10)     NOT NULL COMMENT 'FK to tblSongbooks.Abbreviation',
+    SongId        VARCHAR(20)     NOT NULL COMMENT 'FK to tblSongs.SongId (the human id)',
+    SongNumber    INT UNSIGNED    NULL COMMENT 'Number within THIS songbook; NULL for unstructured collections (Misc)',
+    IsHome        TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = the song''s home/primary songbook (the one its SongId is prefixed from); kept in sync with tblSongs.SongbookAbbr',
+    CreatedAt     TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_book_song   (SongbookAbbr, SongId),
+    UNIQUE KEY uq_book_number (SongbookAbbr, SongNumber),
+    INDEX idx_SongId   (SongId),
+    INDEX idx_Songbook (SongbookAbbr),
+    INDEX idx_Home     (SongId, IsHome),
+
+    CONSTRAINT fk_SongbookEntries_Songbook
+        FOREIGN KEY (SongbookAbbr) REFERENCES tblSongbooks(Abbreviation)
+        ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_SongbookEntries_Song
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId)
+        ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
