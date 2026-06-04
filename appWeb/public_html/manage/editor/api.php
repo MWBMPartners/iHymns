@@ -4548,18 +4548,11 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
  */
 function _bulkImport_normalizeTitle(string $title): string
 {
-    $t = trim($title);
-    /* Fold accents to ASCII so "Niño" ~ "Nino" (best-effort; locale-dependent). */
-    $folded = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $t);
-    if (is_string($folded) && $folded !== '') {
-        $t = $folded;
-    }
-    $t = mb_strtolower($t, 'UTF-8');
-    /* Keep only letters / numbers / whitespace; drop apostrophes, hyphens,
-       punctuation, smart quotes, etc. */
-    $t = (string)preg_replace('/[^\p{L}\p{N}\s]+/u', '', $t);
-    $t = (string)preg_replace('/\s+/', ' ', $t);
-    return trim($t);
+    /* Delegate to the shared normaliser (#1064) so the bulk-import matcher,
+       the lyrics-ingest song resolver and the duplicate-songs page all fold
+       titles identically. require_once is idempotent + cheap. */
+    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'title_normalize.php';
+    return ihymns_normalize_title($title);
 }
 
 /**
