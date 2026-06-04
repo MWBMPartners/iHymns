@@ -376,6 +376,21 @@ try {
                                 <i class="bi bi-archive me-2"></i>This songbook (<code>.zip</code>)</a></li>
                         </ul>
                     </div>
+                    <!-- ProPresenter 6 export (#889): single song → .pro6,
+                         whole songbook → .zip. Wired below. -->
+                    <div class="btn-group">
+                        <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle"
+                                id="btn-p6-export" data-bs-toggle="dropdown" aria-expanded="false"
+                                title="Export to ProPresenter 6 (.pro6 / .zip)" disabled>
+                            <i class="bi bi-display me-1"></i>PP6
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-dark">
+                            <li><a class="dropdown-item" href="#" id="p6-export-song">
+                                <i class="bi bi-file-earmark-code me-2"></i>This song (<code>.pro6</code>)</a></li>
+                            <li><a class="dropdown-item" href="#" id="p6-export-songbook">
+                                <i class="bi bi-archive me-2"></i>This songbook (<code>.zip</code>)</a></li>
+                        </ul>
+                    </div>
                     <!-- OpenLP / OpenLyrics export (#1053): single song → .xml,
                          whole songbook → .osz (zip of OpenLyrics). Wired below. -->
                     <div class="btn-group">
@@ -1758,8 +1773,9 @@ try {
             bindFormat('openSong',   'OpenSong',   'btn-os-export', 'os-export-song', 'os-export-songbook');
             bindFormat('videoPsalm', 'VideoPsalm', 'btn-vp-export', 'vp-export-song', 'vp-export-songbook');
             bindFormat('freeShow',   'FreeShow',   'btn-fs-export', 'fs-export-song', 'fs-export-songbook');
-            bindFormat('openLyrics', 'OpenLP',     'btn-ol-export', 'ol-export-song', 'ol-export-songbook');
-            bindFormat('proclaim',   'Proclaim',   'btn-pc-export', 'pc-export-song', 'pc-export-songbook');
+            bindFormat('openLyrics',    'OpenLP',       'btn-ol-export', 'ol-export-song', 'ol-export-songbook');
+            bindFormat('proclaim',      'Proclaim',     'btn-pc-export', 'pc-export-song', 'pc-export-songbook');
+            bindFormat('proPresenter6', 'ProPresenter 6', 'btn-p6-export', 'p6-export-song', 'p6-export-songbook');
         });
     })();
     </script>

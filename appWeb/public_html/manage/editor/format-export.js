@@ -461,6 +461,103 @@
         return { filename: zipName, size: zip.length, count: files.length };
     }
 
+    /* ====================================================================
+     *  ProPresenter 6 (.pro6) — #889
+     * ====================================================================
+     * A .pro6 is an XML <RVPresentationDocument> whose slide text is stored
+     * as base64-encoded RTF inside <RVTextElement RTFData="…">. Each component
+     * becomes an <RVSlideGrouping> (label = "Verse 1"/"Chorus") with one
+     * slide. Non-ASCII characters are emitted as \uN RTF escapes so the
+     * base64 payload stays ASCII (btoa-safe) and round-trips with the iHymns
+     * ProPresenter 6 importer (#1057). */
+
+    function rtfEscape(text) {
+        var out = '';
+        for (var i = 0; i < text.length; i++) {
+            var ch = text[i];
+            var code = text.charCodeAt(i);
+            if (ch === '\\')      { out += '\\\\'; }
+            else if (ch === '{')  { out += '\\{'; }
+            else if (ch === '}')  { out += '\\}'; }
+            else if (code < 128)  { out += ch; }
+            else {
+                /* RTF \u is signed 16-bit; emit a trailing '?' fallback char
+                   (the importer's \uc1 default swallows one char after \u). */
+                var rtfCode = code > 32767 ? code - 65536 : code;
+                out += '\\u' + rtfCode + '?';
+            }
+        }
+        return out;
+    }
+
+    function buildPro6Rtf(lines) {
+        var body = (lines || []).map(rtfEscape).join('\\line ');
+        return '{\\rtf1\\ansi\\ansicpg1252{\\fonttbl\\f0\\fswiss Helvetica;}'
+             + '\\pard\\qc\\f0\\fs80 ' + body + '}';
+    }
+
+    function b64(asciiStr) {
+        if (typeof btoa === 'function') { return btoa(asciiStr); }
+        /* Node fallback (tests). */
+        return Buffer.from(asciiStr, 'binary').toString('base64');
+    }
+
+    function buildPro6(song) {
+        if (!song) { throw new Error('buildPro6: song required'); }
+        var groups = '';
+        (song.components || []).forEach(function (comp) {
+            var label = fsGroup(comp); // "Verse 1" / "Chorus" / …
+            var rtf = buildPro6Rtf(comp.lines || []);
+            groups += '    <RVSlideGrouping name="' + escapeXml(label) + '">\n'
+                   +  '      <array rvXMLIvarName="slides">\n'
+                   +  '        <RVDisplaySlide><array rvXMLIvarName="displayElements">\n'
+                   +  '          <RVTextElement displayName="" RTFData="' + b64(rtf) + '"/>\n'
+                   +  '        </array></RVDisplaySlide>\n'
+                   +  '      </array>\n'
+                   +  '    </RVSlideGrouping>\n';
+        });
+        var authors = [].concat(song.writers || [], song.composers || []).filter(Boolean).join(' / ');
+        var x = '<?xml version="1.0" encoding="utf-8"?>\n';
+        x += '<RVPresentationDocument height="1080" width="1920" versionNumber="600"';
+        x += ' CCLISongTitle="' + escapeXml(String(song.title || 'Untitled')) + '"';
+        if (authors)        { x += ' CCLIAuthor="' + escapeXml(authors) + '"'; }
+        if (song.copyright) { x += ' CCLIPublisher="' + escapeXml(String(song.copyright)) + '"'; }
+        if (song.ccli)      { x += ' CCLISongNumber="' + escapeXml(String(song.ccli)) + '"'; }
+        x += '>\n';
+        x += '  <array rvXMLIvarName="groups">\n' + groups + '  </array>\n';
+        x += '</RVPresentationDocument>\n';
+        return x;
+    }
+
+    function exportSongPro6(song) {
+        var xml = buildPro6(song);
+        var filename = baseFilename(song) + '.pro6';
+        download(xml, filename, 'application/xml');
+        return { filename: filename, size: xml.length };
+    }
+
+    function exportSongbookPro6(songs, options) {
+        options = options || {};
+        if (!Array.isArray(songs) || !songs.length) {
+            throw new Error('exportSongbookPro6: non-empty songs array required');
+        }
+        var enc = new TextEncoder();
+        var seen = Object.create(null);
+        var files = songs.map(function (song) {
+            var name = baseFilename(song) + '.pro6';
+            if (seen[name]) { name = baseFilename(song) + ' (' + (seen[name]++) + ').pro6'; }
+            else { seen[name] = 1; }
+            return { name: name, bytes: enc.encode(buildPro6(song)) };
+        });
+        var zip = buildZip(files);
+        var stem = options.songbookName
+            ? sanitizeFilename(options.songbookName + (options.songbookAbbr ? ' (' + options.songbookAbbr + ')' : ''))
+            : (options.songbookAbbr ? sanitizeFilename(options.songbookAbbr) : 'ProPresenter6 Export');
+        var zipName = stem + ' [ProPresenter6].zip';
+        download(zip, zipName, 'application/zip');
+        return { filename: zipName, size: zip.length, count: files.length };
+    }
+
     /* ---- public API ----------------------------------------------------- */
 
     var api = {
@@ -473,6 +570,11 @@
             build:           buildOpenLyrics,
             exportSong:      exportSongOpenLyrics,
             exportSongbook:  exportSongbookOpenLyrics
+        },
+        proPresenter6: {
+            build:           buildPro6,
+            exportSong:      exportSongPro6,
+            exportSongbook:  exportSongbookPro6
         },
         proclaim: {
             build:           buildProclaim,
