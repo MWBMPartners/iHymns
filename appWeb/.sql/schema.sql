@@ -1303,6 +1303,10 @@ CREATE TABLE IF NOT EXISTS tblSongRequests (
 
     CONSTRAINT fk_Requests_User
         FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE,
+    /* #1064 — ResolvedSongId is FK-enforced; nulled when its song is removed. */
+    CONSTRAINT fk_Requests_ResolvedSong
+        FOREIGN KEY (ResolvedSongId) REFERENCES tblSongs(SongId)
         ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -1549,7 +1553,11 @@ CREATE TABLE IF NOT EXISTS tblSongRevisions (
         ON DELETE SET NULL ON UPDATE CASCADE,
     CONSTRAINT fk_Revision_Reviewer
         FOREIGN KEY (ReviewedBy) REFERENCES tblUsers(Id)
-        ON DELETE SET NULL ON UPDATE CASCADE
+        ON DELETE SET NULL ON UPDATE CASCADE,
+    /* #1064 — revisions belong to their song; cascade-deleted with it. */
+    CONSTRAINT fk_Revisions_Song
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId)
+        ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -1889,7 +1897,14 @@ CREATE TABLE IF NOT EXISTS tblSongLinkSuggestionsDismissed (
     Reason          VARCHAR(255) NOT NULL DEFAULT '',
     UNIQUE KEY uk_pair (SongIdA, SongIdB),
     KEY idx_SongA (SongIdA),
-    KEY idx_SongB (SongIdB)
+    KEY idx_SongB (SongIdB),
+    /* #1064 — dismissed pairs are FK-enforced; cascade-deleted with either song. */
+    CONSTRAINT fk_DismissedSugg_A
+        FOREIGN KEY (SongIdA) REFERENCES tblSongs(SongId)
+        ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_DismissedSugg_B
+        FOREIGN KEY (SongIdB) REFERENCES tblSongs(SongId)
+        ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 

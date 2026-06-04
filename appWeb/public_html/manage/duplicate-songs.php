@@ -51,10 +51,12 @@ $csrf = csrfToken();
    SongId VALUES are always bound.
 
    MERGE_FK_TABLES_* are the 22 tables with an explicit FOREIGN KEY constraint
-   (single-column, then two-column relationship tables). MERGE_SOFT_REFS are
-   columns that reference a SongId WITHOUT an FK constraint — they would leave
-   dangling values after the duplicate is deleted (the DB can't cascade them),
-   so the merge must repoint them too. (#1064 review finding.) */
+   (single-column, then two-column relationship tables). MERGE_SOFT_REFS were
+   columns that referenced a SongId WITHOUT an FK (a #1064 review finding); they
+   now ALSO carry FK constraints (the FK-hardening migration), but the merge
+   still repoints them FIRST so the data MOVES to the survivor (a request's
+   resolution, a song's revision history, dismissed pairs) instead of being
+   cascade-deleted / nulled when the duplicate is removed. */
 const MERGE_FK_TABLES_SINGLE = [
     'tblSongbookEntries', 'tblSongWriters', 'tblSongComposers', 'tblSongArrangers',
     'tblSongAdaptors', 'tblSongTranslators', 'tblSongArtists', 'tblSongComponents',

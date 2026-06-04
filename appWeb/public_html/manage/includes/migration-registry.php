@@ -1487,4 +1487,28 @@ return [
         ],
         'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongs', 'Isrc'),
     ],
+
+    'song-softref-fks' => [
+        'script' => 'migrate-song-softref-fks.php',
+        'card' => [
+            'title'  => 'Harden soft SongId references (FKs) (#1064)',
+            'body'   => 'Adds real FOREIGN KEY constraints to the three columns that referenced'
+                      . ' <code>tblSongs.SongId</code> without one'
+                      . ' (<code>tblSongRequests.ResolvedSongId</code> → SET NULL;'
+                      . ' <code>tblSongRevisions.SongId</code> and'
+                      . ' <code>tblSongLinkSuggestionsDismissed.SongIdA/B</code> → CASCADE), after'
+                      . ' cleaning any dangling values. The database now guarantees no orphaned'
+                      . ' SongId references. Idempotent.',
+            'button' => 'Run Soft-Reference FK Hardening',
+        ],
+        /* Pending until the representative FK constraint exists in the live schema. */
+        'probe' => static function (\mysqli $db): bool {
+            $res = $db->query(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+                  WHERE CONSTRAINT_SCHEMA = DATABASE()
+                    AND CONSTRAINT_NAME = 'fk_Revisions_Song' LIMIT 1"
+            );
+            return !($res && $res->num_rows > 0);
+        },
+    ],
 ];
