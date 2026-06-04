@@ -71,6 +71,30 @@
         throw new Error('ZIP writer unavailable (propresenter-export.js not loaded).');
     }
 
+    /* ---- slide splitting (#1065) ---------------------------------------- */
+
+    /* Resolve the effective "max lines per slide" from an options object.
+       0 / unset / invalid → 0 (no split: each component stays one slide). */
+    function maxLinesOf(options) {
+        var n = parseInt((options && options.maxLinesPerSlide), 10);
+        return (!isNaN(n) && n > 0) ? n : 0;
+    }
+
+    /* Chunk a component's lines into slides of at most `maxLines` lines for
+       presentation/lower-third export. maxLines <= 0 → a single chunk (the
+       whole component, today's behaviour). Always returns at least one
+       chunk so a component never vanishes. Hard chunking by count is the
+       predictable "no more than X lines per slide" the request asked for. */
+    function chunkLines(lines, maxLines) {
+        var src = lines || [];
+        if (!maxLines || maxLines < 1) { return [src.slice()]; }
+        var out = [];
+        for (var i = 0; i < src.length; i += maxLines) {
+            out.push(src.slice(i, i + maxLines));
+        }
+        return out.length ? out : [[]];
+    }
+
     /* ====================================================================
      *  OpenSong (.xml) — #1054
      * ====================================================================
@@ -91,17 +115,24 @@
         return '[' + letter + n + ']';
     }
 
-    function buildOpenSong(song) {
+    function buildOpenSong(song, options) {
         if (!song) { throw new Error('buildOpenSong: song required'); }
+        var maxLines = maxLinesOf(options);
         var authors = []
             .concat(song.writers || [], song.composers || [])
             .filter(Boolean);
         var lyrics = '';
         (song.components || []).forEach(function (comp) {
             lyrics += openSongMarker(comp) + '\n';
-            (comp.lines || []).forEach(function (line) {
-                /* leading space = a lyric line (vs a chord/comment row). */
-                lyrics += ' ' + String(line == null ? '' : line) + '\n';
+            /* Split into slides of <= maxLines; OpenSong separates slides
+               within a section with a blank line. */
+            var chunks = chunkLines(comp.lines, maxLines);
+            chunks.forEach(function (chunk, ci) {
+                if (ci > 0) { lyrics += '\n'; } /* slide break */
+                chunk.forEach(function (line) {
+                    /* leading space = a lyric line (vs a chord/comment row). */
+                    lyrics += ' ' + String(line == null ? '' : line) + '\n';
+                });
             });
         });
 
@@ -119,8 +150,8 @@
         return x;
     }
 
-    function exportSongOpenSong(song) {
-        var xml = buildOpenSong(song);
+    function exportSongOpenSong(song, options) {
+        var xml = buildOpenSong(song, options);
         var filename = baseFilename(song) + '.xml';
         download(xml, filename, 'application/xml');
         return { filename: filename, size: xml.length };
@@ -138,7 +169,7 @@
             /* de-dupe identical filenames within the bundle */
             if (seen[name]) { name = baseFilename(song) + ' (' + (seen[name]++) + ').xml'; }
             else { seen[name] = 1; }
-            return { name: name, bytes: enc.encode(buildOpenSong(song)) };
+            return { name: name, bytes: enc.encode(buildOpenSong(song, options)) };
         });
         var zip = buildZip(files);
         var stem = options.songbookName
@@ -170,13 +201,21 @@
         return letter + n;
     }
 
-    function buildVideoPsalm(song) {
+    function buildVideoPsalm(song, options) {
         if (!song) { throw new Error('buildVideoPsalm: song required'); }
+        var maxLines = maxLinesOf(options);
+        var verses = [];
+        (song.components || []).forEach(function (comp) {
+            var tag = vpTag(comp);
+            /* Each slide of <= maxLines becomes its own Verses entry sharing
+               the tag (VideoPsalm projects one verse-entry per slide). */
+            chunkLines(comp.lines, maxLines).forEach(function (chunk) {
+                verses.push({ Tag: tag, Text: chunk.join('\n') });
+            });
+        });
         var s = {
             Text:   String(song.title || 'Untitled'),
-            Verses: (song.components || []).map(function (comp) {
-                return { Tag: vpTag(comp), Text: (comp.lines || []).join('\n') };
-            })
+            Verses: verses
         };
         if (song.number != null && song.number !== '') {
             var n = parseInt(song.number, 10);
@@ -187,8 +226,8 @@
         return s;
     }
 
-    function exportSongVideoPsalm(song) {
-        var book = { Text: String(song.title || 'Untitled'), Songs: [buildVideoPsalm(song)] };
+    function exportSongVideoPsalm(song, options) {
+        var book = { Text: String(song.title || 'Untitled'), Songs: [buildVideoPsalm(song, options)] };
         var json = JSON.stringify(book, null, 2);
         var filename = baseFilename(song) + '.json';
         download(json, filename, 'application/json');
@@ -202,7 +241,7 @@
         }
         var book = {
             Text:  String(options.songbookName || options.songbookAbbr || 'VideoPsalm Songbook'),
-            Songs: songs.map(buildVideoPsalm)
+            Songs: songs.map(function (song) { return buildVideoPsalm(song, options); })
         };
         var json = JSON.stringify(book, null, 2);
         var stem = options.songbookName
@@ -239,25 +278,31 @@
         return base + n;
     }
 
-    function buildFreeShow(song) {
+    function buildFreeShow(song, options) {
         if (!song) { throw new Error('buildFreeShow: song required'); }
+        var maxLines = maxLinesOf(options);
         var slides = {};
         var layoutSlides = [];
         (song.components || []).forEach(function (comp) {
-            var sid = fsId();
-            slides[sid] = {
-                group: fsGroup(comp),
-                color: null,
-                settings: {},
-                notes: '',
-                items: [{
-                    style: 'top:120px;left:50px;height:840px;width:1820px;',
-                    lines: (comp.lines || []).map(function (line) {
-                        return { align: '', text: [{ value: String(line == null ? '' : line), style: '' }] };
-                    })
-                }]
-            };
-            layoutSlides.push({ id: sid });
+            var group = fsGroup(comp);
+            /* Each slide of <= maxLines becomes its own FreeShow slide,
+               all sharing the component's group label. */
+            chunkLines(comp.lines, maxLines).forEach(function (chunk) {
+                var sid = fsId();
+                slides[sid] = {
+                    group: group,
+                    color: null,
+                    settings: {},
+                    notes: '',
+                    items: [{
+                        style: 'top:120px;left:50px;height:840px;width:1820px;',
+                        lines: chunk.map(function (line) {
+                            return { align: '', text: [{ value: String(line == null ? '' : line), style: '' }] };
+                        })
+                    }]
+                };
+                layoutSlides.push({ id: sid });
+            });
         });
         var layoutId = fsId();
         var authors = [].concat(song.writers || [], song.composers || []).filter(Boolean).join(', ');
@@ -280,8 +325,8 @@
         return [fsId(), show];
     }
 
-    function exportSongFreeShow(song) {
-        var json = JSON.stringify(buildFreeShow(song));
+    function exportSongFreeShow(song, options) {
+        var json = JSON.stringify(buildFreeShow(song, options));
         var filename = baseFilename(song) + '.show';
         download(json, filename, 'application/json');
         return { filename: filename, size: json.length };
@@ -298,7 +343,7 @@
             var name = baseFilename(song) + '.show';
             if (seen[name]) { name = baseFilename(song) + ' (' + (seen[name]++) + ').show'; }
             else { seen[name] = 1; }
-            return { name: name, bytes: enc.encode(JSON.stringify(buildFreeShow(song))) };
+            return { name: name, bytes: enc.encode(JSON.stringify(buildFreeShow(song, options))) };
         });
         var zip = buildZip(files);
         var stem = options.songbookName
@@ -331,8 +376,9 @@
         return letter + n;
     }
 
-    function buildOpenLyrics(song) {
+    function buildOpenLyrics(song, options) {
         if (!song) { throw new Error('buildOpenLyrics: song required'); }
+        var maxLines = maxLinesOf(options);
         var comps = song.components || [];
         var names = [];
         var verseXml = '';
@@ -341,11 +387,16 @@
             vIdx++;
             var vname = olVerseName(comp, vIdx);
             names.push(vname);
-            var body = (comp.lines || []).map(function (line) {
-                return escapeXml(String(line == null ? '' : line));
-            }).join('<br/>');
+            /* OpenLyrics represents slides within a verse as multiple <lines>
+               blocks — one per chunk of <= maxLines. */
+            var blocks = chunkLines(comp.lines, maxLines).map(function (chunk) {
+                var body = chunk.map(function (line) {
+                    return escapeXml(String(line == null ? '' : line));
+                }).join('<br/>');
+                return '      <lines>' + body + '</lines>\n';
+            }).join('');
             verseXml += '    <verse name="' + escapeXml(vname) + '">\n'
-                     +  '      <lines>' + body + '</lines>\n'
+                     +  blocks
                      +  '    </verse>\n';
         });
 
@@ -372,8 +423,8 @@
         return x;
     }
 
-    function exportSongOpenLyrics(song) {
-        var xml = buildOpenLyrics(song);
+    function exportSongOpenLyrics(song, options) {
+        var xml = buildOpenLyrics(song, options);
         var filename = baseFilename(song) + '.xml';
         download(xml, filename, 'application/xml');
         return { filename: filename, size: xml.length };
@@ -390,7 +441,7 @@
             var name = baseFilename(song) + '.xml';
             if (seen[name]) { name = baseFilename(song) + ' (' + (seen[name]++) + ').xml'; }
             else { seen[name] = 1; }
-            return { name: name, bytes: enc.encode(buildOpenLyrics(song)) };
+            return { name: name, bytes: enc.encode(buildOpenLyrics(song, options)) };
         });
         var zip = buildZip(files);
         var stem = options.songbookName
@@ -502,17 +553,22 @@
         return Buffer.from(asciiStr, 'binary').toString('base64');
     }
 
-    function buildPro6(song) {
+    function buildPro6(song, options) {
         if (!song) { throw new Error('buildPro6: song required'); }
+        var maxLines = maxLinesOf(options);
         var groups = '';
         (song.components || []).forEach(function (comp) {
             var label = fsGroup(comp); // "Verse 1" / "Chorus" / …
-            var rtf = buildPro6Rtf(comp.lines || []);
+            /* Each slide of <= maxLines becomes its own <RVDisplaySlide>
+               within the grouping. */
+            var slidesXml = chunkLines(comp.lines, maxLines).map(function (chunk) {
+                return '        <RVDisplaySlide><array rvXMLIvarName="displayElements">\n'
+                     + '          <RVTextElement displayName="" RTFData="' + b64(buildPro6Rtf(chunk)) + '"/>\n'
+                     + '        </array></RVDisplaySlide>\n';
+            }).join('');
             groups += '    <RVSlideGrouping name="' + escapeXml(label) + '">\n'
                    +  '      <array rvXMLIvarName="slides">\n'
-                   +  '        <RVDisplaySlide><array rvXMLIvarName="displayElements">\n'
-                   +  '          <RVTextElement displayName="" RTFData="' + b64(rtf) + '"/>\n'
-                   +  '        </array></RVDisplaySlide>\n'
+                   +  slidesXml
                    +  '      </array>\n'
                    +  '    </RVSlideGrouping>\n';
         });
@@ -529,8 +585,8 @@
         return x;
     }
 
-    function exportSongPro6(song) {
-        var xml = buildPro6(song);
+    function exportSongPro6(song, options) {
+        var xml = buildPro6(song, options);
         var filename = baseFilename(song) + '.pro6';
         download(xml, filename, 'application/xml');
         return { filename: filename, size: xml.length };
@@ -547,7 +603,7 @@
             var name = baseFilename(song) + '.pro6';
             if (seen[name]) { name = baseFilename(song) + ' (' + (seen[name]++) + ').pro6'; }
             else { seen[name] = 1; }
-            return { name: name, bytes: enc.encode(buildPro6(song)) };
+            return { name: name, bytes: enc.encode(buildPro6(song, options)) };
         });
         var zip = buildZip(files);
         var stem = options.songbookName

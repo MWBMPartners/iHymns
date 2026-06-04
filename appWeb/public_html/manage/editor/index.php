@@ -421,6 +421,18 @@ try {
                                 <i class="bi bi-archive me-2"></i>This songbook (<code>.zip</code>)</a></li>
                         </ul>
                     </div>
+                    <!-- #1065 — max lyric lines per slide for the presentation
+                         exports above (PP6 / FreeShow / OpenLP / OpenSong /
+                         VideoPsalm). The value is used for the next export AND
+                         persisted to localStorage as the user's default.
+                         0 = keep each verse whole. -->
+                    <span class="input-group input-group-sm align-middle ms-1" style="width:auto;display:inline-flex"
+                          title="Max lyric lines per slide for presentation exports (PP6 / FreeShow / OpenLP / OpenSong / VideoPsalm). 0 = keep each verse on one slide. Your choice is remembered as the default for next time.">
+                        <span class="input-group-text py-0"><i class="bi bi-distribute-vertical me-1"></i>Lines/slide</span>
+                        <input type="number" class="form-control py-0" id="export-lines-per-slide"
+                               min="0" max="20" step="1" value="0" style="width:4.5rem"
+                               aria-label="Maximum lyric lines per slide on export">
+                    </span>
                     <button type="button" class="btn btn-sm btn-outline-danger" id="btn-delete-song" title="Delete selected song">
                         <i class="bi bi-trash me-1"></i>Delete
                     </button>
@@ -1729,6 +1741,24 @@ try {
             if (!currentSongId) { return null; }
             return (songData.songs || []).find(function (s) { return s.id === currentSongId; }) || null;
         }
+        /* #1065 — max lyric lines per slide for presentation exports. The
+           toolbar input is BOTH the per-export value and (persisted to
+           localStorage on change) the user's default. 0 = keep verses whole. */
+        var LINES_PER_SLIDE_KEY = 'ihymns_export_lines_per_slide';
+        function linesPerSlide() {
+            var el = document.getElementById('export-lines-per-slide');
+            if (el) {
+                var v = parseInt(el.value, 10);
+                return (!isNaN(v) && v > 0) ? v : 0;
+            }
+            var stored = parseInt(window.localStorage.getItem(LINES_PER_SLIDE_KEY), 10);
+            return (!isNaN(stored) && stored > 0) ? stored : 0;
+        }
+        function exportOptions(extra) {
+            var o = extra || {};
+            o.maxLinesPerSlide = linesPerSlide();
+            return o;
+        }
         async function exportSong(formatKey) {
             var song = currentFullSong();
             if (!song) { notify('Open a song first, then export it.', 'warning'); return; }
@@ -1736,7 +1766,7 @@ try {
                 await _loadSongsFull([currentSongId]);
                 song = currentFullSong() || song;
             }
-            var r = window.iHymnsFormatExport[formatKey].exportSong(song);
+            var r = window.iHymnsFormatExport[formatKey].exportSong(song, exportOptions());
             notify('Exported ' + r.filename, 'success');
         }
         async function exportSongbook(formatKey, label) {
@@ -1749,10 +1779,10 @@ try {
             var songs = payload.songs || [];
             if (!songs.length) { notify('Songbook ' + abbr + ' has no songs to export.', 'warning'); return; }
             var sb = payload.songbook || {};
-            var r = window.iHymnsFormatExport[formatKey].exportSongbook(songs, {
+            var r = window.iHymnsFormatExport[formatKey].exportSongbook(songs, exportOptions({
                 songbookAbbr: abbr,
                 songbookName: sb.name || sb.Name || abbr
-            });
+            }));
             notify('Exported ' + r.count + ' song' + (r.count === 1 ? '' : 's') + ' → ' + r.filename, 'success');
         }
         function bindFormat(formatKey, label, btnId, songItemId, bookItemId) {
@@ -1770,6 +1800,19 @@ try {
             if (btn && window.iHymnsFormatExport && window.iHymnsFormatExport[formatKey]) { btn.disabled = false; }
         }
         document.addEventListener('DOMContentLoaded', function () {
+            /* #1065 — hydrate the lines-per-slide input from the saved default
+               and persist any change back as the new default. */
+            var lps = document.getElementById('export-lines-per-slide');
+            if (lps) {
+                var saved = parseInt(window.localStorage.getItem(LINES_PER_SLIDE_KEY), 10);
+                if (!isNaN(saved) && saved >= 0) { lps.value = String(saved); }
+                lps.addEventListener('change', function () {
+                    var v = parseInt(lps.value, 10);
+                    if (isNaN(v) || v < 0) { v = 0; lps.value = '0'; }
+                    if (v > 20) { v = 20; lps.value = '20'; }
+                    try { window.localStorage.setItem(LINES_PER_SLIDE_KEY, String(v)); } catch (_e) {}
+                });
+            }
             bindFormat('openSong',   'OpenSong',   'btn-os-export', 'os-export-song', 'os-export-songbook');
             bindFormat('videoPsalm', 'VideoPsalm', 'btn-vp-export', 'vp-export-song', 'vp-export-songbook');
             bindFormat('freeShow',   'FreeShow',   'btn-fs-export', 'fs-export-song', 'fs-export-songbook');
