@@ -672,6 +672,111 @@ paths:
                     name: Christian Praise
                     songCount: 650
 
+  /api.php?action=lyrics_ingest:
+    post:
+      operationId: lyricsIngest
+      tags: [Lyrics]
+      summary: Ingest timed lyrics (TTML with word + syllable timing)
+      description: |
+        Accept Apple-Music-style **TTML** (line / word / syllable timing) for a
+        song and store it in the normalized lyrics schema (`tblLyrics` →
+        `tblLyricLines` → `tblLyricWords` → `tblLyricSyllables`, #1047 / #141).
+        Intended for an external pusher such as MeedyaDL (#907).
+
+        - **Auth:** an API key with scope `lyrics:ingest` (mint at
+          `/manage/api-keys`). Send `Authorization: Bearer ihk_live_…` or
+          `X-API-Key: …`.
+        - Ingested lyrics default to `status: pending_review` — a curator
+          approves before they go live.
+        - Re-ingesting the same `(songId, source)` **replaces** its rows
+          (no duplication).
+        - Body is JSON `{ songId, ttml, … }`, or raw TTML with `?songId=`.
+      security:
+        - ingestApiKey: []
+        - ingestApiKeyHeader: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [lyrics_ingest]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, ttml]
+              properties:
+                songId:
+                  type: string
+                  description: tblSongs.SongId the lyrics belong to.
+                  example: CP-0271
+                ttml:
+                  type: string
+                  description: The TTML document (Apple-Music word/syllable timing).
+                source:
+                  type: string
+                  default: applemusic-ttml
+                  description: Provenance label; unique per song with songId.
+                sourceUrl:
+                  type: string
+                isPrimary:
+                  type: boolean
+                  description: Make these the canonical lyrics (demotes any other primary).
+                isExplicit:
+                  type: boolean
+                status:
+                  type: string
+                  enum: [draft, pending_review, approved, rejected, archived]
+                  default: pending_review
+          application/xml:
+            schema:
+              type: string
+              description: Raw TTML body (use ?songId=… &source=… in the query).
+      responses:
+        "200":
+          description: Lyrics ingested
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  songId: { type: string }
+                  lyricsId: { type: integer }
+                  lines: { type: integer }
+                  words: { type: integer }
+                  syllables: { type: integer }
+                  hasTiming: { type: boolean }
+                  hasWordTiming: { type: boolean }
+                  hasSyllableTiming: { type: boolean }
+                  language: { type: string, nullable: true }
+                  status: { type: string }
+              example:
+                ok: true
+                songId: CP-0271
+                lyricsId: 42
+                lines: 24
+                words: 180
+                syllables: 96
+                hasTiming: true
+                hasWordTiming: true
+                hasSyllableTiming: true
+                language: en
+                status: pending_review
+        "400":
+          description: Missing songId/ttml or bad request
+        "401":
+          description: Missing / invalid / unscoped API key
+        "405":
+          description: POST required
+        "413":
+          description: Payload exceeds the 4 MiB limit
+        "422":
+          description: TTML parse / write failure (e.g. not a TTML document, unknown song)
+
   /api.php?action=songs_index:
     get:
       operationId: songsIndex
@@ -7986,6 +8091,23 @@ components:
         `getAuthenticatedUser()` when no `Authorization` header is
         present. Either scheme is accepted wherever security is
         declared with both entries.
+    ingestApiKey:
+      type: http
+      scheme: bearer
+      description: |
+        Machine-to-machine API key (#1064) for external services (e.g.
+        MeedyaDL) — NOT a user token. A global admin mints it at
+        `/manage/api-keys`; it is stored only as a SHA-256 hash + a short
+        prefix (`tblApiKeys`) and carries a space-separated scope (today
+        `lyrics:ingest`). Send it as `Authorization: Bearer ihk_live_…` or,
+        equivalently, the `X-API-Key` header.
+    ingestApiKeyHeader:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        Alternative to the Bearer header for the same machine-to-machine
+        key — `X-API-Key: ihk_live_…`.
 
   schemas:
     # -------------------------------------------------------------------------
