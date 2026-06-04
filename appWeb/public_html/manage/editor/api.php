@@ -2539,6 +2539,9 @@ switch ($action) {
             echo json_encode(['error' => 'POST method required.']);
             break;
         }
+        /* #1051 — opt-in title dedupe (default off = INSERT-only, backward
+           compatible for direct API callers that don't send the field). */
+        _bulkImport_dedupeMode((string)($_POST['dedupeMode'] ?? 'off'));
         if (!class_exists('ZipArchive')) {
             http_response_code(500);
             echo json_encode(['error' => 'Server is missing the PHP zip extension.']);
@@ -2870,6 +2873,7 @@ switch ($action) {
             echo json_encode(['error' => 'POST method required.']);
             break;
         }
+        _bulkImport_dedupeMode((string)($_POST['dedupeMode'] ?? 'off'));  /* #1051 */
         if (!isset($_FILES['videopsalm']) || ($_FILES['videopsalm']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
             $err = $_FILES['videopsalm']['error'] ?? UPLOAD_ERR_NO_FILE;
             $msg = 'Upload failed.';
@@ -3959,6 +3963,21 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
             return ['skipped', null];
         }
 
+        /* #1051 — title-level dedupe. When the importer opted in, a
+           normalised-title match within the same songbook counts as an
+           existing song and is skipped — the SongId check above only
+           catches the SAME numbering scheme, so a song imported under a
+           different number would otherwise duplicate. Excludes the same
+           SongId (already handled above). Centralised here so EVERY
+           importer (OpenSong / VideoPsalm / OpenLP / …) inherits it. */
+        if (_bulkImport_dedupeMode() === 'skip-title') {
+            foreach (_bulkImport_findDuplicateCandidates($db, $songbookAbbr, $title) as $cand) {
+                if ($cand['SongId'] !== $songId) {
+                    return ['skipped', null];
+                }
+            }
+        }
+
         $db->begin_transaction();
 
         /* Plain INSERT — no ON DUPLICATE KEY clause, because we
@@ -4164,6 +4183,23 @@ function _bulkImport_findDuplicateCandidates(\mysqli $db, string $songbookAbbr, 
         }
     }
     return $matches;
+}
+
+/**
+ * Per-request dedupe mode for the current import (#1051). Set once by the
+ * import action handler from the posted `dedupeMode`, read by
+ * _bulkImport_saveSong() so every importer honours it without threading the
+ * value through each parse loop. Values: 'off' (default — INSERT-only) |
+ * 'skip-title' (skip a normalised-title match in the same songbook).
+ * (Future: 'replace-title' / interactive merge.)
+ */
+function _bulkImport_dedupeMode(?string $set = null): string
+{
+    static $mode = 'off';
+    if ($set !== null) {
+        $mode = in_array($set, ['off', 'skip-title'], true) ? $set : 'off';
+    }
+    return $mode;
 }
 
 /**
