@@ -3506,7 +3506,7 @@ function exportCurrentSong() {
 function importJSON() {
     var input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.json,.zip,.xml,.pro6,application/json,application/zip,text/xml,application/xml';
+    input.accept = '.json,.zip,.xml,.pro6,.db,application/json,application/zip,text/xml,application/xml';
 
     input.addEventListener('change', function () {
         if (!input.files || !input.files[0]) return; // user cancelled
@@ -3525,11 +3525,17 @@ function importJSON() {
             /* ProPresenter 6 single-song export (#1057). A folder of .pro6
                files exported as a .zip uses the ZIP path above instead. */
             importPro6(file);
+        } else if (lower.endsWith('.db')) {
+            /* EasyWorship Songs.db (#1058). A two-file EW export (Songs.db +
+               SongWords.db) is zipped and uses the ZIP path above, which the
+               server auto-routes to EasyWorship on detecting a Songs.db. */
+            importEasyWorship(file);
         } else {
             showToast(
                 'Unsupported file type. Choose a .json corpus, a .zip archive ' +
-                '(.SourceSongData / OpenSong / OpenLyrics / ProPresenter 6), an ' +
-                'OpenLyrics .xml, or a ProPresenter .pro6.',
+                '(.SourceSongData / OpenSong / OpenLyrics / ProPresenter 6 / ' +
+                'EasyWorship), an OpenLyrics .xml, a ProPresenter .pro6, or an ' +
+                'EasyWorship Songs.db.',
                 'danger'
             );
         }
@@ -3689,6 +3695,22 @@ function importPro6(file) {
         action:     'bulk_import_pro6',
         field:      'pro6',
         consoleTag: 'bulk_import_pro6',
+    });
+}
+
+/**
+ * importEasyWorship(file) — EasyWorship 6/7 SQLite import (#1058).
+ * Accepts a Songs.db directly. An EW export that ships Songs.db +
+ * SongWords.db as a .zip goes through importBulkZip() instead — the server
+ * detects a Songs.db inside the archive and routes it here automatically.
+ * Lyrics are RTF inside the SQLite db; songs file under an "EasyWorship
+ * Import" (EW) songbook.
+ */
+function importEasyWorship(file) {
+    importSingleFileFormat(file, {
+        action:     'bulk_import_easyworship',
+        field:      'easyworship',
+        consoleTag: 'bulk_import_easyworship',
     });
 }
 

@@ -2585,6 +2585,42 @@ switch ($action) {
         $origName = (string)($_FILES['zip']['name'] ?? 'upload.zip');
         $userId   = isset($currentUser['id']) ? (int)$currentUser['id'] : null;
 
+        /* EasyWorship (#1058): an EW export zip carries a Songs.db (+ maybe
+           SongWords.db) rather than the .SourceSongData / OpenSong / OpenLyrics
+           song-file layout. Detect it and hand the whole archive to the
+           EasyWorship SQLite reader instead of the per-entry loop, so an EW
+           two-file export "just works" through this same Import button. */
+        try {
+            $ewProbe = new \ZipArchive();
+            if ($ewProbe->open($tmpPath) === true) {
+                $hasSongsDb = false;
+                for ($zi = 0; $zi < $ewProbe->numFiles; $zi++) {
+                    if (strtolower(basename((string)$ewProbe->getNameIndex($zi))) === 'songs.db') {
+                        $hasSongsDb = true;
+                        break;
+                    }
+                }
+                $ewProbe->close();
+                if ($hasSongsDb) {
+                    $summary = _bulkImport_processEasyWorship($tmpPath, $origName);
+                    if (!($summary['ok'] ?? false)) {
+                        http_response_code(400);
+                    } elseif (($summary['songs_created'] ?? 0) > 0) {
+                        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+                            . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                        $_maint = songbookMaintenanceRun(getDbMysqli(), 'bulk_import_zip_easyworship');
+                        if ($_maint['rewritten'] > 0 || $_maint['deferred']) {
+                            $summary['maintenance'] = $_maint;
+                        }
+                    }
+                    echo json_encode($summary, JSON_UNESCAPED_UNICODE);
+                    break;
+                }
+            }
+        } catch (\Throwable $ewE) {
+            error_log('[bulk_import_zip] EasyWorship probe failed: ' . $ewE->getMessage());
+        }
+
         /* Pre-flight: tblBulkImportJobs must exist. If migrate-bulk-
            import-jobs.php hasn't run yet we fall back to the
            synchronous behaviour and the response shape stays the
@@ -3074,6 +3110,74 @@ switch ($action) {
         } catch (\Throwable $e) {
             http_response_code(500);
             error_log('[bulk_import_pro6] ' . $e->getMessage());
+            echo json_encode(['error' => 'Import failed: ' . $e->getMessage()]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * BULK_IMPORT_EASYWORSHIP — EasyWorship 6/7 SQLite import (#1058).
+     *
+     * POST /manage/editor/api?action=bulk_import_easyworship
+     *   multipart field "easyworship" = a Songs.db, OR a .zip containing
+     *   Songs.db (+ optional SongWords.db).
+     *
+     * Lyrics are RTF inside a SQLite `word` table; songs file under an
+     * "EasyWorship Import" (EW) songbook. Insert-only; honours #1051
+     * dedupeMode. Unlike the XML/JSON paths this passes the temp-file PATH
+     * to the processor (SQLite3 opens a file, not a string).
+     * ----------------------------------------------------------------- */
+    case 'bulk_import_easyworship':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        _bulkImport_dedupeMode((string)($_POST['dedupeMode'] ?? 'off'));  /* #1051 */
+        if (!isset($_FILES['easyworship']) || ($_FILES['easyworship']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $err = $_FILES['easyworship']['error'] ?? UPLOAD_ERR_NO_FILE;
+            $msg = 'Upload failed.';
+            if ($err === UPLOAD_ERR_INI_SIZE || $err === UPLOAD_ERR_FORM_SIZE) {
+                $msg = 'Uploaded file is larger than the server limit.';
+            } elseif ($err === UPLOAD_ERR_NO_FILE) {
+                $msg = 'No file received — expected a multipart upload with an "easyworship" field.';
+            }
+            http_response_code(400);
+            echo json_encode(['error' => $msg, 'phpError' => $err]);
+            break;
+        }
+
+        /* A full EasyWorship library can be larger than a single song file;
+           allow up to 64 MiB for the SQLite db / zip. */
+        $sizeBytes = (int)($_FILES['easyworship']['size'] ?? 0);
+        if ($sizeBytes > 64 * 1024 * 1024) {
+            http_response_code(413);
+            echo json_encode(['error' => 'Uploaded EasyWorship file exceeds the 64 MiB import limit.']);
+            break;
+        }
+
+        try {
+            $tmpPath  = (string)$_FILES['easyworship']['tmp_name'];
+            $origName = (string)($_FILES['easyworship']['name'] ?? 'Songs.db');
+            if (!is_uploaded_file($tmpPath)) {
+                http_response_code(400);
+                echo json_encode(['error' => 'Invalid upload.']);
+                break;
+            }
+            $summary = _bulkImport_processEasyWorship($tmpPath, $origName);
+            if (!($summary['ok'] ?? false)) {
+                http_response_code(400);
+            } elseif (($summary['songs_created'] ?? 0) > 0) {
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+                    . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                $_maint = songbookMaintenanceRun(getDbMysqli(), 'bulk_import_easyworship');
+                if ($_maint['rewritten'] > 0 || $_maint['deferred']) {
+                    $summary['maintenance'] = $_maint;
+                }
+            }
+            echo json_encode($summary, JSON_UNESCAPED_UNICODE);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[bulk_import_easyworship] ' . $e->getMessage());
             echo json_encode(['error' => 'Import failed: ' . $e->getMessage()]);
         }
         break;
@@ -6374,6 +6478,297 @@ function _bulkImport_processPro6(string $body, ?string $filenameHint = null): ar
         'songs_skipped_existing' => $songsSkipped,
         'songs_failed'           => $songsFailed,
         'parsed_by_format'       => ['propresenter6' => $songsCreated + $songsSkipped],
+        'errors'                 => $errors,
+    ];
+}
+
+/* ===========================================================================
+ *  EasyWorship import (#1058)
+ * ---------------------------------------------------------------------------
+ * EasyWorship 6/7 stores its library in SQLite. The song metadata lives in
+ * `Songs.db` (table `song`: title / author / copyright / reference_number)
+ * and the lyrics in a `word` table — inline in Songs.db on some builds, or in
+ * a sibling `SongWords.db` (table `word`: song_id, words) on others. The
+ * `words` column is RTF, decoded with the shared _bulkImport_rtfToText().
+ *
+ * Upload either a single Songs.db, or a .zip containing Songs.db (+ optional
+ * SongWords.db). We read with the SQLite3 class (NOT PDO — this is an upload
+ * parser, not the app's MySQL data layer). EasyWorship has no songbook, so
+ * songs are filed under an "EasyWorship Import" (EW) songbook.
+ * =========================================================================== */
+
+/**
+ * Split decoded EasyWorship lyric text into components. EW separates slides
+ * with a blank line; a leading "Verse 1"/"Chorus" label line (when present)
+ * sets the component type/number, otherwise blocks become sequential verses.
+ */
+function _bulkImport_easyWorshipSplitComponents(string $text): array
+{
+    $text   = str_replace(["\r\n", "\r"], "\n", $text);
+    $blocks = preg_split('/\n[ \t]*\n+/', trim($text)) ?: [];
+    $components = [];
+    $vnum = 0;
+    foreach ($blocks as $block) {
+        $lines = array_map('rtrim', explode("\n", $block));
+        while (!empty($lines) && trim($lines[0]) === '')          { array_shift($lines); }
+        while (!empty($lines) && trim((string)end($lines)) === '') { array_pop($lines); }
+        if (empty($lines)) { continue; }
+
+        $type = 'verse';
+        $num  = ++$vnum;
+        if (preg_match('/^(verse|chorus|refrain|bridge|pre[- ]?chorus|intro|outro|ending|tag)\s*(\d*)\s*$/i', trim($lines[0]), $m)) {
+            $word = strtolower($m[1]);
+            $word = ($word === 'prechorus' || $word === 'pre chorus') ? 'pre-chorus' : $word;
+            $word = ($word === 'ending' || $word === 'tag') ? 'outro' : $word;
+            $type = _bulkImport_componentTypeFor($word);
+            $num  = $m[2] !== '' ? (int)$m[2] : 0;
+            array_shift($lines);
+            if (empty($lines)) { continue; }
+        }
+        $components[] = ['type' => $type, 'number' => $num, 'lines' => $lines];
+    }
+    return $components;
+}
+
+/**
+ * Return the subset of $wanted columns that actually exist on $table, so a
+ * SELECT survives EasyWorship's schema drift across versions.
+ */
+function _bulkImport_sqliteColumns(\SQLite3 $db, string $table): array
+{
+    $cols = [];
+    $safeTable = preg_replace('/[^A-Za-z0-9_]/', '', $table);
+    $res = @$db->query('PRAGMA table_info("' . $safeTable . '")');
+    if ($res === false) { return $cols; }
+    while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+        $cols[strtolower((string)$row['name'])] = (string)$row['name'];
+    }
+    return $cols;
+}
+
+/**
+ * Read an EasyWorship Songs.db (+ optional SongWords.db) into the neutral
+ * parsed-song structures _bulkImport_assembleSong() consumes.
+ *
+ * @return array{0: array, 1: ?string}  [parsedSongs[], errorReason]
+ */
+function _bulkImport_easyWorshipReadDb(string $songsDbPath, ?string $songWordsDbPath = null): array
+{
+    if (!class_exists('SQLite3')) {
+        return [[], 'the SQLite3 PHP extension is not available on this server'];
+    }
+    try {
+        $songsDb = new \SQLite3($songsDbPath, SQLITE3_OPEN_READONLY);
+    } catch (\Throwable $e) {
+        return [[], 'could not open Songs.db: ' . $e->getMessage()];
+    }
+    $songsDb->busyTimeout(2000);
+
+    $songCols = _bulkImport_sqliteColumns($songsDb, 'song');
+    if (empty($songCols)) {
+        $songsDb->close();
+        return [[], 'no `song` table found (is this an EasyWorship Songs.db?)'];
+    }
+
+    /* Words may live in this db (table `word`) or in SongWords.db. */
+    $wordsDb     = $songsDb;
+    $wordsClose  = false;
+    $wordCols    = _bulkImport_sqliteColumns($songsDb, 'word');
+    if (empty($wordCols) && $songWordsDbPath !== null) {
+        try {
+            $wordsDb    = new \SQLite3($songWordsDbPath, SQLITE3_OPEN_READONLY);
+            $wordsClose = true;
+            $wordsDb->busyTimeout(2000);
+            $wordCols   = _bulkImport_sqliteColumns($wordsDb, 'word');
+        } catch (\Throwable $e) {
+            /* No words db — titles still import, just without lyrics. */
+            $wordCols = [];
+        }
+    }
+
+    /* Build a song_id → words map once. */
+    $wordsBySong = [];
+    if (!empty($wordCols) && isset($wordCols['words'])) {
+        $idCol = $wordCols['song_id'] ?? ($wordCols['songid'] ?? null);
+        if ($idCol !== null) {
+            $res = @$wordsDb->query('SELECT "' . $idCol . '" AS sid, "' . $wordCols['words'] . '" AS w FROM "word"');
+            if ($res !== false) {
+                while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+                    $wordsBySong[(string)$row['sid']] = (string)$row['w'];
+                }
+            }
+        }
+    }
+
+    /* Select the song rows. rowid is always available; the rest are guarded. */
+    $titleC = $songCols['title']            ?? null;
+    $authC  = $songCols['author']           ?? null;
+    $copyC  = $songCols['copyright']         ?? null;
+    $refC   = $songCols['reference_number']  ?? ($songCols['song_number'] ?? null);
+    if ($titleC === null) {
+        $songsDb->close();
+        if ($wordsClose) { $wordsDb->close(); }
+        return [[], '`song` table has no `title` column'];
+    }
+
+    $sel = ['rowid AS rid', '"' . $titleC . '" AS title'];
+    $sel[] = $authC !== null ? '"' . $authC . '" AS author' : "'' AS author";
+    $sel[] = $copyC !== null ? '"' . $copyC . '" AS copyright' : "'' AS copyright";
+    $sel[] = $refC  !== null ? '"' . $refC  . '" AS refnum' : "'' AS refnum";
+    $sql = 'SELECT ' . implode(', ', $sel) . ' FROM "song"';
+
+    $songs = [];
+    $res = @$songsDb->query($sql);
+    if ($res === false) {
+        $songsDb->close();
+        if ($wordsClose) { $wordsDb->close(); }
+        return [[], 'failed to read the `song` table'];
+    }
+    while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+        $title = trim((string)$row['title']);
+        if ($title === '') { continue; }
+        $rid     = (string)$row['rid'];
+        $rtf     = $wordsBySong[$rid] ?? '';
+        $text    = $rtf !== '' ? _bulkImport_rtfToText($rtf) : '';
+        $components = $text !== '' ? _bulkImport_easyWorshipSplitComponents($text) : [];
+        if (empty($components)) {
+            /* Title-only row (no lyrics) — skip rather than write an empty song. */
+            continue;
+        }
+        $writers = [];
+        $author  = trim((string)$row['author']);
+        if ($author !== '') {
+            foreach (preg_split('/\s*[\/&,;]\s*/u', $author) as $w) {
+                $w = trim((string)$w);
+                if ($w !== '') { $writers[] = $w; }
+            }
+        }
+        $songs[] = [
+            'title'        => $title,
+            'songbookName' => '',
+            'entry'        => ctype_digit(trim((string)$row['refnum'])) ? (int)trim((string)$row['refnum']) : 0,
+            'language'     => '',
+            'ccli'         => '',
+            'copyright'    => trim((string)$row['copyright']),
+            'writers'      => $writers,
+            'components'   => $components,
+        ];
+    }
+
+    $songsDb->close();
+    if ($wordsClose) { $wordsDb->close(); }
+    return [$songs, null];
+}
+
+/**
+ * Synchronous EasyWorship import. Accepts either a single Songs.db file or a
+ * .zip containing Songs.db (+ optional SongWords.db). Writes uploaded SQLite
+ * to temp files (SQLite3 needs a path), reads them, and imports each song
+ * under an "EasyWorship Import" (EW) songbook. Same summary shape as the
+ * other single-file processors.
+ */
+function _bulkImport_processEasyWorship(string $tmpPath, string $origName): array
+{
+    $fail = function (string $msg): array {
+        return [
+            'ok'                     => false,
+            'error'                  => $msg,
+            'songbooks_created'      => [],
+            'songbooks_existing'     => [],
+            'songs_created'          => 0,
+            'songs_skipped_existing' => 0,
+            'songs_failed'           => 0,
+            'parsed_by_format'       => ['easyworship' => 0],
+            'errors'                 => [],
+        ];
+    };
+
+    $isZip   = strtolower(pathinfo($origName, PATHINFO_EXTENSION)) === 'zip';
+    $tempFiles = [];
+    $songsDbPath = null;
+    $songWordsDbPath = null;
+
+    if ($isZip) {
+        $zip = new \ZipArchive();
+        if ($zip->open($tmpPath) !== true) {
+            return $fail('could not open the uploaded .zip');
+        }
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $name = (string)$zip->getNameIndex($i);
+            $leaf = strtolower(basename($name));
+            if ($leaf === 'songs.db' || $leaf === 'songwords.db') {
+                $bytes = $zip->getFromIndex($i);
+                if ($bytes === false) { continue; }
+                $t = tempnam(sys_get_temp_dir(), 'ew_');
+                file_put_contents($t, $bytes);
+                $tempFiles[] = $t;
+                if ($leaf === 'songs.db')     { $songsDbPath = $t; }
+                if ($leaf === 'songwords.db') { $songWordsDbPath = $t; }
+            }
+        }
+        $zip->close();
+        if ($songsDbPath === null) {
+            foreach ($tempFiles as $t) { @unlink($t); }
+            return $fail('the .zip does not contain a Songs.db');
+        }
+    } else {
+        /* A single uploaded .db — SQLite3 can open the upload temp file
+           directly (read-only). */
+        $songsDbPath = $tmpPath;
+    }
+
+    [$parsedSongs, $err] = _bulkImport_easyWorshipReadDb($songsDbPath, $songWordsDbPath);
+    foreach ($tempFiles as $t) { @unlink($t); }
+
+    if ($err !== null) {
+        return $fail('EasyWorship read failed: ' . $err);
+    }
+    if (empty($parsedSongs)) {
+        return $fail('no songs with lyrics found in the EasyWorship database');
+    }
+
+    $db       = getDbMysqli();
+    $abbr     = 'EW';
+    $bookName = 'EasyWorship Import';
+    $state             = _bulkImport_upsertSongbook($db, $abbr, $bookName, null);
+    $songbooksCreated  = ($state === 'created')  ? [$abbr] : [];
+    $songbooksExisting = ($state === 'existing') ? [$abbr] : [];
+
+    $counter = _bulkImport_nextSongNumberFor($db, $abbr);
+    $songsCreated = 0;
+    $songsSkipped = 0;
+    $songsFailed  = 0;
+    $errors       = [];
+    foreach ($parsedSongs as $parsed) {
+        $number = (int)$parsed['entry'] > 0 ? (int)$parsed['entry'] : $counter;
+        $counter = max($counter, $number) + 1;
+        $song = _bulkImport_assembleSong($parsed, $abbr, $bookName, $number);
+        [$action, $saveErr] = _bulkImport_saveSong($db, $song);
+        if ($action === 'create')      { $songsCreated++; }
+        elseif ($action === 'skipped') { $songsSkipped++; }
+        else {
+            $songsFailed++;
+            $errors[] = ['entry' => $origName . ': ' . ($song['id'] ?? '?'), 'error' => 'save failed: ' . $saveErr];
+        }
+    }
+
+    if (!empty($songbooksCreated)) {
+        $cnt = $db->prepare(
+            'UPDATE tblSongbooks SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?) WHERE Abbreviation = ?'
+        );
+        $cnt->bind_param('ss', $abbr, $abbr);
+        $cnt->execute();
+        $cnt->close();
+    }
+
+    return [
+        'ok'                     => true,
+        'songbooks_created'      => $songbooksCreated,
+        'songbooks_existing'     => $songbooksExisting,
+        'songs_created'          => $songsCreated,
+        'songs_skipped_existing' => $songsSkipped,
+        'songs_failed'           => $songsFailed,
+        'parsed_by_format'       => ['easyworship' => $songsCreated + $songsSkipped],
         'errors'                 => $errors,
     ];
 }
