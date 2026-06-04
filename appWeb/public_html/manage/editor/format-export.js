@@ -149,6 +149,70 @@
         return { filename: zipName, size: zip.length, count: files.length };
     }
 
+    /* ====================================================================
+     *  VideoPsalm (.json) — #1055
+     * ====================================================================
+     * VideoPsalm's native unit is a whole songbook: one JSON document
+     * { Text:<book name>, Songs:[ { Text:<title>, Number, Verses:[ {Tag,Text} ] } ] }.
+     * So a SONGBOOK export is a single .json (not a zip), and a single song
+     * is a 1-song songbook so it re-imports cleanly. Round-trips with the
+     * iHymns VideoPsalm importer (#883). */
+
+    var VP_TAG = {
+        'verse': 'V', 'chorus': 'C', 'refrain': 'C', 'bridge': 'B',
+        'pre-chorus': 'P', 'prechorus': 'P', 'intro': 'I',
+        'outro': 'E', 'tag': 'T', 'coda': 'T', 'interlude': 'I'
+    };
+
+    function vpTag(comp) {
+        var letter = VP_TAG[String(comp.type || 'verse').toLowerCase()] || 'V';
+        var n = (comp.number != null && comp.number !== '') ? String(comp.number) : '';
+        return letter + n;
+    }
+
+    function buildVideoPsalm(song) {
+        if (!song) { throw new Error('buildVideoPsalm: song required'); }
+        var s = {
+            Text:   String(song.title || 'Untitled'),
+            Verses: (song.components || []).map(function (comp) {
+                return { Tag: vpTag(comp), Text: (comp.lines || []).join('\n') };
+            })
+        };
+        if (song.number != null && song.number !== '') {
+            var n = parseInt(song.number, 10);
+            s.Number = isNaN(n) ? song.number : n;
+        }
+        if (song.copyright) { s.Memo1 = String(song.copyright); }
+        if (song.ccli)      { s.Memo2 = 'CCLI ' + String(song.ccli); }
+        return s;
+    }
+
+    function exportSongVideoPsalm(song) {
+        var book = { Text: String(song.title || 'Untitled'), Songs: [buildVideoPsalm(song)] };
+        var json = JSON.stringify(book, null, 2);
+        var filename = baseFilename(song) + '.json';
+        download(json, filename, 'application/json');
+        return { filename: filename, size: json.length };
+    }
+
+    function exportSongbookVideoPsalm(songs, options) {
+        options = options || {};
+        if (!Array.isArray(songs) || !songs.length) {
+            throw new Error('exportSongbookVideoPsalm: non-empty songs array required');
+        }
+        var book = {
+            Text:  String(options.songbookName || options.songbookAbbr || 'VideoPsalm Songbook'),
+            Songs: songs.map(buildVideoPsalm)
+        };
+        var json = JSON.stringify(book, null, 2);
+        var stem = options.songbookName
+            ? sanitizeFilename(options.songbookName + (options.songbookAbbr ? ' (' + options.songbookAbbr + ')' : ''))
+            : (options.songbookAbbr ? sanitizeFilename(options.songbookAbbr) : 'VideoPsalm Export');
+        var filename = stem + ' [VideoPsalm].json';
+        download(json, filename, 'application/json');
+        return { filename: filename, size: json.length, count: songs.length };
+    }
+
     /* ---- public API ----------------------------------------------------- */
 
     var api = {
@@ -156,6 +220,11 @@
             build:           buildOpenSong,
             exportSong:      exportSongOpenSong,
             exportSongbook:  exportSongbookOpenSong
+        },
+        videoPsalm: {
+            build:           buildVideoPsalm,
+            exportSong:      exportSongVideoPsalm,
+            exportSongbook:  exportSongbookVideoPsalm
         },
         _internal: { escapeXml: escapeXml, baseFilename: baseFilename, buildZip: buildZip, download: download }
     };
