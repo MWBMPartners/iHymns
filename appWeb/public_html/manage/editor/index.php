@@ -361,6 +361,21 @@ try {
                                 <i class="bi bi-journal-text me-2"></i>This songbook (<code>.json</code>)</a></li>
                         </ul>
                     </div>
+                    <!-- FreeShow export (#1056): single song → .show, whole
+                         songbook (active filter) → .zip. Wired below. -->
+                    <div class="btn-group">
+                        <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle"
+                                id="btn-fs-export" data-bs-toggle="dropdown" aria-expanded="false"
+                                title="Export to FreeShow (.show / .zip)" disabled>
+                            <i class="bi bi-easel2 me-1"></i>FreeShow
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-dark">
+                            <li><a class="dropdown-item" href="#" id="fs-export-song">
+                                <i class="bi bi-file-earmark-music me-2"></i>This song (<code>.show</code>)</a></li>
+                            <li><a class="dropdown-item" href="#" id="fs-export-songbook">
+                                <i class="bi bi-archive me-2"></i>This songbook (<code>.zip</code>)</a></li>
+                        </ul>
+                    </div>
                     <button type="button" class="btn btn-sm btn-outline-danger" id="btn-delete-song" title="Delete selected song">
                         <i class="bi bi-trash me-1"></i>Delete
                     </button>
@@ -1712,6 +1727,7 @@ try {
         document.addEventListener('DOMContentLoaded', function () {
             bindFormat('openSong',   'OpenSong',   'btn-os-export', 'os-export-song', 'os-export-songbook');
             bindFormat('videoPsalm', 'VideoPsalm', 'btn-vp-export', 'vp-export-song', 'vp-export-songbook');
+            bindFormat('freeShow',   'FreeShow',   'btn-fs-export', 'fs-export-song', 'fs-export-songbook');
         });
     })();
     </script>

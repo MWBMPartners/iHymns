@@ -213,6 +213,102 @@
         return { filename: filename, size: json.length, count: songs.length };
     }
 
+    /* ====================================================================
+     *  FreeShow (.show) — #1056
+     * ====================================================================
+     * A FreeShow .show file is JSON: [ "<id>", { show } ]. The show holds a
+     * map of `slides` (one per song section, each with items→lines→text) and
+     * a `layouts` map whose active layout lists the slide order. NOTE: the
+     * iHymns FreeShow IMPORTER (#884) is not in the codebase, so this export
+     * is validated structurally rather than round-tripped. */
+
+    var FS_GROUP = {
+        'verse': 'Verse', 'chorus': 'Chorus', 'refrain': 'Refrain', 'bridge': 'Bridge',
+        'pre-chorus': 'Pre-Chorus', 'prechorus': 'Pre-Chorus', 'intro': 'Intro',
+        'outro': 'Outro', 'tag': 'Tag', 'coda': 'Coda', 'interlude': 'Interlude'
+    };
+
+    function fsId() {
+        /* 5-char id, FreeShow style (Math.random is fine in app/browser JS). */
+        return Math.random().toString(36).slice(2, 7);
+    }
+
+    function fsGroup(comp) {
+        var base = FS_GROUP[String(comp.type || 'verse').toLowerCase()] || 'Verse';
+        var n = (comp.number != null && comp.number !== '') ? (' ' + comp.number) : '';
+        return base + n;
+    }
+
+    function buildFreeShow(song) {
+        if (!song) { throw new Error('buildFreeShow: song required'); }
+        var slides = {};
+        var layoutSlides = [];
+        (song.components || []).forEach(function (comp) {
+            var sid = fsId();
+            slides[sid] = {
+                group: fsGroup(comp),
+                color: null,
+                settings: {},
+                notes: '',
+                items: [{
+                    style: 'top:120px;left:50px;height:840px;width:1820px;',
+                    lines: (comp.lines || []).map(function (line) {
+                        return { align: '', text: [{ value: String(line == null ? '' : line), style: '' }] };
+                    })
+                }]
+            };
+            layoutSlides.push({ id: sid });
+        });
+        var layoutId = fsId();
+        var authors = [].concat(song.writers || [], song.composers || []).filter(Boolean).join(', ');
+        var show = {
+            name:     String(song.title || 'Untitled'),
+            category: 'song',
+            settings: { activeLayout: layoutId, template: 'default' },
+            timestamps: { created: 0, modified: 0, used: null },
+            meta: {
+                title:     String(song.title || ''),
+                author:    authors,
+                copyright: String(song.copyright || ''),
+                CCLI:      String(song.ccli || '')
+            },
+            slides:  slides,
+            layouts: {},
+            media:   {}
+        };
+        show.layouts[layoutId] = { name: 'Default', notes: '', slides: layoutSlides };
+        return [fsId(), show];
+    }
+
+    function exportSongFreeShow(song) {
+        var json = JSON.stringify(buildFreeShow(song));
+        var filename = baseFilename(song) + '.show';
+        download(json, filename, 'application/json');
+        return { filename: filename, size: json.length };
+    }
+
+    function exportSongbookFreeShow(songs, options) {
+        options = options || {};
+        if (!Array.isArray(songs) || !songs.length) {
+            throw new Error('exportSongbookFreeShow: non-empty songs array required');
+        }
+        var enc = new TextEncoder();
+        var seen = Object.create(null);
+        var files = songs.map(function (song) {
+            var name = baseFilename(song) + '.show';
+            if (seen[name]) { name = baseFilename(song) + ' (' + (seen[name]++) + ').show'; }
+            else { seen[name] = 1; }
+            return { name: name, bytes: enc.encode(JSON.stringify(buildFreeShow(song))) };
+        });
+        var zip = buildZip(files);
+        var stem = options.songbookName
+            ? sanitizeFilename(options.songbookName + (options.songbookAbbr ? ' (' + options.songbookAbbr + ')' : ''))
+            : (options.songbookAbbr ? sanitizeFilename(options.songbookAbbr) : 'FreeShow Export');
+        var zipName = stem + ' [FreeShow].zip';
+        download(zip, zipName, 'application/zip');
+        return { filename: zipName, size: zip.length, count: files.length };
+    }
+
     /* ---- public API ----------------------------------------------------- */
 
     var api = {
@@ -225,6 +321,11 @@
             build:           buildVideoPsalm,
             exportSong:      exportSongVideoPsalm,
             exportSongbook:  exportSongbookVideoPsalm
+        },
+        freeShow: {
+            build:           buildFreeShow,
+            exportSong:      exportSongFreeShow,
+            exportSongbook:  exportSongbookFreeShow
         },
         _internal: { escapeXml: escapeXml, baseFilename: baseFilename, buildZip: buildZip, download: download }
     };
