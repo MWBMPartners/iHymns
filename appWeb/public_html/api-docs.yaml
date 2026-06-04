@@ -690,7 +690,16 @@ paths:
           approves before they go live.
         - Re-ingesting the same `(songId, source)` **replaces** its rows
           (no duplication).
-        - Body is JSON `{ songId, ttml, … }`, or raw TTML with `?songId=`.
+        - Body is JSON `{ songId|title, ttml, … }`, or raw TTML with `?songId=`.
+
+        **Song resolution (#1064):** when `songId` is omitted, the backend
+        resolves the song from the metadata — explicit `songId` → exact `isrc`
+        → normalized `title` (with an `artist` tiebreak) → else it **creates a
+        provisional song** in the `Misc` songbook (`Verified=0`, surfaced at
+        `/manage/duplicate-songs` for moderator review). The payload's external
+        IDs (`isrc`/`upc`) + artists + provider URLs (`appleMusicUrl`,
+        `crossPlatform`) are stored on the song (idempotent add-if-absent) so
+        future matches get stronger. The response reports `matched`/`created`.
       security:
         - ingestApiKey: []
         - ingestApiKeyHeader: []
@@ -707,19 +716,40 @@ paths:
           application/json:
             schema:
               type: object
-              required: [songId, ttml]
+              required: [ttml]
               properties:
                 songId:
                   type: string
-                  description: tblSongs.SongId the lyrics belong to.
+                  description: Explicit tblSongs.SongId. Omit to resolve/create by metadata.
                   example: CP-0271
                 ttml:
                   type: string
                   description: The TTML document (Apple-Music word/syllable timing).
+                title:
+                  type: string
+                  description: Song title — the primary match key when songId is absent.
+                artist:
+                  type: string
+                  description: Artist(s) — tiebreak when several titles match; stored on the song.
+                album:
+                  type: string
+                isrc:
+                  type: string
+                  description: Recording ISRC — exact-match key + stored on tblSongs.Isrc.
+                upc:
+                  type: string
+                durationMs:
+                  type: integer
+                appleMusicUrl:
+                  type: string
+                crossPlatform:
+                  type: object
+                  additionalProperties: { type: string }
+                  description: Provider→URL map (spotify, youtubeMusic, genius, musicbrainzRecording, …) stored as song external links.
                 source:
                   type: string
                   default: applemusic-ttml
-                  description: Provenance label; unique per song with songId.
+                  description: Provenance label; unique per song with the lyrics record.
                 sourceUrl:
                   type: string
                 isPrimary:
@@ -745,10 +775,13 @@ paths:
                 properties:
                   ok: { type: boolean }
                   songId: { type: string }
+                  matched: { type: boolean, description: matched an existing song }
+                  created: { type: boolean, description: a provisional song was created }
                   lyricsId: { type: integer }
                   lines: { type: integer }
                   words: { type: integer }
                   syllables: { type: integer }
+                  idsAdded: { type: integer, description: external IDs/URLs added to the song }
                   hasTiming: { type: boolean }
                   hasWordTiming: { type: boolean }
                   hasSyllableTiming: { type: boolean }
@@ -757,10 +790,13 @@ paths:
               example:
                 ok: true
                 songId: CP-0271
+                matched: true
+                created: false
                 lyricsId: 42
                 lines: 24
                 words: 180
                 syllables: 96
+                idsAdded: 3
                 hasTiming: true
                 hasWordTiming: true
                 hasSyllableTiming: true

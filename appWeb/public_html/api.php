@@ -899,8 +899,8 @@ if ($action !== null) {
                 $source = isset($_GET['source']) ? (string)$_GET['source'] : null;
             }
 
-            if ($songId === '' || trim($ttml) === '') {
-                sendJson(['error' => 'songId and ttml are required (JSON {songId, ttml} or raw TTML with ?songId=).'], 400);
+            if (trim($ttml) === '') {
+                sendJson(['error' => 'ttml is required (JSON {songId|title, ttml, …} or raw TTML with ?songId=).'], 400);
                 break;
             }
             /* Status is an enum — validate against the allow-list. */
@@ -910,6 +910,19 @@ if ($action !== null) {
 
             try {
                 $parsed = lyricsIngest_parseTtml($ttml);
+
+                /* Resolve the song (#1064): explicit songId → ISRC → normalized
+                   title → create a provisional 'Misc' song. The match/enrich
+                   payload is the JSON body when present, else a minimal one
+                   from the raw-TTML query params. */
+                $matchPayload = is_array($payload) ? $payload : [];
+                if ($songId !== '') { $matchPayload['songId'] = $songId; }
+                /* FULLTEXT seed text for a song created from this TTML. */
+                $lyricsText = implode("\n", array_map(static fn($l) => (string)($l['text'] ?? ''), $parsed['lines']));
+
+                $resolved = lyricsIngest_resolveSong($ingestDb, $matchPayload, $lyricsText);
+                $songId   = $resolved['songId'];
+
                 $result = lyricsIngest_writeToDb($ingestDb, $songId, $parsed, [
                     'source'     => $source ?: 'applemusic-ttml',
                     'sourceUrl'  => $sourceUrl,
@@ -918,23 +931,33 @@ if ($action !== null) {
                     'status'     => $status,
                     /* Machine ingest has no user; SubmittedBy stays null. */
                 ]);
+                /* Enrich the song with the payload's external IDs/URLs so future
+                   matches get stronger (ISRC/UPC columns + artists + provider links). */
+                $enriched = lyricsIngest_storeExternalIds($ingestDb, $songId, $matchPayload);
+
                 if (function_exists('logActivity')) {
                     logActivity('lyrics.ingest', 'song', $songId, [
                         'apiKey'    => (string)($ingestKey['Label'] ?? ''),
                         'source'    => $source ?: 'applemusic-ttml',
+                        'matched'   => $resolved['matched'],
+                        'created'   => $resolved['created'],
                         'lines'     => $result['lines'],
                         'words'     => $result['words'],
                         'syllables' => $result['syllables'],
+                        'idsAdded'  => $enriched,
                         'status'    => $status,
                     ]);
                 }
                 sendJson([
                     'ok'                => true,
                     'songId'            => $songId,
+                    'matched'           => $resolved['matched'],
+                    'created'           => $resolved['created'],
                     'lyricsId'          => $result['lyricsId'],
                     'lines'             => $result['lines'],
                     'words'             => $result['words'],
                     'syllables'         => $result['syllables'],
+                    'idsAdded'          => $enriched,
                     'hasTiming'         => $parsed['hasTiming'],
                     'hasWordTiming'     => $parsed['hasWordTiming'],
                     'hasSyllableTiming' => $parsed['hasSyllableTiming'],

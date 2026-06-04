@@ -408,3 +408,295 @@ function lyricsIngest_writeToDb(\mysqli $db, string $songId, array $parsed, arra
         throw new \RuntimeException('lyrics ingest write failed: ' . $e->getMessage(), 0, $e);
     }
 }
+
+/* ===========================================================================
+ *  Song resolution + enrichment (#1064)
+ * ---------------------------------------------------------------------------
+ * When an external pusher (MeedyaDL #907) supplies Apple-Music metadata but no
+ * songId, resolve the song: explicit songId → ISRC → normalized TITLE (with an
+ * artist tiebreak) → CREATE a provisional song (in the canonical 'Misc'
+ * songbook, Verified=0, surfaced for moderator review at /manage/duplicate-
+ * songs). Then store the external IDs/URLs the payload carries so future
+ * matches get stronger. Title-first, create-when-absent — matching the early-
+ * days "most songs will be added" reality.
+ * =========================================================================== */
+
+/**
+ * Resolve the payload to a tblSongs.SongId, creating a provisional song if
+ * nothing matches. $lyricsText (joined line text) seeds a created song's
+ * FULLTEXT search column.
+ *
+ * @return array{songId:string, matched:bool, created:bool}
+ * @throws \RuntimeException on an explicit-but-missing songId, or no title to match/create.
+ */
+function lyricsIngest_resolveSong(\mysqli $db, array $payload, string $lyricsText = ''): array
+{
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'title_normalize.php';
+
+    /* 1. Explicit songId → verify it exists. */
+    $songId = trim((string)($payload['songId'] ?? $payload['song_id'] ?? ''));
+    if ($songId !== '') {
+        $chk = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+        $chk->bind_param('s', $songId);
+        $chk->execute();
+        $exists = $chk->get_result()->fetch_row() !== null;
+        $chk->close();
+        if (!$exists) {
+            throw new \RuntimeException("song '$songId' not found");
+        }
+        return ['songId' => $songId, 'matched' => true, 'created' => false];
+    }
+
+    /* 2. Match by ISRC (exact) — the strongest signal once songs carry one. */
+    $isrc = trim((string)($payload['isrc'] ?? ''));
+    if ($isrc !== '') {
+        $st = $db->prepare('SELECT SongId FROM tblSongs WHERE Isrc = ? LIMIT 1');
+        $st->bind_param('s', $isrc);
+        $st->execute();
+        $row = $st->get_result()->fetch_assoc();
+        $st->close();
+        if ($row !== null) {
+            return ['songId' => (string)$row['SongId'], 'matched' => true, 'created' => false];
+        }
+    }
+
+    /* 3. Match by NORMALIZED TITLE (owner's first-instance signal). */
+    $title = trim((string)($payload['title'] ?? ''));
+    if ($title === '') {
+        throw new \RuntimeException('cannot resolve a song without a songId, ISRC or title');
+    }
+    $norm = ihymns_normalize_title($title);
+    if ($norm !== '') {
+        $candidates = [];
+        /* Exact-title fast path. */
+        $st = $db->prepare('SELECT SongId, Title FROM tblSongs WHERE Title = ? LIMIT 50');
+        $st->bind_param('s', $title);
+        $st->execute();
+        $res = $st->get_result();
+        while ($r = $res->fetch_assoc()) { $candidates[] = $r; }
+        $st->close();
+        /* Broader scan, bounded by a LIKE on the first normalized word so the
+           cost stays small even as the catalogue grows. */
+        if (empty($candidates)) {
+            $firstWord = preg_split('/\s+/', $norm)[0] ?? '';
+            if ($firstWord !== '' && mb_strlen($firstWord) >= 2) {
+                $like = '%' . $firstWord . '%';
+                $st = $db->prepare('SELECT SongId, Title FROM tblSongs WHERE Title LIKE ? LIMIT 300');
+                $st->bind_param('s', $like);
+                $st->execute();
+                $res = $st->get_result();
+                while ($r = $res->fetch_assoc()) { $candidates[] = $r; }
+                $st->close();
+            }
+        }
+        $matches = [];
+        foreach ($candidates as $c) {
+            if (ihymns_normalize_title((string)$c['Title']) === $norm) {
+                $matches[(string)$c['SongId']] = true;
+            }
+        }
+        $matches = array_keys($matches);
+
+        if (count($matches) === 1) {
+            return ['songId' => $matches[0], 'matched' => true, 'created' => false];
+        }
+        if (count($matches) > 1) {
+            /* Artist tiebreak — pick the one whose artist intersects the
+               payload's; if still ambiguous, create rather than guess wrong
+               (the duplicate-songs page surfaces them for a human). */
+            $artist = trim((string)($payload['artist'] ?? ''));
+            if ($artist !== '') {
+                $artistNorm   = ihymns_normalize_title($artist);
+                $placeholders = implode(',', array_fill(0, count($matches), '?'));
+                $types        = str_repeat('s', count($matches));
+                $st = $db->prepare("SELECT SongId, Name FROM tblSongArtists WHERE SongId IN ($placeholders)");
+                $st->bind_param($types, ...$matches);
+                $st->execute();
+                $res = $st->get_result();
+                $artistHit = [];
+                while ($r = $res->fetch_assoc()) {
+                    $n = ihymns_normalize_title((string)$r['Name']);
+                    if ($n !== '' && ($n === $artistNorm || str_contains($artistNorm, $n) || str_contains($n, $artistNorm))) {
+                        $artistHit[(string)$r['SongId']] = true;
+                    }
+                }
+                $st->close();
+                if (count($artistHit) === 1) {
+                    return ['songId' => array_key_first($artistHit), 'matched' => true, 'created' => false];
+                }
+            }
+            /* Ambiguous → fall through to create. */
+        }
+    }
+
+    /* 4. Create a provisional song. */
+    $newId = lyricsIngest_createSong($db, $payload, $lyricsText);
+    return ['songId' => $newId, 'matched' => false, 'created' => true];
+}
+
+/**
+ * Create a minimal provisional song from the payload, in the canonical 'Misc'
+ * songbook (Verified=0). Inserts a single verse component from the TTML lines
+ * (so the song renders + is editable) and seeds the FULLTEXT search text.
+ * Returns the new SongId.
+ */
+function lyricsIngest_createSong(\mysqli $db, array $payload, string $lyricsText = ''): string
+{
+    $title = trim((string)($payload['title'] ?? ''));
+    if ($title === '') {
+        throw new \RuntimeException('cannot create a song without a title');
+    }
+    $abbr     = 'Misc';
+    $language = trim((string)($payload['language'] ?? 'en')) ?: 'en';
+    $isrc     = trim((string)($payload['isrc'] ?? '')) ?: null;
+    $upc      = trim((string)($payload['upc'] ?? '')) ?: null;
+
+    $db->begin_transaction();
+    try {
+        /* Generate a unique SongId of the form MISC-NNNN (Misc carries NULL
+           Numbers, so derive the suffix from the max existing id). Retry on the
+           rare race. */
+        $songId = '';
+        for ($try = 0; $try < 5; $try++) {
+            $st = $db->prepare("SELECT SongId FROM tblSongs WHERE SongId LIKE ? ORDER BY LENGTH(SongId) DESC, SongId DESC LIMIT 1");
+            $like = $abbr . '-%';
+            $st->bind_param('s', $like);
+            $st->execute();
+            $row = $st->get_result()->fetch_assoc();
+            $st->close();
+            $next = 1;
+            if ($row !== null && preg_match('/-(\d+)$/', (string)$row['SongId'], $m)) {
+                $next = (int)$m[1] + 1 + $try;
+            }
+            $candidate = sprintf('%s-%04d', $abbr, $next);
+            $st = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+            $st->bind_param('s', $candidate);
+            $st->execute();
+            $taken = $st->get_result()->fetch_row() !== null;
+            $st->close();
+            if (!$taken) { $songId = $candidate; break; }
+        }
+        if ($songId === '') {
+            throw new \RuntimeException('could not allocate a SongId');
+        }
+
+        $ins = $db->prepare(
+            'INSERT INTO tblSongs (SongId, Number, Title, SongbookAbbr, Language, Isrc, Upc, Verified, LyricsText)
+             VALUES (?, NULL, ?, ?, ?, ?, ?, 0, ?)'
+        );
+        $ins->bind_param('sssssss', $songId, $title, $abbr, $language, $isrc, $upc, $lyricsText);
+        $ins->execute();
+        $ins->close();
+
+        /* One verse component from the TTML lines, so the provisional song
+           renders + is editable in the curator UI. */
+        $lines = array_values(array_filter(explode("\n", $lyricsText), static fn($l) => trim($l) !== ''));
+        if (!empty($lines)) {
+            $linesJson = json_encode($lines, JSON_UNESCAPED_UNICODE);
+            $comp = $db->prepare(
+                'INSERT INTO tblSongComponents (SongId, Type, Number, LinesJson, SortOrder)
+                 VALUES (?, ?, ?, ?, ?)'
+            );
+            $type = 'verse'; $num = 1; $sort = 0;
+            $comp->bind_param('ssisi', $songId, $type, $num, $linesJson, $sort);
+            $comp->execute();
+            $comp->close();
+        }
+
+        $db->commit();
+        return $songId;
+    } catch (\Throwable $e) {
+        try { $db->rollback(); } catch (\Throwable $_) {}
+        throw new \RuntimeException('lyrics ingest create-song failed: ' . $e->getMessage(), 0, $e);
+    }
+}
+
+/**
+ * Store the payload's external identifiers/URLs on the song, idempotently
+ * (add-if-absent — never the destructive replace-all the editor's
+ * saveExternalLinksForRow does). Fills blank Isrc/Upc columns, adds artists to
+ * tblSongArtists, and adds Apple-Music / MusicBrainz / Spotify / YouTube /
+ * Genius URLs to tblSongExternalLinks under their existing type slugs. Returns
+ * the number of rows added.
+ */
+function lyricsIngest_storeExternalIds(\mysqli $db, string $songId, array $payload): int
+{
+    $added = 0;
+
+    /* ISRC / UPC → fill blank columns only (don't clobber a curator's value). */
+    $isrc = trim((string)($payload['isrc'] ?? ''));
+    $upc  = trim((string)($payload['upc'] ?? ''));
+    if ($isrc !== '' || $upc !== '') {
+        $i = $isrc !== '' ? $isrc : null;
+        $u = $upc !== '' ? $upc : null;
+        $st = $db->prepare('UPDATE tblSongs SET Isrc = COALESCE(NULLIF(Isrc, ""), ?), Upc = COALESCE(NULLIF(Upc, ""), ?) WHERE SongId = ?');
+        $st->bind_param('sss', $i, $u, $songId);
+        $st->execute();
+        $st->close();
+    }
+
+    /* Artists → tblSongArtists add-if-absent. */
+    $artist = trim((string)($payload['artist'] ?? ''));
+    if ($artist !== '') {
+        foreach (preg_split('/\s*[\/&,;]\s*/u', $artist) as $a) {
+            $a = trim((string)$a);
+            if ($a === '') { continue; }
+            $st = $db->prepare(
+                'INSERT INTO tblSongArtists (SongId, Name, SortOrder)
+                 SELECT ?, ?, 0 FROM DUAL
+                 WHERE NOT EXISTS (SELECT 1 FROM tblSongArtists WHERE SongId = ? AND Name = ?)'
+            );
+            $st->bind_param('ssss', $songId, $a, $songId, $a);
+            $st->execute();
+            $added += $st->affected_rows;
+            $st->close();
+        }
+    }
+
+    /* External-link URLs → tblSongExternalLinks add-if-absent, under the
+       already-seeded type slugs. http(s) only. */
+    $links   = [];
+    $appleUrl = trim((string)($payload['appleMusicUrl'] ?? $payload['apple_music_url'] ?? ''));
+    if ($appleUrl !== '' && preg_match('#^https?://#i', $appleUrl)) {
+        $links['apple-music'] = $appleUrl;
+    }
+    $cp = $payload['crossPlatform'] ?? $payload['cross_platform'] ?? [];
+    if (is_array($cp)) {
+        $cpMap = [
+            'spotify' => 'spotify', 'youtube' => 'youtube',
+            'youtubemusic' => 'youtube-music', 'youtube_music' => 'youtube-music',
+            'youtube-music' => 'youtube-music', 'genius' => 'genius',
+            'musicbrainzrecording' => 'musicbrainz-recording', 'musicbrainz_recording' => 'musicbrainz-recording',
+            'musicbrainz-recording' => 'musicbrainz-recording',
+            'musicbrainzwork' => 'musicbrainz-work', 'musicbrainz-work' => 'musicbrainz-work',
+            'musicbrainzartist' => 'musicbrainz-artist', 'musicbrainz-artist' => 'musicbrainz-artist',
+        ];
+        foreach ($cp as $k => $v) {
+            $v = trim((string)$v);
+            if ($v === '' || !preg_match('#^https?://#i', $v)) { continue; }
+            $kl   = strtolower((string)$k);
+            $slug = $cpMap[$kl] ?? (preg_match('/^[a-z0-9:_-]+$/', $kl) ? $kl : null);
+            if ($slug !== null) { $links[$slug] = $v; }
+        }
+    }
+    foreach ($links as $slug => $url) {
+        $st = $db->prepare('SELECT Id FROM tblExternalLinkTypes WHERE Slug = ? AND COALESCE(IsActive,1) = 1 LIMIT 1');
+        $st->bind_param('s', $slug);
+        $st->execute();
+        $r = $st->get_result()->fetch_assoc();
+        $st->close();
+        if ($r === null) { continue; }
+        $typeId = (int)$r['Id'];
+        $st = $db->prepare(
+            'INSERT INTO tblSongExternalLinks (SongId, LinkTypeId, Url, Verified)
+             SELECT ?, ?, ?, 0 FROM DUAL
+             WHERE NOT EXISTS (SELECT 1 FROM tblSongExternalLinks WHERE SongId = ? AND LinkTypeId = ? AND Url = ?)'
+        );
+        $st->bind_param('sissis', $songId, $typeId, $url, $songId, $typeId, $url);
+        $st->execute();
+        $added += $st->affected_rows;
+        $st->close();
+    }
+
+    return $added;
+}
