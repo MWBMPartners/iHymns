@@ -979,15 +979,54 @@ try {
         </footer>
     <?php endif; ?>
 
-    <!-- Report missing song link — points at the dedicated form page (#656)
-         rather than dumping the user at the bottom of the long /help
-         article where the request form used to live. URL is /request (#658)
-         with /request-a-song retained as a back-compat alias. -->
-    <div class="mt-3">
-        <a href="/request" data-navigate="request" class="text-muted small text-decoration-none">
-            <i class="fa-solid fa-flag me-1" aria-hidden="true"></i>
-            Report a missing song or suggest a correction
+    <!-- Report a missing song (→ /request page #656/#658) + suggest a structured
+         correction for THIS song (#1092 — posts {songId, field, proposed} to
+         song_correction_submit; the server reads the current value itself). -->
+    <div class="mt-3 small">
+        <a href="/request" data-navigate="request" class="text-muted text-decoration-none me-3">
+            <i class="fa-solid fa-flag me-1" aria-hidden="true"></i>Report a missing song
         </a>
+        <a class="text-muted text-decoration-none" role="button" data-bs-toggle="collapse"
+           href="#song-correction-form" aria-expanded="false" aria-controls="song-correction-form">
+            <i class="fa-solid fa-pen-to-square me-1" aria-hidden="true"></i>Suggest a correction
+        </a>
+    </div>
+    <div class="collapse mt-2" id="song-correction-form">
+        <form id="correction-form" class="card card-body" data-song-id="<?= htmlspecialchars((string)$songId) ?>" novalidate>
+            <p class="small text-muted mb-2">Spotted an error in this song? Tell us what should change &mdash; a curator will review it.</p>
+            <div class="row g-2">
+                <div class="col-sm-4">
+                    <label class="form-label small mb-1" for="correction-field">What needs correcting?</label>
+                    <select class="form-select form-select-sm" id="correction-field" required>
+                        <option value="title">Title</option>
+                        <option value="lyrics">Lyrics</option>
+                        <option value="author">Author / writer</option>
+                        <option value="composer">Composer</option>
+                        <option value="copyright">Copyright</option>
+                        <option value="tune">Tune name</option>
+                        <option value="ccli">CCLI number</option>
+                        <option value="iswc">ISWC</option>
+                        <option value="language">Language</option>
+                        <option value="other">Something else</option>
+                    </select>
+                </div>
+                <div class="col-sm-8">
+                    <label class="form-label small mb-1" for="correction-email">Your email <span class="text-muted">(optional, for follow-up)</span></label>
+                    <input type="email" class="form-control form-control-sm" id="correction-email" autocomplete="email" maxlength="255">
+                </div>
+            </div>
+            <div class="mt-2">
+                <label class="form-label small mb-1" for="correction-proposed">What should it say?</label>
+                <textarea class="form-control form-control-sm" id="correction-proposed" rows="3" required maxlength="5000"></textarea>
+            </div>
+            <!-- honeypot: real users leave this blank -->
+            <input type="text" id="correction-website" name="website" tabindex="-1" autocomplete="off"
+                   class="position-absolute" style="left:-9999px" aria-hidden="true">
+            <div class="mt-2 d-flex align-items-center gap-2">
+                <button type="submit" class="btn btn-sm btn-primary">Submit correction</button>
+                <span id="correction-feedback" class="small" role="status" aria-live="polite"></span>
+            </div>
+        </form>
     </div>
 
     <!-- Song translations (#352) — populated client-side from API -->

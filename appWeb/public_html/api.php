@@ -7086,6 +7086,115 @@ if ($action !== null) {
             }
             break;
 
+        /* -----------------------------------------------------------------
+         * Submit a structured CORRECTION to an existing song (#1092).
+         * Unlike a missing-song request, this captures {SongId, FieldName,
+         * OriginalValue, ProposedValue} as a reviewable diff. FieldName is
+         * allow-listed (never free user input into SQL/HTML); the OriginalValue
+         * is read SERVER-side from the live record (the client's "before" is
+         * never trusted). Routed through tblSongRequests (RequestType=correction)
+         * with the same honeypot + length + email + IP rate-limit guards as
+         * song_request_submit. POST JSON: { songId, field, proposed, email, website }.
+         * ----------------------------------------------------------------- */
+        case 'song_correction_submit':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $cBody = json_decode((string)file_get_contents('php://input'), true) ?? [];
+            $cSongId   = strtoupper(trim((string)($cBody['songId']   ?? '')));
+            $cField    = strtolower(trim((string)($cBody['field']    ?? '')));
+            $cProposed = trim((string)($cBody['proposed'] ?? ''));
+            $cEmail    = trim((string)($cBody['email']    ?? ''));
+            $cHoney    = (string)($cBody['website']        ?? '');
+            $cIp       = $_SERVER['REMOTE_ADDR'] ?? '';
+
+            /* Honeypot — silent OK so a bot isn't tipped off. */
+            if ($cHoney !== '') { sendJson(['ok' => true, 'trackingId' => 0]); break; }
+
+            /* Allow-list: field key -> the tblSongs scalar column to prefill the
+               OriginalValue from (null = free-text field, no DB column to diff). */
+            $correctionFields = [
+                'title' => 'Title', 'copyright' => 'Copyright', 'tune' => 'TuneName',
+                'ccli' => 'Ccli', 'iswc' => 'Iswc', 'language' => 'Language',
+                'lyrics' => null, 'author' => null, 'composer' => null, 'other' => null,
+            ];
+            if ($cSongId === '' || !array_key_exists($cField, $correctionFields) || $cProposed === '') {
+                sendJson(['error' => 'songId, a valid field, and a proposed value are required.'], 400);
+                break;
+            }
+            if (mb_strlen($cProposed) > 5000) { sendJson(['error' => 'Proposed value too long.'], 400); break; }
+            if (mb_strlen($cEmail) > 255)     { sendJson(['error' => 'Email too long.'], 400); break; }
+            if ($cEmail !== '' && !filter_var($cEmail, FILTER_VALIDATE_EMAIL)) {
+                sendJson(['error' => 'Email address is not valid.'], 400);
+                break;
+            }
+            try {
+                $db = getDbMysqli();
+
+                /* The corrected song must exist; grab its Title + songbook. */
+                $stmt = $db->prepare('SELECT Title, SongbookAbbr FROM tblSongs WHERE SongId = ? LIMIT 1');
+                $stmt->bind_param('s', $cSongId);
+                $stmt->execute();
+                $songRow = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                if (!$songRow) { sendJson(['error' => 'Song not found.'], 404); break; }
+
+                /* Server-authoritative OriginalValue for scalar fields. */
+                $cOriginal = '';
+                $col = $correctionFields[$cField];
+                if ($col !== null) {  // $col is a hardcoded constant from the map (rule #5)
+                    $s2 = $db->prepare("SELECT `{$col}` AS cur FROM tblSongs WHERE SongId = ? LIMIT 1");
+                    $s2->bind_param('s', $cSongId);
+                    $s2->execute();
+                    $r2 = $s2->get_result()->fetch_assoc();
+                    $s2->close();
+                    $cOriginal = (string)($r2['cur'] ?? '');
+                }
+
+                /* Rate-limit: ≥5 submissions from this IP in 24 h. */
+                $stmt = $db->prepare('SELECT COUNT(*) FROM tblSongRequests WHERE IpAddress = ? AND CreatedAt > (NOW() - INTERVAL 1 DAY)');
+                $stmt->bind_param('s', $cIp);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                if ((int)($row[0] ?? 0) >= 5) {
+                    sendJson(['error' => 'You have submitted several times recently. Please try again tomorrow.'], 429);
+                    break;
+                }
+
+                $authUser = getAuthenticatedUser();
+                $cUserId  = $authUser ? (int)$authUser['Id'] : null;
+                $cTitle   = 'Correction: ' . mb_substr((string)$songRow['Title'], 0, 480);
+                $cSongbook = (string)$songRow['SongbookAbbr'];
+                $cDetails  = 'Field: ' . $cField;
+
+                $stmt = $db->prepare(
+                    "INSERT INTO tblSongRequests
+                        (Title, Songbook, Details, ContactEmail, UserId, IpAddress, Status,
+                         RequestType, SongId, FieldName, OriginalValue, ProposedValue)
+                     VALUES (?, ?, ?, ?, ?, ?, 'pending', 'correction', ?, ?, ?, ?)"
+                );
+                $stmt->bind_param(
+                    'ssssisssss',
+                    $cTitle, $cSongbook, $cDetails, $cEmail, $cUserId, $cIp,
+                    $cSongId, $cField, $cOriginal, $cProposed
+                );
+                $stmt->execute();
+                $trackingId = (int)$stmt->insert_id;
+                $stmt->close();
+
+                if (function_exists('logActivity')) {
+                    /* Signature: (action, entityType, entityId, details[], result). */
+                    logActivity('song.correction_submit', 'song', $cSongId,
+                        ['field' => $cField, 'trackingId' => $trackingId], 'success');
+                }
+                sendJson(['ok' => true, 'trackingId' => $trackingId]);
+            } catch (\Throwable $e) {
+                sendJson(['error' => 'Could not submit the correction.'], 500);
+            }
+            break;
+
         case 'song_request_submit':
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
                 sendJson(['error' => 'POST method required.'], 405);

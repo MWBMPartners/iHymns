@@ -556,6 +556,50 @@ class iHymnsApp {
             }
         });
 
+        /* --- Song correction form (event delegation, #1092) ---
+           The song page is AJAX-injected, so its form is bound here at the
+           document level rather than via an inline script. Posts a structured
+           correction to song_correction_submit and only confirms on server ok. */
+        document.addEventListener('submit', async (e) => {
+            const form = e.target;
+            if (!form || form.id !== 'correction-form') {
+                return;
+            }
+            e.preventDefault();
+            const fb = form.querySelector('#correction-feedback');
+            const proposedEl = form.querySelector('#correction-proposed');
+            const proposed = (proposedEl?.value || '').trim();
+            if (!proposed) { proposedEl?.focus(); return; }
+            const btn = form.querySelector('button[type="submit"]');
+            if (btn) { btn.disabled = true; }
+            if (fb) { fb.className = 'small text-muted'; fb.textContent = 'Sending…'; }
+            try {
+                const res = await fetch('/api?action=song_correction_submit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                    body: JSON.stringify({
+                        songId:   form.dataset.songId || '',
+                        field:    form.querySelector('#correction-field')?.value || 'other',
+                        proposed: proposed,
+                        email:    (form.querySelector('#correction-email')?.value || '').trim(),
+                        website:  form.querySelector('#correction-website')?.value || '',
+                    }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || !data || !data.ok) { throw new Error((data && data.error) || 'Failed.'); }
+                form.reset();
+                if (fb) {
+                    fb.className = 'small text-success';
+                    fb.textContent = 'Thank you! Your correction has been submitted for review'
+                        + (data.trackingId ? ` (#${data.trackingId}).` : '.');
+                }
+            } catch (err) {
+                if (fb) { fb.className = 'small text-danger'; fb.textContent = 'Could not submit — please try again.'; }
+            } finally {
+                if (btn) { btn.disabled = false; }
+            }
+        });
+
         /* --- Navigation click handler (event delegation) --- */
         document.addEventListener('click', (e) => {
             const link = e.target.closest('[data-navigate]');
