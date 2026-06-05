@@ -213,6 +213,9 @@ appWeb/data_share/setlist_json/*.json
 appWeb/data_share/*
 appWeb/public_html/data/songs.json
 appWeb/private_html/data/songs.json
+# Local-only importer sample decks (large binaries, not source-of-truth)
+data/Import file examples/
+data/.DS_Store
 
 # CI/CD injected environment channel file (deploy-time only)
 appWeb/public_html/.env-channel
