@@ -979,6 +979,58 @@ try {
         </footer>
     <?php endif; ?>
 
+    <?php
+    /* "Why you can use this" rights panel (#1098 P1a) — pure surfacing of the
+       INDEPENDENT lyrics-PD vs music-PD flags + copyright + CCLI. The two PD
+       axes are reported as a combined verdict for the reader, but are never
+       AND-ed for gating (#939). Helps worship leaders judge project/print/use. */
+    $rpLyricsPd = !empty($song['lyricsPublicDomain']);
+    $rpMusicPd  = !empty($song['musicPublicDomain']);
+    $rpCcli     = trim((string)($song['ccli'] ?? ''));
+    $rpIswc     = trim((string)($song['iswc'] ?? ''));
+    $rpCopyright = trim((string)($song['copyright'] ?? ''));
+    if ($rpLyricsPd && $rpMusicPd) {
+        $rpClass = 'success'; $rpIcon = 'fa-circle-check';
+        $rpTitle = 'Public domain';
+        $rpMsg   = 'Both the words and the music are in the public domain — free to project, print, and translate.';
+    } elseif ($rpLyricsPd || $rpMusicPd) {
+        $rpClass = 'warning'; $rpIcon = 'fa-circle-half-stroke';
+        $rpTitle = 'Partly public domain';
+        $rpMsg   = $rpLyricsPd
+            ? 'The lyrics are public domain, but the music / tune may still be under copyright — check before reproducing the music.'
+            : 'The tune is public domain, but the lyrics may still be under copyright — check before reproducing the words.';
+    } else {
+        $rpClass = 'secondary'; $rpIcon = 'fa-shield-halved';
+        $rpTitle = 'Under copyright';
+        $rpMsg   = $rpCcli !== ''
+            ? 'Likely covered by your church CCLI licence — remember to report this song under CCLI #' . htmlspecialchars($rpCcli) . '.'
+            : 'Check your licence (e.g. CCLI) before projecting, printing, or translating.';
+    }
+    ?>
+    <section class="song-rights mt-4 pt-3 border-top" aria-label="Usage and rights">
+        <h2 class="h6 mb-2 d-flex align-items-center gap-2">
+            <i class="fa-solid fa-scale-balanced text-muted" aria-hidden="true"></i>Can you use this?
+        </h2>
+        <div class="alert alert-<?= $rpClass ?> py-2 px-3 mb-2 small d-flex align-items-start gap-2" role="note">
+            <i class="fa-solid <?= $rpIcon ?> mt-1" aria-hidden="true"></i>
+            <span><strong><?= htmlspecialchars($rpTitle) ?>.</strong> <?= $rpMsg ?></span>
+        </div>
+        <ul class="list-inline small text-muted mb-0">
+            <li class="list-inline-item">Lyrics: <strong><?= $rpLyricsPd ? 'Public domain' : 'Copyright' ?></strong></li>
+            <li class="list-inline-item">·</li>
+            <li class="list-inline-item">Music: <strong><?= $rpMusicPd ? 'Public domain' : 'Copyright' ?></strong></li>
+            <?php if ($rpCcli !== ''): ?>
+                <li class="list-inline-item">·</li>
+                <li class="list-inline-item">CCLI <a href="https://songselect.ccli.com/Search/Results?SongNumber=<?= rawurlencode($rpCcli) ?>" target="_blank" rel="noopener" class="song-meta-link">#<?= htmlspecialchars($rpCcli) ?></a></li>
+            <?php endif; ?>
+            <?php if ($rpIswc !== ''): ?>
+                <li class="list-inline-item">·</li>
+                <li class="list-inline-item">ISWC <?= htmlspecialchars($rpIswc) ?></li>
+            <?php endif; ?>
+        </ul>
+        <p class="text-muted fst-italic mb-0 mt-1" style="font-size:.75rem">Guidance only — confirm rights with your licence provider.</p>
+    </section>
+
     <!-- Report a missing song (→ /request page #656/#658) + suggest a structured
          correction for THIS song (#1092 — posts {songId, field, proposed} to
          song_correction_submit; the server reads the current value itself). -->
