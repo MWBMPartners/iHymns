@@ -2,7 +2,7 @@
 
 > **A multiplatform Christian lyrics application for worship enhancement**
 
-[![Version: 0.550.0 Alpha](https://img.shields.io/badge/Version-0.550.0%20Alpha-orange.svg)](#environments)
+[![Version: 0.770.0 Alpha](https://img.shields.io/badge/Version-0.770.0%20Alpha-orange.svg)](#environments)
 [![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSING.md)
 [![Security Policy](https://img.shields.io/badge/Security-Policy-brightgreen.svg)](SECURITY.md)
 [![Platform: Web](https://img.shields.io/badge/Platform-Web%20PWA-blue.svg)](#platforms)
