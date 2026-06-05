@@ -564,6 +564,20 @@ a.link-bare:hover {
     outline-offset: 2px;
 }
 
+/* a11y (WCAG 2.5.8 Target Size (Minimum), new in WCAG 2.2): interactive
+   controls should be at least 24x24 CSS px. Bootstrap's .btn-sm is already
+   ~31px tall, so this 24px floor is INERT for normal buttons (24px is below
+   their natural size) — it only lifts any genuinely-undersized icon-only small
+   control (audio/card/chip buttons) to the minimum, with zero layout impact on
+   anything already compliant. https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum.html */
+.btn-sm,
+.btn-group-sm > .btn,
+.theme-chip,
+.card-layout-hide-btn {
+    min-width: 24px;
+    min-height: 24px;
+}
+
 /* Collapsible header search bar removed (#812) — the bottom-drawer
    Search entry navigates straight to /search; no need for a sliding
    header bar duplicating the affordance. */
