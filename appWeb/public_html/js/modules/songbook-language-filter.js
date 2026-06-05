@@ -347,6 +347,10 @@ export function bootSongbookLanguageFilter(root) {
         searchInput.addEventListener('input', () => applySearch(searchInput.value));
         /* Clearing via the native search "✕" fires 'search'. */
         searchInput.addEventListener('search', () => applySearch(searchInput.value));
+        /* a11y (WCAG 2.4.3): when the dropdown opens, move focus into the
+           search box so keyboard users can type immediately. Bootstrap's
+           shown.bs.dropdown bubbles to the wrapper. */
+        wrapper.addEventListener('shown.bs.dropdown', () => searchInput.focus());
     }
 
     allCheckbox.addEventListener('change', () => {

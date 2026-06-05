@@ -205,6 +205,12 @@ export class Router {
         /* Run post-load hooks (e.g., initialise favourites on song pages) */
         this.afterPageLoad(page, params);
 
+        /* a11y (WCAG 2.4.3): move focus to the main region after a client-side
+           navigation so keyboard + screen-reader users land on the new content
+           rather than the stale nav link they activated. preventScroll so this
+           doesn't fight the scroll-restore below; #main-content has tabindex="-1". */
+        document.getElementById('main-content')?.focus({ preventScroll: true });
+
         /* Scroll handling. On popstate-back / forward to a previously-
            seen path, restore the saved scroll position with a smooth
            scroll. On forward navigation (or when no saved position

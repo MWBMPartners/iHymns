@@ -556,6 +556,13 @@ a.link-bare:hover {
 .btn-header-icon:active {
     transform: scale(0.92);
 }
+/* a11y (WCAG 2.4.7): small (40x40) header icon buttons need a stronger focus
+   ring than the 2px global default to stay visible in light/standard themes —
+   matches the .scroll-to-top-btn pattern. */
+.btn-header-icon:focus-visible {
+    outline: 3px solid var(--accent-solid);
+    outline-offset: 2px;
+}
 
 /* Collapsible header search bar removed (#812) — the bottom-drawer
    Search entry navigates straight to /search; no need for a sliding
@@ -3463,6 +3470,14 @@ body.reduce-motion .lang-filter-row {
     transform: translateY(-2px);
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
 }
+/* a11y (WCAG 2.4.7): explicit keyboard-focus ring so a focused chip is
+   distinct from the hover state (the transform is reduced-motion-gated below). */
+.theme-chip:focus-visible {
+    outline: 2px solid var(--accent-solid);
+    outline-offset: 2px;
+    transform: translateY(-2px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
+}
 .theme-chip .badge {
     font-weight: 600;
 }
@@ -3474,14 +3489,16 @@ body.reduce-motion .lang-filter-row {
     .theme-chip {
         transition: none;
     }
-    .theme-chip:hover {
+    .theme-chip:hover,
+    .theme-chip:focus-visible {
         transform: none;
     }
 }
 body.reduce-motion .theme-chip {
     transition: none;
 }
-body.reduce-motion .theme-chip:hover {
+body.reduce-motion .theme-chip:hover,
+body.reduce-motion .theme-chip:focus-visible {
     transform: none;
 }
 

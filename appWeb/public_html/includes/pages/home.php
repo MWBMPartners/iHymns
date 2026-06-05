@@ -311,7 +311,7 @@ $homeCardEnd = '</div>';
     <!-- Recently Viewed Songs (#304) — shown for authenticated users -->
     <div class="mb-4" id="recent-songs-section" style="display:none">
         <h2 class="h5"><i class="fa-solid fa-clock-rotate-left me-2" aria-hidden="true"></i>Recently Viewed</h2>
-        <div id="recent-songs-list" class="list-group list-group-flush"></div>
+        <div id="recent-songs-list" class="list-group list-group-flush" aria-live="polite"></div>
     </div>
     <?= $homeCardEnd ?>
 
@@ -319,7 +319,7 @@ $homeCardEnd = '</div>';
     <!-- Popular Songs (#303) -->
     <div class="mb-4" id="popular-songs-section">
         <h2 class="h5"><i class="fa-solid fa-fire me-2 text-warning" aria-hidden="true"></i>Popular Songs</h2>
-        <div id="popular-songs-list" class="list-group list-group-flush">
+        <div id="popular-songs-list" class="list-group list-group-flush" aria-live="polite">
             <div class="text-muted small p-2">Loading...</div>
         </div>
     </div>
@@ -333,7 +333,7 @@ $homeCardEnd = '</div>';
          inline; the dedicated searchable /themes index is the follow-on. -->
     <div class="mb-4" id="tags-section">
         <h2 class="h5"><i class="fa-solid fa-tags me-2" aria-hidden="true"></i>Popular Themes</h2>
-        <div id="tags-list" class="d-flex flex-wrap gap-2 align-items-center">
+        <div id="tags-list" class="d-flex flex-wrap gap-2 align-items-center" aria-live="polite">
             <span class="text-muted small">Loading...</span>
         </div>
     </div>
