@@ -1004,6 +1004,7 @@ if (!empty($breadcrumbItems)) {
                         </button>
                         <div class="dropdown-menu dropdown-menu-end p-0"
                              id="header-notifications-panel"
+                             role="group"
                              aria-labelledby="header-notifications-btn"
                              style="width: 320px; max-width: 90vw;">
                             <div class="d-flex align-items-center justify-content-between px-3 py-2 border-bottom">
