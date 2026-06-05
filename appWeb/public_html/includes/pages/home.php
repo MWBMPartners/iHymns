@@ -310,7 +310,7 @@ $homeCardEnd = '</div>';
     <?= $homeCard('recent-songs') ?>
     <!-- Recently Viewed Songs (#304) — shown for authenticated users -->
     <div class="mb-4" id="recent-songs-section" style="display:none">
-        <h5><i class="fa-solid fa-clock-rotate-left me-2"></i>Recently Viewed</h5>
+        <h2 class="h5"><i class="fa-solid fa-clock-rotate-left me-2" aria-hidden="true"></i>Recently Viewed</h2>
         <div id="recent-songs-list" class="list-group list-group-flush"></div>
     </div>
     <?= $homeCardEnd ?>
@@ -318,7 +318,7 @@ $homeCardEnd = '</div>';
     <?= $homeCard('popular-songs') ?>
     <!-- Popular Songs (#303) -->
     <div class="mb-4" id="popular-songs-section">
-        <h5><i class="fa-solid fa-fire me-2 text-warning"></i>Popular Songs</h5>
+        <h2 class="h5"><i class="fa-solid fa-fire me-2 text-warning" aria-hidden="true"></i>Popular Songs</h2>
         <div id="popular-songs-list" class="list-group list-group-flush">
             <div class="text-muted small p-2">Loading...</div>
         </div>
@@ -332,7 +332,7 @@ $homeCardEnd = '</div>';
          tag vocabulary grows. "Browse all themes" reveals the full set
          inline; the dedicated searchable /themes index is the follow-on. -->
     <div class="mb-4" id="tags-section">
-        <h5><i class="fa-solid fa-tags me-2"></i>Popular Themes</h5>
+        <h2 class="h5"><i class="fa-solid fa-tags me-2" aria-hidden="true"></i>Popular Themes</h2>
         <div id="tags-list" class="d-flex flex-wrap gap-2 align-items-center">
             <span class="text-muted small">Loading...</span>
         </div>
