@@ -1638,4 +1638,132 @@ return [
             !_migProbe_tableExists($db, 'tblLyricLineTranslations')
             || !_migProbe_tableExists($db, 'tblLyricLineAnnotations'),
     ],
+
+    /* ----------------------------------------------------------------------
+     * #1090 — enhancement-foundation batch: forward-looking, additive, dormant
+     * schema for the next program phase (tune entity, CCLI usage spine, corpus
+     * linter, annotation voting, embeddings, live-follow) + request-corrections
+     * + ENUM->VARCHAR hardening. Deployable ahead of the consuming features.
+     * -------------------------------------------------------------------- */
+    'tunes-entity' => [
+        'script' => 'migrate-tunes-entity.php',
+        'card' => [
+            'title'  => 'Tune + meter entity (#1090 P4)',
+            'body'   => 'Creates <code>tblTunes</code> + <code>tblTuneAliases</code>'
+                      . ' and adds <code>tblSongs.TuneId</code> (FK), promoting the'
+                      . ' hymn tune from free-text <code>TuneName</code> to a'
+                      . ' first-class entity (metre, MusicBrainz Work). Backfills'
+                      . ' from distinct tune names + links songs. Additive + idempotent.',
+            'button' => 'Run Tune Entity Migration',
+        ],
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblTunes')
+            || !_migProbe_columnExists($db, 'tblSongs', 'TuneId'),
+    ],
+
+    'usage-events' => [
+        'script' => 'migrate-usage-events.php',
+        'card' => [
+            'title'  => 'Song usage-event log (#1090 P5)',
+            'body'   => 'Creates <code>tblSongUsageEvents</code> — the reportable'
+                      . ' "song used on date, in context, by org" spine that backs'
+                      . ' CCLI / CCS / OneLicense usage reports. Dormant until the'
+                      . ' projection/print/schedule write-hooks land. Additive + idempotent.',
+            'button' => 'Run Usage-Event Log Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongUsageEvents'),
+    ],
+
+    'quality-findings' => [
+        'script' => 'migrate-quality-findings.php',
+        'card' => [
+            'title'  => 'Corpus-quality linter findings (#1090 P8)',
+            'body'   => 'Creates <code>tblSongQualityFindings</code> — one row per'
+                      . ' (song, rule) defect, UPSERTed each lint run and triaged'
+                      . ' like the review queue, so corpus defects become a finite'
+                      . ' assignable worklist. Additive + idempotent.',
+            'button' => 'Run Quality-Findings Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongQualityFindings'),
+    ],
+
+    'annotation-votes' => [
+        'script' => 'migrate-annotation-votes.php',
+        'card' => [
+            'title'  => 'Annotation votes — sort-only (#1090 P10)',
+            'body'   => 'Creates <code>tblLyricAnnotationVotes</code> (one vote per'
+                      . ' user per annotation). The tally drives reviewer-queue SORT'
+                      . ' ORDER only — it never auto-publishes to the read path.'
+                      . ' Additive + idempotent.',
+            'button' => 'Run Annotation Votes Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblLyricAnnotationVotes'),
+    ],
+
+    'song-embeddings' => [
+        'script' => 'migrate-song-embeddings.php',
+        'card' => [
+            'title'  => 'Song embeddings — semantic search (#1090 P11)',
+            'body'   => 'Creates <code>tblSongEmbeddings</code> — the durable vector'
+                      . ' cache for semantic search, with a content-hash so an edit'
+                      . ' re-embeds only the affected rows (never the whole corpus).'
+                      . ' Prepped now, dormant until semantic search ships. Additive + idempotent.',
+            'button' => 'Run Song Embeddings Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongEmbeddings'),
+    ],
+
+    'live-follow' => [
+        'script' => 'migrate-live-follow.php',
+        'card' => [
+            'title'  => 'Live-follow sessions (#1090 P7)',
+            'body'   => 'Creates <code>tblLiveFollowSessions</code> — ephemeral'
+                      . ' broadcast state for the native "Live Follow" feature'
+                      . ' (congregants mirror the leader\'s current slide via a join'
+                      . ' code). Additive + idempotent.',
+            'button' => 'Run Live-Follow Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblLiveFollowSessions'),
+    ],
+
+    'request-corrections' => [
+        'script' => 'migrate-request-corrections.php',
+        'card' => [
+            'title'  => 'Song-request corrections (#1090 N2)',
+            'body'   => 'Extends <code>tblSongRequests</code> with'
+                      . ' <code>RequestType</code> + <code>SongId</code> (FK) +'
+                      . ' <code>FieldName</code> + <code>OriginalValue</code>/'
+                      . '<code>ProposedValue</code> so corrections to an existing'
+                      . ' song are captured as a structured before/after diff.'
+                      . ' Additive + idempotent.',
+            'button' => 'Run Request-Corrections Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongRequests', 'RequestType'),
+    ],
+
+    'identifier-media-hardening' => [
+        'script' => 'migrate-identifier-media-hardening.php',
+        'card' => [
+            'title'  => 'Identifier + media hardening (#1090 P6/N6-N7)',
+            'body'   => 'Widens <code>tblCreditPersonIdentifiers.IdentifierType</code>'
+                      . ' and <code>tblSongMedia.Kind</code> from ENUM to VARCHAR'
+                      . ' (new identifier/media kinds need no ALTER) and adds'
+                      . ' <code>tblCreditPeople.MusicBrainzArtistMBID</code>.'
+                      . ' Data-preserving + idempotent.',
+            'button' => 'Run Identifier + Media Hardening',
+        ],
+        /* Pending until the new column exists AND IdentifierType is widened. */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_columnExists($db, 'tblCreditPeople', 'MusicBrainzArtistMBID')) {
+                return true;
+            }
+            $r = $db->query(
+                "SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblCreditPersonIdentifiers'
+                    AND COLUMN_NAME = 'IdentifierType' LIMIT 1"
+            );
+            $row = $r ? $r->fetch_assoc() : null;
+            return !$row || strtolower((string)$row['DATA_TYPE']) !== 'varchar';
+        },
+    ],
 ];
