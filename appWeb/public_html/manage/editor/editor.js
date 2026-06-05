@@ -1109,6 +1109,44 @@ function renderComponents(song) {
 
         body.appendChild(textarea);
 
+        /* #1094 — optional manual per-line chords (collapsible). One line of
+           space-separated chord symbols per lyric line; saved to ChordsJson
+           (parallel to the lyrics). Hidden until the curator opens it, or shown
+           when the component already has chords. */
+        var chordsWrap = document.createElement('div');
+        chordsWrap.className = 'mt-2';
+        var hasChords = Array.isArray(comp.chords) && comp.chords.some(function (c) {
+            return c && (Array.isArray(c) ? c.length : String(c).trim());
+        });
+        var chordsToggle = document.createElement('button');
+        chordsToggle.type = 'button';
+        chordsToggle.className = 'btn btn-sm btn-link p-0 text-decoration-none';
+        chordsToggle.innerHTML = '<i class="bi bi-music-note-beamed me-1"></i>Chords';
+        var chordsBox = document.createElement('div');
+        chordsBox.className = 'mt-1';
+        chordsBox.style.display = hasChords ? '' : 'none';
+        var chordsArea = document.createElement('textarea');
+        chordsArea.className = 'form-control form-control-sm component-chords font-monospace';
+        chordsArea.rows = 2;
+        chordsArea.placeholder = 'One line of chords per lyric line, e.g.  C    G    Am';
+        chordsArea.value = componentChordsToText(comp);
+        chordsArea.addEventListener('input', function () {
+            comp.chords = chordsArea.value.split('\n').map(function (l) { return l.trim(); });
+            markModified(song.id);
+        });
+        chordsToggle.addEventListener('click', function () {
+            chordsBox.style.display = (chordsBox.style.display === 'none') ? '' : 'none';
+            if (chordsBox.style.display !== 'none') { chordsArea.focus(); }
+        });
+        var chordsHint = document.createElement('div');
+        chordsHint.className = 'form-text small';
+        chordsHint.textContent = 'Optional. Each chord line lines up with the lyric line above it.';
+        chordsBox.appendChild(chordsArea);
+        chordsBox.appendChild(chordsHint);
+        chordsWrap.appendChild(chordsToggle);
+        chordsWrap.appendChild(chordsBox);
+        body.appendChild(chordsWrap);
+
         /* Assemble the full card. */
         card.appendChild(header);
         card.appendChild(body);
@@ -1143,6 +1181,21 @@ function renderComponents(song) {
  * @param {{type:string, number:(number|null|string)}} comp
  * @returns {string}
  */
+/**
+ * componentChordsToText(comp) — render a component's ChordsJson back into the
+ * editable textarea: one line per lyric line, chords space-separated. Loaded
+ * chords are arrays (["C","G"]); freshly-typed lines are strings ("C G"). (#1094)
+ * @param {{chords?:Array}} comp
+ * @returns {string}
+ */
+function componentChordsToText(comp) {
+    if (!Array.isArray(comp.chords)) { return ''; }
+    return comp.chords.map(function (c) {
+        if (Array.isArray(c)) { return c.join(' '); }
+        return (c == null) ? '' : String(c);
+    }).join('\n');
+}
+
 function componentHeaderLabel(comp) {
     var type = (comp && comp.type) ? String(comp.type) : 'verse';
     var cap = type.charAt(0).toUpperCase() + type.slice(1);

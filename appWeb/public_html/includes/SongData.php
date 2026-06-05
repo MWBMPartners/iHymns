@@ -120,6 +120,8 @@ class SongData
     /** #858 — schema-probe result for tblSongComponents.Language. */
     private bool $_componentLangColumn = false;
     private bool $_componentLangColumnChecked = false;
+    private bool $_componentChordsColumn = false;
+    private bool $_componentChordsColumnChecked = false;
 
     /** #892 — schema-probe result for tblSongs.ArrangementJson. */
     private bool $_arrangementColumn = false;
@@ -3285,6 +3287,29 @@ class SongData
         return $this->_componentLangColumn;
     }
 
+    /** Cached probe for the optional tblSongComponents.ChordsJson column (#1066/#1094). */
+    private function _hasComponentChordsColumn(): bool
+    {
+        if ($this->_componentChordsColumnChecked) {
+            return $this->_componentChordsColumn;
+        }
+        $this->_componentChordsColumnChecked = true;
+        try {
+            $stmt = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongComponents'
+                    AND COLUMN_NAME  = 'ChordsJson' LIMIT 1"
+            );
+            $stmt->execute();
+            $this->_componentChordsColumn = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+        } catch (\Throwable $_e) {
+            $this->_componentChordsColumn = false;
+        }
+        return $this->_componentChordsColumn;
+    }
+
     /**
      * #892 — schema-probe for tblSongs.ArrangementJson. Same caching
      * pattern as the component-language probe so editor-load (which
@@ -3377,8 +3402,11 @@ class SongData
         $langSelect = $this->_hasComponentLanguageColumn()
             ? ', Language AS language'
             : ', NULL AS language';
+        $chordsSelect = $this->_hasComponentChordsColumn()
+            ? ', ChordsJson AS chords_json'
+            : ', NULL AS chords_json';
         $stmt = $this->db->prepare(
-            "SELECT Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}
+            "SELECT Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}{$chordsSelect}
              FROM tblSongComponents
              WHERE SongId = ?
              ORDER BY SortOrder"
@@ -3392,6 +3420,7 @@ class SongData
                 'type'     => $row['type'],
                 'number'   => (int)$row['number'],
                 'lines'    => json_decode($row['lines_json'], true) ?? [],
+                'chords'   => (isset($row['chords_json']) && $row['chords_json'] !== null) ? (json_decode($row['chords_json'], true) ?: null) : null,
                 'language' => $row['language'] !== null ? (string)$row['language'] : null,
             ];
         }
@@ -3472,8 +3501,11 @@ class SongData
         $langSelect = $this->_hasComponentLanguageColumn()
             ? ', Language AS language'
             : ', NULL AS language';
+        $chordsSelect = $this->_hasComponentChordsColumn()
+            ? ', ChordsJson AS chords_json'
+            : ', NULL AS chords_json';
         $stmt = $this->db->prepare(
-            "SELECT SongId, Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}
+            "SELECT SongId, Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}{$chordsSelect}
              FROM tblSongComponents
              WHERE SongId IN ($placeholders)
              ORDER BY SongId, SortOrder"
@@ -3487,6 +3519,7 @@ class SongData
                 'type'     => $row['type'],
                 'number'   => (int)$row['number'],
                 'lines'    => json_decode($row['lines_json'], true) ?? [],
+                'chords'   => (isset($row['chords_json']) && $row['chords_json'] !== null) ? (json_decode($row['chords_json'], true) ?: null) : null,
                 'language' => $row['language'] !== null ? (string)$row['language'] : null,
             ];
         }

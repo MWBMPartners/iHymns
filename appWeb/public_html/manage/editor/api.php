@@ -1408,6 +1408,26 @@ switch ($action) {
                 $colProbe->close();
             } catch (\Throwable $_e) { /* default false */ }
 
+            /* #1094 — schema-probe for the optional ChordsJson column (#1066).
+               When present, manual per-line chords are persisted via a guarded
+               UPDATE after each component INSERT (leaving the proven INSERT shape
+               untouched); pre-migration deploys simply skip it. */
+            $hasComponentChords = false;
+            try {
+                $chProbe = $db->prepare(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                      WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME   = 'tblSongComponents'
+                        AND COLUMN_NAME  = 'ChordsJson' LIMIT 1"
+                );
+                $chProbe->execute();
+                $hasComponentChords = $chProbe->get_result()->fetch_row() !== null;
+                $chProbe->close();
+            } catch (\Throwable $_e) { /* default false */ }
+            $updChords = $hasComponentChords
+                ? $db->prepare('UPDATE tblSongComponents SET ChordsJson = ? WHERE Id = ?')
+                : null;
+
             if ($hasComponentLanguage) {
                 $insComp = $db->prepare(
                     'INSERT INTO tblSongComponents
@@ -1441,9 +1461,38 @@ switch ($action) {
                     $insComp->bind_param('ssiis', $songId, $type, $cNum, $order, $lines);
                 }
                 $insComp->execute();
+
+                /* #1094 — persist manual per-line chords (parallel to LinesJson).
+                   comp['chords'][i] may be a space-separated string or an array
+                   of chord symbols; null-padded to the line count. Stored only
+                   when at least one line has chords. */
+                if ($updChords !== null && isset($comp['chords']) && is_array($comp['chords'])) {
+                    $lineCount = is_array($comp['lines'] ?? null) ? count($comp['lines']) : 0;
+                    $chordsArr = [];
+                    $anyChords = false;
+                    for ($ci = 0; $ci < $lineCount; $ci++) {
+                        $cell = $comp['chords'][$ci] ?? null;
+                        if (is_array($cell)) {
+                            $clean = array_values(array_filter(array_map(static fn($c) => trim((string)$c), $cell), static fn($c) => $c !== ''));
+                        } elseif (is_string($cell) && trim($cell) !== '') {
+                            $clean = array_values(array_filter(preg_split('/\s+/', trim($cell)) ?: [], static fn($c) => $c !== ''));
+                        } else {
+                            $clean = null;
+                        }
+                        if ($clean !== null && $clean !== []) { $chordsArr[] = $clean; $anyChords = true; }
+                        else { $chordsArr[] = null; }
+                    }
+                    if ($anyChords) {
+                        $chordsJson = json_encode($chordsArr, JSON_UNESCAPED_UNICODE);
+                        $newCompId  = (int)$db->insert_id;
+                        $updChords->bind_param('si', $chordsJson, $newCompId);
+                        $updChords->execute();
+                    }
+                }
                 $order++;
             }
             $insComp->close();
+            if ($updChords !== null) { $updChords->close(); }
 
             /* Revision audit log (#400) — authenticated editors only.
                Silent no-op if the user isn't authenticated via the /manage
