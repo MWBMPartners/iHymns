@@ -1511,4 +1511,131 @@ return [
             return !($res && $res->num_rows > 0);
         },
     ],
+
+    /* ----------------------------------------------------------------------
+     * #1066 — one-pass forward-looking schema for interchange fidelity, ingest
+     * hardening, identity map. Additive + dormant until the consuming features
+     * land; shipped together to avoid a second migration round.
+     * -------------------------------------------------------------------- */
+    'interchange-fidelity' => [
+        'script' => 'migrate-interchange-fidelity.php',
+        'card' => [
+            'title'  => 'Interchange fidelity — chords/notes/arrangements (#1066)',
+            'body'   => 'Adds <code>tblSongComponents.ChordsJson</code> +'
+                      . ' <code>NotesJson</code> (lossless chord + presenter-note'
+                      . ' round-trip) and creates <code>tblSongArrangements</code>'
+                      . ' (named component reorderings the PP7 exporter reads via'
+                      . ' <code>IsDefault=1</code>). Additive + idempotent.',
+            'button' => 'Run Interchange Fidelity Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongComponents', 'ChordsJson'),
+    ],
+
+    'ingest-review-queue' => [
+        'script' => 'migrate-ingest-review-queue.php',
+        'card' => [
+            'title'  => 'Lyrics review queue + conflicts (#1066)',
+            'body'   => 'Creates <code>tblLyricsConflicts</code> +'
+                      . ' <code>tblLyricsReviewQueue</code> — a moderation gate'
+                      . ' between lyrics ingest and the public read path, so a'
+                      . ' conflicting incoming version is queued for review instead'
+                      . ' of silently overwriting curated data. Additive + idempotent.',
+            'button' => 'Run Lyrics Review Queue Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblLyricsReviewQueue'),
+    ],
+
+    'api-key-hardening' => [
+        'script' => 'migrate-api-key-hardening.php',
+        'card' => [
+            'title'  => 'API-key hardening — rate limits + idempotency (#1066)',
+            'body'   => 'Adds <code>tblApiKeys.RateLimitPerMin/PerDay</code> and'
+                      . ' creates <code>tblApiKeyUsage</code> (rolling counters,'
+                      . ' per-scope-ready) + <code>tblApiKeyIdempotency</code>'
+                      . ' (safe-retry response cache) for the ingest endpoint.'
+                      . ' Additive + idempotent.',
+            'button' => 'Run API-Key Hardening Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblApiKeys', 'RateLimitPerMin'),
+    ],
+
+    'song-normalized-title' => [
+        'script' => 'migrate-song-normalized-title.php',
+        'card' => [
+            'title'  => 'NormalizedTitle dedup column (#1066)',
+            'body'   => 'Adds <code>tblSongs.NormalizedTitle</code> (indexed,'
+                      . ' app-maintained fold of <code>Title</code>) and backfills'
+                      . ' every song, so duplicate detection + ingest resolution'
+                      . ' pre-filter on the index instead of normalising row-by-row'
+                      . ' in PHP. Additive + idempotent (backfill re-runnable).',
+            'button' => 'Run NormalizedTitle Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongs', 'NormalizedTitle'),
+    ],
+
+    'song-link-confidence' => [
+        'script' => 'migrate-song-link-confidence.php',
+        'card' => [
+            'title'  => 'Song-link confidence tiers (#1066)',
+            'body'   => 'Adds <code>tblSongLinkSuggestions.Confidence</code>'
+                      . ' (high/medium/low) + <code>Signal</code> (detecting'
+                      . ' method, e.g. shared-isrc) so curators triage strong-key'
+                      . ' matches ahead of fuzzy title guesses. Additive + idempotent.',
+            'button' => 'Run Song-Link Confidence Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongLinkSuggestions', 'Confidence'),
+    ],
+
+    'song-identity-map' => [
+        'script' => 'migrate-song-identity-map.php',
+        'card' => [
+            'title'  => 'Cross-system identity map + Christian view (#1066)',
+            'body'   => 'Adds <code>tblWorks.MusicBrainzWorkMBID</code> (composition'
+                      . ' identity), creates <code>tblSongIdentityMap</code>'
+                      . ' (recording identity: ISRC/MusicBrainz/Spotify/Genius) and'
+                      . ' the <code>v_ChristianSongs</code> read fence. The iLyricsDB'
+                      . ' bridge stays gated on the DB-merge decision. Additive + idempotent.',
+            'button' => 'Run Identity Map Migration',
+        ],
+        /* Pending until ALL THREE objects this migration creates exist — the
+         * table, the tblWorks column, and the view — so a partial apply (table
+         * created but a later step threw) never shows the card as green. */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_tableExists($db, 'tblSongIdentityMap')) {
+                return true;
+            }
+            if (!_migProbe_columnExists($db, 'tblWorks', 'MusicBrainzWorkMBID')) {
+                return true;
+            }
+            $v = $db->query(
+                "SELECT 1 FROM INFORMATION_SCHEMA.VIEWS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME = 'v_ChristianSongs' LIMIT 1"
+            );
+            return !($v && $v->num_rows > 0);
+        },
+    ],
+
+    /* ----------------------------------------------------------------------
+     * #1088 — per-line lyric enrichment: translations + Genius-style
+     * annotations, anchored on tblLyricLines.Id. Additive + dormant until the
+     * ingest/UI/display feature work lands.
+     * -------------------------------------------------------------------- */
+    'line-enrichment' => [
+        'script' => 'migrate-line-enrichment.php',
+        'card' => [
+            'title'  => 'Per-line lyric enrichment — translations + annotations (#1088)',
+            'body'   => 'Creates <code>tblLyricLineTranslations</code> (per-line meaning'
+                      . ' translation + romanization, modelling the Apple Music TTML'
+                      . ' <code>&lt;translation&gt;</code>/<code>&lt;transliteration&gt;</code> tracks)'
+                      . ' and <code>tblLyricLineAnnotations</code> (Genius-style explanatory'
+                      . ' gloss over a line/phrase span). Both anchor on'
+                      . ' <code>tblLyricLines.Id</code>. Additive + idempotent.',
+            'button' => 'Run Line Enrichment Migration',
+        ],
+        /* Pending until BOTH tables exist (multi-table OR-form). */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblLyricLineTranslations')
+            || !_migProbe_tableExists($db, 'tblLyricLineAnnotations'),
+    ],
 ];
