@@ -173,6 +173,15 @@ final class MusicXmlImporter
             libxml_clear_errors();
             libxml_use_internal_errors($prev);
         }
+        /* SECURITY: reject a container.xml rootfile path that tries to escape
+           the archive (zip-internal traversal / absolute path) before handing
+           it to getFromName — the .mxl is untrusted. Same guard the bulk-import
+           ZIP reader uses (manage/editor/api.php). On reject, fall through to
+           the first-non-container-.xml scan below. */
+        if ($rootPath !== null
+            && (str_contains($rootPath, '..') || str_starts_with($rootPath, '/'))) {
+            $rootPath = null;
+        }
         $xml = false;
         if ($rootPath !== null) {
             $xml = $zip->getFromName($rootPath);

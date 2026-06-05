@@ -6871,7 +6871,17 @@ function _bulkImport_sqliteColumns(\SQLite3 $db, string $table): array
     $res = @$db->query('PRAGMA table_info("' . $safeTable . '")');
     if ($res === false) { return $cols; }
     while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
-        $cols[strtolower((string)$row['name'])] = (string)$row['name'];
+        $name = (string)$row['name'];
+        /* SECURITY: these column names come from an UNTRUSTED uploaded SQLite
+           schema and are later interpolated (double-quoted) into SELECTs
+           (e.g. '"' . $titleC . '"'). A name containing a double-quote would
+           break out of the "<col>" identifier quoting and inject SQL. Reject
+           anything that isn't a plain identifier — EasyWorship's real columns
+           are all [A-Za-z0-9_], so this drops only hostile names. */
+        if ($name === '' || !preg_match('/^[A-Za-z0-9_]+$/', $name)) {
+            continue;
+        }
+        $cols[strtolower($name)] = $name;
     }
     return $cols;
 }

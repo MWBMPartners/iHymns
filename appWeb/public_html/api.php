@@ -4405,7 +4405,7 @@ if ($action !== null) {
             }
 
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            if (!$authUser || !userHasEntitlement('manage_content_restrictions', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -4449,7 +4449,7 @@ if ($action !== null) {
             }
 
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            if (!$authUser || !userHasEntitlement('manage_content_restrictions', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -6667,7 +6667,7 @@ if ($action !== null) {
             }
 
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            if (!$authUser || !userHasEntitlement('assign_user_tier', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -6704,7 +6704,7 @@ if ($action !== null) {
             }
 
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            if (!$authUser || !userHasEntitlement('manage_user_licences', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
