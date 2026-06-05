@@ -1185,7 +1185,7 @@ if (!empty($breadcrumbItems)) {
         </nav>
 
         <!-- Copyright & Version info -->
-        <div class="footer-info" aria-label="Application information">
+        <div class="footer-info" role="group" aria-label="Application information">
             <small>
                 <?= $app["Application"]["Copyright"]["Full"] ?>
                 &nbsp;|&nbsp;
@@ -1206,7 +1206,7 @@ if (!empty($breadcrumbItems)) {
          NUMERIC KEYPAD MODAL — For searching by song number.
          Provides a touch-friendly number pad on all devices.
          ================================================================ -->
-    <div class="modal fade" id="numpad-modal" tabindex="-1" aria-labelledby="numpad-modal-label" aria-hidden="true">
+    <div class="modal fade" id="numpad-modal" tabindex="-1" role="dialog" aria-labelledby="numpad-modal-label" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered modal-sm">
             <div class="modal-content numpad-modal-content">
                 <div class="modal-header">
@@ -1258,7 +1258,7 @@ if (!empty($breadcrumbItems)) {
     <!-- ================================================================
          SHUFFLE MODAL — Options for random song selection.
          ================================================================ -->
-    <div class="modal fade" id="shuffle-modal" tabindex="-1" aria-labelledby="shuffle-modal-label" aria-hidden="true">
+    <div class="modal fade" id="shuffle-modal" tabindex="-1" role="dialog" aria-labelledby="shuffle-modal-label" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered modal-sm">
             <div class="modal-content">
                 <div class="modal-header">
@@ -1293,6 +1293,7 @@ if (!empty($breadcrumbItems)) {
          a valid CCLI licence. Stored in localStorage after acceptance.
          ================================================================ -->
     <div class="modal fade" id="disclaimer-modal" tabindex="-1"
+         role="dialog"
          aria-labelledby="disclaimer-modal-label"
          aria-hidden="true"
          data-bs-backdrop="static"
@@ -1346,7 +1347,7 @@ if (!empty($breadcrumbItems)) {
     <!-- ================================================================
          SHARE MODAL — For sharing/copying song permalink
          ================================================================ -->
-    <div class="modal fade" id="share-modal" tabindex="-1" aria-labelledby="share-modal-label" aria-hidden="true">
+    <div class="modal fade" id="share-modal" tabindex="-1" role="dialog" aria-labelledby="share-modal-label" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered modal-sm">
             <div class="modal-content">
                 <div class="modal-header">
