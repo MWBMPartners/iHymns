@@ -84,6 +84,19 @@ tools/           — Build + data-prep scripts
 - Never skip pre-commit hooks (`--no-verify`), never force-push main/alpha, never amend merged commits.
 - Audit before opening a PR: PHP syntax (`find appWeb -name '*.php' -exec php -l {} \;`), JS syntax (`find appWeb -name '*.js' -exec node --check {} \;`), security + accessibility + structure per the pattern established on PR #445.
 
+## 🔁 Standing consistency tasks (non-negotiable)
+
+**GitHub Issues are this project's point of truth.** After every substantive piece of work — and always before a session ends — run the full **[.claude/standing-tasks.md](standing-tasks.md)** checklist so code, docs, Wiki, Milestones, the Project board and the Claude `.claude/` docs all stay consistent with reality:
+
+1. **Annotate** new/changed code to the project standard — a file/section doc-block **and** inline line-by-line annotations in two registers (an **ELI5** plain sentence + the **detailed** "why"), with links to official docs (MDN, PHP manual, WCAG, the library's docs, the `#issue`). Never mass-rewrite comments across the whole tree in one unreviewed sweep — new code is annotated as written; legacy backfill is a tracked program.
+2. **GitHub Issues** — create/update/close with commit SHAs + evidence; unactioned suggestions → `for consideration`.
+3. **Milestones + Project board** — keep status accurate.
+4. **Wiki** (`iHymns.wiki/`) — update affected pages (API/Architecture/Schema/Setup/Deploy).
+5. **Markdown docs** — `README.md`, `CHANGELOG.md`, `DEV_NOTES.md`, `PROJECT_STATUS.md`, `SECURITY.md`, `LICENSING.md`.
+6. **Claude `.claude/`** — Memory (auto-memory + `MEMORY.md`), Context (`ProjectBrief.md` + this file), History (`sessions/<date>-HANDOFF.md`).
+
+If an item can't be completed (network for a Wiki push, an owner decision for a milestone), **say so explicitly** in the handoff and leave a tracked task — never silently skip, never claim it was done.
+
 ## 📎 Other references in this directory
 
 - `.claude/ProjectBrief.md` — current project state, versions, phase, database schema summary.

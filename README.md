@@ -2,8 +2,9 @@
 
 > **A multiplatform Christian lyrics application for worship enhancement**
 
-[![Version: 0.77.0 Alpha](https://img.shields.io/badge/Version-0.77.0%20Alpha-orange.svg)](#environments)
-[![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](#license)
+[![Version: 0.550.0 Alpha](https://img.shields.io/badge/Version-0.550.0%20Alpha-orange.svg)](#environments)
+[![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSING.md)
+[![Security Policy](https://img.shields.io/badge/Security-Policy-brightgreen.svg)](SECURITY.md)
 [![Platform: Web](https://img.shields.io/badge/Platform-Web%20PWA-blue.svg)](#platforms)
 [![Platform: iOS](https://img.shields.io/badge/Platform-iOS%20%7C%20iPadOS%20%7C%20tvOS-black.svg)](#platforms)
 [![Platform: Android](https://img.shields.io/badge/Platform-Android-green.svg)](#platforms)
@@ -55,7 +56,7 @@ Songs are tagged at song-level with their actual IETF BCP 47 language (#681), so
 
 | Platform | Technology | Status |
 | --- | --- | --- |
-| Web PWA | HTML5, CSS3, Bootstrap 5.3, vanilla JS, PHP 8.1+, MySQL 5.7+ / MariaDB 10.3+ | **Alpha** (v0.77.0) |
+| Web PWA | HTML5, CSS3, Bootstrap 5.3, vanilla JS, PHP 8.1+, MySQL 5.7+ / MariaDB 10.3+ | **Alpha** (v0.550.0) |
 | iOS / iPadOS / tvOS | Swift 6.3, SwiftUI | In progress |
 | Android / Fire OS | Kotlin, Jetpack Compose | Planned |
 
@@ -350,7 +351,9 @@ Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
 
 This software is proprietary. Unauthorized copying, modification, or distribution is strictly prohibited.
 
-Third-party components retain their respective licences (MIT, Apache 2.0, etc.).
+Third-party components retain their respective licences (MIT, Apache 2.0, BSD, etc.). See **[LICENSING.md](LICENSING.md)** for the full dependency-licence breakdown, song-content rights position, and trademark notes.
+
+Security: to report a vulnerability privately, see **[SECURITY.md](SECURITY.md)**.
 
 ---
 
