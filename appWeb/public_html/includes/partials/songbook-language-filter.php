@@ -147,6 +147,7 @@ $languageCount = count($languageList);
 ?>
 <div class="songbook-language-filter mb-3"
      data-songbook-language-filter
+     role="group"
      aria-label="Filter songbooks and songs by language">
     <div class="dropdown">
         <button type="button"
@@ -170,7 +171,7 @@ $languageCount = count($languageList);
             <div class="lang-filter-scroll" id="lang-filter-list">
                 <label class="lang-filter-row lang-filter-row--all d-flex align-items-center gap-2 px-3 py-2 mb-0">
                     <input type="checkbox" class="form-check-input m-0 flex-shrink-0 js-songbook-language-filter-all"
-                           id="songbook-language-filter-all" autocomplete="off" checked>
+                           id="songbook-language-filter-all" checked>
                     <span class="lang-filter-name fw-semibold">All languages</span>
                 </label>
                 <?php foreach ($languageList as $l): ?>
@@ -184,8 +185,7 @@ $languageCount = count($languageList);
                         <input type="checkbox" class="form-check-input m-0 flex-shrink-0 js-songbook-language-filter-option"
                                id="<?= $id ?>"
                                value="<?= htmlspecialchars($l['sub'], ENT_QUOTES, 'UTF-8') ?>"
-                               data-lang-name="<?= htmlspecialchars($l['name'], ENT_QUOTES, 'UTF-8') ?>"
-                               autocomplete="off">
+                               data-lang-name="<?= htmlspecialchars($l['name'], ENT_QUOTES, 'UTF-8') ?>">
                         <span class="d-flex flex-column lh-sm">
                             <span class="lang-filter-name"><?= htmlspecialchars($l['name'], ENT_QUOTES, 'UTF-8') ?></span>
                             <small class="text-muted lang-filter-meta">
